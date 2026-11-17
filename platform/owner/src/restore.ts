@@ -73,8 +73,9 @@
  *
  * **Into a live owner** (`untangle-2026-11/r5w.md`) the object is first brought to `pending`
  * and empty, and its record begins two steps earlier:
- * - `restorePin {gen}`: one of the object's finished, restorable generations pinned (never
- *   pruned while a restore holds the owner, `Backups`' `pinned`), the owner held (the record's
+ * - `restorePin {namespace, gen}`: one of the object's finished, restorable generations pinned
+ *   (never pruned while a restore holds the owner, `Backups`' `pinned`), or one of another
+ *   namespace that names this owner, which its own then holds; the owner held (the record's
  *   `pinned` step: every door but the restore's refused, every run and stream ended, no lane
  *   run), and then a fresh generation of its present state written (`fresh`), begun after
  *   the hold, so nothing the owner wrote is lost unwritten (Fact 13). Asked again until it is
@@ -89,8 +90,15 @@
  * - `restoreRelease`: a pin not yet wiped given up, the owner as it was.
  * A wiped object takes a restore only of the generation it was pinned for, or of the one its
  * pin wrote (the undo). One no pin held (a lost object's failed restore) takes any generation
- * of its namespace, as the lost object did: a log that stages past `LOG_BYTES` fails only at
+ * of this owner's, as the lost object did: a log that stages past `LOG_BYTES` fails only at
  * its `log` step, and the one kept before it is then restored.
+ *
+ * **A restore from another of the owner's namespaces** (a live owner's from one its own holds,
+ * `r8-lost-object.md`): the pin has its own hold the pinned one, the wipe has the pinned one
+ * hold its own first, a begin into a wiped object has the one it adopts hold the record's, and
+ * the restore's last step deletes every hold of the adopted one by one it holds
+ * (`rootNamespace`), so at every step the namespace the object or its record names reaches
+ * every other, and once done no cycle of holds is left.
  *
  * **Another namespace of the owner** (`restoreHold {namespace, gen}`, `r8-erased-orphans.md`):
  * one whose generation names this owner but which this object will not adopt (it is live, so
@@ -296,6 +304,16 @@ export function heldGenerations(storage: OwnerStorage): string[] {
 }
 
 /**
+ * The namespace the restore that holds the owner reads (its record's), or null when none holds
+ * it. A wipe empties the object, so from then until the restore's begin this is the one place
+ * the owner's namespace is named, and the owner's erasure takes it from here (`owner-do.ts`).
+ * A read.
+ */
+export function restoreNamespace(storage: OwnerStorage): string | null {
+  return holdingStep(storage) === null ? null : record(storage.sql)!.ns;
+}
+
+/**
  * Refused, for the moment (`restoring`, a transient code: a sign-in's redirect answers it
  * `temporarily_unavailable`), while a restore holds the owner. A read. When the hold began
  * is `restore.source`'s to answer (`since`): no door shows a refusal's facts.
@@ -340,16 +358,55 @@ function emptiness(o: RestoreDoorNeeds): string | null {
 const refused = (why: string) => new Refusal("refused", why);
 
 /**
- * Refused unless a wiped object (`held` at `wiped`) is begun from its own namespace and, when
- * a pin held it (`fresh`), from the generation it was pinned for or the one its pin wrote; any
- * other object passes.
+ * Refused unless a wiped object a pin held (`held` at `wiped`, with `fresh`) is begun from the
+ * generation it was pinned for, in its record's namespace, or from the one its pin wrote, in the
+ * namespace the object named then; any other object passes, a wiped one no pin held (a lost
+ * object's failed restore) for any generation of this owner's (`ownGeneration`).
  */
 function wipedFor(held: Held | null, ns: string, gen: string): void {
-  if (held?.step === "wiped" && (ns !== held.ns
-      || (held.fresh !== null && gen !== held.gen && gen !== held.fresh))) {
-    throw refused(`this object was wiped to restore generation ${held.gen} of its namespace` +
-                  `${held.fresh === null ? "" : `, or ${held.fresh}, the one its pin wrote`}`);
+  if (held?.step === "wiped" && held.fresh !== null && !(ns === held.ns && gen === held.gen)
+      && gen !== held.fresh) {
+    throw refused(`this object was wiped to restore generation ${held.gen} of ${held.ns}, or ` +
+                  `${held.fresh}, the one its pin wrote`);
   }
+}
+
+/**
+ * Whether generation `gen` of `ns` is one a pin takes on this object, and whether it is of the
+ * object's own namespace: a live owner's (admitted or suspended), and, in its own namespace,
+ * one of its finished generations a restore can load; another namespace's the pin holds to this
+ * owner by its header (`ownGeneration`). In a unit.
+ */
+function pinnable(o: RestoreDoorNeeds, ns: string, gen: string): boolean {
+  const { state } = o.admission.row();
+  if (!ADMITS.includes(state)) {
+    throw refused(`the owner is ${state}: a pin holds a live owner, and a pending one is ` +
+                  "restored into with none");
+  }
+  const own = ns === o.files.storedNamespace();
+  if (own && !o.backups.restorable(gen, clock())) {
+    throw refused(`generation ${gen} is not one of the owner's finished generations a ` +
+                  "restore can load: restore.source names them");
+  }
+  return own;
+}
+
+/**
+ * The restore that holds the owner, for a pin of generation `gen` of `ns`: null when none holds
+ * it; refused unless it is that pin's, its undo's, or a failed one no pin held (a lost object's,
+ * wiped for any generation). In a unit.
+ */
+function pinHeld(o: RestoreDoorNeeds, ns: string, gen: string): Held | null {
+  const now = record(o.storage.sql);
+  if (now === null || now.step === "done") {
+    return null;
+  }
+  if (!(ns === now.ns && gen === now.gen) && gen !== now.fresh
+      && (now.step !== "failed" || now.fresh !== null)) {
+    throw refused(`a restore of this owner from generation ${now.gen} holds it: release it, ` +
+                  "or restore that one");
+  }
+  return now;
 }
 
 /**
@@ -365,6 +422,42 @@ function holdOf(o: RestoreDoorNeeds, held: Held): RestoreHold {
   const due = held.step === "failed" || (held.step === "pinned" && written);
   return { step: held.step, namespace: held.ns, gen: held.gen, fresh: held.fresh, written,
            confirm: due ? `wipe-${o.owner()}-${held.fresh ?? held.gen}` : null };
+}
+
+/**
+ * Whether the wipe `door` asks is due on the record `held`: false for one wiped or begun, which
+ * answers as it stands; refused with none pinned, before the present state is written, for
+ * words not the pin's, and once its generation or its undo can no longer be restored. In a
+ * unit.
+ */
+function wipeDue(o: RestoreDoorNeeds, door: Door<RestoreWipeRequest>, held: Held | null): boolean {
+  const { r } = door.check();
+  if (held === null || held.step === "done") {
+    throw refused("no generation of this owner is pinned: restore.pin first");
+  }
+  if (held.step !== "pinned" && held.step !== "failed") {
+    return false;
+  }
+  const { confirm } = holdOf(o, held);
+  if (confirm === null) {
+    throw refused("the owner's present state is not yet written: ask restore.pin again " +
+                  "until it is");
+  }
+  if (r.confirm !== confirm) {
+    throw new Refusal("invalid", "a wipe is confirmed by wipe-<owner>-<gen>, as " +
+                                 "restore.pin's answer names it");
+  }
+  // A live owner is wiped only for a generation, and an undo, a restore can still load (a
+  // migration since may refuse their schema): else the pin is released, the owner kept. Another
+  // namespace's generation was held to its schema at the pin; its begin holds it again.
+  const loads = held.ns === o.files.storedNamespace() ? [held.gen, held.fresh!] : [held.fresh!];
+  const unloadable = held.step === "pinned"
+    ? loads.find((gen) => !o.backups.restorable(gen, clock())) : undefined;
+  if (unloadable !== undefined) {
+    throw refused(`generation ${unloadable} can no longer be restored: release the pin, ` +
+                  "and pin one restore.source names restorable");
+  }
+  return true;
 }
 
 /** Every table of the owner's schema: the export's two lists, which hold every one. */
@@ -864,6 +957,8 @@ async function piece(o: RestoreDoorNeeds, door: Door<undefined>, source: Bucket)
         return true;
       });
       if (cleared) {
+        // No cycle of holds through the namespace adopted: one it holds may have held it.
+        await o.files.rootNamespace(held.ns);
         const root = await rootOf(source, held.ns, held.gen);
         await o.door(() => {
           if (still()) {
@@ -926,7 +1021,8 @@ export interface RestoreDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sy
   readonly connections: { secretsLost(): void };
   readonly egress: Pick<Egress, "end">;
   readonly files: Pick<Files, "adoptSpace" | "check" | "chunksAfter" | "chunksFrom" | "chunksPage"
-    | "holdNamespace" | "names" | "restored" | "settled" | "storedNamespace" | "sweep">;
+    | "holdNamespace" | "holdUnder" | "names" | "restored" | "rootNamespace" | "settled"
+    | "storedNamespace" | "sweep">;
   readonly grants: { revokeAll(now: number): string[] };
   readonly inbound: Pick<Inbound, "disableAll">;
   readonly keys: Pick<Keys, "ids" | "revoked">;
@@ -1009,16 +1105,21 @@ export const restoreDoors = Object.freeze({
         throw refused(why);
       }
       wipedFor(held, ns, gen);
-      return { ns, gen, held: null };
+      return { ns, gen, held: null, from: held?.ns ?? null };
     });
     if (asked.held !== null) {
       return o.door(() => answer(o, asked.held!));
     }
-    const { ns, gen } = asked;
+    const { ns, gen, from } = asked;
     const { root, schema } = await ownGeneration(o, ns, gen);
     const unloadable = unforwardable(schema);
     if (unloadable !== null) {
       throw refused(unloadable);
+    }
+    // A wiped object's record names the namespace the owner had: the one it adopts holds it
+    // first, so no erasure from here on misses it.
+    if (from !== null && from !== ns) {
+      await o.files.holdUnder(ns, from);
     }
     return o.door(() => {
       door.check();
@@ -1031,8 +1132,9 @@ export const restoreDoors = Object.freeze({
       // A wiped object's record goes on, its pin's fresh generation kept: the undo.
       o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since, schema, " +
                            "source) VALUES (1, ?, ?, 'index', 0, ?, ?, ?) ON CONFLICT (only) DO " +
-                           "UPDATE SET gen = excluded.gen, step = 'index', at = 0, staged = 0, " +
-                           "peak = 0, schema = excluded.schema, source = excluded.source", ns,
+                           "UPDATE SET ns = excluded.ns, gen = excluded.gen, step = 'index', " +
+                           "at = 0, staged = 0, peak = 0, schema = excluded.schema, source = " +
+                           "excluded.source", ns,
                          gen, clock(), MIGRATIONS.length, schema);
       return answer(o, record(o.storage.sql)!);
     });
@@ -1043,8 +1145,10 @@ export const restoreDoors = Object.freeze({
    * too and a restore of the whole bucket begins none it holds
    * (`docs/decisions/untangle-2026-11/r8-erased-orphans.md`): refused unless generation `gen`
    * of `namespace` is this owner's (as a begin holds it), while this object takes a restore
-   * (it then adopts the namespace: `restoreBegin`), and for its own namespace. Its own is made
-   * if it has none. Asked again, it answers as it stands.
+   * (it then adopts the namespace: `restoreBegin`), for a pending owner no restore holds (an
+   * import's, whose discard would delete what it holds), and for its own namespace. Its own is
+   * made if it has none, and none it holds holds it after (`r8-lost-object.md`). Asked again,
+   * it answers as it stands.
    */
   async restoreHold(o: RestoreDoorNeeds, door: Door<RestoreBeginRequest>): Promise<RestoreHeld> {
     const { ns, gen } = await o.door(() => {
@@ -1052,6 +1156,12 @@ export const restoreDoors = Object.freeze({
       if (emptiness(o) === null) {
         throw refused("this object takes a restore: begin it from the namespace, which it then " +
                       "adopts");
+      }
+      // Pending, holding rows and no restore: the import's, whose discard deletes its
+      // namespace and every one it holds (`Erasure.discard`).
+      if (o.admission.row().state === "pending" && record(o.storage.sql) === null) {
+        throw refused("the owner is pending and no restore holds it: an import's discard " +
+                      "would delete what it holds");
       }
       if (o.files.storedNamespace() === asked.ns) {
         throw refused("the namespace is this object's own");
@@ -1076,50 +1186,48 @@ export const restoreDoors = Object.freeze({
     return o.door(() => answer(o, record(o.storage.sql)!));
   },
   /**
-   * Generation `gen` of this live owner pinned, the owner held, and its present state written
-   * as a fresh generation: the first call pins and holds, every call carries the fresh
-   * generation on for at most `RESTORE_PASS_MS` until it is written; its answer then names
-   * the words that confirm the wipe. A record past the pin, for `gen` or the one its pin
-   * wrote, answers as it stands; a pending owner is restored into directly, with no pin.
+   * Generation `gen` of `namespace` pinned on this live owner, the owner held, and its present
+   * state written as a fresh generation: the first call pins and holds, every call carries the
+   * fresh generation on for at most `RESTORE_PASS_MS` until it is written; its answer then names
+   * the words that confirm the wipe. The generation is one of its own namespace's finished,
+   * restorable ones, or one of another namespace that names this owner and that its own then
+   * holds, so its erasure takes it from the pin on (`r8-lost-object.md`). A record past the pin,
+   * for that generation or the one its pin wrote, answers as it stands; a pending owner is
+   * restored into directly, with no pin.
    */
   async restorePin(o: RestoreDoorNeeds, door: Door<RestorePinRequest>): Promise<RestoreHold> {
-    const { held, began } = await o.door(() => {
-      const { r } = door.check();
-      const gen = r.gen;
-      if (typeof gen !== "string" || !HEX16.test(gen)) {
-        throw new Refusal("invalid", "a pin names a generation (16 hex)");
-      }
-      const now = record(o.storage.sql);
-      if (now !== null && now.step !== "done") {
-        // A failed restore no pin held (a lost object's) is wiped for any generation.
-        if (gen !== now.gen && gen !== now.fresh && (now.step !== "failed" || now.fresh !== null)) {
-          throw refused(`a restore of this owner from generation ${now.gen} holds it: release ` +
-                        "it, or restore that one");
-        }
-        return { held: now, began: false };
-      }
-      const { state } = o.admission.row();
-      if (!ADMITS.includes(state)) {
-        throw refused(`the owner is ${state}: a pin holds a live owner, and a pending one is ` +
-                      "restored into with none");
-      }
-      if (!o.backups.restorable(gen, clock())) {
-        throw refused(`generation ${gen} is not one of the owner's finished generations a ` +
-                      "restore can load: restore.source names them");
-      }
-      // The hold, in the unit that pins: no door but the restore's from here on, and every
-      // run and stream ended, as a suspension's prompt stop ends them (`admission.ts`).
-      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
-                           "(1, ?, ?, 'pinned', 0, ?) ON CONFLICT (only) DO UPDATE SET ns = " +
-                           "excluded.ns, gen = excluded.gen, step = 'pinned', at = 0, after = " +
-                           "NULL, held = NULL, spans = NULL, failed = NULL, fresh = NULL, since " +
-                           "= excluded.since, staged = 0, peak = 0, schema = NULL, source = " +
-                           "NULL", o.files.storedNamespace(),
-                         gen, clock());
-      o.egress.end("admission");
-      o.launcher.endAll(clock());
-      return { held: record(o.storage.sql)!, began: true };
+    const asked = await o.door(() => {
+      const { ns, gen } = generationAsked(door);
+      const held = pinHeld(o, ns, gen);
+      return { ns, gen, own: held !== null || pinnable(o, ns, gen), held };
     });
+    if (asked.held === null && !asked.own) {
+      const unloadable = unforwardable((await ownGeneration(o, asked.ns, asked.gen)).schema);
+      if (unloadable !== null) {
+        throw refused(unloadable);
+      }
+      await o.files.holdNamespace(asked.ns);
+    }
+    const { held, began } = asked.held !== null ? { held: asked.held, began: false }
+      : await o.door(() => {
+        door.check();
+        const now = pinHeld(o, asked.ns, asked.gen);  // another call pinned it meanwhile
+        if (now !== null) {
+          return { held: now, began: false };
+        }
+        pinnable(o, asked.ns, asked.gen);
+        // The hold, in the unit that pins: no door but the restore's from here on, and every
+        // run and stream ended, as a suspension's prompt stop ends them (`admission.ts`).
+        o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) VALUES " +
+                             "(1, ?, ?, 'pinned', 0, ?) ON CONFLICT (only) DO UPDATE SET ns = " +
+                             "excluded.ns, gen = excluded.gen, step = 'pinned', at = 0, after = " +
+                             "NULL, held = NULL, spans = NULL, failed = NULL, fresh = NULL, " +
+                             "since = excluded.since, staged = 0, peak = 0, schema = NULL, " +
+                             "source = NULL", asked.ns, asked.gen, clock());
+        o.egress.end("admission");
+        o.launcher.endAll(clock());
+        return { held: record(o.storage.sql)!, began: true };
+      });
     if (began) {
       o.relay.closeAll("lost");  // a socket opened again is refused until the restore is done
     }
@@ -1153,39 +1261,30 @@ export const restoreDoors = Object.freeze({
    * refused its wipe once its generation or its undo can no longer be restored.
    */
   async restoreWipe(o: RestoreDoorNeeds, door: Door<RestoreWipeRequest>): Promise<RestoreHold> {
-    const wiped = await o.door(() => {
-      const { r } = door.check();
+    // From the wipe the object names no namespace: a pin of another namespace's generation
+    // first has that one hold the object's own, so the owner's erasure, which takes the
+    // record's then, misses neither (`restoreNamespace`).
+    const leaving = await o.door(() => {
       const held = record(o.storage.sql);
-      if (held === null || held.step === "done") {
-        throw refused("no generation of this owner is pinned: restore.pin first");
-      }
-      if (held.step !== "pinned" && held.step !== "failed") {
+      const own = o.files.storedNamespace();
+      return wipeDue(o, door, held) && held!.step === "pinned" && own !== null && own !== held!.ns
+        ? { ns: held!.ns, own } : null;
+    });
+    if (leaving !== null) {
+      await o.files.holdUnder(leaving.ns, leaving.own);
+    }
+    const wiped = await o.door(() => {
+      const held = record(o.storage.sql);
+      if (!wipeDue(o, door, held)) {
         return false;
-      }
-      const { confirm } = holdOf(o, held);
-      if (confirm === null) {
-        throw refused("the owner's present state is not yet written: ask restore.pin again " +
-                      "until it is");
-      }
-      if (r.confirm !== confirm) {
-        throw new Refusal("invalid", "a wipe is confirmed by wipe-<owner>-<gen>, as " +
-                                     "restore.pin's answer names it");
-      }
-      // A live owner is wiped only for a generation, and an undo, a restore can still load
-      // (a migration since may refuse their schema): else the pin is released, the owner kept.
-      const unloadable = held.step === "pinned"
-        ? [held.gen, held.fresh!].find((gen) => !o.backups.restorable(gen, clock())) : undefined;
-      if (unloadable !== undefined) {
-        throw refused(`generation ${unloadable} can no longer be restored: release the pin, ` +
-                      "and pin one restore.source names restorable");
       }
       // A transaction of its own: a unit that throws keeps what it wrote (`gate.ts`), so a
       // wipe that throws part way would leave the object half made and its pin gone.
       o.storage.transactionSync(() => {
         remigrate(o.storage, MIGRATIONS, schemaTables());
         o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, fresh, since) " +
-                             "VALUES (1, ?, ?, 'wiped', 0, ?, ?)", held.ns, held.gen, held.fresh,
-                           held.since);
+                             "VALUES (1, ?, ?, 'wiped', 0, ?, ?)", held!.ns, held!.gen,
+                           held!.fresh, held!.since);
       });
       return true;
     });

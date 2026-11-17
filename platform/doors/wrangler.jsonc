@@ -20,10 +20,11 @@
 //   file door's bytes call (the binder streams an upload's chunks to it, src/file-bytes.ts):
 //   the doors hold an uploading owner's wrapped data key, so they bind no read and no key
 //   call of the files Worker's (review M5-1). Only src/file-bytes.ts reaches it.
-// - FILES_LOCATE: the files Worker's FilesLocate entrypoint, which serves locate alone: a
-//   namespace's owner, read from its newest generation's header in the files Worker, for the
-//   operator channel's restore.locate (a restore after an account's loss). Only src/operator.ts
-//   reaches it.
+// - FILES_LOCATE: the files Worker's FilesLocate entrypoint, which serves locate, namespaces
+//   and erase: a namespace's owner, read from its newest generation's header in the files
+//   Worker, the namespaces the bucket holds, and a namespace deleted whole for an owner the
+//   directory records erased, for the operator channel's restore.locate and restore.namespaces
+//   (a restore after an account's loss, or of a lost object). Only src/operator.ts reaches it.
 // - No ratelimits: no number of ours bounds any caller (slice L's review). Cloudflare's own
 //   DDoS protection is in front of every Worker; a metadata fetch the OAuth provider makes
 //   is bounded by the provider (public URLs, 5 KiB, 10 s; global_fetch_strictly_public).

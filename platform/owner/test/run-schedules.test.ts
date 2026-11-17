@@ -125,6 +125,28 @@ describe("a scheduled run's result", () => {
     expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
   });
 
+  it("posts nothing when its engine stopped at a deferred call, the run settled tool_deferred " +
+     "though the end came in a later batch (R5 P-resume)", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
+                                                      at: Date.now() / 1000 + 3600 });
+    await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
+                Date.now() / 1000 - 1);
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/deferred", expected_etag: null });
+    await drainDue(r.stub);
+    const start = await startOf(r.stub, (await recorder(r.stub)).starts.at(-1)!.run);
+    // Claude Code's stop at a call its hook deferred: a result, though no reply.
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 1, at: 1, event: { type: "system", subtype: "init", session_id: "s-deferred" } },
+      { seq: 2, at: 2, event: { type: "result", subtype: "success", result: "Asking first.",
+                                stop_reason: "tool_deferred" } }] });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: start.run }))
+      .toMatchObject({ state: "succeeded", code: "tool_deferred" });
+    expect((await r.stub.mailboxRead(r.bind(), { limit: 50 })).messages).toEqual([]);
+  });
+
   it("is kept when its post is refused for the moment: the runner's batch is refused " +
      "storage_busy, the run stays live, and its next post posts it once (review D-2)",
      async () => {

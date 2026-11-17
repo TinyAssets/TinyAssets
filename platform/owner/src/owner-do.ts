@@ -173,7 +173,7 @@ import { Egress, egressDoors } from "./egress";
 import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
-import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
+import { pinned, refuseRestoring, restoreDoors, restoreNamespace, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors, switchedOn } from "./signins";
 import { Starter, starterDoors } from "./starter";
@@ -645,8 +645,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       },
       // The namespace's mark, at the erasure's start: the copy back's record of it (no put
       // begins under the owner's mark, so the namespace it reads is the one the delete takes).
+      // A wipe for a restore empties the object, and its record names the namespace then.
       mark: async () => {
-        const ns = this.#files.storedNamespace();
+        const ns = this.#files.storedNamespace() ?? restoreNamespace(storage);
         if (ns !== null) {
           await this.#files.markNamespace(ns);
         }
@@ -668,7 +669,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // chunks (ADR-035), deleted by the namespace's prefix once every put this instance
       // began has landed (no new one begins under the mark), and again after the wipe.
       blobs: async () => {
-        const ns = this.#files.storedNamespace();
+        const ns = this.#files.storedNamespace() ?? restoreNamespace(storage);
         await this.#files.settled();
         if (ns !== null) {
           await this.#files.eraseNamespace(ns);
@@ -868,7 +869,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     return { owner, caller, origin: grant.origin, grant: held,
              run: { id: grant.run, scopes: grant.scopes, agent: grant.agent,
-                    stamp: grant.stamp } };
+                    stamp: grant.stamp, conversation: grant.conversation } };
   }
 
   /** The owner itself, on its own account, never an outside client nor a run. */

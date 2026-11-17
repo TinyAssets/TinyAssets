@@ -485,11 +485,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     namespace whose owner is live by that owner's own (`restore.hold`) and begins none another
     holds, and `owner.admit` refuses an owner the directory records whose object is pending
     (`untangle/r8-erased-orphans`, `r8-erased-orphans.md`).
-  - [ ] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
+  - [x] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
     located, the one naming `--owner` taken, then mode `restore` from it, every other one
     naming it held by the restored one; a live owner restored from a namespace it holds; and a
     located namespace whose owner is erased erased (`r8-account-loss.md` item 7, `r8-locate.md`
-    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`).
+    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`, `r8-lost-object.md`).
+  - [x] An erasure of a lost object marks nothing (its object and no restore record name a
+    namespace): mode `erase` finds its namespaces first, and refuses while R2 holds one naming
+    it, until it is restored (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
+  - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
+    it, since `copyback` needs an object naming the namespace and `recover` begins every owner
+    (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
@@ -564,18 +570,21 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
     the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's
     rule moved to the contract (`untangle/r5-decide`; `r5-decide.md`).
-  - [ ] Owner migration 17's pin PR, after P-decide merges (`untangle/r5-decide-pin17`).
+  - [x] Owner migration 17's pin, after P-decide merges: rode `untangle/r5-resume-hooks`.
   - [ ] P-decide's receipts in the export: `action_receipts` joins it with the first migration
     that builds a forward form (`schema.ts` `FORWARD`; `r5-decide.md` item 5,
     `untangle/r5-receipts-export`).
-  - [ ] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
-    stop matcher in its record's `events`; a run settles `waiting` on a card; a held call's
-    digest bound to its run's conversation (`r5-decide.md` item 8).
+  - [x] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
+    stop matcher in its record's `events`; a held call's digest bound to its run's
+    conversation; owner migration 18 (`untangle/r5-resume-hooks`; `r5-resume-hooks.md`).
+  - [ ] Owner migration 18's pin, after P-resume merges (`untangle/r5-resume-pin18`).
   - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
     `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
     when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
     rule where it holds and where it can't (`holds_at`, `not_enforced`), from `acts.json` and
-    the agent's engine record.
+    the agent's engine record; a held call the hook deferred resumes on no input, and its
+    conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
+    pass lands, since the runner writes the files (`untangle/r5-hooks`).
   - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).

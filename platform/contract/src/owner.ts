@@ -251,8 +251,13 @@ export interface RestoreNames {
   readonly next: number | null;
 }
 
-/** The generation a restore pins on a live owner (`restorePin`): one of its finished ones. */
+/**
+ * The generation a restore pins on a live owner (`restorePin`), and its namespace: one of its
+ * own finished ones, or one of another namespace whose generation names this owner (one its
+ * own holds, `r8-lost-object.md`).
+ */
 export interface RestorePinRequest {
+  readonly namespace: string;
   readonly gen: string;
 }
 

@@ -2747,13 +2747,32 @@ export class Files {
 
   /**
    * A restore's `restoreHold`: `held`, another namespace of this owner, held by this object's
-   * own, made first if it has none, so the erasure's mark and delete take it too. Repeatable;
-   * the namespace that holds it.
+   * own, made first if it has none, so the erasure's mark and delete take it too; then every
+   * hold of its own by one it holds deleted (`rootNamespace`), so holding a namespace that held
+   * this one makes no cycle. Repeatable; the namespace that holds it.
    */
   async holdNamespace(held: string): Promise<string> {
     const { ns } = await this.space();
     await this.#store.holdNamespace(ns, held);
+    await this.#store.rootNamespace(ns);
     return ns;
+  }
+
+  /**
+   * A restore's: `held` recorded as held by `ns`, neither of them maybe this object's own now (a
+   * restore's wipe and begin, `restore.ts`), so the namespace the object names next holds the
+   * one it leaves. Repeatable.
+   */
+  async holdUnder(ns: string, held: string): Promise<void> {
+    await this.#store.holdNamespace(ns, held);
+  }
+
+  /**
+   * A restore's, once done: every hold of `ns`, the namespace it adopted, by one it holds
+   * deleted, so no cycle of holds runs through it (`FILES.rootNamespace`). Repeatable.
+   */
+  async rootNamespace(ns: string): Promise<void> {
+    await this.#store.rootNamespace(ns);
   }
 
   /** The erasure's first R2 step (`erase.ts`): the namespace's mark made. Repeatable. */

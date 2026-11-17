@@ -37,10 +37,11 @@ export interface Account {
   readonly grant: Grant | null;
   /**
    * A run's call: its grant's run, scopes and agent, every door held to the scopes and the
-   * ledger acting as the agent; null otherwise.
+   * ledger acting as the agent, and its conversation; null otherwise.
    */
   readonly run: { readonly id: string; readonly scopes: readonly string[];
-                  readonly agent: string; readonly stamp: Stamped | null } | null;
+                  readonly agent: string; readonly stamp: Stamped | null;
+                  readonly conversation: string } | null;
 }
 
 /**

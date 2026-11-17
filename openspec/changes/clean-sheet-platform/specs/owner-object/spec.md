@@ -398,6 +398,17 @@ The owner SHALL answer a held call only in its session, by the card's id and the
 - **WHEN** the owner writes its policy while a card is pending
 - **THEN** the card is neither shown nor answered, and the call asked again is decided under the new rules
 
+### Requirement: A yes to a run's held call resumes its conversation
+A run's held call SHALL be bound to the run's conversation: the owner's yes SHALL admit the call only in that conversation, and SHALL write a run waiting there, under the held run's own authority, on an input that names the card, which starts once the conversation is free. A no SHALL resume nothing. A run whose engine stopped at a tool call it deferred (its record's `deferred` matcher) SHALL settle with the code `tool_deferred`, and its result SHALL post no reply.
+
+#### Scenario: A run's call answered yes
+- **WHEN** a run of `main` is held making a directory, ends, and the owner says yes
+- **THEN** a run of `main` starts in the same conversation, resuming its engine's session, its input naming the card, and its directory call is admitted once, while the same call from another of `main`'s conversations is held anew
+
+#### Scenario: A run stopped at a deferred call
+- **WHEN** a scheduled run's Claude Code ends its turn `tool_deferred`
+- **THEN** the run settles `succeeded` with the code `tool_deferred`, and nothing is posted to the owner's room
+
 ### Requirement: Every outside call is admitted against its client's grant
 The object SHALL admit each call from an outside client against that client's grant before any door acts: an MCP client's first verified call records it `full`, an API key with no grant is refused, a revoked client is refused, and after a revoke only a sign-in made after it is admitted. Only the owner in its session SHALL change a grant; the owner's account MAY revoke one without a session.
 

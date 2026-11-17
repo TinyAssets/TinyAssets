@@ -1011,7 +1011,10 @@
     },
     {
       "door": "restorePin", "class": "admission", "capability": null,
-      "args": { "refused": "invalid restore request", "required": { "gen": {} }, "optional": {} }
+      "args": {
+        "refused": "invalid restore request",
+        "required": { "namespace": {}, "gen": {} }, "optional": {}
+      }
     },
     {
       "door": "restoreWipe", "class": "admission", "capability": null,
