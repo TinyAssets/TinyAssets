@@ -43,7 +43,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { type DoorSteps, ownerRows } from "../src/door-steps";
+import { type OwnerRow, ownerRows } from "../src/door-steps";
 import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
@@ -233,7 +233,7 @@ export function doorHandlers(sources: ReadonlyMap<string, string>):
  */
 export function ungatedHandlers(
     handlers: ReturnType<typeof doorHandlers>,
-    rows: readonly Pick<DoorSteps, "door" | "handler" | "gate" | "caller">[]): string[] {
+    rows: readonly Pick<OwnerRow, "door" | "handler" | "gate" | "caller">[]): string[] {
   const entered = (node: ts.Expression | undefined): boolean => {
     let expression = node;
     if (expression !== undefined && ts.isAwaitExpression(expression)) {
@@ -575,7 +575,7 @@ describe("write-gate guard", () => {
     ["a row whose module has no such handler", "fileProbe", "units"],
   ])("sees an ungated door: %s", (_what, door, gate) => {
     expect(ungatedHandlers(doorHandlers(new Map([["owner/src/files.ts", HANDLERS]])),
-                           [{ door, handler: "files", gate, caller: "account" }] as DoorSteps[]))
+                           [{ door, handler: "files", gate, caller: "account" }] as OwnerRow[]))
       .toEqual([door]);
   });
 
@@ -587,7 +587,7 @@ describe("write-gate guard", () => {
     ["a door that takes no binding", "fileRead", "units", "none"],
   ])("allows a gated door: %s", (_what, door, gate, caller) => {
     expect(ungatedHandlers(doorHandlers(new Map([["owner/src/files.ts", HANDLERS]])),
-                           [{ door, handler: "files", gate, caller }] as DoorSteps[]))
+                           [{ door, handler: "files", gate, caller }] as OwnerRow[]))
       .toEqual([]);
   });
 

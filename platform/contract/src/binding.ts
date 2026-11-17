@@ -129,10 +129,11 @@ export interface Binding {
 // -- The kinds ----------------------------------------------------------------------------
 //
 // A binding is one of these kinds, each the fields of `Binding` it carries, and each with its
-// one parser: the binder builds a kind, and the object parses a door's binding with the
-// parser of the kind its row's caller takes (`BINDING_PARSERS`), so a field the binder sends
-// and the parser lacks is a type error. A parser refuses anything else as `invalid`. Two doors
-// take no binding (`UNBOUND_DOORS`, `doors.ts`).
+// one parser: the binder builds a kind, and the object parses a door's binding with the parser
+// of the kind it presents (`bindingKind`), once it holds that its row's caller takes that kind
+// (`owner/src/door-steps.ts`), so a field the binder sends and the parser lacks is a type
+// error. A parser refuses anything else as `invalid`. The two doors that take no binding
+// (`UNBOUND_DOORS`, `doors.ts`) take the kind `none`.
 
 /** The tier numbers and switched-on sign-ins a door's binding carries, as the binder read them. */
 type Gated = Pick<Binding, "tiers" | "signins">;
@@ -146,9 +147,13 @@ export type AccountBinding = Pick<Binding, "owner" | "caller" | "origin" | "sour
   | "authenticated_at" | "session" | "grant" | "expires_at" | "vendor"> & Gated;
 /** The owner in its live session: an account binding with its session cookie. */
 export type SessionBinding = AccountBinding & { readonly session: string };
-/** A sandbox's token at its own doors (the egress door's, the runner's, the sync agent's). */
-export type SandboxBinding = Pick<Binding, "owner" | "caller"> & {
-  readonly origin: null; readonly sandbox: SandboxToken };
+/** A sandbox's token of kind `T` at its own doors. */
+type TokenBinding<T extends SandboxToken["kind"]> = Pick<Binding, "owner" | "caller"> & {
+  readonly origin: null; readonly sandbox: Extract<SandboxToken, { kind: T }> };
+/** The egress token at its own doors (the egress doors', the runner's). */
+export type EgressBinding = TokenBinding<"egress">;
+/** The sync agent's token, beside its lease's egress token, at the sync doors. */
+export type SyncBinding = TokenBinding<"sync">;
 /** A run's call on the egress host: the egress token, and the run its path names. */
 export type RunBinding = Pick<Binding, "owner" | "caller"> & {
   readonly origin: null; readonly sandbox: Extract<SandboxToken, { kind: "egress" }>;
@@ -260,7 +265,7 @@ export function sessionBinding(value: unknown): SessionBinding {
  * A sandbox's token, exactly (`Binding.sandbox`): the egress token, with a run's or the
  * runner's secret or neither, or the sync token; or `invalid`.
  */
-export function sandboxToken(value: unknown): SandboxToken {
+function sandboxToken(value: unknown): SandboxToken {
   const kind = "sandbox";
   if (object(value) && "egress" in value) {
     const given = fields(value, kind, ["kind", "token", "egress"]);
@@ -282,13 +287,31 @@ export function sandboxToken(value: unknown): SandboxToken {
       : { kind: "egress", token, generation });
 }
 
-/** A sandbox binding (`SandboxBinding`), or `invalid`. */
-export function sandboxBinding(value: unknown): SandboxBinding {
+/** No binding, as a door that takes none is called (`UNBOUND_DOORS`); or `invalid`. */
+export function noBinding(value: unknown): undefined {
+  return value === undefined ? undefined : invalid("none");
+}
+
+/** A sandbox's token binding of `token`'s kind, or `invalid`. */
+function tokenBinding<T extends SandboxToken["kind"]>(value: unknown, token: T): TokenBinding<T> {
   const kind = "sandbox";
   const given = fields(value, kind, ["owner", "caller", "origin", "sandbox"]);
   const owner = own(given, kind);
-  return Object.freeze({ owner, caller: owner, origin: null,
-                         sandbox: sandboxToken(given["sandbox"]) });
+  const sandbox = sandboxToken(given["sandbox"]);
+  return sandbox.kind === token
+    ? Object.freeze({ owner, caller: owner, origin: null,
+                      sandbox: sandbox as Extract<SandboxToken, { kind: T }> })
+    : invalid(kind);
+}
+
+/** An egress binding (`EgressBinding`), or `invalid`. */
+export function egressBinding(value: unknown): EgressBinding {
+  return tokenBinding(value, "egress");
+}
+
+/** A sync binding (`SyncBinding`), or `invalid`. */
+export function syncBinding(value: unknown): SyncBinding {
+  return tokenBinding(value, "sync");
 }
 
 /** A run binding (`RunBinding`), or `invalid`. */
@@ -338,20 +361,43 @@ export function importBinding(value: unknown): ImportBinding {
 }
 
 /**
- * Each binding kind's parser, by the kind: the object parses a door's binding with the one
- * its row's caller takes. An erasure's doors take the reserved binding, as the admit does.
+ * Each binding kind's parser, by the kind: the binder builds a kind through its parser, and
+ * the object parses a door's binding with the parser of the kind it presents (`bindingKind`).
  */
 export const BINDING_PARSERS = Object.freeze({
+  none: noBinding,
   account: accountBinding,
   session: sessionBinding,
-  sandbox: sandboxBinding,
+  egress: egressBinding,
+  sync: syncBinding,
   run: runBinding,
   inbound: inboundBinding,
   reserved: reservedBinding,
-  erasure: reservedBinding,
   import: importBinding,
 });
 export type BindingKind = keyof typeof BINDING_PARSERS;
+/** The binding of kind `K`, as its parser returns it. */
+export type BindingOf<K extends BindingKind> = ReturnType<(typeof BINDING_PARSERS)[K]>;
+
+/**
+ * The kind `value` presents, by the field that kind alone carries: the one parser it must
+ * pass. Nothing (or no object) is `none`; an import's bundle is `import`; the platform's
+ * reserved caller otherwise `reserved`; then an inbound route, a run, a sandbox's token by its
+ * own kind, a session; anything else is an account. Whether its fields are that kind's is
+ * its parser's to say.
+ */
+export function bindingKind(value: unknown): BindingKind {
+  if (!object(value)) {
+    return "none";
+  }
+  const sandbox = value["sandbox"];
+  return "import" in value ? "import"
+    : value["caller"] === PLATFORM_CALLER ? "reserved"
+      : "inbound" in value ? "inbound"
+        : "run" in value ? "run"
+          : "sandbox" in value ? object(sandbox) && sandbox["kind"] === "sync" ? "sync" : "egress"
+            : "session" in value ? "session" : "account";
+}
 
 /**
  * What the inbound door answers the binder for one event (`inboundAccept`): a refused one by

@@ -313,9 +313,9 @@ describe("outside agents register from a verified identity", () => {
       // The owner itself registers only by applying a held card.
       [r.bind(null, { source: MCP, session: r.cookie }), "invalid", "invalid ledger request"],
       [{ ...r.bind(MUSE, { session: r.cookie }), source: undefined } as never, "invalid",
-        "source is api_key or mcp"],
+        "invalid account binding"],
       [r.bind(MUSE, { session: r.cookie, source: { kind: "oauth", ref: "x" } as never }),
-        "invalid", "source is api_key or mcp"],
+        "invalid", "invalid account binding"],
     ] as const) {
       const refused = await failure(() => r.stub.registerAgent(binding, request));
       expect([refused.code, refused.message]).toEqual([name, reason]);
@@ -349,7 +349,7 @@ describe("outside agents register from a verified identity", () => {
     }
     const badKey = await failure(() => r.stub.registerAgent(
       r.session(origin, { kind: "api_key", ref: "not-a-key" }), request));
-    expect([badKey.code, badKey.message]).toEqual(["invalid", "an api_key source_ref is the key id"]);
+    expect([badKey.code, badKey.message]).toEqual(["invalid", "invalid account binding"]);
     const agent = await r.stub.registerAgent(r.session(origin, source), request);
     expect([agent.source, agent.source_ref, agent.delivery_method, agent.outside_client])
       .toEqual(["api_key", key, "pull", origin.client]);
@@ -507,10 +507,10 @@ describe("the ledger's binding", () => {
     for (const origin of [{ client: "a", family: "b" }, { client: "a".repeat(64) },
                           { ...MUSE, extra: "x" }, "owner"]) {
       const refused = await failure(() => r.stub.outsideAgents(r.bind(origin as never)));
-      expect([refused.code, refused.message]).toEqual(["invalid", "invalid outside origin"]);
+      expect([refused.code, refused.message]).toEqual(["invalid", "invalid account binding"]);
     }
     const bare = await failure(() => r.stub.outsideAgents({ owner: r.owner, caller: r.owner } as never));
-    expect(bare.message).toBe("invalid outside origin");
+    expect(bare.message).toBe("invalid account binding");
     expect((await r.stub.outsideAgents(r.bind(MUSE))).agents).toEqual([]);
   });
 

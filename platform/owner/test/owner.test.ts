@@ -242,6 +242,13 @@ describe("the object's stored owner", () => {
       expect((await failure(() => stub.collectionPull({ ...binding, origin: null }, PULL))).message)
         .toBe("invalid owner principal");
     }
+    // No binding at all, at an account door and at a file reader's, which also takes the sync
+    // agent's: refused as no principal, never read as one.
+    for (const call of [() => stub.collectionPull(undefined as never, PULL),
+                        () => stub.fileRead(undefined as never, { path: "/workspace/x.md" })]) {
+      const refused = await failure(call);
+      expect([refused.code, refused.message]).toEqual(["invalid", "invalid owner principal"]);
+    }
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(state.storage.sql.exec("SELECT owner FROM object_owner").toArray()).toEqual([]);
     });
