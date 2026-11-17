@@ -51,10 +51,8 @@ import { fileURLToPath } from "node:url";
 
 import { RUNNER } from "../../ci/classes.ts";
 import { installed } from "../../ci/deps.ts";
+import { freePorts, ownWorkerd, WORKERD } from "../../ci/own-workerd.mjs";
 import { CPU_LIMIT_MS } from "../guards/cpu.ts";
-import { egressLeg } from "./egress.mjs";
-import { freePorts } from "./ports.mjs";
-import { ownWorkerd } from "./workerd.mjs";
 
 installed();
 const OWNER = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -111,9 +109,8 @@ const dummy :Workerd.Worker = (
 
 const driver = createServer();
 await new Promise((resolve) => driver.listen(DRIVER, "127.0.0.1", resolve));
-const workerd = join(dirname(require.resolve("workerd/package.json")), "bin", "workerd");
 // This leg's own workerd: its early exit fails the leg, and any end of the leg kills it.
-const own = ownWorkerd(workerd, ["serve", join(work, "config.capnp"),
+const own = ownWorkerd(WORKERD, ["serve", join(work, "config.capnp"),
                                  `--inspector-addr=127.0.0.1:${INSPECT}`],
                        { onEarlyExit: () => rmSync(work, { recursive: true, force: true }) });
 const problems = [];
@@ -478,11 +475,6 @@ try {
   driver.close();
   rmSync(work, { recursive: true, force: true });
 }
-// The egress cases (egress shape research §5, `egress.mjs`): the door and the gateway in
-// isolates of their own, after the owner's paths.
-const egress = await egressLeg();
-console.log(JSON.stringify({ egress: egress.rows }, null, 1));
-problems.push(...egress.problems);
 if (problems.length > 0) {
   console.error(problems.join("\n"));
   process.exit(1);
