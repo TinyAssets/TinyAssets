@@ -6,9 +6,9 @@
  * nothing), the classes its migrations make, and its namespaces, vars, buckets, KV
  * namespaces and queue producers by binding name, and each other key whose value is itself
  * a security statement. A value the config is the one home of (the Worker's, a queue's, a
- * bucket's or a namespace's name, an id, a build command) is not restated. `configProblems` holds a config
- * to it; what a Worker checks across configs or sources (the doors' entrypoints, the owner's
- * bound Workers) is its own, built on the same rule checks.
+ * bucket's or a namespace's name, an id, a build command) is not restated. `configProblems`
+ * holds a config to it; what a Worker checks across configs or sources (the doors'
+ * entrypoints, the owner's bound Workers) is its own, built on the same rule checks.
  */
 import { join } from "node:path";
 
