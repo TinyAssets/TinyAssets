@@ -6,9 +6,10 @@
  * reads them; each run runs as a user of its own on a home of its own, on the run's
  * allow-list alone, from the record's argv; and every refusal holds: a project, home or
  * ancestor env file, a secret's bytes in a synced file, a model id that would read as a flag,
- * and the attacks of another user on root (a link planted for root to follow, the session store as a way into another engine's home,
- * a home's settings outliving its run). Cancel, `events_busy`, the renewal's held posts and
- * resume, the projection and big files are here too.
+ * and the attacks of another user on root (a link planted for root to follow, the session
+ * store as a way into another engine's home, a home's settings outliving its run). Cancel,
+ * `events_busy`, the renewal's held posts and resume, the projection and big files are here
+ * too.
  */
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
@@ -1991,13 +1992,14 @@ describe("renewal", () => {
     await waitFor(() => box.runner("state").out.includes("\"quiet\":false"));
     const deadline = Date.now() + 1500;
     expect(await box.runnerAsync("renew-wait", String(deadline))).toBe(0);
-    // Renewed (its run told, and acted), and not before the deadline it was given: the run's
-    // renewing is stamped by the runner's own clock, which read the deadline come first.
-    expect(runState(start.run).renewing).toBe(true);
-    const renewing = doors.events().flatMap((post) => post.body["frames"] as
+    // Its run told, and not before the deadline it was given: the run's renewing is stamped
+    // by the runner's own clock, which read the deadline come first. Past its deadline
+    // `renew-wait` waits for no answer (`tell`), so the run's acting is waited for here.
+    const renewingFrame = () => doors.events().flatMap((post) => post.body["frames"] as
       { at: number; event: { type: string } }[])
       .find((frame) => frame.event.type === "ta.renewing");
-    expect(renewing!.at).toBeGreaterThanOrEqual(deadline);
+    await waitFor(() => runState(start.run).renewing === true && renewingFrame() !== undefined);
+    expect(renewingFrame()!.at).toBeGreaterThanOrEqual(deadline);
     box.runner("renewed");
     box.write(release, "");
     await doors.ended_(25_000, start.run);

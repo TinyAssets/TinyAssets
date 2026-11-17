@@ -80,6 +80,17 @@ waiting for its pasted code writes its record only once it has the code, and a c
 never does. The test now reads the pool's users' processes, live before the cancel (so the
 check can see one) and none after.
 
+Also fixed, at review: "renews at its deadline regardless" read the run's `renewing` as
+soon as `renew-wait` returned. Past its deadline, `tell` waits for no answer (its timer is
+the deadline, already past), so the test raced the run's drain and lost under load. Its 1.5 s
+is a protocol argument, not a budget, so #5646's calibration rightly leaves it, and scaling
+it would not help: the race is at the deadline, whatever its value. The test now waits for
+the run's `renewing` and its frame by event. With the run's renewing post answered busy once,
+the old test failed 4 of 4 and the new one passed 4 of 4. Found and left: the Worker passes
+its own now as that deadline (`control.ts` `#renew`), so no renewal waits for its runs'
+answers, though `Job` drains its posts before answering so that none is in flight at the
+pause. Its fix needs the answer's bound researched first: a sub-line of the re-check loop line.
+
 **Left, with the reason:** `test/sandbox.test.ts` reads or sets its own object's rows
 through `runInDurableObject` in 11 places:
 - to age a row's clock (`idle_since`), with no door that moves it;
@@ -92,8 +103,8 @@ These are the Worker's own suite on its own object, not another Worker's interna
 subject). A front door for each is a product change.
 
 **Found and left, cross-area:** with `sync.test.ts`'s copy gone, `contract/src/sync-ignore.ts`
-`wildcard` has no reader. It is the contract's surplus, for the contract area's pass or the
-re-check loop.
+`wildcard` has no reader. It is the contract's surplus: a sub-line of `tasks.md`'s re-check
+loop line, for the contract area's pass or that loop.
 
 ## 3. `s2:N51`: the E2B SDK's serializer, copied
 
@@ -144,7 +155,8 @@ ride with the doors area. The sandbox's own, from s2 (`S22`, `S24`, `S63`, `N8`,
 **Found and left:** `runner.ts` `safeSignedIn` reads any failure of the status check as "not
 signed in", so the sign-in ends `failed` with nothing in its log, where `loginRun`'s own
 catch logs its why. The fix is one log line in the runner. That is a runner change, so a new
-runner digest and pair, and this pass changes no code. It is named here for the re-check loop.
+runner digest and pair, and this pass changes no code. It is a sub-line of `tasks.md`'s
+re-check loop line.
 
 ## 5. Proof
 

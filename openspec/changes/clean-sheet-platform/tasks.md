@@ -594,6 +594,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
+  - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
+    (`pass-sandbox.md` §4).
+  - [ ] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
+    (`pass-sandbox.md` §2).
+  - [ ] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
+    deadline (`control.ts` `#renew`), and `tell` waits for an answer only to it, so no run's
+    posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
+    bound first (`pass-sandbox.md` §2).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
