@@ -633,10 +633,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
 - [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
-  `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
+  `contract/apps.json` and `profiles.json` (developer profile reference built and held for routes,
+  `codex/site-developer-profiles`); the `/connect` page rebuilt (§9); the privacy and
   account-deletion pages corrected, in the founder's copy.
-  - [x] The developer reference renders the tool profiles from the contract. Held for the
-    site release after routes (`codex/site-developer-profiles`).
 - [ ] The mark's source, `tinyassets/desktop/icon_gen.py`, moved out before the old stack is
   deleted, or the site stops deploying (d3 §C6 F4).
 - [ ] The live stage's four PRs, after B13, B14's canary and `control` (d3 §H).
