@@ -873,6 +873,10 @@ real data, in step 5 (d3 §P).
 - [ ] S6, the app manifest and agent players, with the app's view of mail-started runs and
   agents' chains.
 - [ ] S7, the device runner; S8, real-time tiers.
+  - [ ] Research device placement before implementing S7 or S8 host election.
+    Reuse the engine records with the owner's actual local CLI and login. Prove
+    owner-only admission and the unknown outcome on disconnect before a match
+    can advertise that host (`untangle-2026-11/device-placement.md`).
 - [ ] The founder-approved primitives in `docs/architecture.md`: N2 phone push, N3 voice and
   video, N4 a live takeover view, N6 undo by snapshot, N7 agent purchases, N9 media results.
 - [ ] Mail archive's later phases (ADR-036), past step 5's four: a batched or tiered merge for
