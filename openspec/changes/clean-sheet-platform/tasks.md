@@ -834,20 +834,26 @@ Moved before the window, into lane R (d3 §F3, §G).
     reaches the deployed shared-app half (list3 P45).
   - [ ] Server tools priced as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a key run that enables one is metered, not refused
-    `egress_unmetered_tool` (list3 P20).
+    `egress_unmetered_tool` (list3 P20). Bound the tool charge at reservation and settle it
+    from evidence of actual use before admitting those calls (see the Step 19 review below).
   - [ ] Gemini's `countTokens`: Google's page read (ai.google.dev) and listed `free` in
     `api-rules.ts` if it says so.
   - [ ] E2B's lifecycle webhooks as a second doorbell for the sandbox line, and one platform-wide
     pull of `/events/sandboxes` for the deliveries E2B gave up on (list3 P7).
-  - [ ] The MCP Tasks extension once the SDK's `createMcpHandler` serves it: a task id the
-    operation id, `tasks/get` `agentStatus`, `tasks/cancel` `agentCancel`.
+  - [ ] The MCP Tasks extension: check the capability and result contract for each served
+    protocol revision. Map a task to its owner's run receipt. Settle whether a timed launch
+    creates a task for scheduling or for an individual run before exposing timed launches as
+    tasks. The pinned handler already routes explicitly registered extension methods.
   - [ ] A streamed file download, and an outside client's file-bytes tool.
   - [ ] The owner app: the API keys screen reads `keys/list` and deletes by `keys/delete`; the
     Export section uses the export door, and `MISSING.export` goes; the storage view's "deleted
     content" line from `storageUsage`'s `deleted_content`, and that a lower figure shortens
     recovery; "last used" on a source card.
-  - [ ] An MCP tool for the past runs.
-  - [ ] The region a Kimi run's provider hosts need, kept from the sign-in for its runs.
+  - [ ] An MCP tool for past runs, using the existing caller-filtered `runList` and its
+    cursor after the owner fits the actual encoded page to a tool result.
+  - [ ] The region a Kimi run's provider hosts need, kept from the successful sign-in for
+    that credential authority and carried into launch and network reconciliation. See the
+    [Step 19 run dependencies](../../../docs/decisions/untangle-2026-11/step19-run-dependencies.md).
   - [ ] The runner reads a client's grant for its runs' agent definitions, so a full grant's run
     edits them with its CLI's own file tools, not only through the MCP door.
   - [ ] Codex's run secret as a header (`env_http_headers`).
