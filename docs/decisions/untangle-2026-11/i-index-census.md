@@ -85,9 +85,43 @@ the retained and absent paths through the public importCheck door. A census
 must stop on the actual
 refusal and retain the correct per-file and per-batch semantics.
 
-A hard interruption during a synthetic run left the private database and its
-journal. Normal completion removed both. Any cutover implementation needs to
-recognize and reclaim its own abandoned per-run directory on restart.
+## Private SQLite scratch during interruption
+
+The named database in the first experiment needs startup reclamation after
+a hard stop. An alternative for rehearsal on the Linux import host is SQLite's temporary database.
+`new DatabaseSync("")` creates a private temporary main database for each
+connection. SQLite can spill it to disk. A successful open alone does not
+establish where its files live. [SQLite temporary databases](https://www.sqlite.org/inmemorydb.html#temporary_databases) · [Temporary file placement](https://www.sqlite.org/tempfiles.html)
+
+On Node 22.23.5 and 24.22.3 (SQLite 3.54.1), the same synthetic 51,200-entry
+run through all 18 migrations, the owner's WriteGate and import door used
+a private directory on a Linux overlay filesystem for `SQLITE_TMPDIR`.
+Both runs wrote all entries and skipped all 256 on the final batch retry.
+Both reported 50,350,187 charged bytes and 24,608,768 logical database bytes,
+the same as the named control. The largest **sampled** combined length of
+the temporary open files was 26,250,984 bytes. Sampling at batch boundaries
+and inside the gate does not establish a maximum allocation. A separate
+tmpfs run produced the same counts and lengths.
+
+At 8,192 completed entries the child stopped before releasing a savepoint.
+The parent examined the files and sent that child SIGKILL. On both runtimes
+all three temporary file descriptors had mode 0600 and zero hard links, and
+the target directory was empty both before and after the kill. In the named
+control the 4,710,400-byte database and 21,032-byte journal remained.
+A sibling-process check ran two connections in the same scratch directory
+on each runtime. Killing the first left the other's inode alone. The survivor
+verified 1,024 committed rows, added 256 and verified all 1,280. These
+observations apply to the tested Linux filesystem and VFS. Access by the
+host account and recovery of underlying storage are outside this check.
+
+SQLite falls back from an unusable `SQLITE_TMPDIR` to other locations.
+The window's existing free-space check measures its work volume. Place and
+verify the writable scratch mount on that volume for the pinned job image
+before using the measurements to size it. A tmpfs charges memory. In a
+separate control, a child-local injected ENOSPC on an anonymous file write
+caused SQLite error 13 on both runtimes. The previous transaction remained
+intact and the next one committed once the fault cleared. An incomplete
+census cannot authorize a cutover. The replay used synthetic data only.
 
 ## Boundaries for implementation
 
