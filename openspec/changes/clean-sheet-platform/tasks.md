@@ -86,6 +86,8 @@ end.
   doorbell (`owner/src/wakes.ts`, `gateway/src/doorbell.ts`), MCP Events at the MCP door
   (`doors/src/events.ts`). By choice, not built: a verification cache (each subscribe verifies
   again) and retries of a `5xx` (the wake settles failed; the next change rings).
+- [x] Wake subscription IDs and the argument-size check use the platform's canonical JSON
+  (`untangle-2026-11/wake-canonical.md`).
 - [x] Slice BRAIN, the doors half of the shared brain (`doors/src/instructions.ts`,
   `contract/apps.json`, `platform/plugins/`).
 - [ ] **Owed by BRAIN, live**, on the stage (§10 step 8). Proof is observed tool calls and
@@ -610,8 +612,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
-  - [x] Wake subscription IDs and the argument-size check use the platform's canonical JSON
-    (`untangle-2026-11/wake-canonical.md`).
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
   - [ ] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
