@@ -797,6 +797,12 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
 
 Moved before the window, into lane R (d3 §F3, §G).
 
+- [x] Recheck the evidence for off-account key retirement across reruns, disablement and
+  destination changes (`untangle-2026-11/offsite-activation-review.md`).
+- [ ] Before relying on the Files key retirement gate or promising erasure from the copy,
+  establish which backup destinations could have received data and how each one's obligation
+  ends, including after loss of the source account. Review the canary against the same fact.
+
 ### Step 18. Before the first contract change, and the first vendor-forced engine bump
 
 - [ ] The deploy path's compatibility rule: Workers deploy one after another, so a contract

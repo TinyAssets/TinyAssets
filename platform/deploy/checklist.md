@@ -383,6 +383,11 @@ It never counts as "absent".
      for a pass begun after it, then wait 23 days after the night that follows that pass.
      Don't retire `FILES_KEYRING` before the copy's lifecycle rule is seen deleting a hidden
      version live (the copy's first nights, `tasks.md`).
+     **Files key retirement is on hold.** A successful night can describe a different backup
+     bucket from one that still holds data under the old key. An empty or skipped job history
+     can also follow an earlier partial upload. Keep the old Files key until the off-account
+     destination history and retention of each affected copy are established. See
+     `docs/decisions/untangle-2026-11/offsite-activation-review.md`.
   4. `keyring-retire` on your copy: it writes `<file>.retire`, the active key alone, and leaves
      your file as it is. Keep the old file offline.
   5. Store `<file>.retire` as the `production` secret.
