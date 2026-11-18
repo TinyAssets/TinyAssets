@@ -803,7 +803,9 @@ Moved before the window, into lane R (d3 §F3, §G).
   change between two needs an order or a window (`platform/deploy/checklist.md`; list3 P44).
 - [ ] A wrangler version bump reruns T0b's main-against-head comparison of the test Workers'
   bindings: `ci/workers.ts` `configBindings` restates wrangler 4.154.0's conversion (list 5
-  item 22).
+  item 22). The config-derived binding replay and the six-Worker baseline are in
+  `docs/decisions/untangle-2026-11/t0b-binding-replay.md`. The upgrade also compares the
+  actual suite overrides and bundles.
 - [ ] The engine build cadence: one template a week, canaried, for vendor-forced minimum
   versions (`engines-replan.md`), with a standing spend approval (list3 P19).
 
