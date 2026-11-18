@@ -198,13 +198,16 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 - [ ] **Step 13. `routes`, the handles canary, the platform's canary.** `identity.json`'s `host`
   is already `tinyassets.io` (d3 §H). Mode `routes` keeps its route record, then hands the
   routes over; the manifest disables `uptime-canary.yml` (d3 §J2), whose old canary scripts the
-  platform's canary replaces rather than reworks (list3 P29). Verify: the handback's plan job
-  (read-only); the control record opened for the probe owner (tester B) alone, through the
+  platform's canary replaces rather than reworks (list3 P29). Verify: a `handback` dispatch
+  with `plan_only` selected and the original routes run id, to check its saved record against
+  the current zone; the control record opened for the probe owner (tester B) alone, through the
   operator path; its API key stored as `TA_PROBE_KEY`, and the free-tier key connected to it;
   the platform's canary with `full`, then armed (`PLATFORM_CANARY_TOKEN`). If verify fails,
   before the hold ends: `--mode handback --record <id>`, the old stack restarted on its
   untouched volumes, then `handles-canary.yml`. Writes made on the new platform since `routes`
   are lost unless exported (decided at verify).
+  - [x] The dispatch offers a public plan that stops before pairing or applying
+    (`untangle-2026-11/handback-preview.md`). The check against the actual handover is owed here.
 - [ ] **The public `/connect` page,** right after `routes`, in the site-at-the-cutover PR
   (d3 §C6 F2): branch `platform-brain-site` no longer builds, so the page is rebuilt from
   `contract/apps.json`, and its sweep checks one section per app.

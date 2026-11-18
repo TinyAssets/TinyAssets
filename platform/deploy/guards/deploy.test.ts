@@ -3632,7 +3632,7 @@ describe("platform-deploy.yml", () => {
                steps: { name?: string; run?: string; env?: Record<string, string>; uses?: string;
                         with?: Record<string, string | number | boolean> }[] };
   const file = workflow("platform-deploy.yml") as {
-    on: Json; jobs: Record<string, Job> };
+    on: Json; concurrency: unknown; jobs: Record<string, Job> };
   const { plan, pair, apply } = file.jobs as Record<string, Job>;
   const runs = (job: Job) => job.steps.map((each) => each.run ?? "").join("\n");
   /** The modes the dispatch offers, each a row of the kit's (the pair is its own job). */
@@ -3642,6 +3642,12 @@ describe("platform-deploy.yml", () => {
 
   it("is run by hand alone, and reaches no host", () => {
     expect(Object.keys(file.on)).toEqual(["workflow_dispatch"]);
+    expect(file.concurrency).toEqual({
+      group: "${{ inputs.plan_only && format('platform-deploy-preview-{0}', github.run_id) || 'platform-deploy' }}",
+      "cancel-in-progress": false,
+    });
+    const inputs = (file.on["workflow_dispatch"] as Json)["inputs"] as Json;
+    expect(inputs["plan_only"]).toMatchObject({ type: "boolean", default: false });
     expect(offered.filter((mode) => !Object.hasOwn(MODES, mode))).toEqual([]);
     for (const job of [plan!, pair!, apply!]) {
       expect(runs(job)).not.toMatch(/ssh|scp|droplet|\/etc\/tinyassets/i);
@@ -3652,7 +3658,7 @@ describe("platform-deploy.yml", () => {
    * Whether Actions runs a job whose `if` is `expression` in `context` (each name it reads, by
    * its dotted path): the expression syntax the workflow's `if`s use, read as Actions reads it.
    */
-  function runsIf(expression: string, context: Readonly<Record<string, string>>): boolean {
+  function runsIf(expression: string, context: Readonly<Record<string, string | boolean>>): boolean {
     const tokens = expression.match(/\(|\)|&&|\|\||==|!=|!|'[^']*'|[A-Za-z_][\w.-]*(\(\))?/g)!;
     expect(tokens.join(""), expression).toBe(expression.replace(/\s+/g, ""));
     let at = 0;
@@ -3708,24 +3714,25 @@ describe("platform-deploy.yml", () => {
     return truthy(value);
   }
 
-  it("runs the pair for the rows that deploy and apply, and applies each row that applies, " +
-     "after the plan and, when its row deploys, the pair", () => {
+  it("runs only the plan for previews, and gates ordinary jobs by the mode, ref and prior jobs", () => {
     expect([pair!.needs, apply!.needs]).toEqual(["plan", ["plan", "pair"]]);
     for (const mode of offered) {
       const row = MODES[mode];
       for (const ref of ["refs/heads/main", "refs/heads/branch"]) {
         const main = ref === "refs/heads/main";
-        const context = { "github.ref": ref, "inputs.mode": mode };
-        expect([mode, ref, runsIf(plan!.if!, context)]).toEqual([mode, ref, main]);
-        // The pair job needs the plan's success, as a job with no always() does.
-        expect([mode, ref, runsIf(pair!.if!, context)])
-          .toEqual([mode, ref, main && row.deploys && row.applies]);
-        for (const planned of ["success", "failure"]) {
-          for (const paired of ["success", "skipped", "failure"]) {
-            const at = { ...context, "needs.plan.result": planned, "needs.pair.result": paired };
-            expect([mode, ref, planned, paired, runsIf(apply!.if!, at)]).toEqual([
-              mode, ref, planned, paired, main && row.applies && planned === "success"
-                && (paired === "success" || (!row.deploys && paired === "skipped"))]);
+        for (const planOnly of [false, true]) {
+          const context = { "github.ref": ref, "inputs.mode": mode, "inputs.plan_only": planOnly };
+          expect(runsIf(plan!.if!, context)).toBe(main);
+          // The pair job needs the plan's success, as a job with no always() does.
+          expect(runsIf(pair!.if!, context), JSON.stringify(context))
+            .toBe(main && !planOnly && row.deploys && row.applies);
+          for (const planned of ["success", "failure"]) {
+            for (const paired of ["success", "skipped", "failure"]) {
+              const at = { ...context, "needs.plan.result": planned, "needs.pair.result": paired };
+              expect(runsIf(apply!.if!, at), JSON.stringify(at)).toBe(
+                main && !planOnly && row.applies && planned === "success"
+                && (paired === "success" || (!row.deploys && paired === "skipped")));
+            }
           }
         }
       }

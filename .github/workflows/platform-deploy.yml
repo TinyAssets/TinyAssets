@@ -6,7 +6,8 @@ name: Platform deploy (manual, founder-approved)
 #   plan   - the mode's plan (`--public`), to the job summary and to the file
 #            `--plan` names, which the run keeps as its artifact `deploy-plan`.
 #            In the main-only `production` environment, it holds only the
-#            Cloudflare token and the repo's variables, and changes nothing.
+#            Cloudflare token and the repo's variables. It makes no platform changes.
+#            Selecting plan_only ends the dispatch after this job.
 #   pair   - (dark, routes) after the plan, in the `production` environment
 #            with the E2B key alone: the sandbox's template and the runner
 #            this commit ships checked together on throwaway sandboxes,
@@ -17,7 +18,7 @@ name: Platform deploy (manual, founder-approved)
 #            any change the kit makes the plan job's plan again from the live
 #            state and stops on any difference from it (the pair job can take
 #            most of an hour between the two), and it stops a deploy unless the
-#            pair's tag is at E2B. The founder's dispatch is the approval: a
+#            pair's tag is at E2B. The founder's ordinary dispatch is the approval: a
 #            required reviewer on `production` would hold every scheduled job
 #            there too (platform/deploy/checklist.md).
 #
@@ -54,8 +55,8 @@ name: Platform deploy (manual, founder-approved)
 # erase-<owner> (a run without it names the words); `rotation` asks every
 # owner the directory lists to bring its blobs under `keyring`'s active kid,
 # its progress kept in the control namespace; `retire` sets `keyring` with its
-# old kids gone, only once `confirm` is the words its apply job names. Each shares
-# this file's concurrency group, so no operator run ever interleaves with a deploy.
+# old kids gone, only once `confirm` is the words its apply job names. Ordinary runs share
+# the platform-deploy group, so their changes never interleave.
 
 on:
   workflow_dispatch:
@@ -66,6 +67,11 @@ on:
         default: plan
         type: choice
         options: [plan, dark, probe, routes, h2, handback, control, owner, restore, copyback, recover, erase, rotation, retire]
+      plan_only:
+        description: 'Run only the public plan for the selected mode'
+        required: false
+        default: false
+        type: boolean
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -126,7 +132,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: platform-deploy
+  # A preview observes the account independently. It cannot replace a pending operator run.
+  group: ${{ inputs.plan_only && format('platform-deploy-preview-{0}', github.run_id) || 'platform-deploy' }}
   cancel-in-progress: false
 
 jobs:
@@ -189,7 +196,7 @@ jobs:
   # probes' plan's throwaway sandboxes, one after another). It holds only the E2B key.
   pair:
     needs: plan
-    if: github.ref == 'refs/heads/main' && (inputs.mode == 'dark' || inputs.mode == 'routes')
+    if: github.ref == 'refs/heads/main' && !inputs.plan_only && (inputs.mode == 'dark' || inputs.mode == 'routes')
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -212,7 +219,7 @@ jobs:
   apply:
     needs: [plan, pair]
     if: >-
-      always() && github.ref == 'refs/heads/main' && inputs.mode != 'plan'
+      always() && github.ref == 'refs/heads/main' && !inputs.plan_only && inputs.mode != 'plan'
       && needs.plan.result == 'success'
       && (needs.pair.result == 'success'
           || (inputs.mode != 'dark' && inputs.mode != 'routes' && needs.pair.result == 'skipped'))

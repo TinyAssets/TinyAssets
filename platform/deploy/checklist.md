@@ -6,7 +6,7 @@ three jobs:
 
 1. **`plan`** prints what the run would change to the job summary, under the run's id, and
    keeps the same plan as the run's artifact `deploy-plan`. It holds only the Cloudflare
-   token and the repo's variables, and changes nothing.
+   token and the repo's variables. It makes no platform changes.
 2. **`pair`** (modes `dark` and `routes`) checks the pinned E2B template with the runner this
    commit ships, unless E2B already holds their pair's tag (`deploy.ts --mode pair`: three
    throwaway sandboxes, up to about 50 minutes, the E2B key alone).
@@ -15,7 +15,8 @@ three jobs:
    and stops, naming each difference, if anything changed between the jobs (the dispatch,
    a repository variable, or the account's state). It applies only its own run's plan.
 
-Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
+Select `plan_only` to run just the public plan for the chosen mode. An ordinary dispatch
+of a mode other than `plan` approves its apply job. Do not add a required reviewer
 to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
 on their own, and a reviewer would hold every one of them for a click.
 
@@ -230,10 +231,15 @@ It never counts as "absent".
   custom domain or holds an address record (A, AAAA or CNAME). Run from the workflow,
   wrangler's custom-domain deploy replaces either, and no handback could give it back. The
   plan job shows this stop too.
-- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id
-  `routes`' summary names. Its plan job reads the record and the zone and changes nothing,
-  so run it once right after `routes`, to see what a handback would do. The apply job puts
-  back what `routes` changed, in reverse order:
+- **Mode `handback`: the routes' rollback.** For the Step 13 check after the handover,
+  select `handback`, set `record` to the id of the original routes run that moved the
+  routes, and **select `plan_only`**. The public plan compares its saved record with
+  Cloudflare's current state. A preview runs outside the operator queue and may observe
+  a deploy in progress. It records its own GitHub summary and plan artifact. The live E2B
+  hook check belongs to apply. When a rollback is actually needed, dispatch `handback`
+  with the same record and `plan_only` cleared.
+  The ordinary run makes its own plan and checks it again before applying. Its apply job
+  puts back what `routes` changed, in reverse order:
   1. E2B's lifecycle webhook is disabled, unless the record has it enabled before. A hook
      `routes` registered is disabled, never deleted: a disabled hook sends nothing.
   2. The doors' egress custom domain is detached, unless the record has it attached before.
