@@ -337,6 +337,15 @@ export function socketRequest({ binding }: Bound, conversation: string, hash: st
 }
 
 /**
+ * Whether `error` is the runtime's report that a Durable Object is overloaded (its
+ * `.overloaded`, which Cloudflare's error-handling page says never to retry).
+ */
+export function overloaded(error: unknown): boolean {
+  return typeof error === "object" && error !== null
+    && (error as { overloaded?: unknown }).overloaded === true;
+}
+
+/**
  * The same binding's object again, through a fresh stub: a settle after the object reset
  * (a deploy) reaches its new instance, never the broken stub.
  */

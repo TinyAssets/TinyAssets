@@ -10,7 +10,7 @@
  * clamped to its reservation; every refusal is a fixed code that forwards nothing; and every
  * admitted call is settled once, however it ends, at the cost pi-ai read, or kept whole.
  */
-import { createExecutionContext, env } from "cloudflare:test";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -853,6 +853,27 @@ describe("settlement", () => {
     expect(await response.text()).toBe("ok");
     await Promise.all(waits);
     expect((await reservations(box.owner))[0]!["outcome"]).toBe("complete");
+  });
+
+  it("leaves the reservation for the owner when its settle reports overload", async () => {
+    const box = await sandbox();
+    const busy = Object.assign(new Error("owner busy"), { overloaded: true });
+    const settle = vi.fn().mockRejectedValue(busy);
+    const getByName = doorsEnv.OWNER.getByName.bind(doorsEnv.OWNER);
+    vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation((name: string) => {
+      const stub = getByName(name);
+      return new Proxy(stub, {
+        get: (target, key) => key === "egressSettle" ? settle : Reflect.get(target, key),
+      });
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const ctx = createExecutionContext();
+    const response = await doors.fetch(egressRequest(box), doorsEnv, ctx);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+    await waitOnExecutionContext(ctx);
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(logged).toHaveBeenCalledWith("egress settle failed; the object settles it as lost", busy);
   });
 
   it("settles through a fresh stub when the first settle's answer was lost", async () => {

@@ -608,6 +608,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `untangle-2026-11/pass-sandbox.md`).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
+  - [x] Trace Doors' error handling and retry scopes on main and the combined build.
+    A runtime overload ends the immediate egress settlement attempt; genuine lost answers
+    still take one fresh stub (`untangle-2026-11/doors-error-index.md`).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed

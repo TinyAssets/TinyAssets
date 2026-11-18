@@ -38,7 +38,7 @@ import { serveApp } from "./app";
 import { serveEgress } from "./egress";
 import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
-import { bindMcp, withAccount } from "./binder";
+import { bindMcp, overloaded, withAccount } from "./binder";
 import {
   AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH, MCP_PATH,
   UPSTREAM_CALLBACK_PATH,
@@ -82,15 +82,6 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
       req, withAccount(bound, await outsideRead(environment, bound.binding.owner), sources),
       environment));
   }).fetch(request, env, ctx);
-}
-
-/**
- * Whether `error` is the runtime's report that a Durable Object is overloaded (its
- * `.overloaded`, which Cloudflare's error-handling page says never to retry).
- */
-export function overloaded(error: unknown): boolean {
-  return typeof error === "object" && error !== null
-    && (error as { overloaded?: unknown }).overloaded === true;
 }
 
 /** Serve one request through the doors, over the source records `sources`. */

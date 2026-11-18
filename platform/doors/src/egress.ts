@@ -36,7 +36,8 @@
  *    too) or `ended` (the object's end signal: a policy write, a suspension, a revoke, the
  *    lease's close or the owner's erasure; a signal that errors is an end as well). The
  *    settle is registered with `waitUntil` the moment the call is admitted, so no end is
- *    dropped, and goes through a fresh stub, with one retry, so an object that reset
+ *    dropped. An overloaded object recovers its own open reservation. After a lost answer
+ *    a fresh stub retries once, so an object that reset
  *    mid-stream still settles. Every stop aborts the provider's request too.
  *
  * The door bills CPU only while the bytes flow; the owner's object does no work meanwhile,
@@ -57,7 +58,7 @@ import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SYNC_BODY_MAX } from "../../contrac
 import { EVENTS_BODY_MAX, eventsBounded } from "../../contract/src/run-events";
 import { type EgressCode, faultOf, Refusal, refusalOf } from "../../contract/src/refusal";
 
-import { type Bound, bindRun, bindSandbox, bindSync, type Presented, rebound } from "./binder";
+import { type Bound, bindRun, bindSandbox, bindSync, overloaded, type Presented, rebound } from "./binder";
 import type { DoorsEnv } from "./env";
 import { ownerRead } from "./control";
 import { answer, jsonObject } from "./kit";
@@ -105,14 +106,14 @@ async function spendOf(outcome: ReadableStream<Uint8Array> | null): Promise<Mete
   return Promise.race([read, late]).catch((): MeterOutcome => ({ state: "unknown" }));
 }
 
-/** Settle through the stub that opened the call, then once more through a fresh one. */
+/** A lost settle can retry once on a fresh stub. Overload leaves recovery to the owner. */
 async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
     Promise<void> {
   try {
     await bound.stub.egressSettle(bound.binding, request);
   } catch (first) {
-    if (refusalOf(first) !== null) {
-      throw first;  // the object answered: nothing to retry
+    if (overloaded(first) || refusalOf(first) !== null) {
+      throw first;  // an overloaded object or a refusal gets no immediate repeat
     }
     const again = rebound(env, bound);
     await again.stub.egressSettle(again.binding, request);
