@@ -846,6 +846,11 @@ Moved before the window, into lane R (d3 §F3, §G).
     Export section uses the export door, and `MISSING.export` goes; the storage view's "deleted
     content" line from `storageUsage`'s `deleted_content`, and that a lower figure shortens
     recovery; "last used" on a source card.
+    - [x] Home and Your data use the owner's stored byte count. Home shows the storage
+      limit in force separately from the plan allowance (`untangle-2026-11/home-storage.md`).
+    - [ ] The export client must consume the pinned stream, its chunks and terminal record.
+      Distinguish key revocation from deletion and decide what an independently observed
+      source's last use means before displaying one (`home-storage.md`).
   - [ ] An MCP tool for the past runs.
   - [ ] The region a Kimi run's provider hosts need, kept from the sign-in for its runs.
   - [ ] The runner reads a client's grant for its runs' agent definitions, so a full grant's run

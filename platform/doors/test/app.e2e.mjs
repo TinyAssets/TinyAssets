@@ -345,6 +345,30 @@ test("the connect page clears the fragment before any other script runs, sends n
   await page.locator("table", { hasText: "Test OAuth" }).waitFor();
 });
 
+test("Home and Your data show the owner's measured storage and its effective limit", async () => {
+  const { generation, policy } = (await api("policy")).body;
+  const { used_bytes } = (await api("storage")).body;
+  const bound = used_bytes + 1_000_000;
+  const changed = await api("policy/write", { expected_generation: generation,
+    policy: { ...policy, files: { ...policy.files, max_bytes: bound } } });
+  assert.equal(changed.status, 200);
+  try {
+    const storage = (await api("storage")).body;
+    assert.equal(storage.limit_bytes, bound);
+    const [used, limit] = await page.evaluate(async ([a, b]) => {
+      const { bytes } = await import("/app/static/view.js");
+      return [bytes(a), bytes(b)];
+    }, [storage.used_bytes, bound]);
+    await page.goto(`${ORIGIN}/app#data`);
+    await page.getByText(`You store ${used} in total.`, { exact: false }).waitFor();
+    await page.goto(`${ORIGIN}/app#home`);
+    await page.getByText(`Storage: ${used} used of ${limit}.`, { exact: true }).waitFor();
+  } finally {
+    assert.equal((await api("policy/write", { expected_generation: changed.body.generation,
+                                               policy })).status, 200);
+  }
+});
+
 test("the owner makes an agent, starts a run and sees its live frames and its result",
      { timeout: 120_000 }, async () => {
   await page.goto(`${ORIGIN}/app#agents`);
@@ -691,10 +715,10 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), true);
   await picks.getByRole("checkbox", { name: /Every tool/ }).uncheck();
   assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), false);
-  // The doors this app knows are missing say so before anything is clicked, with no button;
-  // past runs are said plainly under Talk (review M3).
+  // The app explains its missing export action before anything is clicked. It offers no button.
+  // Past runs are said plainly under Talk (review M3).
   await page.goto(`${ORIGIN}/app#data`);
-  await page.getByText(/^Exporting everything you hold is not here yet/).waitFor();
+  await page.getByText("Exporting your data from this app is not available yet.", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: /Export/ }).count(), 0);
   await page.goto(`${ORIGIN}/app#agents/helper`);
   await page.getByText(/not kept across reloads/).waitFor();

@@ -19,12 +19,11 @@ const SECTIONS = Object.freeze([
 ]);
 
 /**
- * The doors this app knows are not on the platform yet, each with its slice: only these say
- * "not here yet", shown before anything is clicked. Any other missing door is a bug, and its
- * refusal is shown as it came. Each entry goes when its door lands.
+ * Features the owner cannot use in this app yet. Show the limitation before a click.
+ * Remove the entry when the screen supports the feature.
  */
 const MISSING = Object.freeze({
-  export: "Exporting everything you hold is not here yet: its door is being built.",
+  export: "Exporting your data from this app is not available yet.",
 });
 
 /** What the Talk section holds: this tab's conversation; the rest is under Past runs. */
@@ -148,7 +147,7 @@ function planLine(name, numbers) {
 async function home(arg = null) {
   const turn = turnOf("home", arg);
   const [account, { notices }] = await Promise.all([call("account"), call("notices")]);
-  const used = account.usage.chunk_bytes + account.usage.inline_bytes;
+  const { stored, limits } = account.usage;
   const mine = account.tiers?.[account.tier] ?? null;
   const upgrade = new URLSearchParams(location.search).get("upgrade") === "1";
   paint(turn,
@@ -158,8 +157,9 @@ async function home(arg = null) {
          mine === null
            ? h("p", { class: "message bad" }, "The plan numbers cannot be read right now, so " +
                "no run can start until they can.")
-           : [h("p", {}, `Runs at once: ${mine.runs}.`),
-              h("p", {}, `Storage: ${bytes(used)} used of ${bytes(mine.storage_bytes)}.`)],
+           : h("p", {}, `Runs at once: ${mine.runs}.`),
+         h("p", {}, limits.max_bytes === null ? `Storage: ${bytes(stored)} used.`
+           : `Storage: ${bytes(stored)} used of ${bytes(limits.max_bytes)}.`),
          account.tiers === null ? null : h("div", { class: "scroll" }, h("table", {},
            h("thead", {}, h("tr", {}, h("th", {}, "Plan"), h("th", {}, "Runs at once"),
                             h("th", {}, "Storage"))),
@@ -891,8 +891,8 @@ async function data(arg) {
        h("h1", {}, "Your data"),
        h("section", {},
          h("h2", {}, "Export"),
-         h("p", {}, `You hold ${bytes(account.usage.chunk_bytes + account.usage.inline_bytes)} ` +
-           `in ${account.usage.entries} files and folders.`),
+         h("p", {}, `You store ${bytes(account.usage.stored)} in total. ` +
+           `You have ${account.usage.entries} files and folders.`),
          h("p", { class: "muted" }, MISSING.export)),
        h("section", {},
          h("h2", {}, `Files in ${dir}`),
