@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { agentFile } from "../src/agent-file";
 import { MAIN_AGENT } from "../src/authority";
+import { carried, starterPackage } from "../src/starter-package";
 import { PLATFORM } from "../../ci/paths";
 
 const STARTER = join(PLATFORM, "starter");
@@ -68,15 +69,25 @@ describe("the starter package", () => {
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
-    // And against main's bundle: nothing dropped unretired. A checkout without main's bundle
-    // fails here, never passes unchecked.
+  });
+
+  it("keeps main's retired paths and advances the version for a change owners reconcile", async () => {
+    // Starter.next() gives a reconciled owner no more work at the same or a lower version.
+    // Compare the package as the owner reads it: the OKF watcher's pin alone needs no bump.
     const main = spawnSync("git", ["show", "origin/main:platform/starter/starter.json"],
                            { cwd: PLATFORM, encoding: "utf8" });
     expect(main.status, `main's starter.json is unreadable here: ${main.stderr}`).toBe(0);
     const previous = JSON.parse(main.stdout) as Bundled;
-    const named = new Set([...bundled.files.map((file) => file.path), ...bundled.retired]);
-    expect([...previous.files.map((file) => file.path), ...previous.retired]
-      .filter((path) => !named.has(path))).toEqual([]);
+    const current = carried();
+    expect(current.version, "the starter version went backwards")
+      .toBeGreaterThanOrEqual(previous.version);
+    if (current.version === previous.version) {
+      expect(current, "raise the starter version for changes owners must reconcile")
+        .toEqual(starterPackage(previous));
+    }
+    const { dropped } = await import(join(STARTER, "bundle.mjs")) as
+      { dropped: (before: Bundled, after: Bundled) => string[] };
+    expect(dropped(previous, bundled)).toEqual([]);
   });
 
   it("holds the default agent's files, the owner-wide profile, map and goals, and the " +
