@@ -187,7 +187,11 @@ It never counts as "absent".
   later finds both paths already the doors'. Until `routes`, never delete the control
   record (`CONTROL_KEY` in `contract/src/control.ts`): the doors read a missing record as open and would admit owners on
   these two paths.
-- **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
+- **Mode `routes`: the cutover's routes.** Step 12 removes the old proxy's publisher
+  (`.github/workflows/deploy-worker.yml`) and its completed manifest entry from main in
+  the same change. Before handing over routes, confirm
+  that its earlier deployments have finished. Keep the deployed proxy and origin available
+  for `handback` through the hold. Mode `routes` does everything `dark` does. Then it hands
   the doors' routes over (`routes` in `platform/contract/identity.json`) one route at a
   time, through Cloudflare's routes API, so no path is ever served by nothing:
   - A pattern another Worker holds is moved to the doors in place (`PUT`, one change). Today
@@ -335,8 +339,11 @@ It never counts as "absent".
     6. **Arm it:** store the fine-grained GitHub token (this repository, Actions read and
        write) as the `production` secret `PLATFORM_CANARY_TOKEN`, then run `dark`, which
        sets the doors' copy. From then the clock runs and the alarm pages.
-  - **After `handback` and the old stack's restart:** dispatch **Handles canary**. The
-    platform's canary reads the platform dark again, and its alarm stands down.
+  - **After `handback` and the old stack's restart:** dispatch **Handles canary**. It needs the
+    old stack's canary principal and its `production` secret `TINYASSETS_WIKI_CANARY_TOKEN`
+    throughout the hold. The platform's canary reads the platform dark again and its alarm
+    stands down. When the founder releases the hold, check remaining consumers before
+    retiring the old canary credential.
 - **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
   caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
   dashboard (Free allows one, Pro two), with your own number. It is your setting, recorded

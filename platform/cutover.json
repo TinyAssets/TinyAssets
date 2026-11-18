@@ -5,6 +5,7 @@
       "why": "After the admit, before mode routes hands the routes over (tasks.md §9 step 12).",
       "entries": [
         { "live": "secret", "name": "IMPORT_KEY", "in": "platform/deploy/checklist.md", "what": "the doors' Worker secret, deleted by the real window's close (import-window.yml) once every owner it staged is admitted or discarded: a replayed admit is accepted by design" },
+        { "delete": ".github/workflows/deploy-worker.yml", "what": "the publisher of the old proxy and its routes, retired before the doors take them (R1); a deployment already started must finish before the handover" },
         { "live": "workflow", "name": "uptime-canary.yml", "in": ".github/workflows/uptime-canary.yml", "what": "the old stack's pager, disabled as the routes go (gh workflow disable uptime-canary.yml): from then its old-stack probes meet the doors and would page on every run; the platform's canary (platform-canary.yml) watches from routes on (d3 §J2)" }
       ]
     },
@@ -110,6 +111,11 @@
       "entries": [
         { "edit": "platform/deploy/platform.json", "names": ["final_backup"], "what": "the final backup's bucket, which the kit makes" },
         { "live": "bucket", "name": "tinyassets-final-backup", "in": "platform/deploy/platform.json", "what": "the off-site copy of the import window's final backup, deleted with the old stack's final backup" },
+        { "live": "worker", "name": "tinyassets-mcp-proxy", "in": "openspec/changes/clean-sheet-platform/tasks.md", "what": "the old proxy, kept deployed without its routes until handback is no longer offered" },
+        { "live": "dns", "name": "mcp.tinyassets.io", "in": "openspec/changes/clean-sheet-platform/tasks.md", "what": "the old proxy's internal tunnel-origin CNAME" },
+        { "live": "token", "name": "tinyassets-mcp-worker", "in": "openspec/changes/clean-sheet-platform/tasks.md", "what": "the Access service token the old proxy uses to reach its origin" },
+        { "delete": "scripts/mcp_public_canary.py", "what": "the old handles workflow's command, retained for a handback during the hold" },
+        { "delete": "scripts/_canary_common.py", "what": "the old handles command imports its canary credential reader" },
         { "delete": ".github/workflows/handles-canary.yml", "what": "the old stack's handles canary (d3 §A7), which the old stack's restart after a handback runs" },
         { "delete": "tests/test_handles_canary.py", "what": "its guard, and the old record's" },
         { "edit": "scripts/canary_handles.json", "names": ["\"old\""], "what": "the old stack's record, by which the platform's canary knows the platform dark" },

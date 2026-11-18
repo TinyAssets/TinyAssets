@@ -189,8 +189,10 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     record). One failed owner blocks every admit; going on without it is the founder's call.
   - The founder's and the canary's owners start fresh (the founder, 2026-11-04): their old data
     is exported, kept privately and proven saved (Fact 13), never imported, and their new owners
-    are admitted empty. The old canary stays provisioned until the switch, since
-    `deploy/deploy_fail_safe.sh` refuses a data-moving deploy without it.
+    are admitted empty. Keep the old canary principal and its `production` secret
+    `TINYASSETS_WIKI_CANARY_TOKEN` through the 14-day hold. Before the switch,
+    `deploy/deploy_fail_safe.sh` requires that principal; after a handback, Handles canary
+    uses the same credential against the restarted old stack.
 - [ ] **Step 12. Manifest phase 1:** `IMPORT_KEY` removed, since a replayed admit is accepted by
   design, by the window's `close` alone, once every owner it staged is admitted or discarded
   (`i-window-close.md`); and R1, `deploy-worker.yml` deleted, so no routine deploy of the old
@@ -332,6 +334,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [x] `.agents/activity.log` deleted (#5505).
 - [ ] The manifest's inventory: every path in the repo that goes, is edited or moves, and every
   live object (d3 §A10).
+  - [x] The old proxy publisher retires before the route transfer. The deployed proxy, origin
+    DNS, Access service token and old handles probe survive the hold (`b24-proxy-retirement.md`).
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
@@ -780,8 +784,10 @@ Measured on the stage as it runs:
 
 - [ ] On the founder's word: the droplet, the final backup and `tinyassets-final-backup` with
   its `deploy/platform.json` entry; mode `handback` and the route record; the handles canary's
-  old side; the old proxy Worker `tinyassets-mcp-proxy`, its tunnel, the `mcp.` record and its
-  Access token (list3 P23, P24).
+  old side; the old proxy Worker `tinyassets-mcp-proxy`, the tunnel behind the internal
+  `mcp.tinyassets.io` CNAME and its Access service token `tinyassets-mcp-worker` (list3 P23,
+  P24). Before retiring the tunnel, match its account and UUID to the origin CNAME target.
+  The old preflight's `CLOUDFLARE_TUNNEL_ID` has no verified value in the repository.
 
 ### After the cutover: fixes for rare failures nothing builds on
 

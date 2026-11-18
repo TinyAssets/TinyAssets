@@ -186,6 +186,23 @@ function treeOf(files: Record<string, string>): Tree {
 }
 
 describe("the cutover's manifest", () => {
+  it("retires the old route publisher before handover and its handback path after the hold", () => {
+    const plan = entries(MANIFEST);
+    const phaseOf = (kind: "delete" | "worker" | "dns" | "token", name: string) =>
+      plan.filter(({ entry }) => "delete" in entry ? kind === "delete" && entry.delete === name
+        : "live" in entry && entry.live === kind && entry.name === name).map(({ phase }) => phase);
+
+    const publisher = ".github/workflows/deploy-worker.yml";
+    expect(phaseOf("delete", publisher)).toEqual(REPO_TREE.exists(publisher) ? ["routes"] : []);
+    for (const path of [".github/workflows/handles-canary.yml", "scripts/mcp_public_canary.py",
+                        "scripts/_canary_common.py"]) {
+      expect(phaseOf("delete", path), path).toEqual(["hold"]);
+    }
+    expect(phaseOf("worker", "tinyassets-mcp-proxy")).toEqual(["hold"]);
+    expect(phaseOf("dns", "mcp.tinyassets.io")).toEqual(["hold"]);
+    expect(phaseOf("token", "tinyassets-mcp-worker")).toEqual(["hold"]);
+  });
+
   it("is in its shape", () => {
     expect(shapeProblems(MANIFEST)).toEqual([]);
     const what = "a probe";

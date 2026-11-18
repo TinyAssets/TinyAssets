@@ -71,9 +71,9 @@ Required env:
 - `CLOUDFLARE_ZONE_ID` — from zone overview page (not secret; copy from dashboard).
 
 ### Worker deploy / rollback
-Platform Workers deploy only through the **Platform deploy** workflow (`platform/deploy/checklist.md`). The old proxy (`deploy/cloudflare-worker`) deploys only through `deploy-worker.yml`; after mode `routes`, a hand `wrangler deploy` of it would re-add its `.well-known/oauth-*` routes (`openspec/changes/clean-sheet-platform/tasks.md` §9 R1).
+Platform Workers deploy only through the **Platform deploy** workflow (`platform/deploy/checklist.md`). Before the cutover the old proxy (`deploy/cloudflare-worker`) deploys through `deploy-worker.yml`. Step 12 removes that publisher. Once the doors take over, redeploying the old proxy would re-add its routes (`openspec/changes/clean-sheet-platform/tasks.md` §9 R1).
 
-Rollback: `wrangler rollback --version-id <previous>` on the named Worker, or revert on `main` and let its workflow redeploy.
+Before route handover the old proxy can roll back to a previous version. Once the doors hold the routes, restore them through Platform deploy's `handback` with the saved route record, restart the old stack and run Handles canary (`platform/deploy/checklist.md`).
 
 ### Zone-level settings
 Cloudflare REST API v4 — `GET/PATCH /zones/{zone_id}/settings/{setting_name}`. Direct `requests` calls; no wrapper needed for one-off changes.
