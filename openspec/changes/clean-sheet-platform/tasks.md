@@ -904,9 +904,9 @@ Open questions, from the as-built record:
    and retired `/mcp-directory`.
 5. The published plugins say `license: "Proprietary"` (`platform/plugins/build.mjs`
    `PUBLISHER`), but the repository is MIT. Which should the plugins carry (list 6, item 6d)?
-6. When an owner disconnects an outside MCP app, must the owner explicitly allow it
-   back, or may a fresh sign-in reconnect it once its old revoked record is retired?
-   Resolve slice 5 and slice L before signing off grants or the app's reconnect wording
+6. After disconnecting an outside MCP app, should choosing Allow on that app's ordinary
+   consent screen and signing in again suffice? Or must the owner first change or forget
+   its revoked grant in account controls? Resolve slices 5, 7 and L before signing off grants
    (`docs/decisions/untangle-2026-11/grant-revoke-retention.md`).
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
