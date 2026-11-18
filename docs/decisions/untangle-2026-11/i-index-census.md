@@ -1,4 +1,4 @@
-# F1 pre-cutover file-index census research (2026-11-18)
+# F1 index census research as built (2026-11-18)
 
 The census owes a refusal for an owner whose import would exceed the file index
 (#5548; clean-sheet tasks, step 5). Counting paths or the final file sizes cannot
