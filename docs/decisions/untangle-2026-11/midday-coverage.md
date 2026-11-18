@@ -363,3 +363,44 @@ research, deployment and founder work, and parents as well as subtasks.
 They cannot measure architectural review coverage. The newly explicit
 dependencies are part of the progress; the project-wide exit criteria
 remain the wave 2 recheck above.
+
+## Afternoon recheck of the rebuild and its remaining dependencies
+
+Untangle review takes priority across the five platform areas and the import,
+site, CI and cutover consumers. Record each substantive milestone for Jonathan
+with its commit, actual checks, stage or merge status and next dependency.
+Repeat the combined review after merge batches and before cutover. Keep the
+single Thursday handoff.
+
+Main remains `f934871ad`. All twelve rebuild drafts (#5679 through #5690)
+had successful Tests and invariants on their then-current heads when rechecked
+this afternoon. The following fixes are independently staged for review.
+
+| Area | Evidence and consequence |
+| --- | --- |
+| Cutover and recovery | The documented rollback preview could apply the rollback to live routes. At `0704296b` explicit previews end after the plan and use an independent queue. The first candidate could replace a queued operator job. The final job conditions passed 896 offline combinations. Two independent queue checks covered 196 mode pairs and 120 arrival orders. The real CLI read the saved handover, printed a 12-line plan and refused a subsequent route change. Both calls made zero managed writes. The deploy suite passed 284 with one size case excluded. The coordinator still owns handback and the end-of-hold inventory. |
+| Import, storage and sync | `ba653c28` preserves full SQLite text through the cutover host, including embedded NUL. It passed 167 importer cases on each of Node 22 and 24, 197 together on `133bc5fa9`. The real receiver kept all five synthetic inline and placed bodies through replay and admission. A representative authorized census, Files erasure completion and generation-safe discard are still open. `6095e45f` records why both scoped-sync cursor proposals were held. A retained-history reset can also overwrite a local edit whose upload was refused. Pending writes and directories need coverage independently of reaching the scan boundary. |
+| Owner app and tools | `37c32583` recovers the board through the existing collection listing after a history reset. `8b890623` limits an explicit acknowledgement to the mailbox. Six Chromium/Worker journeys passed on their joined app `0bb485922`. The two-retention-cycle control recovered 38 current rows. `f53cd3c7` documents why the same procedure cannot discover unknown room collections. `46b48bde`, `874fe639` and `e0ce11d7` correct recovery, byte-window and file-preview descriptions. `1aa6f8ac` and `7e29c65c` hold code-result delivery and streamed download on an adequate bounded result and a stable version, respectively. |
+| Engines and gateway | `134a79aa` ranks the same model name consistently across direct and routed connections. The earlier candidate lost a real full-ID tiebreak. The correction passed seven owner Worker tests and the full typecheck. `33871d64` preserves the terminal usage event without retaining each streamed delta. The gateway passed 383 tests and 20 memory/release cases. `f488d3d5` documents a separate metering gap. Six local model calls showed the gateway could treat absent input or output as genuine zero, and accept conflicting totals. Substantiated usage is a prerequisite for expanding metering. |
+| Remaining plan and cutover lifetime | `cd2e3fc1` aligns the temporary-file plan with the shipped seven-day creation clock. Recovery and ordinary erasure still need a completion record and a fence around admitted writers. The founder's reconnect question and vendor prompt boundary remain open. |
+
+On the older frozen `533733c40`, all 88,378 canonical lines matched main
+(wire 804, tools 7, RPC 13,622 and reviewer 73,945). The full Node 22
+typecheck also completed on the separate `151c2a83f` integration.
+On `2c8a2d4a2`, both sandbox artifacts were built before resolving all
+1,267 relative imports in the 201 scoped production modules. Of 154
+unchanged modules, 141 touch a changed module directly and 13 are further
+away. These counts locate additional review work. They do not close it.
+
+New frozen integration `ce85dfe5e` joins the above runtime changes through
+model ranking and mailbox acknowledgement. It predates the rollback
+workflow correction. All 14 first-parent merge trees were checked against
+Git's automatic results. Manual edits were confined to the task checklist
+and the import builder. The app and its browser regression file exactly
+match the already exercised board/ack join. The 268 process tests passed
+on this freeze. The 48 official Doors recorder tests yielded 804 identical
+wire rows and seven tool profiles. Nine tool-description changes across
+registration, board and byte reads account for every difference; the
+protected app profile matched exactly. Owner comparisons for this freeze
+were still in progress when this section was written. Later commits require
+their own evidence. Nothing here has merged or deployed.
