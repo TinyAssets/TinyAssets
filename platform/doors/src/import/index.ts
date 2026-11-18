@@ -63,7 +63,7 @@ import { readControl, tiersOf } from "../../../contract/src/control";
 import { sha256Hex } from "../../../contract/src/digest";
 import { HEX64 } from "../../../contract/src/ids";
 import {
-  answerName, BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, CHECK_PARTS, chunkName,
+  answerName, BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, bundleLocation, CHECK_PARTS, chunkName,
   type Cursor, doneName, type Entry, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_KEY, importKeyBytes,
   importMessage, type ImportMessage, inlineName, macHolds, type Paged, pageName, pageNumber,
   rehearsalRun, stagedName,
@@ -539,12 +539,12 @@ export async function importOne(env: DoorsEnv, body: unknown,
 export async function importQueue(batch: MessageBatch<unknown>, env: DoorsEnv,
                                   bounds: SliceBounds = SLICE): Promise<void> {
   for (const message of batch.messages) {
-    const at = (message.body as { prefix?: unknown } | null)?.prefix;
-    const where = typeof at === "string" && at.length <= 96 ? at : "?";
     try {
       await importOne(env, message.body, bounds);
       message.ack();
     } catch (error) {
+      const at = (message.body as { prefix?: unknown } | null)?.prefix;
+      const where = typeof at === "string" && bundleLocation(at) !== null ? at : "?";
       // A terminal refusal, a gate's or the owner's object's (not pending, a conflicting
       // file, a malformed step), is dropped, never retried; one for the moment only is
       // retried, as any other failure is, and the queue's dead-letter queue keeps what it

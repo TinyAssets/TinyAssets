@@ -10,7 +10,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { env } from "cloudflare:test";
-import { beforeAll, describe, expect, inject, it } from "vitest";
+import { beforeAll, describe, expect, inject, it, vi } from "vitest";
 
 import { inlineId } from "../../contract/src/content";
 import { canonical } from "../../contract/src/canonical";
@@ -292,6 +292,23 @@ describe("the import consumer's gates, each before anything is written", () => {
     expect(w.puts).toEqual([]);
     expect(await env.OWNER_GATE.seen(owner)).toEqual([]);
   }
+
+  it("names only a bundle prefix in queue diagnostics", async () => {
+    const owner = fresh();
+    const message = await staged(owner);
+    const w = world();
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      for (const prefix of ["fixture label", `${message.prefix}/bundle.json`, message.prefix]) {
+        await dropped(owner, w, { ...message, prefix, extra: true });
+      }
+      expect(log.mock.calls.map(([line]) => line)).toEqual(
+        ["?", "?", message.prefix].map((where) =>
+          `an import message (${where}) is refused; dropped: an import message is out of shape`));
+    } finally {
+      log.mockRestore();
+    }
+  });
 
   it("drops every message while the doors hold no IMPORT_KEY", async () => {
     const owner = fresh();
