@@ -30,12 +30,12 @@
         "Webhook only, HTTPS, no redirects, one event per request, at most 256 KiB, Standard Webhooks signing; do not retry deliveries that return 410 or 413 (the subscription stays).",
         "Verification failure is JSON-RPC -32015 CallbackEndpointError with a data.reason category, and its example send times out at 10 s (OpenAI's page; the design sketch's provisional -32027 is not what ChatGPT reads).",
         "ttlMs omitted is the server's default lifetime; the design sketch recommends grants up to about a day. A refresh's new secret is dual-signed for a short window; receivers reject a webhook-timestamp more than 5 minutes old, so 300 s covers every in-flight delivery.",
-        "Event-triggered tasks: 30 runs an hour and 720 a day; not on Free, Go or FedRAMP."
+        "OpenAI lists event-triggered tasks for eligible Plus, Pro, Business, Enterprise, Edu and Healthcare accounts, subject to workspace controls. The 30 hourly and 720 daily runs are shared across tasks. Its MCP Events guide names web Work chats, desktop Cloud Work chats and dots; it gives no separate custom-plugin entitlement by tier."
       ],
       "citations": [
-        { "url": "https://developers.openai.com/plugins/build/mcp-events", "read": "2026-11-03", "evidence": "V" },
+        { "url": "https://developers.openai.com/plugins/build/mcp-events", "read": "2026-11-18", "evidence": "V" },
         { "url": "https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md", "read": "2026-11-03", "evidence": "V" },
-        { "url": "https://help.openai.com/en/articles/10291617", "read": "2026-11-01", "evidence": "VS" }
+        { "url": "https://help.openai.com/en/articles/10291617", "read": "2026-11-18", "evidence": "V" }
       ]
     },
     {
@@ -86,10 +86,11 @@
       "catch_up": "A routine on a schedule (at least 5 minutes apart) that reads inbox_digest and board_digest.",
       "vendor_limits": [
         "200 runs an hour per routine and 300 an hour per user; over it a run fails with \"Automation run rate limit exceeded\" and is not retried. Each run uses plan usage.",
-        "The webhook URL's host is not readable from here (docs.x.ai unreachable): no host is pinned until it is, and the live test records it."
+        "The Bot shows the endpoint in its desktop routine. The public guide gives no fixed host or path. Use the Bot routine with its bearer key; consumer Grok Automation webhooks use a different signing secret."
       ],
       "citations": [
-        { "url": "https://docs.x.ai/grok-bot/skills-routines-and-automations", "read": "2026-11-01", "evidence": "VS" },
+        { "url": "https://docs.x.ai/grok-bot/skills-routines-and-automations", "read": "2026-11-18", "evidence": "V" },
+        { "url": "https://docs.x.ai/grok/automations/webhooks", "read": "2026-11-18", "evidence": "V" },
         { "url": "https://x.ai/changelog/bot", "read": "2026-11-01", "evidence": "VS" }
       ]
     },
@@ -101,11 +102,12 @@
       "push": null,
       "catch_up": "Muse's own recurring scheduled task (daily, weekly or a custom interval), connected by the owner's ADR-028 key in Muse's Secrets tab, reads inbox_digest and board_digest; its agent registers with delivery pull. Meta documents no push for third-party connectors, so TinyAssets sends none and polls nothing.",
       "vendor_limits": [
-        "The minimum recurring interval is not documented."
+        "Meta gives examples of recurring schedules without a minimum interval. Muse Mail recognizes instructions from the owner’s verified personal address. Its connector documentation gives no wake endpoint for an external service."
       ],
       "citations": [
-        { "url": "https://www.meta.com/help/artificial-intelligence/1484325780075655/", "read": "2026-11-01", "evidence": "VS" },
-        { "url": "https://platform.muse.ai/docs", "read": "2026-11-01", "evidence": "VS" }
+        { "url": "https://www.meta.com/help/superintelligence/1484325780075655/", "read": "2026-11-18", "evidence": "V" },
+        { "url": "https://www.meta.com/help/superintelligence/1149305437517250/", "read": "2026-11-18", "evidence": "V" },
+        { "url": "https://platform.muse.ai/docs", "read": "2026-11-18", "evidence": "V" }
       ]
     }
   ]

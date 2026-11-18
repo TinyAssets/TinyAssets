@@ -29,7 +29,7 @@ From the research environment, 2026-11-01, WebFetch returned `getaddrinfo ENOTFO
 `www.meta.com`, `muse.ai`, `developers.facebook.com`, `techcrunch.com`,
 `blog.google`, `support.google.com`, `learn.microsoft.com`, `blogs.microsoft.com`,
 `apps.apple.com` and `play.google.com`. I stopped retrying after the first failure.
-So **everything about OpenAI, xAI, Meta, Google and Microsoft is [VS] at best.**
+Those November 1 reads were [VS] at best. The November 18 wake-page checks below mark the vendor pages read in full [V].
 Anthropic hosts (`claude.com`, `support.claude.com`, `code.claude.com`,
 `www.anthropic.com`) and `github.com` were readable, so Claude facts are [V].
 
@@ -40,11 +40,10 @@ The github.com web page was readable.
 
 1. **ChatGPT.** ADR-031 says "ChatGPT scheduled tasks have no webhooks". That is now
    out of date. Since **2026-09-29**, supported plugins can start an automation
-   through MCP Events. Event-triggered scheduled tasks exist on Plus and above.
+   through MCP Events. Eligibility for built-in event-triggered tasks and surfaces for custom MCP Events are documented separately (§3).
    [VS help.openai.com release notes, help.openai.com/en/articles/10291617]
 2. **Grok Bot does have a push path.** A Grok Bot routine can take a **webhook
-   trigger**: a URL plus a bearer key, at most 200 runs an hour per routine. The plan's
-   "none documented" is wrong. [VS docs.x.ai/grok-bot/skills-routines-and-automations]
+   trigger**: a URL plus a bearer key, at most 200 runs an hour per routine. The Bot guide specifies a 200 response. [Grok Bot guide](https://docs.x.ai/grok-bot/skills-routines-and-automations) [V, 2026-11-18]
 3. **The founder is right that Muse and Grok can poll TinyAssets themselves.** Muse
    has recurring scheduled tasks (daily, weekly or a custom interval). Grok Bot routines
    run as often as every 5 minutes. Consumer Grok Automations can @mention a connector
@@ -84,9 +83,8 @@ The github.com web page was readable.
 - Persistent, proactive and background: it keeps working after the app closes and
   "comes back when something changes or when it needs approval". It has memory
   (`MEMORY.md`), monitoring, and skills. [REPO; VS ai.meta.com/muse/]
-- Announced at Connect (2026-09-23): Muse "will have its own email address... another
-  way for you to communicate with it." I found no documented address format and no
-  sign that it has shipped. [VS about.fb.com/news/2026/09/the-biggest-news-from-connect-2026/]
+- Muse now offers an `@muse.ai` address. Owners can send instructions from a personal
+  address they verify with Muse. [Meta Help](https://www.meta.com/help/superintelligence/1149305437517250/) [V, 2026-11-18]
 
 ### Its own scheduled tasks
 - One-time, location-based and **recurring (daily, weekly or a custom interval)**
@@ -123,11 +121,10 @@ The github.com web page was readable.
 - **None documented for third parties.** "Some Connectors proactively share information
   with Muse (like calendar updates), which Meta identifies before connection." No
   webhook, event or push interface for third-party connectors was found in
-  platform.muse.ai/docs. [VS]
+  platform.muse.ai/docs. [V, 2026-11-18]
 - WhatsApp is the user's own one-to-one chat with Muse. I found no documented way for
   a third-party WhatsApp sender to reach a user's Muse.
-- The agent's own email address could become a push path once it ships. [INF;
-  unverified]
+- Meta's verified-sender instructions apply to the owner's private email account. They give a third-party connector no authority to send instructions. [Meta Help](https://www.meta.com/help/superintelligence/1608220770565889/) [V, 2026-11-18]
 
 ### Taking part in group chats
 - Muse has "side chats" for organising the user's own threads, not group chats. I found
@@ -197,14 +194,10 @@ The github.com web page was readable.
 ### How it connects
 - grok.com/connectors: built-in OAuth connectors, plus **Bring Your Own MCP** for any
   public remote MCP server. [VS x.ai/news/grok-connectors, docs.x.ai/grok/connectors]
-- Grok Bot custom MCP is added through chat. Forum reports:
-  - The add-server tool takes "name, url, and optional headers".
-  - Connectors "authenticate only via OAuth", with no safe UI place for a secret header.
-  - Custom MCP OAuth fails with "redirect_uri not allowed" on some servers, while the
-    same connector works from Grok's certified marketplace.
-  [3P forum.cursor.com/t/grokbot-custom-connectors/169965, .../171877, .../168052]
-  [INF: test TinyAssets' OAuth against Grok Bot's redirect URIs before relying on it.
-  ADR-028's API key might fit the headers field, but the UI may not expose it.]
+- Grok Bot can install a remote MCP server by URL in chat or through the desktop
+  **Connect apps → Add a custom connector → Remote HTTPS** form, which also accepts
+  optional headers and OAuth client credentials. The TinyAssets OAuth redirect still
+  needs a live check on this client. [Grok Bot guide](https://docs.x.ai/grok-bot/computer-and-apps.md) [V, 2026-11-18]
 - **Directory listing (Direction 7):** the Grok Bot Marketplace "Submit a Plugin" form
   takes an organisation handle, website, logo, listing targets, **an MCP server URL or a
   public GitHub repo**, a description and testing instructions. It is reviewed, and you
@@ -216,8 +209,8 @@ The github.com web page was readable.
   opens the routine on desktop to copy the URL and key. The sender POSTs with
   `Authorization: Bearer <key>` and an optional JSON body. "200 only means the run
   started." The Bot receives the body alongside the routine's instruction.
-  Rate limits are as above. [VS docs.x.ai/grok-bot/skills-routines-and-automations,
-  x.ai/changelog/bot]
+  Rate limits are as above. [Grok Bot guide](https://docs.x.ai/grok-bot/skills-routines-and-automations) [V, 2026-11-18]
+- **Consumer Grok Automations** also take a webhook. They use a Standard Webhooks signature over the exact body and return 202 when accepted. This is a different endpoint and credential from the Bot routine in TinyAssets. [Grok Automations guide](https://docs.x.ai/grok/automations/webhooks) [V, 2026-11-18]
 - **Slack-message trigger:** a routine can fire on a Slack message, so a post in a
   watched channel wakes it. [VS same]
 - **Email trigger** (routines; consumer Automations on SuperGrok). [VS]
@@ -308,13 +301,16 @@ The github.com web page was readable.
 - **MCP Events.** The server lists its events; ChatGPT calls `events/subscribe` with a
   callback URL and a signing secret.
   - Delivery: webhook only, HTTPS, no redirects, one event per request, at most
-    256 KiB, Standard Webhooks signing, no retry on 410 or 413, MCP 2.0 required.
+    256 KiB, Standard Webhooks signing, no retry on 410 or 413. OpenAI supports
+    both Streamable HTTP with `initialize` and MCP 2.0 with `server/discover`.
   - "ChatGPT receives the event in the subscribed chat and follows the user's
     instructions for how to respond."
   - Available in Work chats (web, and desktop with Cloud) "and with dots".
-  [VS developers.openai.com/plugins/build/mcp-events] Plan tiers for MCP Events
-  themselves are not stated. Event-triggered tasks (the same feature family) are
-  Plus, Pro, Business, Enterprise and Edu. [VS]
+  [OpenAI developer guide](https://developers.openai.com/plugins/build/mcp-events) [V, 2026-11-18].
+  The [task plan list](https://help.openai.com/en/articles/10291617) covers eligible
+  Plus, Pro, Business, Enterprise, Edu and Healthcare accounts for supported app events.
+  The guide says workspace controls apply to MCP Events and gives no separate tier
+  matrix for custom plugins. Verify an actual TinyAssets subscription per tier.
 - Developer reports [3P, community.openai.com]:
   - Webhook returns 200 "but Dot task never runs" (Pro).
   - Another developer saw ChatGPT post unprompted a few seconds after the event.
@@ -463,7 +459,7 @@ The github.com web page was readable.
 |---|---|---|---|---|
 | Own recurring schedule | Yes: daily, weekly, custom; min not stated | Yes: routines, min 5 min, 200/h per routine | Yes: ChatGPT scheduled tasks, hourly on paid plans; dots self-wake | No user schedule; brief plus interval checks. (Claude/Cowork tasks hourly) |
 | Scheduled run can call a 3rd-party MCP | [INF] yes, with "Always allow" | [INF] yes (Bots use MCP) | Yes, "connected tools... plugins" | Unknown for Duet; **regression #106037** for Claude tasks |
-| How it connects to TinyAssets | Custom connector: MCP URL + OAuth, or API key in Secrets (ADR-028) | Custom MCP via chat; OAuth (UI header gap per forum) | Custom MCP (Pro read/fetch; Business full); OAuth | Claude custom connector (OAuth) inherited from Claude |
+| How it connects to TinyAssets | Custom connector: MCP URL + OAuth, or API key in Secrets (ADR-028) | Custom MCP via chat or desktop Remote HTTPS; OAuth or optional headers | Custom MCP (Pro read/fetch; Business full); OAuth | Claude custom connector (OAuth) inherited from Claude |
 | Push / wake | **None documented** | **Webhook routine** (bearer key); Slack, email triggers | **MCP Events** (Work chats, dots) | **None for Duet**; Claude `/fire` (new session) and Channels (local) |
 | Its own group chat | No | Yes: 2–6 Grok Bots; outside agents not documented | ChatGPT group chats exclude dots; Space pages @dot | No |
 | Joins chats elsewhere | WhatsApp 1:1 only | Slack (shared Bots in threads), X tag | Slack and Teams (acts for owner only) | No; Claude Tag in Slack on Team/Ent |
@@ -490,8 +486,7 @@ speaks *as itself*, through its owner's grant.
     reply").
   - Latency is the task interval: the minimum isn't documented.
   - **Blocked:** any push. Meta documents no third-party push. A doorbell would need
-    either Meta's "proactive connector" status (Meta identifies these; a partnership or
-    directory question) or the Muse email address once it ships [INF].
+    a documented connector delivery path. Muse Mail supports instructions from the owner’s verified address.
 - **Group chat (rooms): pull only.** Muse reads the room and posts through tools on
   each scheduled run. It can't be hosted in a WhatsApp group (Muse isn't documented
   there).
@@ -529,7 +524,7 @@ speaks *as itself*, through its owner's grant.
   - Pro users get only read/fetch custom MCP; Business gets full MCP. A **directory
     listing** is likely needed for writes on Pro [INF from the "read/fetch permissions"
     wording].
-  - The TinyAssets `mailbox.message` MCP Events subscription (openspec/specs/native-mcp-events)
+  - The rebuilt server’s `tinyassets.changed` MCP Events subscription (`platform/contract/wake-kinds.json`)
     is the doorbell, and it lands in the subscribed chat or dot.
   - **Risk:** forum reports of a 200 that never woke a dot. Verify live per tier.
   - A scheduled hourly task is the fallback.
@@ -607,5 +602,5 @@ speaks *as itself*, through its owner's grant.
 3. Whether a Grok Bot routine run can call a custom MCP server, and whether TinyAssets'
    OAuth passes Grok Bot's redirect_uri check.
 4. Muse: minimum recurring interval; whether a scheduled run calls a custom connector
-   without a fresh approval; Muse email address status.
+   without a fresh approval.
 5. Duet: whether Claude custom connectors carry over, and whether the #106037 fix lands.

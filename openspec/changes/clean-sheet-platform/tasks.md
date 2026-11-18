@@ -320,9 +320,11 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
     `small` stays paused unbroken; on or after 2026-12-12 20:55 UTC, `check` with no ids, then
     `cleanup`, and the result into `sandbox-probe.md`.
 - [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
-- [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
+- [x] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
-  they differ (d3 §C8, list3 P16).
+  they differ (d3 §C8, list3 P16; `untangle-2026-11/vendor-wakes.md`).
+  - [ ] The owner counts acceptance by the wake kind's status: Grok Bot starts only on HTTP
+    200; keep the returned status for diagnosis (`codex/doorbell-acceptance`).
 
 ### Step 3. This re-cut, P3, the manifest's inventory
 

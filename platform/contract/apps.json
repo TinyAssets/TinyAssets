@@ -94,11 +94,11 @@
         "say": "Add the MCP server https://tinyassets.io/mcp as TinyAssets, and save the TinyAssets skill: it's my shared memory with my other assistants, so check it before asking me and save what I tell you there.",
         "steps": [
           "In a chat with your Bot, send the sentence below.",
-          "Sign in to TinyAssets on the Connect card it shows. A connected app is available to every Bot you run."
+          "Sign in to TinyAssets on the Connect card. If you add it yourself on desktop, open Connect apps, choose Add a custom connector, select Remote HTTPS, enter https://tinyassets.io/mcp and choose Add plugin. The connection is available to your Bots."
         ]
       },
       "source": "https://docs.x.ai/grok-bot/computer-and-apps.md",
-      "checked": "2026-11-03"
+      "checked": "2026-11-18"
     },
     {
       "id": "muse",
