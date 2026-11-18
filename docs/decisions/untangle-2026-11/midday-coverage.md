@@ -299,3 +299,40 @@ browser run with the installed Chromium passed twelve and its tab crashed
 during the folder-save case. The two initial setup attempts without the
 installed browser path provide no product result. Further combined suites
 and the four-family behavioral comparison remain tied to their exact trees.
+
+## File browsing and the later device plan
+
+On `c84a2d94`, Agent Files and Your data both use the cursor returned by
+the owner, with one page displayed at a time. A loopback Chromium/Worker
+test added 411 directories beside three real starter files. Both ordinary
+views displayed exactly the 200, 128 and 86 entries returned on the three
+pages, in order. The middle page stopped at the byte budget before the
+200-entry request limit. The previous page was reachable. Against main,
+the permanent regression reached an installed starter file, then failed at
+the missing Next files button. Eight ordinary browser journeys passed on
+the staged tree; the invariants and shape checks passed. This closes the
+directory-listing part of the first-party review. Board and room collection
+paging remain open.
+
+On combined `c20aec73b`, the thirteen ordinary browser journeys passed on
+a serial retry, including the previously crashed folder-save case. The exact
+CI process selection passed 268 cases. Combined `bc5cca174` includes the
+directory reader, the mail reader, the live-viewer repairs and the measured
+storage display. All fourteen selected journeys passed on that tree. The
+two adjacent test insertions were reconciled by retaining each complete
+test verbatim. No coordinator review or merge is implied.
+
+The Step 20 plan at `4c8f9654` records the boundary for device runners and
+match hosting. With synthetic device PATH, home, system and conversation directories, the
+real invocation still selected the hosted executable for all eight initial
+and resumed turns across four sign-in-capable records. Node 22 and 24
+agreed on main and combined `c20aec73b`. Three engines continued to use the
+hosted agent directory, while Kimi used the supplied conversation directory.
+S7 still needs local installation and login ownership and an unknown outcome
+on device disconnect. S8 needs the S7 host advert and S6's distinct player
+admissions. No vendor process or paired device ran.
+
+At 14:22 Pacific there were 107 live refs and 88 Codex heads. Main was still
+`f934871ad`. Prior recorded runtime and plan limits remain, including Files
+erasure, import discard identity, continuous sync, older mail-started runs,
+grant reapproval, and exact combined behavioral evidence.
