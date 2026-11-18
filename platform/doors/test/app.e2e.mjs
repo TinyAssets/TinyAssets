@@ -304,6 +304,46 @@ test("a new owner is seeded: main and the starter's files, and no failure told",
                                     "/workspace/agents/main/agent.json": true });
 });
 
+test("Your data and agent Files use the owner's cursor to reach and reopen the next page",
+     { timeout: 60_000 }, async () => {
+  const dir = "/workspace/agents/main";
+  const { body: initial } = await api("tools/file_list", { dir, limit: 1 });
+  const { body: later } = await api("tools/file_list", { dir, limit: 1, after: initial.next });
+  const firstName = initial.entries[0].path.split("/").at(-1);
+  const secondName = later.entries[0].path.split("/").at(-1);
+  const { body: original } = await api("files/read", { path: later.entries[0].path });
+  assert.equal(typeof original.text, "string");
+  const endpoint = "**/app/api/tools/file_list";
+  const calls = [];
+  // Ask the real owner for one entry so the two installed starter files straddle a page.
+  await page.route(endpoint, async (route) => {
+    const args = route.request().postDataJSON();
+    calls.push(args);
+    await route.continue({ postData: JSON.stringify({ ...args, limit: 1 }) });
+  });
+  try {
+    for (const hash of [`data/${encodeURIComponent(dir)}`, "agents/main"]) {
+      calls.length = 0;
+      await page.goto(`${ORIGIN}/app#${hash}`);
+      const first = page.getByRole("link", { name: firstName, exact: true });
+      const second = page.getByRole("link", { name: secondName, exact: true });
+      await first.waitFor();
+      assert.equal(await second.count(), 0);
+      await page.getByRole("button", { name: "Next files" }).click({ timeout: 5000 });
+      await second.waitFor();
+      assert.equal(await first.count(), 0);
+      await second.click();
+      assert.equal(await page.locator("textarea.editor").inputValue(), original.text);
+      await page.getByRole("button", { name: "Previous files" }).click();
+      await first.waitFor();
+      assert.deepEqual(calls, [{ dir, limit: 200 }, { dir, limit: 200, after: initial.next },
+                               { dir, limit: 200 }]);
+    }
+  } finally {
+    await page.unroute(endpoint);
+  }
+});
+
 test("the sign-in return page cleared its code before any other script ran", async () => {
   const signedIn = seen.find((r) => r.url.startsWith(`${ORIGIN}/app/signed-in?`));
   assert.ok(signedIn, "the browser came back to /app/signed-in");

@@ -378,20 +378,16 @@ async function agent(name) {
     await settle();
   };
 
-  const files = h("div", {});
   const editor = h("div", {});
-  const listFiles = async () => {
-    const { entries } = await call("tools/file_list", { dir: agentDir(name), limit: 200 });
-    fill(files, entries.length === 0 ? h("p", { class: "muted" }, "No files.")
-      : h("ul", {}, entries.map((entry) => h("li", {},
-        entry.kind === "file"
-          ? h("a", { href: "#", onclick: (event) => {
-              event.preventDefault();
-              edit(editor, entry.path, listFiles).catch(report);
-            } }, entry.path.slice(agentDir(name).length + 1))
-          : `${entry.path.slice(agentDir(name).length + 1)}/`,
-        h("small", {}, `${bytes(entry.size)}, changed ${new Date(entry.mtime_ms).toLocaleString()}`)))));
-  };
+  const dir = agentDir(name);
+  const files = folderPage(dir, "No files.", (entry) => h("li", {},
+    entry.kind === "file"
+      ? h("a", { href: "#", onclick: (event) => {
+          event.preventDefault();
+          edit(editor, entry.path, files.load).catch(report);
+        } }, entry.path.slice(dir.length + 1))
+      : `${entry.path.slice(dir.length + 1)}/`,
+    h("small", {}, `${bytes(entry.size)}, changed ${new Date(entry.mtime_ms).toLocaleString()}`)));
   const newFile = h("input", { type: "text", placeholder: "skills/notes/SKILL.md" });
 
   paint(turn,
@@ -408,10 +404,10 @@ async function agent(name) {
        h("section", {},
          h("h2", {}, "Files"),
          h("p", { class: "muted" }, "What this agent is and can do lives in these files."),
-         files,
+         files.view,
          h("div", { class: "row" }, newFile, action("New file", async () => {
            const path = `${agentDir(name)}/${newFile.value.trim().replace(/^\/+/, "")}`;
-           await edit(editor, path, listFiles, true);
+           await edit(editor, path, files.load, true);
          }, report, { class: "quiet" })),
          editor));
   showSaid();
@@ -422,7 +418,7 @@ async function agent(name) {
   if (talk.conversation !== null) {
     watch(talk.conversation).catch(report);
   }
-  await listFiles();
+  await files.load();
 }
 
 /** A file's text in an editor, saved against the etag it was read at. */
@@ -880,12 +876,56 @@ async function keys(arg = null) {
 
 // -- Your data ------------------------------------------------------------------------
 
-async function data(arg) {
+/** The owner bounds directory answers by both count and bytes. Keep one page on screen
+ * and use its returned name to fetch the next, including after an empty filtered page. */
+function folderPage(dir, empty, entryRow, start = null) {
+  const view = h("div", {});
+  let current = start;
+  let request = 0;
+  const reportHere = (error) => {
+    if (view.isConnected) {
+      report(error);
+    }
+  };
+  const load = async (cursor = current) => {
+    const turn = ++request;
+    let answer;
+    try {
+      answer = await call("tools/file_list", {
+        dir, limit: 200, ...(cursor ? { after: cursor.after } : {}) });
+    } catch (error) {
+      if (turn === request) {
+        throw error;
+      }
+      return;
+    }
+    if (turn !== request) {
+      return;
+    }
+    current = cursor;
+    fill(view, answer.entries.length ? h("ul", {}, answer.entries.map(entryRow))
+      : h("p", { class: "muted" }, empty),
+      cursor ? action("Previous files", () => load(cursor.previous), reportHere) : null,
+      answer.next === null ? null
+        : action("Next files", () => load({ after: answer.next, previous: cursor }), reportHere));
+  };
+  return { view, load, get cursor() { return current; } };
+}
+
+async function data(arg, start = null) {
   const turn = turnOf("data", arg);
   const dir = arg ?? "/workspace";
-  const [{ entries }, account] = await Promise.all([
-    call("tools/file_list", { dir, limit: 200 }), call("account")]);
   const editor = h("div", {});
+  const files = folderPage(dir, "Empty.", (entry) => h("li", {},
+    entry.kind === "file"
+      ? h("a", { href: "#", onclick: (event) => {
+          event.preventDefault();
+          edit(editor, entry.path, () => data(arg, files.cursor)).catch(report);
+        } }, entry.path.split("/").at(-1))
+      : h("a", { href: `#data/${encodeURIComponent(entry.path)}` },
+          `${entry.path.split("/").at(-1)}/`),
+    h("small", {}, bytes(entry.size))), start);
+  const [, account] = await Promise.all([files.load(), call("account")]);
   const parent = dir.slice(0, dir.lastIndexOf("/")) || null;
   paint(turn,
        h("h1", {}, "Your data"),
@@ -898,16 +938,7 @@ async function data(arg) {
          h("h2", {}, `Files in ${dir}`),
          parent !== null && dir !== "/workspace"
            ? h("p", {}, h("a", { href: `#data/${encodeURIComponent(parent)}` }, "Up a folder")) : null,
-         entries.length === 0 ? h("p", { class: "muted" }, "Empty.")
-           : h("ul", {}, entries.map((entry) => h("li", {},
-             entry.kind === "file"
-               ? h("a", { href: "#", onclick: (event) => {
-                   event.preventDefault();
-                   edit(editor, entry.path, () => data(arg)).catch(report);
-                 } }, entry.path.split("/").at(-1))
-               : h("a", { href: `#data/${encodeURIComponent(entry.path)}` },
-                   `${entry.path.split("/").at(-1)}/`),
-             h("small", {}, bytes(entry.size))))),
+         files.view,
          editor));
 }
 
