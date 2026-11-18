@@ -45,7 +45,7 @@
         { "edit": "platform/contract/src/queue-names.ts", "names": ["IMPORTS"], "what": "the import queue's name, by npm run generate once doors/wrangler.jsonc loses it" },
 
         { "edit": "platform/owner/src/admission.ts", "names": ["IMPORT_PLATFORM_ONLY", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "DISCARDED", "\"import\""], "what": "the import doors' refusals and class" },
-        { "edit": "platform/owner/src/owner-do.ts", "names": ["#discarded", "#discard", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "\"import\"", "\"discard\"", "ImportLine"], "imports": ["platform/owner/src/import.ts", "platform/contract/src/import-message.ts"], "what": "the import doors, the object's #discarded, and the import and discard callers: the import kind's refusals, its class's pending check and the discard's rehearsal branch" },
+        { "edit": "platform/owner/src/owner-do.ts", "names": ["importWiping", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "\"import\"", "\"discard\"", "ImportLine"], "imports": ["platform/owner/src/import.ts", "platform/contract/src/import-message.ts"], "what": "the import doors, the in-progress discard check, and the import and discard callers: the import kind's refusals, its class's pending check and the discard's rehearsal branch" },
         { "edit": "platform/owner/doors.json", "names": ["importRows", "importFiles", "importFileBegin", "importFileStored", "importFileCommit", "importNotice", "importCheck", "importDiscard"], "what": "the eight import rows' steps" },
         { "edit": "platform/owner/src/door-steps.ts", "names": ["\"import\"", "\"discard\""], "what": "the import and discard callers, and their class's rule" },
         { "edit": "platform/owner/guards/doors.test.ts", "names": ["importRows", "importFiles", "\"import\"", "\"discard\""], "what": "the import and discard callers' cases" },
@@ -55,7 +55,7 @@
         { "edit": "platform/owner/src/door.ts", "names": ["ImportLine", "\"import\""], "what": "the import line, the import rows' proof, which Policy.imported alone takes" },
         { "edit": "platform/owner/src/files.ts", "names": ["openUploads", "entriesPage", "chunksPage", "mtimeMs"], "what": "Files.openUploads, Files.entriesPage, Files.chunksPage and the files plane's mtime_ms write option" },
         { "edit": "platform/owner/src/collections.ts", "names": ["rowsPage"], "what": "Collections.rowsPage" },
-        { "edit": "platform/owner/src/erase.ts", "names": ["discard(", "bare"], "what": "Erasure.discard and its bare wipe" },
+        { "edit": "platform/owner/src/erase.ts", "names": ["discard(", "#discarding", "importWiping", "#importWipe", "bare"], "what": "Erasure.discard, its retry state and its bare wipe" },
         { "edit": "platform/owner/src/starter-package.ts", "names": ["for the importer"], "what": "the importer, among the package's readers" },
         { "edit": "platform/owner/guards/admission-caller.test.ts", "names": ["importDiscard"], "what": "the import callers' cases" },
         { "edit": "platform/owner/guards/memory-counts.test.ts", "names": ["IMPORT_BATCH_BYTES", "IMPORT_HOLD_BYTES"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import call's and the consumer's held bytes" },

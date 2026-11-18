@@ -513,6 +513,56 @@ describe("the import's discard", () => {
     expect((await failure(() => stub.fileStat(own(owner), { path: I }))).code).toBe("busy");
   });
 
+  it("joins overlapping discards while the files service holds the first prefix deletion", async () => {
+    const { stub, owner, ns } = await imported();
+    const files = gateFor(env.FILES_GATE, ns);
+    await files.arm("deleteNamespace", { hold: "before" });
+    const first = stub.importDiscard(importing(owner));
+    await files.held("deleteNamespace");
+    const second = stub.importDiscard(importing(owner));
+    // A subsequent RPC reaches the same object while the first operation is held.
+    expect((await failure(() => stub.importDiscard(own(owner)))).code).toBe("refused");
+    await files.release("deleteNamespace");
+    const result = { discarded: true, namespace: ns };
+    expect(await Promise.all([first, second])).toEqual([result, result]);
+    expect((await files.calls()).filter((call) => call.method === "deleteNamespace")).toHaveLength(2);
+    expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
+  });
+
+  it.each(["SQL alone", "files and SQL"])(
+    "retries a failed database wipe before acknowledging a discard of %s",
+    async (stored) => {
+      const { stub, owner, ns } = stored === "SQL alone" ? { ...pending(), ns: null }
+        : await imported();
+      await stub.importRows(importing(owner), { rows: [{
+        kind: "collection", collection: "board", row_id: "private", private: 1, body: "{}",
+      }] });
+      const attempts = await runInDurableObject(stub, (_instance: unknown, state: DurableObjectState) => {
+        const remove = state.storage.deleteAll.bind(state.storage);
+        let count = 0;
+        Object.defineProperty(state.storage, "deleteAll", { configurable: true, value: async () => {
+          if (++count === 1) {
+            throw new Error("the test store refused the wipe");
+          }
+          await remove();
+        } });
+        return () => count;
+      });
+      expect((await failure(() => stub.importDiscard(importing(owner)))).message)
+        .toContain("the test store refused");
+      expect(await runInDurableObject(stub, (_instance: unknown, state: DurableObjectState) =>
+        state.storage.sql.exec("SELECT row_id FROM collection_rows").toArray()))
+        .toEqual([{ row_id: "private" }]);
+      expect((await failure(() => stub.policyRead(own(owner)))).code).toBe("busy");
+      for (let i = 0; i < 2; i++) {
+        expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
+        expect(await runInDurableObject(stub, (_instance: unknown, state: DurableObjectState) =>
+          state.storage.sql.exec("SELECT name FROM sqlite_master WHERE name = 'collection_rows'").toArray()))
+          .toEqual([]);
+        expect(attempts()).toBe(2);
+      }
+    });
+
   it("takes a rehearsal's name in any state, and no admitted real owner", async () => {
     const real = await imported();
     await real.stub.admissionSet({ owner: real.owner, caller: PLATFORM_CALLER, origin: null },

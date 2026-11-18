@@ -499,11 +499,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   readonly #tombstone: boolean;
   /** The owner's erasure (`erasure.ts`, `erase.ts`), begun at `ownerErase`. */
   readonly #erasure: Erasure;
-  /**
-   * The cutover's discard (`#discard`): null until this instance wiped its owner's database
-   * for the import, then the namespace it deleted; from then on every door answers `busy`.
-   */
-  #discarded: { readonly ns: string | null } | null = null;
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env);
     this.#gate = new WriteGate(ctx.storage);
@@ -700,7 +695,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       sync: () => this.#schedule.sync(),
       control: () => this.#control(),
       gone: () => this.#tombstone || this.#erasure.erased || erasing(storage),
-      discard: () => this.#discard(),
+      discard: () => this.#erasure.discard(),
       reset: async () => {
         // Durable first: a reset takes back what is not yet (`facet-probe.md`, Q8).
         await this.#gate.durable();
@@ -1146,9 +1141,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         return bound(given, unaccounted(given.owner, given.caller));
       }
       case "discard": {
-        // The import's discard: a pending owner, or a rehearsal's in any state; an instance
-        // that discarded already answers it again (its database is gone, and so its state).
-        const { binding: given } = this.#discarded !== null ? taken(binding, row.caller, row)
+        // Once the database wipe starts its admission row may be gone. A repeat still has
+        // to present the import binding before it can finish the same wipe.
+        const { binding: given } = this.#erasure.importWiping ? taken(binding, row.caller, row)
           : this.#bind(binding, row.caller, row);
         return bound(given, unaccounted(given.owner, given.caller));
       }
@@ -1279,29 +1274,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return mine[0]!.command_center_id;
   }
 
-  // -- THE CUTOVER'S IMPORT: the platform's, into a pending owner (`import.ts`) ------------
-
-  /**
-   * The discard's wipe (`import.ts`, `Erasure.discard`): the erasure's own deletion of every
-   * R2 object by the namespace's prefix (its files' and placed bodies' chunks and its
-   * generations), Lifecycle's alarm disabled so nothing writes after, then the whole database
-   * deleted, and the prefix deleted once more; no tombstone. A rehearsal's owner is never
-   * signed into (`rehearsalName`), so it has no source connected and no run. From then on this instance answers every door `busy` (`DISCARDED`) and a
-   * discard again with the namespace it deleted; the runtime's next instance of the name is a
-   * fresh, `pending` object. Repeatable; the namespace, read before the wipe.
-   */
-  async #discard(): Promise<string | null> {
-    if (this.#discarded !== null) {
-      if (this.#discarded.ns !== null) {
-        await this.#files.eraseNamespace(this.#discarded.ns);
-      }
-      return this.#discarded.ns;
-    }
-    return this.#erasure.discard((ns) => {
-      this.#discarded = { ns };
-    });
-  }
-
   /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
   #control(): ControlGate {
     return new ControlGate(this.env.CONTROL);
@@ -1320,7 +1292,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refusal("owner_erased", OWNER_ERASED);
     }
-    if (this.#discarded !== null) {
+    if (this.#erasure.importWiping) {
       throw new Refusal("busy", DISCARDED);
     }
     // The erasure's own platform doors are the one way in while the owner is marked, and

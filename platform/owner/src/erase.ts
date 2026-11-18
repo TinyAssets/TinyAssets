@@ -77,6 +77,8 @@ export class Erasure extends LifecycleCapability {
   readonly #parts: ErasureParts;
   #running: Promise<void> | undefined;
   #erased = false;
+  #importWipe: { readonly ns: string | null; wiped: boolean } | undefined;
+  #discarding: Promise<string | null> | undefined;
   /**
    * When the last attempt began (ms), so a refused door resumes at most once an
    * `ERASE_RETRY_MS`.
@@ -196,23 +198,37 @@ export class Erasure extends LifecycleCapability {
     await blobsAgain(ns);
   }
 
+  /** Ordinary doors stay closed from the first database wipe attempt until eviction. */
+  get importWiping(): boolean {
+    return this.#importWipe !== undefined;
+  }
+
   /**
-   * The cutover's discard of an owner the import put here (`import.ts`, `importDiscard`): this
-   * erasure's own R2 step (every object under the namespace's prefix, once every put this
-   * instance began has landed) and its wipe, Lifecycle's alarm disabled first, then the prefix
-   * deleted once more. It is not an erasure: no mark, no outside record (no erased record in
-   * the directory, no issuer's deletion), no grace and no tombstone, so the name is no one's
-   * and its next object starts afresh, `pending`. `wiping` is told the namespace just before
-   * the wipe. Repeatable until the wipe; the namespace it deleted.
+   * The cutover's discard leaves no admission row or tombstone. Retain the namespace
+   * before deleting the database, and acknowledge only after the wipe and final prefix
+   * sweep both succeed. Overlapping deliveries join the same attempt on this instance.
    */
-  async discard(wiping: (ns: string | null) => void): Promise<string | null> {
+  discard(): Promise<string | null> {
+    this.#discarding ??= this.#discard().finally(() => {
+      this.#discarding = undefined;
+    });
+    return this.#discarding;
+  }
+
+  async #discard(): Promise<string | null> {
     const { blobs, blobsAgain, lifecycle, bare } = this.#parts;
-    const ns = await blobs();
-    await lifecycle.disableAlarms();
-    wiping(ns);
-    await bare();
-    await blobsAgain(ns);
-    return ns;
+    if (this.#importWipe === undefined) {
+      const ns = await blobs();
+      await lifecycle.disableAlarms();
+      this.#importWipe = { ns, wiped: false };
+    }
+    const state = this.#importWipe;
+    if (!state.wiped) {
+      await bare();
+      state.wiped = true;
+    }
+    await blobsAgain(state.ns);
+    return state.ns;
   }
 
   /** The erasure's job is due: an erasure a crash cut short, resumed. */

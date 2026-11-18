@@ -514,7 +514,7 @@ export const importDoors = Object.freeze({
     });
   },
   /**
-   * The discard (`owner-do.ts`, `#discard`): the owner's R2 objects and database deleted, no
+   * The discard (`Erasure.discard`): the owner's R2 objects and database deleted, no
    * tombstone, no erased record, no issuer's deletion; the namespace it deleted, for the job's
    * proof that the files bucket lists nothing under it.
    */

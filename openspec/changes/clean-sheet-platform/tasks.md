@@ -144,6 +144,9 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 - [ ] **The importer** (`import_research.md`; `platform/import/`, run on each run's disposable
   import host from the verified backup copy). It is deleted in the cutover's deletion change,
   with everything of the import window, as the manifest lists it.
+  A discard on the same owner instance waits for the database wipe and final files sweep
+  across concurrent calls and retries (`i-discard-wipe-retry.md`). Cross-eviction proof
+  still needs a durable attempt.
   - [x] 1. The census (`census.ts`, #5461).
   - [x] 2. The bundle builder (`bundle.ts`, #5461).
   - [x] 3. The owner object's import doors (`owner/src/import.ts`, #5475).
