@@ -839,6 +839,8 @@ Moved before the window, into lane R (d3 §F3, §G).
     `api-rules.ts` if it says so.
   - [ ] E2B's lifecycle webhooks as a second doorbell for the sandbox line, and one platform-wide
     pull of `/events/sandboxes` for the deliveries E2B gave up on (list3 P7).
+  - [x] The owner's explicit acknowledgement advances through the displayed mail and
+    refreshes the mailbox, preserving the unsent post and current collection views.
   - [ ] The MCP Tasks extension once the SDK's `createMcpHandler` serves it: a task id the
     operation id, `tasks/get` `agentStatus`, `tasks/cancel` `agentCancel`.
   - [ ] A streamed file download, and an outside client's file-bytes tool.

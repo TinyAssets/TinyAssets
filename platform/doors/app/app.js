@@ -495,6 +495,28 @@ function heads(rows) {
       row.deleted ? null : h("small", {}, `by ${row.writer}`))));
 }
 
+/** Acknowledging the displayed mail refreshes just the mailbox, keeping the post draft. */
+function inboxMail(initial) {
+  const view = h("section", {});
+  const show = (messages) => {
+    fill(view,
+         h("h2", {}, "Mail to you"),
+         messages.length === 0 ? h("p", { class: "muted" }, "No new mail.")
+           : h("ul", {}, messages.map((m) => h("li", {},
+             h("b", {}, m.room_id), ` ${m.body ?? "(too long to show here)"} `,
+             h("small", {}, `from ${m.sender_id}, ${when(m.created_at)}`)))),
+         messages.length === 0 ? null : action("Mark all read", async () => {
+           await call("tools/mailbox_ack", { through: messages.at(-1).seq });
+           if (view.isConnected) {
+             const page = await call("tools/mailbox_read", { limit: 100 });
+             show(page.messages);
+           }
+         }, report, { class: "quiet" }));
+  };
+  show(initial);
+  return view;
+}
+
 async function rooms(arg = null) {
   const turn = turnOf("rooms", arg);
   const [inbox, board, { owner_agents: owned }] = await Promise.all([
@@ -503,19 +525,9 @@ async function rooms(arg = null) {
   const room = h("select", {}, owned.filter((a) => a.retired_at === null).map((a) =>
     h("option", { value: `dm:${a.agent_id}` }, `You and ${a.agent}`)));
   const body = h("textarea", {});
-  const mail = inbox.mail.messages;
   paint(turn,
        h("h1", {}, "Rooms and board"),
-       h("section", {},
-         h("h2", {}, "Mail to you"),
-         mail.length === 0 ? h("p", { class: "muted" }, "No new mail.")
-           : h("ul", {}, mail.map((m) => h("li", {},
-             h("b", {}, m.room_id), ` ${m.body ?? "(too long to show here)"} `,
-             h("small", {}, `from ${m.sender_id}, ${when(m.created_at)}`)))),
-         mail.length === 0 ? null : action("Mark all read", async () => {
-           await call("tools/mailbox_ack", { through: mail.at(-1).seq });
-           await rooms();
-         }, report, { class: "quiet" })),
+       inboxMail(inbox.mail.messages),
        h("section", {},
          h("h2", {}, "Post"),
          owned.length === 0 ? h("p", { class: "muted" }, "Make an agent first.")
