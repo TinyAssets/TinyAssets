@@ -97,7 +97,7 @@ retirement, rule changes or a final merge.
 
 ## Follow-up on the combined build
 
-The 13:10 comparison used `9c619aff0` (tree `6d57bac8c`); the shared-install
+The 13:10 Pacific comparison used `9c619aff0` (tree `6d57bac8c`); the shared-install
 decision later joined it without changing runtime source. The following checks
 were run locally, apart from the separately named GitHub results.
 
@@ -118,9 +118,11 @@ were run locally, apart from the separately named GitHub results.
 - The joined tree passed 268 process cases. Its dependency check exposed the
   new app regression importing a private display helper from the test. On a
   checkout with ordinary dependency directories, 63 of 64 layer/kernel
-  checks passed and this was the only failure. Hold that staged test for a
-  public browser path. Nine offline browser checks had already exposed and
-  verified the storage display correction. The 12 frozen-bound and migration
+  checks passed and this was the only failure. The revised test now uses the public account UI.
+  On the repair staged at `4d104c94`, four shipped-app browser cases passed
+  with local Workers, including the regression with the owner's actual byte
+  count and effective cap. Twelve offline browser comparisons passed, and
+  all 64 layer/kernel checks passed on the joined build `b5b14e446`. The 12 frozen-bound and migration
   guards passed.
 - The full-body wake discovery comparison found six registrations with
   intentionally updated descriptions and one unchanged app listing on the
@@ -142,3 +144,60 @@ were run locally, apart from the separately named GitHub results.
   found both Tests and invariants successful. All twelve were drafts. The
   thirteenth draft was the legacy #5343. These were existing GitHub runs.
   The project-wide cutover criteria remain open.
+
+## Scope refreshed after the fixes
+
+At 13:19 Pacific there were 90 remote heads, including 71 Codex heads.
+Relative to the 12:55 snapshot, eight names were new, one moved and 81
+kept the same commit. The nine changed heads were compared with local
+integration `eb627bb76`. Eight have their exact tree in its history.
+For the queue-inventory head, all four paths outside the task list and the
+shared deploy test matched its current tip exactly. The shared source-record
+check and its tests also incorporate neighboring changes in the joined tree.
+
+The Doors error-handling inventory traced 43 catch clauses, eight promise
+catches and four explicit queue retries. Egress settlement could immediately
+retry an owner reporting overload. The shared binder now distinguishes this
+from a lost answer. On the staged repair `e56791a4`, three focused Worker
+regressions passed. Both affected Doors test files also passed in full (81 cases).
+An independent 27-case comparison used main, the earlier
+combined tree and the candidate. On the real owner schema, an abandoned
+reservation retained its estimated charge and replaying a successful
+settlement charged it once. Other workers' error-handling inventories and
+the full behavioral comparison on the new build are still open.
+
+Two preparation requirements for the single F2 site release had landed under
+Step 18, after the window. The corrected plan at `de6e3097` puts them under
+the Step 5 site deliverable. The Step 13 publication still follows routes.
+The ordering check failed on the prior branch and combined plan and passed
+on the corrected plan and its rehearsal with site profiles. The standalone
+OpenSpec validation passed. The graph source, deletion flow and handback
+revision are still prerequisites.
+
+An additional founder decision affects outside apps. The original MCP
+grant requirements keep a disconnection until the owner clears it. Later
+bounded grant storage permits an old, unheld revoked row to be retired.
+The durable cutoff still blocks earlier sign-ins. The OAuth door requires
+per-app consent and a fresh sign-in in either case. The open question is
+whether that flow can suffice after retirement or whether the owner must first
+clear the block separately in grant management. Record the intended promise
+before approving the disconnect screen or relying on automatic retirement.
+
+The registration description also changes generated source. The first joined
+guard found the owner door map stale. After using the canonical generator,
+all six generator steps ran on joined `eb627bb76` and left the checkout
+clean. The single invocation covering seven guard files on that tree was
+killed under load before reporting its 118 results. On the earlier joined
+tree, 53 of the 54 cross-area cases had passed, with the generator case the
+sole failure. The exact earlier 64 layer checks and seven invariant checks
+are reported separately above. The later documentation-only rehearsal
+`b7645b538` passed shape, OpenSpec and seven repository invariants, with the
+separate Chrome-only invariant skipped.
+
+The signed import prefix change also preserves a historical distinction:
+12 actual writer outputs agreed on the folder grammar, while an envelope
+from before the operation field still gets its existing terminal refusal.
+On the local candidate `8f9489c1d`, the full importer suite passed 167 cases
+on Node 22 and the four disjoint Doors Worker selections passed all 22
+import cases. The full TypeScript attempt that exited 137 supplied no
+passing result. Durable discard across eviction is a separate open protocol.
