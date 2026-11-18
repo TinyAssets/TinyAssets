@@ -277,6 +277,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   `untangle/slow-tests`): the file; the job names and `enqueue-merge.yml` are held to it,
   `enqueue_merge.py` reads it and stops while the live rules differ; the classic copy goes
   with a host-actions row (`untangle-2026-11/required-checks.md`).
+- [x] P6, d3 §B8: follow work from an ADR in the active change; the seven historical
+  uses of "owed" were checked (`untangle-2026-11/p6-adr-obligations.md`).
 - [x] `required-tests shard 2/6` took 24 to 27 minutes of its 30-minute watchdog on
   whole-surface merge groups, and `required-tests` reported 26 to 29 minutes after the start,
   against the queue's 35: a stale durations table put both eight-minute root proofs on it.
@@ -695,8 +697,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] 3. Slice S verifies each engine record live, on its pinned version in a headless E2B VM,
   the record fixed where it differs. The pinned installs, startup, users and the not-signed-in run
   passed (`sandbox-probe.md`); what is left needs a model or a sign-in:
-  - every CLI: its event shapes against the matchers on a run and a resume; a resume after a
-    cold create restores `session_paths`; MCP injection reaches the run's door with no bearer
+  - every CLI: measure peak resident memory during its signed-in turn on the pinned template;
+    record its size to assess the proposed 1 vCPU / 1 GiB tier (the not-signed-in runs
+    measured startup only); its event shapes against the matchers on a run and a resume;
+    a resume after a cold create restores `session_paths`; MCP injection reaches the run's door with no bearer
     in the config; the tool filters and unattended flags run with no prompt; `no_update` holds;
     every credential file it writes is in `secret_paths` (Kimi's MCP OAuth stores not yet
     located); a signed-in run starts with every `forbid_env` name unset; on a key, its own
@@ -749,6 +753,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   Grok's webhook host, pinned as data once seen; whether Claude's over-limit fire answers
   `429`. E2B's lifecycle webhook: whether a kill of a paused sandbox carries the pause's
   execution and `sandbox_execution_id`, and E2B's retry timing against `BILLED_WINDOW_S`.
+  - For ADR-034's scheduled-task probe (#106037), use the stage owner and a custom
+    TinyAssets connector in a scheduled Claude task. Record whether the scheduled run
+    itself can list tools and read its inbox before a follow-up message. Record the
+    webhook-triggered cloud routine separately (#102388); a successful `/fire` alone
+    establishes delivery, not that the resulting run can read its mail.
 - [ ] 8. The founder's own test (§8).
 
 Measured on the stage as it runs:

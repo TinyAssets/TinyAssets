@@ -27,12 +27,11 @@ Untangle the code a change touches, or a whole area, and finish the job.
   recoverable with what exists: the one exception to `AGENTS.md` Fact 17,
   listed with its branch in `tasks.md`'s "After the cutover".
 - **The PR body** is the one document. Its **Untangle check** says what was
-  found, fixed and left (and why), and that the diff adds none of the four kinds.
-  Anything found and left, by builder or reviewer, names the PR, branch or
-  `live:` wait that fixes it, or is fixed in place. The PR's decisions go in a
-  file of their own, `docs/decisions/<log>/<pr>.md`, headed
-  `# <PR> as built (<date>)`; a shared log is edited only to correct an earlier
-  line. The PR ticks its own `tasks.md` line.
+  found, fixed and left, why, and that the diff adds none of the four kinds.
+  Fix each finding or name its PR, branch or `live:` wait. Record decisions in
+  `docs/decisions/<log>/<pr>.md`, headed `# <PR> as built (<date>)`. Edit
+  shared logs only to correct an earlier line. Tick the PR's own `tasks.md`
+  line; ADR follow-up belongs in the active tasks (ADR-005).
 - **Every reviewer** runs step 5's search on the PR and checks that section; a
   missing one is a finding. A problem the PR adds or leaves in scope unexplained
   blocks, and so does any of these: an import edge the layer table refuses or a
