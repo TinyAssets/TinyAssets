@@ -215,6 +215,10 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   deletes the old stack, the import window above, the old stack's workflows (`dr-drill.yml`
   among them), its docs, rules and specs, and `docs/architecture.md`'s S36 row then reads
   converged.
+  - [x] The legacy weekly Droplet drill, its cleanup dispatch, dedicated recovery proof
+    and shared consumers are inventoried for phase 2 (`b24-legacy-dr.md`). Reconcile
+    retained drill instances while the cleanup path is available. The platform's monthly
+    off-account drill and the final backup have separate lifetimes.
   - **Old tests leave with their code** (Direction 6): every test file
     `python scripts/affected_tests.py --retiring` lists (its `RETIRING` paths follow the
     manifest), and any other test that fails only because its code is gone. None is skipped,
