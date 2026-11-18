@@ -227,3 +227,43 @@ importers. Start the next unchanged-source review with those contracts and
 the app and connection callers. Then follow the remaining edges and the
 separately scoped consumers. This inventory includes type dependencies.
 An edge count cannot establish that an underlying decision is sound.
+
+## What the next pass found
+
+At 13:44 Pacific, GitHub advertised 96 heads, including 77 Codex heads.
+Compared with the 13:19 snapshot, 88 kept their commit, two moved, six were
+new and none disappeared. The comparison below used main `f934871ad` and
+combined source `b4ebe1371`, with synthetic local accounts and resources.
+
+| Area | Finding and evidence | Disposition |
+| --- | --- | --- |
+| Gateway | The slot pool and gateway both converted a full pool to the same refusal. Real local contention returned the same HTTP 503, one-second retry and response body on Node 22 and 24. All 32 gateway tests in the affected files passed. | `3f3e2343` removes the second conversion. The pool still releases its units and the gateway still owns its public response. |
+| Import host | The import job hashed bundle data and backup files independently of the digest it already used for building imports. The full importer passed all 167 cases on Node 22 and all 167 on Node 24. Nine lengths through two file-path encodings agreed with Python, including an empty file and a partial final chunk. | `2bd83dbb` uses the existing digest while retaining the host's bounded reads and signed-request behavior. The existing C6 guard has its original scope. |
+| Account app | Rooms displayed a prefix as a full message. The existing owner read could recover every byte of a 46,005-byte example, including 21,164 bytes beyond the first part. The app never requested that continuation. Mark all read required a click. The board, room heads and file browser also showed the first page only. | The first-party acceptance criteria are staged at `ce273c61`. Reading the complete message and explicit bulk acknowledgement are separate user actions. |
+| Scoped file sync | A real owner schema and real runner saw 1,000 changes outside the client's scope followed by one readable directory. The first sync finished without applying that directory. The next sync created it. Both Node versions reproduced this on both revisions. | A page can advance the owner's raw cursor while returning zero visible entries. Resolve completion, bounded work under continuous writes, reset and existing runner images before changing the sync contract. |
+| Sign-in | The documented limit is 4,095 UTF-8 bytes. The owner accepted a synthetic 4,096-byte emoji string and a 4,098-byte CJK string. Owner and runner were counting UTF-16 units. The private socket decoder also needs to handle a character split across byte fragments. | Review owner, inbox, runner and framing together. Keep the separately tested renewal verbs and terminal privacy boundaries. |
+| Grant retention | Two existing Worker cases at `e754f7e4` passed. They confirm that a retired revocation keeps the older sign-in cutoff. | The founder must decide whether ordinary per-app consent plus a fresh sign-in suffices or whether the account holder must first explicitly unblock the app. |
+
+A second deployment comparison ran the unmodified main scenario definitions
+against both implementations with the test world's local transports. A
+recorder around the real `perform` call observed **696 matched calls** in
+122 named cases across 15 modes, including 265 fake apply calls. All 466
+successful plan arrays matched exactly. Of 230 refusals, 227 matched
+exactly. Two differed only in the random temporary plan directory and one
+only in the generated operator message ID. No other field was normalized.
+The baseline harness passed 179/179. On the combined kit, 178 of those same
+179 cases passed. The old lifecycle assertion expected a PATCH after an
+incomplete hook response; the staged kit refuses that response before PATCH.
+That assertion calls the lifecycle helper separately from the 696 `perform`
+calls. These counts describe the main-commit harness. B8 and B12's
+historical 342-scenario criterion still needs its original case mapping.
+
+The task list contained three citations to original research files absent
+from all 96 live heads and 132 distinct local tips. The importer now has a
+tracked entry point in its CLI and the three merged slice PRs (#5461,
+#5475, #5477). The owner constructor decision points to the coordinator's
+B3 record in `o2.md`, and R5 points to §N in the remaining-build decision.
+§N7 already settles the defaults for imported owners. The translation,
+archive, and founder's wording for the owner notice each retain their own
+acceptance criteria. This repairs the working plan without reconstructing
+the original unpublished research.

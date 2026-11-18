@@ -141,8 +141,9 @@ The window is d3 §D steps 10 to 15, in this order. What the cutover deletes, ed
 takes down is `platform/cutover.json`, the cutover's manifest in its three phases (d2 B24,
 d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 
-- [ ] **The importer** (`import_research.md`; `platform/import/`, run on each run's disposable
-  import host from the verified backup copy). It is deleted in the cutover's deletion change,
+- [ ] **The importer** runs from the verified backup copy on each run's disposable import
+  host. Its command is [the import CLI](../../../platform/import/cli.ts). The merged slices
+  below record the original research and the behavior each added. It is deleted in the cutover's deletion change,
   with everything of the import window, as the manifest lists it.
   - [x] 1. The census (`census.ts`, #5461).
   - [x] 2. The bundle builder (`bundle.ts`, #5461).
@@ -338,9 +339,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] Complete the wave-2 lane obligations below (d2 §D and d3 §A). The O1–O5
   work is recorded against its individual decisions. Recheck the combined lanes in
   the separate §E review before cutover.
-  - [x] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
-    per-module `DoorNeeds`, four widening proofs, `untangle/o1` to `o1d`
-    (`docs/decisions/untangle-2026-11/o2.md`, "B3's shape").
+  - [x] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as option (b′) in the
+    [coordinator's B3 decision](../../../docs/decisions/untangle-2026-11/o2.md):
+    per-module `DoorNeeds`, four widening proofs, `untangle/o1` to `o1d`.
     - [x] `untangle/o1`: `door.ts`, the placement in `Bodies`, `Archive` in `ownerStores`, the
       row step `seeded`, the tiers kept at the bind, `call.scope`, the leaf modules on
       `DoorNeeds` (`untangle-2026-11/o1.md`).
@@ -564,8 +565,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     namespace hidden in B2 and still among its versions; a night past the deletion limit
     hiding every deletion and then failing;
     a one-day lock and the lifecycle rule together deleting a hidden version once the lock ends.
-- [ ] R5, where an action is decided (d3 §N): its six slices (`r5_research.md` §6), after B25
-  and alongside lane O.
+- [ ] R5, where an action is decided: [the remaining build](../../../docs/decisions/untangle-2026-11-remaining-build.md)
+  §N records the decisions. Its item 8 orders the six slices below, which follow B25
+  and run alongside lane O.
   - [x] P-shape: the policy's `actions` table and `contract/acts.json`, the doors' rows naming
     their act, a rule nothing could see refused at write; the old rule tables, `spend` and
     egress `ask` deleted; the default document and its digest anew, with owner migration 6
