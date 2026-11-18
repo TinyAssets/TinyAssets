@@ -53,13 +53,26 @@ function codes(answer: Answer): string {
  * or the next page number while `page * per_page` is short of `total_count` (wrangler's own
  * two rules, `hasCursor` and `hasMorePages`, in its `fetchListResult`).
  */
-function nextPage(info: Envelope["result_info"]): string | null {
+function nextPage(info: Envelope["result_info"], number: number, what: string,
+                  paging: "cursor" | "number"): string | null {
+  if (info === undefined || info === null) return null;
+  const malformed = () => new Error(`${what} failed (invalid pagination metadata)`);
+  if (typeof info !== "object" || Array.isArray(info)
+      || (info.cursor != null && typeof info.cursor !== "string")) throw malformed();
   if (typeof info?.cursor === "string" && info.cursor !== "") {
     return `cursor=${encodeURIComponent(info.cursor)}`;
   }
-  const { page, per_page: size, total_count: total } = info ?? {};
-  return typeof page === "number" && typeof size === "number" && typeof total === "number"
-    && page * size < total ? `page=${page + 1}` : null;
+  const { page, per_page: size, total_count: total } = info;
+  // R2 may report total_count alongside the cursor even on its last page, without page.
+  if (page === undefined && (paging === "cursor" || total === undefined)) return null;
+  if (page !== undefined && page !== number) throw malformed();
+  if (total === undefined) return null;
+  if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0) throw malformed();
+  if (total === 0) return null;
+  if (page === undefined || typeof size !== "number" || !Number.isSafeInteger(size) || size < 1) {
+    throw malformed();
+  }
+  return number * size < total ? `page=${number + 1}` : null;
 }
 
 /** A listing's rows: an array of objects, or a throw naming `what`. */
@@ -69,6 +82,15 @@ function rows(result: unknown, what: string): Record<string, unknown>[] {
     throw new Error(`${what} failed (its answer holds no listing)`);
   }
   return result as Record<string, unknown>[];
+}
+
+/** Identifiers in a provider inventory are data. An unreadable row cannot establish absence. */
+function identifier(row: Record<string, unknown>, field: string, what: string): string {
+  const value = row[field];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${what} failed (a row has no ${field})`);
+  }
+  return value;
 }
 
 /**
@@ -349,20 +371,36 @@ export class Cloudflare {
   }
 
   /** Each page's result of the listing at `path`, read to its last page (`nextPage`). */
-  async #pages(what: string, path: string): Promise<unknown[]> {
+  async #pages(what: string, path: string, paging: "cursor" | "number" = "number"): Promise<unknown[]> {
     const results: unknown[] = [];
+    const seen = new Set<string>();
+    let numberedSize: unknown;
     for (let query: string | null = ""; query !== null;) {
       const page = await this.#ok(what, query === "" ? path
         : `${path}${path.includes("?") ? "&" : "?"}${query}`);
       results.push(page.result);
-      query = nextPage(page.result_info);
+      // A first unpaginated response may omit result_info. Once a numbered page was
+      // requested, its continuation evidence must identify the page we actually read.
+      if (query.startsWith("page=") && (page.result_info?.page !== results.length
+          || page.result_info.total_count === undefined)) {
+        throw new Error(`${what} failed (missing numbered page evidence)`);
+      }
+      if (query.startsWith("page=") && page.result_info?.per_page !== numberedSize) {
+        throw new Error(`${what} failed (numbered page size changed)`);
+      }
+      query = nextPage(page.result_info, results.length, what, paging);
+      if (query?.startsWith("page=")) numberedSize = page.result_info?.per_page;
+      if (query !== null) {
+        if (seen.has(query)) throw new Error(`${what} failed (a page repeated)`);
+        seen.add(query);
+      }
     }
     return results;
   }
 
   /** Every row of the listing at `path`, each page's result an array of them. */
-  async #rows(what: string, path: string): Promise<Record<string, unknown>[]> {
-    return (await this.#pages(what, path)).flatMap((result) => rows(result, what));
+  async #rows(what: string, path: string, paging: "cursor" | "number" = "number"): Promise<Record<string, unknown>[]> {
+    return (await this.#pages(what, path, paging)).flatMap((result) => rows(result, what));
   }
 
   /**
@@ -385,7 +423,7 @@ export class Cloudflare {
   /** The account's Worker scripts, by name: the one answer to whether a Worker exists. */
   async workers(account: string): Promise<string[]> {
     return (await this.#rows("the Workers listing", `/accounts/${account}/workers/scripts`))
-      .map((script) => String(script["id"]));
+      .map((script) => identifier(script, "id", "the Workers listing"));
   }
 
   /**
@@ -393,9 +431,9 @@ export class Cloudflare {
    * too: whether it exists is the Workers listing's (`workers`), never a failed lookup's.
    */
   async secrets(account: string, script: string): Promise<string[]> {
-    return (await this.#rows(`the secret listing of ${script}`,
-                             `/accounts/${account}/workers/scripts/${script}/secrets`))
-      .map((secret) => String(secret["name"]));
+    const what = `the secret listing of ${script}`;
+    return (await this.#rows(what, `/accounts/${account}/workers/scripts/${script}/secrets`))
+      .map((secret) => identifier(secret, "name", what));
   }
 
   /** The Worker `script`'s secret `name` deleted; any answer but success throws. */
@@ -467,9 +505,18 @@ export class Cloudflare {
 
   /** The account's KV namespaces: each one's id, by its title. */
   async namespaces(account: string): Promise<Map<string, string>> {
-    return new Map((await this.#rows("listing the KV namespaces",
-                                     `/accounts/${account}/storage/kv/namespaces?per_page=100`))
-      .map((row) => [String(row["title"]), String(row["id"])]));
+    const what = "listing the KV namespaces";
+    const listed = await this.#rows(what, `/accounts/${account}/storage/kv/namespaces?per_page=100`);
+    const names = new Map<string, string>();
+    const ids = new Set<string>();
+    for (const row of listed) {
+      const title = identifier(row, "title", what);
+      const id = identifier(row, "id", what);
+      if (names.has(title) || ids.has(id)) throw new Error(`${what} failed (ambiguous namespace)`);
+      names.set(title, id);
+      ids.add(id);
+    }
+    return names;
   }
 
   /** The KV namespace `title` made: its id. */
@@ -486,15 +533,19 @@ export class Cloudflare {
   /** The names of a KV namespace's keys under `prefix`. */
   async keys(account: string, namespace: string, prefix: string): Promise<string[]> {
     const path = `/accounts/${account}/storage/kv/namespaces/${namespace}/keys`;
-    return (await this.#rows(`listing the keys under ${prefix}`,
-                             `${path}?prefix=${encodeURIComponent(prefix)}`))
-      .map((key) => String(key["name"]));
+    const what = "listing the namespace keys";
+    const listed = await this.#rows(what, `${path}?prefix=${encodeURIComponent(prefix)}`, "cursor");
+    return listed.map((row) => {
+      const key = identifier(row, "name", what);
+      if (!key.startsWith(prefix)) throw new Error(`${what} failed (a key is outside the prefix)`);
+      return key;
+    });
   }
 
   /** The account's R2 buckets, by name (the listing's result is `{ buckets }`). */
   async buckets(account: string): Promise<string[]> {
     const what = "listing the R2 buckets";
-    return (await this.#pages(what, `/accounts/${account}/r2/buckets`))
+    return (await this.#pages(what, `/accounts/${account}/r2/buckets`, "cursor"))
       .flatMap((result) => rows((result as { buckets?: unknown } | null)?.buckets, what))
       .map((bucket) => String(bucket["name"]));
   }

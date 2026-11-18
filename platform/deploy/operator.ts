@@ -34,6 +34,7 @@ import {
   type OperatorOp, OPERATOR_OPS, signOperator,
 } from "../contract/src/operator-message.ts";
 import { QUEUES } from "../contract/src/queue-names.ts";
+import { principal } from "../contract/src/text.ts";
 import { BATCH, type Cloudflare } from "./cloudflare.ts";
 import { OPERATOR_NAMES } from "./facts.ts";
 
@@ -467,7 +468,7 @@ export async function rotate(sweep: Sweep): Promise<RotationRecord> {
         `after ${pass.through ?? "no owner yet"}, ${pass.owing.length} owing`);
   }
   const listed = (await cloudflare.keys(account, sweep.directory, OWNER_ENTRY))
-    .map((name) => name.slice(OWNER_ENTRY.length)).sort(inOrder);
+    .map((name) => principal(name.slice(OWNER_ENTRY.length))).sort(inOrder);
   const after = (through: string | null) => through === null ? listed
     : listed.filter((owner) => inOrder(owner, through) > 0);
   const until = waiting.now().getTime() + RUN_MS;

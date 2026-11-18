@@ -450,7 +450,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     directory's owners with its progress record in CONTROL, and mode `retire` with the
     founder's words, for `FILES_KEYRING` only after a second pass begun `KEEP_DAYS` + 1 days
     after the first copy night that followed the first (`r7-rotation.md` item 6;
-    `r7-rotation-driver.md`).
+    `r7-rotation-driver.md`). Its inventory checks malformed directory and window evidence before
+    the first owner is asked (item 12).
   - [x] An imported owner whose admit never ran keeps its data and no `o:` record after the
     window, so no rotation reaches it: the window's `close` passes only when every bundle index
     the staging bucket holds, of any run, names an owner the directory lists, and the real

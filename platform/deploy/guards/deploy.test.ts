@@ -2217,6 +2217,34 @@ describe("the parts of a run", () => {
       .rejects.toThrow(/network down/);
   });
 
+  it("refuses ambiguous metadata before certifying a complete inventory", async () => {
+    const path = "/accounts/a/storage/kv/namespaces/n/keys?prefix=o%3A";
+    for (const info of [{ cursor: 17 }, { page: 2, per_page: 100, total_count: 125 },
+                        { page: 1, per_page: "100", total_count: 125 }]) {
+      const response = { status: 200, body: { success: true, result: [], result_info: info } };
+      await expect(client(api({ [path]: response })).keys("a", "n", "o:"))
+        .rejects.toThrow(/invalid pagination/);
+    }
+    const namespaces = "/accounts/a/storage/kv/namespaces?per_page=100";
+    const missing = api({ [namespaces]: { status: 200, body: { success: true,
+      result: [{ title: "one", id: "1" }], result_info: { page: 1, per_page: 1, total_count: 3 } } },
+      [namespaces + "&page=2"]: ok([{ title: "two", id: "2" }]) });
+    await expect(client(missing).namespaces("a")).rejects.toThrow(/missing numbered page/);
+    const changed = api({ [namespaces]: { status: 200, body: { success: true,
+      result: [{ title: "one", id: "1" }], result_info: { page: 1, per_page: 1, total_count: 4 } } },
+      [namespaces + "&page=2"]: { status: 200, body: { success: true,
+        result: [{ title: "three", id: "3" }, { title: "four", id: "4" }],
+        result_info: { page: 2, per_page: 2, total_count: 4 } } } });
+    await expect(client(changed).namespaces("a")).rejects.toThrow(/numbered page size changed/);
+    let calls = 0;
+    const stuck = client(async () => {
+      if (++calls > 2) throw new Error("unexpected third page");
+      return { status: 200, body: { success: true, result: [], result_info: { cursor: "same" } } };
+    });
+    await expect(stuck.keys("a", "n", "o:")).rejects.toThrow(/a page repeated/);
+    expect(calls).toBe(2);
+  });
+
   it("calls the control record absent only when the API answers it is", async () => {
     const path = "/accounts/a/storage/kv/namespaces/n/values/c%3Acontrol";
     const cf = (answer: CfAnswer) => client(api({ [path]: answer }));
@@ -2261,7 +2289,7 @@ describe("the parts of a run", () => {
                                      result_info: { cursor: "c/2", per_page: 100 } } },
       [`${path}${path.includes("?") ? "&" : "?"}cursor=c%2F2`]: {
         status: 200, body: { success: true, result: page(rows(30, 100).map(row)),
-                             result_info: { cursor: "", per_page: 100 } } } });
+                             result_info: { cursor: "", per_page: 100, total_count: 130 } } } });
     expect((await client(api(cursored("/accounts/a/r2/buckets", (buckets) => ({ buckets }),
                                       (i) => ({ name: `b${i}` })))).buckets("a")).length)
       .toBe(130);
@@ -3542,6 +3570,32 @@ describe("modes rotation and retire", () => {
       expect(open.sent).toEqual([]);
     }
   });
+
+  it.each(["secret", "owner key", "owner principal", "namespace title"])(
+    "stops rotation before its first request on an ambiguous %s inventory", async (inventory) => {
+      const w = world({ held: true, owners: OWNERS });
+      const io = { ...w.io, fetch: async (url: string, init?: RequestInit) => {
+        const path = new URL(url).pathname;
+        if (inventory === "secret" && path.endsWith("/secrets")) {
+          return Response.json({ success: true, result: [{ type: "secret_text" }] });
+        }
+        if (inventory === "owner key" && path.endsWith("/keys")) {
+          return Response.json({ success: true, result: [{ name: "outside-prefix" }] });
+        }
+        if (inventory === "owner principal" && path.endsWith("/keys")) {
+          return Response.json({ success: true, result: [{ name: "o:user_alice" }, { name: "o:" }] });
+        }
+        if (inventory === "namespace title" && path.endsWith("/storage/kv/namespaces")) {
+          const result = Object.entries(IDS).map(([binding, id]) => ({ id, title: NAMESPACES[binding] }));
+          return Response.json({ success: true, result: [...result, { ...result[0], id: "another" }] });
+        }
+        return w.io.fetch(url, init);
+      } };
+      await expect(runMode({ ...w, io }, "rotation", ["--yes", "--keyring", "FILES_KEYRING"], FILES))
+        .rejects.toThrow(inventory === "owner principal" ? /invalid owner principal/ : /listing.*failed/);
+      expect(w.sent).toEqual([]);
+      expect(recordIn(w, "FILES_KEYRING")).toBeNull();
+    });
 
   it("asks every owner the directory lists, its record swept; with no --yes says where the " +
      "record stands and asks nothing", async () => {
