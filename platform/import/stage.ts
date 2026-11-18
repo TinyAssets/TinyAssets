@@ -18,11 +18,12 @@
  *   from a file here; nothing prints them, nor any owner's name or key: the run prints counts
  *   and each bundle's ordinal alone (the job's output discipline, `cli.ts`).
  */
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { keyed, object } from "../contract/src/checks";
+import { sha256Hex } from "../contract/src/digest";
 import { HEX16 } from "../contract/src/ids";
 import {
   BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, PART, rehearsalRun,
@@ -92,8 +93,6 @@ export interface StageSummary {
   readonly messages: number;
 }
 
-const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
-
 /** Every file under `dir`, as names relative to it; a link or anything but a file refused. */
 function filesIn(dir: string, at = ""): string[] {
   return readdirSync(join(dir, at)).sort().flatMap((name) => {
@@ -125,7 +124,7 @@ export function checkedBundle(dir: string, key: string): Staged {
   let bytes = index.byteLength;
   for (const [name, want] of Object.entries(parts)) {
     if (!PART.test(name) || typeof want !== "string" || name === BUNDLE_INDEX
-        || sha256(readFileSync(join(dir, name))) !== want) {
+        || sha256Hex(readFileSync(join(dir, name))) !== want) {
       throw new Error("a bundle's part is missing, or not what its index names");
     }
   }
@@ -134,14 +133,14 @@ export function checkedBundle(dir: string, key: string): Staged {
       throw new Error("a bundle holds a file no bundle has");
     }
     const content = readFileSync(join(dir, name));
-    if (name.startsWith("chunks/") && sha256(content) !== name.slice("chunks/".length)) {
+    if (name.startsWith("chunks/") && sha256Hex(content) !== name.slice("chunks/".length)) {
       throw new Error("a bundle's chunk is not its hash");
     }
     if (name !== BUNDLE_INDEX) {
       bytes += content.byteLength;
     }
   }
-  return { dir, key, owner: parsed["owner"], bundle: sha256(index),
+  return { dir, key, owner: parsed["owner"], bundle: sha256Hex(index),
            parts: [...files.filter((name) => name !== BUNDLE_INDEX), BUNDLE_INDEX], bytes };
 }
 
@@ -176,7 +175,7 @@ export function sigV4(request: { method: string; path: string; query: string;
                      request.payload].join("\n");
   const day = request.amzDate.slice(0, 8);
   const scope = `${day}/${request.region}/${request.service}/aws4_request`;
-  const toSign = ["AWS4-HMAC-SHA256", request.amzDate, scope, sha256(canonical)].join("\n");
+  const toSign = ["AWS4-HMAC-SHA256", request.amzDate, scope, sha256Hex(canonical)].join("\n");
   let key = hmac(`AWS4${request.secretAccessKey}`, day);
   for (const part of [request.region, request.service, "aws4_request"]) {
     key = hmac(key, part);
@@ -198,7 +197,7 @@ export function s3Request(inputs: Inputs, method: "GET" | "PUT" | "DELETE", buck
   const search = Object.keys(query).sort()
     .map((key) => `${segment(key)}=${segment(query[key]!)}`).join("&");
   const amzDate = now.toISOString().replace(/[-:]/g, "").replace(/\.[0-9]{3}/, "");
-  const payload = sha256(body ?? new Uint8Array(0));
+  const payload = sha256Hex(body ?? new Uint8Array(0));
   const headers = { host, "x-amz-content-sha256": payload, "x-amz-date": amzDate };
   const authorization = sigV4({ method, path, query: search, headers, payload,
                                 region: "auto", service: "s3", amzDate,

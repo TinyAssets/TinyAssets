@@ -14,11 +14,11 @@
  * link is listed and never followed. A name is read as bytes and decoded strictly: one that
  * is not UTF-8 is never guessed at.
  */
-import { createHash } from "node:crypto";
 import { closeSync, constants, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { sha256Stream } from "../contract/src/digest";
 import { HEX32, HEX64 } from "../contract/src/ids";
 import { CHUNK_BYTES } from "../contract/src/limits";
 import { utf8Text } from "../contract/src/text";
@@ -90,7 +90,7 @@ export function openFile(path: string | Buffer): number {
 
 /** The SHA-256 of a file's bytes, read in chunks (a 5 GiB image never sits in memory). */
 export function fileSha256(path: string | Buffer): string {
-  const hash = createHash("sha256");
+  const hash = sha256Stream();
   const fd = openFile(path);
   try {
     const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
