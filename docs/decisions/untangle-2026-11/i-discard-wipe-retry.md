@@ -20,3 +20,12 @@ accepting a retry. The files gate holds a real prefix deletion so that overlappi
 can be counted. The discard leaves no tombstone. Once the object is evicted, another
 instance can answer null. Preserving the witness across that boundary and fencing a
 restaged database remain part of the import attempt protocol.
+
+The 24 import cases passed on this change. The four behavior recordings matched
+all 88,378 canonical lines on f934871. The memory leg returned 99 measurements and
+all 66 verdicts passed. An independent workerd case held the final files sweep,
+lost its answer, wrote a late object, retried the discard and evicted the owner.
+Its assertions passed on this branch, but workerd also reported the existing
+post-eviction scheduler error against the removed jobs table. Running that same
+case with the independent schedule fix at `74218055` completed cleanly. The two
+changes also passed the combined 43 owner import and erasure cases.
