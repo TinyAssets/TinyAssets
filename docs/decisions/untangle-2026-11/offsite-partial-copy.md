@@ -17,5 +17,14 @@ case is a negative control for the former fail-open result. Malformed run `creat
 `completed_at` values also refuse instead of making an invalid retirement date.
 No account, bucket, workflow or production setting was read or changed.
 
+Validation on the branch passed 286 deploy tests with one existing skip, Node 22 TypeScript,
+the seven pre-commit invariants, the 2,230-entry test-shape registry, and OpenSpec validation.
+The branch also integrated with the other staged rebuild work: that combined tree passed 300
+deploy tests with the same skip and Node 22 TypeScript. The wire, tools, and RPC behavior
+families produced the expected 804, 7, and 13,622 records. The final 73,945-record family was
+stopped after it filled the shared temporary filesystem and stopped producing output, so this
+branch does not claim a complete behavior-record comparison. GitHub actionlint remains the
+workflow-expression evidence because actionlint is not installed in this workspace.
+
 The off-account copy's first live nights and credentials remain founder operations. Restore
 transport and concurrent erasure remain on their existing branches and review gates.
