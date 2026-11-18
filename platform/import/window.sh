@@ -48,7 +48,7 @@
 #   messages go to the work folder's host.private.log; this script prints fixed words and counts.
 #   A remote's refusal names the operation, rclone's exit code and an allowlisted S3 code and
 #   HTTP status (`cause`), never rclone's own words, which go to the log alone.
-# - Credentials arrive on stdin, one a line: the source key (census, offsite) in
+# - Credentials arrive on stdin, one a line: the source key (census, deletions, offsite) in
 #   SOURCE_CREDENTIALS' order, then the off-site key (offsite) in OFFSITE_CREDENTIALS'; each
 #   refused by its name when it holds a space or a control character, and the run refused when
 #   a line follows the last (a credential that held a line break); the
@@ -104,7 +104,7 @@ run="${2:-}"
 kind="${3:-}"
 extra="${4:-}"
 case "$mode" in
-  census|bundle|stage|verify|wipe|admit|dlq|close|offsite|clean) ;;
+  census|bundle|deletions|stage|verify|wipe|admit|dlq|close|offsite|clean) ;;
   *) refuse "no such mode" ;;
 esac
 [[ "$run" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] \
@@ -160,7 +160,7 @@ take() {
 
 network=none
 case "$mode" in
-  census) take "${SOURCE_CREDENTIALS[@]}" ;;
+  census|deletions) take "${SOURCE_CREDENTIALS[@]}" ;;
   offsite) take "${SOURCE_CREDENTIALS[@]}" "${OFFSITE_CREDENTIALS[@]}" ;;
   stage|verify|wipe|admit|dlq|close)
     network=bridge
@@ -529,6 +529,30 @@ case "$mode" in
     mkdir -m 700 "$work/census"
     job "$work/census" census "$work" --tiers "$control" \
       --table "$work/census/census.private.tsv"
+    ;;
+  deletions)
+    has_copy
+    use_image
+    [[ -d "$work/bundle/out" ]] || refuse "this run has no bundles: run bundle first"
+    # List from the remote root as the old broker does: a store with no jobs is a valid
+    # empty listing. A list or read failure aborts before the offline comparison starts.
+    scan="$work/deletion-scan.private"
+    rm -rf -- "$scan"
+    mkdir -m 700 "$scan" "$scan/jobs"
+    trap 'rm -rf -- "$scan"' EXIT
+    remote list "the current deletion jobs could not be listed" "$scan/list" source_rclone \
+      lsf --recursive --files-only --include '/deletion-jobs/*.json' "$SOURCE"
+    while IFS= read -r name || [[ -n "$name" ]]; do
+      [[ "$name" =~ ^deletion-jobs/([0-9a-f]{64})[.]json$ ]] \
+        || refuse "the deletion authority named an invalid job file"
+      remote read "a current deletion job could not be read" "$scan/jobs/${name##*/}" \
+        source_rclone cat "$SOURCE/$name"
+    done < "$scan/list"
+    flags=()
+    if [[ "$kind" == rehearsal ]]; then
+      flags=(--rehearsal "$run")
+    fi
+    job - deletions "$work" --jobs "$scan/jobs" "${flags[@]}"
     ;;
   offsite)
     has_copy

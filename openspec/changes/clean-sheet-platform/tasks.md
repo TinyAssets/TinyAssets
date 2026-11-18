@@ -181,8 +181,9 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   - The deletion jobs compared (d3 §C4, list3 P28): the old stack's unfinished deletion jobs
     (`tinyassets/broker/deletion_jobs.py` `load_unfinished_jobs`, read from the off-host
     authority, never a backup copy) against the census. An owner whose job was made after the
-    copy is discarded (still `pending`) and withheld before any owner is admitted. No runner
-    mode does this yet (§10 step 5).
+    copy is discarded (still `pending`) and withheld before any owner is admitted. The `deletions` mode compares current off-host records
+    with this run's bundles. Discard, withholding and their enforcement before admission
+    remain open (§10 step 5).
   - `verify`, which holds every imported owner's check to its bundle, runs here, while
     `IMPORT_KEY` is still set (list3 P27).
   - `admit` admits each verified owner (`tierSet`, `admissionSet`, each suspension, the `o:`
@@ -631,7 +632,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
   read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
   and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
-- [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
+- [ ] The deletion-jobs step before `admit` (§9 step 11; d3 §C4).
+  - [x] `deletions` checks current off-host requests against the original owners of the
+    run's bundles (`i-deletion-compare.md`).
+  - [ ] Withhold and discard the matching pending owners before admitting any. Establish
+    when the old service stops accepting new deletion requests or hands them onward.
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
   account-deletion pages corrected, in the founder's copy.
