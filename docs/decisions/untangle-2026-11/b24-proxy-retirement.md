@@ -1,4 +1,4 @@
-# B24. The old proxy across a handback
+# B24 proxy retirement as built (2026-11-18)
 
 The step 12 decision (d3 §Q4) removes the old proxy publisher before routes move. Its push and manual jobs can publish the routes in the old Wrangler configuration. The manifest previously disabled only the old pager. Step 12 deletes the publisher and consumes its manifest entry in the same commit, so the inventory continues to match the checkout between phases. The checklist accounts for deployments already started.
 
