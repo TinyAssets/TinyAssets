@@ -48,6 +48,7 @@ import re
 import subprocess
 import sys
 import time
+import typing
 import zipfile
 from datetime import datetime
 
@@ -148,8 +149,11 @@ def job_failures(job: str, log: str) -> list[str]:
     """
     lines = [_STAMP.sub("", _ANSI.sub("", raw)) for raw in log.splitlines()]
     ws = _WORKSPACE.search(job)
-    return sorted(set(_python_ids("\n".join(lines)))
-                  | set(_vitest_ids(lines, ws[1] if ws else None)))
+    if job.startswith(("platform-tests (", "platform-sizes (")):
+        return _vitest_ids(lines, ws[1] if ws else None)
+    if job == AGGREGATE_JOB or job.startswith("required-tests shard "):
+        return _python_ids("\n".join(lines))
+    return []
 
 
 def is_selected(test_id: str, *, changed: list[str], selection: list[str] | None) -> bool:
@@ -159,21 +163,39 @@ def is_selected(test_id: str, *, changed: list[str], selection: list[str] | None
     return selection is None or test_id.split("::", 1)[0] in selection
 
 
-def attempt_counts(jobs: dict[str, list[str]] | None, *, changed: list[str] | None,
+class FailedJob(typing.NamedTuple):
+    name: str
+    ids: list[str]
+    link: str = ""
+    outcome: str = "failure"
+    complete: bool = True
+
+    def describe(self) -> str:
+        job = f"[{self.name}]({self.link})" if self.link else self.name
+        return f"{job} ({self.outcome})"
+
+
+def attempt_counts(jobs: list[FailedJob] | dict[str, list[str]] | None, *, changed: list[str] | None,
                    selection: list[str] | None) -> tuple[bool, list[str], str]:
-    """(counts against the head, the failing tests, why). Fails closed."""
-    if jobs is None:
-        return True, [], "the failed run or its log could not be read"
+    """(counts against the head, the tests identified, why). Fails closed."""
+    if isinstance(jobs, dict):
+        # Callers that already separated the failed legs supply the aggregate's echo too.
+        legs = {name: ids for name, ids in jobs.items() if name != AGGREGATE_JOB}
+        jobs = [FailedJob(name, ids) for name, ids in (legs or jobs).items()]
+    if not jobs:
+        return True, [], "the failed run supplied no unsuccessful job evidence"
+    ids = sorted({test for job in jobs for test in job.ids})
+    sources = ", ".join(job.describe() for job in jobs)
+    if any(job.name == AGGREGATE_JOB for job in jobs):
+        return True, ids, f"the aggregate has no confirmed upstream cause in {sources}"
+    if any(not job.ids or not job.complete for job in jobs):
+        return True, ids, f"test attribution is incomplete for {sources}"
     if changed is None:
-        return True, [], "the PR's diff could not be read"
-    legs = {job: ids for job, ids in jobs.items() if job != AGGREGATE_JOB} or jobs
-    unnamed = sorted(job for job, ids in legs.items() if not ids)
-    if unnamed:
-        return True, [], f"a failed job names no test: {', '.join(unnamed)}"
-    ids = sorted({test_id for found in legs.values() for test_id in found})
+        return True, ids, f"the diff or selection could not be read for {sources}"
     selected = [t for t in ids if is_selected(t, changed=changed, selection=selection)]
     if selected:
-        return True, selected, "it failed a test the diff selected"
+        sources = ", ".join(job.describe() for job in jobs if set(job.ids).intersection(selected))
+        return True, selected, f"it failed a test the diff selected in {sources}"
     return False, ids, "every failing test lies outside the diff's selection"
 
 
@@ -189,7 +211,8 @@ def render_record(head: str, run: int | None, failing: list[str], why: str,
         "this head.",
         "",
         f"Counted removals: {', '.join(sorted(counted))}.",
-        f"The last one's run: {f'`{run}`' if run else 'not found'}; it counted because {why}:",
+        f"The last one's run: {f'`{run}`' if run else 'not found'}. It counted because {why}.",
+        "Tests identified in the available evidence:",
         "",
         tests,
     ]) + "\n"
@@ -258,17 +281,20 @@ def _runs(repo: str, since: str) -> list[dict]:
     raw = _gh("api", "--paginate",
               f"repos/{repo}/actions/workflows/tests.yml/runs?event=merge_group"
               f"&created=>={_when(since):%Y-%m-%dT%H:%M:%SZ}&per_page=100",
-              "--jq", ".workflow_runs[] | {id, head_branch, conclusion, created_at}")
+              "--jq", ".workflow_runs[] | {id, head_branch, conclusion, created_at, run_attempt}")
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
-def _selection(repo: str, run_id: int) -> list[str] | None:
+def _selection(repo: str, run_id: int, removal_at: str) -> list[str] | None:
     """The run's own Python selection; None means ALL, and so does no artifact."""
-    ids = _gh("api", f"repos/{repo}/actions/runs/{run_id}/artifacts?name=affected-selection",
-              "--jq", ".artifacts[] | select(.expired | not) | .id").split()
-    if len(ids) != 1:
+    raw = _gh("api", f"repos/{repo}/actions/runs/{run_id}/artifacts?name=affected-selection",
+              "--jq", ".artifacts[] | select(.expired | not) | {id, updated_at}")
+    archives = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    if any(_when(a["updated_at"]) > _when(removal_at) for a in archives):
+        raise ValueError("the selection artifact changed after this removal")
+    if len(archives) != 1:
         return None
-    blob = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{ids[0]}/zip"],
+    blob = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{archives[0]['id']}/zip"],
                           capture_output=True, check=True, timeout=GH_TIMEOUT).stdout
     text = zipfile.ZipFile(io.BytesIO(blob)).read("affected.txt").decode("utf-8")
     entries = [line.strip() for line in text.splitlines() if line.strip()]
@@ -293,14 +319,113 @@ def _changed(repo: str, number: int) -> list[str] | None:
     return changed_paths([json.loads(line) for line in raw.splitlines() if line.strip()])
 
 
-def _failed_jobs(repo: str, run_id: int) -> dict[str, list[str]]:
-    """{each job that did not pass: the test ids its log names}."""
-    raw = _gh("api", "--paginate", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
-              "--jq", '.jobs[] | select(.conclusion != "success" and .conclusion != '
-              '"skipped" and .conclusion != "neutral") | {id, name}')
-    jobs = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    return {job["name"]: job_failures(job["name"], _gh(
-        "api", f"repos/{repo}/actions/jobs/{job['id']}/logs")) for job in jobs}
+def _test_step(job: str, step: str) -> bool:
+    """Only a failing test runner can attribute a failure to a test."""
+    if job.startswith(("platform-tests (", "platform-sizes (")):
+        return step.startswith(("Run npm run test ", "Run npm run test:"))
+    if job.startswith("required-tests shard "):
+        return step in {"Run this shard of the required test surface", "Run this shard of the selection"}
+    return job == AGGREGATE_JOB and step.startswith("Decide the gate over ")
+
+
+def _vitest_complete(log: str, ids: list[str]) -> bool:
+    # A job can stop after printing its first FAIL, or report an error outside any test.
+    summary = list(re.finditer(r"^[ \t]*Test Files\s+(\d+) failed[^\n]*\n"
+                               r"[ \t]*Tests\s+(\d+) failed[^\n]*$", log, re.M))
+    if len(summary) != 1 or any(" > " not in test for test in ids):
+        return False
+    if re.search(r"Unhandled Errors?|Source Errors?|errors? not related to your test files", log, re.I):
+        return False
+    files, cases = (int(n) for n in summary[0].groups())
+    tail = log[summary[0].end():]
+    return (files == len({test.split(" > ", 1)[0] for test in ids}) and cases == len(ids)
+            and re.search(r"^[ \t]*Duration\s+[^\n]+[\s\S]*?"
+                          r"^##\[error\]Process completed with exit code 1\.$", tail, re.M) is not None)
+
+
+def _shard_test_summary(log: str, ids: list[str]) -> bool:
+    # A shard displays at most 50 new ids and can fail its quarantine check independently.
+    counts = set(re.findall(r"^- NEW failures: \*\*(\d+)\*\*$", log, re.M))
+    stale = set(re.findall(r"^- stale quarantine entries: \*\*(\d+)\*\*$", log, re.M))
+    return counts == {str(len(ids))} and stale == {"0"} and "**Malformed quarantine file:" not in log
+
+
+def _only_shard_failure(log: str) -> bool:
+    # The aggregate checks the shard results AND their manifests. The emitted notice
+    # must end before the next runner line. A second bullet, or a cut log, cannot pass.
+    heading = "##[notice]### Required tests - SHARD SET INCOMPLETE"
+    lines = log.splitlines()
+    notices = [i for i, line in enumerate(lines) if _STAMP.sub("", line) == heading]
+    if len(notices) != 1:
+        return False
+    rest = lines[notices[0] + 1:notices[0] + 6]
+    return (len(rest) == 5 and rest[:4] == ["", "The gate fails closed:", "",
+                                           "- shard jobs concluded 'failure', not 'success'"]
+            and _STAMP.match(rest[4]) is not None
+            and _STAMP.sub("", rest[4]) == "##[error]Process completed with exit code 1.")
+
+
+def _aggregate_echo(step: str, failed: set[str]) -> bool:
+    """The aggregate may also fail a check of its own after the upstream legs."""
+    if step == "Require structural guards on every event":
+        return "structural-guards" in failed
+    if step == "Require the openspec leg on every event":
+        return "openspec" in failed
+    if step == "Require the platform's tests, the owner app's browser test and the process leg":
+        return bool(failed & {"platform-tests", "platform-checks", "platform-sizes",
+                              "platform-app", "process"})
+    return False
+
+
+def _failed_jobs(repo: str, run_id: int) -> list[FailedJob]:
+    """Preserve each job's identity even when its test log is unavailable."""
+    raw = _gh("api", "--paginate", f"repos/{repo}/actions/runs/{run_id}/attempts/1/jobs?per_page=100",
+              "--jq", '{total_count, jobs: [.jobs[] | {id, name, status, conclusion, '
+              'bad_steps: [.steps[]? | select(.conclusion != "success" and '
+              '.conclusion != "skipped") | {name, conclusion}]}]}')
+    pages = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    jobs = [job for page in pages for job in page["jobs"]]
+    failures = []
+    seen = {job["id"] for job in jobs}
+    if len(seen) != len(jobs) or any(page["total_count"] != len(seen) for page in pages):
+        failures.append(FailedJob("incomplete jobs listing", []))
+    # Drop an aggregate echo only when its failed step actually depends on a failed leg.
+    failed = {job["name"].split(" (")[0] for job in jobs if job["conclusion"] == "failure"}
+    failed_shard = any(name.startswith("required-tests shard ") for name in failed)
+    for job in jobs:
+        name, conclusion = job["name"], job["conclusion"]
+        if job["status"] == "completed" and conclusion == "success":
+            continue
+        # Only the PR matrix and the scheduled heavy leg skip on a merge group.
+        if conclusion == "skipped" and (name.startswith("affected-tests ") or name == "heavy-tests"):
+            continue
+        link = f"https://github.com/{repo}/actions/runs/{run_id}/job/{job['id']}"
+        ids = []
+        complete = True
+        outcome = conclusion or job["status"]
+        steps = job["bad_steps"]
+        sole_failure = (conclusion == "failure" and job["status"] == "completed"
+                        and len(steps) == 1 and steps[0]["conclusion"] == "failure")
+        step = steps[0]["name"] if sole_failure else ""
+        if name == AGGREGATE_JOB and _aggregate_echo(step, failed):
+            continue
+        if step:
+            outcome = f"failure in {step}"
+        if _test_step(name, step):
+            try:
+                log = _gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs")
+                if name == AGGREGATE_JOB and failed_shard and _only_shard_failure(log):
+                    continue
+                ids = job_failures(name, log)
+                clean = "\n".join(_STAMP.sub("", _ANSI.sub("", line)) for line in log.splitlines())
+                if name.startswith(("platform-tests (", "platform-sizes (")):
+                    complete = _vitest_complete(clean, ids)
+                elif name.startswith("required-tests shard "):
+                    complete = _shard_test_summary(clean, ids)
+            except (OSError, subprocess.SubprocessError):
+                outcome = "log unavailable"
+        failures.append(FailedJob(name, ids, link, outcome, complete))
+    return failures
 
 
 def classify_removal(repo: str, number: int,
@@ -310,12 +435,20 @@ def classify_removal(repo: str, number: int,
         queued = queued_at(_timeline(repo, number), removal_at)
         if queued is None:
             return True, None, [], "no enqueue was found before this removal"
-        run = removal_run(_runs(repo, queued), number, queued, removal_at)
+        runs = _runs(repo, queued)
+        run = removal_run(runs, number, queued, removal_at)
         if run is None:
             return True, None, [], "no failed Tests run of this queue entry was found"
-        counts, ids, why = attempt_counts(_failed_jobs(repo, run),
-                                          changed=_changed(repo, number),
-                                          selection=_selection(repo, run))
+        if next(row for row in runs if row["id"] == run)["run_attempt"] != 1:
+            return True, run, [], "a rerun shares this run ID and its selection artifacts"
+        jobs = _failed_jobs(repo, run)
+        try:
+            changed = _changed(repo, number)
+            selection = _selection(repo, run, removal_at)
+        except Exception as exc:  # partial evidence still belongs in the handoff
+            _, ids, why = attempt_counts(jobs, changed=None, selection=None)
+            return True, run, ids, f"{why}; diff or selection unavailable ({type(exc).__name__})"
+        counts, ids, why = attempt_counts(jobs, changed=changed, selection=selection)
         return counts, run, ids, why
     except Exception as exc:  # noqa: BLE001 - fail closed: an unread removal counts
         return True, None, [], f"the evidence could not be read ({type(exc).__name__}: {exc})"
