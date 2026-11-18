@@ -629,8 +629,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
   `sandbox_renewal_refused`, `sandbox_runner_mismatch`, `exceededMemory`, and E2B's team metrics
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
-  read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
-  and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
+  read-only Cloudflare credential. E2B's credit and spend have no API. (The off-account
+  copy's alarm past two nights is built: `x7.md`.)
+  - [x] Trace each signal to its source and check the vendor read contracts before wiring
+    the alerts. The telemetry permission and live ceiling read remain open
+    (`p18-observability.md`).
 - [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
