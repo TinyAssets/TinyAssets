@@ -42,7 +42,7 @@ import { utf8Decoder } from "../../contract/src/text";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { SLOT_WAIT_MS } from "../../contract/src/limits";
 import {
-  type Isolate, isolatePool, isSlotBusy, type Lease, type SlotPool, UNIT_BYTES,
+  type Isolate, isolatePool, type Lease, type SlotPool, UNIT_BYTES,
 } from "../../contract/src/slots";
 
 /** The gateway's pool: 16 slots of one 4 MiB unit, 64 MiB, beside its 12 MiB idle set. */
@@ -183,11 +183,7 @@ export class Hold {
     if (units > this.#most) {
       throw new Refusal("egress_too_large");
     }
-    try {
-      await this.#lease.grow(units, this.#signal);
-    } catch (error) {
-      throw isSlotBusy(error) ? new Refusal("busy") : error;
-    }
+    await this.#lease.grow(units, this.#signal);
   }
 
   release(): void {
