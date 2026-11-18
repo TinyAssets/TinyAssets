@@ -1,4 +1,4 @@
-# The owner tests at the FILES service boundary
+# Owner front-door tests as built (2026-11-18)
 
 List 6 item 9 names two faults the owner tests used to inject inside the object.
 The owner's existing, namespace-scoped FILES gate can exercise both through the
