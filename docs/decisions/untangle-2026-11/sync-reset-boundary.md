@@ -75,3 +75,48 @@ Settle the following together before starting a CLI on a synchronized view.
 
 The committed change here records the build dependencies. The production fix and
 its paired release remain open.
+
+## Paired readers and pending local edits
+
+A disposable owner exposed the file sequence it observed on each changes response.
+A disposable runner remembered the first such sequence and read to that point.
+After listing for a reset it obtained a fresh stopping point for changes committed
+during the listing. The experiment explicitly refused a response with no such field.
+Eight cases for each of the four owner/runner pairings ran on Node 22 and 24
+(64 comparisons). They used main's real reader, filtering, runner and mirror
+with synthetic SQLite history. Neither experimental program is staged.
+
+| Owner | Runner | Observable result |
+| --- | --- | --- |
+| Current | Current | After 1,000 filtered-out rows the runner missed an already committed readable entry. |
+| Experimental | Current | Even with the owner's field present, the runner finished on the short visible page. |
+| Current | Experimental | The runner declined to start on missing completion evidence, including for an empty workspace. A rollout must account for this version pairing. |
+| Experimental | Experimental | The finite backlog took two reads. Adding 1,000 new rows on every read took three. The initial boundary was 2,001, the mirror reached 3,000 and newer writes remained at 4,001. Stable and empty cases each took one read. |
+
+Crossing an observed sequence is a feed guarantee. A separate comparison on main
+and combined `151c2a83f` renamed a skill after reading the changes response and
+before fetching its file. The genuine projection contained neither name on its first
+pass and the new name on its next pass. A stable control projected it on both.
+The projection reads the current workspace. The experiment cannot establish a
+point-in-time view of the tree or guarantee convergence during recurring resets.
+
+A runner-side marker written only after the reset response is insufficient. With
+the real sync client's first successful response lost in transit, the automatic
+retry received reset false. It listed zero directories and returned without the
+newly readable project. With the first response delivered the directory appeared.
+Both versions ran on Node 22 and 24 with a local transport adapter.
+
+A retention reset also affects work going in the other direction. After a simulated
+storage_full refused a new file and an edit to an existing mirrored file, the first
+sync-out left both drafts on disk. An unrelated retention reset then downloaded the
+owner's older bytes over the existing draft. The next sync-out offered only the new
+file. Without a reset it offered both. The two sync directions, mirror, owner file
+reader and 18 migrations were real on main and the combined tree, on Node 22 and 24.
+The commit adapter supplied the refusal. This comparison exercised the documented
+retry promise rather than measuring an owner's quota.
+
+Before an incoming listing can replace durable local bytes, define how to distinguish
+an acknowledged mirror from an outstanding edit or removal. Account for the existing
+version-based conflict-copy path, authoritative remote changes, local sessions and
+files which are read-only for that lease. The Step 19 working set inherits that
+dependency. A filed report of the earlier refusal alone cannot recover the lost bytes.
