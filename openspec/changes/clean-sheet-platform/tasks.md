@@ -435,6 +435,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
     budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
     runner-variance rule (`untangle/budgets-variance`, #5640's review; `budgets-variance.md`).
+    - [x] Replace #5646's estimated runner with the median of its next three merge groups'
+      test reports and recheck the factor against later runs
+      (`untangle-2026-11/ci-measured-reference.md`).
 - [ ] Lane R, the operator path and recovery: its nine PRs as d3 §G orders them, before real
   data arrives (d3 §F3). Its `sweep` carries the key rotations: a new kid active, then
   `owner.rewrap` (or `owner.reseal`) for every owner until a pass answers `left` 0 for every
