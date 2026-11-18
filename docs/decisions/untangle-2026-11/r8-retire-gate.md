@@ -27,7 +27,9 @@ Lane R's owed item from the rotation driver (`r7-rotation-driver.md` item 11): a
    - the copy is not overdue;
    - the settled pass is the first that swept and began at or after the restore record's `began` (with none recorded, the first that swept);
    - T is `firstNightAfter` the settled pass's `swept`;
-   - now is at least T + `KEEP_DAYS` + 1 days, or the copy never passed a night.
+   - now is at least T + `KEEP_DAYS` + 1 days, or every copy job was skipped and therefore
+     never began. A failed copy may have uploaded objects before it stopped. Retire shares the
+     copy job's concurrency group, so no copy can still be uploading while it reads this.
 
    Why that is enough:
    - The settled pass left no root in R2 under a retiring kid.

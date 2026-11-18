@@ -54,8 +54,9 @@ name: Platform deploy (manual, founder-approved)
 # erase-<owner> (a run without it names the words); `rotation` asks every
 # owner the directory lists to bring its blobs under `keyring`'s active kid,
 # its progress kept in the control namespace; `retire` sets `keyring` with its
-# old kids gone, only once `confirm` is the words its apply job names. Each shares
-# this file's concurrency group, so no operator run ever interleaves with a deploy.
+# old kids gone, only once `confirm` is the words its apply job names. Every run shares the
+# platform-deploy group, so no two operator runs interleave. The retire apply job also shares
+# the offsite copy job's group, so its completed-job read cannot miss an active upload.
 
 on:
   workflow_dispatch:
@@ -219,6 +220,9 @@ jobs:
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    concurrency:
+      group: ${{ inputs.mode == 'retire' && 'offsite-files-copy' || format('platform-apply-{0}', github.run_id) }}
+      cancel-in-progress: false
     # The platform canary after each mode reads the off-account copy's nights with the job's
     # own token (platform/deploy/canary.ts).
     permissions:

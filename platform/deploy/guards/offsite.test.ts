@@ -818,6 +818,13 @@ describe("offsite-copy.yml", () => {
     expect(flow.on.schedule).toEqual([{ cron: "37 5 * * *" }, { cron: DRILL_NIGHT }]);
     expect(Object.keys(flow.on)).toEqual(["schedule", "workflow_dispatch"]);
     expect(flow.concurrency).toEqual({ group: "offsite-copy", "cancel-in-progress": false });
+    expect(copyJob.concurrency).toEqual({ group: "offsite-files-copy",
+                                          "cancel-in-progress": false });
+    expect(workflow("platform-deploy.yml").jobs.apply.concurrency).toEqual({
+      group: "${{ inputs.mode == 'retire' && 'offsite-files-copy' || " +
+             "format('platform-apply-{0}', github.run_id) }}",
+      "cancel-in-progress": false,
+    });
     // The canary reads the nights by these two jobs' names (`watch`), which a `name:` would
     // replace in GitHub's listing.
     expect(Object.keys(flow.jobs)).toEqual([NIGHTLY.settings, NIGHTLY.copy]);

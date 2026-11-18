@@ -167,8 +167,9 @@ import {
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
-  BACK_INPUTS, backFrom, type Begin, copyBack, firstNightAfter, KEEP_DAYS, readableAt, recover,
-  type Recovering, type Referenced, RESTORE_KEY, restoreBegan, type Watch, watch,
+  BACK_INPUTS, backFrom, type Begin, copyBack, type CopyAfter, firstNightAfter, KEEP_DAYS,
+  readableAt, recover, type Recovering, type Referenced, RESTORE_KEY, restoreBegan, type Watch,
+  watch,
 } from "./offsite.ts";
 import {
   type Act, type Ask, askOperator, askOwners, controlEdits, differences, type Edit, edited,
@@ -1894,8 +1895,7 @@ export interface Retiring {
   readonly copy: {
     readonly watch: Watch;
     readonly restored: number | null;
-    readonly nightAfter: (at: Date) => Promise<{ readonly first: Date | null;
-                                                 readonly ever: boolean }>;
+    readonly nightAfter: (at: Date) => Promise<CopyAfter>;
   } | null;
   readonly now: Date;
 }
@@ -1908,7 +1908,7 @@ export interface Retiring {
  * 3. for a keyring the off-account copy holds, the copy is not overdue, and `KEEP_DAYS` + 1
  *    days have passed since T, the first night that copied R2 after the first pass that swept
  *    and began after the latest restore from the copy (with none recorded, the first that
- *    swept), or the copy never passed a night, so it holds no blob of the keyring. That pass
+ *    swept), or no copy job ever began, so the copy holds no blob of the keyring. That pass
  *    left no root in R2 under a retiring kid; T uploaded each root it rewrapped and hid each
  *    one gone since, so every version under a retiring kid is gone by then (`offsite.ts`: the
  *    lock runs from upload, and never outlasts the lifecycle's `KEEP_DAYS` and its daily
@@ -1958,12 +1958,12 @@ export async function retirement({ keyring: name, stored, record, copy, now }: R
     const swept = record.passes[settled]!.swept!;
     const night = await copy.nightAfter(new Date(swept * 1000));
     if (night.first === null) {
-      if (night.ever) {
+      if (night.mayHold) {
         throw new Error(`no night of the off-account copy has passed since pass ${settled + 1} ` +
                         `swept at ${at(swept)}: retire waits ${KEEP_DAYS + 1} days after the ` +
                         "first that does; nothing is changed");
       }
-      lines.push("the off-account copy has never passed a night, so it holds no blob under " +
+      lines.push("the off-account copy has never attempted a copy, so it holds no blob under " +
                  `${kids.join(", ")}`);
     } else {
       const gate = new Date(night.first.getTime() + (KEEP_DAYS + 1) * 86_400_000);

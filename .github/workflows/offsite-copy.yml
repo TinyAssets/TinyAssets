@@ -81,6 +81,9 @@ jobs:
     environment: production
     # The first copy of the whole bucket at ten times today's size; a night's copy is minutes.
     timeout-minutes: 300
+    concurrency:
+      group: offsite-files-copy
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 

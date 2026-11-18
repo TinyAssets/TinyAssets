@@ -21,7 +21,7 @@ import { TOKEN } from "../actions";
 import { Cloudflare } from "../cloudflare";
 import { retirement, type Retiring } from "../deploy";
 import { OPERATOR_NAMES } from "../facts";
-import { firstNightAfter, KEEP_DAYS } from "../offsite";
+import { firstNightAfter, KEEP_DAYS, NIGHTLY } from "../offsite";
 import {
   keyHashes, type Pass, rotate, type RotationRecord, rotationKey, RUN_MS,
 } from "../operator";
@@ -286,7 +286,7 @@ const GATE_2 = new Date(T_2.getTime() + (KEEP_DAYS + 1) * DAY);
 const PASSED = { state: "passed", line: "a night last passed" } as const;
 /** The copy's first night after a time, of `nights` (each its copy's end), as GitHub shows them. */
 const nightsOf = (...nights: Date[]) => async (at: Date) =>
-  ({ first: nights.find((night) => night > at) ?? null, ever: nights.length > 0 });
+  ({ first: nights.find((night) => night > at) ?? null, mayHold: nights.length > 0 });
 type Copy = NonNullable<Retiring["copy"]>;
 
 function retiring(change: Partial<Retiring> = {}, copy: Partial<Copy> = {}): Retiring {
@@ -314,10 +314,10 @@ describe("a keyring's retirement", () => {
     expect((await retirement(retiring({ keyring: "GATEWAY_KEYRING", copy: null,
       record: { ...recordOf([PASS_1]), keyring: "GATEWAY_KEYRING" },
       now: new Date(PASS_1.swept! * 1000) }))).words).toBe("retire-GATEWAY_KEYRING-k1");
-    // A copy that never passed a night holds nothing under k1.
+    // A copy whose job was always skipped holds nothing under k1.
     expect((await retirement(retiring({}, { watch: { state: "waiting", line: "" },
                                             nightAfter: nightsOf() }))).lines.at(-1))
-      .toBe("the off-account copy has never passed a night, so it holds no blob under k1");
+      .toBe("the off-account copy has never attempted a copy, so it holds no blob under k1");
   });
 
   it("reads the copy's gate from the first pass begun after the latest restore from it",
@@ -374,11 +374,32 @@ describe("the copy's first night after a pass", () => {
                     night("2026-11-16T05:37:00Z", "failure"),
                     night("2026-11-15T05:37:00Z", "success")];
     expect(await firstNightAfter(reach(nights), new Date("2026-11-15T13:00:00Z")))
-      .toEqual({ first: new Date("2026-11-17T05:57:00Z"), ever: true });
+      .toEqual({ first: new Date("2026-11-17T05:57:00Z"), mayHold: true });
     expect(await firstNightAfter(reach(nights), new Date("2026-11-18T06:00:00Z")))
-      .toEqual({ first: null, ever: true });
+      .toEqual({ first: null, mayHold: true });
     expect(await firstNightAfter(reach([night("2026-11-18T05:37:00Z", "skipped")]),
                                  new Date("2026-11-15T13:00:00Z")))
-      .toEqual({ first: null, ever: false });
+      .toEqual({ first: null, mayHold: false });
+    expect(await firstNightAfter(reach([night("2026-11-18T05:37:00Z", "failure")]),
+                                 new Date("2026-11-15T13:00:00Z")))
+      .toEqual({ first: null, mayHold: true });
+  });
+
+  it.each([
+    ["created_at", "not-a-date", "2026-11-18T05:57:00Z"],
+    ["copy completed_at", "2026-11-18T05:37:00Z", "not-a-date"],
+  ])("refuses a malformed %s", async (field, created, completed) => {
+    const malformed = {
+      env: { [TOKEN]: "gh-token" },
+      fetch: async (url: string) => url.includes(`/actions/workflows/${NIGHTLY.workflow}/runs?`)
+        ? Response.json({ workflow_runs: [{ id: 7, created_at: created }] })
+        : Response.json({ jobs: [
+            { name: NIGHTLY.settings, conclusion: "success",
+              completed_at: "2026-11-18T05:38:00Z" },
+            { name: NIGHTLY.copy, conclusion: "success", completed_at: completed },
+          ] }),
+    };
+    await expect(firstNightAfter(malformed, new Date("2026-11-15T13:00:00Z")))
+      .rejects.toThrow(new RegExp(`${field}.*not a date`));
   });
 });

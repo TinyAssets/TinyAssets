@@ -493,25 +493,49 @@ export async function watch(reach: Reach, now: Date): Promise<Watch> {
     : overdue("ever");
 }
 
+/** What the destination may hold after the settled pass, as completed copy jobs prove it. */
+export interface CopyAfter {
+  readonly first: Date | null;
+  readonly mayHold: boolean;
+}
+
+/** A GitHub date field, or a loud refusal instead of a retirement gate made from `NaN`. */
+function instant(value: unknown, field: string): number {
+  const parsed = Date.parse(String(value));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${NIGHTLY.workflow}'s ${field} is not a date`);
+  }
+  return parsed;
+}
+
 /**
  * When the copy first held what R2 held after `at` (a key rotation's pass, `deploy.ts` mode
  * `retire`): `first`, the copy job's `completed_at` of the first night on `NIGHTLY.ref` that
  * passed and whose run was made after `at` (so it listed R2 after it), or null when none has;
- * and `ever`, whether any night has passed at all. A copy that never passed holds nothing.
+ * and `mayHold`, whether a copy job has ever begun. A failed copy may already have uploaded
+ * objects before it stopped, so only an always-skipped copy proves that B2 holds nothing.
+ * The retirement workflow shares the copy workflow's concurrency group, so no active copy is
+ * omitted from this completed-run view.
  */
-export async function firstNightAfter(reach: Reach, at: Date):
-    Promise<{ readonly first: Date | null; readonly ever: boolean }> {
+export async function firstNightAfter(reach: Reach, at: Date): Promise<CopyAfter> {
   let first: Date | null = null;
+  let mayHold = false;
   for await (const { run, copied } of nights(reach)) {
+    const created = instant(run["created_at"], `run ${run["id"]}'s created_at`);
+    mayHold ||= copied["conclusion"] !== "skipped";
     if (copied["conclusion"] !== "success") {
+      if (copied["conclusion"] !== "skipped") {
+        instant(copied["completed_at"], `run ${run["id"]}'s copy completed_at`);
+      }
       continue;
     }
-    if (Date.parse(String(run["created_at"])) <= at.getTime()) {
-      return { first, ever: true };
+    const completed = instant(copied["completed_at"], `run ${run["id"]}'s copy completed_at`);
+    if (created <= at.getTime()) {
+      return { first, mayHold: true };
     }
-    first = new Date(String(copied["completed_at"]));
+    first = new Date(completed);
   }
-  return { first, ever: first !== null };
+  return { first, mayHold };
 }
 
 /**

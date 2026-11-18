@@ -462,6 +462,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     night (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`): `retire` reads the copy's
     restore record (`deploy:offsite:restore`) and draws the gate from the first pass that swept
     and began after it, and needs no second pass (`r8-retire-gate.md`).
+    - [x] A failed first copy is treated as possibly partial, so key retirement waits for a
+      successful night after the settled pass (`codex/offsite-partial-copy`).
   - [x] R8, restore from the off-account copy and its monthly drill
     (`untangle/r8-copy-restore`): every write from the copy into R2 puts the restore record
     before its first byte, in the kit's concurrency group (`r8-retire-gate.md` item 3), and
