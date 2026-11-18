@@ -180,13 +180,18 @@ bounded grant storage permits an old, unheld revoked row to be retired.
 The durable cutoff still blocks earlier sign-ins. The OAuth door requires
 per-app consent and a fresh sign-in in either case. The open question is
 whether that flow can suffice after retirement or whether the owner must first
-clear the block separately in grant management. Record the intended promise
+clear the block separately in grant management. The decision is staged at
+`e754f7e4`. Record the intended promise
 before approving the disconnect screen or relying on automatic retirement.
 
 The registration description also changes generated source. The first joined
 guard found the owner door map stale. After using the canonical generator,
 all six generator steps ran on joined `eb627bb76` and left the checkout
-clean. The single invocation covering seven guard files on that tree was
+clean. The standalone fix staged at `ce1abb4f` passed 45 Doors cases,
+8 registration-card cases and 2 focused ledger cases. Its seven official
+tools recordings matched the original bodies after accounting for only the
+two intended description edits. The protected app listing was identical.
+The single invocation covering seven guard files on the joined tree was
 killed under load before reporting its 118 results. On the earlier joined
 tree, 53 of the 54 cross-area cases had passed, with the generator case the
 sole failure. The exact earlier 64 layer checks and seven invariant checks
@@ -197,7 +202,8 @@ separate Chrome-only invariant skipped.
 The signed import prefix change also preserves a historical distinction:
 12 actual writer outputs agreed on the folder grammar, while an envelope
 from before the operation field still gets its existing terminal refusal.
-On the local candidate `8f9489c1d`, the full importer suite passed 167 cases
+On the source staged at `e0a847e3`, the full importer suite passed 167 cases
 on Node 22 and the four disjoint Doors Worker selections passed all 22
-import cases. The full TypeScript attempt that exited 137 supplied no
+import cases. Scoped Node 22 TypeScript passed on the four changed source
+and test files and their dependencies. The full attempt that exited 137 supplied no
 passing result. Durable discard across eviction is a separate open protocol.
