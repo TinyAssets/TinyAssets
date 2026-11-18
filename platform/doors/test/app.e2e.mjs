@@ -1035,7 +1035,7 @@ async function handled(from, ...steps) {
  * acted on. Taking it away first is no better: that lets a held request go on to the doors a
  * second time.
  */
-async function holding(pattern, body) {
+async function holding(pattern, body, matches = () => true) {
   let release;
   const released = new Promise((resolve) => { release = resolve; });
   let held;
@@ -1043,6 +1043,10 @@ async function holding(pattern, body) {
   const going = new Set();
   const handler = async (route) => {
     const request = route.request();
+    if (!matches(request)) {
+      await route.continue();
+      return;
+    }
     const headers = Object.fromEntries(Object.entries(await request.allHeaders())
       .filter(([name]) => !name.startsWith(":")));
     const sent = (async () => {
@@ -1070,6 +1074,46 @@ async function holding(pattern, body) {
     await page.unroute(pattern, handler);
   }
 }
+
+test("a late file read leaves the newer editor and its draft on screen",
+     { timeout: 60_000 }, async () => {
+  const dir = "/workspace/agents/main";
+  for (const hash of [`data/${encodeURIComponent(dir)}`, "agents/main"]) {
+    await page.goto(`${ORIGIN}/app#${hash}`);
+    await holding("**/app/api/files/read", async (read) => {
+      await page.getByRole("link", { name: "SOUL.md", exact: true }).click();
+      await read.first;
+      await page.getByRole("link", { name: "agent.json", exact: true }).click();
+      await page.getByRole("heading", { name: `${dir}/agent.json`, exact: true }).waitFor();
+      const draft = `draft in ${hash}`;
+      await page.locator("textarea.editor").fill(draft);
+      const from = await parsedSoFar();
+      await read.release();
+      await handled(from, ["/app/api/files/read"]);
+      assert.equal(await page.locator("textarea.editor").inputValue({ timeout: 3000 }), draft);
+    }, (request) => request.postDataJSON().path === `${dir}/SOUL.md`);
+  }
+});
+
+test("saving a different file updates the directory without losing the owner's new draft",
+     { timeout: 60_000 }, async () => {
+  const dir = "/workspace/agents/main";
+  await page.goto(`${ORIGIN}/app#data/${encodeURIComponent(dir)}`);
+  await page.getByRole("link", { name: "SOUL.md", exact: true }).click();
+  await holding("**/app/api/files/write", async (save) => {
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await save.first;
+    await page.getByRole("link", { name: "agent.json", exact: true }).click();
+    await page.getByRole("heading", { name: `${dir}/agent.json`, exact: true }).waitFor();
+    const draft = "another unsaved edit";
+    await page.locator("textarea.editor").fill(draft);
+    const from = await parsedSoFar();
+    await save.release();
+    await handled(from, ["/app/api/files/write"], ["/app/api/tools/file_list", "/app/api/account"]);
+    assert.equal(await page.locator("textarea.editor").count(), 1);
+    assert.equal(await page.locator("textarea.editor").inputValue({ timeout: 3000 }), draft);
+  });
+});
 
 test("a save re-lists its own folder, never the folder the owner went to since (review L2)",
      { timeout: 60_000 }, async () => {

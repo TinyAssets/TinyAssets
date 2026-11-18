@@ -25,6 +25,8 @@ end.
 - [x] Live AuthKit wiring: WorkOS User Management (`doors/src/oidc.ts`), set up by the deploy
   kit. The stage's first sign-in is its live proof (§10 step 8).
 - [x] The owner's sign-in and session cookie, owed by 3.5 (the binder; `owner/src/sessions.ts`).
+- [x] A late file read or a directory refresh after Save keeps the owner's
+  newer file selection and unsaved draft in the active editor.
 - [ ] DNS, routes and deploy: mode `routes` hands the doors `identity.json`'s `routes` (d3 §J1:
   the doors take `app*` and `api*` in place, as `mcp*`, and the old proxy is left with no
   route), then the handles canary (Fact 11). Every existing connector re-authorizes once, since

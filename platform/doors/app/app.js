@@ -379,7 +379,7 @@ async function agent(name) {
   };
 
   const files = h("div", {});
-  const editor = h("div", {});
+  const editor = fileEditor();
   const listFiles = async () => {
     const { entries } = await call("tools/file_list", { dir: agentDir(name), limit: 200 });
     fill(files, entries.length === 0 ? h("p", { class: "muted" }, "No files.")
@@ -387,7 +387,7 @@ async function agent(name) {
         entry.kind === "file"
           ? h("a", { href: "#", onclick: (event) => {
               event.preventDefault();
-              edit(editor, entry.path, listFiles).catch(report);
+              editor.open(entry.path, listFiles).catch(report);
             } }, entry.path.slice(agentDir(name).length + 1))
           : `${entry.path.slice(agentDir(name).length + 1)}/`,
         h("small", {}, `${bytes(entry.size)}, changed ${new Date(entry.mtime_ms).toLocaleString()}`)))));
@@ -411,9 +411,9 @@ async function agent(name) {
          files,
          h("div", { class: "row" }, newFile, action("New file", async () => {
            const path = `${agentDir(name)}/${newFile.value.trim().replace(/^\/+/, "")}`;
-           await edit(editor, path, listFiles, true);
+           await editor.open(path, listFiles, true);
          }, report, { class: "quiet" })),
-         editor));
+         editor.view));
   showSaid();
   showRun();
   for (const frame of talk.frames) {
@@ -425,33 +425,54 @@ async function agent(name) {
   await listFiles();
 }
 
-/** A file's text in an editor, saved against the etag it was read at. */
-async function edit(box, path, after, fresh = false) {
-  let etag = "";
-  let text = "";
-  if (!fresh) {
-    const read = await call("files/read", { path });
-    if (read.text === null) {
-      fill(box, h("p", { class: "muted" }, `${path} is not shown here: ${read.why}.`));
-      return;
+/** This view's selected file and draft. A save uses the etag it was read at. */
+function fileEditor(closeAfterSave = false) {
+  const view = h("div", {});
+  let selected = 0;
+  const open = async (path, after, fresh = false) => {
+    const turn = ++selected;
+    let etag = "";
+    let text = "";
+    if (!fresh) {
+      let read;
+      try {
+        read = await call("files/read", { path });
+      } catch (error) {
+        if (selected === turn && view.isConnected) {
+          throw error;
+        }
+        return;
+      }
+      if (selected !== turn || !view.isConnected) {
+        return;
+      }
+      if (read.text === null) {
+        fill(view, h("p", { class: "muted" }, `${path} is not shown here: ${read.why}.`));
+        return;
+      }
+      etag = read.entry.etag;
+      text = read.text;
     }
-    etag = read.entry.etag;
-    text = read.text;
-  }
-  const area = h("textarea", { class: "editor", value: text, spellcheck: "false" });
-  fill(box, h("h2", {}, path), area, h("div", { class: "row" }, action("Save", async () => {
-    const parent = path.slice(0, path.lastIndexOf("/"));
-    if (etag === "") {
-      await ensureDirs(parent);
-    }
-    const written = await call("files/write", { path, expected_etag: etag, text: area.value });
-    if (!("entry" in written)) {
-      throw new Error("The file changed since you opened it. Open it again to see the new text.");
-    }
-    etag = written.entry.etag;
-    say(`Saved ${path}.`);
-    await after();
-  }, report)));
+    const area = h("textarea", { class: "editor", value: text, spellcheck: "false" });
+    fill(view, h("h2", {}, path), area, h("div", { class: "row" }, action("Save", async () => {
+      const submitted = area.value;
+      const parent = path.slice(0, path.lastIndexOf("/"));
+      if (etag === "") {
+        await ensureDirs(parent);
+      }
+      const written = await call("files/write", { path, expected_etag: etag, text: submitted });
+      if (!("entry" in written)) {
+        throw new Error("The file changed since you opened it. Open it again to see the new text.");
+      }
+      etag = written.entry.etag;
+      say(`Saved ${path}.`);
+      await after();
+      if (closeAfterSave && selected === turn && area.value === submitted) {
+        fill(view);
+      }
+    }, report)));
+  };
+  return { view, open };
 }
 
 async function ensureDirs(dir) {
@@ -883,32 +904,44 @@ async function keys(arg = null) {
 async function data(arg) {
   const turn = turnOf("data", arg);
   const dir = arg ?? "/workspace";
-  const [{ entries }, account] = await Promise.all([
-    call("tools/file_list", { dir, limit: 200 }), call("account")]);
-  const editor = h("div", {});
+  const editor = fileEditor(true);
+  const files = h("div", {});
+  const storage = h("p", {});
+  let reading = 0;
+  const refresh = async () => {
+    const request = ++reading;
+    const [{ entries }, account] = await Promise.all([
+      call("tools/file_list", { dir, limit: 200 }), call("account")]);
+    if (reading !== request) {
+      return;
+    }
+    fill(storage, `You hold ${bytes(account.usage.chunk_bytes + account.usage.inline_bytes)} ` +
+                  `in ${account.usage.entries} files and folders.`);
+    fill(files, entries.length === 0 ? h("p", { class: "muted" }, "Empty.")
+      : h("ul", {}, entries.map((entry) => h("li", {},
+        entry.kind === "file"
+          ? h("a", { href: "#", onclick: (event) => {
+              event.preventDefault();
+              editor.open(entry.path, refresh).catch(report);
+            } }, entry.path.split("/").at(-1))
+          : h("a", { href: `#data/${encodeURIComponent(entry.path)}` },
+              `${entry.path.split("/").at(-1)}/`),
+        h("small", {}, bytes(entry.size))))));
+  };
+  await refresh();
   const parent = dir.slice(0, dir.lastIndexOf("/")) || null;
   paint(turn,
        h("h1", {}, "Your data"),
        h("section", {},
          h("h2", {}, "Export"),
-         h("p", {}, `You hold ${bytes(account.usage.chunk_bytes + account.usage.inline_bytes)} ` +
-           `in ${account.usage.entries} files and folders.`),
+         storage,
          h("p", { class: "muted" }, MISSING.export)),
        h("section", {},
          h("h2", {}, `Files in ${dir}`),
          parent !== null && dir !== "/workspace"
            ? h("p", {}, h("a", { href: `#data/${encodeURIComponent(parent)}` }, "Up a folder")) : null,
-         entries.length === 0 ? h("p", { class: "muted" }, "Empty.")
-           : h("ul", {}, entries.map((entry) => h("li", {},
-             entry.kind === "file"
-               ? h("a", { href: "#", onclick: (event) => {
-                   event.preventDefault();
-                   edit(editor, entry.path, () => data(arg)).catch(report);
-                 } }, entry.path.split("/").at(-1))
-               : h("a", { href: `#data/${encodeURIComponent(entry.path)}` },
-                   `${entry.path.split("/").at(-1)}/`),
-             h("small", {}, bytes(entry.size))))),
-         editor));
+         files,
+         editor.view));
 }
 
 // -- Past runs: newest first, a page at a time ---------------------------------------
