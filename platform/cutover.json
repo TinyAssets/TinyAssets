@@ -26,6 +26,12 @@
         { "delete": "scripts/platform_setup.py", "what": "the founder's one-time setup, done (deploy/checklist.md): its keyring maker is a copy of keyring-new's, which the kit keeps (o-keyrings.md)" },
         { "delete": "tests/test_platform_setup.py", "what": "the setup's tests" },
 
+        { "edit": "WebSite/brand/render_marks.py", "names": ["TRAY_ICO", "APP_HTML", "_write_app_html", "app_badge_data_uri"], "what": "remove the retired tray export and onboarding badge writer, including its invariant import; regenerate the receipt for the surviving outputs" },
+        { "edit": "WebSite/brand/generated-assets.json", "names": ["tinyassets/desktop/app.ico"], "what": "regenerate after the tray export and onboarding badge writer go" },
+        { "edit": "WebSite/site-react/scripts/brand-parity.test.mjs", "names": ["tinyassets/desktop/app.ico"], "what": "retire the tray from the required surfaces; the desktop app and site checks stay" },
+        { "edit": "scripts/invariants/brand_parity.py", "names": ["tinyassets/desktop/app.ico", "APP_HTML", "app_badge_data_uri", "app_badge_problems"], "what": "retire the tray receipt requirement and the onboarding HTML badge check with their targets" },
+        { "edit": "openspec/specs/public-website-surface/spec.md", "names": ["the Windows tray icon", "The served web app SHALL carry the same mark as its favicon and brand glyph."], "what": "retire the tray and old onboarding badge requirements when both targets go" },
+        { "edit": "WebSite/brand/README.md", "names": ["tinyassets/onboarding/app.html"], "what": "retire the tray and onboarding instructions with their exports" },
         { "edit": "platform/package.json", "names": ["\"import\""], "what": "the import workspace" },
         { "edit": "platform/package-lock.json", "names": ["\"import\""], "what": "the import workspace, by npm install" },
         { "edit": ".github/workflows/tests.yml", "names": ["npm run test -w import", "tests/test_platform_setup.py"], "what": "the import leg, and the setup's tests in the process leg" },

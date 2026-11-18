@@ -34,6 +34,7 @@ on:
       - '.dockerignore'
       - 'pyproject.toml'
       - 'tinyassets/**'
+      - 'WebSite/brand/mark.py'
       - 'fantasy_daemon/**'
       - 'data/world_rules.lp'
       # A list-only PR is a real behaviour change for every user on that source

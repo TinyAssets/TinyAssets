@@ -224,12 +224,12 @@ test("the inline mark is generated from the one geometry source", () => {
   assert.match(mark, /Do not hand-edit/);
   // Its numbers must equal the Python constants, so a drifted checkout is red.
   const iconGen = readFileSync(
-    resolve(siteRoot, "../../tinyassets/desktop/icon_gen.py"),
+    resolve(siteRoot, "../brand/mark.py"),
     "utf8",
   );
   const scalar = (name) => {
     const m = iconGen.match(new RegExp(`^${name}\\s*=\\s*([0-9.]+)`, "m"));
-    assert.ok(m, `icon_gen.py defines ${name}`);
+    assert.ok(m, `mark.py defines ${name}`);
     return Number(m[1]);
   };
 
@@ -243,7 +243,7 @@ test("the inline mark is generated from the one geometry source", () => {
     ["rim radius", scalar("RIM_R")],
     ["tile radius", scalar("TILE_RADIUS")],
   ]) {
-    assert.ok(svgNumbers.has(value), `${label} (${value}) must come from icon_gen.py`);
+    assert.ok(svgNumbers.has(value), `${label} (${value}) must come from mark.py`);
   }
 
   // The compact scene itself. `render_marks.py` writes BOTH this component and
