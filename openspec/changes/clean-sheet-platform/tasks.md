@@ -658,6 +658,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
+- [ ] Before pinning the runner, establish when a scoped sync has applied its available
+  changes. Verify the old image and the replacement against the owner versions served during
+  rollout and handback. See the [filtered sync feed review](../../../docs/decisions/untangle-2026-11/scoped-sync-feed.md).
+
 - [ ] The engines' locks refreshed, then the one paid template build after the re-check loop,
   then the pin PR (d3 §A12, list3 P19). The runner and probes bundles moved in u3-services and
   again in S2 (#5517), so the next deploy needs a pair check of the merged pair and the pin PR
@@ -857,6 +861,8 @@ Moved before the window, into lane R (d3 §F3, §G).
   - [ ] The files' history counted in bytes, as the collections' is, which lifts `max_entries`
     past 30,000 (`limits-audit.md`).
   - [ ] Sync-in of the working set alone (today the whole workspace), with the scratch design.
+    First prove that projection starts with the reachable changes in scope, including a
+    readable change behind a full page of filtered rows (Step 6).
   - [ ] The gateway pool's two recorded Lows (MEMORY PR 3a's verification): a slow sender can
     hold its first unit early so wait-die favours it as the oldest (16 % lower throughput at
     saturation, measured); a user-defined endpoint that reads its upload slowly holds the
