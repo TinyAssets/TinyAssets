@@ -452,7 +452,7 @@ describe("the window's wipe", () => {
     const files = w.buckets.get(NAMES.files_bucket)!;
     files.set(`${objectPrefix(original)}c/late`, "late");
     files.set(`${objectPrefix(replacement)}c/new`, "new");
-    const expected = { records: 0, staged: 0, namespaces: bundles.length + 1, objects: 1 };
+    const expected = { records: 0, staged: 1, namespaces: bundles.length + 1, objects: 1 };
     expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
     expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
   });
@@ -474,7 +474,7 @@ describe("the window's wipe", () => {
     // The fresh object has no namespace, but the first discard's answer still does.
     w.namespaces.delete(first.owner);
     w.buckets.get(NAMES.files_bucket)!.set(`${objectPrefix(original)}c/late`, "late");
-    const expected = { records: 0, staged: 0, namespaces: bundles.length, objects: 1 };
+    const expected = { records: 0, staged: 1, namespaces: bundles.length, objects: 1 };
     expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
     expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
   });
@@ -495,8 +495,35 @@ describe("the window's wipe", () => {
     w.buckets.get(NAMES.files_bucket)!.set(`${objectPrefix(late)}c/late`, "late");
     expect(await wipe(out, RUN, racing, record, quiet)).toMatchObject({ staged: 1 });
     expect(w.staging.has(name)).toBe(true);
+    expect((await close(w.window, quiet)).left).toHaveLength(bundles.length);
     expect(await wipe(out, RUN, w.window, record, quiet))
-      .toEqual({ records: 0, staged: 0, namespaces: bundles.length + 1, objects: 1 });
+      .toEqual({ records: 0, staged: 1, namespaces: bundles.length + 1, objects: 1 });
+  });
+
+  it("keeps the index and published receipt across a failed files listing and host replacement",
+     async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    const unavailable = { ...w.window, fetcher: (request: Request) => {
+      if (new URL(request.url).pathname.includes(NAMES.files_bucket)) {
+        throw new Error("the files listing was interrupted");
+      }
+      return w.window.fetcher(request);
+    } };
+    await expect(wipe(out, RUN, unavailable, record, quiet)).rejects.toThrow(/listing was interrupted/);
+    expect((await close(w.window, quiet)).left).toHaveLength(bundles.length);
+    const first = bundles[0]!;
+    const original = w.namespaces.get(first.owner)!;
+    w.namespaces.delete(first.owner);
+    const late = `${objectPrefix(original)}c/late`;
+    const files = w.buckets.get(NAMES.files_bucket)!;
+    files.set(late, "late");
+    expect((await wipe(out, RUN, w.window, record + ".fresh", quiet)).objects).toBe(1);
+    expect((await close(w.window, quiet)).left).toHaveLength(bundles.length);
+    files.delete(late);
+    expect(await wipe(out, RUN, w.window, record + ".another", quiet))
+      .toEqual({ records: 0, staged: 0, namespaces: bundles.length, objects: 0 });
+    expect((await close(w.window, quiet)).left).toEqual([]);
   });
 
   it("keeps staging intact when a published discard answer is ambiguous or damaged", async () => {

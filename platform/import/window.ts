@@ -426,8 +426,8 @@ async function recoverDiscards(window: Window, run: string, keys: readonly strin
 
 /**
  * `wipe`: each owner whose index is still staged discarded (its namespace kept in the record,
- * so a run again proves it too), then the rehearsal's `o:` records and the staging prefix
- * deleted, then each listing read and proved empty. It refuses first, changing nothing, while
+ * so a run again proves it too), then its rehearsal records deleted. Only a clean files
+ * proof and fully inspected staging allow the index and receipts to be retired. It refuses first, changing nothing, while
  * the run's staging holds an index its `out` names no bundle of (the run bundled again, on a
  * new host, since it staged it): deleting it would leave that owner's data with no index, so
  * `close` would read it as discarded.
@@ -469,17 +469,25 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
     .filter((key) => rehearsalRun(key.slice(OWNER_ENTRY.length)) === run);
   await cloudflare.deleteKeys(window.inputs.account, directory, await runs());
   const staging = window.names.staging_bucket;
-  // Delete only the snapshot we inspected and this pass's recorded answers. A late
-  // delivery stays for the final listing and the next pass to recover.
-  for (const key of keys) {
-    await ok(window, s3Request(window.inputs, "DELETE", staging, key, {}, null,
-                               window.clock.now()), "a staging delete");
-  }
   const namespaces = [...new Set(Object.values(record.discarded)
     .flatMap((each) => each.namespaces))];
   let objects = 0;
   for (const ns of namespaces) {
     objects += (await listKeys(window, window.names.files_bucket, objectPrefix(ns), 1)).length;
+  }
+  // The index is close's evidence that an owner still needs attention. Keep it and
+  // the durable replies if the files listing fails or has any leftover. A later
+  // import host can then recover the namespace even if this host is destroyed.
+  const inspected = new Set(keys);
+  const unseen = objects === 0 && (await listKeys(window, staging, `${run}/`))
+    .some((key) => !inspected.has(key));
+  if (objects === 0 && !unseen) {
+    const indexes = new Set(stagedIndexes(keys).map(({ name }) => name));
+    // Retire the proven indexes first. While an index survives, its receipts do too.
+    for (const key of [...indexes, ...keys.filter((name) => !indexes.has(name))]) {
+      await ok(window, s3Request(window.inputs, "DELETE", staging, key, {}, null,
+                                 window.clock.now()), "a staging delete");
+    }
   }
   const proof = { records: (await runs()).length,
                   staged: (await listKeys(window, staging, `${run}/`, 1)).length,
