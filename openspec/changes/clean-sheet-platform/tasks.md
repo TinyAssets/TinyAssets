@@ -150,6 +150,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   - [x] 4. The doors' import consumer (`doors/src/import/`, #5475).
   - [x] 5. `importCheck`, `importDiscard`, and the job's `verify`, `wipe`, `admit` and `dlq`
     (#5477).
+    - [x] The host retains discard namespaces across restaging and recovers published replies
+      before deleting staging on a retry (`i-wipe-proof.md`).
   - [x] 6. The deploy kit's route record and mode `handback` (#5467).
   - [ ] 7. A dark rehearsal under `rehearsal-` names, measured, verified and wiped (the founder
     approved it on real data, 2026-11-07). Its runner is built: **Import window (manual)**

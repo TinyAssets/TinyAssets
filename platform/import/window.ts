@@ -44,9 +44,10 @@ import {
   IMPORT_KEY, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS, type Paged,
   pageNumber, rehearsalRun, type Row, rowsSum, RUN, stagedName,
 } from "../contract/src/import-message";
+import { object } from "../contract/src/checks";
 import { DEFAULT_TIER } from "../contract/src/control";
-import { objectPrefix } from "../contract/src/files";
-import { HEX16, OWNER_ENTRY } from "../contract/src/ids";
+import { namespace, objectPrefix } from "../contract/src/files";
+import { HEX16, HEX64, OWNER_ENTRY } from "../contract/src/ids";
 import type { ImportNames } from "../contract/src/import-names";
 import { QUEUES } from "../contract/src/queue-names";
 import type { Cloudflare } from "../deploy/cloudflare";
@@ -76,7 +77,7 @@ export interface WindowRecord {
   readonly run: string;
   readonly verified: Record<string, { readonly bundle: string; readonly clean: boolean;
                                       readonly differences: Differences }>;
-  readonly discarded: Record<string, { readonly bundle: string; readonly namespace: string | null }>;
+  readonly discarded: Record<string, { readonly bundle: string; readonly namespaces: readonly string[] }>;
 }
 
 /** The record at `file`, or a new one for `run`; one of another run is refused. */
@@ -84,12 +85,30 @@ export function readRecord(file: string, run: string): WindowRecord {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
-  } catch {
-    return { run, verified: {}, discarded: {} };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { run, verified: {}, discarded: {} };
+    }
+    throw error;
   }
   const record = JSON.parse(text) as WindowRecord;
   if (record.run !== run) {
     throw new Error("the record is another run's: refused");
+  }
+  // Original records kept only the last namespace. Bring that evidence forward on read.
+  if (!object(record.verified) || !object(record.discarded)) {
+    throw new Error("the window record's verification or discard evidence is unreadable");
+  }
+  for (const [key, value] of Object.entries<unknown>(record.discarded)) {
+    if (!object(value) || typeof value["bundle"] !== "string") {
+      throw new Error("the window record holds an unreadable discard");
+    }
+    const names = "namespaces" in value ? value["namespaces"]
+      : value["namespace"] === null ? [] : [value["namespace"]];
+    if (!Array.isArray(names)) {
+      throw new Error("the window record holds an unreadable namespace list");
+    }
+    record.discarded[key] = { bundle: value["bundle"], namespaces: names.map(namespace) };
   }
   return record;
 }
@@ -350,14 +369,59 @@ async function indexStaged(window: Window, run: string, staged: Staged): Promise
                        stagedName(bundlePrefix(run, staged.key), BUNDLE_INDEX)) !== null;
 }
 
-/** Each bundle index the staging bucket holds under `prefix`: its name, run and key. */
-async function stagedIndexes(window: Window, prefix: string):
-    Promise<{ name: string; run: string; key: string }[]> {
-  return (await listKeys(window, window.names.staging_bucket, prefix)).flatMap((name) => {
+/** The bundle indexes in a staging listing, with their run and key. */
+function stagedIndexes(names: readonly string[]): { name: string; run: string; key: string }[] {
+  return names.flatMap((name) => {
     const [run = "", key = "", ...part] = name.split("/");
     return RUN.test(run) && HEX16.test(key) && part.join("/") === BUNDLE_INDEX
       ? [{ name, run, key }] : [];
   });
+}
+
+/** Keep every distinct namespace a successful discard named, including after a restage. */
+function keepDiscard(record: WindowRecord, key: string, answer: Record<string, unknown>): void {
+  const bundle = answer["bundle"];
+  if (answer["op"] !== "discard" || answer["discarded"] !== true || "refused" in answer
+      || typeof bundle !== "string" || !HEX64.test(bundle)) {
+    throw new Error("the staging bucket holds an unreadable discard receipt");
+  }
+  const names = new Set(record.discarded[key]?.namespaces);
+  if (answer["namespace"] !== null) {
+    names.add(namespace(answer["namespace"]));
+  }
+  record.discarded[key] = { bundle, namespaces: [...names] };
+}
+
+/** The doors may have published a discard before the host saved it. Read final answers only,
+ * before sending another discard or clearing staging. A restage can name a different bundle. */
+async function recoverDiscards(window: Window, run: string, keys: readonly string[],
+                               record: WindowRecord, recordFile: string): Promise<void> {
+  let recovered = false;
+  for (const name of keys) {
+    const [, key = "", , leaf = ""] = name.split("/");
+    const ask = leaf.slice(0, -".json".length);
+    if (!HEX16.test(key) || !HEX16.test(ask) || name !== answerName(bundlePrefix(run, key), ask)) {
+      continue;
+    }
+    const text = await getText(window, window.names.staging_bucket, name);
+    const answer: unknown = text === null ? null : JSON.parse(text);
+    if (!object(answer)) {
+      throw new Error("the staging bucket holds an unreadable final answer");
+    }
+    const op = answer["op"];
+    if (op === "admit" || op === "check") {
+      continue;
+    }
+    if (op === "discard" && typeof answer["refused"] === "string"
+        && !("discarded" in answer) && !("namespace" in answer)) {
+      continue;
+    }
+    keepDiscard(record, key, answer);
+    recovered = true;
+  }
+  if (recovered) {
+    writeRecord(recordFile, record);
+  }
 }
 
 /**
@@ -374,25 +438,26 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   const bundles = bundlesIn(out);
   const record = readRecord(recordFile, run);
   const named = new Set(bundles.map((staged) => staged.key));
-  const unnamed = (await stagedIndexes(window, `${run}/`)).filter(({ key }) => !named.has(key));
+  const keys = await listKeys(window, window.names.staging_bucket, `${run}/`);
+  const unnamed = stagedIndexes(keys).filter(({ key }) => !named.has(key));
   if (unnamed.length > 0) {
     throw new Error(`run ${run} stages ${unnamed.length} bundle index(es) its bundles do not ` +
                     "name: nothing is discarded or deleted (admit or discard each from the " +
                     "bundles that staged it)");
   }
+  await recoverDiscards(window, run, keys, record, recordFile);
   const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
   for (const [n, staged] of bundles.entries()) {
     if (!await indexStaged(window, run, staged)) {
       continue;
     }
-    const answer = await ask(window, queue, askOf(staged, run, "discard",
-                                                  window.inputs.importKey));
+    const message = askOf(staged, run, "discard", window.inputs.importKey);
+    const answer = await ask(window, queue, message);
     if (answer["discarded"] !== true || answer["bundle"] !== staged.bundle) {
       throw new Error(`bundle ${n + 1}'s discard was refused by the doors: nothing more is done`);
     }
-    const namespace = answer["namespace"];
-    record.discarded[staged.key] = { bundle: staged.bundle,
-                                     namespace: typeof namespace === "string" ? namespace : null };
+    keepDiscard(record, staged.key, answer);
+    keys.push(answerName(message.prefix, message.ask!));
     writeRecord(recordFile, record);
     print(`bundle ${n + 1} of ${bundles.length}: discarded`);
   }
@@ -404,12 +469,14 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
     .filter((key) => rehearsalRun(key.slice(OWNER_ENTRY.length)) === run);
   await cloudflare.deleteKeys(window.inputs.account, directory, await runs());
   const staging = window.names.staging_bucket;
-  for (const key of await listKeys(window, staging, `${run}/`)) {
+  // Delete only the snapshot we inspected and this pass's recorded answers. A late
+  // delivery stays for the final listing and the next pass to recover.
+  for (const key of keys) {
     await ok(window, s3Request(window.inputs, "DELETE", staging, key, {}, null,
                                window.clock.now()), "a staging delete");
   }
   const namespaces = [...new Set(Object.values(record.discarded)
-    .flatMap((each) => each.namespace === null ? [] : [each.namespace]))];
+    .flatMap((each) => each.namespaces))];
   let objects = 0;
   for (const ns of namespaces) {
     objects += (await listKeys(window, window.names.files_bucket, objectPrefix(ns), 1)).length;
@@ -439,7 +506,7 @@ export async function close(window: Window, print: (line: string) => void):
     Promise<CloseSummary> {
   const staging = window.names.staging_bucket;
   const runs = new Map<string, string[]>();
-  for (const { name, run } of await stagedIndexes(window, "")) {
+  for (const { name, run } of stagedIndexes(await listKeys(window, window.names.staging_bucket, ""))) {
     runs.set(run, [...runs.get(run) ?? [], name]);
   }
   const listed = new Set(await cloudflareOf(window.inputs.apiToken, window.fetcher)

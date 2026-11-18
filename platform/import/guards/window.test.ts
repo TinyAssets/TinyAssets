@@ -13,7 +13,7 @@
  * deploy kit's, read from the configs (`deploy/facts.ts`), as the window's `facts.json` hands
  * them to the job.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -160,9 +160,9 @@ function world(bundles: readonly Staged[]) {
       put(at(), { op: "admit", bundle: message.bundle, tier: "free", state: "admitted",
                   reasons: [] });
     } else if (message.op === "discard") {
-      const ns = namespaces.get(message.owner)!;
+      const ns = namespaces.get(message.owner) ?? null;
       for (const key of [...buckets.get(NAMES.files_bucket)!.keys()]) {
-        if (key.startsWith(objectPrefix(ns))) {
+        if (ns !== null && key.startsWith(objectPrefix(ns))) {
           buckets.get(NAMES.files_bucket)!.delete(key);
         }
       }
@@ -433,6 +433,94 @@ describe("the window's wipe", () => {
     expect([...w.kv.keys()].sort()).toEqual([`o:${rehearsalName("r1-x", "user_y")}`,
                                              `o:${rehearsalName("r2", "user_x")}`, "o:user_real"]);
     expect(w.sent.filter((message) => message.op === "discard").length).toBe(bundles.length);
+  });
+
+  it("continues proving the original namespace after an evicted owner is staged again",
+     async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    const first = bundles[0]!;
+    const original = w.namespaces.get(first.owner)!;
+    await wipe(out, RUN, w.window, record, quiet);
+    // A record written by the original window has one namespace per owner.
+    const discarded = Object.fromEntries(bundles.map((bundle) =>
+      [bundle.key, { bundle: bundle.bundle, namespace: w.namespaces.get(bundle.owner) }]));
+    writeFileSync(record, JSON.stringify({ run: RUN, verified: {}, discarded }));
+    w.staging.set(...indexAt(first));
+    const replacement = "f".repeat(32);
+    w.namespaces.set(first.owner, replacement);
+    const files = w.buckets.get(NAMES.files_bucket)!;
+    files.set(`${objectPrefix(original)}c/late`, "late");
+    files.set(`${objectPrefix(replacement)}c/new`, "new");
+    const expected = { records: 0, staged: 0, namespaces: bundles.length + 1, objects: 1 };
+    expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
+    expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
+  });
+
+  it("recovers a published discard answer when the host stopped before saving it", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    const first = bundles[0]!;
+    const original = w.namespaces.get(first.owner)!;
+    const interrupted = { ...w.window, fetcher: (request: Request) => {
+      if (request.method === "GET" && w.sent.at(-1)?.op === "discard"
+          && new URL(request.url).pathname.endsWith(`/${w.sent.at(-1)!.ask}.json`)) {
+        throw new Error("the host stopped before reading the doors' answer");
+      }
+      return w.window.fetcher(request);
+    } };
+    await expect(wipe(out, RUN, interrupted, record, quiet)).rejects.toThrow(/host stopped/);
+    expect(Object.keys(readRecord(record, RUN).discarded)).toEqual([]);
+    // The fresh object has no namespace, but the first discard's answer still does.
+    w.namespaces.delete(first.owner);
+    w.buckets.get(NAMES.files_bucket)!.set(`${objectPrefix(original)}c/late`, "late");
+    const expected = { records: 0, staged: 0, namespaces: bundles.length, objects: 1 };
+    expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
+    expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
+  });
+
+  it("leaves an answer published after the initial listing for the next wipe", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    const first = bundles[0]!;
+    const late = "e".repeat(32);
+    const name = answerName(`${RUN}/${first.key}`, "b".repeat(16));
+    const racing = { ...w.window, fetcher: (request: Request) => {
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/messages")) {
+        w.staging.set(name, JSON.stringify({ op: "discard", bundle: "a".repeat(64),
+                                            discarded: true, namespace: late }));
+      }
+      return w.window.fetcher(request);
+    } };
+    w.buckets.get(NAMES.files_bucket)!.set(`${objectPrefix(late)}c/late`, "late");
+    expect(await wipe(out, RUN, racing, record, quiet)).toMatchObject({ staged: 1 });
+    expect(w.staging.has(name)).toBe(true);
+    expect(await wipe(out, RUN, w.window, record, quiet))
+      .toEqual({ records: 0, staged: 0, namespaces: bundles.length + 1, objects: 1 });
+  });
+
+  it("keeps staging intact when a published discard answer is ambiguous or damaged", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    const first = bundles[0]!;
+    const name = answerName(`${RUN}/${first.key}`, "a".repeat(16));
+    const good = { op: "discard", bundle: first.bundle, discarded: true, namespace: null };
+    for (const broken of [{ ...good, op: ["discard"] }, { ...good, refused: "also refused" },
+                          { ...good, namespace: 0 }, { ...good, bundle: "incomplete" }]) {
+      w.staging.set(name, JSON.stringify(broken));
+      await expect(wipe(out, RUN, w.window, record, quiet)).rejects.toThrow();
+      expect(w.sent).toEqual([]);
+      expect(w.staging.has(indexAt(first)[0])).toBe(true);
+    }
+  });
+
+  it("refuses an unreadable record before the first discard", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    mkdirSync(record);
+    await expect(wipe(out, RUN, w.window, record, quiet)).rejects.toThrow();
+    expect(w.sent).toEqual([]);
+    expect(w.staging.has(indexAt(bundles[0]!)[0])).toBe(true);
   });
 
   it("converges when killed between its discards, and proves a namespace an earlier run " +
