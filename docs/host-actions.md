@@ -21,11 +21,11 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Production secrets move into a main-only GitHub Environment (2026-10-13)
 
-**Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `tests/test_workflow_production_environment.py`); the environment itself must exist and own the secrets, which only the repo admin can do.
+**Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `platform/ci/guards/environment.test.ts`); the environment itself must exist and own the secrets, which only the repo admin can do.
 
 | Item | Smallest founder-only action |
 |---|---|
-| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Left: delete any repository-level copy of a production secret (Settings → Secrets and variables → Actions → Repository secrets), since a branch dispatch or a pull request can read those. Every workflow now reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment, so each other repository secret goes once its environment holds the same value; `MERGE_ATTRIBUTION_TOKEN`, the four `ANDROID_UPLOAD_*`, `ANDROID_DEBUG_KEYSTORE_B64` and `ANDROID_GOOGLE_SERVICES_JSON_B64` are copied into `production` first. `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN` go with `python scripts/platform_setup.py workos`. |
+| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Left: delete any repository-level copy of a production secret (Settings → Secrets and variables → Actions → Repository secrets), since a branch dispatch or a pull request can read those. Every workflow now reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment, so each other repository secret goes once its environment holds the same value; `MERGE_ATTRIBUTION_TOKEN`, the four `ANDROID_UPLOAD_*`, `ANDROID_DEBUG_KEYSTORE_B64` and `ANDROID_GOOGLE_SERVICES_JSON_B64` are copied into `production` first. For WorkOS, first check the main-only `production` environment for `WORKOS_API_KEY`. Keep an existing value. If absent, store the key from the WorkOS Production dashboard using the local prompt for `gh secret set WORKOS_API_KEY --env production`, then read back the environment secret's name and update time. Once the founder confirms the intended production key is in place and all remaining readers use that environment, remove only the repository copies of `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN`. |
 
 ---
 
@@ -581,6 +581,15 @@ A blocking review verdict is now a check (`.github/workflows/review.yml`), the a
 Actions app, so the `review` context must be pinned to an App of its own, which only an
 organization owner can make. Nothing requires `review` until the last row; until then the
 receipt still gates.
+
+The installed App can recover a lost key under the same identity. Verify the installation
+is limited to `TinyAssets/TinyAssets`, has no active webhook, and grants only
+**checks: write** and **metadata: read**. The `review` environment must allow `main` only,
+with no required reviewer. Verify the environment settings below. In the organization's settings, generate a key on the existing App.
+Store it as `REVIEW_APP_PRIVATE_KEY` in that environment from the founder's machine.
+Keep `REVIEW_APP_ID` and the ruleset pin. Before retiring a previous working key, verify
+a fresh `review` check on a reviewed head succeeded under the pinned App. Replacing the
+App itself gives it a new ID and requires a reviewed ruleset change.
 
 | Item | Smallest founder-only action |
 |---|---|
