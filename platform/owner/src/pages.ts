@@ -12,11 +12,10 @@
  */
 import { inlineWindow, PAGE_BYTES, type Window } from "./bodies";
 import type { Changed, Changes, Row } from "./collections";
-import { fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
+import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { Refusal } from "../../contract/src/refusal";
 
-export const RESULT_TOO_LARGE = `result_too_large: this item's fields alone pass the ${
-  RESULT_CHARS} characters one answer holds`;
+export const RESULT_TOO_LARGE = "result_too_large: this item's fields alone do not fit in one JSON answer";
 
 /** What a body cut to fit, or read from an offset, says of itself. */
 export interface Cut {

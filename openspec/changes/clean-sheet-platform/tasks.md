@@ -593,6 +593,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
+- [x] Reconcile the public file, mailbox and collection read instructions with the owner's
+  fitted JSON pages, per-collection cursor and the file reader's one-character progress guarantee.
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
   tests pass takes the two older tests that make a call refuse by patching a class's prototype
   (`owner/test/runs-authority.test.ts:864` `Files.prototype.open`,

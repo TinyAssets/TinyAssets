@@ -28,10 +28,10 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   boardDigest(binding: Binding, request: DoorRequest<"boardDigest">):
     Promise<DoorAnswer<"boardDigest">>;
   /**
-   * Read this agent's unacknowledged mailbox messages, oldest first. One answer holds at most 50000
-   * characters: a message whose body does not fit is cut, with truncated true and body_next_offset;
-   * read the rest by calling again with body_offset set to it and message_id set to that message's,
-   * before acknowledging it.
+   * Read this agent's unacknowledged mailbox messages, oldest first. If a message body does not fit
+   * in one page of UTF-8 JSON, the body is cut, with truncated true and body_next_offset; read the
+   * rest by calling again with body_offset set to it and message_id set to that message's, before
+   * acknowledging it.
    */
   mailboxRead(binding: Binding, request: DoorRequest<"mailboxRead">):
     Promise<DoorAnswer<"mailboxRead">>;
@@ -65,17 +65,16 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   policyPropose(binding: Binding, request: DoorRequest<"policyPropose">):
     Promise<DoorAnswer<"policyPropose">>;
   /**
-   * Read one row of a collection. One answer holds at most 50000 characters: a body that does not
-   * fit is cut, with truncated true and body_next_offset; read the rest by calling again with
-   * body_offset set to it and etag set to the row's etag, which refuses the read if the row changed
-   * meanwhile.
+   * Read one row of a collection. If the body does not fit in one page of UTF-8 JSON, it is cut,
+   * with truncated true and body_next_offset; read the rest by calling again with body_offset set
+   * to it and etag set to the row's etag, which refuses the read if the row changed meanwhile.
    */
   collectionGet(binding: Binding, request: DoorRequest<"collectionGet">):
     Promise<DoorAnswer<"collectionGet">>;
   /**
-   * List a collection's rows changed after a revision, as many as one answer holds (at most 50000
-   * characters); go on from the cursor it gives. A first row whose body does not fit is cut
-   * (truncated true): read the rest with collection_get.
+   * List a collection's changed rows one page of UTF-8 JSON at a time. Continue from the returned
+   * cursor. A first row whose body does not fit is cut (truncated true): read the rest with
+   * collection_get.
    */
   collectionPull(binding: Binding, request: DoorRequest<"collectionPull">):
     Promise<DoorAnswer<"collectionPull">>;
@@ -115,10 +114,11 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   fileList(binding: Binding, request: DoorRequest<"fileList">): Promise<DoorAnswer<"fileList">>;
   /**
    * Use this to read a file of the user's TinyAssets workspace by its path, such as their profile
-   * /workspace/USER.md: its UTF-8 text from offset (0 when omitted), at most max_bytes (65536 when
-   * omitted, up to 4194304) and at most what one answer holds (50000 characters), cut at a
-   * character. next_offset is where the next part starts, or null at the end. Its entry carries the
-   * etag file_edit and file_write take.
+   * /workspace/USER.md: its UTF-8 text from byte offset (0 when omitted). max_bytes requests a
+   * window (65536 by default, up to 4194304). Text ends at a character boundary and fits one page
+   * of UTF-8 JSON. If the first character alone exceeds the requested window, it is returned whole.
+   * Continue at next_offset, or stop when it is null. Its entry carries the etag file_edit and
+   * file_write take.
    */
   fileText(binding: Binding, request: DoorRequest<"fileText">): Promise<DoorAnswer<"fileText">>;
   /**

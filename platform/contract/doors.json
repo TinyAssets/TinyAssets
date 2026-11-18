@@ -57,7 +57,7 @@
       "tool": {
         "name": "mailbox_read", "title": "Read mailbox", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "Read this agent's unacknowledged mailbox messages, oldest first. One answer holds at most 50000 characters: a message whose body does not fit is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and message_id set to that message's, before acknowledging it."
+        "description": "Read this agent's unacknowledged mailbox messages, oldest first. If a message body does not fit in one page of UTF-8 JSON, the body is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and message_id set to that message's, before acknowledging it."
       }
     },
     {
@@ -158,7 +158,7 @@
       "tool": {
         "name": "collection_get", "title": "Get collection row", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "Read one row of a collection. One answer holds at most 50000 characters: a body that does not fit is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and etag set to the row's etag, which refuses the read if the row changed meanwhile."
+        "description": "Read one row of a collection. If the body does not fit in one page of UTF-8 JSON, it is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and etag set to the row's etag, which refuses the read if the row changed meanwhile."
       }
     },
     {
@@ -167,7 +167,7 @@
         "refused": "invalid collection request",
         "required": {
           "collection": { "type": "string", "description": "The collection's name" },
-          "after": { "type": "integer", "description": "Rows changed after this revision" },
+          "after": { "type": "integer", "description": "Use 0 for the first page, then the cursor returned for this collection" },
           "limit": { "type": "integer", "description": "At most this many rows" }
         },
         "optional": {}
@@ -175,7 +175,7 @@
       "tool": {
         "name": "collection_list", "title": "List collection rows", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "List a collection's rows changed after a revision, as many as one answer holds (at most 50000 characters); go on from the cursor it gives. A first row whose body does not fit is cut (truncated true): read the rest with collection_get."
+        "description": "List a collection's changed rows one page of UTF-8 JSON at a time. Continue from the returned cursor. A first row whose body does not fit is cut (truncated true): read the rest with collection_get."
       }
     },
     {
@@ -295,13 +295,13 @@
         },
         "optional": {
           "offset": { "type": "integer", "description": "The byte to start at: 0, or a next_offset" },
-          "max_bytes": { "type": "integer", "description": "At most this many bytes of text" }
+          "max_bytes": { "type": "integer", "description": "Requested UTF-8 byte window. A smaller window still returns one whole character." }
         }
       },
       "tool": {
         "name": "file_read", "title": "Read file", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "Use this to read a file of the user's TinyAssets workspace by its path, such as their profile /workspace/USER.md: its UTF-8 text from offset (0 when omitted), at most max_bytes (65536 when omitted, up to 4194304) and at most what one answer holds (50000 characters), cut at a character. next_offset is where the next part starts, or null at the end. Its entry carries the etag file_edit and file_write take."
+        "description": "Use this to read a file of the user's TinyAssets workspace by its path, such as their profile /workspace/USER.md: its UTF-8 text from byte offset (0 when omitted). max_bytes requests a window (65536 by default, up to 4194304). Text ends at a character boundary and fits one page of UTF-8 JSON. If the first character alone exceeds the requested window, it is returned whole. Continue at next_offset, or stop when it is null. Its entry carries the etag file_edit and file_write take."
       }
     },
     {
