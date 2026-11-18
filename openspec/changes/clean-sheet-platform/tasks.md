@@ -283,9 +283,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   Each venue is packed on its own by a table refreshed from whole-surface runs only, so the
   slowest shard's tests take 569 to 621 s, about 15 minutes of job (`untangle/shard-2-time`;
   found by `untangle/required-checks`; `untangle-2026-11/shard-2-time.md`).
-- [ ] Whether the Python legs need cover for a runner five times slower before the cutover
-  deletes them: no packing fits one (a 477 s case and the image build, 62 minutes at five
-  times), and #5646's calibration is Vitest's only; research first
+- [x] Keep the Python shard and queue limits through the cutover: 306 shard jobs after the
+  repack, longest 15m06s (measurements in `untangle-2026-11/python-slow-runner.md`)
   (`untangle/python-slow-runner`; found by `untangle/shard-2-time`).
 - [ ] `main_red.py` `REQUIRED_JOB` and `queue_attempts.py` `AGGREGATE_JOB` name the Tests
   aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
