@@ -24,3 +24,10 @@ answer limit. Changing the corrected page to cite a module that only imports
 cited schema path. The active specs currently cite 83 distinct uppercase
 names of the form checked. Method names in prose, external APIs and example
 payloads still need the B26 area reviews.
+
+The full CI workspace on the reviewed tree passed 335 tests with one skipped.
+The typecheck and all 11 owner code-door tests passed. On the final source,
+the canonical recorders matched main byte for byte: 804 wire lines, seven tool
+lines, 13,622 RPC lines and 73,945 RV lines. The oversized-answer wording is
+exercised by the focused code-door test. An interrupted recorder and an
+incomplete worker run supplied no lines to the final RV comparison.
