@@ -592,6 +592,13 @@ describe("an engine record that does not fit", () => {
       at(s, "login")["state_checks"] = [{ path: "{home}/state.json", present: ["token"] }]; })],
     ["a login pattern that is not a regular expression", cli((s) => {
       at(s, "login")["url_pattern"] = "(unclosed"; })],
+    ["a status predicate with no command", cli((s) => { delete at(s, "login")["status_argv"]; })],
+    ["an empty status command", cli((s) => { at(s, "login")["status_argv"] = []; },
+      records.get("codex") as Json)],
+    ["state completion with no state checks", cli((s) => {
+      at(s, "login")["complete_on_state"] = true; })],
+    ["state completion with empty state checks", cli((s) => { at(s, "login")["state_checks"] = []; },
+      records.get("gemini") as Json)],
     // Review M2 and M4: every sign-in's page pinned, and its code's lifetime cited.
     ["a login with no pinned page", cli((s) => { delete at(s, "login")["url"]; })],
     ["a pinned page whose path holds a query", cli((s) => {

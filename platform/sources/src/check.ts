@@ -1101,12 +1101,22 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
       check.fail(`cli.login.${key} is true or absent`);
     }
   }
+  const status = fields["status_argv"];
+  if (Array.isArray(status) && status.length === 0) {
+    check.fail("cli.login.status_argv names a command when present");
+  }
   const equals = fields["status_equals"];
+  if (equals !== undefined && status === undefined) {
+    check.fail("cli.login.status_equals reads the output of cli.login.status_argv");
+  }
   if (equals !== undefined && (!object(equals) || !Object.entries(equals).every(([key, item]) =>
     DOTTED.test(key) && ["string", "number", "boolean"].includes(typeof item)))) {
     check.fail("cli.login.status_equals maps dotted paths to scalars");
   }
   const states = fields["state_checks"];
+  if (fields["complete_on_state"] === true && !(Array.isArray(states) && states.length > 0)) {
+    check.fail("cli.login.complete_on_state needs at least one state check");
+  }
   if (states !== undefined) {
     if (!Array.isArray(states) || states.length > 4) {
       check.fail("cli.login.state_checks is a list of at most 4 checks");

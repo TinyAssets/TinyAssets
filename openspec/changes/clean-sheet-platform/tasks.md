@@ -662,6 +662,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   then the pin PR (d3 §A12, list3 P19). The runner and probes bundles moved in u3-services and
   again in S2 (#5517), so the next deploy needs a pair check of the merged pair and the pin PR
   (d3 §I).
+- [x] Check that a record which declares a vendor sign-in status predicate supplies its
+  command, and that a record which completes on stored state supplies the checks that
+  can finish it. See [the record and runner review](../../../docs/decisions/untangle-2026-11/signin-observations.md).
 
 ### Step 7. The dark redeploy of the untangled build
 
