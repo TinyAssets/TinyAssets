@@ -19,6 +19,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Only these pytest roots participate in the OpenSpec inventory and pruning.
+# Other process tests still run in the required process job.
+PROCESS_TEST_ROOT = "scripts/tests/ci"
+TEST_ROOTS = ("tests", PROCESS_TEST_ROOT)
+TEST_PREFIXES = tuple(f"{home}/" for home in TEST_ROOTS)
+
+
+def is_test_source(path: str) -> bool:
+    name = Path(path).name
+    return path.startswith(TEST_PREFIXES) and path.endswith(".py") and (
+        name.startswith("test_") or name.endswith("_test.py")
+    )
+
+
 HEADING = re.compile(r"^(#{1,6})\s+(.+)$", re.M)
 ROW = re.compile(r"^\|\s*([A-Z]\d+(?:[a-z]|\.\d+)*)\s*\|", re.M)
 
@@ -34,7 +48,7 @@ def sources(root: Path, rev: str | None = None) -> dict[str, str]:
         if rev
         else [
             p.relative_to(root).as_posix()
-            for home in ("tests", "openspec")
+            for home in (*TEST_ROOTS, "openspec")
             for p in (root / home).rglob("*")
             if p.is_file()
         ]
@@ -43,11 +57,7 @@ def sources(root: Path, rev: str | None = None) -> dict[str, str]:
         p
         for p in paths
         if (p.startswith("openspec/") and p.endswith(".md"))
-        or (
-            p.startswith("tests/")
-            and p.endswith(".py")
-            and (Path(p).name.startswith("test_") or Path(p).name.endswith("_test.py"))
-        )
+        or is_test_source(p)
     ]
     if rev:
         # One process, not a git process for each of thousands of source files.
@@ -207,7 +217,7 @@ def inventory(files: dict[str, str]) -> list[Test]:
     return [
         test
         for path, text in sorted(files.items())
-        if path.startswith("tests/")
+        if is_test_source(path)
         for test in tests(path, text)
     ]
 
@@ -242,7 +252,7 @@ def coverage_lines(document: dict) -> dict[str, set[tuple[str, int]]]:
         raise ValueError("coverage JSON needs --show-contexts and --cov-context=test")
     lines = defaultdict(set)
     for path, data in document["files"].items():
-        if path.replace("\\", "/").startswith("tests/"):
+        if path.replace("\\", "/").startswith(TEST_PREFIXES):
             continue
         for line, contexts in data.get("contexts", {}).items():
             for context in contexts:
@@ -360,13 +370,13 @@ def main(argv=None) -> int:
     report["tag_at_merge"] = sorted(excluded)
     duplicate = {}
     if args.coverage:
-        from scripts.ci_structural_guards import GUARDS
+        from scripts.ci_structural_guards import targets
 
         document = json.loads(args.coverage.read_text(encoding="utf-8"))
         duplicate = duplicates(
             [t for t in items if all(rows.get(i) == "current" for i in t.ids)],
             coverage_lines(document),
-            {f"tests/{name}.py" for name in GUARDS},
+            {target.partition("::")[0] for target in targets(args.root)},
         )
     report["duplicates"] = duplicate
     if args.json:

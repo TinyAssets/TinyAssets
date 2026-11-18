@@ -229,7 +229,9 @@ def test_scheduled_prune_is_one_draft_pr_with_no_deploy_or_auto_merge():
     assert all("merge --auto" not in s.get("run", "") for s in steps)
     report = next(s for s in steps if s.get("name") == "Report subsets and delete orphaned tests")
     assert '"$COVERAGE_OUTCOME" = success' in report["run"]
-    assert "git diff --name-only -z -- tests | xargs -0 -r" in report["run"]
+    assert "git diff --name-only -z -- tests scripts/tests/ci | xargs -0 -r" in report["run"]
+    coverage = next(step for step in steps if step.get("id") == "coverage")
+    assert coverage["run"].rstrip().endswith("tests scripts/tests/ci")
 
 
 @pytest.mark.verifies(

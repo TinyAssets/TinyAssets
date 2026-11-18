@@ -127,8 +127,16 @@ jobs:
           else
             evidence="${evidence}; required-shard junit MISSING"
           fi
+          process_report=()
+          if [ -n "${push:-}" ] && gh run download "$push" -R "$REPO" \
+              -n junit-process -D inv/process; then
+            process_report=(--process-junit inv/process/junit-process.xml)
+            evidence="${evidence}; process run ${push} at ${push_sha} (${push_end})"
+          else
+            evidence="${evidence}; process junit MISSING"
+          fi
           echo "$evidence"
-          python scripts/test_inventory.py --junit-dir inv/junit \
+          python scripts/test_inventory.py --junit-dir inv/junit "${process_report[@]}" \
             --json inv/inventory.json --markdown inv/inventory.md
           {
             echo "Rewritten weekly by quarantine-oracle.yml (run ${GITHUB_RUN_ID}, tree ${GITHUB_SHA})."

@@ -15,6 +15,14 @@ from pathlib import Path
 
 import pytest
 
+if __package__:
+    from .test_shape import TEST_ROOTS
+else:
+    # affected_tests.pr_tier loads this module by filename from the tree it selects.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_shape import TEST_ROOTS
+
+
 # Keep existing tests intact. Phase 2 may generate inventories; Phase 1 only
 # brings their existing checks forward and makes their failures actionable.
 GUARDS = {
@@ -190,9 +198,21 @@ ROUTE_CASES = (
 )
 
 
-def targets() -> list[str]:
-    return [f"tests/{name}.py" for name in GUARDS if name != "test_onboarding_app"] + [
-        f"tests/test_onboarding_app.py::{name}" for name in ROUTE_CASES
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def targets(root: Path = REPO_ROOT) -> list[str]:
+    def guard_file(name: str) -> str:
+        for home in TEST_ROOTS:
+            path = f"{home}/{name}.py"
+            if (root / path).is_file():
+                return path
+        # A missing guard must still be a failing pytest target.
+        return f"tests/{name}.py"
+
+    routes = guard_file("test_onboarding_app")
+    return [guard_file(name) for name in GUARDS if name != "test_onboarding_app"] + [
+        f"{routes}::{name}" for name in ROUTE_CASES
     ]
 
 
@@ -224,11 +244,18 @@ class GuardResults:
             terminalreporter.write_line(f"{nodeid}: {repair(nodeid)}")
 
 
-def selected_targets(selection: list[str] | None) -> list[str]:
-    """The guards a selection holds, by test file; ``None`` is the whole surface."""
+def selected_targets(selection: list[str] | None, root: Path = REPO_ROOT) -> list[str]:
+    """Run selected guards and surface any missing registered file, even on a narrow diff."""
+    available = targets(root)
     if selection is None:
-        return targets()
-    return [target for target in targets() if target.split("::", 1)[0] in set(selection)]
+        return available
+    files = set(selection)
+    chosen = []
+    for target in available:
+        path = target.partition("::")[0]
+        if path in files or not (root / path).is_file():
+            chosen.append(target)
+    return chosen
 
 
 def main() -> int:

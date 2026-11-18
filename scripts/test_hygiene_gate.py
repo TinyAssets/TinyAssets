@@ -450,11 +450,8 @@ def _ledger(text: str | None) -> dict[str, tuple]:
 
 
 def collectable(path: str | None) -> bool:
-    """Would pytest's default discovery collect tests from this path?"""
-    if not path or not path.startswith("tests/") or not path.endswith(".py"):
-        return False
-    name = path.rsplit("/", 1)[-1]
-    return name.startswith("test_") or name.endswith("_test.py")
+    """Is this collected by the Python suite or the required process job's shape tests?"""
+    return path is not None and test_shape.is_test_source(path)
 
 
 def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
@@ -481,8 +478,8 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
     test_changes = [
         (old, new)
         for _s, old, new in changes
-        if ((old or "").startswith("tests/") and (old or "").endswith(".py"))
-        or ((new or "").startswith("tests/") and (new or "").endswith(".py"))
+        if ((old or "").startswith(test_shape.TEST_PREFIXES) and (old or "").endswith(".py"))
+        or ((new or "").startswith(test_shape.TEST_PREFIXES) and (new or "").endswith(".py"))
     ]
     # The shape resolver already batch-read every collectable test blob.
     # Reuse that text instead of spawning two more git processes per file.

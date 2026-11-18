@@ -31,7 +31,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/shape-coverage"
           python scripts/linux_oracle.py --as-root --out "$RUNNER_TEMP/shape-coverage" -- \
             -q --cov=tinyassets --cov=scripts --cov-context=test \
-            --cov-report=json:/out/coverage.json -o cache_dir=/tmp/pytest-cache
+            --cov-report=json:/out/coverage.json -o cache_dir=/tmp/pytest-cache tests scripts/tests/ci
       - name: Report subsets and delete orphaned tests
         env:
           COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
@@ -43,7 +43,7 @@ jobs:
           fi
           python scripts/test_shape.py "${coverage_args[@]}" \
             --json "$RUNNER_TEMP/shape-report.json" --prune --body "$RUNNER_TEMP/prune-body.md"
-          git diff --name-only -z -- tests | xargs -0 -r python -m ruff check --select F401 --fix
+          git diff --name-only -z -- tests scripts/tests/ci | xargs -0 -r python -m ruff check --select F401 --fix
       - uses: actions/upload-artifact@v4
         with:
           name: test-shape-coverage

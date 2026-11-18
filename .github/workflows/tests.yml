@@ -243,6 +243,7 @@ jobs:
       - run: pip install -r scripts/process-requirements.txt
       - run: >-
           python -m pytest --noconftest -q -p no:cacheprovider
+          -o junit_family=xunit1 --junitxml=junit-process.xml
           scripts/tests
           tests/test_review_check.py
           tests/test_bash_guard.py
@@ -250,6 +251,13 @@ jobs:
           tests/test_rulebook_ratchet.py
           tests/test_session_sync_gate.py
           tests/test_platform_setup.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: "!cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main'"
+        continue-on-error: true
+        with:
+          name: junit-process
+          path: junit-process.xml
+          if-no-files-found: warn
 
   # The TypeScript platform workspace (ADR-032): its Vitest tests, in the real workerd
   # runtime or in Node. Required through `required-tests`' needs; nothing here deploys.

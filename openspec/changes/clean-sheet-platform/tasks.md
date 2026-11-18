@@ -229,6 +229,9 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 
 ### Process first: priority over every step below (d3 §B5)
 
+- [x] P6 prerequisite: the trusted gates and weekly evidence follow governed tests into
+  `scripts/tests/ci/` (`untangle-2026-11/p6-relocation-gates.md`). The actual moves follow.
+
 Each in its own PR, taking the next free slot, never behind product work; the product lanes
 keep running (the untangle skill's "Process first", founder 2026-11-15).
 

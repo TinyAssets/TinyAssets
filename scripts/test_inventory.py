@@ -58,6 +58,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator
 
+if __package__:
+    from .test_shape import PROCESS_TEST_ROOT, TEST_PREFIXES, TEST_ROOTS
+else:
+    # The CLI and source-file loaders can start outside the repository.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_shape import PROCESS_TEST_ROOT, TEST_PREFIXES, TEST_ROOTS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = "test-inventory/1"
 
@@ -180,7 +187,7 @@ def build_module_index(root: Path) -> dict[str, ModuleInfo]:
         if not base.is_dir():
             continue
         for path in base.rglob("*.py"):
-            if "__pycache__" in path.parts:
+            if "__pycache__" in path.parts or path.relative_to(root).as_posix().startswith(TEST_PREFIXES):
                 continue
             rel = path.relative_to(root).with_suffix("")
             parts = list(rel.parts)
@@ -305,7 +312,7 @@ class InventoryFile:
 
 
 def iter_test_files(root: Path) -> Iterator[Path]:
-    for path in sorted((root / "tests").rglob("*.py")):
+    for path in sorted(path for home in TEST_ROOTS for path in (root / home).rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
         if path.name.startswith("test_") or path.name.endswith("_test.py"):
@@ -580,6 +587,8 @@ def _named_elsewhere(mod: str, rel: str, text: str) -> bool:
 
 def area_of(rel: str, imports: Iterable[str]) -> str:
     """Stable bucket: a tests/ subdirectory, else the most-imported tinyassets unit."""
+    if rel.startswith(f"{PROCESS_TEST_ROOT}/"):
+        return "ci"
     parts = rel.split("/")
     if len(parts) > 2:
         return parts[1]
@@ -609,10 +618,10 @@ def _git(root: Path, *args: str) -> str:
 
 
 def last_change_dates(root: Path) -> dict[str, str]:
-    """Most recent commit date per path under tests/ -- one git log, not N."""
+    """Most recent commit date in each test root, collected in one git log."""
     dates: dict[str, str] = {}
     current = None
-    for line in _git(root, "log", "--format=@%cs", "--name-only", "--", "tests").splitlines():
+    for line in _git(root, "log", "--format=@%cs", "--name-only", "--", *TEST_ROOTS).splitlines():
         if line.startswith("@"):
             current = line[1:]
         elif line and current:
@@ -654,29 +663,34 @@ class JunitWindow:
     ran: set[str] = field(default_factory=set)
 
 
-def read_junit(dirs: list[Path]) -> JunitWindow:
+def read_junit(dirs: list[Path], process_report: Path | None = None) -> JunitWindow:
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     from ci_required_tests import node_id  # one definition of a node id
 
     win = JunitWindow()
-    for i, d in enumerate(dirs):
-        for xml in sorted(d.rglob("*.xml")):
-            root = ET.parse(xml).getroot()
-            for tc in root.iter("testcase"):
-                nid = node_id(tc)
-                skipped = tc.find("skipped")
-                if i == 0:
-                    if skipped is not None:
-                        win.skipped[nid] = skipped.get("message") or ""
-                    else:
-                        win.durations[nid] = float(tc.get("time") or 0)
-                        win.ran.add(nid)
-                bad = tc.find("failure")
-                if bad is None:
-                    bad = tc.find("error")
-                if bad is not None:
-                    win.failing.add(nid)
-                    win.failure_text.setdefault(nid, (bad.get("message") or "")[:300])
+    reports = [(i, xml, False) for i, directory in enumerate(dirs)
+               for xml in sorted(directory.rglob("*.xml"))]
+    if process_report is not None:
+        reports.append((0, process_report, True))
+    for i, xml, process_only in reports:
+        root = ET.parse(xml).getroot()
+        for tc in root.iter("testcase"):
+            nid = node_id(tc)
+            if process_only and not nid.startswith(f"{PROCESS_TEST_ROOT}/"):
+                continue
+            skipped = tc.find("skipped")
+            if i == 0:
+                if skipped is not None:
+                    win.skipped[nid] = skipped.get("message") or ""
+                else:
+                    win.durations[nid] = float(tc.get("time") or 0)
+                    win.ran.add(nid)
+            bad = tc.find("failure")
+            if bad is None:
+                bad = tc.find("error")
+            if bad is not None:
+                win.failing.add(nid)
+                win.failure_text.setdefault(nid, (bad.get("message") or "")[:300])
     return win
 
 
@@ -770,7 +784,8 @@ def node_resolves(path: Path, rest: str) -> bool:
 
 
 def build(
-    root: Path, junit_dirs: list[Path], blame: bool, today: dt.date, history_files: list[Path] = ()
+    root: Path, junit_dirs: list[Path], blame: bool, today: dt.date, history_files: list[Path] = (),
+    *, process_report: Path | None = None,
 ) -> dict:
     index = build_module_index(root)
     changes = last_change_dates(root)
@@ -895,7 +910,7 @@ def build(
     module_paths = {info.path.resolve() for info in index.values()}
     named_parts = []
     for rel in _git(root, "ls-files").splitlines():
-        if rel.startswith("tests/"):
+        if rel.startswith(TEST_PREFIXES):
             continue
         f = root / rel
         if f.suffix not in TEXT_SUFFIXES or not f.is_file():
@@ -950,7 +965,7 @@ def build(
         for m in reached:
             transitive[m] += 1
 
-    win = read_junit(junit_dirs) if junit_dirs else None
+    win = read_junit(junit_dirs, process_report) if junit_dirs or process_report else None
     history: set[str] = set()
     for hist in history_files:
         for line in hist.read_text(encoding="utf-8").splitlines():
@@ -1180,6 +1195,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", type=Path)
     ap.add_argument("--markdown", type=Path)
     ap.add_argument("--junit-dir", type=Path, action="append", default=[])
+    ap.add_argument("--process-junit", type=Path, help="current main process report, for its governed CI tests")
     ap.add_argument(
         "--failure-history",
         type=Path,
@@ -1197,7 +1213,11 @@ def main(argv: list[str] | None = None) -> int:
         if not d.is_dir():
             print(f"--junit-dir {d} is not a directory", file=sys.stderr)
             return 2
-    report = build(args.root, args.junit_dir, not args.no_blame, args.today, args.failure_history)
+    if args.process_junit and not args.process_junit.is_file():
+        print(f"--process-junit {args.process_junit} is not a file", file=sys.stderr)
+        return 2
+    report = build(args.root, args.junit_dir, not args.no_blame, args.today, args.failure_history,
+                   process_report=args.process_junit)
     if args.json:
         args.json.write_text(json.dumps(report, indent=1), encoding="utf-8")
     md = to_markdown(report)

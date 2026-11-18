@@ -398,6 +398,16 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
   });
 });
 
+/** Only the weekly inventory upload is optional; pytest keeps its verdict on every event. */
+function processReport(step: Data): boolean {
+  return keyed(step, ["uses", "if", "continue-on-error", "with"]) &&
+    step.uses === "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" &&
+    step.if === "!cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main'" &&
+    step["continue-on-error"] === true && keyed(step.with, ["name", "path", "if-no-files-found"]) &&
+    step.with.name === "junit-process" && step.with.path === "junit-process.xml" &&
+    step.with["if-no-files-found"] === "warn";
+}
+
 describe("required-tests", () => {
   const RESULTS = { PLATFORM_RESULT: "${{ needs.platform-tests.result }}",
                     CHECKS_RESULT: "${{ needs.platform-checks.result }}",
@@ -417,6 +427,7 @@ describe("required-tests", () => {
       expect(jobs[name].needs, `${name} must wait on no other job`).toBeUndefined();
       expect(jobs[name]["continue-on-error"]).toBeUndefined();
       for (const each of jobs[name].steps) {
+        if (name === "process" && processReport(each)) continue;
         expect(each.if, `a step of ${name} is conditional`).toBeUndefined();
         expect(each["continue-on-error"]).toBeUndefined();
       }
@@ -454,7 +465,8 @@ describe("required-tests", () => {
 
 describe("process", () => {
   const INSTALL = "pip install -r scripts/process-requirements.txt";
-  const PYTEST = "python -m pytest --noconftest -q -p no:cacheprovider";
+  const PYTEST = "python -m pytest --noconftest -q -p no:cacheprovider " +
+    "-o junit_family=xunit1 --junitxml=junit-process.xml";
 
   /** Each way the leg could run something other than the process's tests, whole. */
   function processProblems(job: Data): string[] {
@@ -467,11 +479,15 @@ describe("process", () => {
       found.push("process is one job named process, on the plain runner");
     }
     const steps: Data[] = job?.steps ?? [];
-    const shapes = [["uses"], ["uses", "with"], ["run"], ["run"]];
+    const shapes = [["uses"], ["uses", "with"], ["run"], ["run"],
+                    ["uses", "if", "continue-on-error", "with"]];
     if (steps.length !== shapes.length || !shapes.every((shape, at) => keyed(steps[at], shape))) {
-      found.push("process's steps are checkout, setup-python, the install and pytest, each " +
+      found.push("process runs checkout, setup-python, install, pytest and its weekly report, each " +
                  `alone: ${steps.map((each) => Object.keys(each).sort().join(",")).join(" | ")}`);
       return found;
+    }
+    if (!processReport(steps[4])) {
+      found.push("process publishes its own xunit results from main without changing the test verdict");
     }
     if (steps[2].run !== INSTALL) {
       found.push(`process installs its own requirements and nothing else: ${steps[2].run}`);
@@ -508,6 +524,8 @@ describe("process", () => {
     "job continue-on-error": (job) => { job["continue-on-error"] = true; },
     "waits on the selection": (job) => { job.needs = "select"; },
     "installs the old stack": (job) => { job.steps[2].run = "pip install -e '.[dev]'"; },
+    "wrong report": (job) => { job.steps[4].with.path = "other.xml"; },
+    "report blocks the tests": (job) => { job.steps[4]["continue-on-error"] = false; },
     "pytest swallowed": (job) => { job.steps[3].run += " || true"; },
     "loads the old stack's conftest": (job) => {
       job.steps[3].run = job.steps[3].run.replace("--noconftest ", "");
