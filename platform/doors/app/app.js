@@ -59,11 +59,15 @@ function turnOf(section, arg = null) {
   return at.section === section && at.arg === (arg ?? null) ? RENDER.turn : -1;
 }
 
-/** `children` as the main screen, in turn `turn` only. */
-function paint(turn, ...children) {
+function requireCurrent(turn) {
   if (turn !== RENDER.turn) {
     throw STALE;
   }
+}
+
+/** `children` as the main screen, in turn `turn` only. */
+function paint(turn, ...children) {
+  requireCurrent(turn);
   fill(main, ...children);
 }
 
@@ -340,17 +344,21 @@ async function agent(name) {
     }
   };
   const watch = async (conversation) => {
-    if (talk.socket !== null && talk.socket.readyState <= 1) {
+    if (talk.socket !== null && !talk.socket.closed) {
       return;
     }
-    talk.socket = await follow(conversation, (frame) => {
+    const following = follow(conversation, (frame) => {
       talk.frames.push(frame);
       talk.listener(frame);
     }, () => {
-      talk.socket = null;
+      if (talk.socket === following) {
+        talk.socket = null;
+      }
     }, () => {
       settle().catch(report);
     });
+    talk.socket = following;
+    await following.ready;
   };
   // The socket outlives this view: its frames go to whichever view of this agent is shown.
   talk.listener = (frame) => {
@@ -620,27 +628,52 @@ function signinPanel(record, present, live) {
     let current = view;
     // What came before a socket attached, the first one or one after a drop: the sign-in's
     // row as it stands; none, it ended meanwhile, and the panel offers a new one.
+    let latestRead = 0;
     const reread = async () => {
-      const { signins } = await call("signin/list");
-      const now = signins.find((each) => each.id === view.id);
-      if (now !== undefined) {
-        current = now;
-        show(now);
-      } else if (signinSocket !== null) {
-        signinSocket.close();
-        signinSocket = null;
-        say("The sign-in ended before it could be shown. Start it again.", "bad");
-        sources().catch(report);
+      const read = ++latestRead;
+      // The row and the socket have no shared revision. If a frame arrived during the
+      // read, keep showing it and ask for the row again after that frame.
+      while (signinSocket === following && read === latestRead) {
+        const before = current;
+        let result;
+        try {
+          result = await call("signin/list");
+        } catch (error) {
+          if (signinSocket !== following || read !== latestRead) {
+            return;
+          }
+          if (before === current) {
+            throw error;
+          }
+          continue;
+        }
+        if (signinSocket !== following || read !== latestRead) {
+          return;
+        }
+        if (before !== current) {
+          continue;
+        }
+        const now = result.signins.find((each) => each.id === view.id);
+        if (now !== undefined) {
+          current = now;
+          show(now);
+        } else {
+          following.close();
+          signinSocket = null;
+          say("The sign-in ended before it could be shown. Start it again.", "bad");
+          sources().catch(report);
+        }
+        return;
       }
     };
-    signinSocket = await follow(view.id, (frame) => {
+    const following = follow(view.id, (frame) => {
       const event = frame.event ?? {};
       if (event.type !== "ta.signin") {
         return;
       }
       if (SIGNIN_ENDS.includes(event.state)) {
         say(signinEnded(record, event), event.state.startsWith("signed") ? "good" : "bad");
-        signinSocket?.close();
+        following.close();
         signinSocket = null;
         sources().catch(report);
         return;
@@ -653,7 +686,11 @@ function signinPanel(record, present, live) {
     }, () => undefined, () => {
       reread().catch(report);
     });
-    await reread();
+    signinSocket = following;
+    await following.ready;
+    if (signinSocket === following) {
+      await reread();
+    }
   };
   const begin = async (mode) => {
     const view = await call("signin/start", {
@@ -678,6 +715,8 @@ async function sources(arg = null) {
   const turn = turnOf("sources", arg);
   const [{ sources: records }, { connections }, { signins: live, engines }] = await Promise.all([
     call("sources"), call("connections/list"), call("signin/list")]);
+  // Building the sign-in panel can open a socket before paint receives its children.
+  requireCurrent(turn);
   const presence = new Map(engines.map((engine) => [engine.engine, engine]));
   const shown = connections.filter((c) => c.status !== "revoked");
   const connect = (record) => {

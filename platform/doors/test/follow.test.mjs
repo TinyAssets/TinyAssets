@@ -96,8 +96,9 @@ test("a dropped socket is followed by a new one, and no frame is shown twice", a
   const shown = [];
   let attached = 0;
   let ended = null;
-  const handle = await follow("c1", (f) => shown.push(`${f.run}:${f.seq}`),
+  const handle = follow("c1", (f) => shown.push(`${f.run}:${f.seq}`),
                               (code) => { ended = code; }, () => { attached += 1; });
+  await handle.ready;
   await wait(20);
   assert.deepEqual(shown, ["r1:1", "r1:2", "r1:3"]);
   sockets.at(-1).drop(1006, "");  // the network drops it
@@ -123,7 +124,7 @@ test("a final close ends the follow, with no new socket", async (t) => {
   tail = [];
   const before = sockets.length;
   let ended = null;
-  await follow("c3", () => undefined, (code) => { ended = code; });
+  await follow("c3", () => undefined, (code) => { ended = code; }).ready;
   await wait(10);
   sockets.at(-1).drop(4440, "signed_out");
   await wait(1200);
@@ -136,11 +137,61 @@ test("sockets that keep dropping are asked for again with a doubling wait, not i
   mocked(t);
   behaviour = "flap";
   const before = tickets;
-  const handle = await follow("c2", () => undefined, () => undefined);
+  const handle = follow("c2", () => undefined, () => undefined);
+  await handle.ready;
   // The first ticket at once, then after 1 s, then after 2 s more: two by 2.5 s, three by 3.5.
   await wait(2500);
   assert.equal(tickets - before, 2);
   await wait(1000);
   assert.equal(tickets - before, 3);
   handle.close();
+});
+
+test("a closed follow discards a reconnect ticket still being fetched", async (t) => {
+  mocked(t);
+  behaviour = "tail";
+  tail = [];
+  const attached = [];
+  const ended = [];
+  const shown = [];
+  const handle = follow("c4", (f) => shown.push(f), (code) => ended.push(code),
+                              () => attached.push(true));
+  await handle.ready;
+  await wait(5);
+  const before = sockets.length;
+  let answer;
+  t.mock.method(globalThis, "fetch", () => new Promise((resolve) => { answer = resolve; }));
+  sockets.at(-1).drop(1006, "");
+  await wait(1001);
+  assert.equal(typeof answer, "function");
+  handle.close();
+  answer(Response.json({ ticket: "late" }));
+  await wait(10);
+  assert.equal(sockets.length, before);
+  assert.deepEqual(attached, []);
+  assert.deepEqual(shown, []);
+  assert.deepEqual(ended, [1000]);
+});
+
+test("closing while the first ticket is pending supersedes its failure", async (t) => {
+  let refuse;
+  t.mock.method(globalThis, "fetch", () => new Promise((_resolve, reject) => { refuse = reject; }));
+  const ended = [];
+  const before = sockets.length;
+  const handle = follow("c5", () => undefined, (code) => ended.push(code));
+  assert.equal(handle.closed, false);
+  handle.close();
+  handle.close();
+  refuse(new Error("first ticket unavailable"));
+  await handle.ready;
+  assert.equal(handle.closed, true);
+  assert.equal(sockets.length, before);
+  assert.deepEqual(ended, [1000]);
+});
+
+test("an initial ticket failure reaches its active caller", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => { throw new Error("ticket unavailable"); });
+  const handle = follow("c6", () => undefined, () => undefined);
+  await assert.rejects(handle.ready, /ticket unavailable/);
+  assert.equal(handle.closed, true);
 });

@@ -159,24 +159,16 @@ const RECONNECT_MOST_MS = 30_000;
  * followed by a new one (a new ticket), after a wait that doubles while sockets keep
  * dropping, and `onAttach` is called again so the caller reads the state as it now stands.
  * `onClose` gets the close code and reason when it ends for good: closed here, a final close
- * from the doors, or no new ticket to be had. Answers a handle with `close()` and the
- * current socket's `readyState`.
+ * from the doors, or no new ticket to be had. Answers a handle with `close()` and a
+ * `closed` flag for the whole follow. Its `ready` promise covers the first ticket request.
  */
-export async function follow(conversation, onFrame, onClose, onAttach = () => undefined) {
+export function follow(conversation, onFrame, onClose, onAttach = () => undefined) {
   let socket = null;
   let closed = false;
   let wait = RECONNECT_FIRST_MS;
+  let timer;
   /** The last seq shown, by run, across every socket of this follow. */
   const shown = new Map();
-  const handle = {
-    close() {
-      closed = true;
-      socket?.close();
-    },
-    get readyState() {
-      return closed ? WebSocket.CLOSED : socket?.readyState ?? WebSocket.CONNECTING;
-    },
-  };
   const deliver = (frame) => {
     if (typeof frame?.run === "string" && Number.isSafeInteger(frame.seq)) {
       const last = shown.get(frame.run);
@@ -189,6 +181,9 @@ export async function follow(conversation, onFrame, onClose, onAttach = () => un
   };
   const attach = async () => {
     const { ticket } = await call("agent/socket-ticket", { conversation_id: conversation });
+    if (closed) {
+      return;
+    }
     const query = new URLSearchParams({ conversation_id: conversation, ticket });
     const opened = new WebSocket(`wss://${location.host}/app/api/agent/socket?${query}`);
     socket = opened;
@@ -197,6 +192,9 @@ export async function follow(conversation, onFrame, onClose, onAttach = () => un
       openedAt = Date.now();
     });
     opened.addEventListener("message", (event) => {
+      if (closed || socket !== opened) {
+        return;
+      }
       let frame;
       try {
         frame = JSON.parse(event.data);
@@ -206,6 +204,7 @@ export async function follow(conversation, onFrame, onClose, onAttach = () => un
       deliver(frame);
     });
     opened.addEventListener("close", (event) => {
+      socket = null;
       if (closed || FINAL_CLOSES.includes(event.code)) {
         closed = true;
         onClose(event.code, event.reason);
@@ -217,17 +216,41 @@ export async function follow(conversation, onFrame, onClose, onAttach = () => un
       }
       const now = wait;
       wait = Math.min(wait * 2, RECONNECT_MOST_MS);
-      setTimeout(() => {
-        if (closed) {
-          return;
-        }
-        attach().then(() => onAttach(), (error) => {
-          closed = true;
-          onClose(event.code, error instanceof Error ? error.message : String(error));
+      timer = setTimeout(() => {
+        attach().then(() => {
+          if (!closed) {
+            onAttach();
+          }
+        }, (error) => {
+          if (!closed) {
+            closed = true;
+            onClose(event.code, error instanceof Error ? error.message : String(error));
+          }
         });
       }, now);
     });
   };
-  await attach();
-  return handle;
+  return {
+    ready: attach().catch((error) => {
+      if (!closed) {
+        closed = true;
+        throw error;
+      }
+    }),
+    close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearTimeout(timer);
+      if (socket === null) {
+        onClose(1000, "");
+      } else {
+        socket.close();
+      }
+    },
+    get closed() {
+      return closed;
+    },
+  };
 }

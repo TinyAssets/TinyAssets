@@ -551,6 +551,19 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
   const list = async () => (await (await mf.dispatchFetch(`https://e2e.internal/signins/${WHO}`))
     .json()).signins;
   const before = (await list()).length;
+  await card.getByRole("button", { name: /^Sign in/ }).waitFor();
+  // Hold the first real "starting" snapshot until the live socket has shown the prompt.
+  // The rows and events carry no common revision.
+  await page.evaluate(() => {
+    const original = window.fetch;
+    window.fetch = async (...args) => {
+      const answer = await original(...args);
+      if (String(args[0]).endsWith("/app/api/signin/list") && !window.__signinSnapshot) {
+        await new Promise((resolve) => { window.__signinSnapshot = resolve; });
+      }
+      return answer;
+    };
+  });
   await card.getByRole("button", { name: /^Sign in/ }).click();
   let signin;
   for (let i = 0; i < 100 && signin === undefined; i++) {
@@ -568,6 +581,7 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
                  "x-ta-runner": signin.tokens.runner_token } });
     assert.equal(answer.status, 200, await answer.clone().text());
   };
+  await page.waitForFunction(() => typeof window.__signinSnapshot === "function");
   const vendor = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
     "9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2F" +
     "platform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+" +
@@ -586,6 +600,11 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.equal(await open(), 1);
+  const fresh = page.waitForResponse((response) =>
+    response.url().endsWith("/app/api/signin/list"));
+  await page.evaluate(() => window.__signinSnapshot());
+  assert.equal((await fresh).status(), 200);
+  await card.getByRole("link", { name: "Open Claude's sign-in page" }).waitFor();
   const made = await page.evaluate(() => window.__sockets.length);
   // The connection drops, as a network drops it: the app never closed it.
   await page.evaluate(() => window.__sockets.filter((socket) =>
