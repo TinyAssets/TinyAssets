@@ -115,7 +115,7 @@ export class EgressGateway extends WorkerEntrypoint<GatewayEnv> implements Egres
         : await forwardMetered(this.env, bound, blob, request, reserve, stop,
                                builtinCatalog());
     } catch (error) {
-      sent = { response: failureResponse(codeOf(error, "internal")),
+      sent = { response: failureResponse(codeOf(error)),
                outcome: Promise.resolve({ state: "unknown" }) };
     }
     // A door that stopped reading the outcome (its client left) ends the write: nothing waits.

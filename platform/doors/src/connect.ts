@@ -53,9 +53,7 @@
 import { keyed } from "../../contract/src/checks";
 import { secret, SECRET_MAX } from "../../contract/src/egress-scope";
 import type { Verified } from "../../contract/src/gateway";
-import {
-  type GatewayCode, isGatewayCode, Refusal, REFUSALS, refusalOf,
-} from "../../contract/src/refusal";
+import { gatewayRefusal, Refusal, REFUSALS } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
 import { navigation } from "./authorize";
@@ -125,12 +123,6 @@ function redirectFor(record: SourceRecord): string {
 /** Whether the source's provider can be asked to revoke what its OAuth flow issues. */
 function revocable(oauth: OAuthSpec | undefined): boolean {
   return oauth?.protocol === "rfc6749" && oauth.revocation_endpoint !== undefined;
-}
-
-/** The gateway's refusal `error` is, by its own codes alone; null for anything else. */
-function gatewayRefusal(error: unknown): GatewayCode | null {
-  const code = refusalOf(error)?.code;
-  return isGatewayCode(code) ? code : null;
 }
 
 /**

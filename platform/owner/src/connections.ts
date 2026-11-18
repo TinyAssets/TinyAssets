@@ -76,7 +76,7 @@ import type {
   ResealAnswer, Swept,
 } from "../../contract/src/owner";
 import { resealAnswer } from "../../contract/src/owner";
-import { isGatewayCode, orRefused, Refusal, refusalOf } from "../../contract/src/refusal";
+import { gatewayRefusal, isGatewayCode, orRefused, Refusal } from "../../contract/src/refusal";
 import {
   CONNECTION_BLOB_MAX, EGRESS_JSON_MAX, MODELS_JSON_MAX, REDIRECT_URI_MAX,
 } from "../../contract/src/limits";
@@ -721,8 +721,7 @@ export class Connections {
       refreshed = await this.#gateway.refresh(this.#owner(), id, from.version, from.blob);
     } catch (error) {
       // The gateway's fixed code, as its refusal carries it; anything else is `internal`.
-      const refused = refusalOf(error)?.code;
-      const code = isGatewayCode(refused) ? refused : "internal";
+      const code = gatewayRefusal(error) ?? "internal";
       await this.#write(() => this.#unlease(id, holder, code));
       throw new Refusal("credential_refresh_failed", `credential_refresh_failed: ${code}`);
     }

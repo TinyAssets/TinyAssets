@@ -53,6 +53,8 @@ end.
 - [x] G1 `platform/gateway`: the keyring, sealing, the OAuth exchanges and raw forwarding.
 - [x] G2 The owner side: model connections and spend (`owner/src/connections.ts`, `usage.ts`).
 - [x] G3 The connect doors (`doors/src/connect.ts`) and the source records (`platform/sources/`).
+- [x] The gateway, connect door and owner refresh recognize gateway refusals through the
+  contract. Each keeps its own fault response and cleanup (`gateway-refusal-code.md`).
 - [x] G4 The egress door, the sandbox's identity, its charge and its network document
   (`doors/src/egress.ts`, `owner/src/egress.ts`, `gateway/src/meter.ts`,
   `contract/src/api-rules.ts`). Its live probes are §10 step 8.

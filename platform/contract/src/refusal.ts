@@ -14,10 +14,9 @@
  *
  * A code is `transient` or terminal. A transient refusal says nothing of the request: the
  * same one succeeds later. Most say when, with their `Retry-After` (a pool, a ceiling or a
- * post gate full for the moment, a platform gate closed); a files root that changed under a
- * rewrap is run again at once. So a lane that settles a run, a schedule or a mail on a
- * refusal settles it only on a terminal one, and leaves the item to be tried again on a
- * transient one.
+ * post gate full for the moment, a platform gate closed). A lane that settles a run, a
+ * schedule or a mail on a refusal settles it only on a terminal one, and leaves the item to
+ * be tried again on a transient one.
  *
  * A `quiet` code is one a protocol that shows a code (the egress door, the inbound hooks)
  * does not show: it shows the refusal's message in its place, or the egress door's
@@ -274,6 +273,12 @@ export type GatewayCode = (typeof GATEWAY_CODES)[number];
 /** Whether `code` is one of the gateway's codes. */
 export function isGatewayCode(code: unknown): code is GatewayCode {
   return (GATEWAY_CODES as readonly unknown[]).includes(code);
+}
+
+/** Recognize a gateway refusal locally or across RPC. Callers choose how to handle a fault. */
+export function gatewayRefusal(error: unknown): GatewayCode | null {
+  const code = refusalOf(error)?.code;
+  return isGatewayCode(code) ? code : null;
 }
 
 /**

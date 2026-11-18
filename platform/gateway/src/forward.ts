@@ -407,7 +407,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   try {
     opened = await open(env, bound, blob);
   } catch (error) {
-    return refused(codeOf(error, "internal"));
+    return refused(codeOf(error));
   }
   const { credential, resealed } = opened;
   let incoming: URL;
@@ -466,7 +466,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     } catch (error) {
       hold.release();
       // Nothing was sent: the call is `failed`, whatever stopped it (M3).
-      return refused(cancelled.signal.aborted ? "aborted" : codeOf(error, "internal"),
+      return refused(cancelled.signal.aborted ? "aborted" : codeOf(error),
                      resealed);
     }
     if ("refused" in ready) {

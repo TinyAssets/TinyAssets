@@ -9,13 +9,12 @@
  * it as `{error: {code, message}}` with the code's status.
  */
 import {
-  type GatewayCode, isGatewayCode, Refusal, REFUSALS, refusalOf,
+  type GatewayCode, gatewayRefusal, Refusal, REFUSALS,
 } from "../../contract/src/refusal";
 
-/** The gateway code of a refusal, or `fallback` for anything else (whose text is never shown). */
-export function codeOf(error: unknown, fallback: GatewayCode): GatewayCode {
-  const code = refusalOf(error)?.code;
-  return isGatewayCode(code) ? code : fallback;
+/** The code the gateway reports for an error. Unexpected errors expose only `internal`. */
+export function codeOf(error: unknown): GatewayCode {
+  return gatewayRefusal(error) ?? "internal";
 }
 
 /** Runs an RPC method, letting only a fixed code out of it. */
@@ -23,7 +22,7 @@ export async function guarded<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (error) {
-    throw new Refusal(codeOf(error, "internal"));
+    throw new Refusal(codeOf(error));
   }
 }
 
