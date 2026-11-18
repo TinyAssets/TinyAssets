@@ -201,10 +201,15 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   platform's canary replaces rather than reworks (list3 P29). Verify: the handback's plan job
   (read-only); the control record opened for the probe owner (tester B) alone, through the
   operator path; its API key stored as `TA_PROBE_KEY`, and the free-tier key connected to it;
-  the platform's canary with `full`, then armed (`PLATFORM_CANARY_TOKEN`). If verify fails,
+  the platform's canary with `full`, then armed (`PLATFORM_CANARY_TOKEN`) after the
+  clock-evidence gate below. If verify fails,
   before the hold ends: `--mode handback --record <id>`, the old stack restarted on its
   untouched volumes, then `handles-canary.yml`. Writes made on the new platform since `routes`
   are lost unless exported (decided at verify).
+  - [ ] Before arming, prove the watchdog recognizes a doors clock dispatch independently
+    of the founder's manual run. With a newer manual dispatch, a recent clock tick must
+    still count and a missing or stale one must fail. Refuse future times. Confirm the first
+    real tick after arming (`untangle-2026-11/canary-clock-evidence.md`).
 - [ ] **The public `/connect` page,** right after `routes`, in the site-at-the-cutover PR
   (d3 §C6 F2): branch `platform-brain-site` no longer builds, so the page is rebuilt from
   `contract/apps.json`, and its sweep checks one section per app.
