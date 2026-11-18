@@ -56,14 +56,18 @@ export function measured(reports) {
         throw new Error(`${rel}: not in a test, guards or runner folder`);
       }
       for (const result of file.assertionResults ?? []) {
-        if (result.status !== "passed" || typeof result.duration !== "number") {
+        if (result.status !== "passed") {
           continue;
         }
-        const calibration_ms = result.meta?.calibration_ms;
-        if (typeof calibration_ms !== "number") {
-          throw new Error(`${rel} > ${result.fullName}: no runner calibration in its meta`);
+        const test = `${rel} > ${result.fullName}`;
+        if (!Number.isFinite(result.duration) || result.duration < 0) {
+          throw new Error(`${test}: expected a finite, nonnegative duration`);
         }
-        out.push({ project: `${workspace}/${project}`, test: `${rel} > ${result.fullName}`,
+        const calibration_ms = result.meta?.calibration_ms;
+        if (!Number.isFinite(calibration_ms) || calibration_ms <= 0) {
+          throw new Error(`${test}: expected a finite, positive runner calibration in its meta`);
+        }
+        out.push({ project: `${workspace}/${project}`, test,
                    ms: result.duration, large: (result.tags ?? []).includes("large"),
                    calibration_ms });
       }
