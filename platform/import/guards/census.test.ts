@@ -82,6 +82,10 @@ describe("the census", () => {
     });
     expect((report["files"] as { largest: number }).largest).toBe(4 * 1024 * 1024 + 10);
     // Both policies have the old stack's shape, which the validator no longer takes (d3 §N6).
+    expect(report["legacy_policy"]).toEqual({
+      classified_documents: 2, unclassified_documents: 0, with_entries: 0, entries: 0,
+      with_spend_settings: 0, spend_settings: 0, with_egress_ask: 1,
+    });
     expect(report["rows"]).toEqual({ policies: 2, policies_archived: 2, collection_rows: 2,
                                      body_bytes: 27 });
     expect(report["stores"]).toMatchObject({
@@ -114,6 +118,59 @@ describe("the census", () => {
     }
     expect(table).toContain(`${keyOf(ALICE)}\tfiles\t6`);
     expect(table).toContain(`${keyOf(BOB)}\tadmission\tsuspended,billing`);
+  });
+
+  it("counts configured entries, zero caps, source ceilings and egress asks without their values", () => {
+    const f = fresh();
+    const store = new DatabaseSync(join(f.account(ALICE), "policy.db"));
+    const entry = { scope: "account", table: "rules",
+                    values: { action_class: "share", behaviour: "hand_off" } };
+    const secret = "private-source-name";
+    const spend = { daily: null, monthly: null, transaction: 0, ask_above: 0,
+                    source_ceilings: { [secret]: 17 } };
+    store.prepare("UPDATE policy SET document = ?").run(JSON.stringify({
+      entries: [entry, { scope: "account", table: "review_on", values: { source: secret } }],
+      spend, egress: { mode: "ask", destinations: [] },
+    }));
+    store.close();
+    // A version-zero document predates the egress section.
+    const older = new DatabaseSync(join(f.account(FOUNDER), "policy.db"));
+    older.prepare("UPDATE policy SET document = ?").run(JSON.stringify({ entries: [], spend }));
+    older.close();
+    const result = census(f.copy, TIERS);
+    expect(result.report["legacy_policy"]).toEqual({
+      classified_documents: 2, unclassified_documents: 0, with_entries: 1, entries: 2,
+      with_spend_settings: 2, spend_settings: 6, with_egress_ask: 1,
+    });
+    expect(JSON.stringify(result.report)).not.toContain(secret);
+    expect(result.table).not.toContain(secret);
+  });
+
+  it("reports unrecognised policy separately and examines a policy even when its files cannot fit", () => {
+    const f = fresh();
+    const db = new DatabaseSync(join(f.account(FOUNDER), "policy.db"));
+    db.prepare("UPDATE policy SET document = ?").run("{bad");
+    db.close();
+    sparse(join(f.tree(ALICE), "novel", "workspace", "too-big"), FILE_DEFAULTS.max_file_bytes + 1);
+    const { report, ready } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["legacy_policy"]).toEqual({
+      classified_documents: 1, unclassified_documents: 1, with_entries: 0, entries: 0,
+      with_spend_settings: 0, spend_settings: 0, with_egress_ask: 1,
+    });
+  });
+
+  it("keeps both the fit refusal and unreadable policy in the report", () => {
+    const f = fresh();
+    const db = new DatabaseSync(join(f.account(ALICE), "policy.db"));
+    db.exec("ALTER TABLE policy RENAME COLUMN document TO unexpected");
+    db.close();
+    sparse(join(f.tree(ALICE), "novel", "workspace", "too-big"), FILE_DEFAULTS.max_file_bytes + 1);
+    const { report, ready } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toMatchObject({ over_file_bytes: 1, bad_store: 1 });
+    expect(report["legacy_policy"]).toMatchObject({ classified_documents: 1,
+                                                  unclassified_documents: 1 });
   });
 
   it("never writes to the backup copy, its stores in WAL mode: not a census, not a bundle", () => {

@@ -69,33 +69,41 @@ function byPath(a: string, b: string): number {
   return x.length - y.length;
 }
 
+function accountRows(owner: Owner, copy: Copy, store: string, table: string,
+                     sql: string): Record<string, unknown>[] {
+  const account = join(layout(copy.work).shared, ".broker", "accounts", owner.digest);
+  const at = join(account, store);
+  try {
+    lstatSync(at);
+  } catch {
+    return [];
+  }
+  const db = openStore(at);
+  try {
+    const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table);
+    return has === undefined ? [] : db.prepare(sql).all() as Record<string, unknown>[];
+  } finally {
+    db.close();
+  }
+}
+
+/** The stored documents, before the new platform's validator decides what it can carry. */
+export function policyDocuments(owner: Owner, copy: Copy): string[] {
+  return accountRows(owner, copy, "policy.db", "policy", "SELECT document FROM policy")
+    .map((row) => String(row["document"]));
+}
+
 /**
  * The owner's live rows: its policy document, then its collections' rows by collection and seq;
  * and the old policy as it was stored when the platform's validator refuses it (`validate`),
  * which is then no row: the owner keeps the default, and its document is archived verbatim.
  */
-function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string | null } {
-  const account = join(layout(copy.work).shared, ".broker", "accounts", owner.digest);
-  const read = (store: string, table: string, sql: string): Record<string, unknown>[] => {
-    const at = join(account, store);
-    try {
-      lstatSync(at);
-    } catch {
-      return [];
-    }
-    const db = openStore(at);
-    try {
-      const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-        .get(table);
-      return has === undefined ? [] : db.prepare(sql).all() as Record<string, unknown>[];
-    } finally {
-      db.close();
-    }
-  };
+function rowsOf(owner: Owner, copy: Copy, documents: readonly string[]):
+    { rows: Row[]; refusedPolicy: string | null } {
   const policy: Row[] = [];
   let refusedPolicy: string | null = null;
-  for (const row of read("policy.db", "policy", "SELECT document FROM policy")) {
-    const text = String(row["document"]);
+  for (const text of documents) {
     try {
       const document: unknown = JSON.parse(text);
       validate(document);
@@ -104,7 +112,7 @@ function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string 
       refusedPolicy = text;
     }
   }
-  const collections = read("conversations.db", "collection_rows",
+  const collections = accountRows(owner, copy, "conversations.db", "collection_rows",
                            "SELECT collection, row_id, private, body FROM collection_rows " +
                            "ORDER BY collection, seq")
     .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
@@ -314,7 +322,8 @@ export interface Built {
  * live rows. The files the import makes are made in `dir`'s `.work/` (or a temporary folder
  * of the job's own) and deleted after.
  */
-export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
+export function buildTree(owner: Owner, copy: Copy, dir: string | null,
+                          documents: readonly string[] = policyDocuments(owner, copy)): Built {
   const store = new Store(dir);
   const work = dir === null ? mkdtempSync(join(tmpdir(), "ta-import-work-"))
     : join(dir, ".work");
@@ -362,7 +371,7 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
     if (owner.tree.ignoredTrees.length > 0) {
       make(IGNORED, (at) => tarOf(at, owner.tree.ignoredTrees));
     }
-    const { rows, refusedPolicy } = rowsOf(owner, copy);
+    const { rows, refusedPolicy } = rowsOf(owner, copy, documents);
     if (refusedPolicy !== null) {
       make(POLICY_REFUSED, (at) => writeFileSync(at, refusedPolicy, { flag: "wx" }));
     }

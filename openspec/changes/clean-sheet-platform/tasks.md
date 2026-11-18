@@ -591,6 +591,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).
+    - [x] The offline census reports configured entries, spend settings and egress asks
+      before policy translation (`untangle-2026-11/r5-policy-census.md`).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The

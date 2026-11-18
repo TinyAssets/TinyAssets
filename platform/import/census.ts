@@ -12,13 +12,14 @@
  */
 import { lstatSync, readdirSync } from "node:fs";
 
+import { keyed, object } from "../contract/src/checks";
 import type { Tiers } from "../contract/src/control";
 import { INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, type Fit, fitOf, tierOf } from "./build";
+import { type Built, buildTree, policyDocuments, type Fit, fitOf, tierOf } from "./build";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
 
@@ -123,14 +124,15 @@ export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
  * or counted and not kept), once nothing refuses it first. With `tiers` null (a backup,
  * which the limits do not bind) only what a tar cannot hold refuses it.
  */
-export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
+export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null,
+                        documents?: readonly string[]):
     { built: Built | null; fit: Fit | null; problems: Problem[] } {
   const first = precheck(owner, tiers)
     .filter((problem) => tiers !== null || problem.code === "over_tar_member");
   if (first.length > 0) {
     return { built: null, fit: null, problems: first };
   }
-  const built = buildTree(owner, copy, dir);
+  const built = buildTree(owner, copy, dir, documents);
   if (tiers === null) {
     return { built, fit: null, problems: [] };
   }
@@ -145,6 +147,42 @@ const tally = <T extends string>(items: readonly T[]): Record<string, number> =>
   }
   return found;
 };
+
+/** Counts of explicit settings in the retired broker document, before any translation.
+ * An empty entries array and all-null caps were its defaults. A zero cap was set.
+ * The earliest stored form predates egress. Keep an unrecognised document visible.
+ */
+function legacySettings(text: string): { entries: number; caps: number; ask: boolean } | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!keyed(doc, ["entries", "spend"], ["egress"]) || !Array.isArray(doc.entries)
+      || !doc.entries.every((entry) => keyed(entry, ["scope", "table", "values"])
+        && entry.scope === "account" && typeof entry.table === "string" && object(entry.values))) {
+    return null;
+  }
+  const caps = ["daily", "monthly", "transaction", "ask_above"];
+  const spend = doc.spend;
+  if (!keyed(spend, [...caps, "source_ceilings"]) || !object(spend.source_ceilings)) {
+    return null;
+  }
+  const amounts = caps.map((cap) => spend[cap]).filter((value) => value !== null);
+  const ceilings = Object.values(spend.source_ceilings);
+  if (![...amounts, ...ceilings].every((amount) => typeof amount === "number" && amount >= 0 && Number.isInteger(amount))) {
+    return null;
+  }
+  const egress = doc.egress;
+  if (egress !== undefined && (!keyed(egress, ["mode", "destinations"])
+      || typeof egress.mode !== "string" || !["open", "allowlist", "ask"].includes(egress.mode)
+      || !Array.isArray(egress.destinations))) {
+    return null;
+  }
+  return { entries: doc.entries.length, caps: amounts.length + ceilings.length,
+           ask: object(egress) && egress.mode === "ask" };
+}
 
 export interface Census {
   /** The counts that may leave the host: no principal, no owner's name, no secret. */
@@ -163,17 +201,43 @@ export function census(copy: Copy, tiers: Tiers): Census {
   const fits = new Map<string, Fit>();
   const owned = new Map<string, Problem[]>();
   let archivedPolicies = 0;
+  const settings = { classified_documents: 0, with_entries: 0, entries: 0,
+                     with_spend_settings: 0, spend_settings: 0, with_egress_ask: 0 };
   for (const owner of live) {
     const problems = [...owner.tree.problems, ...admissionProblems(owner)];
-    if (owner.tree.problems.length === 0) {
-      const measured = measure(owner, copy, tiers, null);
-      problems.push(...measured.problems);
-      archivedPolicies += measured.built?.policyArchived === true ? 1 : 0;
-      if (measured.fit !== null) {
-        fits.set(owner.key, measured.fit);
+    owned.set(owner.key, problems);
+    if (owner.tree.problems.length > 0) {
+      continue;
+    }
+    // Count before fit: an otherwise oversize owner can still have policy to translate.
+    let documents: string[] | null;
+    try {
+      documents = owner.tree.rows.policy > 0 ? policyDocuments(owner, copy) : [];
+    } catch {
+      documents = null;
+    }
+    if (documents === null || documents.length !== owner.tree.rows.policy) {
+      problems.push({ code: "bad_store", at: `owner/${owner.key}/policy.db` },
+                    ...precheck(owner, tiers));
+      continue;
+    }
+    for (const text of documents) {
+      const found = legacySettings(text);
+      if (found !== null) {
+        settings.classified_documents++;
+        settings.entries += found.entries;
+        settings.with_entries += Number(found.entries > 0);
+        settings.spend_settings += found.caps;
+        settings.with_spend_settings += Number(found.caps > 0);
+        settings.with_egress_ask += Number(found.ask);
       }
     }
-    owned.set(owner.key, problems);
+    const measured = measure(owner, copy, tiers, null, documents);
+    problems.push(...measured.problems);
+    archivedPolicies += measured.built?.policyArchived === true ? 1 : 0;
+    if (measured.fit !== null) {
+      fits.set(owner.key, measured.fit);
+    }
   }
   const problems = [...copyProblems, ...fleet.problems, ...[...owned.values()].flat()];
   const stores: Record<string, number> = {};
@@ -231,6 +295,8 @@ export function census(copy: Copy, tiers: Tiers): Census {
       archived_stores: sum((owner) => owner.tree.archived.length),
     },
     // A policy the platform's validator refuses: archived as a file, the default kept.
+    legacy_policy: { ...settings,
+                     unclassified_documents: sum((owner) => owner.tree.rows.policy) - settings.classified_documents },
     rows: { policies: sum((owner) => owner.tree.rows.policy),
             policies_archived: archivedPolicies,
             collection_rows: sum((owner) => owner.tree.rows.collection),
