@@ -323,6 +323,8 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
   they differ (d3 §C8, list3 P16).
+  - [x] The owner counts acceptance by the wake kind’s status: Grok Bot starts only on HTTP
+    200; the stored receipt keeps the status returned (`untangle-2026-11/doorbell-acceptance.md`).
 
 ### Step 3. This re-cut, P3, the manifest's inventory
 

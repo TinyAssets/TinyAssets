@@ -242,7 +242,7 @@ describe("each wake kind sends its own record's shape, its secret the gateway's 
     const r = await rung();
     await control([r.owner]);
     const grok = await r.register(MUSE, "Grok", "webhook");
-    await pasted(r, grok, "grok_webhook_routine", `https://doorbell.test/${r.path}/grok`,
+    await pasted(r, grok, "grok_webhook_routine", `https://doorbell.test/${r.path}/status-200`,
                  { rooms: ["room:app:lobby"] });
     await write(r, "room:app:den", "m0");  // not a room it follows: rings nothing
     expect(await r.table("ledger_wakes")).toEqual([]);
@@ -254,6 +254,41 @@ describe("each wake kind sends its own record's shape, its secret the gateway's 
       agent_id: grok, command_center_id: "alpha", changes: ["rooms"], cursor: 0, after: 1,
       read: ["inbox_digest"] });
   });
+
+  it.each([[200, "sent"], [202, "failed"], [201, "failed"]] as const)(
+    "Grok Bot routine returning %i records %s and the vendor response", async (status, state) => {
+      const r = await rung();
+      await control([r.owner]);
+      const grok = await r.register(MUSE, "Grok", "webhook");
+      await pasted(r, grok, "grok_webhook_routine", `https://doorbell.test/${r.path}/status-${status}`);
+      await r.post(null, `dm:${grok}`);
+      await rings(r, 1);
+      const [wake] = await r.sql("SELECT state, receipt_json FROM ledger_wakes");
+      expect(wake!["state"]).toBe(state);
+      expect(JSON.parse(wake!["receipt_json"] as string)).toMatchObject({ status });
+      expect(await r.sql("SELECT status FROM wake_callbacks")).toEqual([{ status }]);
+      expect(await r.sql("SELECT state FROM ledger_recipients WHERE agent_id = ?", grok))
+        .toEqual([{ state: state === "sent" ? "woken" : "queued" }]);
+    });
+
+  it.each([[200, true], [202, false]] as const)(
+    "Grok Bot response %i alongside a 429 records acceptance as %s", async (status, accepted) => {
+      const r = await rung();
+      await control([r.owner]);
+      const grok = await r.register(MUSE, "Grok", "webhook");
+      for (const reply of [String(status), "429?retry=120"]) {
+        await pasted(r, grok, "grok_webhook_routine", `https://doorbell.test/${r.path}/status-${reply}`);
+      }
+      await r.post(null, `dm:${grok}`);
+      await rings(r, 2);
+      const [wake] = await r.sql("SELECT state, receipt_json FROM ledger_wakes");
+      expect(wake!["state"]).toBe("rate_limited");
+      expect(JSON.parse(wake!["receipt_json"] as string)).toMatchObject({ status: 429, accepted });
+      expect(await r.sql("SELECT state FROM ledger_recipients WHERE agent_id = ?", grok))
+        .toEqual([{ state: accepted ? "woken" : "queued" }]);
+      const callbacks = await r.sql("SELECT status, rung FROM wake_callbacks ORDER BY status");
+      expect(callbacks).toMatchObject([{ status, rung: expect.any(String) }, { status: 429, rung: null }]);
+    });
 
   it("Muse: no push, so no wake and no doorbell; it catches up on its own schedule",
      async () => {
@@ -286,6 +321,7 @@ describe("the records are data, checked whole", () => {
                                          ...rest] });
     expect(broken({ body: { text: "{body}" } })).toThrow("unknown placeholder");
     expect(broken({ secret: "whsec_.*" })).toThrow("anchored");
+    expect(broken({ accepted_status: 400 })).toThrow("accepted_status");
     expect(broken({ auth: "basic" })).toThrow("bearer or standard_webhooks");
     expect(broken({ headers: { Authorization: "x" } })).toThrow("never the auth's own");
     expect(broken({ auth: "bearer" })).toThrow("signed by webhook");

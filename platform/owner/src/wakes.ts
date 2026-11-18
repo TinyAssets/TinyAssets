@@ -203,7 +203,7 @@ function rungOf(target: WakeTarget): string {
 }
 
 /** One subscription's answer, as the wake's outcome ranks it. */
-type Answered = { readonly status: number; readonly retry_after: number | null };
+type Answered = { readonly status: number; readonly accepted: boolean; readonly retry_after: number | null };
 
 /**
  * The object's doorbell: one sender for every wake kind, from that kind's record, through
@@ -222,7 +222,7 @@ type Answered = { readonly status: number; readonly retry_after: number | null }
  * subscription is owed it (for the longest 429's `Retry-After`; the next try rings only
  * those), else `unknown` if any send may have left without an answer (`answer_lost` on its
  * row, and in the log, when the gateway's own answer was lost), else `sent` if any
- * was accepted (2xx), else `failed` with the first status (or, when the gateway refused
+ * was accepted by its kind's rule, else `failed` with the first status (or, when the gateway refused
  * every ring before its send, its refusal's code, logged): a 410 or 413 keeps the
  * subscription (the MCP Events spec), and a status the record names `token_dead` leaves the
  * owner one notice that its pasted token no longer works, until it is pasted again.
@@ -391,8 +391,11 @@ export class Doorbell implements WakeSender, Lane {
       }
       const status = rung.status;
       await write(() => ledger.answered(callback.subscription_id, wake, status));
-      answers.push({ status, retry_after: retryAfterOf(rung.retry_after, clock()) });
-      const dead = kindNamed(callback.kind)?.push?.token_dead ?? [];
+      const push = kindNamed(callback.kind)?.push;
+      const accepted = push?.accepted_status === "2xx" ? status >= 200 && status < 300
+        : status === push?.accepted_status;
+      answers.push({ status, accepted, retry_after: retryAfterOf(rung.retry_after, clock()) });
+      const dead = push?.token_dead ?? [];
       if (callback.principal === OWNER && dead.includes(status)
           && !dead.includes(callback.status ?? 0)) {
         await this.#deps.notice("doorbell_token_refused",
@@ -400,7 +403,7 @@ export class Doorbell implements WakeSender, Lane {
                                 "paste the token the vendor shows now");
       }
     }
-    const accepted = answers.find((answer) => answer.status >= 200 && answer.status < 300);
+    const accepted = answers.find((answer) => answer.accepted);
     const limited = answers.filter((answer) => answer.status === 429);
     if (limited.length) {
       const waits = limited.map((answer) => answer.retry_after);

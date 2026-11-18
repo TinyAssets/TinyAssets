@@ -26,6 +26,7 @@
  *   (`{wake}`, `{text}`, `{event_id}`, `{timestamp}`, `{subscription_id}`) is replaced by
  *   its value; nothing is interpolated inside a string.
  * - `max_body_bytes`: the vendor's cited ceiling, or null where it states none.
+ * - `accepted_status`: a particular 2xx status or the full 2xx range.
  * - `token_dead`: the statuses that say the owner's pasted token no longer works, which
  *   leave the owner a notice (the callback stays: the owner pastes the new one).
  *
@@ -71,6 +72,8 @@ export interface Push {
   readonly headers: Readonly<Record<string, string>>;
   readonly body: unknown;
   readonly max_body_bytes: number | null;
+  /** Which HTTP response confirms that the receiver accepted this wake. */
+  readonly accepted_status: "2xx" | number;
   readonly token_dead: readonly number[];
   readonly events: Events | null;
 }
@@ -95,7 +98,7 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EVENT_NAME = /^[a-z][a-z0-9_.]{0,63}$/;
 const KEYS = Object.freeze(["agents", "catch_up", "citations", "delivery_method", "id", "push",
                             "vendor", "vendor_limits"]);
-const PUSH_KEYS = Object.freeze(["auth", "body", "callback", "events", "headers",
+const PUSH_KEYS = Object.freeze(["accepted_status", "auth", "body", "callback", "events", "headers",
                                  "max_body_bytes", "mechanism", "secret", "token_dead", "url"]);
 const EVENTS_KEYS = Object.freeze(["default_ttl_ms", "description", "name",
                                    "rotation_grace_s", "verify_error_code",
@@ -231,6 +234,10 @@ function push(value: unknown, what: string): Push | null {
   if (max !== null) {
     integer(max, 1024, `${what}.max_body_bytes`);
   }
+  const accepted = p["accepted_status"];
+  if (accepted !== "2xx" && !whole(accepted, 200, 299)) {
+    throw new Error(`wake kinds: ${what}.accepted_status is 2xx or a success status`);
+  }
   const dead = p["token_dead"];
   if (!Array.isArray(dead) || !dead.every((s) => Number.isSafeInteger(s) && s >= 400 && s < 600)) {
     throw new Error(`wake kinds: ${what}.token_dead are error statuses`);
@@ -246,7 +253,7 @@ function push(value: unknown, what: string): Push | null {
     secret: p["secret"] as string, auth: p["auth"],
     headers: Object.freeze({ ...(headers as Record<string, string>) }),
     body: template(p["body"], `${what}.body`), max_body_bytes: max as number | null,
-    token_dead: Object.freeze([...dead] as number[]), events: subscribed,
+    accepted_status: accepted, token_dead: Object.freeze([...dead] as number[]), events: subscribed,
   });
 }
 

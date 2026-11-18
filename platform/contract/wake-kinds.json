@@ -15,6 +15,7 @@
         "headers": { "Content-Type": "application/json", "X-MCP-Subscription-Id": "{subscription_id}" },
         "body": { "eventId": "{event_id}", "name": "tinyassets.changed", "timestamp": "{timestamp}", "cursor": null, "data": "{wake}" },
         "max_body_bytes": 262144,
+        "accepted_status": "2xx",
         "token_dead": [],
         "events": {
           "name": "tinyassets.changed",
@@ -52,6 +53,7 @@
         "headers": { "Content-Type": "application/json", "anthropic-beta": "experimental-cc-routine-2026-04-01", "anthropic-version": "2023-06-01" },
         "body": { "text": "{text}" },
         "max_body_bytes": null,
+        "accepted_status": "2xx",
         "token_dead": [401],
         "events": null
       },
@@ -80,6 +82,7 @@
         "headers": { "Content-Type": "application/json" },
         "body": "{wake}",
         "max_body_bytes": null,
+        "accepted_status": 200,
         "token_dead": [],
         "events": null
       },
