@@ -30,20 +30,18 @@ name: linux-jail-proof
 # through scripts/linux_oracle.py -- the same invocation developers use
 # locally, so CI and the local oracle cannot drift apart.
 # The live daemon runs as uid=1001(tinyassets) inside its container with
-# unprivileged user namespaces enabled and /usr/bin/bwrap (checked 2026-10-01).
-# The hosted Ubuntu VM refuses unprivileged user namespaces to the runner, and
-# the old fallback ran pytest under `sudo -n`: as root inside bwrap's user
-# namespace, binds of runner-owned paths and /proc/self/fd/N are denied, so 18
-# workspace-provisioning proofs failed for a reason production never has. The
-# proof therefore runs in the oracle image (docker/linux-oracle.Dockerfile:
-# python:3.11-slim + bubblewrap, the same base as production) at --user
+# unprivileged user namespaces enabled and /usr/bin/bwrap. The hosted Ubuntu VM
+# restricts unprivileged user namespaces. Running pytest directly as root in
+# bwrap's user namespace also denies binds of runner-owned paths and /proc/self/fd/N.
+# Use the oracle image (docker/linux-oracle.Dockerfile, python:3.11-slim +
+# bubblewrap, the same base as production) at --user
 # 1001:1001, with seccomp and systempaths unconfined for that one container
 # (Docker's defaults block bubblewrap's clone flags and /proc mounts).
 # The hosted kernel restricts unprivileged user namespaces through AppArmor
 # (kernel.apparmor_restrict_unprivileged_userns=1): with plain
 # `apparmor=unconfined` the namespace is created but its capabilities are
-# denied (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`,
-# measured 2026-10-01). So the container gets ONE named profile,
+# denied (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`).
+# The container therefore gets one named profile,
 # `ta-jail-userns` (unconfined plus `userns,`), loaded for this run only. No
 # host sysctl is changed, no privileged container, no daemon edits, and no
 # other process gains user namespaces. If the jail cannot be created, the job

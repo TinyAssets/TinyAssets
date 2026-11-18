@@ -1,14 +1,6 @@
-# Resize the production droplet, driven from OUTSIDE it.
-#
-# Written after I tried to drive a resize from a script running ON the droplet. That
-# script's first step was `shutdown`, which killed the script — so the box would have
-# powered off with nothing left alive to resize it or turn it back on: an indefinite
-# outage from an operation meant to take twenty minutes. I cancelled the shutdown with
-# seconds to spare (2026-08-28). The lesson is structural rather than a matter of care:
-# **the thing that power-cycles a machine cannot live on that machine.**
-#
-# So this runs on GitHub's runner, and the power-on step is `if: always()` — if the
-# resize errors, times out, or the job is cancelled, the droplet still comes back.
+# Resize from a GitHub runner because shutting down the droplet would kill a
+# resize running on it. The power-on step uses `if: always()` so an error or
+# cancellation still attempts to bring the droplet back.
 name: droplet-resize
 
 on:

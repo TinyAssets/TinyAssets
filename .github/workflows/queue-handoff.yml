@@ -2,9 +2,7 @@ name: Queue handoff
 
 # Two counted merge-queue failures on one head, then stop and hand off.
 #
-# Measured 2026-09-27..10-01: 39 of 65 queue removals were failed checks, and
-# one PR was removed six times on the way to merging. A blind re-queue of the
-# same head repeats a full merge-group run and holds everything behind it.
+# Retrying the same head repeats a full merge-group run and holds everything behind it.
 # Each `failed_checks` dequeue is recorded against the dequeued head SHA in a
 # ledger comment. It counts only when the removal's run failed a test the
 # diff selected, pytest or vitest; a failed job that names no test counts. On

@@ -13,8 +13,8 @@ name: E2B pause probe (manual)
 #             first byte, its file, process and scratch verified, then paused again, so a
 #             14-day check leaves the 30-day one standing.
 #   cleanup - kills every long-pause sandbox, then lists 0 left.
-# Run start once, check at 14 and 30 days, then cleanup. It runs beside the remaining work
-# and gates nothing: the cutover is done when the build is done (the founder, 2026-11-12).
+# Run start once, check at 14 and 30 days, then cleanup. The remaining build
+# and cutover can proceed while the sandboxes are paused.
 #
 # Each run spends a few sandbox-minutes running, at the template's size; between runs the two
 # stay paused. Its one secret, the E2B key, comes from the main-only `production` environment's

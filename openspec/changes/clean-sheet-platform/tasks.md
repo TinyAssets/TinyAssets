@@ -260,8 +260,7 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
-- [ ] P7's rest: the workflow headers lose their dated history, which git holds (list3 T12;
-  `untangle/p7-headers`).
+- [x] P7's workflow headers, list3 T12 (`untangle-2026-11/p7-headers.md`).
 - [x] P8's rest and P9's "can go now" list: the always-red watchers, the callerless scripts,
   the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
   changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;

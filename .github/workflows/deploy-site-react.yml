@@ -1,18 +1,10 @@
 # Deploy WebSite/site-react (Next.js static export) to GitHub Pages.
 #
-# A push to main publishes when one of the paths below changes. The first
-# three are the site's source folders.
-# The workflow file is included so a change to the publisher itself, including
-# the merge that turns this trigger on, publishes the current site:
-#   WebSite/site-react/**
-#   WebSite/design-system/**
-#   WebSite/shared/**
-#   .github/workflows/deploy-site-react.yml
+# A push to main that changes the publisher itself also publishes the current site.
 # workflow_dispatch stays for a rollback or a republish of an earlier revision;
 # that path still requires confirm=deploy. Two deploys share one group and the
-# second waits, so they cannot overlap. The Svelte rollback tree and
-# deploy-site.yml were retired on 2026-09-02. After deployment, verify
-# https://tinyassets.io and /mcp via the public canary (AGENTS.md hard rule #11).
+# second waits, so they cannot overlap. After deployment, verify
+# https://tinyassets.io and /mcp via the public canary (AGENTS.md Fact 11).
 name: deploy-site-react
 
 on:
