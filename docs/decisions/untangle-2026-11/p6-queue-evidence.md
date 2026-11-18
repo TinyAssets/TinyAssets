@@ -1,4 +1,4 @@
-# P6: keep the three queue workflows
+# P6 queue evidence as built (2026-11-18)
 
 For d3 §B9, read the most recent 16 runs of each workflow available on 2026-11-18 at 10:00 UTC, including probe verdicts and handoff job logs. GitHub marks a workflow successful when the helper exits normally, including when the helper could gather no evidence. The counts below use what the jobs did. Times are elapsed seconds summed over successful jobs, excluding skipped jobs and time waiting for a runner.
 
