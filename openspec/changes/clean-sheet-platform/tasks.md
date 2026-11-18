@@ -743,6 +743,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   next listing; MCP clients' tool-call timeouts against the 25 s wait; a long message read
   through to its end.
 - [ ] 6. BRAIN steps 1 to 8 (§7).
+- [ ] Before depending on a wake result or token notice, establish which installation
+  owns that delivery. Refresh, rewrap, remove and re-create can cross a pending answer.
+  Recheck both dispatch and settlement against the owner and the gateway
+  (`untangle-2026-11/wake-result-ownership.md`).
 - [ ] 7. The wakes: each vendor end to end (a ChatGPT dot and Work chat subscribing, a Claude
   `/fire`, a Grok webhook routine, Muse's catch-up); the SSRF probe (a callback whose DNS
   answers 127.0.0.1, 10.x or 169.254.169.254 is refused by `global_fetch_strictly_public`);
