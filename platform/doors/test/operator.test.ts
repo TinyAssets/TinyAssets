@@ -253,6 +253,26 @@ async function doorsCalled(owner: string): Promise<string[]> {
 }
 
 describe("the operator's owner ops, on a real owner object", () => {
+  it("delivers a previously signed operator ask while maintenance holds the same owner's app",
+     async () => {
+    const owner = fresh();
+    const restore = serveFirstPartyDocument();
+    try {
+      await setControl(OPEN);
+      const app = await signInApp({ owner });
+      const message = await sign(owner);
+      expect((await appPost("account", app.access_token, null, {})).status).toBe(200);
+      await setControl({ ...OPEN, ordinary: "none" });
+      expect((await appPost("account", app.access_token, null, {})).status).toBe(503);
+      expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
+      expect(operatorAnswer((await held(message.ask)).answer, message))
+        .toMatchObject({ result: { state: "admitted" } });
+    } finally {
+      restore();
+      await setControl(null);
+    }
+  });
+
   it("admits an owner, sets its tier, and suspends and lifts it, each answered with the " +
      "owner's own state", async () => {
     const owner = fresh();

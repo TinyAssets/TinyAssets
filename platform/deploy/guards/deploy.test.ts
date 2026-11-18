@@ -1131,6 +1131,16 @@ describe("a dark run", () => {
     expect(w.events.filter((event) => /create|cf PUT|secret put/.test(event))).toEqual([]);
   });
 
+  it("stops after the preceding activations if the next Worker's upload fails", async () => {
+    for (const [n, worker] of WORKERS.entries()) {
+      const w = world({ held: true, failing: `versions upload --config ${worker}/wrangler.json` });
+      await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow("the API refused it");
+      const activated = w.events.filter((event) => event.startsWith("wrangler versions deploy "))
+        .map((event) => event.split("--config ")[1]);
+      expect(activated).toEqual(WORKERS.slice(0, n).map((name) => `${name}/wrangler.json`));
+    }
+  });
+
   it("stops before any change when a migration lock does not pin what the code ships",
      async () => {
     const w = world({ lockRefused: "the migration lock owner/migrations.json pins 1" });

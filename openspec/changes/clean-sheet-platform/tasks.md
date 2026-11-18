@@ -799,8 +799,8 @@ Moved before the window, into lane R (d3 §F3, §G).
 
 ### Step 18. Before the first contract change, and the first vendor-forced engine bump
 
-- [ ] The deploy path's compatibility rule: Workers deploy one after another, so a contract
-  change between two needs an order or a window (`platform/deploy/checklist.md`; list3 P44).
+- [x] The deploy path's compatibility rule covers partial activation and previously queued
+  callers during maintenance. Each contract change needs a compatible order or a window (`platform/deploy/checklist.md`; list3 P44).
 - [ ] A wrangler version bump reruns T0b's main-against-head comparison of the test Workers'
   bindings: `ci/workers.ts` `configBindings` restates wrangler 4.154.0's conversion (list 5
   item 22).

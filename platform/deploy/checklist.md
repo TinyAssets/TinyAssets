@@ -390,16 +390,25 @@ It never counts as "absent".
      names the words, `retire-<keyring>-<kids>`, and changes nothing. Dispatch it again with
      `confirm` those words: it sets the stored ring on the keyring's Workers, then runs the
      canary.
-- **Later deploys change the Workers one after another, never at once.** The kit deploys
-  them in turn, each after the Workers it binds (`WORKERS` in `deploy/facts.ts`), so
-  between two of them old and new versions serve together. A change to a contract between
-  them needs either an order in which each step is compatible with both sides, or a
-  maintenance window (the control record's maintenance gate closed for the run). Egress PR
-  3a (admit, then reserve) is such a change: the open request lost its `model` and `tier`, and
-  `EgressGateway.forward` takes a `reserve` callback in place of its metering, so a new
-  gateway behind old doors answers `internal` (settled `failed`, nothing sent) and a new
-  owner refuses an old door's open. It ships in the first deploy, where nothing serves yet; a
-  later change of that kind takes the window.
+- **Later deploys serve a mix of old and new Workers.** The kit activates each Worker
+  after the Workers it binds (`WORKERS` in `deploy/facts.ts`). An upload failure leaves earlier
+  successful activations in place. If an activation has an uncertain outcome, check the
+  deployed versions before retrying. The kit starts again at the first Worker. Check the changed
+  request and its answer against the caller and receiver that can meet at each step. One
+  rollout can teach a receiver both forms. A later rollout can switch the callers. Retire
+  the old form once its last caller and queued or retried message have gone. Reverting one Worker also creates a mix.
+- **If the change needs a maintenance window, identify what can still call that contract.**
+  In mode `control`, apply `set` = `ordinary=none` and check the run's read-back. Keep
+  the previous `ordinary` value to restore after verification. Another location can still
+  admit a caller from its cached record after that read-back. A previously signed operator
+  message can still reach the owner and receive an answer during that window.
+  Hold new operator submissions that use the changed contract. Account for calls already
+  admitted, affected queue deliveries and any alarms that use it. If they cannot be held or shown to have finished, keep their
+  old form working across the deploy. [Cloudflare KV consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/#consistency)
+- Egress PR 3a (admit, then reserve) was a first-deploy exception. Its open request lost
+  `model` and `tier`, and `EgressGateway.forward` takes a `reserve` callback in place of its
+  metering. A new gateway behind old doors answers `internal` (settled `failed`, nothing
+  sent), and a new owner refuses an old door's open. Nothing served on that first deploy.
 
 ## The import window's credentials
 
