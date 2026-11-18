@@ -162,6 +162,12 @@ async function loginProbe(engine: string, region: string | null): Promise<number
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
   let shown: Prompt = { url: null, code: null };
+  const missing = (): string | null => {
+    if (shown.url === null) {
+      return "no sign-in URL shown";
+    }
+    return login.code_pattern !== undefined && shown.code === null ? "no sign-in code shown" : null;
+  };
   await withRunUser(rec, `probe-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
                     async (session) => {
     const { as, home } = session;
@@ -177,8 +183,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
     const read = (data: Buffer) => {
       text = (text + plain(data.toString("utf8"))).slice(-FRAME_UNITS_MAX);
       shown = prompted(login, text, shown);
-      const wantsCode = login.code_pattern !== undefined;
-      if (shown.url !== null && (!wantsCode || shown.code !== null)) {
+      if (missing() === null) {
         cli.stop();
       }
     };
@@ -189,9 +194,8 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   const redirect = shown.url === null ? null : new URL(shown.url).searchParams.get("redirect_uri");
   const local = redirect !== null && /^https?:\/\/(?:localhost|127\.|\[::1\])/.test(redirect);
   const refused = shown.url === null ? null : signinShape(rec, region, shown.url, shown.code);
-  const why = shown.url === null ? "no sign-in URL shown"
-    : local ? "the URL sends the browser back to localhost"
-      : refused === null ? null : SIGNIN_REFUSALS[refused];
+  const why = local ? "the URL sends the browser back to localhost"
+    : refused !== null ? SIGNIN_REFUSALS[refused] : missing();
   process.stdout.write(JSON.stringify({
     engine, region, ok: why === null, reason: why,
     host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }));

@@ -386,6 +386,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] B14's keyring half, decided (`x5.md` item 10): not built. `scripts/platform_setup.py`,
     its tests and `deploy.test.ts` "takes the keyring the founder's setup makes" are on the
     manifest's cutover list, so the deletion PR takes them together (`o-keyrings.md`).
+  - [x] A sandbox pair check requires the device code its sign-in record promises
+    (`untangle-2026-11/signin-probe-completeness.md`).
+  - [ ] `codex/untangle-signin-prompt-framing`: establish where each pinned CLI terminates
+    its prompt fields, then share the output reader between the runner and its pair check.
   - [x] B22's sweep doorbell half (O5; d3 §I). Built by R7 (`r7-rotation.md` item 4), the
     comment by #5509 and the deadline test in `gateway/test/forward.test.ts`; proved in
     `untangle/o4c` by a mutation (`o4c.md`).

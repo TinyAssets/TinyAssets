@@ -585,6 +585,19 @@ describe("the vendor's own sign-in", () => {
       .toBe("newer-token-file");
   });
 
+  it("requires the device code promised by the sign-in record when checking the pair", () => {
+    const plan = LOGINS["codex"]!;
+    box.cli("codex", { lines: [], login: { lines: [plan.url], exit: 0 } });
+    const missing = box.probe("login-probe", "codex");
+    expect(missing.code).toBe(3);
+    expect(JSON.parse(missing.out)).toMatchObject({ ok: false, reason: "no sign-in code shown",
+                                                   code_shown: false });
+    box.cli("codex", { lines: [], login: { lines: plan.lines, exit: 0 } });
+    const complete = box.probe("login-probe", "codex");
+    expect(complete.code).toBe(0);
+    expect(JSON.parse(complete.out)).toMatchObject({ ok: true, code_shown: true });
+  });
+
   it("is checked at every template build up to its prompt, its shape the record's", () => {
     box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
                                                  code: true } });
