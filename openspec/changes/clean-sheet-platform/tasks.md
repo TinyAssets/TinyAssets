@@ -904,6 +904,10 @@ Open questions, from the as-built record:
    and retired `/mcp-directory`.
 5. The published plugins say `license: "Proprietary"` (`platform/plugins/build.mjs`
    `PUBLISHER`), but the repository is MIT. Which should the plugins carry (list 6, item 6d)?
+6. When an owner disconnects an outside MCP app, must the owner explicitly allow it
+   back, or may a fresh sign-in reconnect it once its old revoked record is retired?
+   Resolve slice 5 and slice L before signing off grants or the app's reconnect wording
+   (`docs/decisions/untangle-2026-11/grant-revoke-retention.md`).
 
 The coordinator's to decide (no spending, irreversible or outward-facing act), from the
 as-built record, and decided (the coordinator, 2026-11-12):
