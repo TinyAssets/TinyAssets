@@ -54,12 +54,9 @@ export default function ConnectPage() {
               )}
               <details className={styles.sources}>
                 <summary>Setup sources · checked {checked}</summary>
-                <ul>{source.split("; ").map((entry) => {
-                  const [url, ...note] = entry.split(" ");
-                  const sourceUrl = new URL(url);
-                  return <li key={url}><a href={url}>{sourceUrl.host}{sourceUrl.pathname}</a>
-                    {note.length > 0 && ` ${note.join(" ")}`}</li>;
-                })}</ul>
+                <p>{source.split(/(https:\/\/\S*?)(?=;\s|\s|$)/u).map((part, i) =>
+                  i % 2 === 1 ? <a key={i} href={part}>{part}</a> : part
+                )}</p>
               </details>
             </section>
           ))}
