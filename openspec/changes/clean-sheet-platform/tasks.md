@@ -253,12 +253,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
     (`review` on `workflow_run`, which it skips): decide there whether it follows that run or
     auto-merge alone queues the PR.
+- [x] P6: the CI budget writer refuses unusable measurements on passed tests before
+  replacing the project budgets (`untangle-2026-11/p6-calibrated-measurements.md`).
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
   measured, `enqueue_merge.py` reading each check's newest run as GitHub does
   (`untangle/p6-process-code`; `untangle-2026-11/p2-review-required.md` item 6).
-  - [x] The CI budget writer refuses unusable measurements on passed tests before
-    replacing the project budgets (`untangle-2026-11/p6-calibrated-measurements.md`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
