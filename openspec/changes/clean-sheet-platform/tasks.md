@@ -80,6 +80,9 @@ end.
   (`owner/src/files.ts`, `platform/files`). Its create-once put on the live bucket is still
   unprobed: §10 step 7.
 
+- [x] The sign-in command, its status check and its sign-out validate the placeholders
+  each command can expand, including the probe's sign-in (`signin-arguments.md`).
+
 ## 7. Wakes and outside agents
 
 - [x] Wakes and doorbells (slice W): wake kinds as data (`contract/wake-kinds.json`), one

@@ -9,6 +9,30 @@ import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
 
 import type { SourceRecord, Sources } from "./schema";
 
+/** Alongside the binary, a login gets the owner's region and its status and logout get its home. */
+const HOME_ARGUMENTS = Object.freeze(["{bin}", "{home}"] as const);
+export const SIGNIN_ARGUMENTS = Object.freeze({
+  argv: Object.freeze(["{bin}", "{region}"] as const),
+  status_argv: HOME_ARGUMENTS, logout_argv: HOME_ARGUMENTS,
+} as const);
+
+export function signinArgv(command: keyof typeof SIGNIN_ARGUMENTS, args: readonly string[],
+                           bin: string, argument: string | null): string[] {
+  const [binary, other] = SIGNIN_ARGUMENTS[command];
+  return args.map((arg) => arg.replace(/\{[a-z_]+\}/g, (token) => {
+    if (token === binary) {
+      return bin;
+    }
+    if (token !== other) {
+      throw new Error(`cli.login.${command} cannot fill ${token}`);
+    }
+    if (argument === null) {
+      throw new Error("this sign-in takes the owner's choice of region");
+    }
+    return argument;
+  }));
+}
+
 /** The hosts a record's sign-in may send the owner to: its login hosts, and its region's. */
 export function signinHosts(rec: SourceRecord, region: string | null): string[] {
   const cli = rec.cli;

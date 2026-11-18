@@ -38,12 +38,12 @@ import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { engineHosts, type Served, signsIn } from "../../sources/src/served";
-import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
+import { SIGNIN_REFUSALS, signinArgv, signinShape } from "../../sources/src/signin";
 
 import { binPath, invocation, isKept, keptPaths } from "./engine";
 import { lineEvent } from "./frames";
 import { remove, safeDirs, safeWrite } from "./fsafe";
-import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
+import { onTerminal, plain, type Prompt, prompted } from "./login";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { CONVERSATIONS, engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared,
@@ -169,8 +169,8 @@ async function loginProbe(engine: string, region: string | null): Promise<number
     // As long as a command may take: a CLI that shows no prompt by then shows none. The
     // answer waits for its close, so no exited child is left unreaped for the user's
     // processes' kill to wait on.
-    const cli = spawnBounded(asUser(as, [shared()],
-                                    onTerminal(loginArgv(login, binPath(rec), region))),
+    const argv = signinArgv("argv", login.argv, binPath(rec), region);
+    const cli = spawnBounded(asUser(as, [shared()], onTerminal(argv)),
                              { env: engineEnv(rec, home), cwd: home,
                                stdio: ["pipe", "pipe", "pipe"] }, COMMAND_MS);
     let text = "";

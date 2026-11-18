@@ -25,6 +25,7 @@ import { bundledRecords, catalogOf } from "../src/catalog";
 import { CREDENTIAL_NAME, sealedSource, sourceRecord } from "../src/check";
 import { RUN_BASICS, runEnv } from "../src/run-env";
 import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
+import { signinArgv } from "../src/signin";
 import { supportedApis } from "../../contract/src/api-rules";
 import { forbids } from "../../contract/src/text";
 import { RECORDS_DIR, recordFiles } from "../write-records";
@@ -436,6 +437,22 @@ describe("the engine records", () => {
     }
   });
 
+  it("fill the selected region only at login and the run user's home for status and sign-out", () => {
+    const record = sourceRecord(cli((s) => {
+      const login = at(s, "login");
+      login["status_argv"] = ["{bin}", "status", "--dir={home}"];
+      login["logout_argv"] = ["{bin}", "logout", "--dir={home}"];
+    }, records.get("kimi") as Json));
+    const login = record.cli!.login!;
+    expect(signinArgv("argv", login.argv, "/cli", "global"))
+      .toEqual(["/cli", "login", "--region", "global"]);
+    expect(() => signinArgv("argv", login.argv, "/cli", null)).toThrow(/choice of region/);
+    expect(signinArgv("status_argv", login.status_argv!, "/cli", "/home/check"))
+      .toEqual(["/cli", "status", "--dir=/home/check"]);
+    expect(signinArgv("logout_argv", login.logout_argv!, "/cli", "/home/out"))
+      .toEqual(["/cli", "logout", "--dir=/home/out"]);
+  });
+
   it("let a Kimi member sign in from either region, its hosts by the choice (M2)", () => {
     const spec = sourceRecord(records.get("kimi")).cli!;
     expect(spec.login!.argv).toEqual(["{bin}", "login", "--region", "{region}"]);
@@ -701,6 +718,13 @@ describe("an engine record that does not fit", () => {
       at(s, "login")["argv"] = ["{bin}", "login"]; }, records.get("kimi") as Json)],
     ["a region placeholder with no regions", cli((s) => { delete s["regions"]; },
                                                  records.get("kimi") as Json)],
+    ["a login started with the status check's home", cli((s) => {
+      (at(s, "login")["argv"] as string[]).push("--directory={home}"); })],
+    ["a status check expecting a selected region", cli((s) => {
+      at(s, "login")["status_argv"] = ["{bin}", "status", "--region={region}"];
+    }, records.get("kimi") as Json)],
+    ["a logout expecting a run's model", cli((s) => {
+      (at(s, "login")["logout_argv"] as string[]).push("--model={model}"); })],
     ["a region placeholder outside the sign-in", cli((s) => {
       (s["unattended_argv"] as string[]).push("--region={region}"); },
     records.get("kimi") as Json)],

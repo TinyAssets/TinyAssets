@@ -69,7 +69,7 @@ import { createInterface } from "node:readline";
 
 import { RUN_BASICS } from "../../sources/src/run-env";
 import { type Served, signsIn } from "../../sources/src/served";
-import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
+import { SIGNIN_REFUSALS, type SigninRefusal, signinArgv, signinShape } from "../../sources/src/signin";
 import { RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
@@ -86,7 +86,7 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
          scratchCleared, type ScratchCleared,
          markUsed,
          writeOrRelease } from "./scratch";
-import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
+import { credentialShaped, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
@@ -437,8 +437,8 @@ async function signedIn(rec: Served): Promise<boolean> {
   const equals = login.status_equals;
   return withRunUser(rec, `check-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
                      async ({ as, home }) => {
-    const check = spawnBounded(asUser(as, [shared()], argvOf.map((arg) =>
-      arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home))), {
+    const argv = signinArgv("status_argv", argvOf, binPath(rec), home);
+    const check = spawnBounded(asUser(as, [shared()], argv), {
       env: engineEnv(rec, home), cwd: home, stdio: ["ignore", "pipe", "ignore"] }, COMMAND_MS);
     const out: Buffer[] = [];
     check.child.stdout!.on("data", (chunk: Buffer) => { out.push(chunk); });
@@ -1349,9 +1349,9 @@ async function loginRun(id: string): Promise<number> {
       const logout = login.logout_argv;
       if (logout !== undefined) {
         await withRunUser(rec, id, { signedIn: true, keeps: false }, async ({ as, home }) => {
-          const argv = asUser(as, [shared()], logout.map((arg) =>
-            arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home)));
-          await spawnBounded(argv, { env: engineEnv(rec, home), cwd: home, stdio: "ignore" },
+          const argv = signinArgv("logout_argv", logout, binPath(rec), home);
+          await spawnBounded(asUser(as, [shared()], argv),
+                             { env: engineEnv(rec, home), cwd: home, stdio: "ignore" },
                              COMMAND_MS).exit;
         });
       }
@@ -1369,7 +1369,7 @@ async function loginRun(id: string): Promise<number> {
       end = await withRunUser(rec, id, { signedIn: true, keeps: false }, async (session) => {
         const { as, home } = session;
         loginFiles(rec, session);
-        const command = loginArgv(login, binPath(rec), doc.region);
+        const command = signinArgv("argv", login.argv, binPath(rec), doc.region);
         const secrets = atoms();
         let shown: Prompt = { url: null, code: null };
         let text = "";

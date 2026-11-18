@@ -14,6 +14,7 @@ import { HEX64 } from "../../contract/src/ids";
 import type { EngineEvents, EventMatcher } from "../../contract/src/run-events";
 import { forbids, SOURCE_ID } from "../../contract/src/text";
 
+import { SIGNIN_ARGUMENTS } from "./signin";
 import { RUN_BASICS } from "./run-env";
 import {
   type ApiKeyEnv, type CliSpec, type ConnectMethod, type Engine, type HostedUse, type Install,
@@ -1045,12 +1046,18 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
                                                  "hosted_use"], [
     "status_argv", "status_equals", "accepts_code", "code_pattern", "state_checks",
     "complete_on_state", "logout_argv"]);
-  argv(fields["argv"], "cli.login.argv", 16);
-  if (fields["status_argv"] !== undefined) {
-    argv(fields["status_argv"], "cli.login.status_argv", 16);
-  }
-  if (fields["logout_argv"] !== undefined) {
-    argv(fields["logout_argv"], "cli.login.logout_argv", 16);
+  for (const [command, allowed] of Object.entries(SIGNIN_ARGUMENTS)) {
+    if (command !== "argv" && fields[command] === undefined) {
+      continue;
+    }
+    const what = `cli.login.${command}`;
+    for (const arg of argv(fields[command], what, 16)) {
+      for (const token of arg.match(/\{[a-z_]+\}/g) ?? []) {
+        if (!allowed.some((name) => name === token)) {
+          check.fail(`${what} cannot fill ${token}`);
+        }
+      }
+    }
   }
   const expires = check.keys(fields["expires"], "cli.login.expires", ["s", "citation"]);
   if (!whole(expires["s"], 1)) {

@@ -46,15 +46,6 @@ export function credentialShaped(value: string, atoms: readonly string[]): boole
   return heldSecret(value, atoms) !== null || credentialLike(value);
 }
 
-/** The login's argv: `{bin}` the engine's binary, `{region}` the owner's choice. */
-export function loginArgv(login: LoginSpec, bin: string, region: string | null): string[] {
-  const { argv } = login;
-  if (argv.some((arg) => arg.includes("{region}")) && region === null) {
-    throw new Error("this sign-in takes the owner's choice of region");
-  }
-  return argv.map((arg) => arg.replaceAll("{bin}", bin).replaceAll("{region}", region ?? ""));
-}
-
 /** One argument for a POSIX shell, single-quoted. */
 function quoted(arg: string): string {
   return `'${arg.replaceAll("'", "'\\''")}'`;
