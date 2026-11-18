@@ -47,13 +47,13 @@ Untangle the code a change touches, or a whole area, and finish the job.
   conflicts.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
-- CI is the one full run, and a coordinator's prompt asks for no check this
-  section doesn't: run only what the diff can break, once a PR (the done-check:
-  `docs/reference/executable-gates.md`), one mutation per declared change; the
-  recorders (step 5) whenever it touches `platform/*/src`, meant to change an
-  answer or not; read only what applies. A reviewer reruns two or three of the
-  builder's mutations and one of each new guard's, and runs the rest for its
-  own fixes only. One review a PR, a second only after a security block. One
+- CI owns the full run. The coordinator asks only for these checks. Once a PR,
+  run what the diff can break (`docs/reference/executable-gates.md`), one mutation
+  per declared change. Prove platform behavior in its surviving workspace. Python
+  tests may exercise their own caller or runner. Run step 5's
+  recorders for every `platform/*/src` diff. Read only what applies. Reviewers repeat two or three
+  builder mutations and one per new guard, the rest only for their own fixes.
+  One review per PR, a second only after a security block. One
   PR in flight per lane, never stacked. Merge `origin/main` in; never rebase.
 - On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
   deploy harness, the recorders) take the host's run lock; a timeout under load

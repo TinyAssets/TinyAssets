@@ -271,6 +271,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
 - [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
   protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
   from `land/3`; `untangle-2026-11/slow-tests.md`).
+- [x] P6 decided the Python guard proposal (d3 §B8). Platform behavior has a surviving
+  workspace test, and Python callers retain their boundary tests (`untangle-2026-11/p6-guard-owner.md`).
 - [x] The required checks' names are held four times: the ruleset, the classic branch
   protection, `docs/ops/merge-queue-ruleset.json` and `enqueue_merge.py` `REQUIRED_CHECKS`,
   and nothing ties them. One source, researched first (`untangle/required-checks`; found by
