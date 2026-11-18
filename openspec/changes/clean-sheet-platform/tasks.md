@@ -612,6 +612,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   exceptions, nothing worth fixing left, behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
+  - [x] The board digest's reset names its reader's served tool, `collection_list`
+    (`untangle-2026-11/board-reset-tool.md`).
   - [ ] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
     (`pass-sandbox.md` §2).
   - [ ] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the

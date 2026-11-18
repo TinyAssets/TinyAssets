@@ -23,7 +23,7 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    * Read the owner's board rows changed after a cursor in one call, each with its etag and the head
    * of its body. Claim a row with collection_write on its etag; read a whole row with
    * collection_get. An answer with reset true means a deletion past the cursor is no longer kept:
-   * read the board again whole (collection_pull), then go on from the cursor given.
+   * read the board again whole (collection_list), then go on from the cursor given.
    */
   boardDigest(binding: Binding, request: DoorRequest<"boardDigest">):
     Promise<DoorAnswer<"boardDigest">>;
