@@ -94,3 +94,51 @@ deploy plan and frozen SQL with any intentional differences explained.
 
 Nothing in this record authorizes routes, customer data, paid builds, key
 retirement, rule changes or a final merge.
+
+## Follow-up on the combined build
+
+The 13:10 comparison used `9c619aff0` (tree `6d57bac8c`); the shared-install
+decision later joined it without changing runtime source. The following checks
+were run locally, apart from the separately named GitHub results.
+
+- All 18 owner migrations ran on main and this combined build. The exact text
+  of all 534 SQL statements and the SQLite catalog after each migration
+  matched. The last catalog had 441 objects, including 283 triggers. All four
+  owner migrations in the wave-1 freeze at `9ea1bbd2b` matched too. All 18
+  hashes were in the staged lock; main still pinned 17. Both sandbox objects
+  matched at every stage as well: three control migrations and one slots
+  migration matched their respective locks. Use the reviewed migration-18 PR
+  for the eventual pin.
+- The actual deploy kit's plan matched main in 96 offline runs under the
+  same main-commit harness: 48 resource states times the public and private
+  read paths, yielding 16 distinct plans. States varied held resources, pair,
+  routes, retired workers and the import window; an open window needs an
+  existing doors Worker. This is a scoped comparison, not every historical
+  harness scenario or an account observation.
+- The joined tree passed 268 process cases. Its dependency check exposed the
+  new app regression importing a private display helper from the test. On a
+  checkout with ordinary dependency directories, 63 of 64 layer/kernel
+  checks passed and this was the only failure. Hold that staged test for a
+  public browser path. Nine offline browser checks had already exposed and
+  verified the storage display correction. The 12 frozen-bound and migration
+  guards passed.
+- The full-body wake discovery comparison found six registrations with
+  intentionally updated descriptions and one unchanged app listing on the
+  intermediate candidate; check the final protected-session wording on its
+  own commit. Future methods still need an owner acceptance and migration
+  decision. The current MCP mechanisms for tasks work with explicit
+  registration, but a scheduled operation and each run it creates have
+  different lifetimes. A past-runs page returned 55,554 bytes against the
+  50,000-byte tool bound. The plan now requires sizing and caller isolation
+  before exposing it (`921fe024`).
+- Step 20's history requirement has a measured boundary: on the main and
+  combined owner SQL, inserting 2,001 settled runs pruned the oldest
+  mail-to-run receipt. Decide what history the future app really promises
+  before relying on pre-feature runs (`050c6430`). Shared-app installation
+  likewise needs one current owner across owners, even when an old binding
+  later revokes. Three historical SQLite cases passed; the build decision is
+  staged at `771b7f0a`. External submission remains a founder action.
+- Rechecking the exact GitHub head of each of the twelve rebuild drafts
+  found both Tests and invariants successful. All twelve were drafts. The
+  thirteenth draft was the legacy #5343. These were existing GitHub runs.
+  The project-wide cutover criteria remain open.
