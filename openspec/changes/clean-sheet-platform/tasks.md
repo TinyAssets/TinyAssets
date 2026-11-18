@@ -195,6 +195,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   design, by the window's `close` alone, once every owner it staged is admitted or discarded
   (`i-window-close.md`); and R1, `deploy-worker.yml` deleted, so no routine deploy of the old
   proxy takes routes back (d3 §J1: the proxy ends with no routes).
+  - [x] The close and wipe verify the scope, count and pagination of their staging and files
+    listings before using them as evidence (`i-s3-list.md`).
 - [ ] **Step 13. `routes`, the handles canary, the platform's canary.** `identity.json`'s `host`
   is already `tinyassets.io` (d3 §H). Mode `routes` keeps its route record, then hands the
   routes over; the manifest disables `uptime-canary.yml` (d3 §J2), whose old canary scripts the

@@ -51,6 +51,7 @@ import type { ImportNames } from "../contract/src/import-names";
 import { QUEUES } from "../contract/src/queue-names";
 import type { Cloudflare } from "../deploy/cloudflare";
 
+import { listPage } from "./s3-list";
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
 import {
   bundlesIn, checkRun, cloudflareOf, type Fetcher, type Inputs, queueId, s3Request, type Staged,
@@ -129,31 +130,34 @@ async function getText(window: Window, bucket: string, name: string): Promise<st
   return answer.text();
 }
 
-const XML_ENTITIES: Readonly<Record<string, string>> = Object.freeze({
-  amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'" });
-const unescaped = (text: string) => text.replace(/&(amp|lt|gt|quot|apos);/g,
-                                                  (_m, name: string) => XML_ENTITIES[name]!);
-
 /** Every key a bucket lists under `prefix` (ListObjectsV2), or the first `most` of them. */
 export async function listKeys(window: Window, bucket: string, prefix: string,
                                most = Number.MAX_SAFE_INTEGER): Promise<string[]> {
-  const keys: string[] = [];
+  const keys = new Set<string>();
+  const limit = Math.min(1000, most);
+  const continuations = new Set<string>();
   let token: string | null = null;
   do {
     const query: Record<string, string> = { "list-type": "2", prefix,
-                                            "max-keys": String(Math.min(1000, most)) };
+                                            "max-keys": String(limit) };
     if (token !== null) {
       query["continuation-token"] = token;
     }
     const answer = await ok(window, s3Request(window.inputs, "GET", bucket, "", query, null,
                                               window.clock.now()), `a listing of ${bucket}`);
-    const xml = await answer.text();
-    keys.push(...[...xml.matchAll(/<Key>([^<]*)<\/Key>/g)].map((m) => unescaped(m[1]!)));
-    token = /<IsTruncated>true<\/IsTruncated>/.test(xml)
-      ? unescaped(/<NextContinuationToken>([^<]*)<\/NextContinuationToken>/.exec(xml)?.[1] ?? "")
-      : null;
-  } while (token !== null && token !== "" && keys.length < most);
-  return keys.slice(0, most);
+    const xml = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
+      .decode(await answer.arrayBuffer());
+    const page = listPage(xml, bucket, prefix, token, limit);
+    for (const key of page.keys) {
+      if (keys.has(key)) throw new Error("repeated key in S3 listing");
+      keys.add(key);
+    }
+    token = page.next;
+    if (token === null) break;
+    if (continuations.has(token)) throw new Error("repeated S3 continuation");
+    continuations.add(token);
+  } while (keys.size < most);
+  return [...keys].slice(0, most);
 }
 
 /** One message for `staged`, of `op`, MAC'd under the window's key, with its ask. */

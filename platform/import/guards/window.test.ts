@@ -36,7 +36,7 @@ import { buildBundles } from "../bundle";
 import { unkeyMain, windowMain } from "../cli";
 import { bundlesIn, type Fetcher, type Inputs, type Staged } from "../stage";
 import {
-  admit, type Clock, close, deadLetters, readRecord, verify, type Window, wipe,
+  admit, type Clock, close, deadLetters, listKeys, readRecord, verify, type Window, wipe,
 } from "../window";
 import { FOUNDER, fixture } from "./fixture";
 
@@ -182,8 +182,8 @@ function world(bundles: readonly Staged[]) {
         const most = Number(url.searchParams.get("max-keys") ?? "1000");
         const keys = [...store.keys()].filter((each) => each.startsWith(prefix)).sort()
           .slice(0, most);
-        return new Response(`<ListBucketResult>${keys.map((each) => `<Key>${each}</Key>`)
-          .join("")}<IsTruncated>false</IsTruncated></ListBucketResult>`);
+        return new Response(`<ListBucketResult><Name>${bucket}</Name><Prefix>${prefix}</Prefix>${keys.map((each) => `<Contents><Key>${each}</Key></Contents>`)
+          .join("")}<KeyCount>${keys.length}</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>`);
       }
       if (request.method === "DELETE") {
         store.delete(key);
@@ -456,6 +456,49 @@ describe("the window's wipe", () => {
     expect(await windowMain(["wipe", out, "--run", RUN, "--facts", facts, "--record", record],
                             envOf(), quiet, w.window.fetcher, CLOCK)).toBe(3);
     expect(discards()).toBe(bundles.length + 2);
+  });
+});
+
+describe("the window's list pagination", () => {
+  const done = "<IsTruncated>false</IsTruncated>";
+  const none = "<KeyCount>0</KeyCount>";
+  const more = "<IsTruncated>true</IsTruncated>";
+  const token = "<NextContinuationToken>a&amp;b</NextContinuationToken>";
+  const page = (body: string) => `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` +
+    `<Name>${NAMES.staging_bucket}</Name><Prefix/>${body}</ListBucketResult>`;
+  it.each([none + done + "<IsTruncated/>", `<!--${none}${done}-->`, "<Contents></Key>" + none + done,
+           "<Contents><Key/></Contents>" + none + done, "<Other>" + none + done + "</Other>",
+           "<ContinuationToken>unexpected</ContinuationToken>" + none + done,
+           "<MaxKeys>0</MaxKeys>" + none + done, done, "<KeyCount>1</KeyCount>" + done, none, none + more, none + more + token + token,
+           none + done + token, none + more + done,
+           none + "<IsTruncated>unknown</IsTruncated>", none + more + "<NextContinuationToken></NextContinuationToken>"])
+  ("holds close when a successful response has ambiguous pagination", async (fields) => {
+    const w = world([]);
+    const window = { ...w.window, fetcher: (req: Request) =>
+      new URL(req.url).searchParams.has("list-type")
+        ? Promise.resolve(new Response(page(fields)))
+        : w.window.fetcher(req) };
+    await expect(close(window, quiet)).rejects.toThrow();
+  });
+
+  it("follows an opaque continuation and stops a cycle before requesting the page again", async () => {
+    const w = world([]).window;
+    const read = (pages: string[], seen: (string | null)[]) =>
+      listKeys({ ...w, fetcher: async (req) => {
+        seen.push(new URL(req.url).searchParams.get("continuation-token"));
+        const body = pages.shift();
+        if (body === undefined) throw new Error("unexpected request");
+        return new Response(page(body));
+      } }, NAMES.staging_bucket, "");
+    const seen: (string | null)[] = [];
+    const contents = "<KeyCount>1</KeyCount><Contents><Key>a&#47;b</Key>" +
+      "<Owner><ID>owner</ID></Owner><Size>2</Size></Contents>";
+    expect(await read([contents + more + token, "<ContinuationToken>a&amp;b</ContinuationToken>" +
+      "<KeyCount>1</KeyCount><Contents><Key>c&amp;d</Key></Contents>" + done], seen))
+      .toEqual(["a/b", "c&d"]);
+    expect(seen.splice(0)).toEqual([null, "a&b"]);
+    await expect(read([none + more + token, none + more + token], seen)).rejects.toThrow(/repeated S3 continuation/);
+    expect(seen).toEqual([null, "a&b"]);
   });
 });
 
