@@ -47,7 +47,7 @@ def test_nothing_reverts() -> None:
 
 @pytest.mark.parametrize(("artifact", "listing"), [
     ("absent", True), ("unreadable", True), ("failing", True),
-    ("failing", False), ("unreadable", False),
+    ("failing", False), ("unreadable", False), ("failing", "no_workflow"),
 ])
 def test_alarm_links_only_this_attempts_unsuccessful_required_legs(monkeypatch, artifact, listing):
     import json
@@ -60,19 +60,25 @@ def test_alarm_links_only_this_attempts_unsuccessful_required_legs(monkeypatch, 
     run = "https://github.com/owner/repo/actions/runs/73"
     workflow = yaml.safe_load((main_red.REPO_ROOT / ".github/workflows/tests.yml").read_text())
     needs = workflow["jobs"]["required-tests"]["needs"]
-    selected = [job for job in needs if job.startswith("platform-") or job == "process"]
+    # Use a different display name at the reported SHA than at the checkout.
+    workflow["jobs"]["structural-guards"]["name"] = "structure (required)"
+    if artifact == "failing":
+        workflow["jobs"]["affected-tests"]["if"] = "${{ github.event_name== 'pull_request' }}"
+    selected = [key for key in needs if key != "affected-tests"]
     # Use GitHub's matrix display names, including the workspace command.
     details = {
         "platform-tests": " (owner 1/2, npm run test:workerd -w owner -- --shard=1/2)",
         "platform-sizes": " (files, npm run test:sizes -w files -- --shard=1/1)",
         "platform-checks": " (typecheck, npm run typecheck)",
     }
-    jobs = [{"name": workflow["jobs"][family].get("name", family) + details.get(family, ""),
+    jobs = [{"name": workflow["jobs"][family].get("name", family).replace("${{ matrix.shard }}", "4") + details.get(family, ""),
              "html_url": f"{run}/job/{i}",
              "conclusion": ("cancelled" if family == "process" else "failure")}
             for i, family in enumerate(selected, start=10)]
     jobs += [{"name": "platform-tests (contract, npm run test -w contract)",
               "html_url": f"{run}/job/83", "conclusion": "success"},
+             {"name": "affected-tests ${{ matrix.shard }}/4",
+              "html_url": f"{run}/job/82", "conclusion": "skipped"},
              {"name": "heavy-tests", "html_url": f"{run}/job/84", "conclusion": "failure"},
              {"name": "required-tests", "html_url": f"{run}/job/85", "conclusion": "failure"}]
     queries = []
@@ -84,7 +90,7 @@ def test_alarm_links_only_this_attempts_unsuccessful_required_legs(monkeypatch, 
         assert args[2].split("?")[0] == "repos/owner/repo/actions/runs/73/attempts/2/jobs"
         query = args[args.index("--jq") + 1]
         queries.append(query)
-        if len(queries) == 2 and not listing:
+        if len(queries) == 2 and listing is False:
             raise OSError("private jobs diagnostic")
         # gh --paginate evaluates the query on every page.
         return "".join(subprocess.check_output(["jq", "-cr", query], text=True,
@@ -98,19 +104,29 @@ def test_alarm_links_only_this_attempts_unsuccessful_required_legs(monkeypatch, 
 
     bodies = []
     monkeypatch.setattr(main_red, "_gh", github)
-    monkeypatch.setattr(main_red, "_run", lambda *a, **kw: SimpleNamespace(stdout=sha))
+    def git(*args, **kwargs):
+        if args[:2] == ("git", "show"):
+            assert args[2] == f"{sha}:.github/workflows/tests.yml"
+            if listing == "no_workflow":
+                raise OSError("private workflow diagnostic")
+            return SimpleNamespace(stdout=yaml.safe_dump(workflow))
+        return SimpleNamespace(stdout=sha)
+
+    monkeypatch.setattr(main_red, "_run", git)
     monkeypatch.setattr(main_red, "new_failures", python_failures)
     monkeypatch.setattr(main_red, "_alarm", lambda r, body, s: bodies.append(body))
     assert main_red.handle(repo, 73, sha, "push", 2, run) == "alarm"
-    assert len(queries) == 2
+    assert len(queries) == (1 if listing == "no_workflow" else 2)
     body, = bodies
-    for job in jobs[:-3]:
+    assert f"{run}/attempts/2" in body
+    for job in jobs[:-4]:
         link = f"[{job['name']}]({job['html_url']}) ({job['conclusion']})"
-        assert (link in body) == listing
-    for job in jobs[-3:]:
+        assert (link in body) == (listing is True)
+    for job in jobs[-4:]:
         assert job["html_url"] not in body
     assert ("tests/test_shape.py::test_roundtrip" in body) == (artifact == "failing")
     assert ("Python failure details could not be collected" in body) == (artifact == "unreadable")
-    assert ("Platform job details could not be collected" in body) != listing
+    assert ("Required job details could not be collected" in body) == (listing is not True)
+    assert "private workflow diagnostic" not in body
     assert "private jobs diagnostic" not in body
     assert "private diagnostic" not in body

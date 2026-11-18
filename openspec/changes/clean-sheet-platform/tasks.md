@@ -257,8 +257,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
   measured, `enqueue_merge.py` reading each check's newest run as GitHub does
   (`untangle/p6-process-code`; `untangle-2026-11/p2-review-required.md` item 6).
-  - [x] The red-main alarm links the completed attempt's unsuccessful platform and process
-    jobs, including when the old Python report is unavailable (`untangle-2026-11/p6-main-red-jobs.md`).
+  - [x] The red-main alarm uses the tested revision's workflow to link unsuccessful required
+    jobs on that attempt, including when the Python report is unavailable (`untangle-2026-11/p6-main-red-jobs.md`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).

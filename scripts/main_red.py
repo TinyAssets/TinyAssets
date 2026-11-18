@@ -10,7 +10,7 @@ after every Tests run on main (.github/workflows/main-red.yml):
   quarantine ledger, including its `flaky` lines. A red `heavy-tests` job never
   triggers anything here.
 * First red attempt: re-run the failed jobs once. A flake costs one re-run.
-* Still red: link the platform and process legs that did not pass, and include
+* Still red: link the required jobs that did not pass, and include
   the legacy suite's failures outside quarantine. A person decides the repair.
 * Green on main's current head: close the alarm.
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-REQUIRED_JOB = "required-tests"
+AGGREGATE_JOB = "required-tests"
 LABEL = "main-red"
 GH_TIMEOUT = 120
 
@@ -62,7 +63,7 @@ def render_body(*, sha: str, subject: str, run_url: str, failures: list[str],
         "forward, or revert by hand once the failure has been read.",
     ]
     if legs:
-        lines += ["", "Required platform and process jobs that did not pass:"]
+        lines += ["", "Required jobs that did not pass:"]
         for leg in legs:
             lines.append(f"- [{leg['name']}]({leg['html_url']}) ({leg['conclusion']})")
     if failures:
@@ -90,7 +91,7 @@ def required_conclusion(repo: str, run_id: int, attempt: int) -> str | None:
     """Read exactly the attempt whose completion is being handled."""
     out = _gh("api", "--paginate",
               f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs",
-              "--jq", f'.jobs[] | select(.name == "{REQUIRED_JOB}") | .conclusion')
+              "--jq", f'.jobs[] | select(.name == "{AGGREGATE_JOB}") | .conclusion')
     found = [line for line in out.split() if line]
     return found[-1] if found else None
 
@@ -109,16 +110,36 @@ def tip_conclusion(repo: str, tip: str) -> str | None:
     return None
 
 
-def platform_legs(repo: str, run_id: int, attempt: int) -> list[dict]:
-    """Keep each unsuccessful platform or process leg's actual conclusion and job link."""
+def required_legs(repo: str, run_id: int, attempt: int, sha: str) -> list[dict]:
+    """Match job display names against the required dependencies of the run's own workflow."""
+    import yaml
+
+    source = _run("git", "show", f"{sha}:.github/workflows/tests.yml").stdout
+    jobs = yaml.safe_load(source)["jobs"]
+    aggregate, = (job for key, job in jobs.items() if job.get("name", key) == AGGREGATE_JOB)
+    patterns = []
+    for key in aggregate["needs"]:
+        job = jobs[key]
+        # Main-red receives push and schedule completions. PR-only jobs appear as skipped.
+        condition = job.get("if", "").strip().removeprefix("${{").removesuffix("}}").strip()
+        if re.fullmatch(r"github\.event_name\s*==\s*'pull_request'", condition):
+            continue
+        name = job.get("name", key)
+        # GitHub substitutes inline matrix values in custom names, or appends the
+        # dimensions in parentheses to a fixed matrix name.
+        pieces = re.split(r"(\$\{\{\s*matrix\.[\w-]+\s*\}\})", name)
+        pattern = "".join(".+?" if i % 2 else re.escape(piece) for i, piece in enumerate(pieces))
+        if len(pieces) == 1 and "matrix" in job.get("strategy", {}):
+            pattern += r"(?: \(.*\))?"
+        patterns.append(re.compile(pattern))
     out = _gh("api", "--paginate",
               f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100",
               "--jq", ".jobs[] | {name, conclusion, html_url} | @json")
-    families = {"platform-tests", "platform-sizes", "platform-checks", "platform-app", "process"}
-    jobs = (json.loads(line) for line in out.splitlines())
-    return sorted((job for job in jobs if job["name"].partition(" (")[0] in families
-                   and job["conclusion"] and job["conclusion"] != "success"),
-                  key=lambda job: job["name"])
+    records = (json.loads(line) for line in out.splitlines())
+    return sorted((record for record in records
+                   if record["conclusion"] and record["conclusion"] != "success"
+                   and any(pattern.fullmatch(record["name"]) for pattern in patterns)),
+                  key=lambda record: record["name"])
 
 
 def new_failures(repo: str, run_id: int, attempt: int) -> list[str]:
@@ -208,11 +229,11 @@ def handle(repo: str, run_id: int, sha: str, event: str, attempt: int, run_url: 
             # Do not include exception text: gh errors can carry the token.
             failures, note = [], "\nPython failure details could not be collected.\n"
         try:
-            legs = platform_legs(repo, run_id, attempt)
+            legs = required_legs(repo, run_id, attempt, sha)
         except Exception:
             legs = []
-            note += "\nPlatform job details could not be collected.\n"
-        _alarm(repo, render_body(sha=sha, subject=subject, run_url=run_url,
+            note += "\nRequired job details could not be collected.\n"
+        _alarm(repo, render_body(sha=sha, subject=subject, run_url=f"{run_url}/attempts/{attempt}",
                                  failures=failures, legs=legs) + note, sha)
     return action
 

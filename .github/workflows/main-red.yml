@@ -3,7 +3,7 @@ name: Main red
 # After every Tests run on main (push or schedule), act on the REQUIRED surface
 # only (scripts/main_red.py). Red once: re-run the failed jobs. Red twice: raise
 # the `main-red` alarm issue. Green on main's tip: close the alarm. Nothing is
-# reverted. The alarm links the attempt's unsuccessful platform and process jobs.
+# reverted. The alarm links the attempt's unsuccessful required jobs.
 # `heavy-tests` (a red baseline) and quarantined/flaky tests never trigger it.
 #
 # This is the safety net that lets the merge-group gate run only the tests a
@@ -49,6 +49,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      # Job links use the workflow at the tested SHA. The alarm and rerun decision
+      # still work if its YAML parser cannot be installed.
+      - name: Install the workflow reader
+        run: python -m pip install 'PyYAML==6.0.3'
+        continue-on-error: true
 
       - name: React to the required-test result
         env:
