@@ -28,6 +28,12 @@ The site SHALL present TinyAssets as one app on any device: the visitor's own ag
 - **AND** the primary action is joining early access
 - **AND** the receipt of pull request #2728 stays on `/build`, not as the home-page headline
 
+#### Scenario: A developer looks up the tools a connection can expose
+
+- **WHEN** a visitor opens a tool profile on the developer page after the route cutover
+- **THEN** the static page shows the tool names in that profile from `platform/contract/profiles.json`
+- **AND** it directs a connected client to `tools/list` to discover its effective tools
+
 #### Scenario: Subscription copy stays truthful
 
 - **WHEN** any page describes connecting a subscription

@@ -21,6 +21,7 @@ on:
     paths:
       - 'WebSite/site-react/**'
       - 'WebSite/design-system/**'
+      - 'platform/contract/profiles.json'
       - 'WebSite/shared/**'
       - '.github/workflows/deploy-site-react.yml'
   workflow_dispatch:

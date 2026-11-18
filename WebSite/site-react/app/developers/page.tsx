@@ -1,23 +1,14 @@
 import type { Metadata } from "next";
 import { RitualLabel } from "@tiny/design-system";
+import profiles from "../../../../platform/contract/profiles.json";
 import { SITE } from "../../lib/site";
 
 export const metadata: Metadata = {
   title: "Developers",
   description:
-    "One public repository under MIT. The MCP endpoint and its seven handles, the specs written after things work, the design system, and how to contribute.",
+    "One public repository under MIT. The MCP endpoint and its tool profiles, the specs written after things work, the design system, and how to contribute.",
   alternates: { canonical: `${SITE.origin}/developers/` },
 };
-
-const HANDLES: Array<[string, string]> = [
-  ["converse", "Talk to a command center. With no graph id, it resolves the caller's home command center."],
-  ["read_graph", "Read graphs, branches, connections, runs, and the public command center list."],
-  ["write_graph", "Create or change a graph, branch, connection, or automation in your command center."],
-  ["run_graph", "Run a graph now and get the receipt."],
-  ["read_page", "Read a page of durable state, or list what changed since a time."],
-  ["write_page", "Write a page of durable state."],
-  ["get_status", "Operator-facing status. Supporting evidence, never the opening move."],
-];
 
 export default function DevelopersPage() {
   return (
@@ -48,60 +39,51 @@ export default function DevelopersPage() {
               <span className="value">{SITE.mcp}</span>
             </p>
             <p>
-              JSON-RPC over HTTP with an initialised session. Claude.ai and ChatGPT use it as a
-              connector; the web, iOS, Android and desktop apps use it too. There is no other public
-              endpoint, and anything claiming to be one is not us.
+              Connect an MCP client here, then call <code>tools/list</code> to see the tools
+              available to that connection. The owner can narrow the custom tool list or turn
+              off code mode. Each call also requires the appropriate grant.
             </p>
             <p>
               <a href={SITE.connectorSpec} target="_blank" rel="noreferrer">
-                Connector surface spec
+                Read the tool descriptions and arguments
               </a>
             </p>
           </div>
-          <div>
-            <RitualLabel>Seven handles</RitualLabel>
-            <table className="ledger" style={{ marginTop: 12 }}>
-              <thead>
-                <tr>
-                  <th>Handle</th>
-                  <th>Does</th>
-                </tr>
-              </thead>
-              <tbody>
-                {HANDLES.map(([name, does]) => (
-                  <tr key={name}>
-                    <td>
-                      <span className="ev">{name}</span>
-                    </td>
-                    <td>{does}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <section aria-labelledby="tool-profiles">
+            <h3 id="tool-profiles">MCP tool profiles</h3>
+            <p>
+              Custom connectors use the custom profile by default. The directory profile defines
+              the tool set for directory clients. An agent running in a sandbox uses the run profile.
+            </p>
+            {Object.entries(profiles).map(([name, profile]) => (
+              <details key={name}>
+                <summary>{name} ({profile.tools.length})</summary>
+                <ul>
+                  {profile.tools.map(tool => <li key={tool}><code>{tool}</code></li>)}
+                </ul>
+              </details>
+            ))}
+          </section>
         </div>
       </section>
 
       <section className="section">
         <div className="container">
           <div className="head">
-            <RitualLabel>Run it yourself</RitualLabel>
+            <RitualLabel>Local development</RitualLabel>
             <h2>The source path.</h2>
             <p>
-              You do not need any of this to use TinyAssets; the hosted command center runs on your
-              subscription. This is for reading, contributing, or running the engine on your own
-              machine.
+              Use the Node.js version specified in <code>platform/package.json</code>, then run
+              the TypeScript checker from the platform workspace.
             </p>
           </div>
           <div className="cols cols--2">
             <div>
               <pre>
                 <code>{`git clone ${SITE.repo}.git
-cd TinyAssets
-python -m venv .venv && . .venv/bin/activate   # Python 3.11+
-pip install -e .
-tinyassets-mcp        # the MCP server
-tinyassets-cli        # the command line`}</code>
+cd TinyAssets/platform
+npm ci
+npm run typecheck`}</code>
               </pre>
             </div>
             <div>

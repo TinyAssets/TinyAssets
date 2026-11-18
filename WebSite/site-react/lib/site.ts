@@ -26,7 +26,7 @@ export const SITE = {
   desktopSource: "https://github.com/TinyAssets/TinyAssets/tree/main/desktop-app",
   specs: "https://github.com/TinyAssets/TinyAssets/tree/main/openspec/specs",
   connectorSpec:
-    "https://github.com/TinyAssets/TinyAssets/blob/main/openspec/specs/live-mcp-connector-surface/spec.md",
+    "https://github.com/TinyAssets/TinyAssets/blob/main/platform/contract/doors.json",
   designSystem: "https://github.com/TinyAssets/TinyAssets/tree/main/WebSite/design-system",
   plan: "https://github.com/TinyAssets/TinyAssets/blob/main/docs/architecture.md",
   agents: "https://github.com/TinyAssets/TinyAssets/blob/main/AGENTS.md",

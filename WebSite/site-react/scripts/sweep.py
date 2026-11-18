@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import json
 import socketserver
 import sys
 import threading
@@ -71,6 +72,7 @@ def main() -> int:
     if not (OUT / "index.html").is_file():
         print("out/index.html missing: run `npm run build` first", file=sys.stderr)
         return 2
+    profiles = json.loads((HERE.parents[2] / "platform/contract/profiles.json").read_text())
     srv = serve()
     base = f"http://127.0.0.1:{PORT}"
     failures: list[str] = []
@@ -116,6 +118,20 @@ def main() -> int:
                         canonical = page.locator('link[rel="canonical"]').get_attribute("href")
                         if canonical != "https://tinyassets.io/connect/":
                             failures.append(f"{label} {route}: wrong canonical {canonical}")
+                    if route == "/developers/":
+                        catalogs = page.get_by_role("region", name="MCP tool profiles").locator("details")
+                        if catalogs.count() != len(profiles):
+                            failures.append(f"{label} {route}: wrong number of tool profiles")
+                        for name, profile in profiles.items():
+                            summary = f"{name} ({len(profile['tools'])})"
+                            catalog = catalogs.filter(has=page.get_by_text(summary, exact=True))
+                            if catalog.count() != 1:
+                                failures.append(f"{label} {route}: missing {summary}")
+                                continue
+                            catalog.locator("summary").click()
+                            tools = catalog.locator("li code")
+                            if tools.all_inner_texts() != profile["tools"]:
+                                failures.append(f"{label} {route}: wrong tools for {name}")
                     if not page.locator("footer").count():
                         failures.append(f"{label} {route}: no footer")
                     overflow = page.evaluate(
