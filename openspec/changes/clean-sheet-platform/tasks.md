@@ -499,6 +499,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
     it, since `copyback` needs an object naming the namespace and `recover` begins every owner
     (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
+    - [x] Prove the Files Worker can identify a lost namespace using only copied ciphertext
+      roots and the newest root’s first part (`r8-copied-header.md`). The targeted restore
+      itself and its private access to the copy remain open.
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner

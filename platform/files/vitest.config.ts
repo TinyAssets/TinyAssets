@@ -15,7 +15,7 @@ export default defineConfig({
       // keyring made fresh for each run as its one secret: none is read from the host.
       project("files", "workerd", {
         plugins: [cloudflareTest(once(async () => pool(main(join(PLATFORM, "files"), {
-          bindings: { FILES_KEYRING: keyring() } }))))],
+          bindings: { FILES_KEYRING: keyring() }, r2Buckets: ["COPIED_BLOBS"] }))))],
       }),
       // Static guards over the source and config, in Node.
       project("files", "guards"),

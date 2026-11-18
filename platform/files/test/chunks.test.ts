@@ -5,7 +5,7 @@
  */
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { base64, hex, OBJECT_OVERHEAD, sealObject } from "../../contract/src/envelope";
@@ -13,7 +13,7 @@ import { chunkName, unwrap } from "../src/datakey";
 import { refusalOf } from "../../contract/src/refusal";
 import FilesService, { FilesLocate } from "../src/index";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
-import { chunkKey, manifestKey, markKey } from "../src/keys";
+import { chunkKey, manifestKey, manifestPrefix, markKey } from "../src/keys";
 import {
   type ChunkGet, GET_READS, MARK_BODY, markedNamespace,
 } from "../../contract/src/files";
@@ -527,20 +527,22 @@ describe("deleteNamespace: the erasure's mark, then its prefix delete", () => {
 });
 
 describe("locate: a namespace's owner, from its newest generation's header", () => {
-  const located = (space: string, bucket: R2Bucket = env.BLOBS) =>
-    new FilesLocate(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: RING })
+  const located = (space: string, bucket: R2Bucket = env.BLOBS, ring = RING) =>
+    new FilesLocate(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: ring })
       .locate(space);
-  /** Part 0 of `gen` of `space` holding `first` as its first line, then a row. */
-  async function generation(space: string, gen: string, first: unknown, at: number) {
-    const key = await keyOf(space);
-    const part = await service().putManifestPart(space, key, gen, 0, bytes(
+  /** A finished generation with a known write time, so newest need not be last by key. */
+  async function generation(space: string, gen: string, first: unknown, at: number,
+                            ring = RING, key = keyOf(space)) {
+    const writer = service(env.BLOBS, ring);
+    const wrapped = await key;
+    const part = await writer.putManifestPart(space, wrapped, gen, 0, bytes(
       `${JSON.stringify(first)}\n{"t":"row","table":"x","row":{}}\n`));
-    // The root as the Worker writes it, its lists' time `at`, so which is newest is the test's.
-    const lists = { parts: [part], segments: [], s: 1, e: 0, at };
-    const sealed = await sealObject(await unwrap(RING, space, key), manifestKey(space, gen),
-                                    bytes(JSON.stringify(lists)));
-    await env.BLOBS.put(manifestKey(space, gen), JSON.stringify({
-      format: "tinyassets-manifest", version: 2, gen, key, sealed: base64(sealed) }));
+    const time = vi.spyOn(Date, "now").mockReturnValue(at);
+    try {
+      await writer.putManifestRoot(space, wrapped, gen, [part], [], { s: 1, e: 0 });
+    } finally {
+      time.mockRestore();
+    }
   }
   const header = (owner: string, gen: string) =>
     headerLine({ schema: 12, owner, at: 1, gen, s: 1 });
@@ -554,6 +556,63 @@ describe("locate: a namespace's owner, from its newest generation's header", () 
     // A pass's part with no root yet names no generation.
     await service().putManifestPart(space, await keyOf(space), "f".repeat(16), 0, bytes("x"));
     expect(await located(space)).toEqual({ owner: "user_alice", gen: newest, at: 2000 });
+  });
+
+  it("locates a lost namespace from copied roots and only the newest part zero", async () => {
+    const space = ns();
+    const [old, newest] = ["f".repeat(16), "1".repeat(16)];
+    const owner = "user_copy_fixture";
+    const oldKey = service(env.BLOBS, OLD).mintKey(space).then(({ key }) => key);
+    await generation(space, old, header(owner, old), 1000, OLD, oldKey);
+    await generation(space, newest, header(owner, newest), 2000, RING, oldKey);
+
+    // The copy transports the bytes, without a key. No old part, log segment or chunk is copied.
+    const copy = env.COPIED_BLOBS;
+    const roots = [manifestKey(space, old), manifestKey(space, newest)];
+    const part = manifestKey(space, newest, 0);
+    for (const name of [...roots, part]) {
+      await copy.put(name, (await env.BLOBS.get(name))!.body);
+    }
+    // A subsequent rotation sweep rewrites only the old root. Keep its bytes as the
+    // next copy would, before simulating the loss of the live namespace.
+    await service().rewrapManifestRoot(space, old);
+    const swept = await (await env.BLOBS.get(manifestKey(space, old)))!.arrayBuffer();
+    await env.BLOBS.delete(await keys(space));
+    expect(await located(space)).toBeNull();
+
+    const reads: string[] = [];
+    const mark = markKey(space);
+    const listed = `list ${manifestPrefix(space)}`;
+    const reader = {
+      head: (key: string) => { reads.push(`head ${key}`); return copy.head(key); },
+      list: (options: R2ListOptions) => {
+        reads.push(`list ${options.prefix}`);
+        return copy.list(options);
+      },
+      get: (key: string) => { reads.push(key); return copy.get(key); },
+    } as unknown as R2Bucket;
+    // The Files Worker still has the old kid; ownership comes from the authenticated time
+    // and header, even when the older generation sorts last.
+    expect(await located(space, reader)).toEqual({ owner, gen: newest, at: 2000 });
+    expect(reads.slice(0, 2)).toEqual([`head ${mark}`, listed]);
+    expect(reads.slice(2).sort()).toEqual([...roots, part].sort());
+    const retired = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
+    expect(await refused(() => located(space, reader, retired))).toBe("data_key_refused");
+    await copy.put(manifestKey(space, old), swept);
+    expect(await located(space, reader, retired)).toEqual({ owner, gen: newest, at: 2000 });
+
+    const ciphertext = new Uint8Array(await (await copy.get(part))!.arrayBuffer());
+    await copy.delete(part);
+    await expect(located(space, reader)).rejects.toThrow("missing from the bucket");
+    ciphertext[ciphertext.length - 1] = ciphertext.at(-1)! ^ 1;
+    await copy.put(part, ciphertext);
+    await expect(located(space, reader)).rejects.toThrow("does not open under its owner's key");
+
+    await copy.put(mark, MARK_BODY);
+    reads.length = 0;
+    expect(await located(space, reader, retired)).toBe("erased");
+    expect(reads).toEqual([`head ${mark}`]);
+    expect(await keys(space)).toEqual([]);
   });
 
   it("answers erased for a namespace the bucket marks, reading nothing of it", async () => {
