@@ -1,4 +1,4 @@
-# P6. Which required job stayed red on main?
+# P6 red-main job evidence as built (2026-11-18)
 
 ADR-020 reruns the failed jobs once and then raises an alarm. The aggregate already knows a required platform leg failed, but the alarm looked for named failures only in the old Python JUnit archive. In #5424 it linked the run and said evidence might be unavailable. Attempt 2 of run 41948241365 had a failed owner workerd job, 126995263405. The aggregate checks the platform legs before the Python artifact steps in `tests.yml`.
 
