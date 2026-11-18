@@ -16,3 +16,9 @@ A record requiring a region still refuses a sign-in made without one.
 The approval hook's record shape, start check and deferred resume are separate
 work (`r5-resume-hooks.md` items 6–8). This changes the runner bundle and therefore
 the paired probes. The existing build and pin in step 6 take the pair together.
+
+The checker also declares the status and stored-state fields as dotted paths.
+A checked status record requiring `account.signed` previously refused a nested
+true value and accepted a literal key containing the period. Both sign-in
+readers now use the existing dotted-path reader for JSON object members.
+The runner still checks the command's exit before interpreting its output.

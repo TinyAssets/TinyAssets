@@ -11,6 +11,7 @@
  * to type there, never a token: a value holding a secret file's atom, or credential-shaped
  * (`credentialLike`, checked again on the trusted side), is refused, and the sign-in ends.
  */
+import { valueAt } from "../../contract/src/run-events";
 import type { LoginSpec } from "../../sources/src/schema";
 import { credentialLike } from "../../sources/src/signin";
 
@@ -59,16 +60,14 @@ export function onTerminal(argv: readonly string[]): string[] {
   return ["script", "-qfec", argv.map(quoted).join(" "), "/dev/null"];
 }
 
-/** A dotted path's value in a parsed JSON document, or undefined. */
-function at(document: unknown, dotted: string): unknown {
-  let value = document;
-  for (const key of dotted.split(".")) {
-    if (typeof value !== "object" || value === null || !(key in value)) {
-      return undefined;
-    }
-    value = (value as Record<string, unknown>)[key];
+/** Whether the CLI's status JSON has the values declared by the source record. */
+export function statusMatches(text: string, equals: NonNullable<LoginSpec["status_equals"]>): boolean {
+  try {
+    const status: unknown = JSON.parse(text);
+    return Object.entries(equals).every(([field, expected]) => valueAt(status, field) === expected);
+  } catch {
+    return false;
   }
-  return value;
 }
 
 /**
@@ -89,7 +88,7 @@ export function statesHold(login: LoginSpec, read: (path: string) => string | nu
     try {
       const document: unknown = JSON.parse(text);
       return check.present.every((field) => {
-        const value = at(document, field);
+        const value = valueAt(document, field);
         return value !== undefined && value !== null && value !== "";
       });
     } catch {

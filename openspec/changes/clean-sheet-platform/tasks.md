@@ -81,7 +81,8 @@ end.
   unprobed: §10 step 7.
 
 - [x] The sign-in command, its status check and its sign-out validate the placeholders
-  each command can expand, including the probe's sign-in (`signin-arguments.md`).
+  each command can expand, including the probe's sign-in. The status and stored-state
+  checks read the record's dotted JSON fields (`signin-arguments.md`).
 
 ## 7. Wakes and outside agents
 

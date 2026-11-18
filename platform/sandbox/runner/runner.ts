@@ -87,7 +87,7 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
          markUsed,
          writeOrRelease } from "./scratch";
 import { credentialShaped, onTerminal, plain, type Prompt, prompted,
-         statesHold } from "./login";
+         statesHold, statusMatches } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
   openMirror, SESSIONS_SEEN, stageSessions, SyncClient, SyncFenced, syncIn, syncOut,
@@ -445,15 +445,7 @@ async function signedIn(rec: Served): Promise<boolean> {
     if (await check.exit !== 0) {
       return false;
     }
-    if (equals === undefined) {
-      return true;
-    }
-    try {
-      const status = JSON.parse(Buffer.concat(out).toString("utf8")) as Record<string, unknown>;
-      return Object.entries(equals).every(([key, value]) => status[key] === value);
-    } catch {
-      return false;
-    }
+    return equals === undefined || statusMatches(Buffer.concat(out).toString("utf8"), equals);
   });
 }
 
