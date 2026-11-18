@@ -60,7 +60,7 @@ Each run of a pi-ai adapter the gateway makes (the meter's learning runs, `meter
 - **THEN** the first two reach the scope's own fetch, and the last the runtime's
 
 ### Requirement: The interposer is exempt from the module-state guard by its three symbols
-The interposer SHALL be exempt from the platform's module-state guard only by the gateway's own exemptions (`gateway/guards/rules.ts`, `MODULE_STATE`), each its one file, a symbol and its reason, for the three symbols it needs (the scope, the captured runtime fetch, the one write of the global): Google's SDK takes no fetch, and nothing else holds it to the seal without forking pi-ai. The scope SHALL hold no data between calls.
+The interposer SHALL be exempt from the platform's module-state guard only by the gateway's own exemptions ([`MODULE_STATE`](../../../../../platform/gateway/guards/rules.ts)), each its one file, a symbol and its reason, for the three symbols it needs (the scope, the captured runtime fetch, the one write of the global): Google's SDK takes no fetch, and nothing else holds it to the seal without forking pi-ai. The scope SHALL hold no data between calls.
 
 #### Scenario: The exemption widens
 - **WHEN** the interposer's file gains another finding, or its text appears in another file

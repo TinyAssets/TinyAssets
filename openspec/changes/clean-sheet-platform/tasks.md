@@ -401,6 +401,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       the setup's `workos` and `review-app` steps go, since the deletion takes them too.
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
+    - [x] Check concrete platform paths and backticked uppercase names in the three active
+      specs, pin linked constants to their modules, and align code-mode answer sizing and
+      the migration bound with the implementation (`untangle-2026-11/b26-spec-references.md`).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
     depth (Fact 15; the coordinator, 2026-11-12, below).
   - [x] Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`,

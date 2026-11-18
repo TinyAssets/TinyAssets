@@ -22,7 +22,7 @@ import type { Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import {
-  CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS,
+  CODE_MODE_OFF, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS,
 } from "../src/codemode";
 import { CONTROL_FRESH_MS } from "../src/control-gate";
 import { PAGE_BYTES } from "../src/bodies";
@@ -282,10 +282,12 @@ describe("the code door", () => {
       "await tools.collection_write({ collection: 'board', row_id: 'big', body: 'b',",
       "  expected_etag: '', private: false });",
       `return '\\u0001'.repeat(${Math.ceil(PAGE_BYTES / 6)});`) });
-    expect(value).toEqual({ ok: false, error: { kind: "answer_too_large",
-                                                message: CODE_ANSWER_TOO_LARGE },
-                            output: [], calls: { ok: 1, error: 0, cancelled: 0 },
-                            landed: [{ name: "collection_write", status: "ok", count: 1 }] });
+    expect(value).toEqual({
+      ok: false, error: { kind: "answer_too_large",
+                          message: expect.stringContaining(`${PAGE_BYTES}-byte JSON answer`) },
+      output: [], calls: { ok: 1, error: 0, cancelled: 0 },
+      landed: [{ name: "collection_write", status: "ok", count: 1 }],
+    });
     // Output past it: the value whole, the output's first item cut at a character, said so.
     const output = await r.stub.codeRun(r.bind(null), { script: lines(
       `text('x'.repeat(${PAGE_BYTES}));`, "text('after');", "return 1;") });

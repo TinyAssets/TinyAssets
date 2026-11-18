@@ -83,7 +83,7 @@ export interface CodeRequest {
  * tool calls ended each way, and which calls of tools that change something landed
  * (`landed`, in order, a run of the same tool and outcome as one entry with its count), so
  * an agent knows what a stopped script did. Its output past what one tool answer holds
- * (`PAGE_BYTES`, `pages.ts`) is cut, said so (`output_cut`); a value past it alone is
+ * (`PAGE_BYTES`) is cut, said so (`output_cut`); a value past it alone is
  * refused `answer_too_large`, its calls kept (`fittedCode`).
  */
 export type CodeResult =
@@ -135,7 +135,7 @@ export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profi
 const CODE_TIMED_OUT = "the script is past its time";
 
 /**
- * A script's answer fitted to one tool answer (`pages.ts`, review M6): its value and calls
+ * A script's answer fitted to one tool answer: its value and calls
  * whole, its output's items while they fit and the next text cut at a character, said so
  * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
  * calls and what landed kept, so nothing is lost silently.
@@ -169,10 +169,8 @@ function fittedCode(answer: CodeResult): CodeResult {
   return { ...answer, output, output_cut: { items: answer.output.length, kept } };
 }
 
-/** A script's value past what one tool answer holds (`pages.ts`), refused whole. */
-export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value is past the " +
-  `${PAGE_BYTES} characters one answer holds; return less, or write it with a tool and read ` +
-  "it back";
+const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's result and call summary do not fit in a " +
+  `${PAGE_BYTES}-byte JSON answer; return less, or write it with a tool and read it back`;
 
 /** What a script runs with: the codemode Worker, its owner, and its tools. */
 interface ScriptParts {
