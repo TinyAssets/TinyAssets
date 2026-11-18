@@ -831,7 +831,9 @@ Moved before the window, into lane R (d3 §F3, §G).
 - Each adds, and none guards data or routing:
   - [ ] The shared app's install flow (Slack's OAuth v2 install, which proves the owner holds the
     workspace), writing the object's `shared` binding and its `i:` entry. Until then no event
-    reaches the deployed shared-app half (list3 P45).
+    reaches the deployed shared-app half (list3 P45). Before enabling installs, prove that
+    one installation has one current binding across owners and that delayed revoke or erasure
+    cannot remove its replacement. See [shared installation ownership](../../../docs/decisions/untangle-2026-11/shared-install-ownership.md).
   - [ ] Server tools priced as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a key run that enables one is metered, not refused
     `egress_unmetered_tool` (list3 P20).
