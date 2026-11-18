@@ -336,3 +336,30 @@ At 14:22 Pacific there were 107 live refs and 88 Codex heads. Main was still
 `f934871ad`. Prior recorded runtime and plan limits remain, including Files
 erasure, import discard identity, continuous sync, older mail-started runs,
 grant reapproval, and exact combined behavioral evidence.
+
+## An older file operation could discard a newer draft
+
+The recheck after directory paging found a separate problem shared by the
+agent and account editors. On main, the actual owner's earlier file answer
+replaced a draft for a more recently selected file. A successful save for
+one file also removed the draft for a different file by repainting the
+entire data screen. The controlled requests reached the real local Worker
+before their answers were delayed in Chromium. Both regressions failed
+on main with two small, readable files.
+
+The staged fix at `84dbb9e2` gives each visible editor ownership of its
+pending selection and refreshes directory and storage information separately.
+Nine Chromium/Worker journeys passed on the exact staged source. Independent
+Node 22 and 24 controls covered changes while typing during a save, the etag
+used on the next save, obsolete errors and the ordinary close on success.
+
+Local integration `e29ce4064` retained the bounded directory reader, the
+owner's measured total storage, both historical save/navigation checks and
+the new draft checks. All sixteen selected Chromium/Worker journeys passed
+with only loopback networking. For a view of outstanding work, main at
+`f934871ad` has 101 unchecked and 100 checked Markdown tasks. This combined
+checklist has 108 unchecked and 166 checked. Both counts include build,
+research, deployment and founder work, and parents as well as subtasks.
+They cannot measure architectural review coverage. The newly explicit
+dependencies are part of the progress; the project-wide exit criteria
+remain the wave 2 recheck above.
