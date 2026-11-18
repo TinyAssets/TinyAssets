@@ -658,6 +658,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
+- [ ] Before relying on a refreshed sign-in pair, finish the shared prompt
+  reader review. Four pinned engine/region configurations have measured
+  output boundaries. Claude's boundary before input remains open
+  (`untangle-2026-11/signin-prompt-framing.md`).
+
 - [ ] The engines' locks refreshed, then the one paid template build after the re-check loop,
   then the pin PR (d3 §A12, list3 P19). The runner and probes bundles moved in u3-services and
   again in S2 (#5517), so the next deploy needs a pair check of the merged pair and the pin PR
