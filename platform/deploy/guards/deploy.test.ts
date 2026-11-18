@@ -2263,6 +2263,24 @@ describe("the parts of a run", () => {
       "body that is not JSON (200)");
   });
 
+  it("requires a readable bucket name and an unambiguous queue name and ID", async () => {
+    const path = "/accounts/a/queues";
+    const first = { queue_name: "imports", queue_id: "q1" };
+    const rows = [
+      [first, { queue_name: "imports", queue_id: "q2" }],
+      [{ queue_name: "imports", queue_id: "q2" }, first],
+      [first, { queue_name: "other", queue_id: "q1" }],
+      [{ queue_id: "q1" }],
+      [{ queue_name: "imports" }],
+    ];
+    for (const listing of rows) {
+      await expect(client(api({ [path]: ok(listing) })).queues("a"))
+        .rejects.toThrow(/listing the queues failed/);
+    }
+    await expect(client(api({ "/accounts/a/r2/buckets": ok({ buckets: [{}] }) })).buckets("a"))
+      .rejects.toThrow(/listing the R2 buckets failed/);
+  });
+
   it("reads every listing past its first 100, by page or by cursor, and makes by REST",
      async () => {
     const rows = (n: number, from = 0) => Array.from({ length: n }, (_, i) => i + from);

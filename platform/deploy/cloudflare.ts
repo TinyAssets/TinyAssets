@@ -93,6 +93,21 @@ function identifier(row: Record<string, unknown>, field: string, what: string): 
   return value;
 }
 
+/** Each listed resource has one name and one ID. Consumers address the ID selected by name. */
+function resourceIds(listed: readonly Record<string, unknown>[], nameField: string,
+                     idField: string, what: string): Map<string, string> {
+  const names = new Map<string, string>();
+  const ids = new Set<string>();
+  for (const row of listed) {
+    const name = identifier(row, nameField, what);
+    const id = identifier(row, idField, what);
+    if (names.has(name) || ids.has(id)) throw new Error(`${what} failed (ambiguous resource)`);
+    names.set(name, id);
+    ids.add(id);
+  }
+  return names;
+}
+
 /**
  * An R2 bucket's lock rule, as the API takes and lists it: objects under `prefix` ("" is every
  * object) kept, unchangeable and undeletable, until they are `maxAgeSeconds` old.
@@ -507,16 +522,7 @@ export class Cloudflare {
   async namespaces(account: string): Promise<Map<string, string>> {
     const what = "listing the KV namespaces";
     const listed = await this.#rows(what, `/accounts/${account}/storage/kv/namespaces?per_page=100`);
-    const names = new Map<string, string>();
-    const ids = new Set<string>();
-    for (const row of listed) {
-      const title = identifier(row, "title", what);
-      const id = identifier(row, "id", what);
-      if (names.has(title) || ids.has(id)) throw new Error(`${what} failed (ambiguous namespace)`);
-      names.set(title, id);
-      ids.add(id);
-    }
-    return names;
+    return resourceIds(listed, "title", "id", what);
   }
 
   /** The KV namespace `title` made: its id. */
@@ -547,7 +553,7 @@ export class Cloudflare {
     const what = "listing the R2 buckets";
     return (await this.#pages(what, `/accounts/${account}/r2/buckets`, "cursor"))
       .flatMap((result) => rows((result as { buckets?: unknown } | null)?.buckets, what))
-      .map((bucket) => String(bucket["name"]));
+      .map((bucket) => identifier(bucket, "name", what));
   }
 
   /** The R2 bucket `name` made. */
@@ -589,8 +595,9 @@ export class Cloudflare {
 
   /** The account's queues: each one's id, by its name. */
   async queues(account: string): Promise<Map<string, string>> {
-    return new Map((await this.#rows("listing the queues", `/accounts/${account}/queues`))
-      .map((queue) => [String(queue["queue_name"]), String(queue["queue_id"])]));
+    const what = "listing the queues";
+    const listed = await this.#rows(what, `/accounts/${account}/queues`);
+    return resourceIds(listed, "queue_name", "queue_id", what);
   }
 
   /** The queue `name` made. */

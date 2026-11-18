@@ -161,6 +161,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
       steps, since a re-import before then answers `busy`;
     - the window's credentials, made as a founder step (`platform/deploy/checklist.md`, "The
       import window's credentials"), and the Spaces read key, already asked (d3 §E7);
+    - stage, dead-letter removal and signed operator asks resolve an unambiguous queue
+      before writing (see the [shared resource review](../../../docs/decisions/untangle-2026-11/queue-resource-identity.md)).
     - the dead-letter reader's limit noted: a message returns about 100 times before the pull
       consumer's `max_retries` drops it.
   - [x] 8. Onboarding tells imported owners what came across (#5463). The text is in the
