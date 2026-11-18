@@ -347,22 +347,27 @@ test("the connect page clears the fragment before any other script runs, sends n
 
 test("Home and Your data show the owner's measured storage and its effective limit", async () => {
   const { generation, policy } = (await api("policy")).body;
-  const { used_bytes } = (await api("storage")).body;
-  const bound = used_bytes + 1_000_000;
+  // A real non-file body counts toward storage. Cap the owner at exactly its measured
+  // usage so the two values shown on Home must agree, whatever their units.
+  const written = await api("tools/collection_write", {
+    collection: "board", row_id: "storage-view", body: "x".repeat(2000),
+    expected_etag: "", private: false });
+  assert.equal(written.status, 200);
+  const { used_bytes: bound, breakdown } = (await api("storage")).body;
+  assert.ok(breakdown.collections >= 2000);
   const changed = await api("policy/write", { expected_generation: generation,
     policy: { ...policy, files: { ...policy.files, max_bytes: bound } } });
   assert.equal(changed.status, 200);
   try {
     const storage = (await api("storage")).body;
     assert.equal(storage.limit_bytes, bound);
-    const [used, limit] = await page.evaluate(async ([a, b]) => {
-      const { bytes } = await import("/app/static/view.js");
-      return [bytes(a), bytes(b)];
-    }, [storage.used_bytes, bound]);
+    assert.equal(storage.used_bytes, bound);
     await page.goto(`${ORIGIN}/app#data`);
-    await page.getByText(`You store ${used} in total.`, { exact: false }).waitFor();
+    const summary = await page.getByText(/^You store /).innerText();
+    const match = /^You store (.+?) in total\./.exec(summary);
+    assert.ok(match, summary);
     await page.goto(`${ORIGIN}/app#home`);
-    await page.getByText(`Storage: ${used} used of ${limit}.`, { exact: true }).waitFor();
+    await page.getByText(`Storage: ${match[1]} used of ${match[1]}.`, { exact: true }).waitFor();
   } finally {
     assert.equal((await api("policy/write", { expected_generation: changed.body.generation,
                                                policy })).status, 200);

@@ -17,8 +17,9 @@ The retention horizon is a maximum. An owner lowering the limit can shorten reco
 Offline Chromium executed the actual app modules with local account and notice responses.
 Mixed-content bytes, an owner cap below the plan and missing tier numbers each exposed a
 display error on the original Home. The candidate passed those three and three data-page
-renders. The regression in the app suite changes a test owner's actual policy and compares
-both pages against the storage door, restoring the policy afterwards.
+renders. The regression in the app suite writes an inline collection row and caps a test owner
+at exactly the measured usage. Both values shown on Home must match the amount shown on
+Your data. It restores the policy afterwards.
 
 ## Remaining Step 19 consumers
 
