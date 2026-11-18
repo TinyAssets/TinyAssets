@@ -1,0 +1,5 @@
+# P9 archive retirement as built (2026-11-18)
+
+The first archive cut removes 120 directories (667 files) from `openspec/changes/archive`. Their complete contents are in main commit `f934871ad44b9a198070d55de517be85d8e107f6`. Search tracked text outside the archive for each directory's dated name and its undated change name as complete names. Keep the named directories, then follow the same names in those directories until the set stops growing. Of 229 directories, 81 had an outside reader and another 28 were reached from those.
+
+Deleting the entire archive in a disposable checkout produced 23 dangling path citations and broke the shape registry's specification check for accepted ADR-017. The cited archives remain for the next part of P9. ADR-005 freezes an accepted decision's body. The requirement registry already excludes archived changes. Dropping all other change directories as well would orphan 1,711 tests; dropping the old canonical specs with them would orphan 2,205. Move the live requirement and its readers together before retiring those sources. The existing gates and the active clean-sheet specification still apply.

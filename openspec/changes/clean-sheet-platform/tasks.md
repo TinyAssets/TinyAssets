@@ -268,6 +268,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   what stayed and why: `untangle-2026-11/p9-now.md`).
 - [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
   their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
+  - [x] The 120 archived changes with no surviving named reader are in git history
+    (`untangle-2026-11/p9-archive.md`). The cited archives and the active requirement IDs remain.
 - [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
   protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
   from `land/3`; `untangle-2026-11/slow-tests.md`).
