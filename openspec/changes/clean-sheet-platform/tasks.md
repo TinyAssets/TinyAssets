@@ -841,6 +841,9 @@ Moved before the window, into lane R (d3 §F3, §G).
     pull of `/events/sandboxes` for the deliveries E2B gave up on (list3 P7).
   - [ ] The MCP Tasks extension once the SDK's `createMcpHandler` serves it: a task id the
     operation id, `tasks/get` `agentStatus`, `tasks/cancel` `agentCancel`.
+  - [ ] Before claiming complete room collection browsing, settle a caller-visible bounded
+    baseline after retention with catch-up under concurrent edits. See the
+    [room digest recovery review](../../../docs/decisions/untangle-2026-11/room-digest-recovery.md).
   - [ ] A streamed file download, and an outside client's file-bytes tool.
   - [ ] The owner app: the API keys screen reads `keys/list` and deletes by `keys/delete`; the
     Export section uses the export door, and `MISSING.export` goes; the storage view's "deleted
