@@ -557,8 +557,8 @@ export class Archive {
         });
         if (first) {
           await this.#door(() => this.#notices.add("storage_busy_long",
-            "Older mail could not be moved out because your storage is full, so new mail is " +
-              "refused until you free some space or upgrade.", clock()));
+            "Archiving older mail would exceed your storage limit. Freeing space can let " +
+              "archiving continue.", clock()));
         }
         return { hold: clock() + ARCHIVE_RETRY_S };
       }

@@ -819,8 +819,15 @@ Moved before the window, into lane R (d3 §F3, §G).
   wired at the erase door first (5.1.1(v), d3 §C6); the shell's native features (4.2).
 - [ ] Billing: a billing door, Stripe's endpoint on it, and `storage_full`'s upgrade (list3 P38).
   Until then a tier changes through the operator path.
+  - [x] Review the mail archive notice and the storage refusal through the app and MCP;
+    remove the notice's unconditional upgrade advice (`untangle-2026-11/storage-remedy.md`).
+  - [ ] Show a purchase action only for a `storage_full` refusal with a larger tier. Preserve
+    the owner-cap and open-upload remedies. Verify the billing return and webhooks against
+    operator tier changes and the cutover census before enabling paid changes.
 - [ ] Connectors for the owner's own agents: the agent's `mcp.json` merged into the run config,
   then a `browser` skill; where a connector's credential lives is undecided (list3 P40).
+  - [ ] Resolve the connector grant, its credential and destination policy before rendering
+    permitted servers into each engine's config and trust settings (`storage-remedy.md`).
 - [ ] Direction 1's standing comparison against the four main agents, and what "beat" is
   measured by (list3 P41).
 - [ ] The directory submissions (`platform/plugins/SUBMIT.md`, the founder's outward act, after
