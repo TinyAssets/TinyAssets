@@ -120,6 +120,9 @@ end.
   10. **Codex CLI and Claude Code locally**, two agents on one repository: claims keyed
      `repo:<name>:<area>`, one `doing` row, and the other stops.
 
+- [x] Registration discovery uses the wake records' methods in both MCP revisions and code
+  mode (`untangle-2026-11/registration-discovery.md`).
+
 ## 8. Founder live test
 
 - [ ] The founder's own test, last on the live stage (§10 step 8), with a stage account: his

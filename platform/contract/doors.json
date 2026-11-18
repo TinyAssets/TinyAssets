@@ -116,7 +116,7 @@
         "required": {
           "command_center_id": { "type": "string", "description": "The command center to register in" },
           "display_name": { "type": "string", "description": "The agent's display name" },
-          "delivery_method": { "type": "string", "description": "How the agent is reached: pull or mcp_event" },
+          "delivery_method": { "$ref": "urn:tinyassets:schema:agent-delivery-method" },
           "recipe_id": { "type": ["string", "null"], "description": "The recipe the agent runs, or null" }
         },
         "optional": {}
@@ -124,7 +124,7 @@
       "tool": {
         "name": "agent_register", "title": "Request agent registration", "readOnlyHint": false,
         "destructiveHint": false, "idempotentHint": false, "openWorldHint": false,
-        "description": "File this connection's agent registration for the owner to approve."
+        "description": "Request registration from an outside agent's own MCP connection for the owner to approve. The owner registers API-key agents separately in a protected session."
       }
     },
     {

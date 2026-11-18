@@ -42,6 +42,7 @@ import { actNamed, type Condition, isCondition } from "./acts.ts";
 import { RUN_CAPABILITIES, type RunCapability } from "./capabilities.ts";
 import { among, frozen, keyed, object } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
+import { admittedMethods } from "./wake-records.ts";
 
 type JsonSchema = Readonly<Record<string, unknown>>;
 
@@ -238,12 +239,25 @@ export function doorRow(name: string): DoorRow {
 
 /**
  * A tool's arguments as JSON Schema: an object of exactly its required fields and any optional
- * ones; an empty one for a door that takes no request.
+ * ones; an empty one for a door that takes no request. The registration field references
+ * the wake registry. Expand it here so every consumer receives a self-contained schema.
  */
 export function argsSchema(args: DoorArgs): JsonSchema {
   const fields = args === "none" ? { required: {}, optional: {} } : args as Args;
-  return { type: "object", properties: { ...fields.required, ...fields.optional },
-           required: Object.keys(fields.required), additionalProperties: false };
+  const properties = { ...fields.required, ...fields.optional };
+  for (const [name, field] of Object.entries(properties)) {
+    if (field["$ref"] === "urn:tinyassets:schema:agent-delivery-method") {
+      // MCP and code mode both show descriptions. Code mode omits schema examples.
+      properties[name] = {
+        type: "string",
+        description: `Supported methods are ${admittedMethods().join(", ")}. Choose pull for an agent ` +
+          "that checks its own mailbox. For push, choose the method its wake mechanism uses. " +
+          "Only an MCP client can subscribe its own callback.",
+      };
+    }
+  }
+  return { type: "object", properties, required: Object.keys(fields.required),
+           additionalProperties: false };
 }
 
 /** A tool as the doors serve it and code mode calls it: its door's tool, capability and arguments. */

@@ -55,7 +55,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   outsideAgents(binding: Binding, request?: DoorRequest<"outsideAgents">):
     Promise<DoorAnswer<"outsideAgents">>;
   /**
-   * File this connection's agent registration for the owner to approve.
+   * Request registration from an outside agent's own MCP connection for the owner to approve. The
+   * owner registers API-key agents separately in a protected session.
    */
   registerPropose(binding: Binding, request: DoorRequest<"registerPropose">):
     Promise<DoorAnswer<"registerPropose">>;

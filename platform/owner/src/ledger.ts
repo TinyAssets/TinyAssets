@@ -7,9 +7,9 @@
  *
  * - The agent registry (`outside_agents`): one outside identity is at most one enabled
  *   agent. It registers only from the verified origin the binder passes, as an `api_key`
- *   or an `mcp` source; delivery is `pull` or `mcp_event`. Its wake limits are owner
- *   policy, set by the owner alone and never by a registration. The owner may delete an
- *   agent, which purges its mail and wakes.
+ *   or an `mcp` source. The wake records name its push methods. Without push, it registers
+ *   for pull. Its wake limits are owner policy, set by the owner alone and never by a
+ *   registration. The owner may delete an agent, which purges its mail and wakes.
  * - ROOM_POST: the sender is the binder's origin (none means the owner; a run, its own
  *   agent), never a field. The room is a pair's (below). A resend with the same client
  *   message id and body hash

@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
 import { profileNames, toolTable } from "../../contract/src/doors";
+import { admittedMethods } from "../../contract/src/wake-records";
 import {
   call, connect, crossed, grantsOf, legacyPost, legacyTool, OPEN, ownDoor, reached, unseen,
   registerClient, rpcBody, setControl, type Tokens, url, answerOf,
@@ -53,6 +54,10 @@ describe.each([
         idempotentHint: row.idempotentHint, openWorldHint: row.openWorldHint,
       });
     }
+    const registration = tools.find((tool) => tool.name === "agent_register");
+    expect(registration?.inputSchema.properties).toMatchObject({
+      delivery_method: { type: "string", description: expect.stringContaining(admittedMethods().join(", ")) },
+    });
     for (const model of ["read", "write", "edit", "bash", "ta"]) {
       expect(tools.map((tool) => tool.name)).not.toContain(model);
     }

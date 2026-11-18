@@ -346,7 +346,8 @@ export interface DoorMethods<H> {
   outsideAgents(binding: Binding, request?: RequestIn<H, "outsideAgents">):
     Promise<AnswerIn<H, "outsideAgents">>;
   /**
-   * File this connection's agent registration for the owner to approve.
+   * Request registration from an outside agent's own MCP connection for the owner to approve. The
+   * owner registers API-key agents separately in a protected session.
    */
   registerPropose(binding: Binding, request: RequestIn<H, "registerPropose">):
     Promise<AnswerIn<H, "registerPropose">>;
