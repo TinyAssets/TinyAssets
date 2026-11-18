@@ -10,9 +10,8 @@ after every Tests run on main (.github/workflows/main-red.yml):
   quarantine ledger, including its `flaky` lines. A red `heavy-tests` job never
   triggers anything here.
 * First red attempt: re-run the failed jobs once. A flake costs one re-run.
-* Still red: raise the alarm. Nothing is reverted. The only failing test IDs a run
-  names are the old stack's Python suite's, and that stack takes fixes only: it is
-  fixed forward, or reverted by a person who has read the failure.
+* Still red: link the platform and process legs that did not pass, and include
+  the legacy suite's failures outside quarantine. A person decides the repair.
 * Green on main's current head: close the alarm.
 
 The alarm is one open issue labelled `main-red`, with a plain comment per event:
@@ -52,7 +51,8 @@ def decide(*, attempt: int, required: str | None, head_is_main_tip: bool) -> str
     return "rerun" if attempt < 2 else "alarm"
 
 
-def render_body(*, sha: str, subject: str, run_url: str, failures: list[str]) -> str:
+def render_body(*, sha: str, subject: str, run_url: str, failures: list[str],
+                legs: list[dict] | None = None) -> str:
     lines = [
         f"<!-- main-red:{sha} -->",
         f"The required tests went red on main at `{sha[:12]}` ({subject}) and stayed red "
@@ -61,8 +61,12 @@ def render_body(*, sha: str, subject: str, run_url: str, failures: list[str]) ->
         "The cause is not established, and nothing is reverted automatically. Fix it "
         "forward, or revert by hand once the failure has been read.",
     ]
+    if legs:
+        lines += ["", "Required platform and process jobs that did not pass:"]
+        for leg in legs:
+            lines.append(f"- [{leg['name']}]({leg['html_url']}) ({leg['conclusion']})")
     if failures:
-        lines += ["", "New failures (outside the quarantine ledger):"]
+        lines += ["", "Python failures outside the quarantine ledger:"]
         lines += [f"- `{t}`" for t in failures[:40]]
         if len(failures) > 40:
             lines.append(f"- ... and {len(failures) - 40} more")
@@ -103,6 +107,18 @@ def tip_conclusion(repo: str, tip: str) -> str | None:
         if conclusion in ("success", "failure", "timed_out"):
             return conclusion
     return None
+
+
+def platform_legs(repo: str, run_id: int, attempt: int) -> list[dict]:
+    """Keep each unsuccessful platform or process leg's actual conclusion and job link."""
+    out = _gh("api", "--paginate",
+              f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100",
+              "--jq", ".jobs[] | {name, conclusion, html_url} | @json")
+    families = {"platform-tests", "platform-sizes", "platform-checks", "platform-app", "process"}
+    jobs = (json.loads(line) for line in out.splitlines())
+    return sorted((job for job in jobs if job["name"].partition(" (")[0] in families
+                   and job["conclusion"] and job["conclusion"] != "success"),
+                  key=lambda job: job["name"])
 
 
 def new_failures(repo: str, run_id: int, attempt: int) -> list[str]:
@@ -190,9 +206,14 @@ def handle(repo: str, run_id: int, sha: str, event: str, attempt: int, run_url: 
             note = ""
         except Exception:
             # Do not include exception text: gh errors can carry the token.
-            failures, note = [], "\nFailure details could not be collected.\n"
+            failures, note = [], "\nPython failure details could not be collected.\n"
+        try:
+            legs = platform_legs(repo, run_id, attempt)
+        except Exception:
+            legs = []
+            note += "\nPlatform job details could not be collected.\n"
         _alarm(repo, render_body(sha=sha, subject=subject, run_url=run_url,
-                                 failures=failures) + note, sha)
+                                 failures=failures, legs=legs) + note, sha)
     return action
 
 

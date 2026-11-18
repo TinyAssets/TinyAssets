@@ -43,3 +43,74 @@ def test_nothing_reverts() -> None:
     workflow = (Path(__file__).resolve().parents[2] / ".github" / "workflows"
                 / "main-red.yml").read_text(encoding="utf-8")
     assert "secrets." not in workflow
+
+
+@pytest.mark.parametrize(("artifact", "listing"), [
+    ("absent", True), ("unreadable", True), ("failing", True),
+    ("failing", False), ("unreadable", False),
+])
+def test_alarm_links_only_this_attempts_unsuccessful_required_legs(monkeypatch, artifact, listing):
+    import json
+    import subprocess
+    from types import SimpleNamespace
+
+    import yaml
+
+    repo, sha = "owner/repo", "f" * 40
+    run = "https://github.com/owner/repo/actions/runs/73"
+    workflow = yaml.safe_load((main_red.REPO_ROOT / ".github/workflows/tests.yml").read_text())
+    needs = workflow["jobs"]["required-tests"]["needs"]
+    selected = [job for job in needs if job.startswith("platform-") or job == "process"]
+    # Use GitHub's matrix display names, including the workspace command.
+    details = {
+        "platform-tests": " (owner 1/2, npm run test:workerd -w owner -- --shard=1/2)",
+        "platform-sizes": " (files, npm run test:sizes -w files -- --shard=1/1)",
+        "platform-checks": " (typecheck, npm run typecheck)",
+    }
+    jobs = [{"name": workflow["jobs"][family].get("name", family) + details.get(family, ""),
+             "html_url": f"{run}/job/{i}",
+             "conclusion": ("cancelled" if family == "process" else "failure")}
+            for i, family in enumerate(selected, start=10)]
+    jobs += [{"name": "platform-tests (contract, npm run test -w contract)",
+              "html_url": f"{run}/job/83", "conclusion": "success"},
+             {"name": "heavy-tests", "html_url": f"{run}/job/84", "conclusion": "failure"},
+             {"name": "required-tests", "html_url": f"{run}/job/85", "conclusion": "failure"}]
+    queries = []
+
+    def github(*args):
+        if args == ("api", "repos/owner/repo/actions/runs/73"):
+            return json.dumps({"run_attempt": 2})
+        assert args[:2] == ("api", "--paginate")
+        assert args[2].split("?")[0] == "repos/owner/repo/actions/runs/73/attempts/2/jobs"
+        query = args[args.index("--jq") + 1]
+        queries.append(query)
+        if len(queries) == 2 and not listing:
+            raise OSError("private jobs diagnostic")
+        # gh --paginate evaluates the query on every page.
+        return "".join(subprocess.check_output(["jq", "-cr", query], text=True,
+                            input=json.dumps({"jobs": page})) for page in (jobs[:2], jobs[2:]))
+
+    def python_failures(repo_arg, run_id, attempt):
+        assert (repo_arg, run_id, attempt) == (repo, 73, 2)
+        if artifact == "unreadable":
+            raise OSError("private diagnostic")
+        return ["tests/test_shape.py::test_roundtrip"] if artifact == "failing" else []
+
+    bodies = []
+    monkeypatch.setattr(main_red, "_gh", github)
+    monkeypatch.setattr(main_red, "_run", lambda *a, **kw: SimpleNamespace(stdout=sha))
+    monkeypatch.setattr(main_red, "new_failures", python_failures)
+    monkeypatch.setattr(main_red, "_alarm", lambda r, body, s: bodies.append(body))
+    assert main_red.handle(repo, 73, sha, "push", 2, run) == "alarm"
+    assert len(queries) == 2
+    body, = bodies
+    for job in jobs[:-3]:
+        link = f"[{job['name']}]({job['html_url']}) ({job['conclusion']})"
+        assert (link in body) == listing
+    for job in jobs[-3:]:
+        assert job["html_url"] not in body
+    assert ("tests/test_shape.py::test_roundtrip" in body) == (artifact == "failing")
+    assert ("Python failure details could not be collected" in body) == (artifact == "unreadable")
+    assert ("Platform job details could not be collected" in body) != listing
+    assert "private jobs diagnostic" not in body
+    assert "private diagnostic" not in body

@@ -3,9 +3,8 @@ name: Main red
 # After every Tests run on main (push or schedule), act on the REQUIRED surface
 # only (scripts/main_red.py). Red once: re-run the failed jobs. Red twice: raise
 # the `main-red` alarm issue. Green on main's tip: close the alarm. Nothing is
-# reverted: the test IDs a red run names are the old stack's, and that stack
-# takes fixes only. `heavy-tests` (a red baseline) and quarantined/flaky tests
-# never trigger it.
+# reverted. The alarm links the attempt's unsuccessful platform and process jobs.
+# `heavy-tests` (a red baseline) and quarantined/flaky tests never trigger it.
 #
 # This is the safety net that lets the merge-group gate run only the tests a
 # group can affect (docs/decisions/ADR-020-lean-ci-successor.md):
