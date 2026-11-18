@@ -50,15 +50,34 @@ describe("the ranking", () => {
 
   it("matches a provider exactly or any, and a glob against the id or its last part", () => {
     const entries = [{ provider: "anthropic", model: "claude-*-5" }, { provider: "*", model: "x" }];
-    expect(rankOf({ provider: "anthropic", model: model("claude-opus-5") }, entries)).toBe(0);
-    expect(rankOf({ provider: "openrouter", model: model("anthropic/claude-opus-5") }, entries))
+    expect(rankOf({ provider: "anthropic", model: model("claude-opus-5") }, entries).rank).toBe(0);
+    expect(rankOf({ provider: "openrouter", model: model("vendor/x") },
+                  [{ provider: "*", model: "*" }])).toEqual({ rank: 0, name: "x" });
+    expect(rankOf({ provider: "openrouter", model: model("anthropic/claude-opus-5") }, entries).rank)
       .toBe(2);
-    expect(rankOf({ provider: "openrouter", model: model("vendor/x") }, entries)).toBe(1);
-    expect(rankOf({ provider: "openrouter", model: model("xx") }, entries)).toBe(2);
+    expect(rankOf({ provider: "openrouter", model: model("vendor/x") }, entries).rank).toBe(1);
+    expect(rankOf({ provider: "openrouter", model: model("xx") }, entries).rank).toBe(2);
     expect(rankOf({ provider: "anthropic", model: model("claude.opus.5") },
-                  [{ provider: "anthropic", model: "claude.opus.5" }])).toBe(0);
+                  [{ provider: "anthropic", model: "claude.opus.5" }]).rank).toBe(0);
     expect(rankOf({ provider: "anthropic", model: model("claudeXopusX5") },
-                  [{ provider: "anthropic", model: "claude.opus.5" }])).toBe(1);
+                  [{ provider: "anthropic", model: "claude.opus.5" }]).rank).toBe(1);
+  });
+
+  it("ranks a router's model by the same name as a direct connection", () => {
+    const direct = usable("c-old", "anthropic", 1, model("claude-fable-5"));
+    const router = usable("c-new", "openrouter", 2, model("anthropic/claude-fable-5"),
+                          model("anthropic/claude-fable-5.1"));
+    expect(ranked([router, direct]).map(named)).toEqual([
+      "c-new/anthropic/claude-fable-5.1", "c-old/claude-fable-5", "c-new/anthropic/claude-fable-5",
+    ]);
+  });
+
+  it("compares full ids when the last segment did not match the rank", () => {
+    const older = usable("c-old", "openai", 1, model("gpt-6.1-sol-2/production"));
+    const newer = usable("c-new", "openai", 2, model("gpt-6.1-sol-3/production"));
+    expect(ranked([older, newer]).map(named)).toEqual([
+      "c-new/gpt-6.1-sol-3/production", "c-old/gpt-6.1-sol-2/production",
+    ]);
   });
 
   it("breaks a tie by the older connection", () => {

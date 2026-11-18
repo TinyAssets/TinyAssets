@@ -48,15 +48,24 @@ function glob(pattern: string, value: string): boolean {
   return new RegExp(`^${source}$`).test(value);
 }
 
-/** The index of the first entry `candidate` matches, or the entries' count for none. */
+/** The first matching entry and the catalog name that matched its pattern. */
 export function rankOf(candidate: Pick<Candidate, "provider" | "model">,
-                       entries: readonly Rank[] = ranks()): number {
+                       entries: readonly Rank[] = ranks()):
+    { rank: number; name: string } {
   const id = candidate.model.id;
-  const tail = id.slice(id.lastIndexOf("/") + 1);
-  const index = entries.findIndex((entry) =>
-    (entry.provider === "*" || entry.provider === candidate.provider)
-    && (glob(entry.model, id) || glob(entry.model, tail)));
-  return index === -1 ? entries.length : index;
+  const name = id.slice(id.lastIndexOf("/") + 1);
+  for (const [rank, entry] of entries.entries()) {
+    if (entry.provider !== "*" && entry.provider !== candidate.provider) {
+      continue;
+    }
+    if (glob(entry.model, name)) {
+      return { rank, name };
+    }
+    if (id !== name && glob(entry.model, id)) {
+      return { rank, name: id };
+    }
+  }
+  return { rank: entries.length, name: id };
 }
 
 /** Every connected model, strongest first. */
@@ -67,10 +76,10 @@ export function ranked(usable: readonly Usable[]): Candidate[] {
     provider: connection.provider, display_name: connection.display_name,
     created_at: connection.created_at, model,
   })));
-  const keyed = all.map((candidate) => ({ candidate, rank: rankOf(candidate, entries) }));
+  const keyed = all.map((candidate) => ({ candidate, ...rankOf(candidate, entries) }));
   keyed.sort((a, b) => a.rank - b.rank
     || (a.rank === entries.length ? b.candidate.model.cost.output - a.candidate.model.cost.output
-      : b.candidate.model.id.localeCompare(a.candidate.model.id, "en", { numeric: true }))
+      : b.name.localeCompare(a.name, "en", { numeric: true }))
     || a.candidate.created_at - b.candidate.created_at
     || (a.candidate.connection < b.candidate.connection ? -1
       : a.candidate.connection > b.candidate.connection ? 1 : 0)

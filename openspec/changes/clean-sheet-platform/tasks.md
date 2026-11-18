@@ -51,6 +51,8 @@ end.
 ## 4. Gateway
 
 - [x] G1 `platform/gateway`: the keyring, sealing, the OAuth exchanges and raw forwarding.
+- [x] Direct and router connections rank by the same model name before the older connection
+  breaks a tie (`untangle-2026-11/model-rank-identity.md`).
 - [x] G2 The owner side: model connections and spend (`owner/src/connections.ts`, `usage.ts`).
 - [x] G3 The connect doors (`doors/src/connect.ts`) and the source records (`platform/sources/`).
 - [x] G4 The egress door, the sandbox's identity, its charge and its network document
