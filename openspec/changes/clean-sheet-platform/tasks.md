@@ -593,16 +593,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
-- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
-  tests pass takes the two older tests that make a call refuse by patching a class's prototype
-  (`owner/test/runs-authority.test.ts:864` `Files.prototype.open`,
-  `owner/test/erasure.test.ts:92` `Lifecycle.prototype.disableAlarms`; list 6, item 9). The
-  two patched calls are in-process (the owner's own SQLite; the agents library's
-  `Lifecycle`), but each test's fault has a front door through `FILES`, so both move to a
-  gate in front of it in the owner suite (`methodsOf` `ChunkStore`, as the ci suite's
-  `files-gate`; B23): an `agent.json` over `INLINE_BYTES` read while its `getChunks` is held
-  and the file is rewritten through the doors; the erasure's `deleteNamespace` refused once,
-  for an owner with files, so it stops at step 2 before the wipe.
+- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5).
+  - [x] The two owner regressions in list 6 item 9 now use the FILES service gate: a
+    chunked agent definition changes during a run's admission, and the erasure's namespace
+    delete fails before the wipe (`owner-front-door-tests.md`).
   - [x] `platform/sandbox/`, both passes in one PR, with `s2:N51` and the sandbox's own
     swallowed errors and retries decided (`untangle/pass-sandbox`;
     `untangle-2026-11/pass-sandbox.md`).
