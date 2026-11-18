@@ -25,10 +25,11 @@
  * - `cursor`, the step and entry a continuation goes on from: a place to skip to, never an
  *   authority (every step is idempotent from the owner's own state, and a check only reads).
  */
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { keyed, object, whole } from "./checks.ts";
 import { chunkedId, cut } from "./content.ts";
+import { sha256Hex } from "./digest.ts";
 import { HEX16, HEX64 } from "./ids.ts";
 import { principal } from "./text.ts";
 
@@ -314,8 +315,7 @@ export function bodyId(body: string): string {
  */
 export function rowLeaf(collection: string, rowId: string, privateRow: 0 | 1,
                         id: string): string {
-  return createHash("sha256")
-    .update(`ta-import-row\0${collection}\0${rowId}\0${privateRow}\0${id}`).digest("hex");
+  return sha256Hex(`ta-import-row\0${collection}\0${rowId}\0${privateRow}\0${id}`);
 }
 
 /** The order-free digest of no rows. */
@@ -342,7 +342,7 @@ export function rehearsalName(run: string, owner: string): string {
   if (!RUN.test(run)) {
     throw new Error("a run's id is lowercase letters, digits and dashes, at most 64");
   }
-  const digest = createHash("sha256").update(principal(owner)).digest("hex");
+  const digest = sha256Hex(principal(owner));
   return `rehearsal-${run}-${digest.slice(0, 24)}`;
 }
 

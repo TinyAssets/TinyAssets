@@ -403,6 +403,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
     depth (Fact 15; the coordinator, 2026-11-12, below).
+  - [x] Lane I's B7: the import row digest and rehearsal name use the contract's
+    `sha256Hex` (`import-digests.md`, C6 item 4).
   - [x] Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`,
     with G-H11 and G-SP5 (d3 §O5): one per-API table (`g1.md`).
 - [x] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
