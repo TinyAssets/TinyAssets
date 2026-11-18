@@ -842,6 +842,9 @@ Moved before the window, into lane R (d3 §F3, §G).
   - [ ] The MCP Tasks extension once the SDK's `createMcpHandler` serves it: a task id the
     operation id, `tasks/get` `agentStatus`, `tasks/cancel` `agentCancel`.
   - [ ] A streamed file download, and an outside client's file-bytes tool.
+  - [ ] The owner app reads a cut mail body through its continuation, and makes later
+    board changes, room changes and directory entries reachable. Verify the explicit
+    acknowledgement separately. See [first-party pages](../../../docs/decisions/untangle-2026-11/first-party-pages.md).
   - [ ] The owner app: the API keys screen reads `keys/list` and deletes by `keys/delete`; the
     Export section uses the export door, and `MISSING.export` goes; the storage view's "deleted
     content" line from `storageUsage`'s `deleted_content`, and that a lower figure shortens
