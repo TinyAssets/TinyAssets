@@ -9,7 +9,7 @@ import { doorbellInput, metering, ringRequest } from "../src/gateway";
 import { manifestLists, objectPrefix } from "../src/files";
 import { MANIFEST_PARTS } from "../src/limits";
 import { refusalOf } from "../src/refusal";
-import { doorbellRequest, type WakeContent } from "../src/wake-kinds";
+import { doorbellRequest, subscriptionId, type WakeContent } from "../src/wake-kinds";
 import { wakeKinds } from "../src/wake-records";
 
 const code = (call: () => unknown): string | undefined => {
@@ -69,6 +69,17 @@ describe("ringRequest", () => {
            [{ ...fixture, headers: { n: 1 } }], [{ ...fixture, headers: [] }],
            [{ ...fixture, extra: 1 }], [{ ...fixture, body: 1 }]])("refuses %j", (value) => {
     expect(code(() => ringRequest(value))).toBe("invalid_request");
+  });
+});
+
+describe("stored subscription ids", () => {
+  it("derives the original ids for MCP Events and owner-pasted subscriptions", () => {
+    expect(subscriptionId("dot-client", "https://callback.example/wake", "tinyassets.changed",
+      { command_center_id: "alpha", board: false, rooms: [] }))
+      .toBe("sub_2e158f481394906720fba8dff1610216");
+    expect(subscriptionId("owner", "https://api.anthropic.com/v1/claude_code/routines/trig_01ABC/fire",
+      "claude_routine_fire", { rooms: ["room:app:café"], board: true, agent_id: "a1" }))
+      .toBe("sub_2520b8d8a1dc17938635b6a377625f9c");
   });
 });
 
