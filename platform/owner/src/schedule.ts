@@ -137,12 +137,27 @@ export class Schedule extends LifecycleCapability {
   }
 
   /** Point every lane's job at its next work, or cancel it; nothing while halted. */
-  async sync(): Promise<void> {
-    if (this.#halted()) {
-      return;
-    }
-    for (const name of this.#lanes.keys()) {
-      await this.#set(name, undefined);
+  sync(): Promise<void> {
+    return this.#set(this.#lanes.keys(), undefined);
+  }
+
+  /** Check the halt inside each gate unit. One actual re-arm yields to other owner work. */
+  async #set(names: Iterable<string>, hold: number | null | undefined): Promise<void> {
+    const lanes = names[Symbol.iterator]();
+    let lane = lanes.next();
+    while (!lane.done) {
+      const [rearmed] = await this.#write((): [Promise<unknown>] | [] => {
+        if (this.#halted()) return [];
+        while (!lane.done) {
+          const name = lane.value;
+          lane = lanes.next();
+          const change = this.#point(name, hold);
+          if (change !== undefined) return [change];
+        }
+        return [];
+      });
+      if (rearmed === undefined) return;
+      await rearmed;
     }
   }
 
@@ -155,34 +170,31 @@ export class Schedule extends LifecycleCapability {
    * rows are read and the job row written in one unit of the write gate; Lifecycle
    * re-arms the alarm after it.
    */
-  async #set(name: string, hold: number | null | undefined): Promise<void> {
+  #point(name: string, hold: number | null | undefined): Promise<unknown> | undefined {
     const jobs = this.lifecycle.jobs;
     const id = laneJob(name);
-    const [rearmed] = await this.#write((): [Promise<unknown>] | [] => {
-      const job = jobs.get(id);
-      // Due by Lifecycle's clock (its job times are `clock()` in ms), so maybe running: its
-      // run sets it at its end.
-      if (hold === undefined && job !== undefined && job.time / 1000 <= clock()) {
-        return [];
+    const job = jobs.get(id);
+    // Due by Lifecycle's clock (its job times are `clock()` in ms), so maybe running: its
+    // run sets it at its end.
+    if (hold === undefined && job !== undefined && job.time / 1000 <= clock()) {
+      return undefined;
+    }
+    const next = this.#lanes.get(name)!.next(clock());
+    if (next === null) {
+      return job === undefined ? undefined : jobs.cancel(id);
+    }
+    const due = Math.ceil(next * 1000);
+    const time = hold === null || hold === undefined ? due
+      : Math.max(due, Math.ceil(hold * 1000));
+    if (hold === undefined && job !== undefined) {
+      const was = setFor(job);
+      if ((job.time === time && was === due) || (job.time > due && due >= was)) {
+        return undefined;  // in place, or held later with no earlier work
       }
-      const next = this.#lanes.get(name)!.next(clock());
-      if (next === null) {
-        return job === undefined ? [] : [jobs.cancel(id)];
-      }
-      const due = Math.ceil(next * 1000);
-      const time = hold === null || hold === undefined ? due
-        : Math.max(due, Math.ceil(hold * 1000));
-      if (hold === undefined && job !== undefined) {
-        const was = setFor(job);
-        if ((job.time === time && was === due) || (job.time > due && due >= was)) {
-          return [];  // in place, or held later with no earlier work
-        }
-      }
-      // Lifecycle writes the job row before it returns; the re-arm follows the unit.
-      return [jobs.push({ id, fn: name, time, payload: { due }, singleflight: true,
-                          hungTimeoutSeconds: LANE_HUNG_S })];
-    });
-    await rearmed;
+    }
+    // Lifecycle writes the job row before it returns; the re-arm follows the unit.
+    return jobs.push({ id, fn: name, time, payload: { due }, singleflight: true,
+                        hungTimeoutSeconds: LANE_HUNG_S });
   }
 
   /**
@@ -195,7 +207,7 @@ export class Schedule extends LifecycleCapability {
       return undefined;  // no lane of this code's, or none runs: done
     }
     const answer = await lane.run(clock(), clock() + LANE_PASS_S);
-    await this.#set(job.fn, heldUntil(answer));
+    await this.#set([job.fn], heldUntil(answer));
     return undefined;  // superseded by the set above
   }
 
@@ -205,7 +217,7 @@ export class Schedule extends LifecycleCapability {
       return undefined;
     }
     console.error(`the owner's ${job.fn} pass failed; it runs again later`);  // no ids or paths
-    await this.#set(job.fn, clock() + LANE_RETRY_S);
+    await this.#set([job.fn], clock() + LANE_RETRY_S);
     return undefined;
   }
 }

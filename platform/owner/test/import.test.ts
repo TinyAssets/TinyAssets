@@ -7,7 +7,7 @@
  * call and of the open uploads; the tier numbers the binding carries; and a chunked file's
  * bytes put to `FILES` by its caller, the object taking none. Deleted at the cutover.
  */
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
@@ -488,6 +488,14 @@ describe("the import's discard", () => {
       state.storage.sql.exec<{ ns: string }>("SELECT ns FROM file_space").one().ns);
     return { ...made, ns };
   }
+
+  it("leaves a fresh instance empty when a discard is delivered again after eviction", async () => {
+    const { stub, owner, ns } = await imported();
+    expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: ns });
+    await evictDurableObject(stub);
+    expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: null });
+    expect(await left(stub, ns)).toEqual({ tables: [], objects: 0 });
+  });
 
   it("deletes a pending owner's R2 objects and database, with no tombstone, and is repeatable",
      async () => {

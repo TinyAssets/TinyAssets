@@ -147,6 +147,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   - [x] 1. The census (`census.ts`, #5461).
   - [x] 2. The bundle builder (`bundle.ts`, #5461).
   - [x] 3. The owner object's import doors (`owner/src/import.ts`, #5475).
+    - [x] A duplicate discard after eviction leaves the database empty even when the owner's
+      schedule resumes between lanes (`i-discard-schedule.md`).
   - [x] 4. The doors' import consumer (`doors/src/import/`, #5475).
   - [x] 5. `importCheck`, `importDiscard`, and the job's `verify`, `wipe`, `admit` and `dlq`
     (#5477).
