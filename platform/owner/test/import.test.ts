@@ -7,7 +7,7 @@
  * call and of the open uploads; the tier numbers the binding carries; and a chunked file's
  * bytes put to `FILES` by its caller, the object taking none. Deleted at the cutover.
  */
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
@@ -479,6 +479,19 @@ async function left(stub: Stub, ns: string): Promise<{ tables: string[]; objects
 }
 
 describe("the import's discard", () => {
+  it("discards each SQL-only import without inventing a files namespace", async () => {
+    const { owner, stub } = pending();
+    const binding = importing(owner);
+    for (const generation of ["first", "second"]) {
+      const row = { kind: "collection" as const, collection: "records", row_id: generation,
+                    private: 1 as const, body: generation };
+      expect(await stub.importRows(binding, { rows: [row] })).toEqual({ written: 1, skipped: 0 });
+      expect(await stub.importCheck(binding, { part: "rows", page: 0 })).toMatchObject({ count: 1 });
+      expect(await stub.importDiscard(binding)).toEqual({ discarded: true, namespace: null });
+      await evictDurableObject(stub);
+    }
+  });
+
   async function imported(owner?: string, namespace?: DurableObjectNamespace) {
     const made = pending(owner, namespace);
     await made.stub.importFiles(importing(made.owner), { entries: [{ kind: "dir", path: I },

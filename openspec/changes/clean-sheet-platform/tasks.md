@@ -157,6 +157,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     `bundle` may run once the credentials are right; `stage`, `verify`, `wipe` and `admit` wait
     for the untangled build's dark redeploy (d2 §G3) and run on the stage (§10 step 8). It also
     owes:
+    - durable discard evidence across a failed first reply, queue redelivery and identical
+      restaging (owner and staging requirements in `i-discard-attempts.md`);
     - the time a discarded object takes to be evicted, measured and written into the window's
       steps, since a re-import before then answers `busy`;
     - the window's credentials, made as a founder step (`platform/deploy/checklist.md`, "The
