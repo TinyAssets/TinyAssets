@@ -12,6 +12,14 @@ The remote snapshot contained 50 Codex heads, including the 12 draft PRs #5679â€
 
 The comparisons measure integration fidelity. The five area reviews below inspected selected production paths on both heads. Whole-program behavior equivalence and a clean architecture verdict on all 900 paths have not been established by this pass. PR #5343 and the other non-Codex refs were inventoried separately from this combined candidate. The older memory and slots WIP tips explicitly record stopped research. Re-read each distinct candidate against its actual merge base and decisions before using it.
 
+### Older branches against their own merge bases
+
+GitHub comparisons covered the other 23 remote heads individually. Three distinctions matter to the remaining build.
+
+- The only other open PR at this snapshot, #5343 at `be88c9116`, changes 65 paths and none under `platform/`. Its PR body reserves activation of the legacy broker change for the founder. Treat its original outside-grants requirements as input when reviewing clean-sheet policy. Importing its implementation or counting it as the new policy system would couple the retiring stack back into the build.
+- Both older memory branches stop for research. In particular, `platform-slots-wip` reported growth while sending chunks over service-binding RPC. ADR-037 subsequently attributes that observation to a two-step sampler and specifies checkpoint sampling with a retained-chunk control. The remaining tasks for MEMORY 3b and 4 use production baselines after the authorized stage. Reusing the old performance conclusion would reorder the build on superseded evidence.
+- `untangle/r5-import` changes two paths from its merge base, the owner migration lock and the checklist. It supplies no policy conversion. The renewal and Files source heads are separate from the Codex drafts that reviewed them. `untangle/p2-receipt-delete` still needs its coordinator-owned ruleset step.
+
 ## Findings and order of work
 
 | Area | Observation and next verification | Work that depends on it |
