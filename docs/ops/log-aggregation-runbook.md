@@ -99,7 +99,7 @@ after all protection/recovery checks. Timer installation alone cannot enable it.
 Run the helper directly for acceptance: the chained service also runs ordinary
 transcript rotation, which this flag does not affect. Containerd image
 storage needs an operator-verified `TINYASSETS_IMAGE_RETENTION_STORAGE_PATH`.
-See the [retention rollout checklist](../../openspec/changes/archive/2026-09-19-daemon-image-retention/operator-acceptance.md)
+See the [retention rollout checklist](daemon-image-retention.md)
 before installing or activating the updated cleanup units. Unknown mapping or
 protected-image evidence is a refusal, not permission for broad prune.
 

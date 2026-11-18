@@ -85,7 +85,7 @@ These are the real boundary and they are load-bearing:
 ## Related
 
 Superseded by
-`openspec/changes/archive/2026-10-06-script-authoring-surface/design.md` (the floor) and
+[script authoring design](https://github.com/TinyAssets/TinyAssets/blob/f934871ad44b9a198070d55de517be85d8e107f6/openspec/changes/archive/2026-10-06-script-authoring-surface/design.md) (the floor) and
 `docs/concerns/2026-08-31-hard-coded-policy-that-should-be-user-composable.md`
 (the same inversion applied to every other cap). Delete this file once the
 allowlist is gone.

@@ -1,6 +1,6 @@
 # Daemon image retention: rollout procedure
 
-Rollout was accepted September19,2026UTC; see `live-acceptance.md`. The
+Rollout was accepted September19,2026UTC; see [the rollout evidence](https://github.com/TinyAssets/TinyAssets/blob/f934871ad44b9a198070d55de517be85d8e107f6/openspec/changes/archive/2026-09-19-daemon-image-retention/live-acceptance.md). The
 following procedure remains the operator contract, not a claim that every
 resource-capacity gap is closed.
 

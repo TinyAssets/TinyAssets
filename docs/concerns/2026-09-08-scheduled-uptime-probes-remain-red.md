@@ -57,7 +57,7 @@ outage signals.
 Detailed source inventory and reproduction:
 [`2026-09-19-hostless-monitor-contract-diagnosis.md`](../reviews/2026-09-19-hostless-monitor-contract-diagnosis.md).
 The bounded monitoring-classification change is archived at
-`openspec/changes/archive/2026-09-19-classify-scheduled-monitor-observations/`; it does not close
+[monitor observation change](https://github.com/TinyAssets/TinyAssets/tree/f934871ad44b9a198070d55de517be85d8e107f6/openspec/changes/archive/2026-09-19-classify-scheduled-monitor-observations); it does not close
 the execution-quality or rendered-acceptance gaps.
 
 The deployed truthful unknown classification also makes automatic recovery
