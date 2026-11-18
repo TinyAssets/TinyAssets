@@ -872,6 +872,10 @@ real data, in step 5 (d3 §P).
   over the owner's and outside agents' mailboxes.
 - [ ] S6, the app manifest and agent players, with the app's view of mail-started runs and
   agents' chains.
+  - [ ] Before first real runs, settle the historical coverage of the app's mail-started
+    run view: what it can show after the settled receipt expires. If earlier links must
+    survive, decide their record and lifetime before writing the runs
+    (`untangle-2026-11/later-slice-boundaries.md`).
 - [ ] S7, the device runner; S8, real-time tiers.
 - [ ] The founder-approved primitives in `docs/architecture.md`: N2 phone push, N3 voice and
   video, N4 a live takeover view, N6 undo by snapshot, N7 agent purchases, N9 media results.
