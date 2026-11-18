@@ -332,6 +332,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [x] `.agents/activity.log` deleted (#5505).
 - [ ] The manifest's inventory: every path in the repo that goes, is edited or moves, and every
   live object (d3 §A10).
+  - [x] The old release chain and installed daemon watchdog are inventoried
+    (`codex/cutover-legacy-release`; `cutover-legacy-release.md`).
+  - [ ] At the final backup boundary, drain the old release producers and host mutators and
+    quiesce installed restart services, preserving the old startup path for handback.
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
