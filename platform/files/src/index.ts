@@ -2,15 +2,13 @@
  * The files Worker (`platform/files`): a stateless blob pipe for owner file bytes
  * (ADR-032, plan §6).
  *
- * It holds the platform's only R2 binding, `BLOBS`, one bucket of immutable chunks of at
+ * This Worker alone binds the owner-files bucket, `BLOBS`. It holds immutable chunks of at
  * most `CHUNK_BYTES`, each under its owner's random namespace and named by an HMAC of its
  * SHA-256 under the owner's data key (`o/<ns>/c/<name>`, `keys.ts`, `datakey.ts`
- * `chunkName`), so a listing of the bucket confirms no known file. It takes only hex values
- * and bytes: it never sees a path, never learns or chooses an owner, and keeps nothing
- * between calls. Which owner's namespace a call names, and whether a chunk is wanted at all,
- * is the owner object's manifest's to know (`owner/src/files.ts`); the namespace is held only
- * there, so no caller can name another owner's chunks without first being that owner's
- * object.
+ * `chunkName`). A listing of the bucket therefore confirms no known file. The owner object's
+ * manifest maps paths to chunks (`owner/src/files.ts`). Uploads use the namespace and
+ * wrapped key the object supplies. For recovery, the operator can ask `FilesLocate` which
+ * owner a namespace's newest finished generation names.
  *
  * Each method takes a batch, so a large read or write is few calls: each call is a
  * subrequest of its caller's invocation, of which Workers Paid allows 10,000 by default
@@ -636,10 +634,8 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
 }
 
 /**
- * The upload door's entrypoint: the doors bind only this, so the internet-facing Worker,
- * which carries an uploading owner's wrapped data key, can put that owner's chunks and read
- * nothing: no chunk, no generation, no key call. It serves `putChunks` alone, as
- * `FilesService` does it.
+ * The upload door binds `FilesUpload` as `FILES` so it can put chunks with the uploading
+ * owner's wrapped data key. Reads and key management are outside this binding.
  */
 export class FilesUpload extends WorkerEntrypoint<FilesEnv> implements ChunkUpload {
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {

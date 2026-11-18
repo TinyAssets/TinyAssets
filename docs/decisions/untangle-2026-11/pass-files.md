@@ -25,6 +25,12 @@ why a root is swept before its objects.
 - **Stale:**
   - `rules.ts` "no var (there is one cipher)" and `vitest.config.ts` "bucket and cipher".
     There is no cipher choice.
+  - `index.ts` described `BLOBS` as the platform's only R2 binding and `FilesUpload` as
+    the doors Worker's only files binding. The files Worker alone binds the owner-files
+    bucket. The doors Worker binds its own staging and operator-log buckets and reaches
+    the files Worker through two entrypoints. Its upload uses the namespace and wrapped
+    key the owner supplies. Its operator recovery channel can locate the owner from the
+    namespace's newest finished generation.
   - `index.ts` "The nightly manifest is the only other kind of object". The marks and the
     holds are objects too. It is the only other kind of sealed object.
   - `index.ts` "`deleteNamespace` … the owner's erasure and the cutover's discard alone".

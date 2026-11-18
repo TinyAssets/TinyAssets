@@ -25,6 +25,7 @@
  * sweep has resealed every blob under it.
  */
 import { type Domain, openBlob, parseRing, type Ring, sealBlob } from "../../contract/src/envelope";
+import { CONNECTION_ID, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { principal, utf8Decoder } from "../../contract/src/text";
 
@@ -50,7 +51,6 @@ export interface Opened {
   readonly resealed?: Resealed;
 }
 
-const CONNECTION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SALT = "tinyassets/gateway/v1";
 
 /** The ring, read from the one secret; anything short of a usable ring is refused loudly. */
@@ -62,15 +62,35 @@ function ring(env: KeyringEnv): Ring {
   return keys;
 }
 
-/** The binding, checked: the owner grammar is the contract's (`text.ts`). */
+/**
+ * A model connection's binding, checked: the owner grammar is the contract's (`text.ts`), and
+ * the connection is the id the owner's object mints (`ids.ts`).
+ */
 export function binding(owner: unknown, connection: unknown, version: unknown): Binding {
+  if (typeof connection !== "string" || !CONNECTION_ID.test(connection)) {
+    throw new Refusal("invalid_binding");
+  }
+  return bound(owner, connection, version);
+}
+
+/**
+ * A doorbell subscription's binding (`doorbell.ts`): its own key space, `wake.<subscription>`,
+ * which no model connection's id can name.
+ */
+export function wakeBinding(owner: unknown, subscription: unknown, version: unknown): Binding {
+  if (typeof subscription !== "string" || !SUBSCRIPTION_ID.test(subscription)) {
+    throw new Refusal("invalid_binding");
+  }
+  return bound(owner, `wake.${subscription}`, version);
+}
+
+function bound(owner: unknown, connection: string, version: unknown): Binding {
   try {
     principal(owner);
   } catch {
     throw new Refusal("invalid_binding");
   }
-  if (typeof connection !== "string" || !CONNECTION.test(connection)
-      || typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+  if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
     throw new Refusal("invalid_binding");
   }
   return Object.freeze({ owner: owner as string, connection, version });

@@ -21,7 +21,7 @@ import { ConnectGateway, EgressGateway } from "../src/index";
 import { learnMeter, meteredRecord } from "../src/meter";
 import { SlotPool, UNIT_BYTES } from "../../contract/src/slots";
 import { until } from "../../ci/workerd";
-import { GOOGLE, OPENAI } from "./support";
+import { C1, GOOGLE, OPENAI } from "./support";
 import type { Reserve } from "../../contract/src/gateway";
 
 /** The doors' connect entrypoint (the doors and owner suites reach it over a real binding). */
@@ -73,10 +73,10 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
 
   it("never sends the long-s cap: the call is refused before any reserve", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const asked: unknown[] = [];
-    const answer = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
+    const answer = await egress.forward("alice", C1, 1, blob, posted("/v1/responses",
       JSON.stringify({ model: model.id, input: "hi", max_output_tokens: 900_000,
                        ["max_output_tokenſ"]: 900_000 }), { "x-fake-mode": "echo" }),
       granting(asked), new ReadableStream());
@@ -88,7 +88,7 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
 
   it("refuses a Google call whose body names a model beside its path's", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", GOOGLE)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", GOOGLE)).blob;
     const catalog = builtinCatalog();
     let path: string | null = null;
     for (const record of catalog.provider("google")!.getModels()
@@ -101,7 +101,7 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
       }
     }
     const asked: unknown[] = [];
-    const answer = await egress.forward("alice", "c1", 1, blob, posted(path!, JSON.stringify({
+    const answer = await egress.forward("alice", C1, 1, blob, posted(path!, JSON.stringify({
       model: "models/some-dearer-model", contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
       { "x-fake-mode": "echo" }), granting(asked), new ReadableStream());
     expect(await answer.response.json()).toMatchObject({ error: { code: "egress_aliased_key" } });
@@ -112,11 +112,11 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
 describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
   it("refuses a body shorter than its Content-Length, before any reserve", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const text = JSON.stringify({ model: model.id, input: "hi" });
     const asked: unknown[] = [];
-    const answer = await egress.forward("alice", "c1", 1, blob, new Request(
+    const answer = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/responses", { method: "POST", body: new Blob([text]).stream(),
                                         headers: { "content-length": String(text.length + 1000),
                                                    "x-fake-mode": "echo" } }),
@@ -128,13 +128,13 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("refuses a body whose tree would weigh more than the pool, before its parse", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     // 4 MiB of empty objects: 11.67 times its bytes once parsed, measured.
     const items = "{},".repeat(Math.floor(4 * 1024 * 1024 / 3));
     const text = `{"model":${JSON.stringify(model.id)},"input":[${items}{}]}`;
     const asked: unknown[] = [];
-    const answer = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses", text),
+    const answer = await egress.forward("alice", C1, 1, blob, posted("/v1/responses", text),
                                         granting(asked), new ReadableStream());
     expect([answer.response.status, await answer.response.json()]).toEqual(
       [413, { error: { code: "egress_too_large", message: "egress_too_large" } }]);
@@ -145,9 +145,9 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
   it("lets every slot go at the caller's stop of a stalled body, another owner's call landing",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
-    const mallory = (await connect.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const mallory = (await connect.seal("mallory", C1, 1, "sk-fwd", OPENAI)).blob;
     const pool = gatewaySlots();
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
     // One sandbox declares the bound and sends 10 bytes, then nothing.
@@ -155,14 +155,14 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
       controller.enqueue(new TextEncoder().encode('{"model":"'));
     } });
     const stop = new IdentityTransformStream();
-    const first = egress.forward("mallory", "c1", 1, mallory, new Request(
+    const first = egress.forward("mallory", C1, 1, mallory, new Request(
       "https://egress/v1/responses", { method: "POST", body: stalled,
                                         headers: { "content-length": String(EGRESS_BODY_MAX) } }),
       granting(), stop.readable);
     // It holds only what its bytes need: one slot, not the pool.
     await until(() => pool.state().held === 1, "the unit held", 1500);
     const small = JSON.stringify({ model: model.id, input: "hi" });
-    const other = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses", small,
+    const other = await egress.forward("alice", C1, 1, blob, posted("/v1/responses", small,
       { "x-fake-mode": "echo" }), granting(), new ReadableStream());
     expect(other.response.status).toBe(200);
     await other.response.body?.cancel();
@@ -177,7 +177,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("refuses a body stalled past its deadline, its slots let go", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const stalled = new ReadableStream<Uint8Array>({ start(controller) {
       controller.enqueue(new TextEncoder().encode('{"model":"'));
     } });
@@ -187,7 +187,7 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
     let said: unknown;
     let answer: Awaited<ReturnType<EgressGateway["forward"]>> | undefined;
     try {
-      const asked = egress.forward("alice", "c1", 1, blob, new Request(
+      const asked = egress.forward("alice", C1, 1, blob, new Request(
         "https://egress/v1/responses", { method: "POST", body: stalled,
                                           headers: { "content-length": "100" } }),
         granting(), new ReadableStream()).then(async (answered) => {
@@ -209,11 +209,11 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("stops a reserve its caller stopped, its slots let go, nothing sent", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const stop = new IdentityTransformStream();
     let asked = false;
-    const answer = egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
+    const answer = egress.forward("alice", C1, 1, blob, posted("/v1/responses",
       JSON.stringify({ model: model.id, input: "hi" }), { "x-fake-mode": "echo" }),
       () => {
         asked = true;
@@ -229,13 +229,13 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
   it("settles `failed`, never `unknown`, a call it threw on after the reserve", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     // The reserve's RPC failed after the owner's commit: the gateway sent nothing.
     const reserve: Reserve = async () => {
       throw new Error("the RPC to the owner's object failed after its commit");
     };
-    const answer = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
+    const answer = await egress.forward("alice", C1, 1, blob, posted("/v1/responses",
       JSON.stringify({ model: model.id, input: "hi" })), reserve, new ReadableStream());
     expect(answer.response.status).toBe(500);
     expect(await outcome(answer)).toEqual({ state: "failed" });
@@ -257,15 +257,15 @@ describe("the verification's cases (rveg2)", () => {
   it("lets every one of 16 silent calls go at its unit's deadline: another owner lands (V-H2)",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const alice = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
-    const mallory = (await connect.seal("mallory", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const alice = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
+    const mallory = (await connect.seal("mallory", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const pool = gatewaySlots();
     // On the fake clock: the units' deadlines pass on it, not on the host.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const hogs = Array.from({ length: GATEWAY_POOL_SLOTS }, () => egress.forward(
-        "mallory", "c1", 1, mallory, new Request("https://egress/v1/responses", {
+        "mallory", C1, 1, mallory, new Request("https://egress/v1/responses", {
           method: "POST", headers: { "content-length": String(EGRESS_BODY_MAX) },
           body: new ReadableStream<Uint8Array>({ start() { /* sends nothing */ } }),
         }), granting(), new ReadableStream()));
@@ -274,7 +274,7 @@ describe("the verification's cases (rveg2)", () => {
       // hold the pool, up to their units' deadline; at it they go, and she lands.
       await vi.advanceTimersByTimeAsync(1);
       const text = JSON.stringify({ model: model.id, input: "hi" });
-      const asked = egress.forward("alice", "c1", 1, alice, posted("/v1/responses", text,
+      const asked = egress.forward("alice", C1, 1, alice, posted("/v1/responses", text,
         { "x-fake-mode": "echo" }), granting(), new ReadableStream());
       await until(() => pool.state().waiting === 1, "alice's wait", 1500);
       await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 2);
@@ -327,7 +327,7 @@ describe("the verification's cases (rveg2)", () => {
   it("refuses a body that cannot fit as soon as its weight passes the pool, not after it",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     // 4 MiB declared, of which 3.5 MiB of empty objects is sent (past the pool's weight by
     // its 2.6th MiB), then nothing.
     const head = '{"model":"m","input":[' + "{},".repeat(3.5 * 1024 * 1024 / 3);
@@ -335,7 +335,7 @@ describe("the verification's cases (rveg2)", () => {
       controller.enqueue(new TextEncoder().encode(head));
     } });
     const started = Date.now();
-    const answer = await egress.forward("alice", "c1", 1, blob, new Request(
+    const answer = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/responses", { method: "POST", body,
                                         headers: { "content-length": String(4 * 1024 * 1024) } }),
       granting(), new ReadableStream());

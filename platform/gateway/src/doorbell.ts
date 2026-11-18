@@ -32,7 +32,6 @@
  */
 import { keyed, object } from "../../contract/src/checks";
 import { base64, base64url, fromBase64, hex } from "../../contract/src/envelope";
-import { SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { callbackSecret, callbackUrl, kindNamed, type Push } from "../../contract/src/wake-records";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import {
@@ -41,7 +40,7 @@ import {
 } from "../../contract/src/gateway";
 import { boundedJson } from "./answer";
 import { timeout } from "./deadline";
-import { binding, type KeyringEnv, openValue, resealValue, sealValue } from "./keyring";
+import { type KeyringEnv, openValue, resealValue, sealValue, wakeBinding } from "./keyring";
 
 /** What a doorbell blob holds: where it goes, how it is sent, and its secret. */
 export interface DoorbellSecret {
@@ -91,14 +90,6 @@ export function doorbellSecret(value: unknown): DoorbellSecret {
   return Object.freeze(value as unknown as DoorbellSecret);
 }
 
-/** A subscription's binding: its own key space, never a model connection's. */
-function bound(owner: string, subscription: string, version: number) {
-  if (typeof subscription !== "string" || !SUBSCRIPTION_ID.test(subscription)) {
-    throw new Refusal("invalid_binding");
-  }
-  return binding(owner, `wake.${subscription}`, version);
-}
-
 /** The plaintext an input seals to, checked against its record; `invalid_request` if not. */
 function plaintext(input: unknown): DoorbellSecret {
   const { record, url, secret } = doorbellInput(input);
@@ -114,7 +105,8 @@ function plaintext(input: unknown): DoorbellSecret {
 /** Seals a pasted doorbell token for its subscription. */
 export async function sealDoorbell(env: KeyringEnv, owner: string, subscription: string,
                                    version: number, input: unknown): Promise<Sealed> {
-  return sealValue(env, bound(owner, subscription, version), plaintext(input), doorbellSecret);
+  return sealValue(env, wakeBinding(owner, subscription, version), plaintext(input),
+                   doorbellSecret);
 }
 
 /**
@@ -124,7 +116,7 @@ export async function sealDoorbell(env: KeyringEnv, owner: string, subscription:
  */
 export async function resealDoorbell(env: KeyringEnv, owner: string, subscription: string,
                                      version: number, blob: string): Promise<Resealed> {
-  const target = bound(owner, subscription, version);
+  const target = wakeBinding(owner, subscription, version);
   const { value } = await openValue(env, target, blob, doorbellSecret);
   return resealValue(env, target, value, doorbellSecret);
 }
@@ -166,7 +158,7 @@ export async function verifyDoorbell(env: KeyringEnv, owner: string, subscriptio
   if (events === null || plain.auth !== "standard_webhooks") {
     throw new Refusal("invalid_request");
   }
-  const target = bound(owner, subscription, version);
+  const target = wakeBinding(owner, subscription, version);
   const challenge = base64url(random(32));
   const id = `msg_verification_${hex(random(16))}`;
   const stamp = Math.floor(Date.now() / 1000);
@@ -225,9 +217,9 @@ export async function ringDoorbell(env: KeyringEnv, owner: string, subscription:
   let opened: Awaited<ReturnType<typeof openValue<DoorbellSecret>>>;
   let old: DoorbellSecret | null = null;
   try {
-    opened = await openValue(env, bound(owner, subscription, version), blob, doorbellSecret);
+    opened = await openValue(env, wakeBinding(owner, subscription, version), blob, doorbellSecret);
     if (previous !== null) {
-      old = (await openValue(env, bound(owner, subscription, previous.version), previous.blob,
+      old = (await openValue(env, wakeBinding(owner, subscription, previous.version), previous.blob,
                              doorbellSecret)).value;
       if (old.url !== opened.value.url) {
         old = null;  // a replaced secret signs only for the URL it was given for
