@@ -37,6 +37,11 @@ end.
 - [x] The key store (`owner/src/keys.ts`, `keys/list`).
 - [x] Owed by 6.1: the file door's bytes, streamed by the binder (`doors/src/file-bytes.ts`).
 - [x] The owner app, served by the doors at `/app` (`doors/app/`, `doors/src/pages.ts`).
+  - [x] The Talk page applies a status receipt to the run that requested it. Frames arriving
+    during a status read share one fresh read (`untangle-2026-11/agent-status.md`).
+  - [ ] Keep one tab conversation per agent across two initial sends and a lost first
+    answer. Recover the original send by its `client_send_id`, then submit the waiting
+    messages to that conversation in order (`untangle-2026-11/agent-status.md`).
 
 ## 3. Owner object
 

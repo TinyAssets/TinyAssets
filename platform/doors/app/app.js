@@ -282,12 +282,65 @@ async function agents(arg) {
 /** The live conversation with each agent this page talks to. */
 const talks = new Map();
 
+function liveRun(run) {
+  return run !== null && ["waiting", "queued", "running"].includes(run.state);
+}
+
 function talkOf(name) {
   if (!talks.has(name)) {
     talks.set(name, { conversation: null, socket: null, run: null, said: [], frames: [],
-                      listener: () => undefined });
+                      listener: () => undefined, show: () => undefined, reading: null });
   }
   return talks.get(name);
+}
+
+function acceptRun(talk, run) {
+  clearTimeout(talk.timer);
+  const ended = liveRun(talk.run) && !liveRun(run);
+  talk.run = run;
+  if (ended) {
+    talk.said.push(["agent", run.result ?? (run.error ? `(${run.error})` : `(the run ${run.state})`)]);
+  }
+  talk.show(ended);
+  if (liveRun(run)) {
+    talk.timer = setTimeout(() => readRun(talk).catch(report), 3000);
+  }
+}
+
+async function readRun(talk) {
+  const previous = talk.run;
+  if (!liveRun(previous)) {
+    return;
+  }
+  if (talk.reading?.run === previous) {
+    // A frame or reattach can arrive after the owner's snapshot but before its answer.
+    talk.reading.again = true;
+    return;
+  }
+  clearTimeout(talk.timer);
+  const reading = { run: previous, again: false };
+  talk.reading = reading;
+  let run;
+  try {
+    run = await call("agent/status", { run_id: previous.run_id });
+  } catch (error) {
+    if (talk.run === previous && !reading.again) {
+      throw error;
+    }
+  } finally {
+    if (talk.reading === reading) {
+      talk.reading = null;
+    }
+  }
+  if (talk.run !== previous) {
+    return;
+  }
+  if (run !== undefined) {
+    acceptRun(talk, run);
+  }
+  if (reading.again && liveRun(talk.run)) {
+    await readRun(talk);
+  }
 }
 
 function frameLine(frame) {
@@ -300,7 +353,6 @@ function frameLine(frame) {
 async function agent(name) {
   const turn = turnOf("agents", name);
   const talk = talkOf(name);
-  clearTimeout(talk.timer);
   const said = h("div", {});
   const frames = h("div", { class: "log", "aria-label": "Live run" });
   const state = h("p", { class: "muted" });
@@ -314,30 +366,28 @@ async function agent(name) {
     fill(state, run === null ? "" : `Run ${run.state}` +
       `${run.engine ? ` on ${run.engine}` : ""}${run.model ? ` (${run.model})` : ""}` +
       `${run.error ? `: ${run.error}` : ""}`);
-    const live = run !== null && ["waiting", "queued", "running"].includes(run.state);
-    fill(cancel, live ? action("Stop this run", async () => {
-      talk.run = await call("agent/cancel", { run_id: run.run_id });
-      showRun();
+    fill(cancel, liveRun(run) ? action("Stop this run", async () => {
+      let cancelled;
+      try {
+        cancelled = await call("agent/cancel", { run_id: run.run_id });
+      } catch (error) {
+        if (talk.run?.run_id === run.run_id) {
+          throw error;
+        }
+        return;
+      }
+      if (talk.run === run) {
+        acceptRun(talk, cancelled);
+      } else if (talk.run?.run_id === run.run_id && liveRun(talk.run)) {
+        await readRun(talk);
+      }
     }, report, { class: "danger" }) : null);
   };
-  const settle = async () => {
-    if (talk.run === null) {
-      return;
-    }
-    const run = await call("agent/status", { run_id: talk.run.run_id });
-    const was = talk.run.state;
-    talk.run = run;
-    if (["succeeded", "failed", "unknown"].includes(run.state)
-        && !["succeeded", "failed", "unknown"].includes(was)) {
-      talk.said.push(["agent", run.result ?? (run.error ? `(${run.error})` : `(the run ${run.state})`)]);
+  talk.show = (messagesChanged) => {
+    if (messagesChanged) {
       showSaid();
     }
     showRun();
-    clearTimeout(talk.timer);
-    if (["waiting", "queued", "running"].includes(run.state)) {
-      // Frames show the run as it goes; its state is read again until it settles.
-      talk.timer = setTimeout(() => settle().catch(report), 3000);
-    }
   };
   const watch = async (conversation) => {
     if (talk.socket !== null && talk.socket.readyState <= 1) {
@@ -349,7 +399,7 @@ async function agent(name) {
     }, () => {
       talk.socket = null;
     }, () => {
-      settle().catch(report);
+      readRun(talk).catch(report);
     });
   };
   // The socket outlives this view: its frames go to whichever view of this agent is shown.
@@ -357,7 +407,7 @@ async function agent(name) {
     frames.append(frameLine(frame));
     frames.scrollTop = frames.scrollHeight;
     if (frame.kind === "result" || frame.kind === "error") {
-      settle().catch(report);
+      readRun(talk).catch(report);
     }
   };
   const send = async () => {
@@ -372,10 +422,9 @@ async function agent(name) {
     talk.said.push(["me", text]);
     talk.run = run;
     talk.conversation = run.conversation_id;
-    showSaid();
-    showRun();
+    talk.show(true);
     await watch(run.conversation_id);
-    await settle();
+    await readRun(talk);
   };
 
   const files = h("div", {});
