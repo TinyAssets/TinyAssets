@@ -588,6 +588,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     the agent's engine record; a held call the hook deferred resumes on no input, and its
     conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
     pass lands, since the runner writes the files (`untangle/r5-hooks`).
+  - [x] A rebooted runner uses the latest session its CLI recorded just as a warm renewal
+    does (`untangle-2026-11/reboot-session.md`).
+  - [ ] Before P-hooks, reconcile conversation admission on direct and queued starts, and
+    preserve the held engine/session when an answer arrives. Recheck job identity across a
+    reboot against stored runner format 1 (`untangle-2026-11/reboot-session.md`).
   - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).

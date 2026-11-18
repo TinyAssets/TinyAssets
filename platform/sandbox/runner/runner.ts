@@ -1121,10 +1121,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       continued = existsSync(conversationDir);
       safeDirs("/", conversationDir, 0o700);
     }
-    let call = invocation(rec, start, process.env, {
-      continued, home, system,
-      ...(conversationDir === undefined ? {} : { conversationDir }),
-      ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
+    const dirs = { home, system, ...(conversationDir === undefined ? {} : { conversationDir }) };
+    // Both interruptions resume the latest session the CLI reported, even on its first turn.
+    const resume = (continued: boolean) => invocation(rec, { ...start, session_id: state.session_id },
+      process.env, { ...dirs, continued, prompt: CONTINUE_PROMPT });
+    let call = recovering ? resume(continued)
+      : invocation(rec, start, process.env, { ...dirs, continued });
     if (recovering && !call.resumed) {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
                            "rebooted sandbox cannot continue it");
@@ -1197,9 +1199,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
             break;
           }
           await killAll(as);
-          call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-            continued: true, home, system, prompt: CONTINUE_PROMPT,
-            ...(conversationDir === undefined ? {} : { conversationDir }) });
+          call = resume(true);
           if (!call.resumed) {
             break;
           }

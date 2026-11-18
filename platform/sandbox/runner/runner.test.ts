@@ -1924,6 +1924,24 @@ describe("renewal", () => {
     }
   });
 
+  it.each([null, "older-session"])("recovers the recorded CLI session after a reboot " +
+     "(launch session %s)", async (original) => {
+    const start = startDoc(doors, "claude-code", { config: config("claude-code"),
+                                                   session_id: original });
+    box.start(start);
+    const dir = `/var/lib/ta/runs/${start.run}`;
+    const shape = FORMATS[String(STATE_FORMAT)]!.files["var/lib/ta/runs/<run>/state.json"]!;
+    box.write(`${dir}/${JOB_FILES.start}`, JSON.stringify(start));
+    box.write(`${dir}/${JOB_FILES.state}`, JSON.stringify(sample(shape, {
+      pid: 2147483647, ended: false, session_id: "saved-session",
+    })));
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    expect(box.runner("recover").code).toBe(0);
+    const end = await doors.ended_(20_000, start.run);
+    expect(end.body["end"]).toEqual({ exit_code: 0 });
+    expect(box.ran("claude-code").at(-1)!.argv.slice(-2)).toEqual(["--resume", "saved-session"]);
+  });
+
   it("posts renewing when quiet, holds its posts, then renewed; a CLI that failed across it " +
      "is resumed", { tags: ["large"] }, async () => {
     // The CLI is still running at `renewed` and fails just after, as a model call the pause
