@@ -440,7 +440,12 @@ export async function close(window: Window, print: (line: string) => void):
   const staging = window.names.staging_bucket;
   const runs = new Map<string, string[]>();
   for (const { name, run } of await stagedIndexes(window, "")) {
-    runs.set(run, [...runs.get(run) ?? [], name]);
+    const indexes = runs.get(run);
+    if (indexes === undefined) {
+      runs.set(run, [name]);
+    } else {
+      indexes.push(name);
+    }
   }
   const listed = new Set(await cloudflareOf(window.inputs.apiToken, window.fetcher)
     .keys(window.inputs.account, await directoryId(window), OWNER_ENTRY));
