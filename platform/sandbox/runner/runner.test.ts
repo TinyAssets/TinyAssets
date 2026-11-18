@@ -466,7 +466,7 @@ const LOGINS: Record<string, { lines: string[]; url: string; code: string | null
             CLAUDE_PAGE,
             "Paste code here if prompted >"],
     url: CLAUDE_PAGE,
-    code: null, paste: "code-from-the-vendor-page#state",
+    code: null, paste: "🙂" + "code-from-the-vendor-page#state".padEnd(4091, "x"),
     writes: { "~/.claude/.credentials.json": "{\"claudeAiOauth\":{\"accessToken\":\"stored\"}}" },
     status: { out: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }), exit: 0 },
   },
@@ -525,6 +525,9 @@ describe("the vendor's own sign-in", () => {
       await frameWhere(id, (frame) => frame["code"] === plan.code);
     }
     if (plan.paste !== undefined) {
+      // Direct handoff to an already-running runner, including ones behind an older Worker.
+      box.write(inboxCode(id), "🙂".repeat(1024));
+      expect(box.runner("login-input", id).code).toBe(0);
       box.write(inboxCode(id), plan.paste);
       expect(box.runner("login-input", id).code).toBe(0);
     }
@@ -546,6 +549,7 @@ describe("the vendor's own sign-in", () => {
     }
     if (plan.paste !== undefined) {
       expect(box.ran(engine).some((each) => each.stdin === `${plan.paste}\n`)).toBe(true);
+      expect(signinFrames(id).filter((frame) => frame["state"] === "code_sent")).toHaveLength(1);
     }
     // Presence, never a credential: the engine is reported signed in; nothing posted holds
     // the stored tokens.

@@ -61,6 +61,10 @@ describe("the sign-in routes and door", () => {
       signins: { id: string; url: string; accepts_code: boolean }[] };
     expect(listed.signins).toEqual([expect.objectContaining({ id: view.id, url,
                                                                accepts_code: true })]);
+    const tooLong = await appPost("signin/code", app.access_token, null,
+                                  { id: view.id, code: "🙂".repeat(1024) });
+    expect(tooLong.status).toBe(400);
+    expect(await tooLong.text()).toContain("4095 UTF-8 bytes");
     const pasted = await appPost("signin/code", app.access_token, null,
                                  { id: view.id, code: "abc#def" });
     expect(await pasted.json()).toEqual({ delivered: true });

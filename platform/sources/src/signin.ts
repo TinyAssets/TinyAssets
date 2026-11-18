@@ -5,7 +5,8 @@
  * leaves it, and again on the trusted side.
  */
 import type { ControlRead } from "../../contract/src/control";
-import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
+import { SIGNIN_CODE_MAX, SIGNIN_PASTE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
+import { isPrintable, utf8Bytes } from "../../contract/src/text";
 
 import type { SourceRecord, Sources } from "./schema";
 
@@ -136,6 +137,15 @@ export function signinShape(rec: SourceRecord, region: string | null, url: strin
     }
   }
   return null;
+}
+
+/** An owner's paste for the CLI's stdin: one printable line that fits with its newline. */
+export function pastedSigninCode(value: unknown): string | null {
+  if (typeof value !== "string" || !isPrintable(value)) {
+    return null;
+  }
+  const code = value.trim();
+  return code !== "" && utf8Bytes(code) <= SIGNIN_PASTE_MAX ? code : null;
 }
 
 /**

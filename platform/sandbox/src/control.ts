@@ -70,6 +70,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { AUTHORITY, HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
+import { pastedSigninCode } from "../../sources/src/signin";
 import { readControl, type SandboxCeilings } from "../../contract/src/control";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import {
@@ -926,8 +927,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    */
   async signinInput(request: { authority: string; id: string; code: string }):
       Promise<{ delivered: boolean }> {
-    if (!SIGNIN_ID.test(request.id) || !AUTHORITY.test(request.authority)
-        || typeof request.code !== "string" || /[\r\n]/.test(request.code)) {
+    const code = pastedSigninCode(request.code);
+    if (!SIGNIN_ID.test(request.id) || !AUTHORITY.test(request.authority) || code === null) {
       throw new Error("a pasted code names its sign-in and is one line");
     }
     return this.#serial(async () => {
@@ -936,7 +937,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return { delivered: false };
       }
       await this.#e2b().upload(handle, inboxCode(request.id),
-                               new TextEncoder().encode(request.code));
+                               new TextEncoder().encode(code));
       try {
         return { delivered: (await this.#run(handle, [COMMAND.loginInput, request.id])).code
           === EXIT.ok };

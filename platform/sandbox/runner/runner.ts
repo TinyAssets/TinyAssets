@@ -69,9 +69,12 @@ import { createInterface } from "node:readline";
 
 import { RUN_BASICS } from "../../sources/src/run-env";
 import { type Served, signsIn } from "../../sources/src/served";
-import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
+import {
+  pastedSigninCode, SIGNIN_REFUSALS, type SigninRefusal, signinShape,
+} from "../../sources/src/signin";
 import { RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
+import { utf8Text } from "../../contract/src/text";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
@@ -241,22 +244,6 @@ function channelOf(kind: JobKind, id: string): string {
 }
 
 /**
- * One message sent on a job's channel: `sent` once written (the job's answer not waited
- * for), `none` when nothing listens there (not yet, or no more), `failed` otherwise.
- */
-function send(channel: string, verb: Verb, payload: string):
-    Promise<"sent" | "none" | "failed"> {
-  return new Promise((resolve) => {
-    const connection = createConnection(channel, () => {
-      connection.end(`${verb}\n${payload}`, () => resolve("sent"));
-    });
-    connection.on("error", (error: NodeJS.ErrnoException) => {
-      resolve(error.code === "ENOENT" || error.code === "ECONNREFUSED" ? "none" : "failed");
-    });
-  });
-}
-
-/**
  * A message to a live job's runner on its channel, sent whatever the time, and its answer
  * waited for until `deadline`: the job closes the connection once it acted (or once it
  * died). A runner not listening yet (just started) is asked again at a fifth of the flush
@@ -345,21 +332,35 @@ class Job {
   }
 
   /**
-   * Its channel open: each message to `act`, by its verb and what it carries (cut at `most`
-   * characters), answered by the connection's close once `act` is done.
+   * Its channel open: one complete UTF-8 message per connection, at most `most` bytes.
+   * Its close answers after `act`, or discards a frame that cannot be read whole.
    */
   listen(most: number, act: (verb: string, payload: string) => void | Promise<void>): void {
     const path = `${this.dir}/${JOB_FILES.socket}`;
     remove(path);  // one a runner before a reboot left
     this.#channel = createServer({ allowHalfOpen: true }, (socket) => {
-      let text = "";
+      const frame = Buffer.alloc(most);
+      let size = 0;
       socket.on("data", (data: Buffer) => {
-        text = (text + data.toString("utf8")).slice(0, most);
+        if (size <= most) {
+          data.copy(frame, size);
+          size += data.length;
+        }
       });
       socket.on("end", () => {
+        if (size > most) {
+          socket.end();
+          return;
+        }
+        let text: string;
+        try {
+          text = utf8Text(frame.subarray(0, size), "keep");
+        } catch {
+          socket.end();
+          return;
+        }
         const at = text.indexOf("\n");
         const [verb, payload] = at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)];
-        text = "";
         void (async () => {
           await act(verb, payload);
           socket.end();  // the answer: acted on
@@ -1295,13 +1296,20 @@ async function loginInput(id: string): Promise<number> {
     remove(inbox);
     return NO;
   }
-  let code: string;
+  let code: Buffer;
   try {
-    code = readFileSync(inbox, "utf8");
+    code = readFileSync(inbox);
   } finally {
     remove(inbox);
   }
-  return await send(channelOf("signin", id), VERB.code, code) === "sent" ? OK : NO;
+  // Report the handoff once the code is written. The runner reports code_sent after stdin.
+  return new Promise((resolve) => {
+    const connection = createConnection(channelOf("signin", id), () => {
+      connection.write(`${VERB.code}\n`);
+      connection.end(code, () => resolve(OK));
+    });
+    connection.on("error", () => resolve(NO));
+  });
 }
 
 /** A pasted code the Worker left that was never handed over, gone. */
@@ -1407,13 +1415,13 @@ async function loginRun(id: string): Promise<number> {
         child.stdin!.on("error", () => undefined);
         // A pasted code comes on the sign-in's channel, a socket in its root-only directory,
         // straight to the CLI's stdin: never on disk, never logged. Open while the CLI runs.
-        work.listen(VERB.code.length + 1 + SIGNIN_PASTE_MAX + 2, (verb, pasted) => {
-          const code = pasted.trim();
+        work.listen(VERB.code.length + 1 + SIGNIN_PASTE_MAX, (verb, pasted) => {
+          const code = pastedSigninCode(pasted);
           // Only a sign-in that takes a pasted code, shown its prompt, gets one: one line,
           // at most a terminal line's length.
           if (verb !== VERB.code || login.accepts_code !== true
               || (shown.url === null && shown.code === null)
-              || code === "" || code.length > SIGNIN_PASTE_MAX || /[\r\n]/.test(code)) {
+              || code === null) {
             return;
           }
           child.stdin!.write(`${code}\n`);

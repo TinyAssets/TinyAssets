@@ -557,14 +557,19 @@ describe("a pasted code (review L1)", () => {
       .toBe(NO_CODE_WANTED);
     await r.stub.signinEvents(runnerOfSignin(r, await lastSignin(r)), { id, frames: [
       frame(1, { state: "open", url: CLAUDE_PAGE })] });
-    expect((await failure(() => r.stub.signinCode(r.bind(), { id, code: "x".repeat(4096) })))
-      .message).toMatch(/at most 4095/);
-    expect(await r.stub.signinCode(r.bind(), { id, code: "x".repeat(4095) }))
-      .toEqual({ delivered: true });
+    const exact = ["x".repeat(4095), "界".repeat(1365), "🙂".repeat(1023) + "abc"];
+    for (const code of ["x".repeat(4096), "界".repeat(1366), "🙂".repeat(1024)]) {
+      expect((await failure(() => r.stub.signinCode(r.bind(), { id, code }))).message)
+        .toMatch(/at most 4095/);
+    }
+    for (const code of exact) {
+      expect(await r.stub.signinCode(r.bind(), { id, code: ` ${code} ` }))
+        .toEqual({ delivered: true });
+    }
     await r.sql("UPDATE sandbox_signins SET started_at = started_at - 100000 WHERE id = ?", id);
     expect((await failure(() => r.stub.signinCode(r.bind(), { id, code: "abc" }))).message)
       .toBe(NO_CODE_WANTED);
-    expect((await recorder(r.stub)).codes.map((each) => each.code.length)).toEqual([4095]);
+    expect((await recorder(r.stub)).codes.map((each) => each.code)).toEqual(exact);
   });
 });
 

@@ -348,6 +348,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] `untangle/o1c`: files, collections, ledger, import (`untangle-2026-11/o1c.md`).
     - [x] `untangle/o1d`: runs, launch, signins, restore; `OwnerState` deleted
       (`untangle-2026-11/o1d.md`).
+  - [x] Hold pasted vendor sign-in codes to the terminal's byte limit across the owner,
+    sandbox and runner (`untangle-2026-11/signin-paste-bytes.md`).
   - [x] B4: the door table generates the prototype methods at module load (d3 §K4). Its generator
     reads the table one way: `contract/requests.ts`'s own `tableRows()` beside `doorTable()`
     goes (lane O; C2). Built in O2 (`untangle-2026-11/o2.md`).

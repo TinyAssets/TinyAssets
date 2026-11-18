@@ -1218,11 +1218,20 @@ describe("a sign-in", () => {
   it("hands a pasted code to the live sign-in, and stops it", async () => {
     const who = owner();
     await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
-    expect(await stub(who).signinInput({ authority: "owner", id: SI, code: "abc#d" }))
+    for (const code of ["界".repeat(1366), "🙂".repeat(1024), "line\n", "\tline"]) {
+      const error = await stub(who).signinInput({ authority: "owner", id: SI, code })
+        .then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+    }
+    const before = await seen();
+    expect(before.files[`${before.sandboxes[0]!.id}:${inboxCode(SI)}`]).toBeUndefined();
+    expect(before.commands.some((command) => command.argv.includes("login-input"))).toBe(false);
+    const code = "🙂".repeat(1023) + "abc";
+    expect(await stub(who).signinInput({ authority: "owner", id: SI, code: ` ${code} ` }))
       .toEqual({ delivered: true });
     const state = await seen();
     const box = state.sandboxes[0]!;
-    expect(state.files[`${box.id}:${inboxCode(SI)}`]).toBe("abc#d");
+    expect(state.files[`${box.id}:${inboxCode(SI)}`]).toBe(code);
     expect(state.commands.at(-1)!.argv.slice(1)).toEqual(["login-input", SI]);
     expect(await stub(who).signinCancel({ authority: "owner", id: SI }))
       .toEqual({ cancelled: true });

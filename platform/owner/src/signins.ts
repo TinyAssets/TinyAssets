@@ -32,7 +32,7 @@ import { AUTHORITY, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
 import { servedRecord, signsIn } from "../../sources/src/served";
 import {
-  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
+  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, pastedSigninCode, signinShape,
 } from "../../sources/src/signin";
 
 import { Refusal } from "../../contract/src/refusal";
@@ -41,7 +41,6 @@ import {
 } from "../../contract/src/limits";
 import { OWNER } from "./authority";
 import type { OwnerStorage } from "./gate";
-import { isPrintable } from "../../contract/src/text";
 import type { Call, Door, DoorUnits, ObjectReads } from "./door";
 import type { OwnerEnv } from "./env";
 import type { Files } from "./files";
@@ -318,16 +317,6 @@ export class Signins {
   }
 }
 
-/** A pasted code: the vendor's own, one line of printable text, a terminal line at most. */
-function pastedCode(value: unknown): string {
-  if (typeof value !== "string" || value.trim() === "" || /[\r\n]/.test(value)
-      || !isPrintable(value) || value.trim().length > SIGNIN_PASTE_MAX) {
-    throw new Refusal("invalid", `a pasted code is one line of printable text, at most ${
-      SIGNIN_PASTE_MAX} characters`);
-  }
-  return value.trim();
-}
-
 /**
  * In a unit: the served records whose sign-in is switched on, as the binder handed them
  * (`Binding.signins`), kept (written only when they changed) for the runs the lane starts;
@@ -539,7 +528,11 @@ export const signinsDoors = Object.freeze({
   async signinCode(o: SigninsDoorNeeds, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
     const { row, code } = await o.door(() => {
       const { binding, r } = door.check();
-      const code = pastedCode(r["code"]);
+      const code = pastedSigninCode(r["code"]);
+      if (code === null) {
+        throw new Refusal("invalid", `a pasted code is one line of printable text, at most ${
+          SIGNIN_PASTE_MAX} UTF-8 bytes`);
+      }
       const row = o.signins.wantsCode(r["id"], clock());
       if (!switchedOn(o.storage, binding.signins, clock()).has(row.engine)) {
         throw new Refusal("signin_off", SIGNIN_OFF);
