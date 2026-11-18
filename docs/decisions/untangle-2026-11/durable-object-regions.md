@@ -1,4 +1,4 @@
-# Durable Object regional availability as observed (2026-11-18)
+# Durable Object regional availability research as built (2026-11-18)
 
 ADR-032 gives each owner one SQLite-backed Durable Object. The doors resolve the same
 owner name to the same object (`platform/doors/src/binder.ts`, `platform/owner/wrangler.jsonc`).
