@@ -205,5 +205,25 @@ from before the operation field still gets its existing terminal refusal.
 On the source staged at `e0a847e3`, the full importer suite passed 167 cases
 on Node 22 and the four disjoint Doors Worker selections passed all 22
 import cases. Scoped Node 22 TypeScript passed on the four changed source
-and test files and their dependencies. The full attempt that exited 137 supplied no
-passing result. Durable discard across eviction is a separate open protocol.
+and test files and their dependencies. The full Node 22 workspace typecheck
+subsequently passed on the same tree after the first attempt exited 137. Durable discard across eviction is a separate open protocol.
+
+## Where to continue the dependency review
+
+On `eb627bb76`, the scoped source inventory contains 201 tracked TS or JS
+files under platform workspace `src/` and `sandbox/runner/`, excluding test
+files and test directories. Thirty-five differ from main. The six additional
+paths since the 29-file review are the two contract registration sources, the
+generated owner door map, and Doors' binder, dispatch and egress sources.
+Their registration and retry findings are above. App JS, deploy, import host
+and the website remain separately scoped.
+
+Using the TypeScript compiler to resolve all 1,265 relative import references
+in that inventory, 137 of the 166 unchanged files directly touch a changed
+file in at least one direction. Changed files import 127 unchanged files;
+61 unchanged files import changed ones. The categories overlap. The refusal,
+limits and digest modules have respectively 17, 16 and 12 distinct changed
+importers. Start the next unchanged-source review with those contracts and
+the app and connection callers. Then follow the remaining edges and the
+separately scoped consumers. This inventory includes type dependencies.
+An edge count cannot establish that an underlying decision is sound.
