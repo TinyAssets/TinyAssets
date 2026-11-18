@@ -267,3 +267,35 @@ B3 record in `o2.md`, and R5 points to §N in the remaining-build decision.
 archive, and founder's wording for the owner notice each retain their own
 acceptance criteria. This repairs the working plan without reconstructing
 the original unpublished research.
+
+## Follow-up from the first-party callers and release review
+
+At 14:12 Pacific the branch inventory contained 105 refs including main and
+86 Codex heads. Main still pointed to `f934871ad`. The following work is
+staged separately. The scopes and exclusions above still apply.
+
+| Consumer | Confirmed result on the staged tree | Next dependency |
+| --- | --- | --- |
+| Rooms | `2ec78fcc` lets the owner read the remaining text using the mailbox's byte cursor. The independent 144,010-byte message reconstructed exactly. All eight selected Chromium and local Worker journeys passed. On main the same test reached the genuine message and failed at its missing button. Reading and acknowledging remained separate and later mail survived the acknowledgement. | Finish board and collection paging and the two directory views. The product question about intentionally acknowledging a partial message is still open. |
+| Talk and subscriptions | `a08764ca` keeps the live viewer through pending initial and reconnect tickets. Seven local Worker and Chromium cases passed. `b64d8c33` keeps status and cancellation replies attached to their run. Three browser regressions failed on main and passed on the change. The joined tree `eea2e2086` passed all nine follow and Talk cases. | Two initial sends can still create different conversations. Recover the original submission identity before sending later input. Check retention when its result is uncertain. |
+| Private sign-in input | `e0067de9` enforces the 4,095-byte UTF-8 limit through the owner and runner. Six HTTP, 30 related owner, 140 sandbox and 64 guard cases passed, as did TypeScript. Three real local terminal inputs at the limit were delivered and three larger inputs were refused. All 66 verdicts from 99 owner-memory measurements passed. | Exercise the privileged runner and the final joined recorder on the release tree. |
+| Sign-in output and deployment probe | `bb863130` rejects missing codes in the Codex and two Kimi pair checks. 140 sandbox tests, 64 guards and TypeScript passed. At `a632c592` the four source-proved emitter fixtures produced 496 refusals and 56 accepted wrong fields on main across 1,466 split points. Keeping complete lines in a local experiment recovered every field on Node 22 and 24. | The fifth emitter, pinned Claude, hands off to a native binary. Establish its prompt boundary, then design the shared bounded reader for the runner and probe. No real sign-in or paid build was used. |
+| Service refusals and sync | At `c272c6e5`, 143 codes and four transport faults exercised the shared public refusal handling. The focused 52 contract, four CI and 17 Gateway Worker cases passed. `114be3b2` records the real filtered-feed counterexample on both Node versions. | Scope sync needs an owner-observed completion boundary during continuous writes. Keep old runner compatibility in its replacement and handback. |
+| Structural CI | At `24c3bb9b`, the runbook now describes checking the current checkout. The old revision flag was ignored. A review of 99 heads and 13 open PRs found no executable caller using the flag. All 82 focused tests passed. Main and candidate ran the same 780 test IDs across 41 guard files, with 761 passes and the same 19 failures. | Coordinate this process change with the existing process PR. The full-run failures comprised 13 socket restrictions and six legacy actor assumptions in this environment. |
+
+The combined deploy kit at `b4ebe1371` passed its own 188 current harness
+cases. Seven split architecture-guard files on that build passed all 118
+cases. Those results supplement the 696-call comparison described above.
+The historical 342-case comparator ran outside the repository in the
+original builder's workspace. [B8](https://github.com/tinyassets/tinyassets/pull/5553)
+records 57 successes and 285 refusals. [B12](https://github.com/tinyassets/tinyassets/pull/5569)
+records both plain and Actions environments including masks and route summaries.
+Today's call comparison does not reproduce those fixtures or certify a cutover.
+
+The local combined build `c20aec73b` retained both the scope-sync and
+prompt-framing pre-pin tasks plus the completed sandbox status-log task.
+Nine follow and Talk checks passed on Node 22. The first joined thirteen-case
+browser run with the installed Chromium passed twelve and its tab crashed
+during the folder-save case. The two initial setup attempts without the
+installed browser path provide no product result. Further combined suites
+and the four-family behavioral comparison remain tied to their exact trees.
