@@ -1,5 +1,5 @@
 {
-  "about": "Golden blobs sealed by main's own keyring code (gateway/src/keyring.ts, files/src/datakey.ts) at commit, and golden objects sealed there by files/src/cipher.ts under the data key files.k1.key, under the throwaway keys k1 and k2 (never a production key); the doorbell value's secret is the test's own, left out here. Each must open, byte for byte, under every later envelope (contract/src/envelope.ts).",
+  "about": "Golden blobs sealed by main's own keyring code (gateway/src/keyring.ts, files/src/datakey.ts) at commit, and golden objects sealed there by files/src/cipher.ts under the data key files.k1.key, under the throwaway keys k1 and k2 (never a production key); the doorbell value's secret is the test's own, left out here. Each must open, byte for byte, under every later envelope (contract/src/envelope.ts). The credential and the plain value were sealed again by that same commit's code for a connection id, once the gateway's binding took only the owner's connection ids (docs/decisions/untangle-2026-11/o-keyrings.md).",
   "commit": "e115a123ea0c7c566ff474bbe70a246e6a3ec70e",
   "keys": {
     "k1": "XkqkHvgB5RAAmIbDDsJ5H5iok5KKpuArH48K+c+Jixo=",
@@ -8,7 +8,7 @@
   "gateway": {
     "binding": {
       "owner": "alice",
-      "connection": "c1",
+      "connection": "c0123456789abcdef01234567",
       "version": 3
     },
     "credential": {
@@ -39,8 +39,8 @@
       ],
       "sealed_at": 1800000000000
     },
-    "k1": "v1.k1.tYGq7yaRZc870_qP.zJBW9gXg8WhFUUNdk9DYglyJeZHcvQqTbrA7i7jOl_YN8hfLkUGyd6ZZX3gjmj3dEjzPHpvhIplN33Kh9p9o9UEBmJlsRzulJ377bZ76PFp2WCJn_VIGRw0WAKkQtiG27BxLre0mVRgw4BdyQPMz5SWjZuSSxKmz0Lb7FHlNdTlzi7g2qsXRgskFaJuyw5oBxFvE6ruePzmswbOKVqlwQeo4RErRFRnxrvl4_puhunGsI6jncY9q9jNUjcYwsVE2eheRfbhPOvjCbDLaHCWdOHs20oVk8_q78QoubCDsnE7ywlciiNWtIrlvIIF1O_oVrw3cNHishRqjrloDc2TaYvfmURT69qzHkJBGJIQDN9HsLm-gQnOhBfmu8WwWI5Db2aw9XifpxKM9cyge20Y4W3fUNXB5oRkh-vLsAKfXdv1CY64N0Ic4q40XwRTKyJq4NDWO2UVAISy8dwuLuNueOl6WWmXT8WLgHVfSZa5zTM4LkgfMWoF2RXHsv0VKVksg2ggeybRCR2QDnM8qhCaHVla2ChjfoVHGNJdt7Y3J",
-    "k2": "v1.k2.3iDRtKA4o0xNFHf6.VB2AkA4-S-qCqlDZwVaifoBtZMLRXcAc17CeQ2dxcKqSblfHBRvkamRsn_c8BSt1pgvZxA0G8F6CCQ9_SUlziEBPcn4IdT7UrernU3-FViVrIfR_1_aAj3IgzOeVSh7hvkIlrL7awdFUawdsNxg4CJ933tWub4bBdInjXPYL1Eod87eYfb6VgI3kNV_9PckZBLbUqoY1JvfTchTkkEOVq_N1llKQarf4Fjyy3Y1b4bF20KgVGd7MYVktemVpd6R7wtl1f-cY3Mfzj-nhEHY87ARG4HaFVHUYDTm4u2pSjZUpcNDILgzgjTKIFIwyzfXg_rvMcCDQlfZHLy-7U7YdB4_lHfh30kbL4K1MJcIJzuTNH38FBX7REFMVAf6WhnzAKdR7Sjq_mcSH3cdBQ29QLKvihHfl281VioBbRw4IbFs6RJ1AvRGeuR_OdxVoUV1INu2SihTq8XLZEzVDNmtASszhoaAC9sNVLeD0B2KdwLMaCH1vyH0RMACRKOxPrhkOc1MWgp8d_Ee8aY2VGtCbh8eocLBwMfvmJxWuPy74",
+    "k1": "v1.k1.OB6g0S1xzXWOuTaq.iiwoqm92xa7SabVQcG6ZjGgtS8JqRBJ2vttFJMHbJJpoM9YKTaUloG9Xd0iFQqpQ0wZdPeIfTnIoXOCISxW01ySoodqKZFcAjGJo_0Jn4KPfhVBSKIxsGZpCn5oOZaT2rZxV9xANOhvYhIObivfZ-tnynOv2Wao8udTCkmDq23Il5NFfl25dV6Pes-k6jQQ-f4_QGPJCQ9Z4RV5mtFMypMGSFApWvGKxJAIFf0BKejnhLB99iQ01UNzgWiVRhFu0t9tqGAvjnUz540-JNkydGjSuUu3uKjyoFBM9-twW_jxMOafWqctDNSNQ4e12Wf0nUXLlbo9fsWyl6okzmy6oPg6M5t2KNUbRvOyIiKbJOZOYrpc0vHMDcKe8DM3fAcs3C1Hz4_2IbR_-XKARNmZPar_-_NZBWL6fr3W3HClAx1_vSMROaeTJJtRD-r22Lr1su4-QwF9EINY5HoLE8QmJUIqNkfVBHCO-0OE4CxskuuHpdG4on_JjZOyTsK2Q6LOtJHU0rNdfs0BaYf7PmVZjnKE9LoFEQ9OHR586JPi4",
+    "k2": "v1.k2.jxRZBRjc9ZdQCOG7.ztSo11LItVw0hc9TFMdS1TWAEbzesbj98VySEUpdoPv_h9YNlaO3SxR4XpdYZeQAxH_l7nG9sZxnwaUR57hGhBqXyAeQgof57GH5chXHzeWIx5JHUB9XfWInm5GI2A8M62en9-tSPjrc2xMn1dRt0cw_JntTTOCyVNHbtHQJ4KItKXwfmu8Bz_lZe_m5VPSvgXwJjD-m6v1RQnsxAFurEwOpUJDIExM6E1nYAR4PqLuyEGDgXVl7Emq4WpSDrClnZX8gAG3ZBeqZMRjzrZ3w28VHzsoRsRirzQZ5da1ISEQ6kGPtjRmzulYhmGE0f6-SQhIz5ptOOjAfynm53e9Qald0bWWHGgj5Pmm0BbsQpXCRhL5Af4XJUtxy9c8HYESS3DU4X09hlsaH62kzDF36X5uycpl3oICXwln72h02-FKEWh-JL7ArQjfWbVKQGqpKaiHgk2WVgU_r2emDk2pozGVAqMx7y75ZCtBy-_RXveGOjWCgUs_AC0_jIowaEvnIH12jvstO5-KNwR57dkKnjZue6RsF7A9kmnTCbatV",
     "doorbell": {
       "owner": "alice",
       "subscription": "sub_0123456789abcdef0123456789abcdef",
@@ -61,11 +61,11 @@
     "value": {
       "binding": {
         "owner": "0123456789abcdef0123456789abcdef",
-        "connection": "c1",
+        "connection": "c0123456789abcdef01234567",
         "version": 1
       },
       "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-      "k2": "v1.k2.R6Mr0HV9k6uw4h2O.Q0YNiLXQEBn0qp85LnZC9xpcYoyr76X7l4uNQoCZ776amvZ59aFkgw8E-8wxXUB4"
+      "k2": "v1.k2.c60pQKCM5SgS4kFu.1PprL5IlCjBsdDh9dMf4xTS-0eo2vZIof6rHKoTemc7cg9Vaxkixmh4B-GLJwoiD"
     }
   },
   "files": {

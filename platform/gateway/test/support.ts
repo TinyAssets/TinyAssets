@@ -21,7 +21,11 @@ export function rotate(env: KeyringEnv, active: string,
   return ring(active, [...Object.keys(parsed.keys), ...extra], parsed.keys);
 }
 
-export const ALICE: Binding = Object.freeze({ owner: "alice", connection: "c1", version: 1 });
+/** Two model connections' ids, as the owner's object mints them (`contract/src/ids.ts`). */
+export const C1 = `c${"1".repeat(24)}`;
+export const C2 = `c${"2".repeat(24)}`;
+
+export const ALICE: Binding = Object.freeze({ owner: "alice", connection: C1, version: 1 });
 
 export const GOOGLE: Source = Object.freeze({
   upstream: { provider: "google", api: "google-generative-ai",

@@ -379,19 +379,26 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       `deploy/guards/rules.ts` owes the literal guard, `untangle/x1b` (`o4c.md`).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
-  - V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`).
-  - B14's keyring half, owed (`x5.md` item 10): `scripts/platform_setup.py` calling the kit's
-    `keyring-new` in place of its own `make_keyring`. X5 left it, since it would make the
-    founder's local setup need Node 22 and the platform's `npm ci` for one keyring. The
-    cutover does not wait on it (the keyrings are stored, and the kit only reads them), but the
-    deletion PR must not delete `platform_setup.py` while `deploy.test.ts` "takes the keyring
-    the founder's setup makes" runs it: either this is built, or both go on the manifest.
+  - [x] V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`). Built in
+    `untangle/o-keyrings`: the goldens sealed again by their own commit's code for a connection
+    id, and the gateway's binding takes the owner's connection ids, a doorbell's its own
+    `wake.<SUBSCRIPTION_ID>` (`o-keyrings.md`).
+  - [x] B14's keyring half, decided (`x5.md` item 10): not built. `scripts/platform_setup.py`,
+    its tests and `deploy.test.ts` "takes the keyring the founder's setup makes" are on the
+    manifest's cutover list, so the deletion PR takes them together (`o-keyrings.md`).
   - [x] B22's sweep doorbell half (O5; d3 §I). Built by R7 (`r7-rotation.md` item 4), the
     comment by #5509 and the deadline test in `gateway/test/forward.test.ts`; proved in
     `untangle/o4c` by a mutation (`o4c.md`).
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
     platform Workers are entries in the deploy kit's `retired` list (`deploy/platform.json`),
     the one remover of a platform Worker (d3 §O2).
+    - `untangle/b24-manifest`: `scripts/platform_setup.py` is on the cutover list
+      (`o-keyrings.md`). Its inventory of `scripts/` takes what still names it: `platform.json`
+      `made`'s `why`, `deploy.ts`'s kit note, `checklist.md`'s setup line,
+      `platform-deploy.yml`'s header, `docs/host-actions.md`, `.github/test-durations.json`,
+      `deploy/review-app.html` (it runs the setup's `review-app` step, and only the setup's tests
+      read it) and `tests/test_workflow_production_environment.py`'s note. It also decides where
+      the setup's `workos` and `review-app` steps go, since the deletion takes them too.
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
@@ -481,11 +488,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     namespace whose owner is live by that owner's own (`restore.hold`) and begins none another
     holds, and `owner.admit` refuses an owner the directory records whose object is pending
     (`untangle/r8-erased-orphans`, `r8-erased-orphans.md`).
-  - [ ] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
+  - [x] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
     located, the one naming `--owner` taken, then mode `restore` from it, every other one
     naming it held by the restored one; a live owner restored from a namespace it holds; and a
     located namespace whose owner is erased erased (`r8-account-loss.md` item 7, `r8-locate.md`
-    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`).
+    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`, `r8-lost-object.md`).
+  - [x] An erasure of a lost object marks nothing (its object and no restore record name a
+    namespace): mode `erase` finds its namespaces first, and refuses while R2 holds one naming
+    it, until it is restored (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
+  - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
+    it, since `copyback` needs an object naming the namespace and `recover` begins every owner
+    (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
@@ -590,10 +603,21 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   `files-gate`; B23): an `agent.json` over `INLINE_BYTES` read while its `getChunks` is held
   and the file is rewritten through the doors; the erasure's `deleteNamespace` refused once,
   for an owner with files, so it stops at step 2 before the wipe.
+  - [x] `platform/sandbox/`, both passes in one PR, with `s2:N51` and the sandbox's own
+    swallowed errors and retries decided (`untangle/pass-sandbox`;
+    `untangle-2026-11/pass-sandbox.md`).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
+  - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
+    (`pass-sandbox.md` §4).
+  - [ ] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
+    (`pass-sandbox.md` §2).
+  - [ ] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
+    deadline (`control.ts` `#renew`), and `tell` waits for an answer only to it, so no run's
+    posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
+    bound first (`pass-sandbox.md` §2).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 

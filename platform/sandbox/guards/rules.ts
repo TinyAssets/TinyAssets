@@ -1,5 +1,5 @@
 /**
- * The sandbox Worker's config allow-list (slice S), checked by the platform's guard kit
+ * The sandbox Worker's config allow-list, checked by the platform's guard kit
  * (`ci/kit/config.ts`); the owner's config guard holds what it binds to the owner's own
  * allowance for `SANDBOX` (`owner/guards/rules.ts`).
  *

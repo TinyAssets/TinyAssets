@@ -1,7 +1,7 @@
 /**
- * The route probe's verdict (`ta-runner route-probe`, at every template build;
- * codexurl_research.md Q4): what a keyed engine's CLI did, run as a run runs it with its
- * egress door on a loopback capture server, judged here. Pure: no process, no socket.
+ * The route probe's verdict (`probes.ts`'s `route-probe`, at every pair check): what a keyed
+ * engine's CLI did, run as a run runs it with its egress door on a loopback capture server,
+ * judged here. Pure: no process, no socket.
  *
  * It passes only when every model request reached the door's own path for its run and
  * connection, each carrying the run's placeholder key and its run secret where the record

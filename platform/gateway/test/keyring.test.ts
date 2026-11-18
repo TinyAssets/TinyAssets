@@ -8,8 +8,10 @@ import VECTORS from "../../ci/keyring-vectors.json" with { type: "json" };
 import { credential } from "../src/credential";
 import { Refusal } from "../../contract/src/refusal";
 import { doorbellSecret } from "../src/doorbell";
-import { binding, type KeyringEnv, open, openValue, reseal, seal } from "../src/keyring";
-import { ALICE, ANTHROPIC, apiKey, ring, rotate, sealed } from "./support";
+import {
+  binding, type KeyringEnv, open, openValue, reseal, seal, wakeBinding,
+} from "../src/keyring";
+import { ALICE, ANTHROPIC, apiKey, C1, ring, rotate, sealed } from "./support";
 
 async function refused(run: () => Promise<unknown>, code = "credential_refused") {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
@@ -88,7 +90,7 @@ describe("seal and open", () => {
 
   it("binds each field so no two bindings share an AAD", async () => {
     // "a\0b" style ambiguity cannot arise: the owner grammar refuses control characters.
-    expect(() => binding("alice\u0000c1", "c1", 1)).toThrow("invalid_binding");
+    expect(() => binding("alice\u0000c1", C1, 1)).toThrow("invalid_binding");
     const env = ring("k1");
     const blob = await sealed(env, { owner: "alice", connection: "c10", version: 1 }, "sk", ANTHROPIC);
     await refused(() => open(env, { owner: "alice", connection: "c1", version: 10 }, blob));
@@ -163,7 +165,9 @@ describe("the blobs main sealed (ci/keyring-vectors.json)", () => {
   const { k1, k2 } = VECTORS.keys;
   const rotated = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k1, k2 } }) };
   const retired = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k2 } }) };
-  const bound = VECTORS.gateway.binding;
+  // Bound as the gateway binds a stored record: by the caller's names, through today's grammar.
+  const { owner, connection, version } = VECTORS.gateway.binding;
+  const bound = binding(owner, connection, version);
 
   it("open as the credential they hold, an older kid's resealed to the active one", async () => {
     expect(await open(rotated, bound, VECTORS.gateway.k2))
@@ -175,15 +179,15 @@ describe("the blobs main sealed (ci/keyring-vectors.json)", () => {
   });
 
   it("open as doorbells, and never as a credential", async () => {
-    const { owner, subscription, version } = VECTORS.gateway.doorbell;
-    const bell = { owner, connection: `wake.${subscription}`, version };
+    const { owner: who, subscription, version: at } = VECTORS.gateway.doorbell;
+    const bell = wakeBinding(who, subscription, at);
     const opened = await openValue(rotated, bell, VECTORS.gateway.doorbell.k2, doorbellSecret);
     expect(opened.value).toMatchObject(VECTORS.gateway.doorbell.value);
     await refused(() => open(rotated, bell, VECTORS.gateway.doorbell.k2));
   });
 
   it("never open a data key the files Worker wrapped under the same keys", async () => {
-    await refused(() => openValue(rotated, binding(VECTORS.files.namespace, "c1", 1),
+    await refused(() => openValue(rotated, binding(VECTORS.files.namespace, connection, 1),
                                   VECTORS.files.k2.wrapped, (value) => value));
   });
 });
@@ -230,21 +234,40 @@ describe("the keyring", () => {
 });
 
 describe("the binding", () => {
+  const SUB = `sub_${"0".repeat(32)}`;
+
   it.each([
-    ["an empty owner", "", "c1", 1],
-    ["an owner with surrounding space", " alice", "c1", 1],
-    ["an owner with a control character", "al\u0007ice", "c1", 1],
-    ["an owner over 512 characters", "a".repeat(513), "c1", 1],
-    ["a connection with a dot first", "alice", ".c1", 1],
-    ["a connection with a NUL", "alice", "c\u00001", 1],
-    ["a version of zero", "alice", "c1", 0],
-    ["a fractional version", "alice", "c1", 1.5],
-    ["a version that is text", "alice", "c1", "1"],
+    ["an empty owner", "", C1, 1],
+    ["an owner with surrounding space", " alice", C1, 1],
+    ["an owner with a control character", "al\u0007ice", C1, 1],
+    ["an owner over 512 characters", "a".repeat(513), C1, 1],
+    ["a connection with a dot first", "alice", `.${C1}`, 1],
+    ["a connection with a NUL", "alice", `${C1}\u0000`, 1],
+    ["a connection the owner's object never mints", "alice", "c1", 1],
+    ["a doorbell's key space", "alice", `wake.${SUB}`, 1],
+    ["a version of zero", "alice", C1, 0],
+    ["a fractional version", "alice", C1, 1.5],
+    ["a version that is text", "alice", C1, "1"],
   ])("refuses %s", (_what, owner, connection, version) => {
     expect(() => binding(owner, connection, version)).toThrow("invalid_binding");
   });
 
   it("takes any printable owner, as the owner object's grammar does", () => {
-    expect(binding("Ålice 🌊", "c1", 3)).toEqual({ owner: "Ålice 🌊", connection: "c1", version: 3 });
+    expect(binding("Ålice 🌊", C1, 3))
+      .toEqual({ owner: "Ålice 🌊", connection: C1, version: 3 });
+  });
+
+  it.each([
+    ["a subscription that is no subscription id", "alice", "sub_1", 1],
+    ["a model connection's id", "alice", C1, 1],
+    ["an empty owner", "", SUB, 1],
+    ["a version of zero", "alice", SUB, 0],
+  ])("refuses a doorbell's binding with %s", (_what, owner, subscription, version) => {
+    expect(() => wakeBinding(owner, subscription, version)).toThrow("invalid_binding");
+  });
+
+  it("binds a doorbell to its subscription's own key space", () => {
+    expect(wakeBinding("alice", SUB, 2))
+      .toEqual({ owner: "alice", connection: `wake.${SUB}`, version: 2 });
   });
 });

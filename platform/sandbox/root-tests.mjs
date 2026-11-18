@@ -1,4 +1,4 @@
-// The runner's tests, as root (slice S): the in-VM runner runs as root and makes files of
+// The runner's tests, as root: the in-VM runner runs as root and makes files of
 // other users, gives each run a uid of its own (`setpriv`) and kills a uid's processes, so
 // its tests need real root and real uids. Each test sandbox is a root of its own in mount,
 // pid and uts namespaces of its own (`runner/test/harness.ts`), so the suite runs in a mount

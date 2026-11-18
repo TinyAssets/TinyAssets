@@ -1,6 +1,6 @@
-// The sandbox Worker (slice S; ADR-034 decision 4.2): what stands behind the owner object's
-// SANDBOX binding, and the only holder of the E2B API key. Not deployable: no routes, no
-// workers.dev or preview URL, and its control namespace is a placeholder. It binds
+// The sandbox Worker (ADR-034 decision 4.2): what stands behind the owner object's SANDBOX
+// binding, and the only holder of the E2B API key. No routes, no workers.dev or preview URL;
+// the deploy kit fills in its control namespace's id (`deploy/deploy.ts`). It binds
 // exactly what the owner's config guard allows (owner/guards/config.test.ts, SERVICES):
 // - SANDBOXES: the namespace of its own class SandboxControl, one per owner, which
 //   serializes one owner's E2B calls and renews each sandbox before its runtime ceiling;

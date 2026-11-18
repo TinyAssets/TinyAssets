@@ -125,6 +125,7 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
     markNamespace: (ns) => files.markNamespace(ns),
     deleteNamespace: (ns) => files.deleteNamespace(ns),
     holdNamespace: (ns, held) => files.holdNamespace(ns, held),
+    rootNamespace: (ns) => files.rootNamespace(ns),
     putManifestPart: (ns, key, day, part, bytes) =>
       files.putManifestPart(ns, key, day, part, bytes),
     putManifestSegment: (ns, key, gen, a, b, bytes) =>
