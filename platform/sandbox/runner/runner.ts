@@ -1275,7 +1275,9 @@ async function postSignins(url: string, lease: LeaseFile,
 async function safeSignedIn(rec: Served): Promise<boolean> {
   try {
     return await signedIn(rec);
-  } catch {
+  } catch (error) {
+    // This job's root-only log gets the cause; the presence report carries only a boolean.
+    console.error(`the ${rec.id} sign-in status check failed: ${String(error)}`);
     return false;
   }
 }
