@@ -671,6 +671,19 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] `dark` with the untangled build, the sandbox Worker included (the first `dark` stopped
   there), its ring queue and control namespace. Checked live at it:
   - the deploy workflow's `pair` job, live;
+  - the files Worker's create-once put of sealed bytes on the live bucket (`onlyIf:
+    { etagDoesNotMatch: "*" }` with the sealed bytes' own `sha256`; `files/test/chunks.test.ts`),
+    and the files bucket listed empty first: no object stored before the one cipher opens under
+    it (d3 §G);
+  - the read-only census of non-default rules, spend caps and egress `ask` follows
+    P-import and its authorized source access.
+
+### Step 8. The live stage (d3 §F1, §H), in order
+
+Open the stage using d3 §H's `routes` on the stage host, then restrict admission to
+its designated owners. Keep the pair check at dark. The following live checks require
+the routed stage and its admitted runs (`untangle-2026-11/stage-egress-order.md`):
+
   - E1's: a lease opened after the redeploy has its network marked applied, and its sandbox's
     model calls are admitted (d3 §K5, §M1); E3's: that lease's file holds no egress token
     (d3 §M3);
@@ -678,16 +691,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     run's next model call through `egress.tinyassets.io` is answered, not refused 409; the
     sandbox's network, read from E2B, carries generation 2 and the same `x-ta-sandbox`; a host
     the policy dropped is unreachable from the sandbox;
-  - the files Worker's create-once put of sealed bytes on the live bucket (`onlyIf:
-    { etagDoesNotMatch: "*" }` with the sealed bytes' own `sha256`; `files/test/chunks.test.ts`),
-    and the files bucket listed empty first: no object stored before the one cipher opens under
-    it (d3 §G);
-  - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
-    against an organization's server-managed settings; Codex, Gemini and pi loading our
-    root-owned hooks unattended; the delay one decision adds; a census of non-default rules,
-    spend caps and egress `ask` in the import.
-
-### Step 8. The live stage (d3 §F1, §H), in order
+  - R5's engine checks (d3 §N9), once the hook helper and run-scoped decision door are
+    built: Claude's `defer` with several tool calls in one turn, managed settings against
+    an organization's server-managed settings, Codex, Gemini and pi loading root-owned
+    hooks unattended, and the delay one decision adds.
 
 - [ ] 1. H2 (§5).
 - [ ] 2. The rehearsal's platform half (§9 item 7), which also proves the `aes-gcm` files under
