@@ -832,6 +832,8 @@ Moved before the window, into lane R (d3 §F3, §G).
   - [ ] The shared app's install flow (Slack's OAuth v2 install, which proves the owner holds the
     workspace), writing the object's `shared` binding and its `i:` entry. Until then no event
     reaches the deployed shared-app half (list3 P45).
+  - [ ] Before extending model-call pricing, establish complete upstream usage evidence
+    for an exact settlement (`untangle-2026-11/meter-usage-evidence.md`).
   - [ ] Server tools priced as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a key run that enables one is metered, not refused
     `egress_unmetered_tool` (list3 P20).
