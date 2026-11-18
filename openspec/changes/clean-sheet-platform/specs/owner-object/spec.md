@@ -609,7 +609,7 @@ Each file entry SHALL hold a reference to its content, in every root, as each ke
 - **THEN** every write lands and history holds ten rows
 
 ### Requirement: The owner frees history, and temporary files keep none
-A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
+A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history. Each temporary directory and its contents SHALL be eligible for housekeeping deletion seven days after the directory was created. Reading or writing a file inside it SHALL preserve that deadline.
 
 #### Scenario: A purge at any time
 - **WHEN** the owner purges a path's history

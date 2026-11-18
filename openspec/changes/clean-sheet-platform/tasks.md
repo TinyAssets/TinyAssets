@@ -647,6 +647,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - collection history (§P item 3): H1 merged (#5538); S1, the stream extraction into
     `owner/src/stream.ts`, after T1b4, receipts and rooms; H2, the erasures stream; H3, the
     history stream, bounding the deleter's name or taking the factor into the guard's term;
+  - [x] Owner file spill directories: reconcile the history spec with the seven-day creation
+    deadline already shipped in #5396 (`untangle-2026-11/temp-lifetime.md`).
   - conversation ids carrying the order key, idle conversations to segments, after T1b4 and
     on S1's stream module (§P item 3);
   - files: F1's owed census refusal at the index's ceiling (lane I; #5548's body); F2

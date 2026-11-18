@@ -2130,7 +2130,7 @@ export class Files {
     });
   }
 
-  /** A new temporary directory under `/.ta/tmp`, expired after a day. */
+  /** Create a temporary directory and record when housekeeping may remove it. */
   tempDir(prefix: unknown, writer: string): string {
     // A prefix and the 16 hex after it make one path component (`MAX_NAME_BYTES`).
     if (typeof prefix !== "string" || prefix.includes("/")

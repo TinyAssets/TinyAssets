@@ -122,10 +122,10 @@ These expiries are not ceilings: each queue or area is bounded by its count or c
 10 GB, and needs no expiry to fit. Each is a retention chosen for what it serves, with its
 reason; none refuses a write.
 
-- `owner/src/files.ts` `TEMP_TTL_S`, 7 days: a temporary directory under `/.ta/tmp` unused
-  for a week has its files deleted. The area is the sandbox's for spills, charged to the
-  owner's files; a week is long past any run (a sandbox lives a day at most, E2B Pro's 24
-  hours), so a crashed run's spills do not hold the owner's storage.
+- `owner/src/files.ts` `TEMP_TTL_S`, 7 days: housekeeping can remove an owner-stored temporary directory
+  and its files a week after the directory was created. File activity preserves that
+  deadline. This bounds storage charged for abandoned spills. Export and restore carry
+  the recorded deadline. The hosted runner uses its own local temporary directory.
 - `owner/src/registrations.ts` `CARD_TTL_S`, 7 days: a filed registration card waits a week
   for the owner, so an owner away for a week misses none; the client files again past it.
 - the control record's `scratch_retention_days` (30 to start; `sandbox/runner/scratch.ts`): an agent's sandbox scratch unused that long is deleted at its sandbox's next run. Scratch is a cache on the sandbox's own disk, never counted in the owner's storage; 30 days matches Codespaces' default idle deletion and Claude Code's transcript default. It refuses nothing; with none in the record only the disk's own pressure lets scratch go.

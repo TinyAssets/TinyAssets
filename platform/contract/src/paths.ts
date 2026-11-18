@@ -5,7 +5,7 @@
  * rule (`platform/import/`).
  *
  * `/workspace` holds the owner's files; `/.ta/tmp` is the reserved temporary area
- * (`createTempDir`, spill files), whose entries expire. Both roots always exist and are
+ * for owner-stored spill files, whose entries expire. Both roots always exist and are
  * never written, removed or renamed themselves. A stored path is absolute, has no empty,
  * `.` or `..` component and no NUL, is well-formed Unicode, and is at most 4,096 UTF-8
  * bytes with components of at most 255. It is never normalized (no NFC, no case
