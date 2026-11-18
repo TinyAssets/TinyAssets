@@ -335,8 +335,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
-- [ ] The wave-2 lanes (d2 §D): lane O (O1–O5) is left, unblocked since C3 and C4 merged; the
-  merged lanes' owed items and d3 §A's changes:
+- [ ] Complete the wave-2 lane obligations below (d2 §D and d3 §A). The O1–O5
+  work is recorded against its individual decisions. Recheck the combined lanes in
+  the separate §E review before cutover.
   - [x] B3 after T1, on the cleaned constructors (d3 §A2, §K1), as `o1_research.md`'s option (b′):
     per-module `DoorNeeds`, four widening proofs, `untangle/o1` to `o1d`
     (`docs/decisions/untangle-2026-11/o2.md`, "B3's shape").
