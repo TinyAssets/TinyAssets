@@ -306,6 +306,7 @@ def _failed_jobs(repo: str, run_id: int) -> dict[str, list[str]]:
 def classify_removal(repo: str, number: int,
                      removal_at: str) -> tuple[bool, int | None, list[str], str]:
     """(counts, run, failing tests, why). Any error reading GitHub counts."""
+    run = None
     try:
         queued = queued_at(_timeline(repo, number), removal_at)
         if queued is None:
@@ -318,7 +319,7 @@ def classify_removal(repo: str, number: int,
                                           selection=_selection(repo, run))
         return counts, run, ids, why
     except Exception as exc:  # noqa: BLE001 - fail closed: an unread removal counts
-        return True, None, [], f"the evidence could not be read ({type(exc).__name__}: {exc})"
+        return True, run, [], f"the evidence could not be read ({type(exc).__name__}: {exc})"
 
 
 def _write_ledger(repo: str, number: int, comment: dict | None, body: str) -> dict:
@@ -350,7 +351,10 @@ def handoff(repo: str, number: int, head: str, settle_seconds: float = 20.0) -> 
         # Either a re-delivered event, or this removal's timeline entry is not
         # readable yet and the latest one is the previous removal. Look once more.
         time.sleep(settle_seconds)
-        latest = fetch_pr(repo, number)["timelineItems"]["nodes"]
+        pr = fetch_pr(repo, number)
+        if pr["headRefOid"] != head:
+            return 0
+        latest = pr["timelineItems"]["nodes"]
         if not latest or latest[-1].get("reason") != "failed_checks":
             return 0
         removal_at = latest[-1]["createdAt"]

@@ -124,7 +124,8 @@ def test_a_removal_whose_evidence_cannot_be_read_counts(monkeypatch) -> None:
         "platform-tests (owner, x -w owner)": ["platform/owner/a.test.ts > s"]})
     monkeypatch.setattr(qa, "_changed", lambda repo, number: ["docs/a.md"])
     monkeypatch.setattr(qa, "_selection", bad_selection)
-    assert qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")[0] is True
+    counts, run, _, why = qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")
+    assert counts and run == 3 and "could not be read" in why
     # The same removal, read in full, does not count: the vitest test is unselected.
     monkeypatch.setattr(qa, "_selection", lambda repo, run: None)
     assert qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")[0] is False
@@ -202,3 +203,20 @@ def test_a_ledger_written_before_this_change_still_reads() -> None:
     ledger = qa.parse_ledger(old)
     assert ledger == {sha: {"attempt": {"2026-11-01T00:00:00Z"}, "not-counted": set()}}
     assert qa.parse_ledger(qa.render_ledger(ledger)) == ledger
+
+
+def test_a_head_change_while_waiting_for_the_timeline_cannot_charge_the_old_head(monkeypatch):
+    old = "a" * 40
+    first = "2026-11-04T11:00:00Z"
+    ledger = qa.render_ledger({old: {"attempt": {first}, "not-counted": set()}})
+    reads = iter([(old, first), ("b" * 40, "2026-11-04T12:00:00Z")])
+
+    def fetch(repo, number):
+        head, at = next(reads)
+        return {"headRefOid": head, "timelineItems": {"nodes": [
+            {"createdAt": at, "reason": "failed_checks"}]}}
+
+    monkeypatch.setattr(qa, "fetch_pr", fetch)
+    monkeypatch.setattr(qa, "_comments", lambda repo, number: [{"id": 1, "body": ledger}])
+    monkeypatch.setattr(qa, "_gh", lambda *args: pytest.fail(f"Unexpected write: {args}"))
+    assert qa.handoff("o/r", 7, old, settle_seconds=0) == 0

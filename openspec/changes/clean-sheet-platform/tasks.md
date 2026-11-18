@@ -292,6 +292,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
+- [x] P6, d3 §B9: the three queue workflows measured and kept; freshness runs the selected
+  gate and the handoff keeps the failed run it found (`untangle-2026-11/p6-queue-evidence.md`).
 
 ### Step 1. Now: B25, T0b, E2
 

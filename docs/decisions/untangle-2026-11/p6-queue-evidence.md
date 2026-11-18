@@ -1,0 +1,15 @@
+# P6: keep the three queue workflows
+
+For d3 §B9, read the most recent 16 runs of each workflow available on 2026-11-18 at 10:00 UTC, including probe verdicts and handoff job logs. GitHub marks a workflow successful when the helper exits normally, including when the helper could gather no evidence. The counts below use what the jobs did. Times are elapsed seconds summed over successful jobs, excluding skipped jobs and time waiting for a runner.
+
+| Workflow | Sample window (UTC) | Work observed | Decision |
+| --- | --- | --- | --- |
+| rerun-cancelled-checks | Nov 14 03:34–Nov 18 07:57 | 16 scheduled runs, 152 seconds. No reruns requested. | Keep. A quiet sample offers no replacement for the recovery needed on [#4204](https://github.com/TinyAssets/TinyAssets/pull/4204). |
+| queue-freshness | Nov 16 23:59–Nov 17 12:18 | 11 pushes had no probe. Five pushes ran seven probes. All seven selected shared tests but reported no readable report. 28 jobs, 616 seconds. | Keep and repair the gate invocation before judging how often it finds a semantic conflict. |
+| queue-handoff | Nov 17 01:57–12:18 | 16 dequeue events, 146 seconds. Fifteen were not failed checks. One removal counted when the helper could not read a failed job log. None reached the two-failure handoff. | Keep the bounded retry and retain the Tests run id when its evidence is incomplete. |
+
+The seven probes selected 13 and 8 shared files in [this run](https://github.com/TinyAssets/TinyAssets/actions/runs/44074766029), 6 and 18 in [the preceding run](https://github.com/TinyAssets/TinyAssets/actions/runs/44073576652), then [9](https://github.com/TinyAssets/TinyAssets/actions/runs/44023407852), [35](https://github.com/TinyAssets/TinyAssets/actions/runs/44020139206) and [14](https://github.com/TinyAssets/TinyAssets/actions/runs/43990872454). The probe passed a dash-prefixed pytest option to argparse as a separate argument. Argparse exited before pytest started. Replaying #5677 against the main commit from its run reproduced the missing report. Joining the option to its flag ran 289 tests, with seven failures and none attributable to the merge. The verdict stayed unchecked for that reason. A local pair of branches passed the merged-tree probe when compatible and identified the failing test when only their combined edits broke it. An empty or all-skipped report cannot clear a shared selection. To blame a change, the same test must fail again on the merge and actually pass on main. A skipped or unreadable confirmation on either side supplies neither outcome.
+
+The [#5678 handoff](https://github.com/TinyAssets/TinyAssets/actions/runs/44080406469) counted a removal and printed `run None`. It had already found [the failed Tests run](https://github.com/TinyAssets/TinyAssets/actions/runs/44079286405) before its failed-job log read errored. Keeping that link preserves what an operator can inspect. A separate regression covers a new head appearing during the delayed timeline read: its removal must never be charged to the old head.
+
+The sample predates the fix. Measure the corrected probes on later eligible pushes before using these counts to estimate prevented conflicts.

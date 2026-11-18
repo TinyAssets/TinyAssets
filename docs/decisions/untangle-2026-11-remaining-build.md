@@ -32,7 +32,7 @@ The wave-2 log, [`untangle-2026-11-wave-2.md`](untangle-2026-11-wave-2.md) (`d2`
 6. **P2, one review gate,** needs the founder's ruleset pin (§E). Until then the receipt stays, and reviews stay independent: no builder approves its own PR.
 7. **The cutover's deletion can't pass today's gates** (`x3:X1`, `X2`, `T9`): the 8-file cap, a forbidden path and the 3,000-file limit (`slow-tests`, a required check then, has gone: corrected 2026-11-16, `untangle/slow-tests`). P3 removes the cap and the forbidden path before the window. The deletion is two or three PRs in one window (code, tests, workflows and scripts; then `openspec/`; then docs), each proved by the manifest's dry run. The ruleset step is the founder's (§E).
 8. **Open: `drift_code_audit.md`'s §6.2, §6.3 and §6.5 checks** (a new Python guard of a `platform/` path refused; no owed text in an accepted ADR; a calibrated control for every measurement). None is built or dropped; P6 decides each.
-9. **Open: `rerun-cancelled-checks.yml`, `queue-freshness.yml` and `queue-handoff.yml` are kept or deleted on measured runs** (list3 Q3). None is measured yet; P6 measures them.
+9. **Keep `rerun-cancelled-checks.yml`, `queue-freshness.yml` and `queue-handoff.yml`** (list3 Q3). P6 measured 16 runs each, repaired the freshness probe and kept failed-run evidence for handoff ([measurements](untangle-2026-11/p6-queue-evidence.md)).
 
 ## C. What the cutover needs that wave 2 doesn't hold (decided, some after research)
 

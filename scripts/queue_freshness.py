@@ -46,6 +46,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -97,11 +98,6 @@ def probe_set(pr_selection: list[str] | None, main_selection: list[str] | None,
     if len(candidates) > cap:
         return None, f"{len(candidates)} shared test files exceed the cap {cap}; left to the queue"
     return sorted(candidates), f"{len(candidates)} shared test file(s)"
-
-
-def blame(first_run: list[str], merged_again: set[str], main_alone: set[str]) -> list[str]:
-    """Failures the PR is responsible for: fail twice merged, pass on main alone."""
-    return sorted(t for t in first_run if t in merged_again and t not in main_alone)
 
 
 def outcome(blamed: list[str], gate_ok: bool, why: str) -> dict:
@@ -275,26 +271,18 @@ def _selection(files: list[str], root: Path) -> list[str] | None:
     return selected
 
 
-def _junit_failures(junit: Path, asked: list[str] | None = None) -> set[str] | None:
-    """Failing node ids, or None if the report is missing or unreadable.
-
-    With ``asked``, an asked-for id that did not run counts as failing.
-    """
+def _junit_outcomes(junit: Path) -> tuple[set[str], set[str]]:
+    """The failing and executed ids. Without a report, neither outcome is proved."""
     import ci_required_tests as gate
 
-    if not junit.exists():
-        return None
     try:
-        failing, ran = gate.collect_outcomes(junit)
-    except Exception:  # noqa: BLE001 - a broken report is "unchecked", never "fresh"
-        return None
-    if asked is None:
-        return failing
-    return (failing | (set(asked) - ran)) & set(asked)
+        return gate.collect_outcomes(junit)
+    except (OSError, ValueError, ET.ParseError):
+        return set(), set()
 
 
-def _still_failing(tree: Path, node_ids: list[str], tmp: str, tag: str) -> set[str]:
-    """Re-run just these node ids in ``tree``; the ones that fail again."""
+def _rerun(tree: Path, node_ids: list[str], tmp: str, tag: str) -> tuple[set[str], set[str]]:
+    """Confirm outcomes for particular node ids in this checkout."""
     junit = Path(tmp) / f"confirm-{tag}.xml"
     # Same junit family as the gate run: under the default xunit2 the report
     # loses `file` and every id reads as "did not run" (Codex on #4293).
@@ -304,9 +292,8 @@ def _still_failing(tree: Path, node_ids: list[str], tmp: str, tag: str) -> set[s
              f"--junitxml={junit}", *node_ids,
              cwd=tree, check=False, timeout=CONFIRM_TIMEOUT, untrusted=True)
     except subprocess.TimeoutExpired:
-        return set(node_ids)
-    failing = _junit_failures(junit, node_ids)
-    return set(node_ids) if failing is None else failing
+        return set(), set()
+    return _junit_outcomes(junit)
 
 
 def probe_one(number: int, head: str, main: str) -> dict:
@@ -344,21 +331,24 @@ def probe_one(number: int, head: str, main: str) -> dict:
                     sys.executable, "scripts/ci_required_tests.py", "--junit", str(junit),
                     "--exclude-from", ".github/heavy-test-files.txt",
                     "--affected", str(selection), "--profile", "affected",
-                    "--pytest-arg", f"--basetemp={tmp}/b",
+                    f"--pytest-arg=--basetemp={tmp}/b",
                     cwd=tree, check=False, timeout=FIRST_RUN_TIMEOUT, untrusted=True)
             except subprocess.TimeoutExpired:
                 return {**verdict, "verdict": "unchecked", "why": f"{why}; the run timed out"}
-            failing = _junit_failures(junit)
-            if failing is None:
-                return {**verdict, "verdict": "unchecked", "why": f"{why}; no readable report"}
+            failing, ran = _junit_outcomes(junit)
+            if not ran:
+                return {**verdict, "verdict": "unchecked", "why": f"{why}; no readable report with executed tests"}
             import ci_required_tests as gate
 
             tolerated, flaky, _ = gate.parse_quarantine(tree / ".github/known-failing-tests.txt")
             failures = sorted(failing - tolerated - flaky)
             if failures:
-                again = _still_failing(tree, failures, tmp, "merged")
+                again, _ = _rerun(tree, failures, tmp, "merged")
+                failures = sorted(again.intersection(failures))
+            if failures:
                 _run("git", "checkout", "-q", "--detach", main, cwd=tree)
-                failures = blame(failures, again, _still_failing(tree, failures, tmp, "main"))
+                main_failed, main_ran = _rerun(tree, failures, tmp, "main")
+                failures = sorted((main_ran - main_failed).intersection(failures))
             return {**verdict, **outcome(failures, gate_run.returncode == 0, why)}
         finally:
             _run("git", "worktree", "remove", "--force", str(tree), check=False)
