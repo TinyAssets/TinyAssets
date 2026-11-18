@@ -104,12 +104,7 @@ export default function StartPage() {
               <p>
                 <span className="value">{SITE.mcp}</span>
               </p>
-              <p className="note">
-                Claude.ai: Settings › Connectors › Add custom connector, paste the URL. ChatGPT:
-                Settings › Connectors › Create, paste the URL. Both ask you to sign in to TinyAssets
-                once.
-              </p>
-              <p><Link href="/connect/">Setup for Claude, ChatGPT, Cursor and Codex</Link></p>
+              <p><Link href="/connect/">Choose your app for setup instructions</Link></p>
             </div>
 
             <div className="sheet" id="android">

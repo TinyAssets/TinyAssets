@@ -207,7 +207,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   are lost unless exported (decided at verify).
 - [ ] **The public `/connect` page,** right after `routes`, in the site-at-the-cutover PR
   (d3 §C6 F2): branch `platform-brain-site` no longer builds, so the page is rebuilt from
-  `contract/apps.json`, and its sweep checks one section per app.
+  `contract/apps.json`, and its sweep checks one section per app. Local export and anchor
+  compatibility are recorded in `untangle-2026-11/f2-connect-contract.md`.
 - [ ] **Step 14. The gates opened through the operator path's `control` mode** (d3 §G): canary
   owners, then everyone.
 - [ ] **Step 15. Manifest phase 2, the deletion** (Direction 5): two or three PRs in one window,

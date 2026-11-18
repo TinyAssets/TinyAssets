@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import json
 import socketserver
 import sys
 import threading
@@ -28,6 +29,7 @@ from playwright.sync_api import sync_playwright
 HERE = Path(__file__).resolve().parent
 OUT = HERE.parent / "out"
 PORT = 4323
+APPS = json.loads((HERE.parents[2] / "platform/contract/apps.json").read_text(encoding="utf-8"))
 
 ROUTES = [
     "/", "/start/", "/connect/", "/build/", "/commons/",
@@ -114,7 +116,16 @@ def main() -> int:
                         ):
                             failures.append(f"{label} {route}: setup page missing")
                         canonical = page.locator('link[rel="canonical"]').get_attribute("href")
-                        if canonical != "https://tinyassets.io/connect/":
+                        ids = [app["id"] for app in APPS["apps"]]
+                        sections = page.locator("main section[id]")
+                        if sections.evaluate_all("(items) => items.map(item => item.id)") != ids:
+                            failures.append(f"{label} {route}: app sections differ from the contract")
+                        for app in APPS["apps"]:
+                            section = page.locator(f'main section[id="{app["id"]}"]')
+                            steps = section.locator("ol > li").all_text_contents()
+                            if steps != app["connect"]["steps"]:
+                                failures.append(f"{label} {route}: wrong steps for {app['id']}")
+                        if canonical != APPS["page"]:
                             failures.append(f"{label} {route}: wrong canonical {canonical}")
                     if not page.locator("footer").count():
                         failures.append(f"{label} {route}: no footer")

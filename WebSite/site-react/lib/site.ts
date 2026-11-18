@@ -1,15 +1,18 @@
+import identity from "../../../platform/contract/identity.json";
 import { legal } from "./legal";
 
 /**
  * Canonical public addresses the site links to. One list, so a moved surface
  * is a one-line change and the copy never drifts from the real URLs.
  */
+const origin = `https://${identity.host}`;
+
 export const SITE = {
-  origin: "https://tinyassets.io",
+  origin,
   /** The web app: sign in, connect a model you already use, talk to your agent. */
-  app: "https://tinyassets.io/app",
+  app: origin + identity.first_party.resource,
   /** The one public MCP endpoint (Claude.ai / ChatGPT connector URL). */
-  mcp: "https://tinyassets.io/mcp",
+  mcp: origin + identity.mcp,
   repo: "https://github.com/TinyAssets/TinyAssets",
   /**
    * The Android app: Google Play's opt-in page for the closed test. This is the

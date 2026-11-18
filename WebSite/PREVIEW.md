@@ -41,6 +41,7 @@ preview.
 
 After review and merge, a push to `main` that changes
 `WebSite/site-react/**`, `WebSite/design-system/**`, `WebSite/shared/**`,
+`platform/contract/apps.json`, `platform/contract/identity.json`,
 or `.github/workflows/deploy-site-react.yml` runs
 `.github/workflows/deploy-site-react.yml`. A manual run with
 `confirm: deploy` is the rollback. Follow `WebSite/DEPLOY.md`.

@@ -22,6 +22,9 @@ on:
       - 'WebSite/site-react/**'
       - 'WebSite/design-system/**'
       - 'WebSite/shared/**'
+      # Public addresses and connection instructions are static export inputs.
+      - 'platform/contract/apps.json'
+      - 'platform/contract/identity.json'
       - '.github/workflows/deploy-site-react.yml'
   workflow_dispatch:
     inputs:

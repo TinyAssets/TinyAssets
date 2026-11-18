@@ -3,7 +3,8 @@
 **Production source:** `WebSite/site-react/` (Next.js static export). A push
 to `main` that changes site source runs `.github/workflows/deploy-site-react.yml`.
 The paths are `WebSite/site-react/**`, `WebSite/design-system/**`,
-`WebSite/shared/**`, and `.github/workflows/deploy-site-react.yml`, so a
+`WebSite/shared/**`, `platform/contract/apps.json`, `platform/contract/identity.json`,
+and `.github/workflows/deploy-site-react.yml`, so a
 change to the publisher itself publishes the current site. A manual run of
 the same workflow, with `confirm` set to `deploy`, remains for a rollback or
 a republish.
