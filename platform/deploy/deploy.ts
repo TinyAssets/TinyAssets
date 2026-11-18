@@ -131,6 +131,7 @@ import { migrated } from "../ci/kit/locks.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
+import { object } from "../contract/src/checks.ts";
 import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
 import { ZONE } from "../contract/src/egress.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
@@ -566,15 +567,27 @@ export function hookSetsSecret(setting: readonly { worker: string; name: string 
 
 /**
  * E2B's lifecycle webhook as its listing holds it, matched by its URL, or null when it holds
- * none. A failed listing, or two hooks for the URL, throws.
+ * none. Unreadable destinations or state and duplicate subscriptions to the endpoint throw.
  */
 export async function heldHook(e2b: E2bAdmin): Promise<Json | null> {
   const hooks = await e2b.webhooks();
-  const ours = hooks.filter((hook) => (hook as Json | null)?.["url"] === E2B_HOOK.url) as Json[];
+  const ours = hooks.filter((hook): hook is Json => {
+    const url = object(hook) && typeof hook["url"] === "string" ? URL.parse(hook["url"]) : null;
+    if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
+      throw new Error("E2B's webhook listing holds an unreadable HTTP URL");
+    }
+    url.hash = ""; // HTTP sends no fragment to the doors.
+    return url.href === E2B_HOOK.url;
+  });
   if (ours.length > 1) {
     throw new Error(`E2B holds ${ours.length} webhooks for ${E2B_HOOK.url}: keep one`);
   }
-  return ours[0] ?? null;
+  const hook = ours[0];
+  if (hook && (typeof hook["enabled"] !== "boolean"
+               || typeof hook["id"] !== "string" || !hook["id"].trim())) {
+    throw new Error("E2B's lifecycle webhook holds an unreadable state or id");
+  }
+  return hook ?? null;
 }
 
 /** What a run asks of E2B's lifecycle webhook (`lifecycleHook`). */

@@ -2588,7 +2588,7 @@ describe("E2B's lifecycle webhook", () => {
     await expect(lifecycleHook(e2bHooks([], "POST").e2b,
         { secret: "s", setSecret: false, enable: false }, true))
       .rejects.toThrow("E2B POST /events/webhooks answered 500");
-    await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b,
+    await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: false }], "PATCH").e2b,
         { secret: "s", setSecret: true, enable: false }, true))
       .rejects.toThrow("E2B PATCH /events/webhooks/a answered 500");
     await expect(heldHook(e2bHooks([{ id: "a", url: E2B_HOOK.url },
@@ -2596,6 +2596,30 @@ describe("E2B's lifecycle webhook", () => {
       .rejects.toThrow(/holds 2 webhooks/);
     // A route hands the hook's path to the doors.
     expect(ROUTES.some((pattern) => routeTakes(pattern, `${ZONE}${identity.hook}`))).toBe(true);
+  });
+
+  it("stops before changing a hook whose identity or state cannot be read", async () => {
+    for (const hook of [{ id: "w1", enabled: false },
+                        { id: "w1", url: "not a URL", enabled: false },
+                        { url: E2B_HOOK.url, enabled: false },
+                        { url: E2B_HOOK.url, id: "w1", enabled: "false" },
+                        { url: E2B_HOOK.url, id: "w1" }]) {
+      const held = e2bHooks([hook]);
+      await expect(lifecycleHook(held.e2b, { secret: "s", setSecret: false, enable: true }, true))
+        .rejects.toThrow(/webhook/);
+      expect(held.calls).toEqual(["GET /events/webhooks"]);
+    }
+  });
+
+  it("recognizes the held HTTP endpoint in equivalent spellings", async () => {
+    const address = new URL(E2B_HOOK.url);
+    for (const url of [` ${address.href} `, `${address.origin}:443${address.pathname}`,
+                       `${address.href}#local`]) {
+      const held = e2bHooks([{ id: "w1", url, enabled: false, events: EVENTS }]);
+      expect(await lifecycleHook(held.e2b, { secret: "s", setSecret: false, enable: false }, true))
+        .toBe("present, unchanged, disabled");
+      expect(held.calls).toEqual(["GET /events/webhooks"]);
+    }
   });
 
   it("changes its secret only with the doors' copy: both or neither", async () => {

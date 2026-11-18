@@ -187,6 +187,15 @@ describe("the platform canary", () => {
     expect([result.outcomes[0]!.state, exitOf(result)]).toEqual(["failed", 10]);
   });
 
+  it("reports an unreadable hook state while the old stack serves", async () => {
+    const w = world(platform({ side: "old" }));
+    const result = await canary({ ...w, fetch: (url, init) =>
+      url === `${E2B_API}/events/webhooks` ? Promise.resolve(json([{ id: "w1", url: E2B_HOOK_URL }]))
+        : w.fetch(url, init) }, AUTO);
+    expect(result.outcomes.find((each) => each.check === "E2B")?.state).toBe("failed");
+    expect(exitOf(result)).toBe(11);
+  });
+
   it("holds the side asked for", async () => {
     const result = await canary(world(platform({ side: "old" })), { ...AUTO, side: "doors" });
     expect([states(result), exitOf(result)]).toEqual([[["the side", "failed"]], 8]);
