@@ -488,6 +488,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     namespace whose owner is live by that owner's own (`restore.hold`) and begins none another
     holds, and `owner.admit` refuses an owner the directory records whose object is pending
     (`untangle/r8-erased-orphans`, `r8-erased-orphans.md`).
+  - [x] Whole-account recovery and its drill reconcile the marks they see in each inventory
+    and follow erased holders through R2 and the copy. Recovery checks the current marks
+    again before writing namespace objects (`codex/recovery-erasure-inventory`,
+    `r8-recovery-inventory.md`).
   - [x] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
     located, the one naming `--owner` taken, then mode `restore` from it, every other one
     naming it held by the restored one; a live owner restored from a namespace it holds; and a

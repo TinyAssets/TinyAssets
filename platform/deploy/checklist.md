@@ -796,7 +796,10 @@ The steps:
    the same `at` (with none, the time its restore record names). Once the marks are back a
    night copies again and hides in the copy what R2 does not hold yet, so the copy as it
    stands then lacks it. What R2 holds is not written again, and a begin asked again answers
-   as it stands.
+   as it stands. If the two listings of a store disagree on erasure marks, repeat with the
+   same `at`. The restore record and marks can already be back in R2. Before copying namespace
+   objects the run reads the current marks in both stores again. A namespace reached from a
+   marked holder in either inventory is excluded, including through a chain of holds.
 3. **Dispatch `restore`** for each owner the run names, with the generation it names.
 4. **Revoke the write key,** as step 4 above.
 

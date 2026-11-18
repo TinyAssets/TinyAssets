@@ -580,6 +580,31 @@ export function readableAt(at: Date | null, now: Date): void {
 
 type Run<R extends string> = ReturnType<typeof rcloneOf<R>>["run"];
 
+/** An object returned by a mark listing must name an erased namespace. */
+function erasureMark(name: string, where: string): string {
+  const ns = markedNamespace(name);
+  if (ns === null) {
+    throw new Error(`the erasure marks in ${where} can't be read: it holds a name under ` +
+                    `${MARKS} that is no namespace's mark`);
+  }
+  return ns;
+}
+
+/** Read only the marks, including when the bucket has none. */
+function listedMarks(run: Run<"back" | "now" | "r2">, using: "back" | "now" | "r2", root: string,
+                     where: string): Set<string> {
+  return new Set(run(`listing of the erasure marks in ${where}`, [using],
+                     ["lsf", "--files-only", "-R", "--include", `/${MARKS}*`, `${using}:${root}`],
+                     true).split("\n").filter(Boolean).map((name) => erasureMark(name, where)));
+}
+
+/** Refuse a plan made before a mark appeared or disappeared from either observed store. */
+function checkMarks(seen: ReadonlySet<string>, expected: ReadonlySet<string>, where: string): void {
+  if (seen.size !== expected.size || [...seen].some((ns) => !expected.has(ns))) {
+    throw new Error(`the erasure marks in ${where} changed between listings; retry the restore`);
+  }
+}
+
 /**
  * The namespaces the files bucket marks deleted on purpose (`e/<ns>`,
  * `contract/src/files.ts` `MARKS`), as R2 holds them and the copy as it stands: the files
@@ -592,28 +617,17 @@ type Run<R extends string> = ReturnType<typeof rcloneOf<R>>["run"];
  * anything is written: no copy back runs without the erasures.
  */
 function erasures(run: Run<"back" | "now" | "r2">, bucket: string, source: string,
-                  at: boolean): ReadonlySet<string> {
-  const listed = (using: "back" | "now" | "r2", root: string, where: string) =>
-    new Set(run(`listing of the erasure marks in ${where}`, [using],
-                ["lsf", "--files-only", "-R", "--include", `/${MARKS}*`, `${using}:${root}`], true)
-      .split("\n").filter(Boolean).map((name) => {
-        const ns = markedNamespace(name);
-        if (ns === null) {
-          throw new Error(`the erasure marks in ${where} can't be read: it holds a name under ` +
-                          `${MARKS} that is no namespace's mark; nothing is written`);
-        }
-        return ns;
-      }));
-  const now = listed(at ? "now" : "back", bucket, "the copy");
-  if (at) {
-    const lost = [...listed("back", bucket, "the copy as it stood")].filter((ns) => !now.has(ns));
-    if (lost.length > 0) {
-      throw new Error(`the copy as it stands lacks ${lost.length} erasure marks it held at the ` +
-                      "time asked: a night copied a files bucket that had lost them, so its " +
-                      "marks are not whole; nothing is written");
-    }
+                  at: boolean) {
+  const now = listedMarks(run, at ? "now" : "back", bucket, "the copy");
+  const back = at ? listedMarks(run, "back", bucket, "the copy as it stood") : now;
+  const lost = at ? [...back].filter((ns) => !now.has(ns)) : [];
+  if (lost.length > 0) {
+    throw new Error(`the copy as it stands lacks ${lost.length} erasure marks it held at the ` +
+                    "time asked: a night copied a files bucket that had lost them, so its " +
+                    "marks are not whole; nothing is written");
   }
-  return new Set([...now, ...listed("r2", source, "R2")]);
+  const r2 = listedMarks(run, "r2", source, "R2");
+  return { back, now, r2, erased: new Set([...now, ...r2]) };
 }
 
 /**
@@ -626,13 +640,26 @@ function readBack(b: Back, source: string, prefix: string, at: Date | null, io: 
   const rclone = rcloneOf(io, { back: readRemote("back", b.read, at),
                                 now: readRemote("now", b.read, null),
                                 r2: r2Remote("r2", b.account, b.r2) });
-  const erased = erasures(rclone.run, b.bucket, source, at !== null);
+  const marks = erasures(rclone.run, b.bucket, source, at !== null);
   const from = `back:${b.bucket}/${prefix}`;
   const to = `r2:${source}/${prefix}`;
   const there: ReadonlySet<string> = new Set(rclone.listed("listing of R2", "r2", to));
   const held = rclone.listed("listing of the copy", "back", from);
+  if (prefix === "") {
+    const fullMarks = (keys: Iterable<string>, where: string) => {
+      const seen = new Set<string>();
+      for (const key of keys) {
+        if (key.startsWith(MARKS)) {
+          seen.add(erasureMark(key, where));
+        }
+      }
+      return seen;
+    };
+    checkMarks(fullMarks(there, "R2"), marks.r2, "R2");
+    checkMarks(fullMarks(held, "the copy"), marks.back, "the copy");
+  }
   const lacking = held.filter((name) => !there.has(name));
-  return { run: rclone.run, from, to, held, there, lacking, erased };
+  return { run: rclone.run, from, to, held, there, lacking, marks };
 }
 
 /**
@@ -684,7 +711,7 @@ export async function copyBack(b: Back, source: string, namespace: string, at: D
   const prefix = objectPrefix(namespace);
   const as = at === null ? "as the copy stands" : `as the copy held them at ${iso(at)}`;
   const back = readBack(b, source, prefix, at, io);
-  if (back.erased.has(namespace)) {
+  if (back.marks.erased.has(namespace)) {
     throw new Error(`the files bucket marks the namespace under ${prefix} erased: nothing of it ` +
                     "is written, and no restore is recorded");
   }
@@ -739,13 +766,24 @@ function rootName(name: string): boolean {
  *   the one it adopts once done.
  * Any other name is a loud stop: the files bucket holds nothing else (`files/src/keys.ts`).
  */
-function recovered({ held, there, lacking, erased }:
-                     Pick<ReturnType<typeof readBack>, "held" | "there" | "lacking" | "erased">) {
-  const kept = new Set([...there].map(markedNamespace));
+function recovered({ held, there, lacking, marks }:
+                     Pick<ReturnType<typeof readBack>, "held" | "there" | "lacking" | "marks">) {
+  const { erased } = marks;
   const spaces = new Set<string>();
   const roots = new Set<string>();
-  const holds: { holder: string; held: string }[] = [];
-  for (const name of held.filter((each) => markedNamespace(each) === null)) {
+  const historical = new Map<string, string[]>();
+  function addHold(edges: Map<string, string[]>, holder: string, ns: string): void {
+    const children = edges.get(holder);
+    if (children === undefined) {
+      edges.set(holder, [ns]);
+    } else {
+      children.push(ns);
+    }
+  }
+  for (const name of held) {
+    if (markedNamespace(name) !== null) {
+      continue;
+    }
     const ns = namespaceOf(name);
     if (ns === null) {
       throw new Error(`the copy holds an object that is neither a namespace's nor a mark ` +
@@ -757,29 +795,39 @@ function recovered({ held, there, lacking, erased }:
     }
     const hold = heldNamespace(name);
     if (hold !== null) {
-      holds.push(hold);
+      addHold(historical, hold.holder, hold.held);
     }
   }
-  const out = new Set(erased);
-  const reach = (from: Set<string>, within: (ns: string) => boolean) => {
-    for (let grew = true; grew;) {
-      grew = false;
-      for (const { holder, held: ns } of holds) {
-        if (from.has(holder) && !from.has(ns) && within(ns)) {
-          from.add(ns);
-          grew = true;
+  // Set iteration visits each newly added namespace once, including through cycles.
+  const reach = (from: Set<string>, within: (ns: string) => boolean,
+                 ...graphs: ReadonlyMap<string, string[]>[]) => {
+    for (const holder of from) {
+      for (const edges of graphs) {
+        for (const ns of edges.get(holder) ?? []) {
+          if (within(ns)) {
+            from.add(ns);
+          }
         }
       }
     }
     return from;
   };
-  reach(out, () => true);
+  const live = new Map<string, string[]>();
+  if (erased.size > 0) {
+    for (const name of there) {
+      const hold = heldNamespace(name);
+      if (hold !== null) {
+        addHold(live, hold.holder, hold.held);
+      }
+    }
+  }
+  const out = reach(new Set(erased), () => true, historical, live);
   const namespaces = [...roots].filter((ns) => !out.has(ns)).sort();
   const taken = new Set(namespaces);
-  const heldBy = new Set(holds.filter(({ holder }) => taken.has(holder)).map(({ held: ns }) => ns));
+  const heldBy = new Set(namespaces.flatMap((ns) => historical.get(ns) ?? []));
   const located = namespaces.filter((ns) => !heldBy.has(ns));
-  const from = (ns: string) => reach(new Set([ns]), (each) => taken.has(each));
-  const begun = reach(new Set(located), (ns) => taken.has(ns));
+  const from = (ns: string) => reach(new Set([ns]), (each) => taken.has(each), historical);
+  const begun = reach(new Set(located), (ns) => taken.has(ns), historical);
   const rest = namespaces.filter((ns) => !begun.has(ns));
   for (const ns of rest) {
     // Whatever holds `ns` it holds back: it is in a cycle nothing outside holds.
@@ -789,7 +837,7 @@ function recovered({ held, there, lacking, erased }:
     }
   }
   return {
-    marks: [...erased].filter((ns) => !kept.has(ns)).length,
+    marks: erased.size - marks.r2.size,
     namespaces,
     located,
     writes: lacking.filter((name) => taken.has(namespaceOf(name) ?? "")),
@@ -824,7 +872,7 @@ export function drill(s: Settings, source: string, night: Copied, io: Effects): 
           `erasure marks and ${would.writes.length} objects of ${would.namespaces.length} ` +
           `namespaces R2 no longer holds (${would.namespaces.length - would.located.length} ` +
           `held by another), and leave out ${would.erased} namespaces marked erased or held ` +
-          `by one (${back.erased.size} marks) and ${would.rootless} with no root; ` +
+          `by one (${back.marks.erased.size} marks) and ${would.rootless} with no root; ` +
           `${sample.length} of them read back whole`];
 }
 
@@ -901,6 +949,10 @@ export async function recover(b: Back, source: string, at: Date | null, asking: 
                "each read back byte for byte");
   }
   if (writes.length > 0) {
+    // Recording the restore and copying its marks take time. R2 must now hold the union,
+    // and the current copy must still hold precisely the marks the plan used.
+    checkMarks(listedMarks(back.run, "now", b.bucket, "the copy"), back.marks.now, "the copy");
+    checkMarks(listedMarks(back.run, "r2", source, "R2"), back.marks.erased, "R2");
     withList(writes, (file) => {
       back.run("copy back", ["back", "r2"],
                ["copy", back.from, back.to, "--files-from", file, "--ignore-existing",

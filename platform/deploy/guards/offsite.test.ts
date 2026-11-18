@@ -81,6 +81,7 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
                           readonly marks?: Partial<Record<"back" | "now" | "r2",
                                                           readonly string[]>> }
                = {}) {
+  const copiedMarks = new Set<string>();
   const calls: Call[] = [];
   const asked: string[] = [];
   const keyOf: Record<string, "write" | "read"> =
@@ -126,9 +127,15 @@ function world(options: { readonly capabilities?: Partial<Record<"write" | "read
       const count = args.at(-1)!.startsWith("copy:") ? 3000 : 5000;
       return { status: 0, stdout: JSON.stringify({ count, bytes: count * 10, sizeless: 0 }) };
     }
+    if (args[0] === "copy" && args[1] === `now:${BUCKET}` && args.includes("/e/*")) {
+      for (const key of options.marks?.now ?? options.marks?.back ?? []) {
+        copiedMarks.add(key);
+      }
+    }
     if (args[0] === "lsf" && args.includes("--include")) {
       const remote = args.at(-1)!.split(":")[0] as "back" | "now" | "r2";
-      return { status: 0, stdout: (options.marks?.[remote] ?? []).join("\n") };
+      const seen = options.marks?.[remote] ?? [];
+      return { status: 0, stdout: [...seen, ...(remote === "r2" ? copiedMarks : [])].join("\n") };
     }
     if (args[0] === "lsf" && /^(back|r2):/.test(args.at(-1)!)) {
       return { status: 0, stdout: (args.at(-1)!.startsWith("back:") ? options.back?.copy
@@ -492,7 +499,7 @@ describe("a copy back from the copy (R8)", () => {
        /the copy's listing of the erasure marks in R2 failed/],
       [{ marks: { r2: ["e/not-a-namespace"] } },
        "the erasure marks in R2 can't be read: it holds a name under e/ that is no " +
-       "namespace's mark; nothing is written"],
+       "namespace's mark"],
       [{ marks: { back: [mark(OTHER)] } },
        "the copy as it stands lacks 1 erasure marks it held at the time asked: a night copied " +
        "a files bucket that had lost them, so its marks are not whole; nothing is written"],
@@ -594,6 +601,8 @@ describe("a recover after the account's loss", () => {
       [["copy", ...marks, "--ignore-existing", "--stats-one-line", "--stats", "1m",
         "--stats-log-level", "NOTICE"], undefined],
       [["check", ...marks, "--one-way", "--download"], undefined],
+      ...["now", "r2"].map((remote) => [["lsf", "--files-only", "-R", "--include", "/e/*",
+        `${remote}:${remote === "r2" ? SOURCE : BUCKET}`], undefined]),
       [["copy", `back:${BUCKET}/`, `r2:${SOURCE}/`, "--files-from",
         expect.stringMatching(/names$/), "--ignore-existing", "--stats-one-line", "--stats", "1m",
         "--stats-log-level", "NOTICE"], [`o/${AA}/m/${GEN}`, `o/${AA}/m/${GEN}/0`,
@@ -605,7 +614,7 @@ describe("a recover after the account's loss", () => {
     expect(puts).toEqual([["lsf", "lsf", "lsf", "lsf", "lsf"]]);
     // The marks from the copy as it stands; the objects as it stood at the time.
     expect(fake.calls[5]!.env["RCLONE_CONFIG_NOW_VERSION_AT"]).toBeUndefined();
-    expect(fake.calls[7]!.env["RCLONE_CONFIG_BACK_VERSION_AT"]).toBe("2026-11-01T00:00:00Z");
+    expect(fake.calls[9]!.env["RCLONE_CONFIG_BACK_VERSION_AT"]).toBe("2026-11-01T00:00:00Z");
     // The erased and the rootless namespaces are neither written, located nor begun.
     expect(asked).toEqual({ locate: [[AA, BB]], begin: [
       { owner: "user_aa", namespace: AA, gen: GEN }, { owner: "user_bb", namespace: BB, gen: GEN }],
@@ -646,6 +655,53 @@ describe("a recover after the account's loss", () => {
     expect(lines).toContain("the doors erased 1 namespaces, each naming an owner this account " +
                             "records erased, whose erasure no object of it reached: each " +
                             "deleted whole, its mark first");
+  });
+
+  it.each(["R2", "the copy"] as const)(
+    "stops before the restore record when the full listing of %s shows a new erasure mark",
+    async (where) => {
+      const back = { copy: [...LOST.back.copy], r2: [...LOST.back.r2] };
+      (where === "R2" ? back.r2 : back.copy).push(`e/${AA}`);
+      const fake = world({ ...LOST, back });
+      const { held, puts } = control(fake);
+      const { asked, asking } = doors();
+      await expect(recover(BACK, SOURCE, AT, asking, held, fake.io)).rejects.toThrow(
+        /erasure marks.*listing/);
+      expect([puts, fake.calls.filter((call) => call.args[0] !== "lsf"), asked])
+        .toEqual([[], [], { locate: [], begin: [], hold: [] }]);
+    });
+
+  it.each(["the copy", "R2"] as const)(
+    "rechecks %s after transferring marks and stops before writing namespace objects",
+    async (where) => {
+      const marks = { ...LOST.marks, now: [...LOST.marks.now], r2: [] as string[] };
+      const fake = world({ ...LOST, marks });
+      const { asked, asking } = doors();
+      const { held } = control(fake);
+      await expect(recover(BACK, SOURCE, AT, asking, {
+        ...held,
+        cloudflare: { put: async () => {
+          (where === "R2" ? marks.r2 : marks.now).push(`e/${AA}`);
+          return 200;
+        } },
+      }, fake.io)).rejects.toThrow(/erasure marks.*changed between listings/);
+      expect(fake.calls.filter((call) => call.args[0] === "copy").map((call) => call.args[1]))
+        .toEqual([`now:${BUCKET}`]);
+      expect(asked).toEqual({ locate: [], begin: [], hold: [] });
+    });
+
+  it("follows erasure holds across R2 and the historical copy before choosing what to write",
+     async () => {
+    const fake = world({ ...LOST, back: {
+      r2: [...LOST.back.r2, `o/${ERASED}/h/${DD}`],
+      copy: [...LOST.back.copy, `o/${DD}/h/${AA}`],
+    } });
+    const { asked, asking } = doors();
+    await recover(BACK, SOURCE, AT, asking, control(fake).held, fake.io);
+    expect(fake.calls.find((call) => call.args[0] === "copy" && call.sample)?.sample)
+      .toEqual([`o/${BB}/m/${GEN}`]);
+    expect(asked.locate).toEqual([[BB]]);
+    expect(asked.begin.map((begin) => begin.namespace)).toEqual([BB]);
   });
 
   it("begins none when two namespaces name one owner, naming both", async () => {
