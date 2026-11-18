@@ -124,6 +124,8 @@ th { color: var(--muted); font-weight: 600; }
 .frame { padding: 2px 0; border-bottom: 1px dotted var(--line); }
 .frame b { margin-right: 6px; }
 
+.mail-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .said { padding: 8px 10px; border-radius: 6px; margin: 6px 0; background: var(--wash); }
 .said.me { border-left: 3px solid var(--accent); }
 .said.agent { border-left: 3px solid var(--good); white-space: pre-wrap; }

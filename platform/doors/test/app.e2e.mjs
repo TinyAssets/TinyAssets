@@ -55,7 +55,10 @@ export default {
     const back = new URL(url.searchParams.get("redirect_uri") ?? "https://tinyassets.io/");
     const state = url.searchParams.get("state") ?? "";
     if (url.hostname === "upstream.test" && url.pathname === "/authorize") {
-      const signIn = JSON.stringify({ subject: env.WHO,
+      // A second browser context can sign in as a different synthetic owner.
+      const subject = request.headers.get("Cookie")?.split("; ")
+        .find((cookie) => cookie.startsWith("fixture_owner="))?.slice("fixture_owner=".length);
+      const signIn = JSON.stringify({ subject: subject || env.WHO,
         authenticated_at: Math.floor(Date.now() / 1000) - 5,
         challenge: url.searchParams.get("code_challenge") });
       const code = btoa(signIn).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
@@ -155,7 +158,7 @@ before(async () => {
     `--host-resolver-rules=${local}, MAP * ~NOTFOUND`,
   ] });
   // workerd's own certificate stands in for the public one.
-  context = await browser.newContext({ serviceWorkers: "block", ignoreHTTPSErrors: true });
+  context = await ownerContext();
   context.on("request", (request) => seen.push({
     url: request.url(), navigation: request.isNavigationRequest(), type: request.resourceType(),
     referer: request.headers()["referer"] ?? null, main: request.frame().page() === page }));
@@ -272,12 +275,20 @@ async function report(start, body) {
   return answer.json();
 }
 
-test("the owner signs in: the code leaves the address bar first, and a session is kept",
-     { timeout: 120_000 }, async () => {
+function ownerContext() {
+  return browser.newContext({ serviceWorkers: "block", ignoreHTTPSErrors: true });
+}
+
+async function signIn(page) {
   await page.goto(`${ORIGIN}/app`);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(`${ORIGIN}/app`);
   await page.getByRole("heading", { name: "Home" }).waitFor();
+}
+
+test("the owner signs in: the code leaves the address bar first, and a session is kept",
+     { timeout: 120_000 }, async () => {
+  await signIn(page);
   assert.match(await page.locator("main").innerText(), /Your plan: Free[\s\S]*Runs at once: 5\./);
   const cookies = await context.cookies(ORIGIN);
   const session = cookies.find((c) => c.name === "__Host-ta-owner");
@@ -302,6 +313,87 @@ test("a new owner is seeded: main and the starter's files, and no failure told",
   assert.ok(starter.agents.includes("main"), "main is the owner's agent");
   assert.deepEqual(starter.files, { "/workspace/USER.md": true, "/workspace/index.md": true,
                                     "/workspace/agents/main/agent.json": true });
+});
+
+test("the owner reads a long message in Rooms before explicitly marking it read",
+     { timeout: 90_000 }, async (t) => {
+  // This conversation registers an outside agent. Keep the primary owner's history intact.
+  const isolated = await ownerContext();
+  t.after(() => isolated.close());
+  await isolated.addCookies([{ name: "fixture_owner", value: `user_${randomBytes(16).toString("hex")}`,
+                               url: UPSTREAM }]);
+  const page = await isolated.newPage();
+  await signIn(page);
+  const acks = [];
+  page.on("request", (request) => {
+    if (request.url() === `${ORIGIN}/app/api/tools/mailbox_ack`) {
+      acks.push(request.postDataJSON());
+    }
+  });
+  const key = await api("keys", { name: "Mail writer",
+    scopes: [{ universe: "cc", agent: "main", capability: "write_graph" }] }, page);
+  assert.equal(key.status, 200);
+  try {
+    const agent = await api("outside-agents", { key_id: key.body.key_id, command_center_id: "cc",
+      display_name: "Mail writer", delivery_method: "pull", recipe_id: null }, page);
+    assert.equal(agent.status, 200);
+    const room = `dm:${agent.body.agent_id}`;
+    const text = "A line of mail 🪁 with <b>literal text</b>.\n".repeat(3500);
+    const post = async (body) => {
+      const posted = await mf.dispatchFetch(`${ORIGIN}/api/tools/room_post`, {
+        method: "POST", headers: { Authorization: `Bearer ${key.body.key}`,
+          "Content-Type": "application/json" }, body: JSON.stringify({
+          room_id: room, client_message_id: randomBytes(16).toString("hex"),
+          body, parent_id: null }) });
+      assert.equal(posted.status, 200, await posted.clone().text());
+    };
+    await post(text);
+    const digest = page.waitForResponse((r) => r.url().endsWith("/tools/inbox_digest"));
+    await page.goto(`${ORIGIN}/app#rooms`);
+    const first = (await (await digest).json()).mail.messages[0];
+    assert.equal(first.room_id, room);
+    assert.equal(first.truncated, true);
+    const row = page.getByRole("listitem").filter({ has: page.getByText(room, { exact: true }) });
+    const more = row.getByRole("button", { name: "Read more of this message" });
+    // Losing this first request must leave both the prefix and its continuation intact.
+    await page.route("**/app/api/tools/mailbox_read", (route) => route.abort("connectionreset"),
+                     { times: 1 });
+    await more.click({ timeout: 5000 });
+    await row.locator(".bad").waitFor();
+    assert.equal(await row.locator(".mail-body").textContent(), first.body);
+    let offset = first.body_next_offset;
+    let reads = 0;
+    while (offset !== null) {
+      const [response] = await Promise.all([
+        page.waitForResponse((r) => r.url().endsWith("/tools/mailbox_read")),
+        more.click({ timeout: 5000 })]);
+      assert.deepEqual(response.request().postDataJSON(), {
+        message_id: first.message_id, body_offset: offset, limit: 1 });
+      const part = (await response.json()).messages[0];
+      assert.equal(part.message_id, first.message_id);
+      assert.ok(part.body_next_offset === null || part.body_next_offset > offset);
+      offset = part.body_next_offset;
+      reads++;
+    }
+    assert.ok(reads >= 2);
+    await more.waitFor({ state: "detached" });
+    assert.equal(await row.locator(".mail-body").textContent(), text);
+    assert.equal(await row.locator(".mail-body b").count(), 0);
+    assert.equal(await row.locator(".bad").count(), 0);
+    assert.deepEqual(acks, []);
+    // Mail arriving since the digest is still there after the owner acknowledges this page.
+    const later = "A later message, still unread.";
+    await post(later);
+    const [ack] = await Promise.all([
+      page.waitForRequest((r) => r.url().endsWith("/tools/mailbox_ack")),
+      page.getByRole("button", { name: "Mark all read" }).click()]);
+    assert.deepEqual(ack.postDataJSON(), { through: first.seq });
+    await page.getByText(later, { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Mark all read" }).click();
+    await page.getByText("No new mail.").waitFor();
+  } finally {
+    assert.equal((await api("keys/revoke", { key_id: key.body.key_id }, page)).status, 200);
+  }
 });
 
 test("the sign-in return page cleared its code before any other script ran", async () => {
@@ -708,8 +800,8 @@ const P_SCRIPT = `</textarea><script>window.__xss=(window.__xss||0)+1</script>`;
 const PAYLOAD = `${P_IMG}${P_SVG}${P_SCRIPT}`;
 
 /** One owner-surface call from the page itself: its token, and its cookie. */
-async function api(path, body = {}) {
-  return page.evaluate(async ([p, b]) => {
+async function api(path, body = {}, from = page) {
+  return from.evaluate(async ([p, b]) => {
     const held = JSON.parse(sessionStorage.getItem("ta.app.tokens"));
     const answer = await fetch(`/app/api/${p}`, { method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${held.access_token}` },

@@ -38,8 +38,12 @@ const SESSION_NEEDED = "interactive owner session required";
 
 // -- Messages -------------------------------------------------------------------------
 
-function say(text, kind = "good", ...extra) {
-  fill(notice, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra));
+function showMessage(target, text, kind = "good", ...extra) {
+  fill(target, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra));
+}
+
+function say(...args) {
+  showMessage(notice, ...args);
 }
 
 /**
@@ -68,20 +72,20 @@ function paint(turn, ...children) {
 }
 
 /** A failure, in plain words; a change that needs a fresh sign-in offers one. */
-function report(error) {
+function report(error, target = notice) {
   if (error === STALE) {
     return;
   }
   if (error instanceof Refused && error.message === SESSION_NEEDED) {
-    say("To change this, sign in again: changes need a sign-in from the last 8 hours.", "bad",
+    showMessage(target, "To change this, sign in again: changes need a sign-in from the last 8 hours.", "bad",
         h("button", { type: "button", onclick: () => signIn() }, "Sign in again"));
     return;
   }
   if (error instanceof Refused && error.status === 503) {
-    say(`TinyAssets is down for maintenance right now: ${error.message}`, "bad");
+    showMessage(target, `TinyAssets is down for maintenance right now: ${error.message}`, "bad");
     return;
   }
-  say(error instanceof Error ? error.message : String(error), "bad");
+  showMessage(target, error instanceof Error ? error.message : String(error), "bad");
 }
 
 // -- Routing --------------------------------------------------------------------------
@@ -495,6 +499,44 @@ function heads(rows) {
       row.deleted ? null : h("small", {}, `by ${row.writer}`))));
 }
 
+/** A cut body continues at the byte offset the mailbox returned, one page per click. */
+function inboxMessage(message) {
+  const body = h("span", { class: "mail-body" }, message.body ?? "Message text unavailable.");
+  const row = h("li", {}, h("b", {}, message.room_id), " ", body, " ",
+                h("small", {}, `from ${message.sender_id}, ${when(message.created_at)}`));
+  if (message.truncated) {
+    let offset = message.body_next_offset;
+    const feedback = h("div", { role: "status" });
+    const more = action("Read more of this message", async () => {
+      const { messages } = await call("tools/mailbox_read", {
+        limit: 1, message_id: message.message_id, body_offset: offset });
+      if (!row.isConnected) {
+        return;
+      }
+      const part = messages[0];
+      if (part?.message_id !== message.message_id) {
+        throw new Error("The inbox changed. Reload this page to see the current mail.");
+      }
+      if (part.body === null) {
+        throw new Error("The rest of this message is unavailable.");
+      }
+      body.append(part.body);
+      fill(feedback);
+      if (part.truncated) {
+        offset = part.body_next_offset;
+      } else {
+        more.remove();
+      }
+    }, (error) => {
+      if (row.isConnected) {
+        report(error, feedback);
+      }
+    }, { class: "quiet" });
+    row.append(" ", more, feedback);
+  }
+  return row;
+}
+
 async function rooms(arg = null) {
   const turn = turnOf("rooms", arg);
   const [inbox, board, { owner_agents: owned }] = await Promise.all([
@@ -509,9 +551,7 @@ async function rooms(arg = null) {
        h("section", {},
          h("h2", {}, "Mail to you"),
          mail.length === 0 ? h("p", { class: "muted" }, "No new mail.")
-           : h("ul", {}, mail.map((m) => h("li", {},
-             h("b", {}, m.room_id), ` ${m.body ?? "(too long to show here)"} `,
-             h("small", {}, `from ${m.sender_id}, ${when(m.created_at)}`)))),
+           : h("ul", {}, mail.map(inboxMessage)),
          mail.length === 0 ? null : action("Mark all read", async () => {
            await call("tools/mailbox_ack", { through: mail.at(-1).seq });
            await rooms();
