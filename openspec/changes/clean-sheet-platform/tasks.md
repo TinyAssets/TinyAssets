@@ -232,6 +232,7 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 Each in its own PR, taking the next free slot, never behind product work; the product lanes
 keep running (the untangle skill's "Process first", founder 2026-11-15).
 
+- [x] P6 research: rehearsed the two process-test moves. The trusted base must recognize their paths first (`untangle-2026-11/p6-test-location.md`).
 - [ ] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
   - [x] the verdict posted as a `COMMENT` PR review on the commit read, as the App's `review`
     check reads it, and each decision one new check run, never an edit of one (an edit
@@ -257,7 +258,6 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
   measured, `enqueue_merge.py` reading each check's newest run as GitHub does
   (`untangle/p6-process-code`; `untangle-2026-11/p2-review-required.md` item 6).
-  - [x] Rehearsed the two test moves. The trusted base must recognize their paths first (`untangle-2026-11/p6-test-location.md`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
