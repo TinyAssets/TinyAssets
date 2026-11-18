@@ -227,10 +227,10 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 
 ## 10. The remaining work, in order (d3 §D)
 
-### Process first: priority over every step below (d3 §B5)
+### Process first after the untangle review (d3 §B5)
 
 Each in its own PR, taking the next free slot, never behind product work; the product lanes
-keep running (the untangle skill's "Process first", founder 2026-11-15).
+follow the untangle-first priority and drift re-checks (founder, 2026-11-18).
 
 - [ ] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
   - [x] the verdict posted as a `COMMENT` PR review on the commit read, as the App's `review`
@@ -334,6 +334,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   live object (d3 §A10).
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
+
+The November 18 re-check and its open dependencies are in `docs/decisions/untangle-2026-11/nov18-recheck.md`.
 
 - [ ] The wave-2 lanes (d2 §D): lane O (O1–O5) is left, unblocked since C3 and C4 merged; the
   merged lanes' owed items and d3 §A's changes:
@@ -610,8 +612,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
-  The November 18 cross-area pass records open findings and dependent work in
-  `docs/decisions/untangle-2026-11/nov18-recheck.md`.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
   - [ ] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted

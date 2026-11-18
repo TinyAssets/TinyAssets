@@ -15,17 +15,16 @@ Untangle the code a change touches, or a whole area, and finish the job.
   parameter, test-only hook, optional binding or special case. A stale test,
   guard or rule never blocks a fix: change or delete it in the same PR, with a
   `Test-Removal:` line for a test.
-- **Process first.** A fix to how we build (CI, gates, guards, skills, briefs,
-  tooling, the review flow) takes priority over product work, whose lanes keep
-  running: once found, it takes the next free slot, in its own PR or the
-  process PR at hand, with Fact 17's retro-check done now. A reviewer blocks
-  any change that defers one or puts it behind product work.
-  Next, before the cutover, come untangling, security and what code or a stored
-  record builds on. The cutover rule never defers a process fix: any other fix
-  waits until after the cutover only when nothing builds on it, it works after
-  the window closes, and its failure is rare, loud when it happens and
-  recoverable with what exists: the one exception to `AGENTS.md` Fact 17,
-  listed with its branch in `tasks.md`'s "After the cutover".
+- **Untangle first.** Re-review built, open and staged work together and every
+  proposed build against the decisions. At suspected drift, stop the affected
+  work and re-review its design, callers and dependents (Facts 5 and 14).
+  Fix root causes before other work. Re-check before cutover.
+- Process fixes take the next free process slot before product work, each in its
+  own PR or the process PR at hand, with Fact 17's retro-check. Before cutover,
+  also fix security and anything code or stored data builds on. Other fixes
+  can wait only if nothing depends on them, they work after the window closes,
+  and failure is rare, loud and recoverable. Name their branch in the task
+  list under "After the cutover" (Fact 17's exception).
 - **The PR body** is the one document. Its **Untangle check** says what was
   found, fixed and left (and why), and that the diff adds none of the four kinds.
   Anything found and left, by builder or reviewer, names the PR, branch or
