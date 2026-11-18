@@ -36,7 +36,7 @@ import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
-import { layout, openFile, openStore, quoted, storeUri } from "./backup";
+import { layout, openFile, openStore, quoted, storeUri, tableRows } from "./backup";
 import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
 
@@ -76,7 +76,7 @@ function byPath(a: string, b: string): number {
  */
 function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string | null } {
   const account = join(layout(copy.work).shared, ".broker", "accounts", owner.digest);
-  const read = (store: string, table: string, sql: string): Record<string, unknown>[] => {
+  const read = (store: string, table: string, names: string[], order: string[] = []) => {
     const at = join(account, store);
     try {
       lstatSync(at);
@@ -87,14 +87,14 @@ function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string 
     try {
       const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get(table);
-      return has === undefined ? [] : db.prepare(sql).all() as Record<string, unknown>[];
+      return has === undefined ? [] : tableRows(db, table, names, order);
     } finally {
       db.close();
     }
   };
   const policy: Row[] = [];
   let refusedPolicy: string | null = null;
-  for (const row of read("policy.db", "policy", "SELECT document FROM policy")) {
+  for (const row of read("policy.db", "policy", ["document"])) {
     const text = String(row["document"]);
     try {
       const document: unknown = JSON.parse(text);
@@ -105,8 +105,7 @@ function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string 
     }
   }
   const collections = read("conversations.db", "collection_rows",
-                           "SELECT collection, row_id, private, body FROM collection_rows " +
-                           "ORDER BY collection, seq")
+                           ["collection", "row_id", "private", "body"], ["collection", "seq"])
     .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
                           row_id: String(row["row_id"]), private: Number(row["private"]) ? 1 : 0,
                           body: String(row["body"]) }));

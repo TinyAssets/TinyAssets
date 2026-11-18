@@ -19,7 +19,7 @@ import { IMPORTED, storedPath, WORKSPACE } from "../contract/src/paths";
 import { DEFAULT_IGNORES, ignoredBy, type Matcher } from "../contract/src/sync-ignore";
 
 import {
-  intact, isStore, layout, type Manifest, nameText, openStore, quoted, rowsIn, tablesOf,
+  intact, isStore, layout, type Manifest, nameText, openStore, rowsIn, tableRows, tablesOf,
 } from "./backup";
 import {
   type ErasureFacts, erasureFacts, imageTombstones, names, withImageFacts,
@@ -472,7 +472,7 @@ function rows(path: string, table: string): Record<string, unknown>[] {
     if (!tablesOf(db).includes(table)) {
       return [];
     }
-    return db.prepare(`SELECT * FROM ${quoted(table)}`).all() as Record<string, unknown>[];
+    return tableRows(db, table);
   } finally {
     db.close();
   }

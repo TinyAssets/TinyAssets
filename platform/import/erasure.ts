@@ -37,7 +37,7 @@ import { join } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
 
-import { intact, isStore, nameText, openStore, readSmall, tablesOf } from "./backup";
+import { intact, isStore, nameText, openStore, readSmall, tableRows, tablesOf } from "./backup";
 import { CENTER_NAME, ROOT, ruleOf } from "./rules";
 
 /** One digest's facts: which sources name it, and its principal where any does. */
@@ -183,7 +183,7 @@ export function imageTombstones(root: string): ImageRead {
           return { problem: "not_intact" };
         }
         return { rows: tablesOf(db).includes(table)
-          ? db.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[] : [] };
+          ? tableRows(db, table) : [] };
       } finally {
         db.close();
       }

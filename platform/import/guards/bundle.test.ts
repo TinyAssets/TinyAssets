@@ -137,12 +137,19 @@ describe("the bundle builder", () => {
 
   it("carries the collections as rows, and the owner's admission and tier", () => {
     const { f, out, options } = setup();
+    const body = "前\0café\0末";
+    const db = new DatabaseSync(join(f.account(ALICE), "conversations.db"));
+    try {
+      db.prepare("UPDATE collection_rows SET body = ? WHERE row_id = 'b1'").run(body);
+    } finally {
+      db.close();
+    }
     buildBundles(f.copy, options);
     const bundle = join(out, keyOf(ALICE));
     // The old stack's policy has its rule tables and spend caps, which the platform's validator
     // no longer takes (d3 §N6), so it is archived, never a row.
     expect(rows(bundle)).toEqual([
-      { kind: "collection", collection: "board", row_id: "b1", private: 1, body: '{"t":"first"}' },
+      { kind: "collection", collection: "board", row_id: "b1", private: 1, body },
       { kind: "collection", collection: "board", row_id: "b2", private: 0, body: '{"t":"second"}' },
     ]);
     expect(json(join(bundle, "owner.json"))).toEqual({

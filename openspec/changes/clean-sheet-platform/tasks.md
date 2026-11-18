@@ -146,6 +146,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   with everything of the import window, as the manifest lists it.
   - [x] 1. The census (`census.ts`, #5461).
   - [x] 2. The bundle builder (`bundle.ts`, #5461).
+    - [x] Census and bundle read complete legacy SQLite text on the cutover's Node image,
+      with the source writer as the comparison (`import-verbatim-rows.md`).
   - [x] 3. The owner object's import doors (`owner/src/import.ts`, #5475).
   - [x] 4. The doors' import consumer (`doors/src/import/`, #5475).
   - [x] 5. `importCheck`, `importDiscard`, and the job's `verify`, `wipe`, `admit` and `dlq`

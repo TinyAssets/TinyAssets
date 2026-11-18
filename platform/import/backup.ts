@@ -144,6 +144,35 @@ export function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
+/**
+ * The stored values crossing from a backup into the job. Node 22 cuts a SQLite TEXT
+ * result at its first NUL. SQLite quotes text before it crosses that boundary, including
+ * its embedded NULs. All other storage classes cross as themselves.
+ */
+export function tableRows(db: DatabaseSync, table: string, names?: readonly string[],
+                          order: readonly string[] = []): Record<string, unknown>[] {
+  const from = quoted(table);
+  const columns = names ?? db.prepare(`SELECT * FROM ${from} LIMIT 0`).columns()
+    .map((column) => column.name);
+  const fields = columns.map((name) => {
+    const field = quoted(name);
+    return `CASE typeof(${field}) WHEN 'text' THEN json_quote(${field}) ELSE ${field} END AS ${field}`;
+  });
+  const keys = order.map((name) => `${from}.${quoted(name)}`);
+  const by = keys.length > 0 ? ` ORDER BY ${keys.join(", ")}` : "";
+  const query = db.prepare(`SELECT ${fields.join(", ")} FROM ${from}${by}`);
+  const rows = [];
+  for (const row of query.iterate()) {
+    for (const [name, value] of Object.entries(row)) {
+      if (typeof value === "string") {
+        row[name] = JSON.parse(value) as string;
+      }
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
 /** A store's own tables, SQLite's internal ones left out. */
 export function tablesOf(db: DatabaseSync): string[] {
   return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE " +
