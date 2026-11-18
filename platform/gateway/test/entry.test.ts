@@ -19,7 +19,7 @@ import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { doorbellSecret, sealDoorbell } from "../src/doorbell";
 import { open, openValue } from "../src/keyring";
 import { until } from "../../ci/workerd";
-import { ALICE, ANTHROPIC, C1, C2, OPENAI, sealed } from "./support";
+import { ALICE, ANTHROPIC, C1, C2, OPENAI, sealed, waitForProvider } from "./support";
 import type { Metering, Reserve } from "../../contract/src/gateway";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
@@ -68,11 +68,6 @@ async function anthropicModel(): Promise<{ id: string }> {
   }
   throw new Error("no metered Messages model in the catalog");
 }
-
-/** Once the provider has the request sent with `x-fake-id: id` (the fake records it). */
-const arrived = (id: string) => until(async () => (await (await fetch(
-  `https://status.test/cancelled?id=${id}`)).json() as { arrived: boolean }).arrived,
-  `the request ${id}`);
 
 async function rejected(run: () => Promise<unknown>): Promise<string> {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
@@ -244,7 +239,7 @@ describe("the gateway Worker", () => {
     const cut = egress.forward("alice", C1, 1, blob, posted("/v1/responses", JSON.stringify({
       model: model.id, input: "hi", stream: true }),
       { "x-fake-mode": "hang", "x-fake-id": "cut-metered" }), granting(), cutStop.readable);
-    await arrived("cut-metered");
+    await waitForProvider("cut-metered", "arrived");
     await cutStop.writable.getWriter().close();
     expect(await outcome(await cut)).toEqual({ state: "unknown" });
     // A priority call is priced as pi-ai prices it, above the standard call's price.
@@ -412,15 +407,7 @@ describe("the gateway Worker", () => {
       vi.useRealTimers();
     }
     // The meter's own reads of the answer end with it: the provider's request is cut.
-    for (let tries = 0; tries < 100; tries++) {
-      const seen = await (await fetch("https://status.test/cancelled?id=idle-metered"))
-        .json() as { cancelled: boolean | null };
-      if (seen.cancelled === true) {
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new Error("the provider's request was never cut");
+    await waitForProvider("idle-metered", "cancelled");
   });
 
   it("never cuts a metered answer whose every byte comes inside the idle cut", async () => {
@@ -478,15 +465,7 @@ describe("the gateway Worker", () => {
       }
     }
     expect(JSON.parse(await new Response(answer.outcome).text())).toEqual({ state: "unknown" });
-    for (let tries = 0; tries < 100; tries++) {
-      const seen = await (await fetch("https://status.test/cancelled?id=stopped"))
-        .json() as { cancelled: boolean | null };
-      if (seen.cancelled === true) {
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new Error("the provider's request was never cut");
+    await waitForProvider("stopped", "cancelled");
   });
 
   it("sends the provider the clamped parse as bytes, with its Content-Length", async () => {

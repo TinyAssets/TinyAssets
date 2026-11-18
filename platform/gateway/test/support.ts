@@ -1,6 +1,7 @@
 /**
- * Shared test helpers: keyrings, and source records like the ones the binder will pass.
+ * Gateway test fixtures for keyrings, sources and the fake upstream's observations.
  */
+import { until } from "../../ci/workerd";
 import { keyring } from "../../ci/fixtures";
 import type { Credential } from "../src/credential";
 import type { Source } from "../../contract/src/egress-scope";
@@ -44,4 +45,13 @@ export function apiKey(secret: string, record: Source): Credential {
 export async function sealed(env: KeyringEnv, bound: Binding, secret: string,
                              record: Source): Promise<string> {
   return (await seal(env, bound, apiKey(secret, record))).blob;
+}
+
+/** Wait on the fake upstream's observation of this request. Cancellation keeps its two-second polling budget. */
+export function waitForProvider(id: string, observation: "arrived" | "cancelled"): Promise<void> {
+  return until(async () => {
+    const answer = await fetch(`https://status.test/cancelled?id=${encodeURIComponent(id)}`);
+    const state = await answer.json() as { arrived: boolean; cancelled: boolean | null };
+    return state[observation] === true;
+  }, `provider ${observation}: ${id}`, observation === "cancelled" ? 200 : undefined);
 }

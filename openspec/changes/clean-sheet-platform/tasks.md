@@ -405,6 +405,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     depth (Fact 15; the coordinator, 2026-11-12, below).
   - [x] Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`,
     with G-H11 and G-SP5 (d3 §O5): one per-API table (`g1.md`).
+  - [x] Gateway cancellation tests read the fake provider through the shared workerd wait
+    (`untangle-2026-11/gateway-cancel-waits.md`). The area-wide pass remains open.
 - [x] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2).
   - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
