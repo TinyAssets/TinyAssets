@@ -635,6 +635,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
   account-deletion pages corrected, in the founder's copy.
+  - [x] Recheck the legacy public graph snapshot, public account instructions and the site
+    rollback against the doors that will serve at F2 (`untangle-2026-11/site-cutover-boundaries.md`).
+  - [ ] Before the F2 site publishes, settle the public graph sample's source or retirement,
+    verify a reachable deletion path and accurate completion wording for each shipping shell,
+    and identify the matching site revision for either side of a route handback.
 - [ ] The mark's source, `tinyassets/desktop/icon_gen.py`, moved out before the old stack is
   deleted, or the site stops deploying (d3 §C6 F4).
 - [ ] The live stage's four PRs, after B13, B14's canary and `control` (d3 §H).
@@ -806,12 +811,6 @@ Moved before the window, into lane R (d3 §F3, §G).
   item 22).
 - [ ] The engine build cadence: one template a week, canaried, for vendor-forced minimum
   versions (`engines-replan.md`), with a standing spend approval (list3 P19).
-
-- [x] Recheck the legacy public graph snapshot, public account instructions and the site
-  rollback against the doors that will serve at F2 (`untangle-2026-11/site-cutover-boundaries.md`).
-- [ ] Before the F2 site publishes, settle the public graph sample's source or retirement,
-  verify a reachable deletion path and accurate completion wording for each shipping shell,
-  and identify the matching site revision for either side of a route handback.
 
 ### Step 19. Shells, billing, connectors, the comparison, the directories
 
