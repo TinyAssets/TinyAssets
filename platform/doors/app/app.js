@@ -495,6 +495,62 @@ function heads(rows) {
       row.deleted ? null : h("small", {}, `by ${row.writer}`))));
 }
 
+/** A board digest continues on the owner's change clock. After retention removes a deletion,
+ * the collection reader rebuilds the current board on its own sequence. */
+function boardPages(first) {
+  const rows = h("div", {}, heads(first.rows));
+  const status = h("p", { role: "status", class: "muted" });
+  let change = first.cursor;
+  let sequence = null;
+  const next = action("Check for later board changes", async () => {
+    if (sequence !== null) {
+      const page = await call("tools/collection_list", { collection: "board", after: sequence,
+                                                         limit: 100 });
+      if (!rows.isConnected) {
+        return;
+      }
+      if (page.rows.length) {
+        fill(rows, heads(page.rows.map((row) => ({
+          collection: "board", row_id: row.row_id, writer: row.writer,
+          head: row.truncated ? row.body + "…" : row.body,
+        }))));
+        sequence = page.cursor;
+        fill(status, "Current board rows");
+        next.textContent = "Continue reading the current board";
+      } else {
+        if (sequence === 0) {
+          fill(rows, heads([]));
+        }
+        sequence = null;
+        fill(status, "Finished reading the current board.");
+        next.textContent = "Check for later board changes";
+      }
+      return;
+    }
+    const page = await call("tools/board_digest", { limit: 100, after: change });
+    if (!rows.isConnected) {
+      return;
+    }
+    change = page.cursor;
+    if (page.reset) {
+      sequence = 0;
+      fill(rows);
+      fill(status, "Some earlier changes expired. Read the current board to continue.");
+      next.textContent = "Read the current board";
+    } else if (page.rows.length) {
+      fill(rows, heads(page.rows));
+      fill(status);
+    } else {
+      fill(status, "No later board changes.");
+    }
+  }, (error) => {
+    if (rows.isConnected) {
+      report(error);
+    }
+  }, { class: "quiet" });
+  return h("div", {}, rows, next, status);
+}
+
 async function rooms(arg = null) {
   const turn = turnOf("rooms", arg);
   const [inbox, board, { owner_agents: owned }] = await Promise.all([
@@ -527,7 +583,7 @@ async function rooms(arg = null) {
                 say("Posted. Mail to your own agent starts its run; its reply comes here.");
               }, report)]),
        h("section", {}, h("h2", {}, "Rooms"), heads(inbox.rooms.rows)),
-       h("section", {}, h("h2", {}, "Board"), heads(board.rows)));
+       h("section", {}, h("h2", {}, "Board"), boardPages(board)));
 }
 
 // -- Model sources --------------------------------------------------------------------

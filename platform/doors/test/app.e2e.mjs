@@ -304,6 +304,70 @@ test("a new owner is seeded: main and the starter's files, and no failure told",
                                     "/workspace/agents/main/agent.json": true });
 });
 
+test("the board reads current rows on a reset and resumes its own change cursor",
+     { timeout: 60_000 }, async () => {
+  const write = async (collection, id) => {
+    const result = await api("tools/collection_write", { collection, row_id: id, body: id,
+                                                         expected_etag: "", private: false });
+    assert.equal(result.status, 200);
+  };
+  await write("board", "first");
+  await write("other-board-fixture", "between");
+  await write("board", "second");
+  const first = (await api("tools/board_digest", { after: 0, limit: 1 })).body;
+  const reset = (await api("tools/board_digest", { after: 0, limit: 100 })).body.cursor;
+  const baseline = await api("tools/collection_list", { collection: "board", after: 0, limit: 100 });
+  assert.equal(baseline.status, 200);
+  const changes = [];
+  const listing = [];
+  const boardPath = "**/app/api/tools/board_digest";
+  const listPath = "**/app/api/tools/collection_list";
+  await page.route(boardPath, async (route) => {
+    const args = route.request().postDataJSON();
+    changes.push(args.after);
+    if (changes.length === 2) {
+      // A retained deletion past this cursor expired. The owner tests exercise its prune.
+      await route.fulfill({ json: { reset: true, rows: [], cursor: reset } });
+    } else {
+      await route.continue({ postData: JSON.stringify({ ...args, limit: 1 }) });
+    }
+  });
+  await page.route(listPath, async (route) => {
+    const args = route.request().postDataJSON();
+    listing.push(args);
+    await route.continue({ postData: JSON.stringify({ ...args, limit: 1 }) });
+  });
+  try {
+    await page.goto(`${ORIGIN}/app#rooms`);
+    const board = page.locator("section", { has: page.getByRole("heading", { name: "Board",
+                                                                            exact: true }) });
+    const row = (id) => board.getByText(`board · ${id}`, { exact: true });
+    await row("first").waitFor();
+    const draft = page.locator("textarea");
+    await draft.fill("unsent draft");
+    const more = board.getByRole("button", { name: "Check for later board changes" });
+    await more.click({ timeout: 5000 });
+    await board.getByRole("button", { name: "Read the current board", exact: true }).click();
+    await row("first").waitFor();
+    const next = board.getByRole("button", { name: "Continue reading the current board" });
+    await next.click();
+    await row("second").waitFor();
+    await next.click();
+    await board.getByText("Finished reading the current board.").waitFor();
+    await write("board", "later");
+    await more.click();
+    await row("later").waitFor();
+    assert.equal(await draft.inputValue(), "unsent draft");
+    assert.deepEqual(changes, [0, first.cursor, reset]);
+    assert.deepEqual(listing.map((p) => [p.collection, p.after]), [
+      ["board", 0], ...baseline.body.rows.map((row) => ["board", row.seq]),
+    ]);
+  } finally {
+    await page.unroute(boardPath);
+    await page.unroute(listPath);
+  }
+});
+
 test("the sign-in return page cleared its code before any other script ran", async () => {
   const signedIn = seen.find((r) => r.url.startsWith(`${ORIGIN}/app/signed-in?`));
   assert.ok(signedIn, "the browser came back to /app/signed-in");

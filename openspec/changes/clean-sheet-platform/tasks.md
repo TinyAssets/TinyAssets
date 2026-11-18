@@ -842,6 +842,9 @@ Moved before the window, into lane R (d3 §F3, §G).
   - [ ] The MCP Tasks extension once the SDK's `createMcpHandler` serves it: a task id the
     operation id, `tasks/get` `agentStatus`, `tasks/cancel` `agentCancel`.
   - [ ] A streamed file download, and an outside client's file-bytes tool.
+  - [x] The account board follows the owner change cursor and, on a retained deletion
+    reset, reads the current board through the existing collection reader before resuming
+    at the reset clock. Cross-room discovery still needs its own recovery contract.
   - [ ] The owner app: the API keys screen reads `keys/list` and deletes by `keys/delete`; the
     Export section uses the export door, and `MISSING.export` goes; the storage view's "deleted
     content" line from `storageUsage`'s `deleted_content`, and that a lower figure shortens
