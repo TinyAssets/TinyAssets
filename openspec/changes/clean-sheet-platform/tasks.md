@@ -829,6 +829,8 @@ Moved before the window, into lane R (d3 §F3, §G).
   today; whether Muse's own client completes our OAuth is unverified; the listing's own door is
   the founder's question 4.
 - Each adds, and none guards data or routing:
+  - [x] The owner app describes chunked file previews from the owner's returned
+    representation (`untangle-2026-11/file-preview-reason.md`).
   - [ ] The shared app's install flow (Slack's OAuth v2 install, which proves the owner holds the
     workspace), writing the object's `shared` binding and its `i:` entry. Until then no event
     reaches the deployed shared-app half (list3 P45).

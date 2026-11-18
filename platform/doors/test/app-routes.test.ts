@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
+import { INLINE_BYTES } from "../../contract/src/limits";
 import { wakeKinds } from "../../contract/src/wake-records";
 import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../../sources/src/catalog";
@@ -254,6 +255,22 @@ describe("the owner app's file routes", () => {
     // In its session, the owner's app changes it.
     expect(await answered(await appPost("tools/file_remove", token, session,
       { path, expected_etag: etag, recursive: false }))).toEqual({ removed: 1 });
+  });
+
+  it("shows inline text and explains why a chunked file has no preview", async () => {
+    const app = await signInApp({ owner: owner() });
+    const path = "/workspace/text.txt";
+    const inline = "t".repeat(INLINE_BYTES);
+    const write = async (text: string, expected_etag: string) =>
+      (await answered(await appPost("files/write", app.access_token, null,
+                                   { path, text, expected_etag })))["entry"] as { etag: string };
+    const small = await write(inline, "");
+    expect(await answered(await appPost("files/read", app.access_token, null, { path })))
+      .toMatchObject({ entry: { etag: small.etag }, text: inline });
+    const chunked = await write(inline + "t", small.etag);
+    expect(await answered(await appPost("files/read", app.access_token, null, { path })))
+      .toMatchObject({ entry: { etag: chunked.etag, size: INLINE_BYTES + 1 }, text: null,
+                       why: "its contents are stored in chunks" });
   });
 
   it("show a file that is not UTF-8 as not text, and take only closed bodies", async () => {

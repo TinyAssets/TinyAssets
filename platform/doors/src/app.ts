@@ -39,9 +39,8 @@
  *   tiers differ only by simultaneous runs and storage), `notices`, `policy` and
  *   `policy/write` (code mode's switch and the owner's `custom` tools are policy),
  *   `grants` and `grants/set` (a client's mode, scopes and profile; a revoke goes by
- *   `grants/revoke` alone, so the provider's refresh tokens die with it), `files/read` and
- *   `files/write` (an agent is files: the owner reads and writes them as UTF-8 text, a file
- *   of at most one chunk).
+ *   `grants/revoke` alone, so the provider's refresh tokens die with it), `files/read`
+ *   (preview inline UTF-8 text) and `files/write` (write text against the file's etag).
  * - `sources`: the source records' public facts (name, how each connects, which engines a
  *   key runs, which credentials an engine takes), so the app's connect screen is the
  *   records' data, never a list of its own.
@@ -232,7 +231,7 @@ const fileRead: Route = async ({ owner: { binding, stub }, body: request }) => {
   }
   const { entry, inline } = await stub.fileRead(binding, { path: request["path"] as string });
   if (inline === undefined) {
-    return answer(200, { entry, text: null, why: "larger than one chunk" });
+    return answer(200, { entry, text: null, why: "its contents are stored in chunks" });
   }
   try {
     return answer(200, { entry, text: utf8Decoder("strip").decode(inline) });
