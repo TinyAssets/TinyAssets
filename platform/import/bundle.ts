@@ -21,7 +21,7 @@ import { join, sep } from "node:path";
 import type { Tiers } from "../contract/src/control";
 import { sha256Hex } from "../contract/src/digest";
 import {
-  BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, type BundleOwner, bundlePages,
+  BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, type BundleOwner, bundleIdentity, bundlePages,
   pageName, rehearsalName,
 } from "../contract/src/import-message";
 
@@ -106,7 +106,7 @@ export function erasureGuard(fleet: Fleet, principals: Iterable<string>): void {
 
 /** The owner under a rehearsal's name, keyed by it; its tree and stores its own still. */
 function renamed(owner: Owner, name: string): Owner {
-  return { ...owner, principal: name, key: sha256Hex(name).slice(0, 16) };
+  return { ...owner, principal: name, key: bundleIdentity(name).key };
 }
 
 /** One owner's bundle at `dir`, or the fit's problems (and nothing left at `dir`). */

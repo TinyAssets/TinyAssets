@@ -13,6 +13,7 @@
 import { lstatSync, readdirSync, readlinkSync, type Stats } from "node:fs";
 import { join } from "node:path";
 
+import { bundleIdentity } from "../contract/src/import-message";
 import { sha256Hex } from "../contract/src/digest";
 import { SUSPENSIONS } from "../contract/src/owner";
 import { IMPORTED, storedPath, WORKSPACE } from "../contract/src/paths";
@@ -580,7 +581,7 @@ export function survey(copy: Copy): Fleet {
   for (const [principal] of plans) {
     if (!principals.has(principal)) {
       orphans.plans += 1;
-      problems.push({ code: "orphan_row", at: `plans/${sha256Hex(principal).slice(0, 16)}` });
+      problems.push({ code: "orphan_row", at: `plans/${bundleIdentity(principal).key}` });
     }
   }
   for (const [principal, volume] of volumes) {
@@ -654,10 +655,10 @@ export function survey(copy: Copy): Fleet {
   const facts = withImageFacts(erasure, inImages);
   const tombstones = [...facts.facts].filter(([digest]) => !digests.has(digest));
   const owners = identities.map((identity) => {
-    const digest = sha256Hex(identity.principal);
+    const { digest, key } = bundleIdentity(identity.principal);
     const volume = volumes.get(identity.principal) ?? null;
     const owner: Owner = {
-      principal: identity.principal, digest, key: digest.slice(0, 16),
+      principal: identity.principal, digest, key,
       uid: identity.uid, admission: admitted.get(digest) ?? null,
       plan: plans.get(identity.principal) ?? null, volume,
       erasure: admitted.get(digest)?.state === "erased" ? "erased"

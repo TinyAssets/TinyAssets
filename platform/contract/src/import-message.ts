@@ -29,6 +29,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 import { keyed, object, whole } from "./checks.ts";
 import { chunkedId, cut } from "./content.ts";
+import { sha256Hex } from "./digest.ts";
 import { HEX16, HEX64 } from "./ids.ts";
 import { principal } from "./text.ts";
 
@@ -221,6 +222,20 @@ export interface BundleOwner {
   readonly tier: string;
   readonly notice: string;
   readonly centers: readonly { readonly name: string; readonly retired: boolean }[];
+}
+
+/** The legacy owner digest and the folder that carries that principal's bundle. A
+ * rehearsal hashes the replacement principal used in its index. */
+export function bundleIdentity(owner: string): { digest: string; key: string } {
+  const digest = sha256Hex(owner);
+  return { digest, key: digest.slice(0, 16) };
+}
+
+/** Identity shared by the offline bundle and its staged index. */
+export function indexAtKey(value: unknown, key: string):
+    value is Record<string, unknown> & Pick<BundleIndex, "format" | "owner" | "key"> {
+  return object(value) && value["format"] === BUNDLE_FORMAT && value["key"] === key
+    && typeof value["owner"] === "string" && bundleIdentity(value["owner"]).key === key;
 }
 
 /** `bundle.json`. */

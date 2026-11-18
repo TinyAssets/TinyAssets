@@ -59,14 +59,14 @@ const CLOCK: Clock = { now: () => new Date(Date.UTC(2026, 10, 8)), sleep: async 
  * The builder's bundles of the fixture, a rehearsal's, in a fresh out folder; a record; and the
  * window's `facts.json`, as its bundle step writes it (`facts.ts --import`).
  */
-function bundled(): { out: string; record: string; facts: string; bundles: Staged[] } {
+function bundled(rehearsal: string | null = RUN): { out: string; record: string; facts: string; bundles: Staged[] } {
   const f = fixture();
   const out = mkdtempSync(join(tmpdir(), "ta-window-out-"));
   const priv = mkdtempSync(join(tmpdir(), "ta-window-private-"));
   const work = mkdtempSync(join(tmpdir(), "ta-window-work-"));
   temps.push(f.work, out, priv, work);
   buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS,
-                         rehearsal: RUN });
+                         rehearsal });
   writeFileSync(join(work, "facts.json"), JSON.stringify(IMPORT_NAMES));
   return { out, record: join(work, "record.json"), facts: join(work, "facts.json"),
            bundles: bundlesIn(out) };
@@ -481,8 +481,8 @@ describe("the window's close", () => {
     w.faults.kill = { op: "admit", after: 1 };
     await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/killed/);
     // And another run's owner, staged and never admitted, is the window's too.
-    w.staging.set(stagedName(`r0/${"0".repeat(16)}`, BUNDLE_INDEX),
-                  JSON.stringify({ owner: rehearsalName("r0", "user_z") }));
+    const other = bundled("r0").bundles[0]!;
+    w.staging.set(stagedName(`r0/${other.key}`, BUNDLE_INDEX), indexAt(other)[1]);
     const lines: string[] = [];
     const { window, made } = writes(w);
     const shut = await close(window, (line) => lines.push(line));
@@ -501,6 +501,22 @@ describe("the window's close", () => {
     }
     expect(await windowMain(["close", "--facts", facts], envOf(), quiet, window.fetcher,
                             CLOCK)).toBe(3);
+  });
+
+  it.each([null, RUN])("closes only for the owner of each staged index (rehearsal %s)", async (run) => {
+    const { bundles } = bundled(run);
+    const w = world(bundles);
+    const [admitted, missing] = bundles;
+    for (const bundle of bundles) w.kv.set(`o:${bundle.owner}`, "{}");
+    expect((await close(w.window, quiet)).left).toEqual([]);
+    w.kv.delete(`o:${missing!.owner}`);
+    expect((await close(w.window, quiet)).left).toHaveLength(1);
+    w.staging.set(indexAt(missing!)[0], indexAt(admitted!)[1]);
+    await expect(close(w.window, quiet)).rejects.toThrow(/inconsistent identity/);
+    const changed = JSON.parse(indexAt(admitted!)[1]);
+    changed.key = missing!.key;
+    w.staging.set(indexAt(missing!)[0], JSON.stringify(changed));
+    await expect(close(w.window, quiet)).rejects.toThrow(/inconsistent identity/);
   });
 
   it("passes once every owner is admitted, and once every owner is discarded", async () => {

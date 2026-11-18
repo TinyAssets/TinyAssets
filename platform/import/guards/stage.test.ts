@@ -8,14 +8,14 @@
  * from the configs (`deploy/facts.ts`), as the window's `facts.json` hands them to the job.
  */
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
-import { macHolds } from "../../contract/src/import-message";
+import { BUNDLE_INDEX, macHolds } from "../../contract/src/import-message";
 import { QUEUES } from "../../contract/src/queue-names";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
@@ -195,13 +195,16 @@ describe("the staging step", () => {
   });
 
   it("refuses a bundle that is not whole before anything is sent", async () => {
-    for (const damage of ["part", "extra", "chunk"] as const) {
+    for (const damage of ["part", "extra", "chunk", "owner"] as const) {
       const out = bundled();
       const dir = join(out, keyOf(ALICE));
       if (damage === "part") {
         writeFileSync(join(dir, "rows", "0.json"), '{"rows":[]}\n');
       } else if (damage === "extra") {
         writeFileSync(join(dir, "notes.txt"), "x");
+      } else if (damage === "owner") {
+        const index = JSON.parse(readFileSync(join(dir, BUNDLE_INDEX), "utf8"));
+        writeFileSync(join(dir, BUNDLE_INDEX), JSON.stringify({ ...index, owner: BOB }));
       } else {
         writeFileSync(join(dir, "chunks", "0".repeat(64)), "x");
       }

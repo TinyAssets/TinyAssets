@@ -16,7 +16,7 @@ import { inlineId } from "../../contract/src/content";
 import { canonical } from "../../contract/src/canonical";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
-  answerName, type CheckChunk, type CheckEntry, doneName, type Entry, importMac,
+  answerName, bundleIdentity, type CheckChunk, type CheckEntry, doneName, type Entry, importMac,
   type ImportMessage, NO_ROWS, rehearsalName, type Row, rowsSum,
 } from "../../contract/src/import-message";
 import { type Answers, clean, differences, expectedOf } from "../../import/check";
@@ -54,8 +54,10 @@ function paged<T>(files: Map<string, Uint8Array>, kind: "manifest" | "rows", key
 function made(owner: string, files = bundleFiles()): { files: Map<string, Uint8Array>; bundle: string } {
   const index = json(files.get("bundle.json")!);
   index["owner"] = owner;
+  index["key"] = bundleIdentity(owner).key;
   const record = json(files.get("owner.json")!);
   record["owner"] = owner;
+  record["key"] = index["key"];
   const recordBytes = new TextEncoder().encode(`${JSON.stringify(record)}\n`);
   files.set("owner.json", recordBytes);
   index["parts"] = { ...(index["parts"] as Record<string, string>),
@@ -67,7 +69,7 @@ function made(owner: string, files = bundleFiles()): { files: Map<string, Uint8A
 
 /** A bundle staged in the bucket, and its message signed under `key`. */
 async function staged(owner: string, files = made(owner), key = KEY): Promise<ImportMessage> {
-  const prefix = `t${randomBytes(4).toString("hex")}/${sha256(owner).slice(0, 16)}`;
+  const prefix = `t${randomBytes(4).toString("hex")}/${bundleIdentity(owner).key}`;
   for (const [name, bytes] of files.files) {
     await doorsEnv.IMPORT_STAGING.put(`${prefix}/${name}`, bytes);
   }
@@ -325,6 +327,12 @@ describe("the import consumer's gates, each before anything is written", () => {
     await doorsEnv.IMPORT_STAGING.put(`${message.prefix}/bundle.json`,
                                       `${JSON.stringify(index)}\n`);
     await dropped(owner, w, message);
+    // A signed index for this owner placed under a different owner folder.
+    const misplaced = await staged(owner);
+    const wrongPrefix = `${misplaced.prefix.split("/")[0]}/${bundleIdentity(fresh()).key}`;
+    const original = await doorsEnv.IMPORT_STAGING.get(`${misplaced.prefix}/bundle.json`);
+    await doorsEnv.IMPORT_STAGING.put(`${wrongPrefix}/bundle.json`, await original!.arrayBuffer());
+    await dropped(owner, w, { ...misplaced, prefix: wrongPrefix });
     // A rows page changed under its index.
     const rows = await staged(owner);
     await doorsEnv.IMPORT_STAGING.put(`${rows.prefix}/rows/0.json`, '{"rows":[]}\n');

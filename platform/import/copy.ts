@@ -28,7 +28,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
-import { sha256Hex } from "../contract/src/digest";
+import { bundleIdentity } from "../contract/src/import-message";
 
 import {
   fileSha256, intact, isStore, layout, type Manifest, manifestOf, openStore,
@@ -153,7 +153,7 @@ export function forbidden(work: string): string[] {
     }
   }
   for (const principal of principals) {
-    named.push(principal, sha256Hex(principal).slice(0, 16));
+    named.push(principal, bundleIdentity(principal).key);
   }
   return [...new Set(named.filter((text) => text !== ""))];
 }

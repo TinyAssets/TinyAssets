@@ -457,6 +457,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     window's pass alone deletes the doors' `IMPORT_KEY`, so `rotation`'s refusal holds until
     then (the founder's B, `r7-rotation-driver.md` item 8; `untangle/i-window-close`,
     `i-window-close.md`).
+  - [x] Stage, queue delivery and close agree on the format-1 index and its owner folder,
+    including rehearsal names (`import-bundle-identity.md`).
   - [x] A restore from the off-account copy between a `FILES_KEYRING` rotation's passes puts
     old-kid roots back and restarts the copy's expiry, so `retire`'s gate is read from that
     night (`r7-rotation-driver.md` item 11, `untangle/r8-retire-gate`): `retire` reads the copy's

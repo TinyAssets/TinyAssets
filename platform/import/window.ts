@@ -40,7 +40,7 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  answerName, BUNDLE_INDEX, BUNDLE_OWNER, type BundleOwner, bundlePrefix, doneName, type Entry,
+  answerName, BUNDLE_INDEX, BUNDLE_OWNER, type BundleOwner, bundlePrefix, doneName, type Entry, indexAtKey,
   IMPORT_KEY, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS, type Paged,
   pageNumber, rehearsalRun, type Row, rowsSum, RUN, stagedName,
 } from "../contract/src/import-message";
@@ -439,22 +439,24 @@ export async function close(window: Window, print: (line: string) => void):
     Promise<CloseSummary> {
   const staging = window.names.staging_bucket;
   const runs = new Map<string, string[]>();
-  for (const { name, run } of await stagedIndexes(window, "")) {
-    runs.set(run, [...runs.get(run) ?? [], name]);
+  for (const { key, run } of await stagedIndexes(window, "")) {
+    runs.set(run, [...runs.get(run) ?? [], key]);
   }
   const listed = new Set(await cloudflareOf(window.inputs.apiToken, window.fetcher)
     .keys(window.inputs.account, await directoryId(window), OWNER_ENTRY));
   const left: string[] = [];
   let owners = 0;
   for (const [run, indexes] of [...runs].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    for (const [n, name] of indexes.sort().entries()) {
+    for (const [n, key] of indexes.sort().entries()) {
+      const name = stagedName(bundlePrefix(run, key), BUNDLE_INDEX);
       const text = await getText(window, staging, name);
-      const owner = text === null ? null : (JSON.parse(text) as { owner?: unknown }).owner;
-      if (text !== null && typeof owner !== "string") {
-        throw new Error(`run ${run}'s staged index ${n + 1} names no owner: nothing is closed`);
+      if (text === null) continue;
+      const index: unknown = JSON.parse(text);
+      if (!indexAtKey(index, key)) {
+        throw new Error(`run ${run}'s staged index ${n + 1} has inconsistent identity: nothing is closed`);
       }
-      owners += owner === null ? 0 : 1;
-      if (owner !== null && !listed.has(`${OWNER_ENTRY}${owner}`)) {
+      owners += 1;
+      if (!listed.has(`${OWNER_ENTRY}${index.owner}`)) {
         const line = `run ${run}, bundle ${n + 1} of ${indexes.length}: left, staged and not ` +
           "admitted";
         left.push(line);

@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { keyed, object } from "../contract/src/checks";
 import { HEX16 } from "../contract/src/ids";
 import {
-  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, PART, rehearsalRun,
+  BUNDLE_INDEX, bundlePrefix, indexAtKey, importMac, type ImportMessage, PART, rehearsalRun,
   RUN, stagedName,
 } from "../contract/src/import-message";
 import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
@@ -117,8 +117,7 @@ export function checkedBundle(dir: string, key: string): Staged {
   const files = filesIn(dir);
   const index = readFileSync(join(dir, BUNDLE_INDEX));
   const parsed: unknown = JSON.parse(index.toString("utf8"));
-  if (!object(parsed) || parsed["format"] !== BUNDLE_FORMAT || parsed["key"] !== key
-      || typeof parsed["owner"] !== "string" || !object(parsed["parts"])) {
+  if (!indexAtKey(parsed, key) || !object(parsed["parts"])) {
     throw new Error("a bundle's index is out of shape, or not its folder's");
   }
   const parts = parsed["parts"] as Record<string, unknown>;
