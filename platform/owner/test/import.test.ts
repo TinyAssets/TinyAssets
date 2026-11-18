@@ -22,6 +22,7 @@ import {
   DISCARDED, IMPORT_DOORS_ONLY, IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY,
 } from "../src/admission";
 import { MAX_OPEN_INTENTS } from "../src/files";
+import { INDEX_BYTES } from "../src/manifest";
 import { IMPORT_NOTICE, type ImportCheckAnswer } from "../src/import";
 import type { OwnerDO } from "../src/owner-do";
 import {
@@ -29,7 +30,7 @@ import {
 } from "../../contract/src/policy-document";
 import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
-import { failure, gateFor, spaceOf, TIERS } from "./support";
+import { crowd, failure, gateFor, spaceOf, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const BUNDLE = "b".repeat(64);
@@ -546,4 +547,45 @@ describe("the import's discard", () => {
     }
     expect((await left(stub, ns)).objects).toBeGreaterThan(0);
   });
+});
+
+it("keeps the first file when the next file in the batch fills the index", async () => {
+  const meter = (stub: Stub) => runInDurableObject(stub, (_instance, state) =>
+    state.storage.sql.exec<{ bytes: number }>("SELECT manifest_bytes AS bytes FROM file_space").one().bytes);
+  const parent = { kind: "dir" as const, path: I };
+  const first = inline(I + "/first", "first file");
+  const second = inline(I + "/second", "second file");
+  const sample = pending();
+  await sample.stub.importFiles(importing(sample.owner), { entries: [parent] });
+  const before = await meter(sample.stub);
+  await sample.stub.importFiles(importing(sample.owner), { entries: [first] });
+  const delta = await meter(sample.stub) - before;
+  // Independent Node fixture measured these on the same paths and file sizes.
+  expect(delta).toBeGreaterThan(0);
+
+  const { stub, owner } = pending();
+  const bind = importing(owner);
+  const batch = { entries: [first, second] };
+  await stub.importFiles(bind, { entries: [parent] });
+  expect(await meter(stub)).toBe(before);
+  const listing = async () => (await pages(stub, owner, "files")).flatMap(page =>
+    page.part === "files" ? page.entries.map(entry => entry.path) : []);
+  expect(await listing()).toEqual([I]);
+  const uncrowd = await crowd(stub, INDEX_BYTES, delta);
+  try {
+    const refusal = await failure(() => stub.importFiles(bind, batch));
+    expect(refusal.code).toBe("file_index_full");
+    expect(await meter(stub)).toBe(INDEX_BYTES);
+    expect(await listing()).toEqual([I, first.path]);
+    expect(await stub.importFiles(bind, { entries: [first] })).toEqual({ written: 0, skipped: 1 });
+    expect((await failure(() => stub.importFiles(bind, batch))).code).toBe("file_index_full");
+    expect(await meter(stub)).toBe(INDEX_BYTES);
+    expect(await listing()).toEqual([I, first.path]);
+  } finally {
+    await uncrowd();
+  }
+  expect(await meter(stub)).toBe(before + delta);
+  expect(await stub.importFiles(bind, batch)).toEqual({ written: 1, skipped: 1 });
+  expect(await listing()).toEqual([I, first.path, second.path]);
+  expect(await stub.importFiles(bind, batch)).toEqual({ written: 0, skipped: 2 });
 });

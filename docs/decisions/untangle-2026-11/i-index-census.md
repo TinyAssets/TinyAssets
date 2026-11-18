@@ -39,10 +39,55 @@ was refused. The numbers above are observations, not a second pricing formula.
 
 The Node adapter must pass Worker ArrayBuffer bindings to node:sqlite as a
 Uint8Array. Node 22 refused the first inline file before this change. Use
-savepoints for nested synchronous storage transactions, so a refusal rolls back
-the same writes as the owner. The smoke used a synthetic namespace key and
+savepoints for nested synchronous storage transactions. A refused file write
+rolls back its own work. The enclosing import call has a different boundary
+(see the two-entry replay below). The smoke used a synthetic namespace key and
 declared chunk digests offline. The Worker exercised its actual FILES binding.
 No real customer data or infrastructure was used.
+
+## File batches on disk
+
+The real `migrate`, owner `WriteGate`, `Files` and `importFiles` ran against
+a private on-disk SQLite database per synthetic owner, with DELETE journaling
+and FULL synchronization. Each group of 32 entries starts with a directory.
+Its 31 files have 32-byte bodies: odd entry numbers store the entry number as
+a four-byte big-endian prefix, even numbers share an all-zero body. Paths are
+`/workspace/imported/synthetic/d<group-start>/f<entry>`. The real 256-entry
+import bound determines the batch. The last batch replay skipped all 256
+entries in each run and left the charge unchanged.
+
+| Entries | File index bytes | Database bytes | Largest sampled DB + journal bytes | Node 22 import time | Node 24 import time |
+|---:|---:|---:|---:|---:|---:|
+| 1,024 | 1,003,230 | 1,474,560 | 1,520,440 | 0.435 s | 0.395 s |
+| 10,240 | 10,031,467 | 5,619,712 | 6,391,968 | 3.273 s | 3.618 s |
+| 51,200 | 50,350,187 | 24,608,768 | 25,881,984 | 16.041 s | 19.109 s |
+
+Both runtimes used SQLite 3.54.1. The table uses a per-database cache capped
+at 32 prepared statements, enabled after the migrations. On Node 22 the 1,024
+entries issued 12,745 data statements. Preparing them every time took 3.624 s,
+versus eight preparations with reuse, with identical charge and file lengths.
+Timing covers input generation, hashing, writes, commits and sampling. Import
+time excludes schema setup and replay. Sizes are logical lengths
+sampled before and after each batch commit. Production hardware, chunk I/O,
+backup decoding, rows, starter reconciliation and the census window still need
+a representative rehearsal.
+
+A two-entry batch does **not** roll back its earlier successful file when a
+later one is refused. The outer owner gate catches the error inside its SQLite
+transaction, commits the earlier writes, then reports the error. A plain
+transaction wrapper incorrectly rolled both entries back. An independent
+Node replay measured the first file's 1,070-byte charge, set the disposable
+meter so that file fit exactly at 536,870,912, and got `file_index_full` on
+the second. Retrying the first alone skipped it. After making room, the pair
+skipped one and wrote one, then skipped both. The real Worker RPC test in
+owner/test/import.test.ts independently measured the space needed and confirmed
+the retained and absent paths through the public importCheck door. A census
+must stop on the actual
+refusal and retain the correct per-file and per-batch semantics.
+
+A hard interruption during a synthetic run left the private database and its
+journal. Normal completion removed both. Any cutover implementation needs to
+recognize and reclaim its own abandoned per-run directory on restart.
 
 ## Boundaries for implementation
 
@@ -65,5 +110,5 @@ No real customer data or infrastructure was used.
   production boundary before wiring the offline owner. Retain only the inline
   content the real write requires and keep a per-owner temporary disk database
   private, bounded and cleaned up on success, refusal and interruption.
-- Exercise disk and time at census scale before any claim about the cutover
-  window. One tiny synthetic owner establishes parity for the cases above.
+- Measure the full census on representative backup shapes and the planned host
+  before claiming a cutover window. The batch timings above cover inline files.
