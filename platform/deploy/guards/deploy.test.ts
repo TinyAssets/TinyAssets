@@ -63,10 +63,9 @@ import {
   type Bundle, type Bundles, BUNDLES, bundles, pairTag, treeImage,
 } from "../../sandbox/template/pair";
 import {
-  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, IMPORT_NAMES, KEYRINGS,
-  MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED, retiredWorkers,
-  ROUTES,
-  SECRET_INPUTS, SECRETS, WORKERS, workerNames,
+  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, FILES_BUCKET, IMPORT_NAMES,
+  KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED,
+  retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, workerNames,
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
@@ -687,7 +686,7 @@ describe("the deploy kit's facts", () => {
   it("retires only a Worker no config names", () => {
     expect(retiredWorkers(["tinyassets-old"], NAMES)).toEqual(["tinyassets-old"]);
     expect(() => retiredWorkers(["tinyassets-old", NAMES["owner"]!], NAMES))
-      .toThrow("platform.json retires tinyassets-owner, which a config still names");
+      .toThrow(`platform.json retires ${NAMES["owner"]}, which a config still names`);
   });
 
   it("holds only what no config says, and that for exactly what the configs declare", () => {
@@ -912,11 +911,11 @@ describe("the plan the apply job runs", () => {
     const forged = world({ held: true });
     const plan = await planned(forged, "dark");
     const file = JSON.parse(readFileSync(plan, "utf8")) as { plan: { lines: string[] } };
-    file.plan.lines = file.plan.lines.filter((line) => !line.startsWith("upload and deploy a " +
-                                                                        "version of tinyassets-doors"));
+    file.plan.lines = file.plan.lines.filter((line) =>
+      !line.startsWith(`upload and deploy a version of ${DOORS}`));
     writeFileSync(plan, JSON.stringify(file));
     expect(await refused(forged, "dark", plan)).toEqual({ changed: [], why: expect.stringContaining(
-      "planned now, and never approved: upload and deploy a version of tinyassets-doors") });
+      `planned now, and never approved: upload and deploy a version of ${DOORS}`) });
     const shapeless = world({ held: true });
     const empty = await planned(shapeless, "dark");
     writeFileSync(empty, "{}");
@@ -1141,20 +1140,22 @@ describe("a dark run", () => {
   });
 
   it.each([
-    ["the import window's", "tinyassets-import", "tinyassets-import-staging"],
-    ["the operator channel's", "tinyassets-operator", "tinyassets-operator"],
+    ["the import window's", QUEUE_NAMES.IMPORTS, IMPORT_NAMES.dead_letter_queue,
+     IMPORT_NAMES.staging_bucket],
+    ["the operator channel's", QUEUE_NAMES.OPERATOR, OPERATOR_NAMES.dead_letter_queue,
+     OPERATOR_NAMES.bucket],
   ])("makes %s queue, dead-letter queue and bucket, each only when its listing lacks it, in a " +
-     "fresh, a held and a partial account", async (_what, queue, bucket) => {
-    const MADE_HERE = [`R2 bucket ${bucket}`, `queue ${queue}`, `queue ${queue}-dlq`];
+     "fresh, a held and a partial account", async (_what, queue, deadLetters, bucket) => {
+    const MADE_HERE = [`R2 bucket ${bucket}`, `queue ${queue}`, `queue ${deadLetters}`];
     const made = (w: ReturnType<typeof world>) => w.created
       .filter((each) => each.startsWith("R2 bucket") || each.startsWith("queue"));
     const its = (w: ReturnType<typeof world>) => made(w)
       .filter((each) => MADE_HERE.includes(each));
-    expect(BUCKETS).toEqual(["tinyassets-files", "tinyassets-import-staging",
-                             "tinyassets-operator", "tinyassets-final-backup"]);
-    expect(QUEUES).toEqual(["tinyassets-sandbox-ring", "tinyassets-erasure", "tinyassets-import",
-                            "tinyassets-operator", "tinyassets-import-dlq",
-                            "tinyassets-operator-dlq"]);
+    expect(BUCKETS).toEqual([FILES_BUCKET, IMPORT_NAMES.staging_bucket, OPERATOR_NAMES.bucket,
+                             IMPORT_NAMES.final_backup_bucket]);
+    expect(QUEUES).toEqual([QUEUE_NAMES.RING, QUEUE_NAMES.ERASURES, QUEUE_NAMES.IMPORTS,
+                            QUEUE_NAMES.OPERATOR, IMPORT_NAMES.dead_letter_queue,
+                            OPERATOR_NAMES.dead_letter_queue]);
     const fresh = world();
     await runMode(fresh, "dark", ["--yes"]);
     expect(its(fresh)).toEqual(MADE_HERE);
@@ -1164,11 +1165,11 @@ describe("a dark run", () => {
     // The queue made but not its dead-letter queue nor the bucket: only those two are made.
     const partial = world({ held: true, listed: {
       buckets: BUCKETS.filter((each) => each !== bucket),
-      queues: QUEUES.filter((each) => each !== `${queue}-dlq`) } });
+      queues: QUEUES.filter((each) => each !== deadLetters) } });
     const work = await runMode(partial, "dark", ["--yes"]);
-    expect(made(partial)).toEqual([`R2 bucket ${bucket}`, `queue ${queue}-dlq`]);
+    expect(made(partial)).toEqual([`R2 bucket ${bucket}`, `queue ${deadLetters}`]);
     expect(work.plan).toEqual(expect.arrayContaining([
-      `create the R2 bucket ${bucket}`, `create the queue ${queue}-dlq`]));
+      `create the R2 bucket ${bucket}`, `create the queue ${deadLetters}`]));
     expect(work.plan).not.toContain(`create the queue ${queue}`);
   });
 
@@ -1176,17 +1177,17 @@ describe("a dark run", () => {
      "bucket holds no rule or another, and plans it without --yes", async () => {
     const RULE = { id: "kept-365-days", enabled: true, prefix: "",
                    condition: { type: "Age", maxAgeSeconds: 365 * 86_400 } };
-    const LINE = "lock every object of the R2 bucket tinyassets-operator for 365 days";
+    const LINE = `lock every object of the R2 bucket ${OPERATOR_NAMES.bucket} for 365 days`;
     const locked = (w: ReturnType<typeof world>) => w.created
       .filter((each) => each.startsWith("R2 lock"));
-    expect(BUCKET_LOCKS).toEqual({ "tinyassets-operator": 365 });
+    expect(BUCKET_LOCKS).toEqual({ [OPERATOR_NAMES.bucket]: 365 });
     // A fresh account: the bucket made, then its rule set.
     const fresh = world();
     const made = await runMode(fresh, "dark", ["--yes"]);
     expect(made.plan).toContain(LINE);
     expect(locked(fresh))
-      .toEqual([`R2 lock tinyassets-operator ${JSON.stringify({ rules: [RULE] })}`]);
-    expect(fresh.created.indexOf("R2 bucket tinyassets-operator"))
+      .toEqual([`R2 lock ${OPERATOR_NAMES.bucket} ${JSON.stringify({ rules: [RULE] })}`]);
+    expect(fresh.created.indexOf(`R2 bucket ${OPERATOR_NAMES.bucket}`))
       .toBeLessThan(fresh.created.indexOf(locked(fresh)[0]!));
     // Held as the kit sets it: nothing planned, nothing set.
     const held = world({ held: true });
@@ -1197,7 +1198,7 @@ describe("a dark run", () => {
     for (const rules of [[{ ...RULE, condition: { type: "Age", maxAgeSeconds: 86_400 } }],
                          [{ ...RULE, prefix: "answers/" }], [{ ...RULE, enabled: false }],
                          [RULE, { ...RULE, id: "other" }]]) {
-      const other = world({ held: true, locks: { "tinyassets-operator": rules } });
+      const other = world({ held: true, locks: { [OPERATOR_NAMES.bucket]: rules } });
       const work = await runMode(other, "dark", ["--yes"]);
       expect(work.plan).toContain(`${LINE}, in place of its ${rules.length} lock rules`);
       expect(locked(other)).toHaveLength(1);
@@ -1214,24 +1215,24 @@ describe("a dark run", () => {
       .filter((each) => each.startsWith("R2 bucket"));
     expect([...CONFIGS.values()].flatMap((config) =>
       ((config["r2_buckets"] ?? []) as { bucket_name: string }[]).map((each) => each.bucket_name)))
-      .not.toContain("tinyassets-final-backup");
+      .not.toContain(IMPORT_NAMES.final_backup_bucket);
     const fresh = world();
     await runMode(fresh, "dark", ["--yes"]);
-    expect(made(fresh)).toContain("R2 bucket tinyassets-final-backup");
+    expect(made(fresh)).toContain(`R2 bucket ${IMPORT_NAMES.final_backup_bucket}`);
     const held = world({ held: true });
     await runMode(held, "dark", ["--yes"]);
     expect(made(held)).toEqual([]);
     const lacking = world({ held: true, listed: {
-      buckets: BUCKETS.filter((each) => each !== "tinyassets-final-backup"), queues: QUEUES } });
+      buckets: BUCKETS.filter((each) => each !== IMPORT_NAMES.final_backup_bucket), queues: QUEUES } });
     const work = await runMode(lacking, "dark", ["--yes"]);
-    expect(made(lacking)).toEqual(["R2 bucket tinyassets-final-backup"]);
-    expect(work.plan).toContain("create the R2 bucket tinyassets-final-backup");
+    expect(made(lacking)).toEqual([`R2 bucket ${IMPORT_NAMES.final_backup_bucket}`]);
+    expect(work.plan).toContain(`create the R2 bucket ${IMPORT_NAMES.final_backup_bucket}`);
     // The plan job lists it and makes nothing.
     const plan = world({ held: true, listed: {
-      buckets: BUCKETS.filter((each) => each !== "tinyassets-final-backup"), queues: QUEUES } });
+      buckets: BUCKETS.filter((each) => each !== IMPORT_NAMES.final_backup_bucket), queues: QUEUES } });
     const planned = await runMode(plan, "dark", []);
     expect(made(plan)).toEqual([]);
-    expect(planned.plan).toContain("create the R2 bucket tinyassets-final-backup");
+    expect(planned.plan).toContain(`create the R2 bucket ${IMPORT_NAMES.final_backup_bucket}`);
   });
 
   it("stops on a failed bucket or queue listing, never reading it as absent", async () => {
@@ -1320,7 +1321,7 @@ describe("a routes run", () => {
   it("in the plan job says the hook waits, where dark's would be", async () => {
     const work = await runMode(world({ held: true }), "routes", ["--public"], PUBLIC);
     const hook = work.plan.findIndex((line) => line.startsWith("E2B lifecycle webhook"));
-    expect(work.plan[hook - 1]).toMatch(/^upload and deploy a version of tinyassets-doors/);
+    expect(work.plan[hook - 1]).toBe(`upload and deploy a version of ${DOORS}, touching no route`);
     expect(work.plan[hook + 1]).toMatch(/^move the route /);
   });
 });
@@ -1391,7 +1392,7 @@ describe("the route record", () => {
       // The plan says how to hand it back, and the summary holds the record too.
       expect(work.plan).toContain(`record the zone's ${table.length} routes and the handover's 8 ` +
         "changes, the egress domain (none) and E2B's lifecycle webhook (disabled) as this " +
-        "run's route record in tinyassets-control, before any change: hand back with --mode " +
+        `run's route record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode ` +
         "handback --record <this run's id>");
       const summaryText = readFileSync(file, "utf8");
       expect(summaryText).toContain(`Route record ${KEY}:`);
@@ -1427,12 +1428,12 @@ describe("the route record", () => {
     // No control namespace: no dark run came first.
     const fresh = world();
     await expect(runMode(fresh, "routes", ["--yes"], RUN)).rejects.toThrow(
-      "routes keeps its route record in tinyassets-control, which a dark run makes: run dark " +
+      `routes keeps its route record in ${NAMESPACES["CONTROL"]}, which a dark run makes: run dark ` +
       "first; nothing is changed");
     expect(fresh.events.filter((event) => CHANGE.test(event))).toEqual([]);
     const planned = await runMode(world(), "routes", [], RUN);
     expect(planned.plan).toContain("record the zone's routes as this run's route record: " +
-                                   "tinyassets-control is not made yet, so the apply job stops " +
+                                   `${NAMESPACES["CONTROL"]} is not made yet, so the apply job stops ` +
                                    "until a dark run makes it");
     // Cloudflare refuses the write.
     const refused = world({ held: true, refusing: KEY });
@@ -1465,7 +1466,7 @@ describe("the route record", () => {
     // The doors hold the old proxy's three in place, in the zone's order, and the five added.
     expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 9 routes and the handover's 0 changes, the ` +
       `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as this run's route ` +
-      "record in tinyassets-control, before any change: hand back with --mode handback " +
+      `record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback ` +
       "--record <this run's id>; " +
       `${DOORS} holds ${["mcp*", "app*", "api*", "hooks/inbound/*", "hooks/e2b/*",
                          ".well-known/oauth-*"].map((path) => `${ZONE}/${path}`).join(", ")} ` +
@@ -1485,7 +1486,7 @@ describe("the route record", () => {
     const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
     expect(fresh.plan).toContain("record the zone's 8 routes and the handover's 7 changes, the " +
       "egress domain (none) and E2B's lifecycle webhook (disabled) as this run's route record " +
-      "in tinyassets-control, before any change: hand back with --mode handback --record " +
+      `in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
       `<this run's id>; ${DOORS} holds tinyassets.io/mcp* already: the record of the ` +
       "routes run that moved them is the one to hand back, and it covers this run's changes too");
     // The first run's record does: its handback, after the second run, puts the zone back.
@@ -1601,7 +1602,7 @@ describe("a handback run", () => {
   it("refuses a missing or bad record, changing nothing", async () => {
     const missing = world({ held: true });
     await expect(runMode(missing, "handback", ["--yes", "--record", "7999"])).rejects.toThrow(
-      "there is no route record deploy:routes:7999 in tinyassets-control: name the id a routes " +
+      `there is no route record deploy:routes:7999 in ${NAMESPACES["CONTROL"]}: name the id a routes ` +
       "run's job summary gives; nothing is changed");
     await expect(runMode(world(), "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
       /there is no route record deploy:routes:7001/);
@@ -2200,20 +2201,20 @@ describe("the parts of a run", () => {
   });
 
   it("never reads a failed secret listing as no secrets, a missing Worker's neither", async () => {
-    const path = "/accounts/a/workers/scripts/tinyassets-doors/secrets";
+    const path = `/accounts/a/workers/scripts/${DOORS}/secrets`;
     const cf = (answers: Record<string, CfAnswer | Error>) => client(api(answers));
     expect(await cf({ [path]: ok([{ name: "WORKOS_API_KEY", type: "secret_text" }]) })
-      .secrets("a", "tinyassets-doors")).toEqual(["WORKOS_API_KEY"]);
+      .secrets("a", DOORS)).toEqual(["WORKOS_API_KEY"]);
     for (const answer of [
       { status: 500, body: {} }, { status: 403, body: { success: false, errors: [{ code: 10000 }] } },
       { status: 404, body: { success: false, errors: [{ code: 10007 }] } },
       { status: 404, body: { success: false, errors: [{ code: 7003 }] } },
       { status: 200, body: { success: false } }, { status: 200, body: { success: true } },
     ] as CfAnswer[]) {
-      await expect(cf({ [path]: answer }).secrets("a", "tinyassets-doors"))
+      await expect(cf({ [path]: answer }).secrets("a", DOORS))
         .rejects.toThrow(/failed/);
     }
-    await expect(cf({ [path]: new Error("network down") }).secrets("a", "tinyassets-doors"))
+    await expect(cf({ [path]: new Error("network down") }).secrets("a", DOORS))
       .rejects.toThrow(/network down/);
   });
 
@@ -2711,14 +2712,15 @@ describe("the template and the pair", () => {
         return url.includes("/aliases/") ? Response.json({ templateID: "t1" }, { status: alias })
           : Response.json({ exists }, { status: tag });
       });
-    expect(await e2b(200, true).ready("tinyassets-sandbox:v1")).toBe(true);
-    expect(await e2b(200, false).ready("tinyassets-sandbox:v1")).toBe(false);
-    expect(await e2b(404, true).ready("tinyassets-sandbox:v1")).toBe(false);
-    await expect(e2b(500, true).ready("tinyassets-sandbox:v1"))
-      .rejects.toThrow("E2B GET /templates/aliases/tinyassets-sandbox answered 500");
-    await expect(e2b(200, true, 503).ready("tinyassets-sandbox:v1"))
+    const template = "plan-fixture:v1";
+    expect(await e2b(200, true).ready(template)).toBe(true);
+    expect(await e2b(200, false).ready(template)).toBe(false);
+    expect(await e2b(404, true).ready(template)).toBe(false);
+    await expect(e2b(500, true).ready(template))
+      .rejects.toThrow("E2B GET /templates/aliases/plan-fixture answered 500");
+    await expect(e2b(200, true, 503).ready(template))
       .rejects.toThrow("E2B GET /templates/t1/tags/exists answered 503");
-    await expect(e2b(200, true).ready("tinyassets-sandbox")).rejects.toThrow(/name:tag/);
+    await expect(e2b(200, true).ready("plan-fixture")).rejects.toThrow(/name:tag/);
     // Both lookups send the key.
     expect(headers.length).toBeGreaterThan(0);
     for (const each of headers) {
@@ -2739,27 +2741,27 @@ describe("the template and the pair", () => {
       .toBe(`${TEMPLATE}-r${sha(RUNNER).slice(0, 16)}-p${sha(PROBE_BUNDLE).slice(0, 16)}`);
     expect(() => pairTag(TEMPLATE, sha(RUNNER), "probes")).toThrow(/SHA-256/);
     // This tree's image, as image.ts prints it: the kit's pin check reads it so.
-    expect(treeImage()).toMatch(/^tinyassets-sandbox:s[0-9a-f]{16}$/);
+    expect(treeImage()).toMatch(/^[^:\s]+:s[0-9a-f]{16}$/);
   });
 
   it("plans a tree whose image is not the pin, and refuses to apply it", async () => {
-    const w = world({ image: "tinyassets-sandbox:s0123456789abcdef" });
+    const image = "plan-fixture:s0123456789abcdef";
+    const w = world({ image });
     const work = await runMode(w, "plan");
     expect(work.plan).toContain(`the pinned template ${TEMPLATE} is not this tree's image ` +
-      "tinyassets-sandbox:s0123456789abcdef: build it (sandbox-template.yml, build) and pin " +
+      `${image}: build it (sandbox-template.yml, build) and pin ` +
       "its passed pair");
-    await expect(runMode(world({ image: "tinyassets-sandbox:s0123456789abcdef" }), "dark",
-                         ["--yes"]))
+    await expect(runMode(world({ image }), "dark", ["--yes"]))
       .rejects.toThrow(`the pinned template ${TEMPLATE} is not this tree's image ` +
-        "tinyassets-sandbox:s0123456789abcdef: build it (sandbox-template.yml, build) and pin " +
+        `${image}: build it (sandbox-template.yml, build) and pin ` +
         "its passed pair; nothing is deployed");
   });
 
   it("versions a later deploy by the id wrangler prints", () => {
-    expect(versionOf("Uploaded tinyassets-owner\nWorker Version ID: " +
+    expect(versionOf(`Uploaded ${NAMES["owner"]}\nWorker Version ID: ` +
                      "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n"))
       .toBe("0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b");
-    expect(() => versionOf("Uploaded tinyassets-owner")).toThrow(/Version ID/);
+    expect(() => versionOf(`Uploaded ${NAMES["owner"]}`)).toThrow(/Version ID/);
   });
 });
 
@@ -3250,7 +3252,7 @@ describe("mode copyback", () => {
     const planned = world({ held: true });
     expect((await runMode(planned, "copyback", ["--public", "--owner", "user_alice"],
                           { ...PUBLIC, OFFSITE_BUCKET: BACK["OFFSITE_BUCKET"]! })).plan).toEqual([
-      "copy back into tinyassets-files the objects of user_alice's namespace that it lacks and " +
+      `copy back into ${FILES_BUCKET} the objects of user_alice's namespace that it lacks and ` +
       "the owner's object names (restore.names: a row of it each, so nothing its own " +
       "collection deleted comes back), as the off-account copy stands, never one it holds, " +
       `after writing the restore record ${RESTORE_KEY}: the namespace the owner's own object ` +
@@ -3277,14 +3279,14 @@ describe("mode copyback", () => {
       .toEqual([
         `rclone lsf --files-only -R --include /e/* now:${bucket}`,
         `rclone lsf --files-only -R --include /e/* back:${bucket}`,
-        "rclone lsf --files-only -R --include /e/* r2:tinyassets-files",
-        `rclone lsf --files-only -R --use-server-modtime --fast-list r2:tinyassets-files/${PREFIX}`,
+        `rclone lsf --files-only -R --include /e/* r2:${FILES_BUCKET}`,
+        `rclone lsf --files-only -R --use-server-modtime --fast-list r2:${FILES_BUCKET}/${PREFIX}`,
         `rclone lsf --files-only -R --use-server-modtime --fast-list back:${bucket}/${PREFIX}`,
-        `rclone copy back:${bucket}/${PREFIX} r2:tinyassets-files/${PREFIX} --files-from <list> ` +
+        `rclone copy back:${bucket}/${PREFIX} r2:${FILES_BUCKET}/${PREFIX} --files-from <list> ` +
         "--ignore-existing --stats-one-line --stats 1m --stats-log-level NOTICE (c/2,m/3)",
-        `rclone check back:${bucket}/${PREFIX} r2:tinyassets-files/${PREFIX} --one-way ` +
+        `rclone check back:${bucket}/${PREFIX} r2:${FILES_BUCKET}/${PREFIX} --one-way ` +
         "--download --files-from <list> (c/2,m/3)"]);
-    expect(work.plan).toContain(`wrote 2 objects under ${PREFIX} into tinyassets-files, as ` +
+    expect(work.plan).toContain(`wrote 2 objects under ${PREFIX} into ${FILES_BUCKET}, as ` +
                                 `the copy held them at ${AT}, each one R2 lacked and the ` +
                                 "owner's object names, and read each back byte for byte (0 " +
                                 "more it lacks no row names)");
@@ -3353,7 +3355,7 @@ describe("mode recover", () => {
     const planned = world({ held: true });
     expect((await runMode(planned, "recover", ["--public"],
                           { ...PUBLIC, OFFSITE_BUCKET: BUCKET })).plan).toEqual([
-      "write back into tinyassets-files, as the off-account copy stands, every object it lacks " +
+      `write back into ${FILES_BUCKET}, as the off-account copy stands, every object it lacks ` +
       "of each namespace that no erasure mark names and that holds a root, never one it holds, " +
       `after writing the restore record ${RESTORE_KEY} and then every mark R2 lacks (the marks ` +
       "read from R2 and the copy first, a loud stop when they can't be), each read back byte " +
@@ -3979,17 +3981,9 @@ const DARK_FRESH = [
   "auth.test's sign-in",
   ...Object.entries(NAMESPACES).map(([binding, title]) =>
     `create the KV namespace ${title} (${binding})`),
-  "create the R2 bucket tinyassets-files",
-  "create the R2 bucket tinyassets-import-staging",
-  "create the R2 bucket tinyassets-operator",
-  "create the R2 bucket tinyassets-final-backup",
-  "lock every object of the R2 bucket tinyassets-operator for 365 days",
-  "create the queue tinyassets-sandbox-ring",
-  "create the queue tinyassets-erasure",
-  "create the queue tinyassets-import",
-  "create the queue tinyassets-operator",
-  "create the queue tinyassets-import-dlq",
-  "create the queue tinyassets-operator-dlq",
+  ...BUCKETS.map((name) => `create the R2 bucket ${name}`),
+  `lock every object of the R2 bucket ${OPERATOR_NAMES.bucket} for 365 days`,
+  ...QUEUES.map((name) => `create the queue ${name}`),
   ...Object.entries(SECRETS).flatMap(([worker, names]) =>
     names.map((name) => `set the secret ${name} on ${NAMES[worker]}`)),
   ...WORKERS.map((worker) => `deploy ${NAMES[worker]}, touching no route`),
@@ -4005,7 +3999,7 @@ const ROUTES_HELD = [
   `the pair ${PAIR} passed its standing checks in this E2B team`,
   `record the zone's ${LIVE.length + 2} routes and the handover's 8 changes, the egress ` +
   "domain (none) and E2B's lifecycle webhook (disabled) as this run's route record in " +
-  "tinyassets-control, before any change: hand back with --mode handback --record " +
+  `${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
   "<this run's id>",
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: present`,
   `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the browser to ` +

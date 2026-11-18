@@ -374,9 +374,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6). Built:
       `deploy/guards/literals.test.ts` reads the live names from `facts.ts`; its permanent
       exceptions are its own `KEPT`, each with its reason (`untangle-2026-11/o4c.md`).
-    - [ ] X1b: the deploy kit's test reads the live names from `facts.ts`, and the founder's
-      checklist points at the configs and `platform.json`: the 73 and 17 that
-      `deploy/guards/rules.ts` owes the literal guard, `untangle/x1b` (`o4c.md`).
+    - [x] X1b: the deploy tests and founder checklist use the configured resource names
+      (`untangle-2026-11/x1b.md`).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
   - [x] V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`). Built in
