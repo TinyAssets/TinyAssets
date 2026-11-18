@@ -77,19 +77,20 @@ function apiModels(catalog: Catalog, upstream: Upstream): Model<Api>[] {
 
 /** One run of pi-ai's adapter for `model`, its every request answered by `fetch`. */
 async function run(catalog: Catalog, upstream: Upstream, apiKey: string, model: Model<Api>,
-                   respond: FetchFunction, maxTokens: number): Promise<AssistantMessageEvent[]> {
+                   respond: FetchFunction, maxTokens: number):
+                   Promise<AssistantMessageEvent | undefined> {
   const models = createModels({ authContext: NO_AMBIENT });
   models.setProvider(providerFor(catalog, upstream));
-  const events: AssistantMessageEvent[] = [];
-  await within(respond, async () => {
+  return within(respond, async () => {
+    let last: AssistantMessageEvent | undefined;
     const stream = models.streamSimple(model, context(), {
       apiKey, maxTokens, maxRetries: 0, ...(takesFetch(upstream.api) ? { fetch: respond } : {}),
     } as never);
     for await (const event of stream) {
-      events.push(event);
+      last = event;
     }
+    return last;
   });
-  return events;
 }
 
 /**
@@ -326,13 +327,12 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
     handed = true;
     return new Response(body, { status, headers });
   };
-  let events: AssistantMessageEvent[];
+  let last: AssistantMessageEvent | undefined;
   try {
-    events = await run(catalog, upstream, apiKey, model, replay, model.maxTokens);
+    last = await run(catalog, upstream, apiKey, model, replay, model.maxTokens);
   } catch {
     return null;
   }
-  const last = events.at(-1);
   if (last === undefined || last.type !== "done" || !handed) {
     return null;
   }

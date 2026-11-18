@@ -51,6 +51,8 @@ end.
 ## 4. Gateway
 
 - [x] G1 `platform/gateway`: the keyring, sealing, the OAuth exchanges and raw forwarding.
+- [x] The gateway drains the provider adapter and retains only its last event for settlement
+  (`untangle-2026-11/meter-events.md`).
 - [x] G2 The owner side: model connections and spend (`owner/src/connections.ts`, `usage.ts`).
 - [x] G3 The connect doors (`doors/src/connect.ts`) and the source records (`platform/sources/`).
 - [x] G4 The egress door, the sandbox's identity, its charge and its network document
