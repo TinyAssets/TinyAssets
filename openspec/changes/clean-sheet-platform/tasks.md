@@ -614,6 +614,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`pass-sandbox.md` §4).
   - [ ] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
     (`pass-sandbox.md` §2).
+  - [ ] Settle how a code caller sees which writes completed when their ordered summary
+    itself exceeds a public tool page. Verify delivery through the public tool before the
+    connector rehearsal (`untangle-2026-11/code-result-delivery.md`).
   - [ ] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
     deadline (`control.ts` `#renew`), and `tell` waits for an answer only to it, so no run's
     posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
