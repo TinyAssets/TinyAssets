@@ -2,13 +2,40 @@
 from __future__ import annotations
 
 import inspect
+import json
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main_red  # noqa: E402
+import queue_attempts  # noqa: E402
+
+
+def test_readers_recognize_the_aggregate_reported_by_the_tests_workflow(monkeypatch) -> None:
+    workflow = main_red.REPO_ROOT / ".github" / "workflows" / "tests.yml"
+    job_id = "required-tests"
+    aggregate = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"][job_id]
+    name = aggregate.get("name", job_id)
+    jobs = {"jobs": [{"name": name, "conclusion": "failure"},
+                     {"name": "other job", "conclusion": "success"}]}
+
+    def jobs_response(*args: str) -> str:
+        query = args[args.index("--jq") + 1]
+        return subprocess.check_output(["jq", "-cr", query], input=json.dumps(jobs), text=True)
+
+    monkeypatch.setattr(main_red, "_gh", jobs_response)
+    assert main_red.required_conclusion("owner/repo", 7, 2) == "failure"
+
+    # A docs-only change did not select this leg's failing test. Its aggregate, which
+    # reports the failure too, must not count as a second, unexplained job failure.
+    failing = "platform/files/test/chunks.test.ts > getChunks"
+    counts, _, _ = queue_attempts.attempt_counts(
+        {name: [], "files leg": [failing]}, changed=["docs/readme.md"], selection=None)
+    assert counts is False
 
 
 @pytest.mark.parametrize("required,attempt,tip,expected", [

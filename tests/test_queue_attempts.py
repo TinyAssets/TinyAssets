@@ -58,8 +58,8 @@ LEG = "platform-tests (owner, npm run test:workerd -w owner)"
 
 @pytest.mark.parametrize("jobs, changed, selection, counts", [
     # A vitest failure counts only when the diff touches platform/.
-    ({LEG: [VITEST], "required-tests": []}, ["docs/a.md"], None, False),
-    ({LEG: [VITEST], "required-tests": []}, ["platform/doors/x.ts"], None, True),
+    ({LEG: [VITEST], qa.AGGREGATE_JOB: []}, ["docs/a.md"], None, False),
+    ({LEG: [VITEST], qa.AGGREGATE_JOB: []}, ["platform/doors/x.ts"], None, True),
     # A pytest failure counts when its file is in the run's selection, or that is ALL.
     ({SHARD: [PYTEST]}, ["platform/x.ts"], ["tests/test_other.py"], False),
     ({SHARD: [PYTEST]}, ["platform/x.ts"], ["tests/test_router.py"], True),
@@ -68,7 +68,7 @@ LEG = "platform-tests (owner, npm run test:workerd -w owner)"
     ({LEG: [VITEST], SHARD: [PYTEST]}, ["platform/x.ts"], ["tests/test_other.py"], True),
     # Fail closed: a failed job that names no test, only the aggregate, unreadable data.
     ({LEG: [VITEST], "platform-app": []}, ["docs/a.md"], None, True),
-    ({"required-tests": []}, ["docs/a.md"], None, True),
+    ({qa.AGGREGATE_JOB: []}, ["docs/a.md"], None, True),
     (None, ["docs/a.md"], None, True),
     ({LEG: [VITEST]}, None, None, True),
 ])

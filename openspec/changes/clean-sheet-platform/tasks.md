@@ -287,9 +287,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   deletes them: no packing fits one (a 477 s case and the image build, 62 minutes at five
   times), and #5646's calibration is Vitest's only; research first
   (`untangle/python-slow-runner`; found by `untangle/shard-2-time`).
-- [ ] `main_red.py` `REQUIRED_JOB` and `queue_attempts.py` `AGGREGATE_JOB` name the Tests
-  aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
-  reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
+- [x] Main-red and queue attempts share the Tests aggregate name, checked against the workflow
+  in the process suite (`untangle-2026-11/aggregate-name.md`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
 

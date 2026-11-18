@@ -33,7 +33,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-REQUIRED_JOB = "required-tests"
+from tests_workflow import AGGREGATE_JOB  # noqa: E402
+
 LABEL = "main-red"
 GH_TIMEOUT = 120
 
@@ -86,7 +87,7 @@ def required_conclusion(repo: str, run_id: int, attempt: int) -> str | None:
     """Read exactly the attempt whose completion is being handled."""
     out = _gh("api", "--paginate",
               f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs",
-              "--jq", f'.jobs[] | select(.name == "{REQUIRED_JOB}") | .conclusion')
+              "--jq", f".jobs[] | select(.name == {json.dumps(AGGREGATE_JOB)}) | .conclusion")
     found = [line for line in out.split() if line]
     return found[-1] if found else None
 

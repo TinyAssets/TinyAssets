@@ -50,6 +50,11 @@ import sys
 import time
 import zipfile
 from datetime import datetime
+from pathlib import Path
+
+if __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tests_workflow import AGGREGATE_JOB  # noqa: E402
 
 CAP = 2
 LABEL = "queue-handoff"
@@ -57,8 +62,6 @@ CAPPED_EXIT = 3
 LEDGER_MARKER = "<!-- queue-attempts-ledger -->"
 RECORD_MARKER = "<!-- queue-handoff:{head} -->"
 GH_TIMEOUT = 60
-#: The aggregate fails whenever a leg does; it names a test only through them.
-AGGREGATE_JOB = "required-tests"
 
 _PR_QUERY = """query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){
 pullRequest(number:$number){headRefOid labels(first:50){nodes{name}}
