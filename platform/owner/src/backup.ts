@@ -538,9 +538,13 @@ export class Backups {
     if (row === undefined) {
       return null;
     }
-    const parts = row.state === "done" ? root?.parts ?? [] : partsOf(row.part_list);
-    const segments = (row.state === "done" ? root?.segments ?? [] : segmentsOf(row.segment_list))
-      .filter((segment) => row.e === null || segment.b <= row.e);
+    const lists = row.state === "done" ? root
+      : { parts: partsOf(row.part_list), segments: segmentsOf(row.segment_list) };
+    if (lists === null) {
+      throw new Error("a finished generation's root is missing from the bucket");
+    }
+    const { parts } = lists;
+    const segments = lists.segments.filter((segment) => row.e === null || segment.b <= row.e);
     if (index < parts.length) {
       return { kind: "part", part: index, sha256: parts[index]!.sha256 };
     }

@@ -26,7 +26,7 @@ import {
   decodeCursor, encodeLines, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED,
   readPage,
 } from "../src/export";
-import type { ChunkStore } from "../../contract/src/files";
+import { type ChunkStore, objectPrefix } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
@@ -163,6 +163,27 @@ describe("the owner export", () => {
     expect(lines.filter((line) => line.t === "row" && Object.hasOwn(NOT_EXPORTED,
                                                                     line["table"] as string)))
       .toEqual([]);
+  });
+
+  it("fails an export when the finished generation's root is missing and resumes once restored",
+     async () => {
+    const o = await owner();
+    const before = await exportFrom(o, null);
+    const gen = before.lines[0]!["gen"] as string;
+    const [{ ns }] = await sqlIn(o.stub, "SELECT ns FROM file_space") as [{ ns: string }];
+    const listed = await env.BLOBS.list({ prefix: objectPrefix(ns) });
+    const key = listed.objects.find(object => object.key.endsWith(`/${gen}`))!.key;
+    const stored = await (await env.BLOBS.get(key))!.arrayBuffer();
+    await env.BLOBS.delete(key);
+
+    await expect(o.stub.ownerExport(o.session(), {})).rejects.toThrow();
+    await expect(o.stub.ownerExport(o.session(), { cursor: before.cursors[0]!,
+                                                   export_id: before.exportId })).rejects.toThrow();
+
+    await env.BLOBS.put(key, stored);
+    expect((await exportFrom(o, null)).lines).toEqual(before.lines);
+    const tail = await exportFrom(o, before.cursors[0]!, before.exportId);
+    expect(tail.lines.at(-1)).toEqual(before.lines.at(-1));
   });
 
   it("resumes from every cursor it ever handed out, to the same owner at E (review R4-2)",
