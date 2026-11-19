@@ -28,6 +28,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SYNC_IGNORE,
 } from "../../contract/src/sync-ignore";
+import { sha256Hex } from "../../contract/src/digest";
 import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
   from "../../contract/src/limits";
 import { AGENT_PEAK, HEAP_PER_LIST_BYTE, SANDBOX_HEAP } from "./sizing";
@@ -161,6 +162,40 @@ describe("a refusal of one file", () => {
 });
 
 describe("the mirror, from each file's identity when it was offered", () => {
+  it("stores the whole file's SHA-256 across a download and a fresh upload", async () => {
+    const { place: p } = place();
+    const path = "/workspace/archive.bin";
+    const parts = [Buffer.alloc(CHUNK_BYTES, 0xa5), Buffer.from([0, 0xff, 1])];
+    const chunks = parts.map((part) => ({ sha256: sha256Hex(part), size: part.length }));
+    const expected = sha256Hex(Buffer.concat(parts));
+    const downloaded = mirrorOf();
+    await syncIn(await client((door) => {
+      if (door === "changes") {
+        return { status: 200, body: { cursor: 1, changes: [{ path, kind: "file", version: 1 }] } };
+      }
+      if (door === "read") {
+        return { status: 200, body: { entry: { version: 1, mode: 0, kind: "file" }, chunks } };
+      }
+      if (door === "chunks") {
+        return { status: 200, body: { chunks: parts.map((part) => part.toString("base64")) } };
+      }
+      return { status: 404, body: {} };
+    }), p, downloaded);
+    expect(downloaded.get(path)?.sha256).toBe(expected);
+
+    const uploaded = mirrorOf();
+    const offered: unknown[] = [];
+    await syncOut(await client((door, body) => {
+      if (door === "upload_begin") {
+        offered.push(body["chunks"]);
+        return { status: 200, body: { intent_id: "1".repeat(INTENT_ID_CHARS), missing: [] } };
+      }
+      return door === "commit" ? commitAll(body) : { status: 404, body: {} };
+    }), p, uploaded, LEASE, []);
+    expect(offered).toEqual([chunks.map((chunk) => chunk.sha256)]);
+    expect(uploaded.get(path)?.sha256).toBe(expected);
+  });
+
   it("goes on when a file another run deletes meanwhile", async () => {
     const { place: p, local } = place();
     writeFileSync(join(local, "a.txt"), "aaaa");

@@ -35,8 +35,7 @@
  *   bytes (`guards.ts`) is refused here and reported, never sent. The agents' scratch
  *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
-import { sha256Hex } from "../../contract/src/digest";
-import { createHash } from "node:crypto";
+import { sha256Hex, sha256Stream } from "../../contract/src/digest";
 import { existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -371,7 +370,7 @@ async function fetchInto(client: SyncClient, path: string, base: string, local: 
     return null;
   }
   const out = safeStream(base, local, modeOf(entry.mode), undefined, dirMode);
-  const hash = createHash("sha256");
+  const hash = sha256Stream();
   let size = 0;
   const take = (piece: Uint8Array) => {
     out.append(piece);
@@ -616,7 +615,7 @@ function overlapOf(atoms: readonly string[]): number {
  */
 async function scanned(base: string, local: string, atoms: readonly string[]):
     Promise<{ sha256: string; chunks: string[]; size: number; secret: boolean } | null> {
-  const whole = createHash("sha256");
+  const whole = sha256Stream();
   const chunks: string[] = [];
   const keep = overlapOf(atoms);
   let tail = Buffer.alloc(0);

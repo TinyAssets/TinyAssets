@@ -76,6 +76,8 @@ end.
 
 ## 6. Files and sandbox
 
+- [x] The sync runner uses the shared incremental digest for downloads and uploads
+  (`untangle-2026-11/sync-stream-digests.md`).
 - [x] 6.1 The trusted file plane: the manifest in the owner's object and the files Worker
   (`owner/src/files.ts`, `platform/files`). Its create-once put on the live bucket is still
   unprobed: §10 step 7.
