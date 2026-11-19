@@ -91,10 +91,10 @@ if (command === "record" && dirs.length === 1) {
   for (const recorder of TABLE) {
     passed = await run(recorder, out) && passed;
   }
-  process.exit(passed ? 0 : 1);
+  process.exitCode = passed ? 0 : 1;
 } else if (command === "diff" && dirs.length === 2) {
-  process.exit(differences(dirs[0]!, dirs[1]!) ? 0 : 1);
+  process.exitCode = differences(dirs[0]!, dirs[1]!) ? 0 : 1;
 } else {
   console.error("usage: npm run record -- <out-dir> | npm run record:diff -- <base> <head>");
-  process.exit(2);
+  process.exitCode = 2;
 }
