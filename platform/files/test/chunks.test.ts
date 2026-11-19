@@ -928,6 +928,31 @@ describe("manifests", () => {
       .toBe("invalid");
   });
 
+  it("retires a root kept on a previous page before deleting its remaining parts", async () => {
+    const space = ns();
+    const gen = "b".repeat(16);
+    const key = await keyOf(space);
+    const parts = [await service().putManifestPart(space, key, gen, 0, bytes("first")),
+                   await service().putManifestPart(space, key, gen, 1, bytes("second"))];
+    await service().putManifestRoot(space, key, gen, parts, [], { s: 1, e: 0 });
+    const root = manifestKey(space, gen);
+    const last = manifestKey(space, gen, 1);
+    const paged = service({
+      list: (options: R2ListOptions) => env.BLOBS.list({ ...options, limit: 2 }),
+      delete: async (batch: string[]) => {
+        if (batch.includes(last)) {
+          expect(await env.BLOBS.head(root)).toBeNull();
+        }
+        await env.BLOBS.delete(batch);
+      },
+    } as unknown as R2Bucket);
+    const first = await paged.sweepManifests(space, [gen], null);
+    expect(first.cursor).toEqual(expect.any(String));
+    expect(first.deleted).toBe(0);
+    expect(await paged.sweepManifests(space, [], first.cursor)).toEqual({ deleted: 1, cursor: null });
+    expect(await keys(space)).toEqual([manifestKey(space, gen, 0)]);
+  });
+
   it("writes a root under the active kid, and wraps an old root's key again in place",
      async () => {
     const space = ns();

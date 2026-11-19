@@ -249,7 +249,8 @@ export interface ChunkStore {
     Promise<void>;
   /**
    * One page of the namespace's generations from `cursor` (null: the first), every object of
-   * one `keep` does not name deleted, roots first; where the next page starts, or null.
+   * one `keep` does not name deleted, roots first. Returns the number of unkept keys on
+   * this page and where the next page starts, or null.
    */
   sweepManifests(ns: string, keep: string[], cursor: string | null):
     Promise<{ deleted: number; cursor: string | null }>;

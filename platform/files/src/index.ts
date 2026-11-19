@@ -620,8 +620,8 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
   /**
    * One page of a sweep of `ns`'s generations: the next `DELETE_BATCH` keys under its manifest
    * prefix after `cursor`, and every one of a generation `keep` does not name deleted, the
-   * roots first. The bucket lists keys in order, and a root's key begins each of its objects',
-   * so a root is listed no later than its objects and never names one gone. Where the next
+   * roots first. The first generation on a continuation can have a root kept on an earlier
+   * page: the owner reads its retained generations again between pages. Where the next
    * page starts, or null after the last.
    */
   async sweepManifests(ns: string, keep: string[], cursor: string | null):
@@ -633,9 +633,13 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     const kept = new Set(keep.map((gen) => generation(gen)));
     const listed = await this.env.BLOBS.list({ prefix: manifestPrefix(ns), limit: DELETE_BATCH,
                                                ...(cursor === null ? {} : { cursor }) });
-    const gone = listed.objects.map((object) => listedGeneration(ns, object.key))
-      .filter((at) => !kept.has(at.gen));
+    const page = listed.objects.map((object) => listedGeneration(ns, object.key));
+    const gone = page.filter((at) => !kept.has(at.gen));
     const roots = gone.filter((at) => at.root).map((at) => at.key);
+    const first = page[0];
+    if (cursor !== null && first && !first.root && !kept.has(first.gen)) {
+      roots.push(manifestKey(ns, first.gen));
+    }
     const objects = gone.filter((at) => !at.root).map((at) => at.key);
     for (const keys of [roots, objects].filter((each) => each.length > 0)) {
       await this.env.BLOBS.delete(keys.map((key) => listedManifest(ns, key)));
