@@ -622,10 +622,11 @@ export class Backups {
         const gen = await this.#write(() => this.#open(now));
         writing = this.#rows().find((row) => row.gen === gen);
       }
-      if (writing !== undefined && !await this.#carry(writing, until)) {
+      const pending = writing === undefined ? null : await this.#carry(writing, until);
+      if (pending !== null) {
         await this.#write(() => this.#sql.exec(
           "UPDATE owner_backups SET retry_at = ? WHERE gen = ? AND state = 'writing'",
-          clock() + MANIFEST_CONTINUE_S, writing.gen));
+          clock() + MANIFEST_CONTINUE_S, pending));
       }
     } catch (error) {
       if (isSlotBusy(error)) {
@@ -749,9 +750,8 @@ export class Backups {
    * newest still lacks what it would have held, so the lane tries the next night, or at once
    * after a migration, which begins a fresh one.
    */
-  async #abandon(row: GenerationRow, why: string | null): Promise<void> {
-    console.error(`a generation was given up (${why ?? "its capture was lost"})`);
-    await this.#write(() => this.#parts.storage.transactionSync(() => {
+  async #abandon(row: GenerationRow, why: string | null): Promise<string | null> {
+    const fresh = await this.#write(() => this.#parts.storage.transactionSync(() => {
       this.#sql.exec("DELETE FROM owner_backups WHERE gen = ?", row.gen);
       this.#owe();
       if (this.#parts.log.state().gen === row.gen) {
@@ -774,7 +774,12 @@ export class Backups {
             "unavailable for too long while it ran. Your data is intact; it is tried again " +
             "the next night.");
       }
+      // A schema change promises a fresh generation immediately. Keep the prior writing
+      // row, capture and notice intact if its replacement cannot open.
+      return why === MANIFEST_SCHEMA ? this.#open(clock()) : null;
     }));
+    console.error(`a generation was given up (${why ?? "its capture was lost"})`);
+    return fresh;
   }
 
   /**
@@ -912,78 +917,77 @@ export class Backups {
 
   /**
    * The generation of `row` carried on until it finishes or the pass does: base bursts, each
-   * followed by shipping the log so far. Whether it ended (finished, given up, or halted), so
-   * a pass that did not finish backs off.
+   * followed by shipping the log so far. Returns the generation that needs another pass,
+   * including a new-schema replacement, or null once finished, given up or halted.
    */
-  async #carry(row: GenerationRow, until: number): Promise<boolean> {
+  async #carry(row: GenerationRow, until: number): Promise<string | null> {
     const { ns, key } = await this.#parts.space();
     const log = this.#parts.log;
     if (row.schema !== MIGRATIONS.length) {
       // A migration ran while it was under way: its base and log are the old schema's, so it
       // is given up, loudly, and a fresh one begun under the new (review L5-2).
-      await this.#abandon(row, MANIFEST_SCHEMA);
-      const gen = await this.#write(() => this.#open(clock()));
+      const gen = await this.#abandon(row, MANIFEST_SCHEMA);
       return this.#carry(this.#rows().find((each) => each.gen === gen)!, until);
     }
     if (log.state().gen !== row.gen) {
       await this.#abandon(row, null);  // a generation whose capture is not its own
-      return true;
+      return null;
     }
     while (clock() < until) {
       if (this.#parts.halted()) {
-        return true;
+        return null;
       }
       if (log.state().overflow === 1) {
         await this.#abandon(row, MANIFEST_LOG_OVERFLOW);
-        return true;
+        return null;
       }
       const at = this.#rows().find((each) => each.gen === row.gen)!;
       if (at.cursor === ENDED) {
         const shipped = await this.#ship(ns, key, at, at.e!, until);
         if (shipped === null) {
           await this.#abandon(at, MANIFEST_CEILING);
-          return true;
+          return null;
         }
         if (!shipped) {
-          return false;
+          return row.gen;
         }
         if (this.#parts.halted()) {
-          return true;  // the root carries the key: none is written once the erasure began
+          return null;  // the root carries the key: none is written once the erasure began
         }
         await this.#finish(ns, key, at.gen);
         // What it supersedes goes in the same pass.
         await this.#write(() => this.#prune(clock()));
         await this.#sweep(until);
-        return true;
+        return null;
       }
       // The log so far first: what a pass that ended mid-burst, and the wait for the next,
       // left unshipped never waits on another burst too.
       const first = await this.#ship(ns, key, at, log.state().last, until);
       if (first === null) {
         await this.#abandon(at, MANIFEST_CEILING);
-        return true;
+        return null;
       }
       if (!first) {
-        return false;
+        return row.gen;
       }
       if (this.#parts.halted()) {
-        return true;  // an erasure begun while the log shipped: no burst begins
+        return null;  // an erasure begun while the log shipped: no burst begins
       }
       // A burst of whole base pages, its parts put and recorded (`#burst`), in a frame of
       // its own, so nothing of it is live once its log ships (rvburst X2).
       const burst = await this.#burst(ns, key, at);
       if (burst === "ended") {
-        return true;
+        return null;
       }
       const e = burst.e;
       // And the log written while the burst's parts were put and recorded, before the next
       // burst, each segment under its own hold (cut at E once fixed).
       if (await this.#ship(ns, key, at, log.state().last, until, e) === null) {
         await this.#abandon(at, MANIFEST_CEILING);
-        return true;
+        return null;
       }
     }
-    return false;
+    return row.gen;
   }
 
   /**

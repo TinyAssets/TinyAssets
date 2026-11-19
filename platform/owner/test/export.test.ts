@@ -29,6 +29,7 @@ import {
 import type { ChunkStore } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
+import { ChangeLog } from "../src/changelog";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import {
@@ -336,6 +337,63 @@ describe("a generation", () => {
         expect([call, when, digest(replay(made.lines))]).toEqual([call, when, made.atE]);
       }
     }
+  });
+
+  it("retains the old-schema capture until its replacement can actually start", async () => {
+    const o = await owner();
+    const { gen: before } = await generate(o.stub, { onePass: true });
+    await sqlIn(o.stub, "UPDATE owner_backups SET schema = ? WHERE gen = ?",
+                MIGRATIONS.length - 1, before);
+    const after = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const { backups } = storesOn(state);
+      const opening = vi.spyOn(ChangeLog.prototype, "begin").mockImplementationOnce(() => {
+        throw new Error("new schema opening interrupted");
+      });
+      try {
+        await backups.run(clock(), clock() + 60);
+      } finally {
+        opening.mockRestore();
+      }
+      return {
+        writing: backups.writing(),
+        retry: backups.next(clock()),
+        capture: state.storage.sql.exec("SELECT gen, capturing FROM log_capture").one(),
+        sweep: state.storage.sql.exec("SELECT sweep FROM owner_backup_state").one(),
+        notices: state.storage.sql.exec(
+          "SELECT type FROM owner_notices WHERE type = 'manifest_schema'").toArray(),
+      };
+    });
+    expect(after).toMatchObject({ writing: before, capture: { gen: before, capturing: 1 },
+                                  sweep: { sweep: 0 }, notices: [] });
+    expect(after.retry).toBeGreaterThan(clock());
+    vi.useFakeTimers({ toFake: ["Date"], now: after.retry! * 1000 });
+    const replaced = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const { backups } = storesOn(state);
+      const at = clock();
+      const until = at + 1;
+      const begin = ChangeLog.prototype.begin;
+      const tick = vi.spyOn(ChangeLog.prototype, "begin").mockImplementationOnce(function (
+        this: ChangeLog, gen: string,
+      ) {
+        const seq = begin.call(this, gen);
+        vi.setSystemTime(until * 1000);  // time ran out after the replacement began
+        return seq;
+      });
+      try {
+        await backups.run(at, until);
+      } finally {
+        tick.mockRestore();
+      }
+      return { gen: backups.writing(), next: backups.next(until), until };
+    });
+    expect(replaced.gen).not.toBe(before);
+    expect(replaced.next).toBe(replaced.until + MANIFEST_CONTINUE_S);
+    vi.setSystemTime(replaced.next! * 1000);
+    const retry = await generate(o.stub);
+    expect(retry.gen).toBe(replaced.gen);
+    expect(retry.lines[0]).toMatchObject({ t: "header", schema: MIGRATIONS.length });
+    expect(await sqlIn(o.stub, "SELECT type FROM owner_notices WHERE type = 'manifest_schema'"))
+      .toEqual([{ type: "manifest_schema" }]);
   });
 
   it("gives up one a migration ran under, loudly, and begins a fresh one under the new " +
