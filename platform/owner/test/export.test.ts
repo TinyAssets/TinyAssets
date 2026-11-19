@@ -29,7 +29,6 @@ import {
 import type { ChunkStore } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
-import { ChangeLog } from "../src/changelog";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import {
@@ -131,19 +130,20 @@ describe("the owner export", () => {
                                       "CROSS JOIN log_capture");
     const before = await state();
     const session = o.session();
-    const error = await runInDurableObject(o.stub, async (instance: OwnerDO) => {
-      const begin = ChangeLog.prototype.begin;
-      const capture = vi.spyOn(ChangeLog.prototype, "begin").mockImplementationOnce(function (
-        this: ChangeLog, gen: string,
-      ) {
-        begin.call(this, gen);
-        throw new Error("generation interrupted");
+    const error = await runInDurableObject(o.stub, async (instance: OwnerDO, state) => {
+      const storage = state.storage.sql;
+      const exec = storage.exec.bind(storage);
+      const opening = vi.spyOn(storage, "exec").mockImplementation((query, ...bindings) => {
+        if (query.startsWith("INSERT INTO owner_backups")) {
+          throw new Error("generation interrupted");
+        }
+        return exec(query, ...bindings);
       });
       try {
         return await instance.ownerExport(session, { cursor: null })
           .then(() => null, (err: unknown) => String(err));
       } finally {
-        capture.mockRestore();
+        opening.mockRestore();
       }
     });
     expect(error).toContain("generation interrupted");
