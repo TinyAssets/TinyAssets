@@ -58,10 +58,10 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
 - [x] The new case fails on main source `f934871ad`: log cursor zero, zero recorded bytes and peak, yet one staged row survives. It passes on seven-branch tree `1cbfcc25`, which applies only the revised tests to `9d4b4628` (one passed, 66 outside the selection). Together with the prior seven selected cases this checks both the nested gate and an interrupted segment. These two ordinary Workerd entrypoint runs used identical, locally prebuilt Wrangler dry-run bundles for Files, Gateway and Codemode. Their source, config, contract, CI and lockfile matched. The owner Worker ran each tree's source.
 - [x] A second local Workerd fixture switched the actual restore and gate modules over the same Durable Object database using Miniflare configuration reloads. All nine writer/reader combinations matched the SQLite table above, including the stored peak.
 - [x] Independently checked the public owner restore on the staged runtime with a 97-byte legacy prefix. In the focused test, immediately after dropping the trigger, take the first line of the first segment from the real Files manifest. Insert it into `restore_rows(tbl,k,row,n)` using the exported table key, JSON row and original newline-inclusive byte count. Keep the cursor and counters at zero. The normal retry answered done and the complete restored-row digest matched, then the final count assertion failed: staged and peak both read 98 against the immutable generation's 195. This diagnostic seeds the older writer's prefix. The separate runtime-switch fixture produces it by interrupting the actual main writer.
-- [ ] The original multi-segment capture/peak case is still unverified on this head. Its ordinary rerun exited 137. The smaller segment case has its own completed verdict.
+- [x] The original multi-segment capture/peak case passed on e9453549 in the ordinary Node 24 Workerd suite. It checks the restored rows and the staged-byte peak against the generation. An earlier ordinary run exited 137.
 - [ ] Establish the historical recovery route before enabling mixed-version restores. An active log record answers a same-generation begin in place. A release after wipe refuses. A repeated wipe on an active step returns its status. Existing confirmed wipe/restart is available from a failed restore and retains the namespace, original generation, undo generation and hold time. Verify recovery for both pinned and lost owners. Completed historical adoptions need a separate inventory because their staging rows have been cleared.
 
-- [ ] Pinned undo evidence. The ordinary run on `30545b0a` reached the second
+- [x] Pinned undo evidence. The earlier ordinary run on `30545b0a` reached the second
   confirmed wipe after a real digest failure and admission refusal. The Worker
   then exited before the final digest assertion returned. A separate attempt
   with a smaller owner exited 137. Preserve the existing full undo scenario and
@@ -82,7 +82,10 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
   completed historical restores still need a recovery decision.
 - On b692a671, Node 22 TypeScript reported zero diagnostics for the restore
   test and owner restore module with the corrected status assertion. The
-  ordinary Vitest run for the pinned undo scenario is still outstanding.
+  ordinary Node 24.22.3 Vitest run on e9453549 passed the corrected pinned undo
+  and multi-segment capture/peak cases together (2 passed, 63 outside the filter).
+  After the digest failure the undo test observed admission refusal, the retained
+  pin through a second confirmed wipe, and the retained generation at restart.
 
 - [x] Checked the lost-owner counterpart to the pinned recovery above on the
   public owner and Files Workers from b692a671. A local fixture exported a
