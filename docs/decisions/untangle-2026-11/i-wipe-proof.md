@@ -46,3 +46,9 @@ window command passed all 42, including both stopping boundaries for a
 one-key listing. TypeScript passed with the platform compiler options and
 all importer TypeScript roots. This resolves the ordinary combined-run gap.
 The last listing still cannot prevent a subsequent producer write.
+
+### Recovery of a historically partial rehearsal
+
+- [x] On 929c440f, 26 ordinary window tests passed with Node 24.22.3. The new regression stages one owner's index from a larger synthetic cohort. Removing the matching local bundle stopped cleanup before any discard and preserved every staged key. Restoring that same folder allowed one discard and a clean close. The other local bundles received no discard.
+- [x] Three additional offline Node 24 cases exercised the unchanged cleanup implementation. A missing final digest file and a torn file each allowed cleanup of the one matching staged index, with zero remaining staging entries and clean Files evidence. The third case independently removed and returned the matching bundle. All used the real host window functions with synthetic storage and queue responses.
+- [ ] Admission still needs a complete cohort and fresh deletion comparison. With only one matching bundle present both locally and in staging, a separate offline test observed verify report one clean bundle, admit record one owner, and close report one admitted with none left. These local counts cannot discover the missing eligible owners. The existing comparison on PR #5688 reads the frozen source and both private records. Preserve the original bundle folders for rehearsal cleanup. Producer writes after the final listing remain open.
