@@ -93,7 +93,14 @@ export class WriteGate {
       sql: Object.freeze({ exec }),
       transactionSync: <T>(closure: () => T): T => {
         this.#held();
-        return storage.transactionSync(closure);
+        const wroteBefore = this.#wrote;
+        try {
+          return storage.transactionSync(closure);
+        } catch (error) {
+          // SQLite discarded this savepoint. Earlier writes in the unit still count.
+          this.#wrote = wroteBefore;
+          throw error;
+        }
       },
     });
   }

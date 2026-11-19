@@ -544,6 +544,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `restorableAt` and `adopt` reading the generation's schema; owner migration 16.
   - [x] Owner migration 16's pin PR, after the schema restore merges
     (`untangle/r-restore-schema-pin16`).
+  - [ ] Recheck backup eligibility after a failed restore or export transaction. A rolled-back
+    savepoint must preserve the backup's first-change time, including when the caller catches
+    the error. A write already committed earlier in the same gate unit still counts. Verify
+    the shared gate alongside backup capture, restore and export before the stage rehearsal.
   - [ ] Live, on the stage: a rehearsal owner pinned, wiped and restored, its check equal,
     proving a synced write outlives the wipe's reset in production (`r5w.md` item 2;
     `facet-probe.md` Q8 never sampled it).

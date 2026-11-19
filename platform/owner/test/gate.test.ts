@@ -33,6 +33,34 @@ describe("the write gate", () => {
     expect(await gate.write(() => undefined)).toBeUndefined();
   }));
 
+  it("marks a backup changed only when a nested transaction leaves a write", () =>
+    withGate(async (gate, state) => {
+      let marks = 0;
+      gate.onChange(() => { marks++; });
+      const insert = (n: number) => gate.storage.sql.exec("INSERT INTO gate_probe VALUES (?)", n);
+      const rolledBack = () => gate.storage.transactionSync(() => {
+        insert(2);
+        throw new RangeError("rolled back");
+      });
+      await gate.write(() => { expect(rolledBack).toThrow("rolled back"); });
+      expect(rows(state)).toEqual([]);
+      expect(marks).toBe(0);
+
+      await expect(gate.write(() => {
+        insert(1);
+        rolledBack();
+      })).rejects.toThrow("rolled back");
+      expect(rows(state)).toEqual([1]);
+      expect(marks).toBe(1);
+
+      await gate.write(() => {
+        expect(rolledBack).toThrow("rolled back");
+        gate.storage.transactionSync(() => insert(3));
+      });
+      expect(rows(state)).toEqual([1, 3]);
+      expect(marks).toBe(2);
+    }));
+
   it("keeps a unit's atomicity its own: what it wrote before it threw stands, its " +
      "transactionSync rolls back", () => withGate(async (gate, state) => {
     const refused = await failure(() => gate.write(() => {
