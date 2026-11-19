@@ -146,3 +146,36 @@ census cannot authorize a cutover. The replay used synthetic data only.
   private, bounded and cleaned up on success, refusal and interruption.
 - Measure the full census on representative backup shapes and the planned host
   before claiming a cutover window. The batch timings above cover inline files.
+
+### Same import estimate, four different starter fits
+
+The real host census and measure on Node 22 and 24 each accepted four synthetic
+backups with eight imported entries and no collection rows. Every one measured
+43,257 stored bytes, including 4,687 inline bytes. The two additional imported
+files had identical paths and lengths across backups. Their bytes either matched
+or differed by one byte from the projected starter's 2,945-byte schedule skill
+and 38,570-byte knowledge reference. That starter combines the carried content
+from `7d314f374` and watcher PR #5692 at `3f8be4de9`. Owner and Files source on
+both heads matches main `f934871ad`.
+
+Each host-generated bundle went through the owner import methods in local
+workerd. The chunk went through begin, the actual Files Worker and local R2,
+stored acknowledgement and commit. The real starter ran on the same SQLite
+owner after import. Each row below completed with 14 receipts at the exact tier
+and stopped with 13 receipts, reconciled version zero and a failure notice at
+one byte below. Twelve independent owner runs covered ample capacity and both
+sides of each boundary.
+
+| Imported content shared with the starter | Minimum passing tier in stored bytes | Final index charge in bytes |
+| --- | ---: | ---: |
+| Both files | 73,799 | 64,102 |
+| Only the chunked reference | 76,744 | 69,058 |
+| Only the inline schedule skill | 112,369 | 65,314 |
+| Neither file | 115,314 | 70,270 |
+
+The two extremes differ by 41,515 stored bytes. Adding a constant starter byte
+allowance to the reported import would reject a fitting owner in one case.
+Leaving the starter out would admit an owner whose seed cannot finish in all
+four. These measurements cover fresh owners with distinct imported paths and
+the named package. The production dependency for replaying the owner's charges
+and the representative whole census remain open.
