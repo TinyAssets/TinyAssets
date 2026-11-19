@@ -665,6 +665,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 7. The dark redeploy of the untangled build
 
+- [x] A signal from the pinned Wrangler CLI stops the platform kit before the next step.
+  Reconcile any uncertain remote effect before retrying (`untangle-2026-11/wrangler-command-exit.md`).
+
 - [x] The migration locks pin E2's owner 5 and SandboxControl 2, and S2's SandboxControl 3
   (#5519), first: the kit's `locks` step refuses every mode until they do (`deploy/checklist.md`
   § The migration locks; #5511).

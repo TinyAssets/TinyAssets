@@ -21,6 +21,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -2288,6 +2289,22 @@ describe("the parts of a run", () => {
     const run = wranglerFor(parse(["--mode", "dark"], ENV, w.io), ACCOUNT);
     expect(() => run(["versions", "upload"]))
       .toThrow("wrangler versions upload failed (exit 1): the API refused it");
+  });
+
+  it("stops when the running Wrangler CLI is terminated", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wrangler-signal-"));
+    try {
+      const interrupt = join(dir, "interrupt.cjs");
+      const entry = createRequire(join(PLATFORM, "package.json")).resolve("wrangler");
+      writeFileSync(interrupt, `if (process.argv[1] === ${JSON.stringify(entry)}) ` +
+        'process.kill(process.pid, "SIGTERM");');
+      const env = { ...ENV, NODE_OPTIONS: `--require=${JSON.stringify(interrupt)}` };
+      const run = wranglerFor(parse(["--mode", "dark"], env, { ...world().io, spawn: spawnSync }),
+                              ACCOUNT);
+      expect(() => run(["--version"])).toThrow("wrangler --version failed (SIGTERM)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("hands each route from the old proxy to the doors one at a time, no path unserved " +

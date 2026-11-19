@@ -695,7 +695,8 @@ export function wranglerFor(run: Run, account: string): Wrangler {
     });
     if (result.status !== 0) {
       // Its stderr alone: wrangler never echoes a secret's value.
-      throw new Error(`wrangler ${args.slice(0, 3).join(" ")} failed (exit ${result.status}): ` +
+      const cause = result.signal ?? `exit ${result.status}`;
+      throw new Error(`wrangler ${args.slice(0, 3).join(" ")} failed (${cause}): ` +
                       `${String(result.stderr).trim()}`);
     }
     return String(result.stdout);
