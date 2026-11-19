@@ -28,3 +28,16 @@
   clean and ignored children, a changed parent type, cursor replay, scope
   narrowing and bounded retention. The separate question about a purged
   original file mode does not apply to a child that never had a version.
+
+- [x] On the ten-stage rehearsal, three local Owner Workerd controls passed
+  through the normal lease door. A write with a known deleted file version
+  kept the original absent and saved a conflict copy. A write below a parent
+  replaced with a file saved a conflict beside that parent. A new child sent
+  with base null after an empty parent's removal committed at its original
+  path and recreated the parent. These three outcomes are distinct. The
+  last one describes current behavior, not acceptance of directory revival.
+- [ ] Before implementing retry, determine how the runner retains enough
+  information about the parent change to keep the API's deletion and recover
+  the local edit as required by ADR-032. Reoffering the base-null child alone
+  cannot express a previously deleted directory. Full platform types passed
+  for the standalone regression; it remains red until retry is implemented.
