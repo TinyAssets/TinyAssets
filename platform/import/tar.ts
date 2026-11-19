@@ -36,7 +36,14 @@ function header(name: Buffer, type: string, size: number, mode: number, mtime: n
   octal(0, 8).copy(block, 108);
   octal(0, 8).copy(block, 116);
   octal(size, 12).copy(block, 124);
-  octal(Math.max(0, Math.floor(mtime)), 12).copy(block, 136);
+  const seconds = Math.floor(mtime);
+  if (seconds < 0) {
+    // GNU tar encodes pre-epoch seconds as a signed base-256 field, sign-extended to 12 bytes.
+    block.fill(0xff, 136, 148);
+    block.writeBigInt64BE(BigInt(seconds), 140);
+  } else {
+    octal(seconds, 12).copy(block, 136);
+  }
   block.fill(0x20, 148, 156);
   block.write(type, 156, "latin1");
   link.copy(block, 157, 0, Math.min(link.length, 100));

@@ -337,6 +337,9 @@ describe("the bundle builder", () => {
 
   it("keeps what the sync's defaults ignore verbatim in ignored.tar, counted", () => {
     const { f, out, options } = setup();
+    const original = join(f.tree(ALICE), "novel", "workspace", "node_modules", "dep", "index.js");
+    const beforeEpoch = new Date(-1250);
+    fs.utimesSync(original, beforeEpoch, beforeEpoch);
     buildBundles(f.copy, options);
     const bundle = join(out, keyOf(ALICE));
     const tar = mkdtempSync(join(tmpdir(), "ta-tar-"));
@@ -346,9 +349,9 @@ describe("the bundle builder", () => {
     execFileSync("tar", ["-xf", join(tar, "ignored.tar"), "-C", tar]);
     const dep = join(tar, "novel", "workspace", "node_modules", "dep");
     expect(readdirSync(dep).sort()).toEqual(["index.js", "package.json"]);
-    expect(readFileSync(join(dep, "index.js"))
-      .equals(readFileSync(join(f.tree(ALICE), "novel", "workspace", "node_modules", "dep",
-                                "index.js")))).toBe(true);
+    const restored = join(dep, "index.js");
+    expect(readFileSync(restored)).toEqual(readFileSync(original));
+    expect(lstatSync(restored).mtimeMs).toBe(Math.floor(lstatSync(original).mtimeMs / 1000) * 1000);
     expect(manifest(bundle).some((e) => e.path.includes("/node_modules"))).toBe(false);
   });
 

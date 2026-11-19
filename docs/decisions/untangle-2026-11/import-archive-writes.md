@@ -40,3 +40,14 @@ method that closed the output descriptor.
   shape registry and clean-sheet OpenSpec validation passed. An earlier guard
   attempt on a sparse checkout omitted required repository inputs and failed
   before this full result. This rehearsal covers the 23 named stages only.
+
+- [x] Both ignored and refused trees use the same archive header. It previously
+  changed a file's pre-1970 timestamp to January 1, 1970. The ordinary build and
+  GNU tar extraction reproduced zero milliseconds for an expected -2000 on
+  fa92c218. They now preserve the original whole second using the same signed
+  field as GNU tar. The focused build and extraction passed on Node 24.
+  Python tarfile independently read all eight source timestamps and their file
+  contents from Node 22 and 24 archives, including -2147483648, -1, epoch and
+  10000000000 seconds. File, directory and symlink headers use this writer.
+- [ ] Run the ordinary importer, platform typecheck and combined archive case
+  on this correction. Coordinator integration on main remains open.
