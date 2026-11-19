@@ -1,8 +1,8 @@
 /**
  * The doors Worker (ADR-032 Decision 2): the binder, our authorization server, the
  * stateless MCP door, `/api` keys, `/hooks/inbound` and the owner surface (`doors.ts`).
- * Not deployed: its checked-in config has no routes and placeholder KV ids, and the deploy
- * kit (`platform/deploy/`) writes the deployed one. The upstream sign-in is the configured
+ * The deploy kit (`platform/deploy/`) supplies the KV IDs and applies the public routes
+ * during handover. The upstream sign-in is the configured
  * owner issuer's (`upstream.ts` `upstreamOf`), or `UNWIRED` until the deploy configures it,
  * so a sign-in fails loudly; the source records are the bundled ones.
  */

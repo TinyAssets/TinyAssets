@@ -1,7 +1,6 @@
 /**
- * The model gateway Worker (ADR-032 Decision 3; research §12 G1). Not deployed: its
- * config has no routes and no URL, so only the service bindings of the owner Worker and
- * the doors Worker (the binder) reach it, and it binds nothing, so it reaches no object.
+ * The model gateway Worker (ADR-032 Decision 3, research §12 G1) is reached through
+ * the owner and doors Workers' service bindings. Its own config binds no Durable Object.
  *
  * - `seal`: a pasted API key, sealed with its source record (§7.2 inline connect).
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
