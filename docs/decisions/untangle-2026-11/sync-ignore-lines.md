@@ -1,4 +1,6 @@
-# Sync-ignore lines in the runner and the owner (2026-11-18)
+# Sync-ignore lines in the runner and the owner
+
+**Staged on November 19.** The runner, owner notices and importer share the matcher. Source and caller regressions are on `a03c36176cda29dd806277a184bb2ee6e24205d5`. The updated memory test is on `7ee41a2ce3d61c0b7dbfce5179e8624195969a69`. The pinned sandbox run and the coordinator’s post-merge verification are still open.
 
 The founder adopted Git's byte-oriented ignore semantics. An owner may add a
 custom rule that holds back edits to an already-kept file. The shipped default
@@ -12,7 +14,7 @@ The matcher and owner also trimmed leading whitespace to classify a default or
 comment. An owner rule for a filename beginning with a space could therefore
 leave the runner syncing its edits or suppress the owner's notice.
 
-Both readers now retain the original spelling of decoded lines. The parser
+The first correction kept the spelling of valid UTF-8 lines in both readers. The parser
 removes one mark at the start of the file, original line endings and unescaped
 trailing spaces. Rule names, default classification, notices and unapplied
 line reports consume that spelling. A mark after the first position stays in
@@ -44,22 +46,17 @@ give wrong answers. Git matches the bracket class with bytes `5b 61 ff 5d` again
 
 An embedded NUL is valid UTF-8 but also needs file-level interpretation.
 With `one NUL two LF` (hex `6f 6e 65 00 74 77 6f 0a`), Git ignored `one`.
-Both the old and corrected runners sent the tracked edit to `one`.
+Both main and the first text-only correction sent the tracked edit to `one`.
 A following ordinary line still works in Git.
 
-The open dependency is to keep original rule bytes through line boundaries, tokenization,
-duplicate-rule identity, indexing and byte accounting. Keep the owner's
-human-readable line report distinct from byte identity, respect the existing
-read bound and check mixed-byte rules against Git and the real file-sync path.
-This correction covers well-formed UTF-8 text rules without NUL. A full matcher review and the
-standing pinned-template performance checks remain open.
+These failures on the first correction led to the raw reader and real caller tests below.
 
 ## Repeated wildcard precedence
 
 - [x] On `e07b1dcf93decd82b98fb5712e9a4973b51e4a24`, Git ignored `xa` for the file lines `x?`, `!x[ab]`, `x?`, but the shared matcher sent it. The compiler updated the repeated rule number without moving its accepting state. This also affected anchored paths and directory walks.
 - [x] Reuse each admitted rule's states and place them at its last occurrence when compiling. A permanent Git differential on Node 22 failed on the previous source and passed on the corrected source, covering anchored and unanchored rules, both polarities, files, directories and descendants.
 - [x] On `92a4a8afd1b738682c52a01934dd3d86a89a5657`, the ordinary contract suite passed 300 tests, with 18 size-tagged tests excluded. Both separate Git comparisons passed, using all 310 pinned GitHub templates and 120 generated lists.
-- [ ] Two caller regressions now exercise the unfinished raw-byte path. The runner must send the genuine replacement-character filename when a raw FF rule does not name it. An owner replacing FF with the actual UTF-8 spelling of U+FFFD must see the new-rule notice. Recheck against Git, both ordinary entry points, raw size accounting and the pinned sandbox measurements.
+- [x] Two caller regressions exercise the raw-byte path. The runner must send the genuine replacement-character filename when a raw FF rule does not name it. An owner replacing FF with the actual UTF-8 spelling of U+FFFD must see the new-rule notice. Their original failures and corrected results are recorded below.
 
 ## Raw rule reader under verification
 
@@ -67,11 +64,11 @@ Both permanent consumer tests on `c657e4d9264d313bcd36a2805df79ec65b03c1e5` fail
 
 The candidate reads each physical byte range once for its line boundary. The shared parser removes the physical terminal CR before interpreting NUL, then trims unescaped trailing spaces. The compiler uses the original end offset for the list ceiling, byte identities for duplicate rules and defaults, and strictly decodes complete unescaped literals before indexing valid path names. The owner compares the same normalized byte identities.
 
-The new runner regression passed on the initial candidate, and three focused contract checks passed after the type annotation correction. The two template and generated-list comparisons passed on the initial candidate. A concurrent full contract run and a runner-file run lost a test process to SIGKILL. The first scoped typecheck identified a missing TextDecoder option and the required generated runner module. Rebuild the runner, verify the corrected typecheck and repeat the two suites serially. The real owner notice check, broader caller comparison and pinned performance and memory checks remain open at this checkpoint.
+The new runner regression passed on the initial candidate, and three focused contract checks passed after the type annotation correction. The two template and generated-list comparisons passed on the initial candidate. A concurrent full contract run and a runner-file run lost a test process to SIGKILL. The first scoped typecheck identified a missing TextDecoder option and the required generated runner module. The final serial runs and corrected scoped typecheck are recorded below.
 
 The published candidate `fea8933c2e8be4e085f58bfba0c8ebcdee193895` passed all 20 ordinary sync runner tests in a serial retry. Six real owner notice tests passed on the preceding candidate with the same matching behavior. Independent checks using the production sync runner, a SQLite mirror, owner reaction, and Git on Node 24 passed seven caller scenarios. The combined name/path state ceiling was exercised at exactly 8,192 states. These checks used local fixtures.
 
-The serial contract run on that candidate passed 301 and failed one: an unapplied rule supplied as a JavaScript string lost its original unpaired surrogate in the reported spelling. Preserve the original display slice for string inputs. The independent Git comparison also found that inherited JavaScript property names were accepted as POSIX classes, including `constructor` and `toString`. Limit the lookup to table entries. Three focused contract checks passed on this correction; the broader suites, generated runner and scoped types are being rechecked. The spatial and timing limits still need their own evidence.
+The serial contract run on that candidate passed 301 and failed one: an unapplied rule supplied as a JavaScript string lost its original unpaired surrogate in the reported spelling. Preserve the original display slice for string inputs. The independent Git comparison also found that inherited JavaScript property names were accepted as POSIX classes, including `constructor` and `toString`. Limit the lookup to table entries. Three focused contract checks passed on this correction.
 
 ## Behavioral verification and remaining acceptance
 
@@ -79,4 +76,5 @@ The serial contract run on that candidate passed 301 and failed one: an unapplie
 - [x] Two pre-existing local size tests passed separately. The bundled sync completed a 20 MiB list under the configured heap limit. The existing 14-shape heap test passed with text-list inputs. This test change supplies the same shapes as the original stored file bytes that the runner now passes to the matcher.
 - [x] Reconciled the sole overlapping source hunk with PR #5686 at `b6a50a551d6d60aeb4c39cf4eb30a44a28724a1c` by retaining the complete deletion of its unused wildcard function. All six focused matcher checks passed on the combined tree `6794fee2cd94010f8a6cad7d4586c83c075ab9c0`. Its four-family recorder comparison still belongs to its original head.
 - [x] Searched 159 remote heads for references in 642 platform JS/TS paths (1,707 distinct blobs). Historical owner implementations and older owner branches read the older rule-list API. This branch carries the current owner and runner transitions together. The search covered source references and does not establish behavior on those historical branches.
-- [ ] Verify the updated raw-file heap test. The real pinned sandbox pair and the post-merge check on main remain open. The scoped rescan boundary is independently held.
+- [x] On `7ee41a2ce3d61c0b7dbfce5179e8624195969a69`, the updated local test passed all 14 file shapes with three heap samples per shape. In an isolated local mount and network namespace, the bundled probe verified its installed runner's hash and measured 3.508 ns per step against the 6 ns ceiling. The Node 22 importer bundle built, all 167 importer tests passed, and all 64 kernel and import isolation checks passed. Initial attempts lacked workflow fixtures in a sparse checkout and exposed temporary dependency links as unclassified paths. These final runs used the complete checkout with dependencies in directories.
+- [ ] Execute the paired timing check in the pinned sandbox under the existing release process. Repeat the joined verification after integration on main and before cutover. The scoped rescan boundary is independently held.
