@@ -962,7 +962,8 @@ async function piece(o: RestoreDoorNeeds, door: Door<undefined>, source: Bucket)
         const root = await rootOf(source, held.ns, held.gen);
         await o.door(() => {
           if (still()) {
-            finish(o, held, root);
+            // Adoption, the held columns and the done marker must survive together.
+            o.storage.transactionSync(() => finish(o, held, root));
           }
         });
       }

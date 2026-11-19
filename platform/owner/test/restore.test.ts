@@ -251,6 +251,12 @@ describe("a restore", () => {
         tiers: TIERS } as Binding, { detail: "x" }))).message).toBe(RESTORING);
     // No lane runs while a restore is under way.
     expect(await laneJobs(stub)).toEqual({});
+    await sqlIn(stub, "CREATE TRIGGER reject_done BEFORE UPDATE OF step ON owner_restore " +
+      "WHEN NEW.step = 'done' BEGIN SELECT RAISE(ABORT, 'finish interrupted'); END");
+    await expect(stepped(stub, o.name)).rejects.toThrow(/finish interrupted/);
+    expect(await sqlIn(stub, "SELECT gen FROM owner_backups WHERE gen = ?", gen.gen)).toEqual([]);
+    expect(await sqlIn(stub, "SELECT state FROM owner_admission")).toEqual([{ state: "pending" }]);
+    await sqlIn(stub, "DROP TRIGGER reject_done");
     const answers = await stepped(stub, o.name);
     const done = answers.at(-1)!;
     expect(done).toMatchObject({ step: "done", gen: gen.gen, state: "admitted", reasons: [],
