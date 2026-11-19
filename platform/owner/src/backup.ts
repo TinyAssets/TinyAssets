@@ -68,6 +68,8 @@ import { sha256 } from "../../contract/src/digest";
 import {
   CHUNK_BYTES, GC_GRACE_S, LOG_BYTES, MANIFEST_PARTS, SLOT_WAIT_MS,
 } from "../../contract/src/limits";
+import type { Admission } from "./admission";
+import type { Lane } from "./schedule";
 import type { ChangeLog } from "./changelog";
 import { clock, clockMs } from "./clock";
 import {
@@ -330,6 +332,11 @@ function fallback(done: readonly GenerationRow[], now: number): GenerationRow | 
   return done.slice(0, -1).reverse().find((row) => restorableAt(row, now)) ?? null;
 }
 
+/** The account states a recovery generation can restore at the end of its log. */
+export function liveRecoveryState(state: unknown): boolean {
+  return state === "admitted" || state === "suspended";
+}
+
 /** What the manifest lane runs on. */
 interface BackupParts {
   readonly storage: OwnerStorage;
@@ -341,8 +348,8 @@ interface BackupParts {
   /** The owner's namespace and wrapped key, made on first use (`Files.space`). */
   readonly space: () => Promise<ChunkSpace>;
   readonly owner: () => string;
-  /** Whether the object serves its owner yet (its first door ran): none before, nothing to keep. */
-  readonly serves: () => boolean;
+  /** The bound owner's admission, or null before its first binding. */
+  readonly servedState: () => Admission["state"] | null;
   /** Whether the owner is being erased: a pass under way stops before its next put. */
   readonly halted: () => boolean;
   /** The generation a restore holds (`restore.ts`), which no prune deletes; null for none. */
@@ -379,10 +386,35 @@ export class Backups {
                       "RETURNING gen", clock()).toArray().length > 0;
   }
 
-  /** When (s) the last generation was begun, given up or not, or null for none. */
+  /** The cadence began on first service and restarts at each actual generation opening. */
   #began(): number | null {
     return this.#sql.exec<{ began_at: number | null }>(
       "SELECT began_at FROM owner_backup_state").one().began_at;
+  }
+
+  /** A first binding starts the nightly cadence even before there is a generation. */
+  firstNight(now: number): void {
+    this.#sql.exec("UPDATE owner_backup_state SET began_at = ? WHERE began_at IS NULL", now);
+  }
+
+  /** Resume owners bound before the cadence was recorded on their first door. */
+  resumeFirstNight(now: number, appointment: () => number | null): void {
+    if (this.#began() !== null || this.#parts.servedState() === null) {
+      return;
+    }
+    const last = this.#rows().at(-1);
+    if (last !== undefined) {
+      this.firstNight(last.started_at);
+      return;
+    }
+    const { sweep, lost, told } = this.#sql.exec<{ sweep: number; lost: number | null; told: number }>(
+      "SELECT sweep, lost, told FROM owner_backup_state").one();
+    const due = sweep === 0 && lost === null && told === 0 ? appointment() : null;
+    // An original nightly appointment identifies its UTC day even if its alarm was held later.
+    // A sweep, expiry, missing job or different time cannot establish when this owner first served.
+    const offset = spread(this.#parts.owner());
+    const night = due !== null && (due - offset) % DAY_S === 0 ? due - DAY_S : now;
+    this.firstNight(Math.min(now, night));
   }
 
   /** Whether the owner changed since the newest finished generation began. */
@@ -479,9 +511,16 @@ export class Backups {
       started_at: row.started_at, finished_at: row.finished_at! }));
   }
 
-  /** When the lane next has work, in seconds, never before `now`; null before any owner. */
+  /** Automatic jobs can survive a previous release. Recheck admission before even sweeping. */
+  readonly nightly: Lane = {
+    next: (now) => this.next(now),
+    run: (now, until) => liveRecoveryState(this.#parts.servedState())
+      ? this.run(now, until) : Promise.resolve(),
+  };
+
+  /** When the lane next has work, in seconds, never before `now`; only a live owner owes it. */
   next(now: number): number | null {
-    if (!this.#parts.serves()) {
+    if (!liveRecoveryState(this.#parts.servedState())) {
       return null;
     }
     const rows = this.#rows();
@@ -500,8 +539,9 @@ export class Backups {
     // The night after the later of the newest's day and the last begun's, so one given up is
     // tried the next night, not at once.
     const began = this.#began();
-    const day = [done.at(-1)?.day ?? manifestDay(now), began === null ? "" : manifestDay(began)]
-      .sort().at(-1)!;
+    const days = [done.at(-1)?.day, began === null ? undefined : manifestDay(began)]
+      .filter((day): day is string => day !== undefined);
+    const day = days.sort().at(-1) ?? manifestDay(now);
     const nightly = done.length > 0 && !this.#changed(done) ? null
       : Math.max(now, dayStart(day) + DAY_S + spread(this.#parts.owner()));
     const { sweep, sweep_retry: sweepRetry } = this.#sweepState();
@@ -573,7 +613,8 @@ export class Backups {
       [...root.parts, ...root.segments].reduce((sum, object) => sum + object.size, 0), root.s,
       schema, root.e, at, at, at, staged);
     // A generation finished here: from now on, none restorable is told (`#tellUnrestorable`).
-    this.#sql.exec("UPDATE owner_backup_state SET lost = coalesce(lost, 0)");
+    this.#sql.exec("UPDATE owner_backup_state SET lost = coalesce(lost, 0), " +
+                     "began_at = coalesce(began_at, ?)", at);
     // Its namespace holds every generation the object had before it was lost or wiped, and
     // the one the restore's pin wrote: none named once the restore is done.
     this.#owe();

@@ -136,6 +136,12 @@ export class Schedule extends LifecycleCapability {
     this.#halted = halted;
   }
 
+  /** Logical work time of a surviving appointment, in seconds, before any alarm backoff. */
+  scheduledFor(name: string): number | null {
+    const job = this.lifecycle.jobs.get(laneJob(name));
+    return job === undefined ? null : setFor(job) / 1000;
+  }
+
   /** Point every lane's job at its next work, or cancel it; nothing while halted. */
   async sync(): Promise<void> {
     if (this.#halted()) {

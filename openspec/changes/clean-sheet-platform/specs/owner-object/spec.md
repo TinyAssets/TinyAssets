@@ -1274,6 +1274,14 @@ Each owner's object SHALL write its export manifest to R2 once a night when anyt
 - **WHEN** the owner's manifest is due
 - **THEN** the object's own alarm writes its parts and root and deletes the older one; with no change since, it sets no job, and the first change sets it for the next night
 
+#### Scenario: The owner's first recovery night
+- **WHEN** an admitted or suspended owner has served its first non-admission door and its first scheduled night arrives
+- **THEN** its alarm writes the first generation at the recorded appointment even if no export has been requested
+
+#### Scenario: An import reaches its first night before verification
+- **WHEN** an import has bound a pending owner and an old or newly calculated nightly appointment would fall due
+- **THEN** the automatic lane leaves its capture and namespace untouched until admission, and a first night already past is due when admission activates the schedule
+
 #### Scenario: Garbage past the owner's figure
 - **WHEN** an owner on a tier of three files' storage deletes four files
 - **THEN** each leaves the owner's number at once, the oldest file's chunk is deleted early, and the other three wait out their 30 days

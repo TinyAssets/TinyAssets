@@ -10,7 +10,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { until } from "../../ci/workerd";
+import { sqlIn, until } from "../../ci/workerd";
 import { chunkedId, cut, inlineId } from "../../contract/src/content";
 import {
   bodyId, CHECK_CHUNKS, CHECK_FILES, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_INTENTS,
@@ -29,7 +29,7 @@ import {
 } from "../../contract/src/policy-document";
 import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
-import { failure, gateFor, spaceOf, TIERS } from "./support";
+import { atClock, drainDue, failure, gateFor, laneAt, spaceOf, storesOn, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const BUNDLE = "b".repeat(64);
@@ -98,6 +98,46 @@ describe("the import doors' caller and state", () => {
     const { stub, owner } = pending();
     expect(await stub.importNotice(importing(owner), { detail: "imported" }))
       .toEqual({ added: true });
+  });
+
+  it("keeps a pending import out of nightly copies and catches up after verification", async () => {
+    const { stub, owner } = pending();
+    await stub.importNotice(importing(owner), { detail: "before verification" });
+    expect(await laneAt(stub, "manifest")).toBeNull();
+    await atClock(Math.floor(Date.now() / 1000) + 2 * 86_400, async () => {
+      await drainDue(stub);
+      expect(await sqlIn(stub, "SELECT ns, data_key FROM file_space"))
+        .toEqual([{ ns: null, data_key: null }]);
+      await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
+      await drainDue(stub);
+      const [row] = await sqlIn(stub, "SELECT gen, state, ns FROM owner_backups CROSS JOIN file_space");
+      expect(row?.["state"]).toBe("done");
+      const ns = row!["ns"] as string;
+      const gen = row!["gen"] as string;
+      const root = await env.FILES.getManifestRoot(ns, gen);
+      const first = await env.FILES.getManifestPart(ns, root!.key, gen, 0, root!.parts[0]!.sha256);
+      const lines = new TextDecoder().decode(first).trimEnd().split("\n").map((line) => JSON.parse(line));
+      expect(lines).toContainEqual(expect.objectContaining({
+        table: "owner_admission", row: expect.objectContaining({ state: "admitted" }),
+      }));
+    });
+  });
+
+  it("retires an already-due nightly job without copying an old pending import", async () => {
+    const { stub, owner } = pending();
+    await stub.importNotice(importing(owner), { detail: "historical pending import" });
+    // A pre-upgrade writing row and a job which was already due when the code changed.
+    await runInDurableObject(stub, async (_instance: OwnerDO, state: DurableObjectState) => {
+      const { gate, backups } = storesOn(state);
+      await gate.quiet(() => backups.begin(Math.floor(Date.now() / 1000)));
+      state.storage.sql.exec("INSERT OR REPLACE INTO cf_agents_jobs (id, capability, fn, time) " +
+          "VALUES ('owner-schedule/manifest', 'owner-schedule', 'manifest', 0)");
+      await state.storage.setAlarm(Date.now());
+    });
+    await drainDue(stub);
+    expect(await laneAt(stub, "manifest")).toBeNull();
+    expect(await sqlIn(stub, "SELECT state, parts FROM owner_backups")).toEqual([{ state: "writing", parts: 0 }]);
+    expect(await stub.importDiscard(importing(owner))).toEqual({ discarded: true, namespace: null });
   });
 
   it("refuses every other caller, binding and state with a typed terminal refusal", async () => {

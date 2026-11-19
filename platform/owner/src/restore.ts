@@ -128,7 +128,7 @@ import { Refusal } from "../../contract/src/refusal";
 import { clock } from "./clock";
 import { exported, NOT_EXPORTED } from "./export";
 import type { OwnerStorage } from "./gate";
-import type { Backups } from "./backup";
+import { type Backups, liveRecoveryState } from "./backup";
 import type { Collections } from "./collections";
 import type { Door, DoorUnits, ObjectReads } from "./door";
 import type { Egress } from "./egress";
@@ -257,8 +257,6 @@ const RESTORE_PASS_MS = 30_000;
 const SLICE_ROWS = 500;
 /** Chunks one check unit reads back. */
 const SLICE_CHUNKS = 64;
-/** A live owner's admissions: the ones a pin holds, and a restore admits at E (`finish`). */
-const ADMITS: readonly string[] = Object.freeze(["admitted", "suspended"]);
 
 /** The restore's record, or null when none was begun. A read. */
 function record(sql: Pick<SqlStorage, "exec">): Held | null {
@@ -379,7 +377,7 @@ function wipedFor(held: Held | null, ns: string, gen: string): void {
  */
 function pinnable(o: RestoreDoorNeeds, ns: string, gen: string): boolean {
   const { state } = o.admission.row();
-  if (!ADMITS.includes(state)) {
+  if (!liveRecoveryState(state)) {
     throw refused(`the owner is ${state}: a pin holds a live owner, and a pending one is ` +
                   "restored into with none");
   }
@@ -890,7 +888,7 @@ async function piece(o: RestoreDoorNeeds, door: Door<undefined>, source: Bucket)
       // owner as it stood at E fails here, its chunks untouched, for its operator to wipe.
       const kept = JSON.parse(held.held ?? "{}") as Record<string, Record<string, unknown>>;
       const state = kept["owner_admission"]?.["state"];
-      if (typeof state !== "string" || !ADMITS.includes(state)) {
+      if (!liveRecoveryState(state)) {
         await o.door(() => {
           if (still()) {
             console.error("a restore's generation holds no live admission; nothing is swept");

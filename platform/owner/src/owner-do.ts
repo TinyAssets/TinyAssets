@@ -122,7 +122,7 @@ import { type Lease, mintProof } from "./proof-mint";
 import type { RunCapability } from "../../contract/src/capabilities";
 
 import {
-  admissionDoors, DISCARDED, type DoorClass, doorRefusal, IMPORT_DOORS_ONLY,
+  type Admission, admissionDoors, DISCARDED, type DoorClass, doorRefusal, IMPORT_DOORS_ONLY,
   IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, OwnerAdmission, PLATFORM_ONLY,
   PLATFORM_RESERVED, PLATFORM_TIER_ONLY, tombstoned, writeTombstone,
 } from "./admission";
@@ -173,7 +173,7 @@ import { Egress, egressDoors } from "./egress";
 import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
-import { pinned, refuseRestoring, restoreDoors, restoreNamespace, restoring } from "./restore";
+import { holdingStep, pinned, refuseRestoring, restoreDoors, restoreNamespace, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors, switchedOn } from "./signins";
 import { Starter, starterDoors } from "./starter";
@@ -345,7 +345,8 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   const backups = new Backups({
     storage, write: units.quiet, store: env.FILES, space: () => files.space(), log,
     owner: () => id.name ?? "",
-    serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
+    servedState: () => storage.sql.exec<{ state: Admission["state"] }>(
+      "SELECT state FROM owner_admission JOIN object_owner USING (only)").toArray()[0]?.state ?? null,
     halted: () => wiped(storage.sql) || erasing(storage),
     pinned: () => pinned(storage),
     notice: (type, detail) => notices.add(type, detail, clock()),
@@ -631,7 +632,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     // global tick; each owner's object schedules only itself.
     this.#schedule = new Schedule({
       wakes: this.#sender, files: this.#files, connections: this.#connections,
-      runs: this.#launcher, manifest: this.#backups, sandbox: this.#sandboxTime,
+      runs: this.#launcher, manifest: this.#backups.nightly, sandbox: this.#sandboxTime,
       archive: this.#archive, starter: this.#starter,
     }, write, () => wiped(storage.sql) || erasing(storage) || restoring(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
@@ -725,15 +726,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       this.#gate.onChange((sql) => {
         if (this.#backups.mark(sql)) {
           // The first change since the last manifest: its job set again, once the unit is done.
-          queueMicrotask(() => {
-            this.#schedule.sync().catch(() => console.error("the schedule's sync failed"));
-          });
+          this.#syncSoon();
         }
       });
       if (erasing(storage)) {
         // An erasure a crash cut short, from its recorded step: its alarm may be gone.
         this.#erasure.resume();
         return;
+      }
+      const restore = holdingStep(storage);
+      if (restore === null || restore === "pinned") {
+        // A pre-wipe pin can release straight back to this owner's normal schedule.
+        await this.#quiet(() => this.#backups.resumeFirstNight(clock(),
+          () => this.#schedule.scheduledFor("manifest")));
       }
       // The schedule as stored, for this code's lanes and sender: a deploy that adds a
       // doorbell gives the wakes held while there was none their job.
@@ -772,6 +777,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** A hibernating socket's error, handed to Lifecycle. */
   override async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     await this.#lifecycle.webSocketError(ws, error);
+  }
+
+  /** Sync from committed rows after a door or its change mark discovers work. */
+  #syncSoon(): void {
+    queueMicrotask(() => {
+      this.#schedule.sync().catch(() => console.error("the schedule's sync failed"));
+    });
   }
 
   /** A door's synchronous body, as one unit of the write gate. */
@@ -1369,8 +1381,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       throw new Refusal("refused", NO_SANDBOX);
     }
     // The owner is stored at its first door past the platform's admit, never by the admit.
-    if (stored === undefined && door !== "admission") {
-      sql.exec("INSERT INTO object_owner (only, owner) VALUES (1, ?)", owner);
+    const first = stored === undefined && door !== "admission";
+    if (first) {
+      this.#storage.transactionSync(() => {
+        sql.exec("INSERT INTO object_owner (only, owner) VALUES (1, ?)", owner);
+        this.#backups.firstNight(clock());
+      });
+      this.#syncSoon();
     } else if (stored !== undefined && stored.owner !== owner) {
       throw new Refusal("refused", "this object belongs to another owner");
     }
@@ -1379,9 +1396,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     // quota and every run, written only when they changed.
     const unread = this.#admission.tiers() === null;
     this.#admission.keep(given.tiers, clock());
-    if (unread && this.#admission.tiers() !== null && this.#starter.version() === 0) {
+    if (!first && unread && this.#admission.tiers() !== null && this.#starter.version() === 0) {
       // The first numbers a new owner's door hands: its seed, which waited for them, is due.
-      queueMicrotask(() => void this.#schedule.sync());
+      this.#syncSoon();
     }
     return held;
   }

@@ -441,6 +441,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   owner, and only then the old kid removed from `FILES_KEYRING` (or `GATEWAY_KEYRING`), no
   sooner than the off-account copy's versions under it expire (`r7-sweep.md` item 10;
   `r7-rotation.md`).
+  - [ ] The owner's first automatic recovery copy must finish on its first scheduled night
+    without an export or a previous backup. Verify the durable cadence on first service,
+    after a give-up and after restore. Keep a pending import outside the nightly lane until
+    admission, including an already-due job (`first-night-manifest.md`).
   - [x] The rotation's PR 1 (`r7-rotation.md`): `dataKeyRewrap` answers `{rewrapped, roots,
     left, kid}`, a changed root and a restore's hold counted in `left`, never refused; and
     `gatewayReseal` `{resealed, left, kid}`, resealing doorbell subscriptions' blobs
