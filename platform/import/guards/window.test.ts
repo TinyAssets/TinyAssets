@@ -451,9 +451,14 @@ describe("the window's wipe", () => {
     w.namespaces.set(first.owner, replacement);
     const files = w.buckets.get(NAMES.files_bucket)!;
     files.set(`${objectPrefix(original)}c/late`, "late");
+    files.set(`${objectPrefix(original)}c/another`, "another");
     files.set(`${objectPrefix(replacement)}c/new`, "new");
     const expected = { records: 0, staged: 1, namespaces: bundles.length + 1, objects: 1 };
-    expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
+    const lines: string[] = [];
+    expect(await wipe(out, RUN, w.window, record, (line) => lines.push(line))).toEqual(expected);
+    expect(w.staging.size).toBeGreaterThan(1);
+    expect(lines.at(-1)).toContain("staging objects remain for the run");
+    expect(lines.at(-1)).toContain(`Discarded namespaces still containing objects: 1 of ${expected.namespaces}`);
     expect(await wipe(out, RUN, w.window, record, quiet)).toEqual(expected);
   });
 

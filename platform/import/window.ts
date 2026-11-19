@@ -353,8 +353,10 @@ async function directoryId(window: Window): Promise<string> {
 /** What a wipe proved: each listing's count, every one 0 when the wipe holds. */
 export interface WipeProof {
   readonly records: number;
+  /** One if any staging object remains for the run, zero otherwise. */
   readonly staged: number;
   readonly namespaces: number;
+  /** Number of discarded namespaces with at least one remaining object. */
   readonly objects: number;
 }
 
@@ -492,9 +494,10 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   const proof = { records: (await runs()).length,
                   staged: (await listKeys(window, staging, `${run}/`, 1)).length,
                   namespaces: namespaces.length, objects };
-  print(`the directory lists ${proof.records} rehearsal records of the run, the staging bucket ` +
-        `${proof.staged} objects of it, and the files bucket ${proof.objects} objects under ` +
-        `the ${proof.namespaces} discarded namespaces`);
+  const stagingResult = proof.staged ? "staging objects remain" : "staging is empty";
+  print(`the directory lists ${proof.records} rehearsal records of the run. ` +
+        `${stagingResult} for the run. Discarded namespaces still containing objects: ` +
+        `${proof.objects} of ${proof.namespaces}`);
   return proof;
 }
 

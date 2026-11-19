@@ -8,3 +8,17 @@
 6. This recovers evidence present in the host record or staged replies. A producer stopping before the first durable receipt, or replacing an earlier reply to the same ask, is a separate producer durability question. The dark rehearsal and the old deletion-writer handoff before real admission remain open.
 7. A failed files listing used to leave no staged index. The independent close then accepted the run even though wipe had failed. The host now retires indexes only after checking the files prefixes and a second staging snapshot. Residual files, a failed listing or a newly published answer keep the indexes and private receipts available to a fresh host. Once proved, the host deletes the indexes before replies. An interruption after the first index deletion retains the receipt for that owner.
 8. A late publication after the second snapshot remains possible. The final listing reports leftover staging, but a separate close reads indexes and can already pass. Closing that interval requires coordination with the producer. This change preserves the founder's close predicate. The host does not promise that later file writes are impossible.
+
+### Report what the bounded listings measured
+
+The final staging probe reads at most one key. The files probe reads at most one
+key per discarded namespace. A run with multiple retained staging entries and
+two files under one discarded namespace printed one object in each bucket on
+4a53b14f. The CLI uses the zero/nonzero result to set its exit code.
+
+- [x] Report staging presence and the number of nonempty discarded namespaces.
+  The ordinary window suite passed all 25 cases on Node 22 with the revised
+  reporting and the multiple-object regression. The original report failed
+  the regression.
+- [ ] Retain the bounded probes when combining with the S3 listing and close
+  grouping branches. The final observation still cannot fence a later writer.
