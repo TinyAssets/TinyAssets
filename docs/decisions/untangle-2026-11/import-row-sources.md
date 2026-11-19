@@ -30,3 +30,10 @@ The cutover still requires a frozen source copy. This change aligns the two
 representations within each generated bundle. Earlier bundles and previously
 staged owner subsets still require their original provenance and a fresh
 deletion comparison.
+
+The policy census at 93f714d1 has a different read order. Its early document
+argument cannot be forwarded into the final writer. The permanent policy
+revision regression changes the synthetic original during a carried-file read
+and checks both the emitted SQLite copy and the readable refused document.
+The policy branch fails that assertion. Keep the pre-fit counts for owners
+that cannot produce a bundle; see its ordinary R5 census decision.
