@@ -284,3 +284,22 @@ SQLite file. The archive writer materializes only the selected tables.
   24.22.3 with the locked dependencies.
 - [ ] The measured fit still needs shared owner accounting for starter content,
   row history and the index, followed by representative rehearsal.
+
+### Combined host census review
+
+- [x] Rehearsed the runtime and tests from 16161c75 with policy census
+  4e102795, signed bundle identity 727b718b, verbatim SQLite rows ba653c28
+  and deletion comparison 3dd64974. All five stages are based on f934871ad.
+  Compared nine related source and test paths across 160 published heads.
+  The historical module split added no changes to those import paths relative
+  to its own base.
+- [x] Two overlaps need explicit reconciliation. In census.ts retain both
+  policyDocuments and fitOf. In build.ts retain the policy branch's accountRows
+  entry point and delegate its column projection and ordering to the verbatim
+  branch's SQLite tableRows. Policy classification still sees the document
+  when fit refuses the owner, and collection rows preserve embedded NULs.
+- [x] On that combined tree Node 24.22.3 passed all 176 ordinary importer
+  tests and the full platform TypeScript check. Node 22.23.5 passed all 73
+  bundle and census cases and built the ordinary importer CLI.
+- [ ] Repeat the comparison on main after the relevant stages land. Shared
+  owner accounting and the representative rehearsal remain open.
