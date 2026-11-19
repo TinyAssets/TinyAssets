@@ -527,6 +527,22 @@ describe("kept files and same-size edits at sync-out", () => {
 
 
 describe("the list's own write carries what it holds back", () => {
+  it("offers only the valid paths left visible by the rule file's original bytes", async () => {
+    const { place: p, local } = place();
+    for (const name of ["�", "a", "©", "one", "kept"]) {
+      writeFileSync(join(local, name), name);
+    }
+    mkdirSync(join(local, ".ta"), { recursive: true });
+    writeFileSync(join(local, ".ta", "sync-ignore"), Uint8Array.of(
+      0xff, 10, 91, 97, 0xff, 93, 10, 42, 0xa9, 10, 111, 110, 101, 0, 120, 10,
+    )); // FF, [a FF], * A9, one NUL x
+    const offered: string[] = [];
+    await syncOut(await client((door, body) => door === "commit" ? commitAll(body, offered)
+      : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
+    expect(offered.filter((path) => path !== "/workspace/.ta/sync-ignore").sort())
+      .toEqual(["/workspace/kept", "/workspace/�"]);
+  });
+
   it("offers the sync-ignore last, with the kept files its lines hold back counted", async () => {
     const { place: p, local } = place();
     mkdirSync(join(local, "src"), { recursive: true });

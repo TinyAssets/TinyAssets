@@ -248,6 +248,21 @@ describe("the sync's ignore list", () => {
     expect(receipts.map((receipt) => receipt.decision)).toEqual(["you", "you"]);
   });
 
+  it("reports a new ignore rule when its bytes differ but its display text is the same", async () => {
+    const r = await rig();
+    const path = `${W}/.ta/sync-ignore`;
+    const first = await r.stub.fileWrite(r.bind(null), {
+      path, expected_etag: null, content: Uint8Array.of(0xff, 10),
+    });
+    await r.stub.fileWrite(r.bind(null), {
+      path, expected_etag: (first as { entry: { etag: string } }).entry.etag, content: text("�\n"),
+    });
+    const notices = (await r.stub.noticeList(r.bind(null))).notices
+      .filter((notice) => notice.type === "sync_ignore_changed");
+    expect(notices).toHaveLength(2);
+    expect(notices[0]!.detail).toContain("Its new lines may hold back files you keep");
+  });
+
   it("gives the sync agent's count of the kept files a sync's list holds back, and never " +
      "scans the owner's files in the write", async () => {
     const r = await rig();
