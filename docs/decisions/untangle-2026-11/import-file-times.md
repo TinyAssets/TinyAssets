@@ -100,3 +100,5 @@ milliseconds and go through the owner directly.
 - [ ] Finish the wire and tool-family comparison on this runtime. The full
   owner recordings and recovery of state produced by the older Owner during
   a mixed-version delivery remain open.
+
+On main `f934871ad` and corrected `a7d7a7d4`, the ordinary Doors recorders each passed 47 wire cases and one discovery case. All 804 canonical wire records (110,359 bytes) and seven tool profiles (157,462 bytes) compare byte-for-byte. The owner comparison above covers the seven affected doors. Same-storage recovery from the mixed run with the previous owner is still being checked.
