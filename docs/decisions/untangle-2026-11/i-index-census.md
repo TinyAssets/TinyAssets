@@ -228,15 +228,14 @@ same content. The census needs the owner's actual write and retention rules
 when deciding fit. Add both sides of this boundary to the shared replay's
 acceptance cases before relying on it for admission.
 
-- [ ] The owner import suite now checks two equal rows at the placement boundary
-  and one byte above it. It checks idempotent replay, waits for the carried
-  starter to finish, and compares each owner with an empty seeded owner.
-  Node 22 TypeScript reported zero diagnostics on the updated import test file.
-  The six independent Workerd cases above passed. The new ordinary Vitest case
-  still requires a completed run.
-  The ordinary owner Workerd command selecting both new import cases on
-  8f9d902c reached Vitest and then exited 137 before an assertion verdict.
-  The separate public Worker measurements and focused file diagnostics stand.
+- [x] On 56d55ef0 the ordinary Node 24.22.3 owner Workerd command passed both
+  import regressions, with 22 cases outside the filter. The row case checks
+  identical bodies at the placement boundary and one byte above it, including
+  idempotent replay and usage against a seeded reference owner. The file case
+  checks that imported inline and chunked files share their bytes with the
+  starter after admission. The earlier 8f9d902c attempt exited 137.
+  TypeScript passed with the platform options over the importer, owner import
+  test, owner test declarations and their transitive dependencies.
 
 ### Both wrong admission decisions on complete synthetic bundles
 
