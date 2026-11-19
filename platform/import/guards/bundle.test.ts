@@ -162,6 +162,24 @@ describe("the bundle builder", () => {
     expect(rows(join(out, keyOf(BOB)))).toEqual([]);
   });
 
+  it("keeps every byte of an unrecognized policy document in the owner's archive", () => {
+    const { f, out, options } = setup();
+    const doc = "draft v1\0café\0終";
+    const db = new DatabaseSync(join(f.account(ALICE), "policy.db"));
+    try {
+      db.prepare("UPDATE policy SET document = ?").run(doc);
+    } finally {
+      db.close();
+    }
+    expect((census(f.copy, TIERS).report["rows"] as Record<string, number>)["policies_archived"])
+      .toBe(2);
+    buildBundles(f.copy, options);
+    const bundle = join(out, keyOf(ALICE));
+    expect(rows(bundle).filter((row) => row.kind === "policy")).toEqual([]);
+    const archived = manifest(bundle).find((entry) => entry.path === `${I}/policy.refused.json`)!;
+    expect(bytesOf(bundle, archived)).toEqual(Buffer.from(doc, "utf8"));
+  });
+
   it("archives a policy the platform's validator refuses, verbatim, and keeps the default, " +
      "found by the census first", () => {
     const { f, out, options } = setup();
