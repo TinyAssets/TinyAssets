@@ -543,6 +543,28 @@ describe("the bundle builder", () => {
     expect(readdirSync(out)).not.toContain(keyOf(ALICE));
   });
 
+  it.each(["NULL", "2", "'unknown'", "X'00'"])(
+    "holds an owner whose stored collection privacy marker is %s", (marker) => {
+      const { f, out, options } = setup();
+      const db = new DatabaseSync(join(f.account(ALICE), "conversations.db"));
+      try {
+        // Keep the same known table and columns in a copy without the historical CHECK.
+        db.exec("ALTER TABLE collection_rows RENAME TO old_rows");
+        db.exec("CREATE TABLE collection_rows AS SELECT * FROM old_rows");
+        db.exec("DROP TABLE old_rows");
+        db.exec(`UPDATE collection_rows SET private=${marker} WHERE row_id='b1'`);
+        expect(db.prepare("PRAGMA integrity_check").get()?.["integrity_check"]).toBe("ok");
+      } finally {
+        db.close();
+      }
+      expect(census(f.copy, TIERS).report["problems"]).toMatchObject({ bad_store: 1 });
+      expect(buildBundles(f.copy, options)).toMatchObject({
+        bundled: 2, excluded: 1, refused: { bad_store: 1 },
+      });
+      expect(readdirSync(out)).not.toContain(keyOf(ALICE));
+    },
+  );
+
   it("leaves out an owner rule 0 refuses, counted, while the others go on", () => {
     const { f, out, options } = setup();
     const db = new DatabaseSync(join(f.tree(BOB), ".centers.db"));

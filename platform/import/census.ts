@@ -18,7 +18,7 @@ import { INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
-import { InvalidStoredText, fileSha256, layout } from "./backup";
+import { InvalidLiveField, fileSha256, layout } from "./backup";
 import { type Built, buildTree, policyDocuments, type Fit, fitOf, tierOf, UnreadableCollection, UnreadablePolicy } from "./build";
 import { POLICY_ROWS } from "./rules";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
@@ -140,7 +140,7 @@ export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: stri
     built = buildTree(owner, copy, dir);
   } catch (error) {
     const problem = error instanceof UnreadableCollection ? error.problem : error;
-    if (!(problem instanceof InvalidStoredText)) throw error;
+    if (!(problem instanceof InvalidLiveField)) throw error;
     return { built: null, fit: null, problems: [{ code: "bad_store", at: `owner/${owner.key}/${problem.store}` }],
              policyDocuments: error instanceof UnreadableCollection ? error.documents : [] };
   }
@@ -240,7 +240,7 @@ export function census(copy: Copy, tiers: Tiers): Census {
         documents = policyDocuments(sources, owner.tree.rows.policy);
       }
     } catch (error) {
-      if (!(error instanceof UnreadablePolicy || error instanceof InvalidStoredText)) {
+      if (!(error instanceof UnreadablePolicy || error instanceof InvalidLiveField)) {
         throw error;
       }
       problems.push({ code: "bad_store", at: `owner/${owner.key}/policy.db` });

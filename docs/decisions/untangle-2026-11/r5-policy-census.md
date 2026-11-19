@@ -125,3 +125,19 @@ ordinary census tests passed with the regression.
 
 Historical cohort certification, original producer and exclusions, fresh
 deletion comparison and integration on main remain open.
+
+## Carrying a collection's privacy marker
+
+The old writer stores integer 0 or 1 and its usual SQLite constraint enforces
+that domain. The survey also accepts compatible tables by their known columns.
+A database can pass its own integrity check while holding an invalid value in
+a table without the original constraint. The Owner wire contract requires an
+exact 0 or 1. Validate the stored field in the same live projection as the text
+fields, before bundle creation, and keep generic readers unchanged.
+
+Four ordinary synthetic regressions failed on 3be7a5d3 and passed with this
+change. A null, an out-of-range integer, nonnumeric text and a BLOB each hold
+the affected owner. These are local fixtures. The full suite and the combined
+rehearsal for this change are pending. On its immediate predecessor the
+seventeen-stage join also passed 25 Owner import Workerd tests, and both full
+platform typechecks passed after adding the archive-revision regression.

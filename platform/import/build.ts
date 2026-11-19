@@ -36,7 +36,7 @@ import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
-import { InvalidStoredText, openFile, openStore, quoted, storeUri, tableRows } from "./backup";
+import { InvalidLiveField, openFile, openStore, quoted, storeUri, tableRows } from "./backup";
 import { COLLECTION_ROWS, type LiveRows, POLICY_ROWS } from "./rules";
 import { type Archived, brokerRecord, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
@@ -91,7 +91,7 @@ function carriedRows(copies: readonly StoreCopy[], projection: LiveRows): Record
 }
 
 export class UnreadableCollection extends Error {
-  constructor(readonly problem: InvalidStoredText, readonly documents: readonly string[]) {
+  constructor(readonly problem: InvalidLiveField, readonly documents: readonly string[]) {
     super(problem.message, { cause: problem });
   }
 }
@@ -104,7 +104,7 @@ export function policyDocuments(copies: readonly StoreCopy[], expected: number):
     documents = carriedRows(copies, POLICY_ROWS)
       .map((row) => String(row["document"]));
   } catch (cause) {
-    if (cause instanceof InvalidStoredText) throw cause;
+    if (cause instanceof InvalidLiveField) throw cause;
     throw new UnreadablePolicy("cannot read the surveyed policy", { cause });
   }
   if (documents.length !== expected) {
@@ -129,11 +129,11 @@ function rowsOf(copies: readonly StoreCopy[], documents: readonly string[]):
   try {
     const collections = carriedRows(copies, COLLECTION_ROWS)
       .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
-                            row_id: String(row["row_id"]), private: Number(row["private"]) ? 1 : 0,
+                            row_id: String(row["row_id"]), private: row["private"] as 0 | 1,
                             body: String(row["body"]) }));
     return { rows: [...policy, ...collections], refusedPolicy };
   } catch (error) {
-    if (!(error instanceof InvalidStoredText)) throw error;
+    if (!(error instanceof InvalidLiveField)) throw error;
     throw new UnreadableCollection(error, documents);
   }
 }

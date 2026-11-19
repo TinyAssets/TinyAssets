@@ -145,17 +145,16 @@ export function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-/** A field a live import interprets as text cannot be read losslessly. */
-export class InvalidStoredText extends Error {
+/** A stored value cannot be represented by its declared live import field. */
+export class InvalidLiveField extends Error {
   constructor(readonly store: string, column: string) {
-    super(`invalid stored text in ${store}.${column}`);
+    super(`invalid stored value in ${store}.${column}`);
   }
 }
 
 /**
- * The stored values crossing from a backup into the job. Node 22 cuts a SQLite TEXT
- * result at its first NUL. SQLite quotes text before it crosses that boundary, including
- * its embedded NULs. All other storage classes cross as themselves.
+ * Live fields retain their declared type and the database's text encoding. Generic
+ * row readers use SQLite's JSON quoting to preserve embedded NULs on Node 22.
  */
 export function tableRows(db: DatabaseSync, source: string | LiveRows): Record<string, unknown>[] {
   const projection = typeof source === "string" ? undefined : source;
@@ -169,6 +168,9 @@ export function tableRows(db: DatabaseSync, source: string | LiveRows): Record<s
     if (projection?.fields[name] === "text") {
       return `CASE typeof(${field}) WHEN 'text' THEN CAST(${field} AS BLOB) END AS ${field}`;
     }
+    if (projection?.fields[name] === "bit") {
+      return `CASE WHEN typeof(${field}) = 'integer' AND ${field} IN (0, 1) THEN ${field} END AS ${field}`;
+    }
     return `CASE typeof(${field}) WHEN 'text' THEN json_quote(${field}) ELSE ${field} END AS ${field}`;
   });
   const keys = (projection?.order ?? []).map((name) => `${from}.${quoted(name)}`);
@@ -177,13 +179,13 @@ export function tableRows(db: DatabaseSync, source: string | LiveRows): Record<s
   const rows = [];
   for (const row of query.iterate()) {
     for (const [name, value] of Object.entries(row)) {
+      if (projection && value === null) throw new InvalidLiveField(projection.store, name);
       if (projection?.fields[name] === "text") {
-        if (!(value instanceof Uint8Array)) throw new InvalidStoredText(projection.store, name);
         try {
-          row[name] = decoder!.decode(value);
+          row[name] = decoder!.decode(value as Uint8Array);
         } catch (error) {
           if (!(error instanceof TypeError)) throw error;
-          throw new InvalidStoredText(projection.store, name);
+          throw new InvalidLiveField(projection.store, name);
         }
       } else if (typeof value === "string") {
         row[name] = JSON.parse(value) as string;
