@@ -545,16 +545,19 @@ case "$mode" in
     need="$(du -sbc "$work/mnt" 2>> "$log" | tail -n 1 | cut -f1)" \
       || refuse "the images' bytes could not be read"
     room "$need" "the bundles"
-    mkdir -m 700 "$work/bundle"
+    pending="$(mktemp -d -- "$work/bundle.pending.XXXXXXXX")"
     flags=()
     if [[ "$kind" == rehearsal ]]; then
       flags=(--rehearsal "$run")
     fi
     status=0
-    job "$work/bundle" -i bundle "$work" --tiers "$control" --exclude - \
-      --out "$work/bundle/out" --private "$work/bundle/private" "${flags[@]}" || status=$?
-    if [[ "$status" -ne 0 && "$status" -ne 3 ]]; then
-      rm -rf -- "$work/bundle"
+    (job "$pending" -i bundle "$work" --tiers "$control" --exclude - \
+      --out "$pending/out" --private "$pending/private" "${flags[@]}") || status=$?
+    if [[ "$status" -eq 0 || "$status" -eq 3 ]]; then
+      # Readers open only the published directory. Both folders move together on this disk.
+      mv -T -- "$pending" "$work/bundle"
+    else
+      rm -rf -- "$pending"
       say "nothing was bundled"
     fi
     exit "$status"

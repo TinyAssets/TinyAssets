@@ -22,6 +22,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
@@ -31,6 +32,7 @@ import { parse } from "yaml";
 import { TIERS } from "../../ci/fixtures";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { MOUNT_OPTIONS } from "../backup";
+import { DIGESTS } from "../bundle";
 import { STAGE_INPUTS } from "../cli";
 import { checkStores, copyMain, forbidden, released } from "../copy";
 import {
@@ -562,6 +564,45 @@ describe("the copy, on a fake droplet", () => {
     }
   });
 
+  it("publishes the whole owner set only after the offline bundle job finishes", () => {
+    const h = host();
+    // A shared-layer-only backup can go through the real job without mounting an image.
+    h.manifest.snapshots.length = 0;
+    const db = new DatabaseSync(join(h.f.work, "data", "_data", ".broker", "state",
+                                     "owner-identities.db"));
+    try {
+      db.exec("DELETE FROM owner_volumes");
+    } finally {
+      db.close();
+    }
+    h.publish();
+    const work = h.work("publish1");
+    expect(h.window(["census", "publish1", "rehearsal"]).status).toBe(0);
+    const observed = join(h.dir, "visibility");
+    const preload = join(h.dir, "observe.cjs");
+    writeFileSync(preload, [
+      'const fs = require("node:fs");',
+      'const write = fs.writeFileSync;',
+      'fs.writeFileSync = function (file, ...args) {',
+      '  const result = write.call(fs, file, ...args);',
+      '  if (typeof file === "string" && file.endsWith("/bundle.json")) {',
+      `    fs.appendFileSync(${JSON.stringify(observed)}, ` +
+        `String(fs.existsSync(${JSON.stringify(join(work, "bundle", "out"))})) + "\\n");`,
+      '  }',
+      '  return result;',
+      '};',
+      'require("node:module").syncBuiltinESMExports();',
+    ].join("\n"));
+    const made = h.window(["bundle", "publish1", "rehearsal"], `${FOUNDER}\n`,
+                          { env: { NODE_OPTIONS: `--require=${preload}` } });
+    expect(made.status, made.out).toBe(0);
+    const views = readFileSync(observed, "utf8").trim().split("\n");
+    expect(views.length).toBeGreaterThan(1);
+    expect(new Set(views)).toEqual(new Set(["false"]));
+    expect(existsSync(join(work, "bundle", "out"))).toBe(true);
+    expect(existsSync(join(work, "bundle", "private", DIGESTS))).toBe(true);
+  });
+
   it("bundles from the exclusion list on stdin, into its one writable folder, once", () => {
     const h = host();
     h.window(["census", "b1", "rehearsal"]);
@@ -570,8 +611,11 @@ describe("the copy, on a fake droplet", () => {
     countsOnly(bundle.out, work);
     const call = h.calls().filter((each) => each.startsWith("docker run")
                                             && each.includes(" bundle "))[0]!;
+    const pending = dirname(call.match(/--out (\S+\/out) /)![1]!);
+    expect(dirname(pending)).toBe(work);
+    expect(pending).not.toBe(join(work, "bundle"));
     expect(call).toContain(`--network none -v ${stage}:${stage}:ro -v ${work}:${work}:ro ` +
-                           `-v ${work}/bundle:${work}/bundle -i `);
+                           `-v ${pending}:${pending} -i `);
     expect(call).toContain("--exclude -");
     expect(call).toContain("--rehearsal b1");
     // The list reached the builder (an empty one is its own first refusal), which then
