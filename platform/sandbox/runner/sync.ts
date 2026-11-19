@@ -75,8 +75,7 @@ export const SESSIONS_SEEN = `${STATE_DIR}/sessions-seen.json`;
 
 /** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
 interface SeenSession {
-  readonly size: number;
-  readonly mtime_ms: number;
+  readonly stamp: string | null;
   readonly sha256: string;
   /** The digest of the secrets it was refused against, when it held one's bytes. */
   readonly refused?: string;
@@ -97,9 +96,8 @@ function readSeen(): Record<string, SeenSession> {
  * agent's lock) staged into the sync agent's `out/<run>`: this run's, and any an earlier
  * sync-out left unsent (refused at a full storage, changed while sent, fenced, cut short), so
  * each is offered again until it lands, whether or not a later run touches it. A session the
- * files hold already is never copied. A session's hash is read again only when its size or
- * change time moved since it was last hashed (or that time was too recent to trust,
- * `RACY_MS`). One holding a secret's bytes is never staged; it is returned (as
+ * files hold already is never copied. A cached hash belongs to one inode with the same
+ * length, modification time and status-change time. Recent changes are hashed again. One holding a secret's bytes is never staged; it is returned (as
  * `{home}/<path>`) once, until it or the secrets change.
  */
 export async function stageSessions(
@@ -120,10 +118,12 @@ export async function stageSessions(
       }
       const path = `${SESSIONS}/${authority}/${each.id}/${rel}`;
       const at = Date.now();
-      const stat = lstatSync(join(store, rel));
+      const stat = lstatSync(join(store, rel), { bigint: true });
+      const cutoff = BigInt(at - RACY_MS);
+      const stamp = stat.ctimeMs >= cutoff || stat.mtimeMs >= cutoff ? null
+        : [stat.dev, stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs].join(":");
       const was = seen[path];
-      let sha = was !== undefined && was.size === stat.size && was.mtime_ms === stat.mtimeMs
-        && stat.mtimeMs < at - RACY_MS ? was.sha256 : null;
+      let sha = stamp !== null && was?.stamp === stamp ? was.sha256 : null;
       if (sha === null) {
         const bytes = safeRead(store, join(store, rel));
         if (bytes === null) {
@@ -131,7 +131,7 @@ export async function stageSessions(
         }
         sha = sha256Hex(bytes);
       }
-      next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
+      next[path] = { stamp, sha256: sha,
                      ...(was?.sha256 === sha && was.refused !== undefined
                        ? { refused: was.refused } : {}) };
       sessions.push({ rec: each, rel, digest: sha, path });
