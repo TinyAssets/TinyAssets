@@ -23,5 +23,10 @@ method that closed the output descriptor.
   stub. Narrowing the buffer with instanceof Uint8Array resolved them. With
   this test correction, the full platform typecheck and all 24 bundle tests
   passed on Node 24.22.3.
-- [ ] Verify the archive change with the staged importer and repeat on main
-  after coordinated integration.
+- [x] On 991d9d0a plus the eleven importer stages documented in the
+  [identity comparison](https://github.com/TinyAssets/TinyAssets/commit/5faf91961920c6a34d289bb87e603a6de4faa0f4),
+  the complete ordinary importer passed all 200 cases on Node 22.23.5.
+  The full platform typecheck passed on Node 24.22.3. The two source overlaps
+  were imports. Keep tableRows alongside writeTar in the builder and retain
+  truncateSync in the existing F1 fixture.
+- [ ] Repeat the archive checks on main after coordinated integration.
