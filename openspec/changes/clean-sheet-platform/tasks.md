@@ -877,6 +877,11 @@ real data, in step 5 (d3 §P).
   video, N4 a live takeover view, N6 undo by snapshot, N7 agent purchases, N9 media results.
 - [ ] Mail archive's later phases (ADR-036), past step 5's four: a batched or tiered merge for
   sparse late acks; unread mail archived, with its own research.
+  Measure single late acknowledgements across fences and batches within a fence. Before
+  archiving unread mail, account for the sender's resend window, mutable recipient and
+  delivery state, independent mailbox and room cursors, and export and restore at the cut.
+  The evidence and open questions are in
+  `docs/decisions/untangle-2026-11/later-mail-archive.md`.
 
 S9 (Claude and Grok wakes) is built as slice W. S10 (Sign in with ChatGPT) is parked and its
 record deleted (d3 §A8): it comes back as a record if OpenAI approves.
