@@ -621,12 +621,19 @@ function insert(sql: Pick<SqlStorage, "exec">, load: Load,
   const loaded = columns.filter((column) => !held.includes(column));
   const fresh = required(sql, load.table);
   const updated = loaded.filter((column) => !key.includes(column) && !refs.includes(column));
-  // A seeded row, or one a trigger of a table loaded before made, takes the stream's values.
-  const statement = `INSERT INTO ${load.table} (${[...loaded, ...fresh, ...held].join(", ")}) ` +
-    `VALUES (${[...loaded, ...fresh].map(() => "?").concat(held.map((column) =>
-      `(SELECT ${column} FROM ${load.table})`)).join(", ")}) ON CONFLICT DO ${
-      updated.length === 0 ? "NOTHING"
-        : `UPDATE SET ${updated.map((column) => `${column} = excluded.${column}`).join(", ")}`}`;
+  const names = [...loaded, ...fresh, ...held].join(", ");
+  const values = [...loaded, ...fresh].map(() => "?").concat(
+    held.map((column) => `(SELECT ${column} FROM ${load.table})`));
+  const compared = loaded.filter((column) => !refs.includes(column));
+  // An exact prefix an older failed page left already stands. Skip its insert entirely:
+  // both insert and update triggers may reject an existing immutable row.
+  // A different seeded or trigger-created row still takes the generation's values.
+  const statement = `WITH wanted (${names}) AS (VALUES (${values.join(", ")})) ` +
+    `INSERT INTO ${load.table} (${names}) SELECT * FROM wanted WHERE NOT EXISTS (` +
+    `SELECT 1 FROM ${load.table} AS present WHERE ${compared.map((column) =>
+      `present.${column} IS wanted.${column}`).join(" AND ")}) ON CONFLICT DO ` +
+    (updated.length === 0 ? "NOTHING"
+      : `UPDATE SET ${updated.map((column) => `${column} = excluded.${column}`).join(", ")}`);
   for (const row of rows) {
     if (held.length > 0) {
       const kept = JSON.parse(record(sql)!.held ?? "{}") as Record<string, unknown>;
@@ -748,6 +755,13 @@ async function piece(o: RestoreDoorNeeds, door: Door<undefined>, source: Bucket)
     return now !== null && now.step === held.step && now.at === held.at
       && now.after === held.after;
   };
+  // A throwing door unit keeps its earlier writes. Log bytes, loaded rows and the cursor
+  // recording them must commit together, including the trigger effects of each row.
+  const writePage = (apply: () => void) => o.door(() => {
+    if (still()) {
+      o.storage.transactionSync(apply);
+    }
+  });
   /** In a unit: the record moved on from where `held` read it. */
   const move = (step: Step, at: number, after: string | null, failed: string | null = null) => {
     sql.exec("UPDATE owner_restore SET step = ?, at = ?, after = ?, failed = ?", step, at, after,
@@ -782,10 +796,7 @@ async function piece(o: RestoreDoorNeeds, door: Door<undefined>, source: Bucket)
       }
       const read = sized(await objectAt(source, held.ns, root,
                                         index ? held.at : root.parts.length + held.at));
-      await o.door(() => {
-        if (!still()) {
-          return;
-        }
+      await writePage(() => {
         if (index) {
           const spans = JSON.parse(held.spans ?? "[]") as unknown[];
           sql.exec("UPDATE owner_restore SET spans = ?", JSON.stringify(
@@ -822,10 +833,7 @@ async function piece(o: RestoreDoorNeeds, door: Door<undefined>, source: Bucket)
       const read = "p" in within && within.p < parts.length
         ? lines(await objectAt(source, held.ns, await rootOf(source, held.ns, held.gen),
                                parts[within.p]!)) : null;
-      await o.door(() => {
-        if (!still()) {
-          return;
-        }
+      await writePage(() => {
         let rows: Record<string, unknown>[];
         let next: Within | null;
         if (read !== null) {

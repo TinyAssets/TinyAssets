@@ -234,6 +234,34 @@ async function source(): Promise<{ o: Owner; gen: Generated; ns: string; rows: s
 }
 
 describe("a restore", () => {
+  it("rolls back a failed load page and resumes an identical receipt kept by an older loader",
+     async () => {
+    const o = await owner();
+    const receipt = "INSERT INTO model_reservations (id, run, connection_id, source, model, " +
+      "state, max_output_tokens, est_tokens, est_cost, tokens, cost, policy_generation, day, " +
+      "month, created_at, settled_at) VALUES (?, 'r', 'c', 's', 'm', 'succeeded', 10, 10, " +
+      "7, 9, 5, 1, '20261101', '202611', 1, 2)";
+    for (const id of ["a", "b"]) {
+      await sqlIn(o.stub, receipt, id);
+    }
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string, gen: gen.gen });
+    await sqlIn(stub, "CREATE TRIGGER reject_second BEFORE INSERT ON model_reservations " +
+      "WHEN NEW.id = 'b' BEGIN SELECT RAISE(ABORT, 'receipt interrupted'); END");
+    await expect(stepped(stub, o.name)).rejects.toThrow(/receipt interrupted/);
+    expect(await sqlIn(stub, "SELECT id FROM model_reservations")).toEqual([]);
+    expect(await sqlIn(stub, "SELECT cost FROM model_spend")).toEqual([]);
+    await sqlIn(stub, "DROP TRIGGER reject_second");
+    // Older code could commit this exact prefix without advancing its cursor.
+    await sqlIn(stub, receipt, "a");
+    expect((await stepped(stub, o.name)).at(-1)?.step).toBe("done");
+    expect(await sqlIn(stub, "SELECT id FROM model_reservations ORDER BY id"))
+      .toEqual([{ id: "a" }, { id: "b" }]);
+    expect(await sqlIn(stub, "SELECT cost FROM model_spend")).toEqual([{ cost: 10 }, { cost: 10 }]);
+  });
+
   it("reads a production-shaped owner back into its own object, every table and counter as " +
      "at E, every chunk read back, nothing put to R2 and no row in an answer", async () => {
     const { o, gen, ns, rows, counters, usage } = await source();
@@ -364,6 +392,15 @@ describe("a restore", () => {
       .toEqual([{ staged: staged.peak }]);
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    // Interrupt one segment after its first change, while the durable byte total still
+    // describes the previous cursor. The partial row and byte count must roll back together.
+    await sqlIn(stub, "CREATE TRIGGER reject_log_row BEFORE INSERT ON restore_rows WHEN " +
+      "(SELECT coalesce(sum(n), 0) FROM restore_rows) > (SELECT staged FROM owner_restore) " +
+      "BEGIN SELECT RAISE(ABORT, 'segment interrupted'); END");
+    await expect(stepped(stub, o.name)).rejects.toThrow(/segment interrupted/);
+    expect(await sqlIn(stub, "SELECT staged = (SELECT coalesce(sum(n), 0) FROM restore_rows) " +
+      "AS accounted FROM owner_restore")).toEqual([{ accounted: 1 }]);
+    await sqlIn(stub, "DROP TRIGGER reject_log_row");
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
     expect(await rowsOf(stub)).toBe(gen.atE);
     // And the restore staged as much: its own count, and the generation it adopts.
