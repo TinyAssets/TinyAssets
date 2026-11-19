@@ -122,49 +122,59 @@ const FULL = "storage_full: your storage is full: 24.5 GB of 25.0 GB used, and t
   "2.0 GB more (500 MB free). Free some space (delete files you no longer need) or upgrade " +
   "to paid for 250 GB. {}";
 
-it.each(["quiet", "write", "remove"])("retries a storage refusal after a later %s", async (change) => {
-  const { place: p, local, root } = place();
-  const path = "/workspace/note.txt";
-  const file = join(local, "note.txt");
-  const db = join(root, "mirror.db");
-  let mirror = openMirror(db);
-  let remote = "original";
-  let version = 1;
-  let full = false;
-  const offered: [string, number | null][] = [];
-  const doors = await client((door, body) => {
-    if (door === "changes") {
-      return { status: 200, body: { reset: false, cursor: version, changes:
-        Number(body["after"]) < version ? [{ path, kind: change === "remove" && version === 2
-          ? null : "file", version }] : [] } };
+it.each(["quiet", "write", "remove", "reset unchanged", "reset write", "reset remove"])(
+  "retries a storage refusal after a later %s", async (change) => {
+    const { place: p, local, root } = place();
+    const path = "/workspace/note.txt";
+    const file = join(local, "note.txt");
+    const db = join(root, "mirror.db");
+    let mirror = openMirror(db);
+    let remote = "original";
+    let version = 1;
+    let full = false;
+    let reset = false;
+    const offered: [string, number | null][] = [];
+    const doors = await client((door, body) => {
+      if (door === "changes") {
+        const rescan = reset;
+        reset = false;
+        return { status: 200, body: { reset: rescan, cursor: version, changes:
+          Number(body["after"]) < version ? [{ path, kind: change === "remove" && version === 2
+            ? null : "file", version }] : [] } };
+      }
+      if (door === "list") return { status: 200, body: { next: null, entries:
+        change === "reset remove" ? [] : [{ path, kind: "file", version }] } };
+      if (door === "read") return { status: 200, body: { entry: { kind: "file", mode: 0, version },
+        inline: Buffer.from(remote).toString("base64") } };
+      if (door !== "commit") throw Error(door);
+      const ops = body["ops"] as { path: string; base: number | null; inline?: string }[];
+      return { status: 200, body: { outcomes: ops.map(op => {
+        if (op.path !== path) return { path: op.path, outcome: "committed", entry: { version: 10 } };
+        offered.push([Buffer.from(op.inline!, "base64").toString(), op.base]);
+        return full ? { path, outcome: "refused", code: "storage_full", reason: FULL }
+          : { path, outcome: op.base === version ? "committed" : "conflict", entry: { version: 3 } };
+      }) } };
+    });
+    await syncIn(doors, p, mirror);
+    expect(readFileSync(file, "utf8")).toBe("original");
+    writeFileSync(file, "sandbox edit");
+    full = true;
+    const attempt = await syncOut(doors, p, mirror, LEASE, []);
+    expect(attempt.refused).toContainEqual(expect.objectContaining({ path, code: "storage_full" }));
+    expect(offered).toEqual([["sandbox edit", 1]]);
+    mirror.close();
+    mirror = openMirror(db);
+    full = false;
+    reset = change.startsWith("reset");
+    if (change !== "quiet" && change !== "reset unchanged") {
+      version = 2;
+      remote = "remote edit";
     }
-    if (door === "read") return { status: 200, body: { entry: { kind: "file", mode: 0, version },
-      inline: Buffer.from(remote).toString("base64") } };
-    if (door !== "commit") throw Error(door);
-    const ops = body["ops"] as { path: string; base: number | null; inline?: string }[];
-    return { status: 200, body: { outcomes: ops.map(op => {
-      if (op.path !== path) return { path: op.path, outcome: "committed", entry: { version: 10 } };
-      offered.push([Buffer.from(op.inline!, "base64").toString(), op.base]);
-      return full ? { path, outcome: "refused", code: "storage_full", reason: FULL }
-        : { path, outcome: op.base === version ? "committed" : "conflict", entry: {version: 3} };
-    }) } };
+    await syncIn(doors, p, mirror);
+    await syncOut(doors, p, mirror, LEASE, []);
+    mirror.close();
+    expect(offered).toEqual([["sandbox edit", 1], ["sandbox edit", 1]]);
   });
-  await syncIn(doors, p, mirror);
-  expect(readFileSync(file, "utf8")).toBe("original");
-  writeFileSync(file, "sandbox edit");
-  full = true;
-  const attempt = await syncOut(doors, p, mirror, LEASE, []);
-  expect(attempt.refused).toContainEqual(expect.objectContaining({ path, code: "storage_full" }));
-  expect(offered).toEqual([["sandbox edit", 1]]);
-  mirror.close();
-  mirror = openMirror(db);
-  full = false;
-  if (change !== "quiet") { version = 2; remote = "remote edit"; }
-  await syncIn(doors, p, mirror);
-  await syncOut(doors, p, mirror, LEASE, []);
-  mirror.close();
-  expect(offered).toEqual([["sandbox edit", 1], ["sandbox edit", 1]]);
-});
 
 describe("a refusal of one file", () => {
   it("at an upload's begin (the storage full) is that file's, the sync going on", async () => {

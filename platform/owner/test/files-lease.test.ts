@@ -169,6 +169,22 @@ describe("a sync commit", () => {
                                     inline: text("vm") }])).outcomes[0]!.outcome).toBe("conflict");
   });
 
+  it("preserves the sandbox bytes as a conflict when the owner removed the original", async () => {
+    const r = await rig();
+    const path = `${W}/note.txt`;
+    const original = entryOf(await write(r, path, "original"));
+    const lease = await acquire(r);
+    await r.stub.fileRemove(r.bind(null), { path, expected_etag: original.etag, recursive: false });
+    const { outcomes } = await sync(r, lease, [
+      { op: "write", path, base: original.version, mode: 1, inline: text("sandbox edit") },
+    ]);
+    const [result] = outcomes;
+    expect(result).toMatchObject({ path, outcome: "conflict", current: null, copy: { mode: 1 } });
+    if (result?.outcome !== "conflict" || result.copy === null) throw Error("missing conflict copy");
+    expect((await r.stub.fileStat(r.bind(null), { path })).entry).toBeNull();
+    expect(await readText(r, result.copy.path)).toBe("sandbox edit");
+  });
+
   it("never removes what the API changed, nor a directory still holding entries", async () => {
     const r = await rig();
     const seen = entryOf(await write(r, `${W}/a`, "one"));
