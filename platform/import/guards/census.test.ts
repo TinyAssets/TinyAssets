@@ -433,7 +433,7 @@ describe("each owner's fit", () => {
     const f = fresh();
     sparse(join(f.tree(BOB), "main", "workspace", "huge.bin"), FILE_DEFAULTS.max_file_bytes + 1);
     const { report, table } = census(f.copy, TIERS);
-    expect(report["problems"]).toEqual({ over_file_bytes: 1, over_storage: 1 });
+    expect(report["problems"]).toEqual({ over_file_bytes: 1 });
     expect(table).toContain(`${keyOf(BOB)}\tproblem over_file_bytes`);
   });
 

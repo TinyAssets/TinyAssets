@@ -180,13 +180,12 @@ four. These measurements cover fresh owners with distinct imported paths and
 the named package. The production dependency for replaying the owner's charges
 and the representative whole census remain open.
 
-- [ ] The owner import suite now has a public-door check with the package carried
+- [x] The owner import suite now has a public-door check with the package carried
   by the checked-out commit. It compares the stored bytes of a freshly seeded
   owner with those of an owner imported with an identical inline skill and a
   chunked reference under two distinct paths. Both imports precede admission.
   The test verifies the starter receipts and all four paths. The first ordinary
-  Worker run and the concurrent scoped TypeScript attempt each exited 137. Both
-  verdicts are pending a serial run.
+  Worker run and the concurrent scoped TypeScript attempt each exited 137. The serial results on 56d55ef0 are recorded below.
 - [x] An independent local Worker run exercised the public owner and Files
   RPC methods on the original v7 package. Three fresh named owners ran the
   genuine Wrangler-built owner entry and local R2. The ordinary seed alone and
@@ -194,12 +193,10 @@ and the representative whole census remain open.
   71,540 stored bytes. Changing one byte in each imported copy used 112,598.
   All three reached v7 with 14 receipts. Both imported paths and both starter
   paths existed in the two import cases. This fixture waited for the real alarm.
-  The in-tree test now uses the existing ownerObject and seeded helpers. The
-  Vitest entrypoint and scoped typecheck still need completed verdicts.
+  The in-tree test now uses the existing ownerObject and seeded helpers. The ordinary Vitest and scoped typecheck results follow below.
 - On a4f50a92, Node 22 TypeScript reported zero diagnostics for the import
   test, its shared test support, and the owner import, files and starter
-  modules. The full scoped compiler invocation exited 137. The ordinary
-  Vitest result is still outstanding.
+  modules. The full scoped compiler invocation exited 137. Both ordinary import regressions subsequently passed on 56d55ef0.
 
 ### Collection body accounting at the placement boundary
 
@@ -258,3 +255,30 @@ Together with the boundary regression in 8f9d902c, these are acceptance
 fixtures for the shared accounting dependency. A constant starter allowance
 cannot repair both verdicts. The host census still needs that implementation
 and a representative rehearsal before cutover.
+
+
+### Which sizes can be checked before building a bundle
+
+The census and bundle builder both call measure. On bb11ea32 its preliminary
+check rejected an 8 MiB file on a 6 MiB tier before reading its two identical
+4 MiB chunks. It also rejected a kept-table archive by the size of the source
+SQLite file. The archive writer materializes only the selected tables.
+
+- [x] Check the platform file ceiling early on verbatim inputs. Check rebuilt
+  archive size and stored bytes on the built tree. The tar member ceiling also
+  applies in backup mode. An oversized verbatim file still fails before its
+  bytes are read. Its physical length alone cannot prove a storage overage.
+- [x] Both original host controls failed independently. With the revised
+  precheck all 70 ordinary census and bundle tests passed on Node 24. An
+  8 MiB repeated-chunk file was accepted and bundled with two references to
+  the same digest. Changing one byte in the second chunk refused the owner.
+  A sparse SQLite source just over 40 GiB produced a kept-table archive under
+  one chunk. An independent ordinary owner/Files Workerd case passed at the
+  same tier, including file readback and the distinct-chunk refusal.
+- [x] On 56d55ef0 the full platform TypeScript check passed on Node 24. Its
+  two Worker accounting regressions also passed separately with the exact
+  carried starter packages from 1004f546 and 3f8be4de (two cases per package).
+  The coordinator still owns their release order.
+- [ ] Rerun the whole importer and owner import test file with the precheck
+  change. The measured fit still needs shared owner accounting for starter
+  content, row history and the index, followed by representative rehearsal.

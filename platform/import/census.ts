@@ -18,7 +18,7 @@ import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, type Fit, fitOf, tierOf } from "./build";
+import { type Built, buildTree, type Fit, fitOf } from "./build";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
 
@@ -93,24 +93,19 @@ function largestBelow(source: Buffer): number {
 }
 
 /**
- * What refuses an owner before its tree is made, read from sizes alone: a file past the
- * platform's largest or the tier's storage, or a file past what a tar member can hold in `refused.tar` or `ignored.tar`. So a 40 GiB file
- * is refused by its size, never read.
+ * Reject an oversized verbatim file before reading its bytes. A kept-table archive is
+ * rebuilt, so its file limit applies to the result. Storage depends on the distinct
+ * contents and chunks. The bundle measurement checks both after building the tree.
  */
 export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
   const tree = owner.tree;
   const at = `owner/${owner.key}`;
-  const largest = [...tree.carried.map((item) => item.size), ...tree.archived.map((a) => a.size)]
-    .reduce((a, b) => Math.max(a, b), 0);
   const members = (list: readonly Refusal[]) =>
     list.reduce((a, member) => Math.max(a, largestBelow(member.source)), 0);
   const problems: Problem[] = [];
-  if (largest > FILE_DEFAULTS.max_file_bytes) {
+  if (tiers !== null && (tree.carried.some(item => item.size > FILE_DEFAULTS.max_file_bytes)
+      || tree.archived.some(item => item.whole && item.size > FILE_DEFAULTS.max_file_bytes))) {
     problems.push({ code: "over_file_bytes", at });
-  }
-  const tier = tiers === null ? undefined : tierOf(owner, tiers);
-  if (tier !== undefined && largest > tier.storage_bytes) {
-    problems.push({ code: "over_storage", at });
   }
   if (Math.max(members(tree.refused), members(tree.ignoredTrees)) > TAR_MEMBER_MAX) {
     problems.push({ code: "over_tar_member", at });
@@ -125,8 +120,7 @@ export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
  */
 export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
     { built: Built | null; fit: Fit | null; problems: Problem[] } {
-  const first = precheck(owner, tiers)
-    .filter((problem) => tiers !== null || problem.code === "over_tar_member");
+  const first = precheck(owner, tiers);
   if (first.length > 0) {
     return { built: null, fit: null, problems: first };
   }

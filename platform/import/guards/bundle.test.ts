@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync,
-  symlinkSync, writeFileSync,
+  symlinkSync, truncateSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -470,11 +470,41 @@ describe("the bundle builder", () => {
     expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
   });
 
+  it("holds a kept-table archive to its rebuilt size when the source database is larger", () => {
+    const { f, out, options } = setup();
+    const source = join(f.account(ALICE), "conversations.db");
+    truncateSync(source, FILE_DEFAULTS.max_file_bytes + 4096);
+    expect(census(f.copy, TIERS).report["problems"]).toEqual({});
+    expect(buildBundles(f.copy, options).refused).toEqual({});
+    const archive = manifest(join(out, keyOf(ALICE))).find(entry =>
+      entry.path === `${I}/.records/broker/conversations.db`);
+    expect(archive?.size).toBeGreaterThan(0);
+    expect(archive!.size).toBeLessThan(CHUNK_BYTES);
+  });
+
+  it("measures repeated chunks before refusing a file larger than its storage tier", () => {
+    const { f, out, options } = setup();
+    const tier = { ...TIERS.free, storage_bytes: CHUNK_BYTES + CHUNK_BYTES / 2 };
+    const tiers = { ...TIERS, free: tier };
+    const file = join(f.tree(BOB), "main", "workspace", "repeated.bin");
+    const bytes = Buffer.alloc(2 * CHUNK_BYTES, 7);
+    writeFileSync(file, bytes);
+    expect(census(f.copy, tiers).report["problems"]).toEqual({});
+    expect(buildBundles(f.copy, { ...options, tiers }).refused).toEqual({});
+    const stored = manifest(join(out, keyOf(BOB))).find(entry => entry.path.endsWith("/repeated.bin"));
+    const digest = sha(bytes.subarray(0, CHUNK_BYTES));
+    expect(stored?.chunks).toEqual([digest, digest]);
+
+    bytes[CHUNK_BYTES] = 8;
+    writeFileSync(file, bytes);
+    expect(census(f.copy, tiers).report["problems"]).toEqual({ over_storage: 1 });
+  });
+
   it("leaves out an owner past the platform's limits, counted, while the others go on", () => {
     const { f, out, options } = setup();
     sparse(join(f.tree(BOB), "main", "workspace", "huge.bin"), FILE_DEFAULTS.max_file_bytes + 1);
     const summary = buildBundles(f.copy, options);
-    expect(summary.refused).toEqual({ over_file_bytes: 1, over_storage: 1 });
+    expect(summary.refused).toEqual({ over_file_bytes: 1 });
     expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
   });
 

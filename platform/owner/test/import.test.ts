@@ -70,19 +70,20 @@ function chunked(path: string, bytes: Uint8Array, mode: 0 | 1 = 0) {
 }
 
 /** A chunked file through the import's upload: begun, its chunks put to `FILES`, committed. */
-async function upload(stub: Stub, owner: string, path: string, bytes: Uint8Array) {
+async function upload(stub: Stub, owner: string, path: string, bytes: Uint8Array, tiers = TIERS) {
+  const binding = importing(owner, tiers);
   const { request, pieces } = chunked(path, bytes);
-  const begun = await stub.importFileBegin(importing(owner), request);
+  const begun = await stub.importFileBegin(binding, request);
   if (begun.skipped) {
     return { skipped: true };
   }
   for (const piece of pieces.filter((p) => begun.pending.includes(p.sha256))) {
     await env.FILES.putChunks(begun.namespace, begun.key, [{ sha256: piece.sha256,
                                                              bytes: piece.bytes }]);
-    await stub.importFileStored(importing(owner), { intent_id: begun.intent_id,
+    await stub.importFileStored(binding, { intent_id: begun.intent_id,
                                                     chunks: [piece.sha256] });
   }
-  return stub.importFileCommit(importing(owner), { intent_id: begun.intent_id, path,
+  return stub.importFileCommit(binding, { intent_id: begun.intent_id, path,
                                                    mode: request.mode,
                                                    content_id: request.content_id,
                                                    mtime_ms: MTIME });
@@ -312,6 +313,23 @@ describe("the import's files", () => {
     for (const path of [`${I}/guide.md`, `${I}/reference.md`, guide.path, spec.path]) {
       expect((await stub.fileStat(own(owner), { path })).entry?.kind).toBe("file");
     }
+  });
+
+  it("charges a repeated file chunk once while enforcing the tier on distinct chunks", async () => {
+    const tiers = { ...TIERS, free: { ...TIERS.free, storage_bytes: CHUNK_BYTES + CHUNK_BYTES / 2 } };
+    const bytes = new Uint8Array(2 * CHUNK_BYTES).fill(7);
+    const first = pending();
+    const path = `${I}/repeated.bin`;
+    expect(await upload(first.stub, first.owner, path, bytes, tiers)).toEqual({ written: 1, skipped: 0 });
+    await first.stub.admissionSet({ owner: first.owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
+    const binding = { ...own(first.owner), tiers };
+    const read = await first.stub.fileRead(binding, { path });
+    expect(read.chunks?.map(piece => piece.sha256)).toEqual(cut(bytes).map(piece => piece.sha256));
+
+    const second = pending();
+    bytes[CHUNK_BYTES] = 8;
+    expect((await failure(() => upload(second.stub, second.owner, path, bytes, tiers))).code)
+      .toBe("storage_full");
   });
 
   it("holds the files to the tier numbers the binding carries", async () => {
