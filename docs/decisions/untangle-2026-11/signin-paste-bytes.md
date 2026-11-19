@@ -18,6 +18,10 @@
   cases passed. The old and new validator returned identical results on
   1,114,210 inputs per Node 22 and 24, including every single Unicode code
   point and trimmed UTF-8 lines around the terminal byte boundary.
-- [ ] Full platform types and end-to-end checks are being verified on the
-  staged source and the local rehearsal. Coordinator integration, pinned
-  sandbox acceptance and the separate workspace retry work remain open.
+- [x] On 9c4c50ac standalone, full Node 24 platform types, 297 contract cases
+  (18 size cases excluded), all 140 ordinary sandbox Worker/guard cases and
+  all 30 Owner sign-in Workerd cases passed. On the ten-stage sandbox
+  rehearsal the full Node 24 typecheck, 140 sandbox cases and six Doors
+  sign-in Workerd cases passed. All tests used local fixtures.
+- [ ] Coordinator integration, pinned sandbox acceptance and the separate
+  workspace retry work remain open.
