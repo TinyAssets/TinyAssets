@@ -150,7 +150,7 @@ You're done when:
 - A typical change lands in one place.
 - Every import is reasonable, and nothing imports anything more volatile than itself.
 - Subagents have no issues left that are worth fixing.
-- Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end: in `platform/`, `npm run record -- <dir>` on base and head, then `npm run record:diff -- <base> <head>`.
+- In `platform/`, `npm run record -- <dir>` on base and head. Only bug fixes may differ in `npm run record:diff -- <base> <head>`. [Older base captures](../../../docs/decisions/untangle-2026-11/record-completion.md).
 
 **Tips**
 
