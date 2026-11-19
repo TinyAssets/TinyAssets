@@ -35,3 +35,9 @@ on an exception alone has neither state. This slice supplies no new operator act
 
 The final fence, stale-generation identity across asynchronous reads, and the separate
 preservation of expired spend counters have their own ordering and recovery questions.
+
+## Interrupted log segment verification
+
+- [x] On staged test commit `278199e4`, the focused ordinary Node 22 Workerd case passed (63 outside its selection). The fixture writes two notices during a real generation. After a second-row failure, the restore still points to log segment zero with no rows, staged bytes or peak. Retry finishes and the restored rows equal the generation digest. The final staged bytes and peak match an independent reading of the generation. This isolates the fault from the original multi-segment peak test, which remains in the suite.
+- [ ] Verify the same fault on the current main source and the seven-branch combination. Earlier combined tree `9d4b4628` passed seven selected cases. Its original combined peak/fault case timed out at 86 seconds. The first standalone and combined reruns of that old case exited 137 before a verdict.
+- [ ] Determine how to handle an in-flight segment whose first row was already committed by the old writer and whose cursor still points to that segment. The new savepoint prevents a fresh partial write. Existing rows reduce the byte delta computed during replay, so a preserved cursor alone cannot certify the byte count.
