@@ -7,8 +7,8 @@
  * nothing and needing no credential. Deleted at the cutover with the rest of the job.
  *
  * - The bundles are the out folder's (`<out>/<key>/`), each checked whole before anything is
- *   sent: its index (`bundle.json`) names every part by its SHA-256, each part is there with
- *   its bytes, its key is its folder's, and nothing else is in it. A bundle that fails stops
+ *   sent: its index (`bundle.json`) names the metadata parts by SHA-256. Inline files and
+ *   chunks carry their content ids in their names. The owner's folder must match its key. A bundle that fails stops
  *   the run before any upload.
  * - Each goes to `<run>/<key>/` in the bucket, its index last, then its message; a run sent
  *   again puts the same bytes at the same names and the same message, which the consumer
@@ -23,12 +23,14 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { keyed, object } from "../contract/src/checks";
+import { inlineId } from "../contract/src/content";
 import { HEX16 } from "../contract/src/ids";
 import {
-  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, PART, rehearsalRun,
+  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, inlineName, PART, rehearsalRun,
   RUN, stagedName,
 } from "../contract/src/import-message";
 import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
+import { INLINE_BYTES } from "../contract/src/limits";
 import { QUEUES } from "../contract/src/queue-names";
 import { Cloudflare } from "../deploy/cloudflare";
 
@@ -134,6 +136,10 @@ export function checkedBundle(dir: string, key: string): Staged {
       throw new Error("a bundle holds a file no bundle has");
     }
     const content = readFileSync(join(dir, name));
+    if (name.startsWith("inline/")
+        && (content.byteLength > INLINE_BYTES || inlineName(inlineId(content)) !== name)) {
+      throw new Error("a bundle's inline file does not match its content id");
+    }
     if (name.startsWith("chunks/") && sha256(content) !== name.slice("chunks/".length)) {
       throw new Error("a bundle's chunk is not its hash");
     }

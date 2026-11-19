@@ -8,7 +8,7 @@
  * from the configs (`deploy/facts.ts`), as the window's `facts.json` hands them to the job.
  */
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -210,6 +210,17 @@ describe("the staging step", () => {
         .rejects.toThrow(/bundle/);
       expect(calls).toEqual([]);
     }
+  });
+
+  it("refuses a truncated inline file before sending the bundle", async () => {
+    const out = bundled();
+    const dir = join(out, keyOf(ALICE), "inline");
+    const name = readdirSync(dir).find((file) => statSync(join(dir, file)).size > 0)!;
+    truncateSync(join(dir, name), 0);
+    const { calls, fetcher } = apis();
+    await expect(stage(out, "r1", NAMES, INPUTS, fetcher, () => undefined))
+      .rejects.toThrow(/bundle/);
+    expect(calls).toEqual([]);
   });
 
   it("stops at the first refusal, and at an account with no import queue", async () => {
