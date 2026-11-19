@@ -25,3 +25,5 @@ Local tests covered a complete two-page list, entity-encoded keys and cursors, r
   cases. The earlier focused Node 22 attempt exited 137.
 - [ ] Fence a later producer after the final listing before claiming that a
   wipe is complete across concurrent writes.
+
+- [x] Reconciled the two modified paths in the local listing checkout against the published listing `1bbfa667`, wipe `2d527bca` and close grouping `a799066e`, using main `f934871ad` as the common base. The combined window test file matched byte for byte. The combined host source matched byte for byte after retaining the wipe branch’s listing call and the grouping branch’s existing map-update body at their one adjacent edit. A fresh ordinary Node 22 run passed all 42 window cases on those files. The previously recorded Node 24 run passed all 190 importer cases. The late-producer obligation above remains open.
