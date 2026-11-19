@@ -10,3 +10,9 @@ The old broker's provisioner in `tinyassets/broker/policy.py` stored an empty en
 - `classified_documents` counts documents with recognisable sections. Other known policy rows, including malformed documents or ones on a tree the survey cannot read safely, contribute to `unclassified_documents`. Store and backup failures remain visible through the ordinary census checks. An owner's oversized file alone does not hide their policy. Withheld owners are excluded.
 
 No owner ID, rule contents, source, cap amount or destination is included in these counters. The archived bytes, bundle and admission policy are unaffected. Translation of the action defaults, the archive disposition and the founder’s notice wording remain on P-import.
+
+## Shared text reader at integration, November 19
+
+- [x] Rechecked the policy reader and both consumers against the staged verbatim-row change. Keep the single `policyDocuments` call in the census and pass those documents into the bundle builder. Its account reader must select named columns through the shared `tableRows` implementation, including its explicit collection ordering.
+- [x] The ordinary regression on `a248b68e` distinguishes the two integrations on Node 22. The five-stage rehearsal at `70110c7d` without the shared text reader truncated an unrecognized stored document in its readable archive, even though its ordinary Node 24 run passed that case. Adding the verbatim reader to the same five stages passed all 181 ordinary importer cases and the full platform typecheck on Node 22. Five independent synthetic documents per source and runtime confirmed both the readable file and the separate archived SQLite copy, recorded at `bf36bfa9`.
+- [ ] Real representative census, legacy mapping decisions and integration on main remain open.
