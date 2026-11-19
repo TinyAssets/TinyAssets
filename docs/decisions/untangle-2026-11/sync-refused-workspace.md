@@ -12,3 +12,19 @@
 - [x] Checked retry after an uncertain reply against the real Owner on main source. The API replaced the original file after the sandbox took its base. Two deliveries of the identical retained edit under the same lease and base returned two different conflict-copy paths. Both copies contained the correct bytes and the remote replacement stayed intact. One isolated Workerd case passed. An unconditional offer before every incoming update cannot by itself establish whether an earlier attempt already saved the local bytes. Keep this distinct from two genuinely different edits that both need saving.
 
 - [x] Checked a mixed commit through the real lease-bound Owner and Files Workers on main `f934871ad`. One batch wrote an inline file and a 6,000-byte file using its uploaded chunk. The first reply reported both committed. Delivering the identical request a second time returned a conflict for the inline file and a refusal for the consumed upload intent. Readback of both original files and the extra inline conflict copy matched the submitted bytes. One focused Node 22 Workerd case passed, with 60 unrelated cases filtered. A retrying client that lost the first reply thus receives neither original outcome. Any recovery design must cover mixed batches and keep the original per-file outcomes recoverable across a lost reply. A genuinely new edit must stay distinguishable from a redelivery.
+
+### A refused new child has no mirror row
+
+- [x] A new ordinary runner test on dd5a1022 created a child under an existing
+  remote directory. Full storage refused the first write. The runner offered
+  the child's bytes with base null and its SQLite mirror had no row for it.
+  After reopening the mirror, a quiet feed offered the same bytes and base
+  again. An incoming deletion of the parent removed the only local bytes,
+  and the second offer never occurred. The quiet control passed and the
+  parent-deletion regression failed on Node 24 standalone and Node 22 in the
+  ten-stage sandbox rehearsal. This is an intentionally failing regression.
+- [ ] Reconcile eligible new children before recursively applying a parent
+  deletion. A design consulting only mirror rows cannot find them. Check
+  clean and ignored children, a changed parent type, cursor replay, scope
+  narrowing and bounded retention. The separate question about a purged
+  original file mode does not apply to a child that never had a version.

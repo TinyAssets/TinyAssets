@@ -176,6 +176,53 @@ it.each(["quiet", "write", "remove", "reset unchanged", "reset write", "reset re
     expect(offered).toEqual([["sandbox edit", 1], ["sandbox edit", 1]]);
   });
 
+it.each([false, true])("retries a new child after storage refusal (parent removed: %s)",
+  async (removed) => {
+    const { place: p, local, root } = place();
+    const dir = "/workspace/folder";
+    const path = `${dir}/new.txt`;
+    const saved = join(root, "mirror.db");
+    let mirror = openMirror(saved);
+    let version = 1;
+    let full = true;
+    const offered: { base: number | null; content: string }[] = [];
+    const doors = await client((door, body) => {
+      if (door === "changes") {
+        const changes = Number(body["after"]) < version
+          ? [{ path: dir, kind: version === 1 ? "dir" : null, version }] : [];
+        return { status: 200, body: { reset: false, cursor: version, changes } };
+      }
+      if (door !== "commit") throw Error(door);
+      const ops = body["ops"] as { path: string; base: number | null; inline?: string }[];
+      const outcomes = ops.map((op) => {
+        if (op.path === path) {
+          offered.push({ base: op.base, content: Buffer.from(op.inline!, "base64").toString() });
+          if (full) return { path, outcome: "refused", code: "storage_full", reason: FULL };
+        }
+        return { path: op.path, outcome: "committed", entry: { version: 3 } };
+      });
+      return { status: 200, body: { outcomes } };
+    });
+    try {
+      await syncIn(doors, p, mirror);
+      writeFileSync(join(local, "folder", "new.txt"), "new offline work");
+      const first = await syncOut(doors, p, mirror, LEASE, []);
+      expect(first.refused).toContainEqual(expect.objectContaining({ path, code: "storage_full" }));
+      const initial = { base: null, content: "new offline work" };
+      expect(offered).toEqual([initial]);
+      expect(mirror.get(path)).toBeUndefined();
+      mirror.close();
+      mirror = openMirror(saved);
+      full = false;
+      if (removed) version = 2;
+      await syncIn(doors, p, mirror);
+      await syncOut(doors, p, mirror, LEASE, []);
+      expect(offered).toEqual([initial, initial]);
+    } finally {
+      mirror.close();
+    }
+  });
+
 describe("a refusal of one file", () => {
   it("at an upload's begin (the storage full) is that file's, the sync going on", async () => {
     const { place: p, local } = place();
