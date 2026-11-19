@@ -136,8 +136,21 @@ exact 0 or 1. Validate the stored field in the same live projection as the text
 fields, before bundle creation, and keep generic readers unchanged.
 
 Four ordinary synthetic regressions failed on 3be7a5d3 and passed with this
-change. A null, an out-of-range integer, nonnumeric text and a BLOB each hold
-the affected owner. These are local fixtures. The full suite and the combined
-rehearsal for this change are pending. On its immediate predecessor the
+44dd859c. A null, an out-of-range integer, nonnumeric text and a BLOB each hold
+the affected owner. All 183 standalone Node 22 importer tests, 236 joined Node
+24 importer tests and both full Node 24 platform typechecks passed. In the
+joined import lists keep modifiedTime and readAt, use the new field error and
+retain the existing F1 tierOf import from its own module.
+
+The original legacy test in tests/test_collections.py, introduced at f7f7e712,
+uses a pre-creator table without the 0/1 CHECK. Replayed its exact CREATE TABLE
+in local synthetic copies. Integer 0/1 and text inputs '0'/'1' all stored as
+SQLite integers under its affinity. On each of Node 22 and 24, all four inputs
+retained their expected marker in both public and private bundles on both
+standalone and joined trees. The first disposable driver omitted its output
+directories and stopped before invoking the writer. All counts above come
+from the corrected runs. No production data was used.
+
+On the preceding shared-text change the
 seventeen-stage join also passed 25 Owner import Workerd tests, and both full
 platform typechecks passed after adding the archive-revision regression.
