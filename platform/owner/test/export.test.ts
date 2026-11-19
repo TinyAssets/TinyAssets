@@ -176,9 +176,10 @@ describe("the owner export", () => {
     const stored = await (await env.BLOBS.get(key))!.arrayBuffer();
     await env.BLOBS.delete(key);
 
-    await expect(o.stub.ownerExport(o.session(), {})).rejects.toThrow();
-    await expect(o.stub.ownerExport(o.session(), { cursor: before.cursors[0]!,
-                                                   export_id: before.exportId })).rejects.toThrow();
+    for (const request of [{}, { cursor: before.cursors[0]!, export_id: before.exportId }]) {
+      const error = await failure(() => o.stub.ownerExport(o.session(), request));
+      expect(error.message).toContain("finished generation's root is missing");
+    }
 
     await env.BLOBS.put(key, stored);
     expect((await exportFrom(o, null)).lines).toEqual(before.lines);
