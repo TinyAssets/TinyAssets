@@ -69,3 +69,24 @@ When the deletion comparison in #5688 and this change meet, its private original
   Doors ES module differed. The emitted Owner, Files, Gateway, sandbox
   Worker and runner data, and Codemode Worker and WebAssembly were
   byte-identical. The separate owner recorder families remain unrun here.
+
+## Import folder identity with the revised row and fit checks
+
+The thirteen-stage archive and census rehearsal in 01d33a71, with the F1
+collection-size correction cb36af5b, also ran with this branch at 3af05df8.
+All 220 ordinary Node 24 importer tests, 22 Node 22 Doors import Worker
+tests and the full Node 24 platform typecheck passed. At the listing overlap,
+parse each observed snapshot with bundleLocation, group its records by run,
+and check the folder key against the index before counting an admission.
+Retain manifest membership, content checks and the wipe's second snapshot.
+
+Adding e0a847e3 (queue diagnostics), 4f3b737a (archive writes) and 534e6bcb
+(ignore rules) passed 223 importer cases, 23 Doors import Worker cases, 15
+ordinary matcher cases with 18 size cases excluded, the full typecheck and
+the Node 22-target job build. Node 24 ran the host and type checks and Node
+22 ran the Workers. The earlier F1 and importer integration checkouts have
+151 and 161 literal case titles across their changed test files. All were
+present in the final rehearsal, with 143 and 155 exact case bodies respectively.
+The remaining bodies differ and title coverage alone does not establish their
+behavior. The original owner set and a fresh deletion comparison remain due
+for older imports. Recheck the staged behavior on main after integration.
