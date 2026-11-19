@@ -121,3 +121,9 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
 - [ ] Mixed-version activation still depends on historical recovery for both
   an active partial record and a previously completed adoption. Recheck the
   coordinated result on main before cutover.
+
+### Historical file dates with the seven restore changes
+
+- [x] Reconciled the seven tracked owner files from the earlier combined restore checkout against 160 GitHub heads. Each of its 21 added or replacement blocks occurred verbatim on an ordinary branch. The six blocks in the restore test file traced to the published begin, finish, pin and pass changes. No additional restore implementation was needed from that checkout.
+- [x] Exercised the combined restore source with the two historical file-date regressions from `codex/untangle-import-file-times` at `5e80f663`. One adjacent insertion in the restore suite required retaining both sets of tests. TypeScript syntax-tree comparison found all 63 distinct test declarations with their bodies preserved from one of the inputs, including the updated production-shaped fixture. Node 22 ran the ordinary restore file (69 passed, one size case excluded), then the size case separately (one passed). Full platform TypeScript passed on Node 24.
+- [ ] Coordinator integration and the decision for previously active or completed historical restores remain open. These tests used synthetic data.
