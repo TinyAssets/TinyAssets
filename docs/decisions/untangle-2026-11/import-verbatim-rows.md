@@ -89,4 +89,25 @@ Occurrence in a real old volume is unknown.
   including original bytes, a leading BOM, embedded NUL, non-BMP text, and
   omission of the dropped approval table. The two lossy-value regressions
   above still fail and are a separate open finding.
-- [ ] Verify the full importer and the archive projection integration.
+- [x] On 85413357 the full Node 22 importer had 170 passing cases and
+  exactly the two open collection-value failures. The seventeen-stage
+  rehearsal from 661d8798 plus this source and these regressions had 229
+  passing and the same two failures on Node 24. Full platform typechecks
+  passed on both trees.
+- [x] Independent normal builds with UTF-8, UTF-16le and UTF-16be kept
+  the source encoding, storage class and raw bytes in all 12 filtered
+  collection databases on each Node runtime. Legal BOM, NUL, non-BMP and
+  replacement characters survived in the live rows. A malformed surrogate
+  in either UTF-16 byte order still produced a different live string.
+  Thus the remaining loss occurs when projecting the live row. SQLite
+  preserved the bytes in these filtered archives.
+- [x] A disposable reader using SQLite's actual storage class, raw TEXT
+  bytes and a fatal BOM-preserving decoder returned 11 generic values and
+  11 declared-text verdicts for each encoding on each Node runtime. It kept
+  real binary values for generic readers. Two runs per reader and runtime
+  over 25,000 four-field rows produced identical output digests, with
+  overlapping timings on Node 22. This was a prototype, outside production.
+- [ ] Bring the declared live text types and per-owner refusal together with
+  the shared projection on c6899cdd. Review generic readers of fleet and
+  erasure facts before changing the common decoder. Keep the two explicit
+  failures open until census and writing agree on the actual archived revision.
