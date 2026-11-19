@@ -102,7 +102,8 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { chunkName, mint, rewrap, unwrap } from "./datakey";
 import type { FilesEnv } from "./env";
 import { keyed } from "../../contract/src/checks";
-import { base64, fromBase64, hex, openObject, sealObject } from "../../contract/src/envelope";
+import { base64, fromBase64, openObject, sealObject } from "../../contract/src/envelope";
+import { sha256Hex } from "../../contract/src/digest";
 import { exportHeader } from "../../contract/src/export-header";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
@@ -164,15 +165,11 @@ function openedLists(plain: Uint8Array): ManifestLists {
   return listed;
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
-}
-
 /** `plain` sealed for the object at `objectKey`, and the sealed bytes' hash, which R2 checks. */
 async function sealed(dataKey: ArrayBuffer, objectKey: string, plain: Uint8Array):
     Promise<{ body: Uint8Array; sha256: string }> {
   const body = await sealObject(dataKey, objectKey, plain);
-  return { body, sha256: await sha256Hex(body) };
+  return { body, sha256: sha256Hex(body) };
 }
 
 const OPENS_NOT = "a stored object does not open under its owner's key";
@@ -266,7 +263,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
 
   async #put(ns: string, dataKey: ArrayBuffer, sha256: string, bytes: Uint8Array):
       Promise<boolean> {
-    if (await sha256Hex(bytes) !== sha256) {
+    if (sha256Hex(bytes) !== sha256) {
       throw new Refusal("invalid", "the chunk's bytes do not match its sha256");
     }
     const name = await chunkName(dataKey, sha256);
@@ -344,7 +341,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     if (bytes === null) {
       return { check: "broken", why: OPENS_NOT };
     }
-    return await sha256Hex(bytes) === sha256 ? { bytes }
+    return sha256Hex(bytes) === sha256 ? { bytes }
       : { check: "broken", why: "a chunk's bytes no longer match its hash" };
   }
 
@@ -498,7 +495,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     const stored = await sealed(dataKey, manifestObjectKey(ns, gen, at), body);
     await this.env.BLOBS.put(manifestObjectKey(ns, gen, at), stored.body,
                              { sha256: stored.sha256 });
-    return { sha256: await sha256Hex(body), size: body.byteLength };
+    return { sha256: sha256Hex(body), size: body.byteLength };
   }
 
   /** A generation's object's bytes read under the key `key` (the object's, or the root's). */
@@ -511,7 +508,7 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     }
     const bytes = await opened(dataKey, manifestObjectKey(ns, gen, at),
                                new Uint8Array(await object.arrayBuffer()));
-    if (await sha256Hex(bytes) !== chunkHash(sha256)) {
+    if (sha256Hex(bytes) !== chunkHash(sha256)) {
       throw new Error("a manifest object's bytes no longer match its hash");
     }
     return bytes;

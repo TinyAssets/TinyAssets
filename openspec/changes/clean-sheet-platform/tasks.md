@@ -79,6 +79,8 @@ end.
 - [x] 6.1 The trusted file plane: the manifest in the owner's object and the files Worker
   (`owner/src/files.ts`, `platform/files`). Its create-once put on the live bucket is still
   unprobed: §10 step 7.
+  - [x] Files uses the contract content digest at its existing Worker compatibility date
+    (`untangle-2026-11/v-files-digest.md`, B7).
 
 ## 7. Wakes and outside agents
 
