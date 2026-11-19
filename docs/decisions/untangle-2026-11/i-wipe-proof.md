@@ -26,7 +26,9 @@ two files under one discarded namespace printed one object in each bucket on
 On 839b971e the ordinary Node 22 window suite passed all 25 cases. Seven
 importer suites passed 122 cases in a wider run. Host and runner failed
 collection in that checkout because the workflow fixture was missing. After
-restoring the fixture the full run exited 137.
+restoring the fixture the full run exited 137. On a fresh standalone checkout
+of 439fc49b the ordinary Node 24.22.3 importer command subsequently passed
+all 173 cases across nine test files.
 
 The local comparison combined 839b971e, e3293eb9 (S3 listing), and the
 a799066e per-run grouping loop. All 42 window test bodies passed with their
