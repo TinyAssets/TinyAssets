@@ -801,6 +801,8 @@ Moved before the window, into lane R (d3 §F3, §G).
 
 - [ ] The deploy path's compatibility rule: Workers deploy one after another, so a contract
   change between two needs an order or a window (`platform/deploy/checklist.md`; list3 P44).
+- [x] The owner test keyring variants use the same compiled Worker program. Compare all
+  variant bindings and module hashes (`untangle-2026-11/owner-pool-bundles.md`).
 - [ ] A wrangler version bump reruns T0b's main-against-head comparison of the test Workers'
   bindings: `ci/workers.ts` `configBindings` restates wrangler 4.154.0's conversion (list 5
   item 22).

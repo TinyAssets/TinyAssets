@@ -12,7 +12,7 @@
 import { execFile } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, sep } from "node:path";
+import { basename, join, parse, relative, sep } from "node:path";
 import { promisify } from "node:util";
 
 import ts from "typescript";
@@ -82,11 +82,21 @@ export async function bundle(dir: string, out: string, entry?: string): Promise<
                                                "--config", join(dir, "wrangler.jsonc"),
                                                ...(entry === undefined ? [] : [entry])],
                             { cwd: dir, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
-  const data = (workerConfig(dir).rules ?? []).filter((rule) => rule.type === "Data")
+  const config = workerConfig(dir);
+  const source = entry ?? config.main;
+  if (!source) {
+    throw new Error(`${config.name}: a bundled Worker needs a script entry`);
+  }
+  const main = parse(source).name + ".js";
+  const files = readdirSync(out);
+  if (!files.includes(main)) {
+    throw new Error(`${config.name}: Wrangler did not write the entry module ${main}`);
+  }
+  const data = (config.rules ?? []).filter((rule) => rule.type === "Data")
     .flatMap((rule) => rule.globs.map((glob) => glob.split("/").at(-1)!));
-  const isData = (file: string) => data.some((name) => file === name || file.endsWith(`-${name}`));
-  const main = entry === undefined ? "index.js" : basename(entry).replace(/\.[cm]?[jt]s$/, ".js");
-  return readdirSync(out).filter((file) => /\.(?:m?js|wasm)$/.test(file) || isData(file))
+  const isData = (file: string) => file !== main && data.some(
+    (name) => file === name || file.endsWith(`-${name}`));
+  return files.filter((file) => /\.(?:m?js|wasm)$/.test(file) || isData(file))
     .sort((a, b) => Number(b === main) - Number(a === main) || a.localeCompare(b))
     .map((file) => ({ file, type: isData(file) ? "Data" as const
       : file.endsWith(".wasm") ? "CompiledWasm" as const : "ESModule" as const }));
@@ -284,21 +294,27 @@ function configured(config: WorkerConfig, dir: string, extra: object) {
 }
 
 /**
- * The real Worker at `dir`, as an auxiliary Worker beside a test's own: bundled from its own
+ * Variants of the real Worker at `dir`, beside a test's own: bundled once from its own
  * config and entry (or `entry` in its place), as a deploy bundles it, with its own name and
  * everything its config gives it (`configured`), as `main` below is. A test binds its
- * classes by `scriptName`, as other Workers' configs do. Its secrets and only what a test
- * changes are the caller's `extra`.
+ * classes by `scriptName`, as other Workers' configs do. Each variant has its own bindings.
+ * Each caller supplies the secrets and changes for that variant.
  */
-export async function auxiliary<Extra extends object>(dir: string, extra: Extra,
-                                                       entry?: string) {
+export async function auxiliaryWorkers<Extra extends object>(dir: string, variants: readonly Extra[],
+                                                             entry?: string) {
   const config = workerConfig(dir);
-  return {
+  const modules = await bundled(dir, entry);
+  return variants.map((extra) => ({
     name: config.name,
     modulesRoot: dir,
-    modules: await bundled(dir, entry),
+    modules,
     ...configured(config, dir, extra),
-  };
+  }));
+}
+
+export async function auxiliary<Extra extends object>(dir: string, extra: Extra,
+                                                       entry?: string) {
+  return (await auxiliaryWorkers(dir, [extra], entry))[0]!;
 }
 
 /**

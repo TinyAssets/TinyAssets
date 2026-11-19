@@ -6,7 +6,7 @@
 // built, migrated and served, by the memory leg (`memory/leg.mjs`), which holds it within
 // `OWNER_BASELINE_BYTES`; the doors' and files' pools (PR 3b, PR 4) measure theirs the same
 // way. Run by hand: `node memory/baselines.mjs`.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,7 +23,8 @@ for (const name of ["doors", "files"]) {
   const out = mkdtempSync(join(tmpdir(), `baseline-${name}-`));
   try {
     const built = await bundle(join(PLATFORM, name), out);
-    writeFileSync(join(out, "rest.js"), `import * as bundle from "./index.js";
+    mkdirSync(join(out, "baseline"));
+    writeFileSync(join(out, "baseline", "rest.js"), `import * as bundle from ${JSON.stringify("../" + built[0].file)};
 void bundle;
 export default {
   async fetch() {
@@ -41,7 +42,7 @@ const config :Workerd.Config = (
   sockets = [ (name = "http", address = "127.0.0.1:${port}", http = (), service = "main") ],
 );
 const w :Workerd.Worker = (
-  modules = [ ${capnpModules(".", [{ file: "rest.js", type: "ESModule" }, ...built])} ],
+  modules = [ ${capnpModules(".", [{ file: "baseline/rest.js", type: "ESModule" }, ...built])} ],
   compatibilityDate = "${workerConfig(join(PLATFORM, name)).compatibility_date}",
   compatibilityFlags = ["nodejs_compat"],
 );

@@ -8,7 +8,7 @@ import { keyring } from "../ci/fixtures";
 import { PLATFORM } from "../ci/paths";
 import { project } from "../ci/project";
 import { control, gate, methodsOf } from "../ci/gate";
-import { auxiliary, fake, fakeConfig, main, once, pool, workerConfig } from "../ci/workers";
+import { auxiliary, auxiliaryWorkers, fake, fakeConfig, main, once, pool, workerConfig } from "../ci/workers";
 import { QUEUES } from "../contract/src/queue-names";
 
 /** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
@@ -84,13 +84,15 @@ const OWNER = async () => main(join(PLATFORM, "owner"), {
                                       entrypoint: "Sent" } },
   outboundService: fakeConfig(FAKE_UPSTREAM).name,
   workers: [
-    await auxiliary(join(PLATFORM, "files"), { bindings: { FILES_KEYRING: FILES_RING } }),
-    await auxiliary(join(PLATFORM, "files"), { name: `${FILES}-older`,
-                                               bindings: { FILES_KEYRING: older(FILES_RING) } }),
-    ...await Promise.all([[GATEWAY, KEYRING], [`${GATEWAY}-older`, older(KEYRING)],
-                          [`${GATEWAY}-retired`, retired(KEYRING)]].map(([name, ring]) =>
-      auxiliary(join(PLATFORM, "gateway"), { name, bindings: { GATEWAY_KEYRING: ring },
-                                             outboundService: fakeConfig(FAKE_UPSTREAM).name }))),
+    ...await auxiliaryWorkers(join(PLATFORM, "files"), [
+      { bindings: { FILES_KEYRING: FILES_RING } },
+      { name: `${FILES}-older`, bindings: { FILES_KEYRING: older(FILES_RING) } },
+    ]),
+    ...await auxiliaryWorkers(join(PLATFORM, "gateway"),
+      [[GATEWAY, KEYRING], [`${GATEWAY}-older`, older(KEYRING)],
+       [`${GATEWAY}-retired`, retired(KEYRING)]].map(([name, ring]) => ({
+         name, bindings: { GATEWAY_KEYRING: ring }, outboundService: fakeConfig(FAKE_UPSTREAM).name,
+       }))),
     await auxiliary(join(PLATFORM, "codemode"), {}),
     gate(SANDBOX_GATE, methodsOf(join(PLATFORM, "contract", "src", "sandbox.ts"),
                                  "SandboxService"), { fake: FAKE_SANDBOX }),
