@@ -18,6 +18,14 @@
   268,435,456 bytes. A zero file-size limit caused a real EFBIG on a new
   holder record. Main left one temporary name and the fix left zero. These
   outcomes matched on Node 22.23.5 and 24.22.3.
-- [ ] Run the permanent disk and holder tests on the ordinary privileged
-  runner, plus sandbox Workerd, guards and platform TypeScript. Verify with
-  the staged sandbox renewal changes before integration.
+- [x] Standalone source a836ee72 passed the full Node 24 platform typecheck,
+  140 ordinary sandbox Worker and guard tests, and six selected ordinary
+  PID-lock tests on Node 22 including the disk-limit cleanup case.
+- [x] Joined PR #5680 at 3200ee3e, reboot/session 6aea8136 and sign-in status
+  26a281e with a836ee72. All source and tests applied cleanly. The combined
+  tree passed 140 sandbox Worker/guard tests and 64 layer and kernel checks
+  on Node 24.22.3, and full platform TypeScript on Node 22.23.5. The three
+  independent Linux checks above also passed on both runtimes on the join.
+- [ ] The ordinary privileged suite exited 2 at preflight on this host. Its
+  tmpfs and UID cases require root with mount namespaces or passwordless sudo.
+  Run the permanent cases on the privileged lane and recheck on main.
