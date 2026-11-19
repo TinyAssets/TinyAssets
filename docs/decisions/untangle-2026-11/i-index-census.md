@@ -237,3 +237,24 @@ acceptance cases before relying on it for admission.
   The ordinary owner Workerd command selecting both new import cases on
   8f9d902c reached Vitest and then exited 137 before an assertion verdict.
   The separate public Worker measurements and focused file diagnostics stand.
+
+### Both wrong admission decisions on complete synthetic bundles
+
+Two synthetic backups went through the v7 host census and bundle measurement on
+Node 22 and 24. Each owner had nine imported entries and 48 collection rows
+with distinct IDs and identical JSON strings. The local owner and Files
+Workers received the generated rows and file contents in import order. With
+ample storage both owners finished and installed all 14 starter files.
+
+| Bytes per row body | Host estimate | Tier tested | Host result | Actual owner |
+| ---: | ---: | ---: | --- | --- |
+| 2,048 | 321,502 | 321,503 | Accept | Refused the fourth file entry with storage_full. At ample capacity it used 419,806 before admission and 491,346 after seeding. |
+| 4,097 | 444,430 | 444,429 | Refuse | Imported every entry and row, then installed v7. It used 251,871 before admission and 323,411 after seeding. |
+
+The three successful public Worker runs each matched the host's 48-row digest,
+all nine file paths, kinds and content IDs, and the readback hash of every
+placed chunk. The fourth run stopped at the expected storage refusal.
+Together with the boundary regression in 8f9d902c, these are acceptance
+fixtures for the shared accounting dependency. A constant starter allowance
+cannot repair both verdicts. The host census still needs that implementation
+and a representative rehearsal before cutover.
