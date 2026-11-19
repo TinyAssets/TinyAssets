@@ -41,3 +41,14 @@ preservation of expired spend counters have their own ordering and recovery ques
 - [x] On staged test commit `278199e4`, the focused ordinary Node 22 Workerd case passed (63 outside its selection). The fixture writes two notices during a real generation. After a second-row failure, the restore still points to log segment zero with no rows, staged bytes or peak. Retry finishes and the restored rows equal the generation digest. The final staged bytes and peak match an independent reading of the generation. This isolates the fault from the original multi-segment peak test, which remains in the suite.
 - [ ] Verify the same fault on the current main source and the seven-branch combination. Earlier combined tree `9d4b4628` passed seven selected cases. Its original combined peak/fault case timed out at 86 seconds. The first standalone and combined reruns of that old case exited 137 before a verdict.
 - [ ] Determine how to handle an in-flight segment whose first row was already committed by the old writer and whose cursor still points to that segment. The new savepoint prevents a fresh partial write. Existing rows reduce the byte delta computed during replay, so a preserved cursor alone cannot certify the byte count.
+
+### Switching writers at the interrupted cursor
+
+Scoped Node 22 TypeScript passed for the restore source, test and their dependencies on `278199e4`. A separate SQLite replay used the actual restore piece and write gate from main `f934871ad`, the staged apply branch and the seven-branch runtime described in the backup opener decision. The test supplied a synthetic two-row manifest segment to the Files reader. The two encoded lines were 311 bytes each. An ordinary SQLite trigger stopped the second insert. The retry constructed a new gate on the same database after dropping the trigger. All nine ordered writer/reader pairs gave these results on both Node 22.23.5 and Node 24.22.3.
+
+| Writer at interruption | Rows and bytes left at cursor 0 | Next reader | Bytes recorded at cursor 1 | Stored row bytes |
+| --- | --- | --- | ---: | ---: |
+| Main | 1 row, 311 bytes | Main, staged apply, or combined | 311 | 622 |
+| Staged apply or combined | 0 rows, 0 bytes | Main, staged apply, or combined | 622 | 622 |
+
+This extends the historical hold to a cursor that has **never advanced**. Retrying on corrected code can acknowledge an old partial segment with the wrong count. Recovering only the final row sum also leaves a previous peak unverified. Keep activation for an existing in-flight restore open until replay from its immutable generation or an authorized restart proves the historical counts. The SQLite replay covers the single restore piece. Whole-Worker attempts that exited 137 supply no verdict.
