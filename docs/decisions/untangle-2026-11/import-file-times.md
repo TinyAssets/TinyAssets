@@ -57,6 +57,10 @@ nine expected chunk keys.
   accounts. a7d7a7d4 excludes new out-of-range imports. The file reader
   promises an ISO modification date, so any disposition for old values
   must preserve file access and avoid inventing a timestamp.
+- [x] The same combined runtime passed 332 platform CI cases on Node
+  24.22.3 with one excluded, all seven pre-commit invariants and the shape
+  registry. Rerunning the six platform generators left the entire tracked
+  diff against main byte-identical.
 - [ ] Repeat after coordinator integration on main.
 
 The separate archive writer preserves historical times in ignored or refused
