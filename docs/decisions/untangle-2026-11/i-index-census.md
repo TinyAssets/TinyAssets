@@ -313,6 +313,8 @@ SQLite file. The archive writer materializes only the selected tables.
 - [x] Read the collection bodies from the built rows and use the same UTF-8
   counter as the Owner collection writer. Both focused tests now pass at the
   exact tier and its one-byte boundary. The survey retains its source census.
-- [ ] Verify the full importer and the combined archive and policy branches.
-  Complete shared Owner accounting and a representative rehearsal are separate
-  obligations.
+- [x] On cb36af5b all 171 ordinary importer tests and the full platform
+  TypeScript check passed on Node 24. With the thirteen staged changes,
+  including policy 5b05e6bf and archive row projection 70f30b5c, all 218
+  importer tests and the full platform TypeScript check passed on Node 24.
+- [ ] Complete shared Owner accounting and the representative rehearsal.
