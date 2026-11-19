@@ -49,5 +49,12 @@ When the deletion comparison in #5688 and this change meet, its private original
   and 24.22.3. Signed-message parsing preserved all 4,386 accepted values
   and all 12,957 refusals on each runtime. The folder reader returned the
   original run and key for every accepted input.
-- [ ] Finish ordinary importer, Doors and typecheck verification, then repeat
-  the comparison on main after coordinated integration.
+- [x] Source 72672304 passed 169 ordinary importer tests on Node 24.22.3,
+  21 Doors import Worker tests on Node 22.23.5 and the full platform typecheck.
+  With the 23 staged changes identified in the archive verification at fa92c218,
+  all 22 Doors import Worker cases passed on Node 22, as did the full Node 24
+  platform typecheck. The combined contract preserved the same 4,386 accepted
+  values and 12,957 refusals on each runtime. Only the Doors lookup and its
+  test fixture changed relative to that rehearsal.
+- [ ] Compare the public behavior recordings with main and repeat the
+  importer and Doors checks after coordinated integration.
