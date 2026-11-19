@@ -112,8 +112,15 @@ function utf8(text: string): Uint8Array {
   return out.subarray(0, n);
 }
 
-function decode(bytes: readonly number[]): string {
-  return new TextDecoder().decode(Uint8Array.from(bytes));
+/** Keep a BOM in a filename or pattern. Only the start of the whole rule file may drop one. */
+function decode(bytes: Uint8Array | readonly number[]): string {
+  const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+  return new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(data);
+}
+
+/** Both readers preserve the file's bytes for the list ceiling and first-line handling. */
+export function syncIgnoreLines(bytes: Uint8Array): string[] {
+  return decode(bytes).split("\n");
 }
 
 const SLASH = 47;
@@ -122,6 +129,8 @@ const SLASH = 47;
 
 /** One rule line: its pattern's bytes for matching, and git's flags. */
 interface Parsed {
+  /** The line as git reads it, including meaningful spaces, escapes and a possible `!`. */
+  readonly line: string;
   readonly bytes: Uint8Array;
   readonly negative: boolean;
   /** A trailing `/`: folders only. */
@@ -153,12 +162,16 @@ function trimTrailingSpaces(line: string): string {
 }
 
 /** A line as git reads it (`add_patterns_from_buffer`, `parse_path_pattern`), or null. */
-function parse(raw: string): Parsed | null {
-  let line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+function parse(raw: string, first = false): Parsed | null {
+  let line = first && raw.startsWith("\uFEFF") ? raw.slice(1) : raw;
+  if (line.endsWith("\r")) {
+    line = line.slice(0, -1);
+  }
   if (line === "" || line.startsWith("#")) {
     return null;
   }
-  line = trimTrailingSpaces(line);
+  const spelling = trimTrailingSpaces(line);
+  line = spelling;
   let negative = false;
   if (line.startsWith("!")) {
     negative = true;
@@ -176,13 +189,19 @@ function parse(raw: string): Parsed | null {
   if (!name && line.startsWith("/")) {
     line = line.slice(1);  // `match_pathname` drops one leading `/`
   }
-  return { bytes: utf8(line), negative, dirOnly, name };
+  return { line: spelling, bytes: utf8(line), negative, dirOnly, name };
 }
 
 /** The rule lines among `lines` (no comment, no blank), as the matcher reads each. */
 export function ruleLines(lines: readonly string[]): string[] {
-  return lines.map((line) => line.trim())
-    .filter((line) => line !== "" && !line.startsWith("#"));
+  const active: string[] = [];
+  for (const [at, raw] of lines.entries()) {
+    const parsed = parse(raw, at === 0);
+    if (parsed !== null) {
+      active.push(parsed.line);
+    }
+  }
+  return active;
 }
 
 // -- A pattern's tokens (wildmatch.c, by byte) ------------------------------------------------
@@ -863,18 +882,19 @@ function compile(lines: readonly string[]): Compiled {
     better(best, rule, dirOnly);
     into.set(key, best);
   };
-  for (const raw of lines) {
-    bytes += utf8Bytes(raw) + 1;
-    const parsed = parse(raw);
+  for (const [at, raw] of lines.entries()) {
+    // A continuing file must show the line ending within the bounded read.
+    bytes += utf8Bytes(raw) + (at + 1 < lines.length ? 1 : 0);
+    const parsed = parse(raw, at === 0);
     if (parsed === null) {
       continue;
     }
-    if (bytes - 1 > LIST_BYTES) {
-      unapplied.push({ line: raw.trim(), reason: "bytes" });
+    if (bytes > LIST_BYTES) {
+      unapplied.push({ line: parsed.line, reason: "bytes" });
       continue;
     }
     const record: Rule = { negative: parsed.negative,
-                           kind: defaults.has(raw.trim()) ? "default" : "custom" };
+                           kind: defaults.has(parsed.line) ? "default" : "custom" };
     const tokens = tokenize(parsed.bytes, !parsed.name);
     if (tokens === null) {
       rules.push(record);  // a line git takes that matches nothing
@@ -895,7 +915,7 @@ function compile(lines: readonly string[]): Compiled {
       if (full || counted.name + counted.path + cost > AUTOMATON_STATES) {
         // Past the ceiling: this and every later automaton line, in file order.
         full = true;
-        unapplied.push({ line: raw.trim(), reason: "states" });
+        unapplied.push({ line: parsed.line, reason: "states" });
         continue;
       }
       rules.push(record);

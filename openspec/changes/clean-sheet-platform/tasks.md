@@ -619,6 +619,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
     bound first (`pass-sandbox.md` §2).
 
+- [x] The runner and owner read UTF-8 text rules without NUL with Git's file marker and
+  whitespace rules. Their byte ceiling includes a continuing line's newline; the
+  runner reports the unread byte count (`untangle-2026-11/sync-ignore-lines.md`).
+- [ ] Compare original non-UTF-8 and NUL-bearing rule lines with Git before treating the
+  matcher review as complete. Decoding with replacement changes literals, wildcards and
+  bracket classes; Git also stops reading a pattern at an embedded NUL (`sync-ignore-lines.md`).
+
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),

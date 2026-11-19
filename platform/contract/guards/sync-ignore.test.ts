@@ -21,7 +21,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   AUTOMATON_STATES, automatonStates, defaultSyncIgnore, ignoredBy, LIST_BYTES,
-  REMEMBERED_NAME_BYTES, unappliedLines,
+  REMEMBERED_NAME_BYTES, ruleLines, unappliedLines,
 } from "../src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -183,6 +183,19 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
     expect(found).toEqual([]);
   });
 
+  it("reads one file marker and keeps the spaces and marks in later rule names", () => {
+    const lines = ["\uFEFF*.tmp", "# comment", "\uFEFFnote", "**/\uFEFFother", " node_modules",
+                   " #memo", "end\\ ", "build  \r"];
+    const paths = ["a.tmp", "note", "\uFEFFnote", "sub/other", "sub/\uFEFFother", " node_modules",
+                   "node_modules", " #memo", "end ", "end", "build"];
+    expect(differences(lines, paths)).toEqual([]);
+    expect(ruleLines(lines)).toEqual(["*.tmp", "\uFEFFnote", "**/\uFEFFother", " node_modules",
+                                     " #memo", "end\\ ", "build"]);
+    const match = ignoredBy(lines);
+    expect([match(" node_modules"), match("build")]).toEqual(["custom", "default"]);
+    expect(differences(["\uFEFF\uFEFFname"], ["\uFEFFname", "name"])).toEqual([]);
+  });
+
   it("never ignores itself, nor the folders on its way", () => {
     const matcher = ignoredBy(["*", ".ta/", ".ta/sync-ignore"]);
     expect([matcher(".ta", true), matcher(".ta/sync-ignore"), matcher(".ta/other")])
@@ -247,6 +260,14 @@ describe("its ceilings, each line past one said in file order", () => {
       return bytes - 1 > LIST_BYTES;
     });
     expect(past[0]!.line).toBe(lines[firstPast]);
+  });
+
+  it("requires a whole line within the byte ceiling, up to a newline or end of file", () => {
+    const edge = "ä.log";
+    const comment = "#" + "x".repeat(LIST_BYTES - Buffer.byteLength(edge) - 2);
+    expect(ignoredBy([comment, edge])(edge)).toBe("custom");
+    expect(unappliedLines([comment, edge, ""])).toEqual([{ line: edge, reason: "bytes" }]);
+    expect(ignoredBy([comment.slice(0, -1), edge, ""])(edge)).toBe("custom");
   });
 
   it("counts a lone high surrogate as the 3 bytes it is matched as, the unit after it its own",

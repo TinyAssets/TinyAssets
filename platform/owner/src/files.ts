@@ -107,7 +107,8 @@ import {
 import { isPrintable, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import {
-  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
+  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, syncIgnoreLines,
+  unappliedLines,
 } from "../../contract/src/sync-ignore";
 import type { Backups } from "./backup";
 import type { Collections } from "./collections";
@@ -3336,7 +3337,7 @@ function syncIgnoreChanged(o: SyncIgnoreTold, present: boolean, now: number,
     // Whoever wrote it, its new lines are read (a set's work, the list at most an inline
     // file), never matched against the owner's files here.
     const lines = (bytes: Uint8Array | null) => bytes === null ? null
-      : ruleLines(new TextDecoder().decode(bytes).split("\n"));
+      : ruleLines(syncIgnoreLines(bytes));
     const after = lines(o.files.inlineOf(change.content_id));
     const before = o.files.contentBefore(SYNC_IGNORE, o.files.lastVersion(SYNC_IGNORE));
     const was = new Set(before === null ? [] : lines(o.files.inlineOf(before.content_id))
@@ -3348,7 +3349,7 @@ function syncIgnoreChanged(o: SyncIgnoreTold, present: boolean, now: number,
     }
     // Lines past a ceiling are not applied: said here, never in silence.
     const raw = o.files.inlineOf(change.content_id);
-    const past = raw === null ? [] : unappliedLines(new TextDecoder().decode(raw).split("\n"));
+    const past = raw === null ? [] : unappliedLines(syncIgnoreLines(raw));
     const states = past.filter((each) => each.reason === "states");
     if (states.length > 0) {
       held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${

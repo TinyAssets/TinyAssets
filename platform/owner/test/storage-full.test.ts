@@ -281,6 +281,9 @@ describe("the sync's ignore list", () => {
     await sync("node_modules\nsrc\nbuild-out\ndist\n", { kept: 1, changed: 5 },
                await version());
     expect(await changed()).not.toContain("hold back");
+    // Only the first marker belongs to the file. The second names a different, custom path.
+    await sync("\uFEFF\uFEFFnode_modules\n", { kept: 0, changed: 0 }, await version());
+    expect(await changed()).toContain("Its new lines may hold back files you keep");
   });
 
   it("says a list past `LIST_BYTES` is not applied past it, in the notice", async () => {

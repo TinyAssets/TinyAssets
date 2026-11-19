@@ -474,22 +474,22 @@ describe("memory, whatever the tree holds", () => {
 describe("kept files and same-size edits at sync-out", () => {
   it("says a kept file whose changes a run's own line holds back", async () => {
     const { place: p, local } = place();
-    mkdirSync(join(local, "src"), { recursive: true });
-    writeFileSync(join(local, "src", "app.ts"), "v1");
+    mkdirSync(join(local, " node_modules"), { recursive: true });
+    writeFileSync(join(local, " node_modules", "app.ts"), "v1");
     const mirror = mirrorOf();
     await syncOut(await client((door, body) => door === "commit" ? commitAll(body)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
-    expect(mirror.get("/workspace/src/app.ts")).toBeDefined();
-    // A run adds a line of its own, then changes the kept file and leaves another as it was.
-    writeFileSync(join(local, ".ta", "sync-ignore"), "src\n");
-    writeFileSync(join(local, "src", "app.ts"), "v2, the run's work");
+    expect(mirror.get("/workspace/ node_modules/app.ts")).toBeDefined();
+    // The rule file starts with a marker. This space-prefixed name is distinct from a default.
+    writeFileSync(join(local, ".ta", "sync-ignore"), "\uFEFF node_modules\n");
+    writeFileSync(join(local, " node_modules", "app.ts"), "v2, the run's work");
     const sent: string[] = [];
     const report = await syncOut(await client((door, body) => door === "commit"
       ? commitAll(body, sent) : { status: 404, body: {} }), p, mirror, LEASE, []);
     expect(sent).toEqual(["/workspace/.ta/sync-ignore"]);
-    expect(report.skipped).toEqual([{ path: "/workspace/src/app.ts", code: "held_back" }]);
+    expect(report.skipped).toEqual([{ path: "/workspace/ node_modules/app.ts", code: "held_back" }]);
     // Never removed, and the owner's copy stands.
-    expect(mirror.get("/workspace/src/app.ts")).toBeDefined();
+    expect(mirror.get("/workspace/ node_modules/app.ts")).toBeDefined();
   });
 
   it("sends a same-size edit that kept its change time, by the next sync", async () => {
@@ -583,14 +583,14 @@ describe("the sync-ignore's ceilings, at sync-out", () => {
     mkdirSync(join(local, ".ta"), { recursive: true });
     const line = "*.ext-0123456789-";
     const count = Math.ceil(LIST_BYTES / (line.length + 6)) + 1_000;
-    writeFileSync(join(local, ".ta", "sync-ignore"),
-                  `${Array.from({ length: count }, (_, i) => `${line}${i}`).join("\n")}\nlast.txt\n`);
+    const rules = `${Array.from({ length: count }, (_, i) => `${line}${i}`).join("\n")}\nlast.txt\n`;
+    writeFileSync(join(local, ".ta", "sync-ignore"), rules);
     writeFileSync(join(local, "last.txt"), "named past the cut: kept syncing");
     const sent: string[] = [];
     const report = await syncOut(await client((door, body) => door === "commit"
       ? commitAll(body, sent) : { status: 404, body: {} }), p, mirrorOf(), LEASE, []);
     expect(sent).toContain("/workspace/last.txt");
-    expect(report.list_bytes_past).toBeGreaterThan(0);
+    expect(report.list_bytes_past).toBe(Buffer.byteLength(rules) - LIST_BYTES);
   });
 });
 

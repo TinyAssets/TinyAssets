@@ -56,7 +56,7 @@ import {
   CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
 } from "../../contract/src/limits";
 import {
-  defaultSyncIgnore, ignoredBy, LIST_BYTES, SYNC_IGNORE, type Unapplied,
+  defaultSyncIgnore, ignoredBy, LIST_BYTES, SYNC_IGNORE, syncIgnoreLines, type Unapplied,
 } from "../../contract/src/sync-ignore";
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
@@ -564,8 +564,8 @@ const RACY = -1;
 
 /**
  * The sync-ignore rules of the workspace at `local`: its file's lines, read to `LIST_BYTES`
- * at most (a line the cut falls in, and every one after it, not applied: `past` says how
- * many bytes), or the defaults, the file written with them (so the owner sees and edits
+ * at most (a line the cut falls in, and every one after it, not applied: `past` counts
+ * the bytes beyond the read), or the defaults, the file written with them (so the owner sees and edits
  * them) when it is missing.
  */
 function syncIgnore(local: string): { lines: readonly string[]; past: number } {
@@ -577,7 +577,7 @@ function syncIgnore(local: string): { lines: readonly string[]; past: number } {
       const cut = text.lastIndexOf(10);
       text = text.subarray(0, cut < 0 ? 0 : cut);
     }
-    return { lines: text.toString("utf8").split("\n"), past: read.size - text.length };
+    return { lines: syncIgnoreLines(text), past: read.size - read.bytes.length };
   }
   if (!existsSync(path)) {
     safeWrite(local, path, new TextEncoder().encode(`${defaultSyncIgnore().join("\n")}\n`),
