@@ -80,6 +80,17 @@ The next F1 change addresses a separate stale collection byte measurement.
   Other owners proceed. The size check can still report an oversized file
   for the same owner. The four ordinary owner cases and existing combined
   size and unreadable policy regression passed on Node 24.
-- [ ] Verify the full importer, typecheck, private exclusions and the combined
-  archive, folder, size and deletion stages. A database that changes during
-  the build still needs a fresh frozen copy.
+- [x] Source c6899cdd passed all 176 ordinary Node 22 importer tests and the
+  full Node 24 platform typecheck. On each of Node 22 and 24, 32 independent
+  comparisons exercised dry and writing builds, ordinary and rehearsal names,
+  public and excluded owners. All six required columns, an extra compatible
+  column and a case-only rename were covered. Folder counts and index keys
+  agreed with the published-owner counts.
+- [x] With the seventeen stages documented at 67c22ccc all 227 Node 24
+  importer tests, 25 Node 22 Owner import Workerd cases and full Node 24
+  platform types passed. The same 32 independent cases passed on each runtime
+  on this tree too. The first rehearsal dropped the survey's quoted-identifier
+  import, failing 133 importer cases and typecheck. Restore that import
+  alongside modifiedTime and tableRows. At the measurement overlap keep the
+  F1 precheck and append the known missing stores for private and public owners.
+- [ ] Integration on main and a representative frozen copy remain outstanding.
