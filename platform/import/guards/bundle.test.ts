@@ -383,6 +383,22 @@ describe("the bundle builder", () => {
     }
   });
 
+  it("matches GNU tar's timestamp field on either side of the octal limit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ta-tar-time-"));
+    temps.push(dir);
+    const source = join(dir, "sample");
+    writeFileSync(source, "dated bytes");
+    for (const seconds of [-2, 0, 2 ** 33 - 1, 2 ** 33, 2 ** 36]) {
+      const date = new Date(seconds * 1000);
+      fs.utimesSync(source, date, date);
+      const archive = join(dir, `${seconds}.tar`);
+      writeTar(archive, [{ member: Buffer.from("sample"), source: Buffer.from(source) }]);
+      // Both writers see the time this filesystem actually retained.
+      const reference = execFileSync("tar", ["--format=gnu", "-cf", "-", "-C", dir, "sample"]);
+      expect(readFileSync(archive).subarray(136, 148)).toEqual(reference.subarray(136, 148));
+    }
+  });
+
   it("refuses a tar member past the header's size field, before writing it", () => {
     const dir = mkdtempSync(join(tmpdir(), "ta-tar-"));
     temps.push(dir);

@@ -21,8 +21,10 @@ function octal(value: number, width: number): Buffer {
   return Buffer.from(`${value.toString(8).padStart(width - 1, "0")}\0`, "latin1");
 }
 
+const OCTAL_FIELD_MAX = 0o77777777777;
+
 /** A member's most bytes: what the header's 11 octal digits can say (8 GiB less a byte). */
-export const TAR_MEMBER_MAX = 0o77777777777;
+export const TAR_MEMBER_MAX = OCTAL_FIELD_MAX;
 
 /** One 512-byte header; a member past `TAR_MEMBER_MAX` is refused, never written short. */
 function header(name: Buffer, type: string, size: number, mode: number, mtime: number,
@@ -37,9 +39,9 @@ function header(name: Buffer, type: string, size: number, mode: number, mtime: n
   octal(0, 8).copy(block, 116);
   octal(size, 12).copy(block, 124);
   const seconds = Math.floor(mtime);
-  if (seconds < 0) {
-    // GNU tar encodes pre-epoch seconds as a signed base-256 field, sign-extended to 12 bytes.
-    block.fill(0xff, 136, 148);
+  if (seconds < 0 || seconds > OCTAL_FIELD_MAX) {
+    // GNU base-256: marker bit and sign extension above the low 64 bits.
+    block.writeUInt32BE(seconds < 0 ? 0xffffffff : 0x80000000, 136);
     block.writeBigInt64BE(BigInt(seconds), 140);
   } else {
     octal(seconds, 12).copy(block, 136);

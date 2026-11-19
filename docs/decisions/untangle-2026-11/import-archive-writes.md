@@ -62,3 +62,5 @@ method that closed the output descriptor.
   was byte-identical to the previous writer on both runtimes.
 
 - [ ] Extend the same archive timestamp decision to positive seconds outside the octal field. On 8535a52d a real Linux file at 68,719,476,736 seconds archived as 8,589,934,592. GNU tar retained the original and Python read both archives independently. At 8,589,934,592 seconds the old output still decodes to the right value but has no field terminator. The ignored and refused archive writers share this header. Preserve member-size refusal and ordinary octal output. Verify both boundaries before closing this item.
+
+Candidate uses GNU base-256 for dates outside the 11 octal digits. The new ordinary test compares the actual archive header against GNU tar. It failed on the preceding writer. Candidate verification is in progress. Separately, subsecond timestamps near a whole second need an exact filesystem reading before truncation.
