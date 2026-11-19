@@ -29,3 +29,27 @@
 - [ ] The ordinary privileged suite exited 2 at preflight on this host. Its
   tmpfs and UID cases require root with mount namespaces or passwordless sudo.
   Run the permanent cases on the privileged lane and recheck on main.
+
+## November 19 reconciliation with current staged callers
+
+- [x] Rebuilt the four-source combination above directly from GitHub heads.
+  All eight changed source and test files matched the saved runner rehearsal
+  byte for byte, including the combined runner and its test. No additional
+  tracked source changes from that checkout need publication.
+- [x] Added 08788f8a (login arguments), e0067de9 (paste), bb863130 (probe
+  completeness), 44e44370 (sync identity), 534e6bcb (ignore) and dd5a1022
+  (refused workspace edits) to the local four-stage rehearsal. All 26 changed
+  source and test files were retained. The overlaps in runner.ts and
+  sync.test.ts required the imports used by both sets of callers.
+- [x] The 140 ordinary sandbox Worker/guard cases passed but the sources
+  suite found the Sandbox Worker imported a source-record module for paste
+  validation (354 passed, one failed). The repair on the ordinary paste
+  branch, 9c4c50ac, moves that parser to the existing sandbox RPC contract.
+  With the repair the joined sources suite passed all 355 tests, the sandbox
+  suite passed all 140 and the six Doors sign-in tests passed.
+- [ ] Five selected runner files on the ten-stage rehearsal had 44 passes,
+  five skipped, and eight failures. Five confirm pending retry after a storage
+  refusal; two confirm the outstanding workspace content/mode cases. The PID
+  test stopped at unshare on this host. These suites do not certify either
+  the pending workspace design or privileged acceptance. Recheck with the
+  pinned sandbox and after integration on main.
