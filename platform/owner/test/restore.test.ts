@@ -18,7 +18,7 @@ import { GET_READS, objectPrefix } from "../../contract/src/files";
 import { HELD_WAIT_MS } from "../../ci/fixtures";
 import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { eraseWords, type RestoreAnswer, type RestoreHold } from "../../contract/src/owner";
-import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
+import { Backups, MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
 import type { Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
@@ -1202,6 +1202,41 @@ const schemaOf = (stub: Stub) => sqlIn(stub, "SELECT type, name FROM sqlite_mast
                                              "substr(name, 1, 4) != '_cf_' ORDER BY 1, 2");
 
 describe("a restore into a live owner", () => {
+  it("keeps the pin held and retries its fresh capture when attaching the generation fails", async () => {
+    const o = await owner();
+    const original = await generate(o.stub);
+    const capture = () => sqlIn(o.stub, "SELECT gen, capturing FROM log_capture");
+    const before = await capture();
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const asked = { namespace: space!["ns"] as string, gen: original.gen };
+    const binding = platform(o.name);
+    const error = await runInDurableObject(o.stub, async (instance: OwnerDO) => {
+      const begin = Backups.prototype.begin;
+      const opening = vi.spyOn(Backups.prototype, "begin").mockImplementationOnce(function (
+        this: Backups, now: number,
+      ) {
+        begin.call(this, now);
+        throw new Error("pin fresh interrupted");
+      });
+      try {
+        return await instance.restorePin(binding, asked)
+          .then(() => null, (err: unknown) => String(err));
+      } finally {
+        opening.mockRestore();
+      }
+    });
+    expect(error).toContain("pin fresh interrupted");
+    expect(await sqlIn(o.stub, "SELECT step, fresh FROM owner_restore"))
+      .toEqual([{ step: "pinned", fresh: null }]);
+    expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE state = 'writing'")).toEqual([]);
+    expect(await capture()).toEqual(before);
+
+    const hold = await pinnedTo(o.stub, o.name, original.gen);
+    expect(hold.fresh).not.toBeNull();
+    expect(hold.fresh).not.toBe(original.gen);
+    expect((await pinOf(o.stub, o.name, original.gen)).fresh).toBe(hold.fresh);
+  });
+
   it("pins the generation, holds the owner and writes its present state, wipes the object " +
      "to pending and empty with R2 untouched, and restores the pinned one equal at E",
      async () => {

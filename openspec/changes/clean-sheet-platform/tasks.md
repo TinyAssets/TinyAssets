@@ -507,6 +507,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     generation to restore pinned first, since a fresh generation's finish prunes every older
     unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed;
     the wipe landed as #5607.
+  - [x] A restore pin opens its fresh backup and records the undo generation together
+    (`codex/untangle-restore-pin-capture`, `restore-pin-capture.md`).
   - [x] Owner migration 11's pin PR, after `restore.wipe` merges (`r5w.md` item 9): #5608.
   - [x] The sweep's rotation counts a restore record's `gen` and `fresh` (a wiped or failed
     restore's object knows neither), or does not finish while any owner is held

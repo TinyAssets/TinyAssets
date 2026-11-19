@@ -1241,7 +1241,11 @@ export const restoreDoors = Object.freeze({
       const now = record(o.storage.sql);
       if (now?.step === "pinned" && (now.fresh === null || !o.backups.kept(now.fresh))
           && o.backups.writing() === null) {
-        o.storage.sql.exec("UPDATE owner_restore SET fresh = ?", o.backups.begin(clock()));
+        // The fresh capture is the pin's undo only once its record names it.
+        o.storage.transactionSync(() => {
+          const fresh = o.backups.begin(clock());
+          o.storage.sql.exec("UPDATE owner_restore SET fresh = ?", fresh);
+        });
       }
     });
     if (!await o.door(() => holdOf(o, record(o.storage.sql)!).written)) {
