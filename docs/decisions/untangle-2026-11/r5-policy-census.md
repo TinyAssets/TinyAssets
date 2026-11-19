@@ -33,3 +33,12 @@ No owner ID, rule contents, source, cap amount or destination is included in the
   the unreadable-policy and size findings in its existing regression.
   Confirm the counts for those owners and compare the reported classification
   with the bytes actually published for owners that can be built.
+
+The regression is published at 70f30b5c. The ordinary 48-case policy census
+suite on 93f714d1 passed on Node 22, including both pre-fit controls, while
+the new writer regression failed. Additional Node 22 and 24 runs with actual
+bundle output crossed the two validation outcomes. When the archived
+document changed from valid to unrecognized, 93f714d1 emitted one valid
+live policy and no refused file. In the reverse direction it emitted no live
+policy and a refused file. The archive-row writer eeee6bba agreed with
+the archived database in both directions on both runtimes.
