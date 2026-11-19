@@ -196,3 +196,7 @@ and the representative whole census remain open.
   paths existed in the two import cases. This fixture waited for the real alarm.
   The in-tree test now uses the existing ownerObject and seeded helpers. The
   Vitest entrypoint and scoped typecheck still need completed verdicts.
+- On a4f50a92, Node 22 TypeScript reported zero diagnostics for the import
+  test, its shared test support, and the owner import, files and starter
+  modules. The full scoped compiler invocation exited 137. The ordinary
+  Vitest result is still outstanding.
