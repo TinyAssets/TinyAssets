@@ -17,7 +17,7 @@ When the deletion comparison in #5688 and this change meet, its private original
   identity reader silently skipped a staged owner. The two ordinary identity
   tests failed for both original and rehearsal names. Each expected one
   missing admission and received zero.
-- [ ] Keep the listed object name and parsed folder key together through
+- [x] Keep the listed object name and parsed folder key together through
   grouping, index lookup and validation. Verify both ordinary identities,
   the broader importer and the Doors consumer. Then repeat on main after
   coordinated integration. All of these stages remain independent.
@@ -25,4 +25,20 @@ When the deletion comparison in #5688 and this change meet, its private original
   It reads its object by name and checks the embedded identity against its
   folder key. The two fixture variants also check all index GETs in order
   and the admitted owner count. All 21 ordinary window tests passed locally
-  on Node 24.22.3. Verification with the staged consumers is in progress.
+  on Node 24.22.3. The full standalone importer passed all 169 tests on source 13453f71.
+
+- [x] On the combined importer, retain the wipe branch's listing snapshots
+  and parse their keys with bundleLocation. Group the returned index records
+  and read each by name. The ten other staged inputs are F1 16161c75, policy
+  4e102795, verbatim rows ba653c28, deletion comparison 3dd64974, contract
+  digest b02a640e, host digest 2bd83dbb, prefix e0a847e3, listing 1bbfa667,
+  wipe 2d527bca and grouping a799066e. Source 13453f71 with those stages
+  passed all 199 importer tests and the platform typecheck on Node 24.22.3.
+  All 22 Doors import Workerd tests passed on Node 22.23.5.
+- [x] Independently read 1,013 genuine folder-keyed synthetic indexes in
+  three runs across three listing pages. Sorted and shuffled listings both
+  yielded exactly 1,013 index GETs in the same order and the same 93 missing
+  admissions and ordinals. Each ordering passed on standalone and combined
+  source on both Node 22 and 24.
+- [ ] When the prefix and identity stages meet, use the shared parser for the
+  Doors index-key lookup as well. Recheck the reconciled sources on main.
