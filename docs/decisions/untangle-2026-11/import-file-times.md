@@ -87,5 +87,16 @@ milliseconds and go through the owner directly.
   out of eight runtime modules across six Workers. The runner data and Wasm
   also matched. For seven affected doors, 14 official RPC recorder cases per
   source produced 686 byte-identical canonical records.
-- [ ] Finish the corresponding reviewer records and the wire and tool-family
-  comparison for this runtime. The full owner recordings remain separate.
+- [x] The same seven doors completed their 14 official reviewer cases on
+  main and the staged runtime. All 4,592 canonical reviewer lines matched
+  byte for byte. All 23 ordinary combined Doors import tests then passed.
+- [x] Mixed-version acceptance requires both Workers. With corrected Doors
+  and the original Owner, the delivery was acknowledged with two rows, 21
+  entries and nine chunk puts, no completion receipt and a failing import
+  check. All eight locally built runtime modules matched the intended mix.
+  With the original Doors and corrected Owner, the same fixture stopped at
+  two rows and zero entries. With both corrected it recovered all 28. The
+  coordinator must verify both versions before resubmitting affected bundles.
+- [ ] Finish the wire and tool-family comparison on this runtime. The full
+  owner recordings and recovery of state produced by the older Owner during
+  a mixed-version delivery remain open.
