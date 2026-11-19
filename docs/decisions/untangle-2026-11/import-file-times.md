@@ -75,5 +75,17 @@ milliseconds and go through the owner directly.
   and public readback. Another delivery added zero puts and left the complete
   check identical. Both consumer versions used the same staged owner and
   Files Workers. An acknowledged delivery requires explicit resubmission.
-- [ ] Run the new ordinary regression that interrupts the delivery after its
-  rows and resubmits the original message.
+- [x] On 08b27231 all 22 standalone Doors import cases passed on Node 22,
+  including the committed-rows resend case. That same regression passed
+  on the combined source. On Node 22 and 24, repeating the actual staging
+  CLI against its offline fixture reproduced every URL, method and body
+  across 35 requests. All three signed messages were sent again. This
+  command reissues the batch, including owners whose first delivery succeeded.
+- [x] The ordinary owner memory leg on the a7d7a7d4 runtime measured
+  99 rows and all 66 verdicts passed. Local dry-build comparison at the same
+  paths as f934871ad found exactly two changed ES modules, Doors and Owner,
+  out of eight runtime modules across six Workers. The runner data and Wasm
+  also matched. For seven affected doors, 14 official RPC recorder cases per
+  source produced 686 byte-identical canonical records.
+- [ ] Finish the corresponding reviewer records and the wire and tool-family
+  comparison for this runtime. The full owner recordings remain separate.
