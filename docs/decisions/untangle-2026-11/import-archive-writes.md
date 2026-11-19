@@ -30,3 +30,13 @@ method that closed the output descriptor.
   were imports. Keep tableRows alongside writeTar in the builder and retain
   truncateSync in the existing F1 fixture.
 - [ ] Repeat the archive checks on main after coordinated integration.
+
+- [x] Rehearsed the twelve importer stages above with the seven
+  [owner restore stages](https://github.com/TinyAssets/TinyAssets/commit/5eefcdea52a781d6dd33641cfa73f25507b4cdf4)
+  and four [sandbox runner stages](https://github.com/TinyAssets/TinyAssets/commit/895d11080c1f49adc6a6916625d32781aab98e86)
+  on f934871ad. The three groups changed disjoint sets of 27, 7 and 8 source,
+  test and workflow paths. In the full checkout 332 platform CI cases passed,
+  one was excluded, and the platform typecheck, seven repository invariants,
+  shape registry and clean-sheet OpenSpec validation passed. An earlier guard
+  attempt on a sparse checkout omitted required repository inputs and failed
+  before this full result. This rehearsal covers the 23 named stages only.
