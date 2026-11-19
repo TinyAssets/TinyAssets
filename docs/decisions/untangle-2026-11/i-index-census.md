@@ -179,3 +179,11 @@ Leaving the starter out would admit an owner whose seed cannot finish in all
 four. These measurements cover fresh owners with distinct imported paths and
 the named package. The production dependency for replaying the owner's charges
 and the representative whole census remain open.
+
+- [ ] The owner import suite now has a public-door check with the package carried
+  by the checked-out commit. It compares the stored bytes of a freshly seeded
+  owner with those of an owner imported with an identical inline skill and a
+  chunked reference under two distinct paths. Both imports precede admission.
+  The test verifies the starter receipts and all four paths. The first ordinary
+  Worker run and the concurrent scoped TypeScript attempt each exited 137. Both
+  verdicts are pending a serial run.

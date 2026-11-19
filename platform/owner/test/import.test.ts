@@ -24,12 +24,14 @@ import {
 import { MAX_OPEN_INTENTS } from "../src/files";
 import { INDEX_BYTES } from "../src/manifest";
 import { IMPORT_NOTICE, type ImportCheckAnswer } from "../src/import";
+import { carried } from "../src/starter-package";
 import type { OwnerDO } from "../src/owner-do";
 import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, policyDigest, type PolicyDocument,
 } from "../../contract/src/policy-document";
 import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
+import { settled, settledOwner } from "./starter-support";
 import { crowd, failure, gateFor, spaceOf, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -270,6 +272,28 @@ describe("the import's files", () => {
     expect((await failure(() => stub.importFileCommit(importing(owner), {
       intent_id: a.skipped ? "" : a.intent_id, path: first.path, mode: 0,
       content_id: first.content_id, mtime_ms: MTIME }))).message).toMatch(/never stored/);
+  });
+
+  it("shares imported inline and chunked contents with the starter after admission", async () => {
+    const reference = await settledOwner();
+    const seedBytes = (await reference.stub.storageUsage(reference.bind(null))).used_bytes;
+    const pkg = carried();
+    const guide = pkg.files.find(file => file.path.endsWith("/schedule/SKILL.md"))!;
+    const spec = pkg.files.find(file => file.path.endsWith("/knowledge/references/okf-spec.md"))!;
+    const { stub, owner } = pending();
+    expect(await stub.importFiles(importing(owner), { entries: [
+      inline(`${I}/guide.md`, guide.text),
+    ] })).toEqual({ written: 1, skipped: 0 });
+    expect(await upload(stub, owner, `${I}/reference.md`, bytesOf(spec.text)))
+      .toEqual({ written: 1, skipped: 0 });
+    await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
+    const bind = () => own(owner);
+    await settled({ stub, bind });
+    expect((await stub.starterReceipts(bind())).receipts).toHaveLength(pkg.files.length);
+    expect((await stub.storageUsage(bind())).used_bytes).toBe(seedBytes);
+    for (const path of [`${I}/guide.md`, `${I}/reference.md`, guide.path, spec.path]) {
+      expect((await stub.fileStat(bind(), { path })).entry?.kind).toBe("file");
+    }
   });
 
   it("holds the files to the tier numbers the binding carries", async () => {
