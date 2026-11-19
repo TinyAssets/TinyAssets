@@ -101,3 +101,8 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
   independent local run used the same namespace. Recovery from an active
   historical partial segment and from already completed historical adoption
   still needs a decision.
+
+- [x] On e9453549 the full ordinary owner restore test file passed on Node
+  22.23.5 using the pinned Workerd runner. All 64 ordinary cases passed,
+  including both undo cases. The size-tagged case was outside this selection.
+  The historical partial and completed restore decisions above remain open.
