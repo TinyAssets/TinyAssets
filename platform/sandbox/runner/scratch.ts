@@ -22,7 +22,7 @@
  *   unwritten, nor the run `unknown`; the ballast is made again once there is room.
  */
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync,
-         statfsSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+         statfsSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const SCRATCH = "/scratch";
@@ -196,7 +196,7 @@ export function scratchCleared(pruned: Pruned): ScratchCleared | null {
 /** The ballast that keeps the runner's own room: made when there is room for it and more. */
 export function keepReserve(path: string): boolean {
   const bytes = RESERVE_BYTES;
-  if (existsSync(path)) {
+  if (statSync(path, { throwIfNoEntry: false })?.size === bytes) {
     return true;
   }
   if (diskOf(dirname(path)).free_bytes < 2 * bytes) {
@@ -207,7 +207,7 @@ export function keepReserve(path: string): boolean {
   const fd = openSync(temp, "w", 0o600);
   try {
     for (let written = 0; written < bytes; written += block.byteLength) {
-      writeSync(fd, block, 0, Math.min(block.byteLength, bytes - written));
+      writeFileSync(fd, block.subarray(0, Math.min(block.byteLength, bytes - written)));
     }
   } catch (error) {
     closeSync(fd);

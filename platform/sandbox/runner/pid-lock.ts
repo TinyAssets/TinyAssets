@@ -10,7 +10,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, lstatSync, openSync, readFileSync, rmSync,
-         writeSync } from "node:fs";
+         writeFileSync } from "node:fs";
 
 /** A wait's first sleep. */
 const FIRST_MS = 20;
@@ -123,11 +123,11 @@ export function tryLock(path: string): boolean {
   const temp = `${path}.${randomBytes(6).toString("hex")}`;
   const fd = openSync(temp, "wx", 0o600);
   try {
-    writeSync(fd, `${process.pid} ${boot}`);
-  } finally {
-    closeSync(fd);
-  }
-  try {
+    try {
+      writeFileSync(fd, `${process.pid} ${boot}`);
+    } finally {
+      closeSync(fd);
+    }
     for (;;) {
       try {
         linkSync(temp, path);

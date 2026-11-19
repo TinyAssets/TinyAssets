@@ -42,6 +42,19 @@ describe("the runner's lock", () => {
     expect(tryLock(lock)).toBe(true);
   });
 
+  it("leaves the directory empty when the holder record cannot be written", () => {
+    const lock = lockPath();
+    const attempt = `process.on("SIGXFSZ", () => {});
+      const { tryLock } = await import(process.argv[1]);
+      try { tryLock(process.argv[2]); process.exitCode = 1; }
+      catch (error) { if (error.code !== "EFBIG") throw error; }`;
+    const run = spawnSync("sh", ["-c", 'ulimit -f 0 && exec "$@"', "test-lock",
+      process.execPath, "--input-type=module", "-e", attempt,
+      join(import.meta.dirname, "pid-lock.ts"), lock], { encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
+    expect(readdirSync(join(lock, ".."))).toEqual([]);
+  });
+
   it("is taken over from a holder that is gone: dead, or of another boot", () => {
     const lock = lockPath();
     writeFileSync(lock, `${String(deadPid())} ${bootId()}`);

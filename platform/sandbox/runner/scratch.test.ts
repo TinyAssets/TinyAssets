@@ -127,6 +127,8 @@ describe("the runner's room on the disk", () => {
     // Room for the reserve and as much again: it is made, at its whole size.
     const { root } = area({}, "520m");
     const reserve = join(root, "reserve");
+    // An older writer could publish a short ballast after a partial write.
+    writeFileSync(reserve, Buffer.alloc(PAGE));
     expect(keepReserve(reserve)).toBe(true);
     expect(statSync(reserve).size).toBe(RESERVE_BYTES);
     fill(root);
@@ -156,6 +158,9 @@ describe("the runner's room on the disk", () => {
     expect(keepReserve(reserve)).toBe(false);
     expect(existsSync(reserve)).toBe(false);
     expect(readdirSync(root).sort()).toEqual(["scratch", "used"]);
+    writeFileSync(reserve, Buffer.alloc(PAGE));
+    expect(keepReserve(reserve)).toBe(false);
+    expect(statSync(reserve).size).toBe(PAGE);
   });
 });
 
