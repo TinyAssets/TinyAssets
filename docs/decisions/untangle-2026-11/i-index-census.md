@@ -200,3 +200,30 @@ and the representative whole census remain open.
   test, its shared test support, and the owner import, files and starter
   modules. The full scoped compiler invocation exited 137. The ordinary
   Vitest result is still outstanding.
+
+### Collection body accounting at the placement boundary
+
+The same F1 source at 8e9996ea can underestimate or overestimate collection
+storage even before considering any new starter files. In six synthetic
+backups, the host census and measure counted the bytes of two collection rows
+once each. Node 22 and 24 agreed in all six. Independently, six fresh owners
+imported two rows through the public importRows door, replayed both as skips,
+and reached v7 with 14 receipts after admission. The table subtracts the
+71,540-byte empty-owner seed measured with the same real owner and Files
+Workers. The host column isolates collection bodies from archived files.
+These are component comparisons, not a replay of a whole backup.
+
+| UTF-8 bytes per JSON body | Host row bytes | Owner increase, equal bodies | Owner increase, distinct bodies |
+| ---: | ---: | ---: | ---: |
+| 2,048 | 4,096 | 8,192 | 8,192 |
+| 2,049 | 4,098 | 2,049 | 4,098 |
+| 4,097 | 8,194 | 4,097 | 8,194 |
+
+To repeat, use two row IDs in one collection with JSON string bodies of
+the specified byte lengths. Use the same string for both, then equal-length
+strings made of different characters. Check the public owner's storage after
+admission against a freshly seeded owner. Inside the boundary, current and
+history rows both carry inline bytes. Above it, equal placed bodies reuse the
+same content. The census needs the owner's actual write and retention rules
+when deciding fit. Add both sides of this boundary to the shared replay's
+acceptance cases before relying on it for admission.
