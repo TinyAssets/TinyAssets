@@ -268,7 +268,8 @@ export function openMirror(path: string): Mirror {
           "CREATE TABLE IF NOT EXISTS meta (only INTEGER PRIMARY KEY CHECK (only = 1), " +
           "cursor INTEGER NOT NULL); INSERT OR IGNORE INTO meta VALUES (1, 0);");
   const get = db.prepare("SELECT version, size, mtime_ms, sha256 FROM files WHERE path = ?");
-  const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)");
+  const put = db.prepare("INSERT OR REPLACE INTO files (path, version, size, mtime_ms, sha256) " +
+                         "VALUES (?, ?, ?, ?, ?)");
   const drop = db.prepare("DELETE FROM files WHERE path = ?");
   const under = db.prepare("DELETE FROM files WHERE path = ? OR (path > ? AND path < ?)");
   const knows = db.prepare("SELECT 1 FROM files WHERE path = ? OR (path > ? AND path < ?) " +

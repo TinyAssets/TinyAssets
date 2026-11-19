@@ -96,6 +96,29 @@ describe("the runner's on-disk format", () => {
     expect(schema(path)).toEqual(FORMATS[String(STATE_FORMAT)]!.mirror);
   });
 
+  it("keeps the base version and invalidates newer metadata when an older writer replaces a row", () => {
+    const path = join(temp(), "mirror.db");
+    const old = openMirror(path);
+    const entry = { version: 3, size: 5, mtime_ms: 1, sha256: "0".repeat(64) };
+    old.put("/workspace/a.md", entry);
+    old.setCursor(7);
+    old.close();
+
+    const newer = new DatabaseSync(path);
+    newer.exec("ALTER TABLE files ADD COLUMN mode INTEGER");
+    newer.exec("UPDATE files SET mode = 1");
+    newer.close();
+
+    const reopened = openMirror(path);
+    expect(reopened.cursor()).toBe(7);
+    expect(reopened.get("/workspace/a.md")).toEqual(entry);
+    reopened.put("/workspace/a.md", { ...entry, version: 4 });
+    reopened.close();
+    const db = new DatabaseSync(path);
+    expect(db.prepare("SELECT version, mode FROM files").get()).toEqual({ version: 4, mode: null });
+    db.close();
+  });
+
   it("reads every format's mirror it reads, as each was recorded", () => {
     for (const format of READS) {
       const path = join(temp(), "mirror.db");

@@ -52,6 +52,26 @@ const held = ({ lease_id, epoch }: Lease) => ({ lease_id, epoch });
 const FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
 
 describe("the sync lease", () => {
+  it("commits executable-only changes against the original base", async () => {
+    const r = await rig();
+    const lease = await acquire(r);
+    const path = `${W}/script.sh`;
+    const inline = text("alpha");
+    let version: number | null = null;
+    const etags = new Set<string>();
+    for (const mode of [0, 1, 0]) {
+      const { outcomes } = await sync(r, lease, [{ op: "write", path, base: version, mode, inline }]);
+      expect(outcomes[0]?.outcome).toBe("committed");
+      const read = await r.stub.fileRead(r.bind(null), { path });
+      expect(read.entry.mode).toBe(mode);
+      expect(read.inline).toEqual(inline);
+      expect(read.entry.version).toBeGreaterThan(version ?? 0);
+      etags.add(read.entry.etag);
+      version = read.entry.version;
+    }
+    expect(etags.size).toBe(3);
+  });
+
   it("is held by one holder at a time, renewed, and taken again only once it lapses",
      async () => {
     const r = await rig();
