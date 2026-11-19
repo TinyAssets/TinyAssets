@@ -7,3 +7,9 @@ On main f934871ad a failed opening before its first SQL write left a previously 
 The pass now reports the original failure when its retry update finds no writing generation. A due Lifecycle job uses its existing failure policy. A direct pin caller can retry its held restore. A writing generation still keeps the same short delay on pool contention and the same longer delay on other failures. This change and the capture-opening transaction address separate effects. Restoring existing interrupted histories and first-night scheduling remain open elsewhere.
 
 Schema migration 13 also gives an owner a sweep when an earlier opening stamped the attempt before Files minted its key. The original schema-12 write followed by migrations 13–18 reproduced an owed sweep with no key or writing generation. On both Node versions a failed Files mint left the sweep immediately due on main. Resolving the namespace and sweeping a page now share the existing sweep retry. Namespace resolution still precedes the per-page checks for a restore hold or erasure. No new retry state is needed.
+
+## Interaction with the first scheduled generation
+
+The retry changes at `69e72147` and first-night scheduling at `99a7739c` combine automatically in runtime source. Their edits to the ordinary export test file overlap in two places. Keep the shared test-support import with `atClock` and all five new test bodies, two for retry and three for first-night scheduling. Choosing either whole hunk drops coverage. The local combined tree `518696fae370e3f5a56214659b7f1067bbf48954` retains all five. Its targeted Workerd run is pending.
+
+The retry branch also adds a checklist entry at the same point as the independent atomic opener (`eb845985`) and schema restart (`83460ef9`). Each records a different obligation. Retain all three entries at integration and repeat the behavioral checks on main.
