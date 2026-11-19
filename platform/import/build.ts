@@ -36,7 +36,7 @@ import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
-import { layout, openFile, openStore, quoted, storeUri } from "./backup";
+import { layout, modifiedTime, openFile, openStore, quoted, storeUri } from "./backup";
 import { type Archived, type Copy, type Owner, type Problem } from "./survey";
 import { writeTar } from "./tar";
 
@@ -338,7 +338,8 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
       file(path, at, lstatSync(at).size, 0, mtime);
     };
     for (const archived of owner.tree.archived) {
-      const mtime = Math.floor(lstatSync(archived.source).mtimeMs);
+      const stat = lstatSync(archived.source, { bigint: true });
+      const mtime = Number(modifiedTime(stat.mtimeNs, "milliseconds"));
       if (archived.whole) {
         file(archived.path, archived.source, archived.size, 0, mtime);
       } else {

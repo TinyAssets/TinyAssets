@@ -11,13 +11,13 @@ import { closeSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, wr
 
 import { CHUNK_BYTES } from "../contract/src/limits";
 
-import { openFile } from "./backup";
+import { modifiedTime, openFile } from "./backup";
 import type { Refusal } from "./survey";
 
 const BLOCK = 512;
 const LONG_NAME = "././@LongLink";
 
-function octal(value: number, width: number): Buffer {
+function octal(value: number | bigint, width: number): Buffer {
   return Buffer.from(`${value.toString(8).padStart(width - 1, "0")}\0`, "latin1");
 }
 
@@ -27,7 +27,7 @@ const OCTAL_FIELD_MAX = 0o77777777777;
 export const TAR_MEMBER_MAX = OCTAL_FIELD_MAX;
 
 /** One 512-byte header; a member past `TAR_MEMBER_MAX` is refused, never written short. */
-function header(name: Buffer, type: string, size: number, mode: number, mtime: number,
+function header(name: Buffer, type: string, size: number, mode: number, seconds: bigint,
                 link: Buffer = Buffer.alloc(0)): Buffer {
   if (size > TAR_MEMBER_MAX) {
     throw new Error(`a tar member of ${size} bytes is past the format's ${TAR_MEMBER_MAX}`);
@@ -38,11 +38,10 @@ function header(name: Buffer, type: string, size: number, mode: number, mtime: n
   octal(0, 8).copy(block, 108);
   octal(0, 8).copy(block, 116);
   octal(size, 12).copy(block, 124);
-  const seconds = Math.floor(mtime);
-  if (seconds < 0 || seconds > OCTAL_FIELD_MAX) {
+  if (seconds < 0n || seconds > OCTAL_FIELD_MAX) {
     // GNU base-256: marker bit and sign extension above the low 64 bits.
-    block.writeUInt32BE(seconds < 0 ? 0xffffffff : 0x80000000, 136);
-    block.writeBigInt64BE(BigInt(seconds), 140);
+    block.writeUInt32BE(seconds < 0n ? 0xffffffff : 0x80000000, 136);
+    block.writeBigInt64BE(seconds, 140);
   } else {
     octal(seconds, 12).copy(block, 136);
   }
@@ -67,7 +66,7 @@ function padding(size: number): Buffer {
 /** A GNU long record (`L` a name, `K` a link target) for bytes past 100. */
 function long(type: "L" | "K", bytes: Buffer): Buffer[] {
   const data = Buffer.concat([bytes, Buffer.from([0])]);
-  return [header(Buffer.from(LONG_NAME, "latin1"), type, data.length, 0o644, 0), data,
+  return [header(Buffer.from(LONG_NAME, "latin1"), type, data.length, 0o644, 0n), data,
           padding(data.length)];
 }
 
@@ -85,7 +84,7 @@ class TarWriter {
     }
   }
 
-  #head(name: Buffer, type: string, size: number, mode: number, mtime: number,
+  #head(name: Buffer, type: string, size: number, mode: number, seconds: bigint,
         link: Buffer = Buffer.alloc(0)): void {
     if (name.length > 100) {
       this.#write(...long("L", name));
@@ -93,7 +92,7 @@ class TarWriter {
     if (link.length > 100) {
       this.#write(...long("K", link));
     }
-    this.#write(header(name, type, size, mode, mtime / 1000, link));
+    this.#write(header(name, type, size, mode, seconds, link));
   }
 
   /**
@@ -101,13 +100,15 @@ class TarWriter {
    * A socket, FIFO or device is left out.
    */
   add(name: Buffer, source: Buffer): void {
-    const stat = lstatSync(source);
+    const stat = lstatSync(source, { bigint: true });
+    const mode = Number(stat.mode);
+    const seconds = modifiedTime(stat.mtimeNs, "seconds");
     if (stat.isSymbolicLink()) {
-      this.#head(name, "2", 0, stat.mode, stat.mtimeMs, readlinkSync(source, { encoding: "buffer" }));
+      this.#head(name, "2", 0, mode, seconds, readlinkSync(source, { encoding: "buffer" }));
       return;
     }
     if (stat.isDirectory()) {
-      this.#head(Buffer.concat([name, Buffer.from("/")]), "5", 0, stat.mode, stat.mtimeMs);
+      this.#head(Buffer.concat([name, Buffer.from("/")]), "5", 0, mode, seconds);
       for (const child of readdirSync(source, { encoding: "buffer" }).sort(Buffer.compare)) {
         this.add(Buffer.concat([name, Buffer.from("/"), child]),
                  Buffer.concat([source, Buffer.from("/"), child]));
@@ -117,11 +118,12 @@ class TarWriter {
     if (!stat.isFile()) {
       return;
     }
-    this.#head(name, "0", stat.size, stat.mode, stat.mtimeMs);
+    const size = Number(stat.size);
+    this.#head(name, "0", size, mode, seconds);
     const fd = openFile(source);
     try {
       const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
-      let left = stat.size;
+      let left = size;
       while (left > 0) {
         const n = readSync(fd, buffer, 0, Math.min(buffer.length, left), null);
         if (n === 0) {
@@ -133,7 +135,7 @@ class TarWriter {
     } finally {
       closeSync(fd);
     }
-    this.#write(padding(stat.size));
+    this.#write(padding(size));
   }
 }
 

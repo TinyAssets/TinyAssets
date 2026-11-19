@@ -383,6 +383,26 @@ describe("the bundle builder", () => {
     }
   });
 
+  it("keeps the last millisecond and archive second before a clock boundary", () => {
+    const { f, out, options } = setup();
+    const root = f.tree(ALICE);
+    const carried = "novel/workspace/run.sh";
+    const ignored = "novel/workspace/node_modules/dep/index.js";
+    execFileSync("touch", ["-m", "-d", "@1699999999.999999999",
+                           join(root, carried), join(root, ".runs.db"), join(root, ignored)]);
+    execFileSync("touch", ["-m", "-d", "@-0.000000001", join(root, "novel/notes/ch1.md")]);
+    buildBundles(f.copy, options);
+    const bundle = join(out, keyOf(ALICE));
+    const entries = manifest(bundle);
+    const entry = (path: string) => entries.find((item) => item.path === `${I}/${path}`)!;
+    expect([entry(carried).mtime_ms, entry(".records/.runs.db").mtime_ms,
+            entry("novel/notes/ch1.md").mtime_ms]).toEqual([1699999999999, 1699999999999, -1]);
+    const tar = mkdtempSync(join(tmpdir(), "ta-tar-time-"));
+    temps.push(tar);
+    execFileSync("tar", ["-xf", "-", "-C", tar], { input: bytesOf(bundle, entry("ignored.tar")) });
+    expect(lstatSync(join(tar, ignored)).mtimeMs).toBe(1699999999000);
+  });
+
   it("matches GNU tar's timestamp field on either side of the octal limit", () => {
     const dir = mkdtempSync(join(tmpdir(), "ta-tar-time-"));
     temps.push(dir);

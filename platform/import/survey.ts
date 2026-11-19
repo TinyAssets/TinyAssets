@@ -10,7 +10,7 @@
  * names), or a name's digest (`#` and the first 12 hex of its SHA-256), never a name the
  * owner chose, so the census's output holds no user content.
  */
-import { lstatSync, readdirSync, readlinkSync, type Stats } from "node:fs";
+import { lstatSync, readdirSync, readlinkSync, type BigIntStats, type Stats } from "node:fs";
 import { join } from "node:path";
 
 import { sha256Hex } from "../contract/src/digest";
@@ -19,7 +19,7 @@ import { IMPORTED, storedPath, WORKSPACE } from "../contract/src/paths";
 import { DEFAULT_IGNORES, ignoredBy, type Matcher } from "../contract/src/sync-ignore";
 
 import {
-  intact, isStore, layout, type Manifest, nameText, openStore, quoted, rowsIn, tablesOf,
+  intact, isStore, layout, type Manifest, modifiedTime, nameText, openStore, quoted, rowsIn, tablesOf,
 } from "./backup";
 import {
   type ErasureFacts, erasureFacts, imageTombstones, names, withImageFacts,
@@ -362,10 +362,10 @@ function nested(visit: LevelVisit, folder: string): LevelVisit {
 }
 
 /** What the walk of the owner's files keeps of a node's `lstat`. */
-function carriedOf(path: string, source: Buffer, stat: Stats): Carried {
+function carriedOf(path: string, source: Buffer, stat: BigIntStats): Carried {
   return { path, kind: stat.isDirectory() ? "dir" : "file", source,
-           size: stat.isDirectory() ? 0 : stat.size, mode: (stat.mode & 0o100) !== 0 ? 1 : 0,
-           mtime_ms: Math.floor(stat.mtimeMs) };
+           size: stat.isDirectory() ? 0 : Number(stat.size), mode: (stat.mode & 0o100n) !== 0n ? 1 : 0,
+           mtime_ms: Number(modifiedTime(stat.mtimeNs, "milliseconds")) };
 }
 
 /** Whether `path` (a stored path under the workspace) is one the sync's defaults ignore. */
@@ -396,7 +396,7 @@ export function walkUser(source: Buffer, path: string, member: Buffer, tree: Tre
 
 function walkNode(source: Buffer, path: string, member: Buffer, tree: Tree,
                   matcher: Matcher): void {
-  const stat = lstatSync(source);
+  const stat = lstatSync(source, { bigint: true });
   if (stat.isSymbolicLink()) {
     const target = nameText(readlinkSync(source, { encoding: "buffer" }));
     if (target === null) {
@@ -417,8 +417,8 @@ function walkNode(source: Buffer, path: string, member: Buffer, tree: Tree,
   }
   tree.carried.push(carriedOf(path, source, stat));
   if (stat.isFile()) {
-    tree.hardlinks += stat.nlink > 1 ? 1 : 0;
-    tree.sqliteInUser += stat.size > 0 && isStore(source) ? 1 : 0;
+    tree.hardlinks += stat.nlink > 1n ? 1 : 0;
+    tree.sqliteInUser += stat.size > 0n && isStore(source) ? 1 : 0;
     return;
   }
   for (const name of entriesOf(source)) {

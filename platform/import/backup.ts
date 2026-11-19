@@ -83,6 +83,13 @@ export function manifestOf(text: string): Manifest {
   return doc as unknown as Manifest;
 }
 
+/** Floor an exact filesystem time to the unit carried in a manifest or archive. */
+export function modifiedTime(nanoseconds: bigint, unit: "milliseconds" | "seconds"): bigint {
+  const divisor = unit === "seconds" ? 1_000_000_000n : 1_000_000n;
+  const whole = nanoseconds / divisor;
+  return nanoseconds % divisor < 0n ? whole - 1n : whole;
+}
+
 /** A regular file, opened without following a link; a link or any other kind is refused. */
 export function openFile(path: string | Buffer): number {
   return openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
