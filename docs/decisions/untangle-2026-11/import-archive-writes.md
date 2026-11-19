@@ -49,5 +49,8 @@ method that closed the output descriptor.
   Python tarfile independently read all eight source timestamps and their file
   contents from Node 22 and 24 archives, including -2147483648, -1, epoch and
   10000000000 seconds. File, directory and symlink headers use this writer.
-- [ ] Run the ordinary importer, platform typecheck and combined archive case
-  on this correction. Coordinator integration on main remains open.
+- [x] On 8535a52d the full standalone ordinary importer passed 168 tests
+  on Node 22.23.5 and the full platform typecheck passed on Node 24.22.3.
+  With the 23 stages above and shared import folder reader 72672304, all
+  26 ordinary bundle cases passed on Node 22. Coordinator integration on
+  main remains open.
