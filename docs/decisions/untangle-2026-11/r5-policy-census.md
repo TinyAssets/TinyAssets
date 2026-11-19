@@ -55,3 +55,14 @@ the archived database in both directions on both runtimes.
   regression passed separately after a document changed during the build.
 - [ ] Verify the complete importer, platform types, and the joint rehearsal on
   the published source. Representative data and the founder's mapping remain open.
+
+On 5b05e6bf all 172 ordinary Node 22 importer cases and the full Node 24
+platform typecheck passed. Both new revision tests failed on the previous
+head a5e6aa8e with its writer and classifier. In independent Node 22 and
+24 builds, valid-to-unrecognized and unrecognized-to-valid transitions both
+produced the live policy or refused file selected by the archived SQLite copy.
+The thirteen-stage rehearsal (twelve stages at 0d09d898 plus 5b05e6bf)
+passed all 216 importer cases, 25 Owner import Workerd cases on Node 22,
+and the full platform typecheck on Node 24. Preserve the existing short-read
+helper at integration and the F1 precheck when reconciling the census imports.
+The next F1 change addresses a separate stale collection byte measurement.
