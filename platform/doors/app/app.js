@@ -38,12 +38,12 @@ const SESSION_NEEDED = "interactive owner session required";
 
 // -- Messages -------------------------------------------------------------------------
 
-function message(text, kind, ...extra) {
-  return h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra);
+function showMessage(target, text, kind = "good", ...extra) {
+  fill(target, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra));
 }
 
-function say(text, kind = "good", ...extra) {
-  fill(notice, message(text, kind, ...extra));
+function say(...args) {
+  showMessage(notice, ...args);
 }
 
 /**
@@ -77,15 +77,15 @@ function report(error, target = notice) {
     return;
   }
   if (error instanceof Refused && error.message === SESSION_NEEDED) {
-    fill(target, message("To change this, sign in again: changes need a sign-in from the last 8 hours.", "bad",
-        h("button", { type: "button", onclick: () => signIn() }, "Sign in again")));
+    showMessage(target, "To change this, sign in again: changes need a sign-in from the last 8 hours.", "bad",
+        h("button", { type: "button", onclick: () => signIn() }, "Sign in again"));
     return;
   }
   if (error instanceof Refused && error.status === 503) {
-    fill(target, message(`TinyAssets is down for maintenance right now: ${error.message}`, "bad"));
+    showMessage(target, `TinyAssets is down for maintenance right now: ${error.message}`, "bad");
     return;
   }
-  fill(target, message(error instanceof Error ? error.message : String(error), "bad"));
+  showMessage(target, error instanceof Error ? error.message : String(error), "bad");
 }
 
 // -- Routing --------------------------------------------------------------------------
