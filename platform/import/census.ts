@@ -18,8 +18,8 @@ import { INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
-import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, policyDocuments, type Fit, fitOf, tierOf, UnreadablePolicy } from "./build";
+import { InvalidStoredText, fileSha256, layout } from "./backup";
+import { type Built, buildTree, policyDocuments, type Fit, fitOf, tierOf, UnreadableCollection, UnreadablePolicy } from "./build";
 import { POLICY_ROWS } from "./rules";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
@@ -126,7 +126,7 @@ export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
  * which the limits do not bind) only what a tar cannot hold refuses it.
  */
 export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
-    { built: Built | null; fit: Fit | null; problems: Problem[] } {
+    { built: Built | null; fit: Fit | null; problems: Problem[]; policyDocuments?: readonly string[] } {
   const first = precheck(owner, tiers)
     .filter((problem) => tiers !== null || problem.code === "over_tar_member");
   for (const store of owner.tree.rows.unreadable) {
@@ -135,7 +135,15 @@ export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: stri
   if (first.length > 0) {
     return { built: null, fit: null, problems: first };
   }
-  const built = buildTree(owner, copy, dir);
+  let built: Built;
+  try {
+    built = buildTree(owner, copy, dir);
+  } catch (error) {
+    const problem = error instanceof UnreadableCollection ? error.problem : error;
+    if (!(problem instanceof InvalidStoredText)) throw error;
+    return { built: null, fit: null, problems: [{ code: "bad_store", at: `owner/${owner.key}/${problem.store}` }],
+             policyDocuments: error instanceof UnreadableCollection ? error.documents : [] };
+  }
   if (tiers === null) {
     return { built, fit: null, problems: [] };
   }
@@ -222,14 +230,17 @@ export function census(copy: Copy, tiers: Tiers): Census {
       if (measured.built !== null) {
         documents = measured.built.policyDocuments;
         archivedPolicies += Number(measured.built.policyArchived);
+      } else if (measured.policyDocuments !== undefined) {
+        documents = measured.policyDocuments;
       } else {
         // Pre-fit refusal leaves no materialized copy. The census still owes these counts.
-        if (owner.tree.rows.unreadable.includes(POLICY_ROWS.store)) continue;
+        if (measured.problems.some((p) => p.code === "bad_store"
+            && p.at === `owner/${owner.key}/${POLICY_ROWS.store}`)) continue;
         const sources = owner.tree.archived.map((archive) => ({ archive, file: archive.source }));
         documents = policyDocuments(sources, owner.tree.rows.policy);
       }
     } catch (error) {
-      if (!(error instanceof UnreadablePolicy)) {
+      if (!(error instanceof UnreadablePolicy || error instanceof InvalidStoredText)) {
         throw error;
       }
       problems.push({ code: "bad_store", at: `owner/${owner.key}/policy.db` });

@@ -733,7 +733,7 @@ function surveyAccount(owner: Owner, dir: string): void {
         const from = quoted(live.table);
         const fields = db.prepare(`SELECT * FROM ${from} LIMIT 0`).columns()
           .map((column) => column.name.toLowerCase());
-        if (![...live.fields, ...live.order].every((column) => fields.includes(column))) {
+        if (![...Object.keys(live.fields), ...live.order].every((column) => fields.includes(column))) {
           tree.rows.unreadable.push(name);
         }
         if (live === COLLECTION_ROWS && fields.includes("body")) {

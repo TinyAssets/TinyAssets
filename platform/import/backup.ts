@@ -21,6 +21,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { HEX32, HEX64 } from "../contract/src/ids";
 import { CHUNK_BYTES } from "../contract/src/limits";
+import type { LiveRows } from "./rules";
 import { utf8Text } from "../contract/src/text";
 
 /** One owner image's pin in a manifest: its uid, snapshot and the uncompressed image's hash. */
@@ -144,27 +145,47 @@ export function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
+/** A field a live import interprets as text cannot be read losslessly. */
+export class InvalidStoredText extends Error {
+  constructor(readonly store: string, column: string) {
+    super(`invalid stored text in ${store}.${column}`);
+  }
+}
+
 /**
  * The stored values crossing from a backup into the job. Node 22 cuts a SQLite TEXT
  * result at its first NUL. SQLite quotes text before it crosses that boundary, including
  * its embedded NULs. All other storage classes cross as themselves.
  */
-export function tableRows(db: DatabaseSync, table: string, names?: readonly string[],
-                          order: readonly string[] = []): Record<string, unknown>[] {
-  const from = quoted(table);
-  const columns = names ?? db.prepare(`SELECT * FROM ${from} LIMIT 0`).columns()
-    .map((column) => column.name);
+export function tableRows(db: DatabaseSync, source: string | LiveRows): Record<string, unknown>[] {
+  const projection = typeof source === "string" ? undefined : source;
+  const from = quoted(typeof source === "string" ? source : source.table);
+  const columns = projection ? Object.keys(projection.fields)
+    : db.prepare(`SELECT * FROM ${from} LIMIT 0`).columns().map((column) => column.name);
+  const decoder = projection && new TextDecoder(String(db.prepare("PRAGMA encoding").get()!["encoding"]),
+                                                 { fatal: true, ignoreBOM: true });
   const fields = columns.map((name) => {
     const field = quoted(name);
+    if (projection?.fields[name] === "text") {
+      return `CASE typeof(${field}) WHEN 'text' THEN CAST(${field} AS BLOB) END AS ${field}`;
+    }
     return `CASE typeof(${field}) WHEN 'text' THEN json_quote(${field}) ELSE ${field} END AS ${field}`;
   });
-  const keys = order.map((name) => `${from}.${quoted(name)}`);
+  const keys = (projection?.order ?? []).map((name) => `${from}.${quoted(name)}`);
   const by = keys.length > 0 ? ` ORDER BY ${keys.join(", ")}` : "";
   const query = db.prepare(`SELECT ${fields.join(", ")} FROM ${from}${by}`);
   const rows = [];
   for (const row of query.iterate()) {
     for (const [name, value] of Object.entries(row)) {
-      if (typeof value === "string") {
+      if (projection?.fields[name] === "text") {
+        if (!(value instanceof Uint8Array)) throw new InvalidStoredText(projection.store, name);
+        try {
+          row[name] = decoder!.decode(value);
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error;
+          throw new InvalidStoredText(projection.store, name);
+        }
+      } else if (typeof value === "string") {
         row[name] = JSON.parse(value) as string;
       }
     }

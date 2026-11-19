@@ -36,7 +36,7 @@ import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
-import { openFile, openStore, quoted, storeUri, tableRows } from "./backup";
+import { InvalidStoredText, openFile, openStore, quoted, storeUri, tableRows } from "./backup";
 import { COLLECTION_ROWS, type LiveRows, POLICY_ROWS } from "./rules";
 import { type Archived, brokerRecord, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
@@ -75,7 +75,8 @@ interface StoreCopy {
   readonly file: string | Buffer;
 }
 
-function carriedRows(copies: readonly StoreCopy[], { store, table, fields, order }: LiveRows): Record<string, unknown>[] {
+function carriedRows(copies: readonly StoreCopy[], projection: LiveRows): Record<string, unknown>[] {
+  const { store, table } = projection;
   const source = copies.find(({ archive }) => archive.path === brokerRecord(store)
     && archive.tables.some((t) => t.table === table && t.use === "carry"));
   if (source === undefined) {
@@ -83,9 +84,15 @@ function carriedRows(copies: readonly StoreCopy[], { store, table, fields, order
   }
   const db = openStore(source.file);
   try {
-    return tableRows(db, table, fields, order);
+    return tableRows(db, projection);
   } finally {
     db.close();
+  }
+}
+
+export class UnreadableCollection extends Error {
+  constructor(readonly problem: InvalidStoredText, readonly documents: readonly string[]) {
+    super(problem.message, { cause: problem });
   }
 }
 
@@ -97,6 +104,7 @@ export function policyDocuments(copies: readonly StoreCopy[], expected: number):
     documents = carriedRows(copies, POLICY_ROWS)
       .map((row) => String(row["document"]));
   } catch (cause) {
+    if (cause instanceof InvalidStoredText) throw cause;
     throw new UnreadablePolicy("cannot read the surveyed policy", { cause });
   }
   if (documents.length !== expected) {
@@ -118,11 +126,16 @@ function rowsOf(copies: readonly StoreCopy[], documents: readonly string[]):
       refusedPolicy = text;
     }
   }
-  const collections = carriedRows(copies, COLLECTION_ROWS)
-    .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
-                          row_id: String(row["row_id"]), private: Number(row["private"]) ? 1 : 0,
-                          body: String(row["body"]) }));
-  return { rows: [...policy, ...collections], refusedPolicy };
+  try {
+    const collections = carriedRows(copies, COLLECTION_ROWS)
+      .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
+                            row_id: String(row["row_id"]), private: Number(row["private"]) ? 1 : 0,
+                            body: String(row["body"]) }));
+    return { rows: [...policy, ...collections], refusedPolicy };
+  } catch (error) {
+    if (!(error instanceof InvalidStoredText)) throw error;
+    throw new UnreadableCollection(error, documents);
+  }
 }
 
 /** Content a tree holds, each piece once, as the files plane charges it; written to `dir`. */
@@ -197,6 +210,14 @@ export class Store {
 function tablesCopy(archived: Archived, to: string): void {
   const db = new DatabaseSync(to);
   try {
+    // SQLite requires attached databases to use the main database's encoding.
+    const source = openStore(archived.source);
+    try {
+      const encoding = source.prepare("PRAGMA encoding").get()!["encoding"] as string;
+      db.exec(`PRAGMA encoding = ${quoted(encoding)}`);
+    } finally {
+      source.close();
+    }
     db.prepare("ATTACH DATABASE ? AS src").run(storeUri(archived.source));
     for (const table of archived.tables) {
       const made = db.prepare("SELECT sql FROM src.sqlite_master WHERE type = 'table' AND name = ?")

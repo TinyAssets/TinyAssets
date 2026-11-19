@@ -220,16 +220,16 @@ const BROKER_STATE: Level = level([
 export interface LiveRows {
   readonly store: string;
   readonly table: string;
-  readonly fields: readonly string[];
+  readonly fields: Readonly<Record<string, "text" | "native">>;
   readonly order: readonly string[];
 }
 
 export const POLICY_ROWS: LiveRows = {
-  store: "policy.db", table: "policy", fields: ["document"], order: [],
+  store: "policy.db", table: "policy", fields: { document: "text" }, order: [],
 };
 export const COLLECTION_ROWS: LiveRows = {
   store: "conversations.db", table: "collection_rows",
-  fields: ["collection", "row_id", "private", "body"], order: ["collection", "seq"],
+  fields: { collection: "text", row_id: "text", private: "native", body: "text" }, order: ["collection", "seq"],
 };
 
 /** One owner's own broker stores (`.broker/accounts/<sha256(principal)>/`). */

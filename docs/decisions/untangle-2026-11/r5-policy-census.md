@@ -94,3 +94,18 @@ The next F1 change addresses a separate stale collection byte measurement.
   alongside modifiedTime and tableRows. At the measurement overlap keep the
   F1 precheck and append the known missing stores for private and public owners.
 - [ ] Integration on main and a representative frozen copy remain outstanding.
+
+## Reading live text from the filtered archive
+
+The live projection declares which fields require text. SQLite supplies their
+native bytes from the archived database. The importer decodes those bytes in
+the database encoding and counts bad_store for the affected owner if a field
+is binary or contains malformed text. Fleet readers retain native binary
+values and their existing behavior for unused historical fields. On a
+collection refusal, census uses the policy documents already read from the
+same archive. An early size refusal still needs its separate source check.
+
+Two ordinary regressions failed on 661d8798. Both passed after this change,
+along with the archived-policy revision and combined size/refusal controls.
+Full-suite and combined verification are pending. Historical cohort and fresh
+deletion comparison remain open.
