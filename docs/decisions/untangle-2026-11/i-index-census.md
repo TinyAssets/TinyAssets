@@ -234,3 +234,6 @@ acceptance cases before relying on it for admission.
   Node 22 TypeScript reported zero diagnostics on the updated import test file.
   The six independent Workerd cases above passed. The new ordinary Vitest case
   still requires a completed run.
+  The ordinary owner Workerd command selecting both new import cases on
+  8f9d902c reached Vitest and then exited 137 before an assertion verdict.
+  The separate public Worker measurements and focused file diagnostics stand.
