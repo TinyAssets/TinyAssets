@@ -628,19 +628,20 @@ export class Backups {
           clock() + MANIFEST_CONTINUE_S, writing.gen));
       }
     } catch (error) {
-      if (isSlotBusy(error)) {
-        // A burst or a segment's ship found the pool full: nothing of it was read or put; it
-        // goes on once units turn over, never counted a failure.
-        await this.#write(() => this.#sql.exec(
-          "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing'",
-          clock() + MANIFEST_BUSY_RETRY_S));
-        return;
+      // Back off a writing generation on a full pool or a failed call. Before opening, or
+      // after finishing, there is no such row. Let the caller handle that failed pass
+      // (Lifecycle retries a thrown lane); returning success would re-arm unserved work.
+      const busy = isSlotBusy(error);
+      const retry = clock() + (busy ? MANIFEST_BUSY_RETRY_S : MANIFEST_RETRY_S);
+      const writing = await this.#write(() => this.#sql.exec(
+        "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing' RETURNING gen",
+        retry).toArray());
+      if (writing.length === 0) {
+        throw error;
       }
-      // An R2 call that failed, kept in the rows: the lane comes back after its retry.
-      console.error("the generation's pass failed; it is tried again later");
-      await this.#write(() => this.#sql.exec(
-        "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing'",
-        clock() + MANIFEST_RETRY_S));
+      if (!busy) {
+        console.error("the generation's pass failed; it is tried again later");
+      }
     } finally {
       // After what the pass did, so a give-up's own notice, the more telling one, comes first.
       if (!this.#parts.halted()) {
@@ -696,7 +697,19 @@ export class Backups {
     if (owed === 0 || (retry !== null && retry > clock()) || this.#parts.pinned() !== null) {
       return true;
     }
-    const { ns } = await this.#parts.space();
+    const retrySweep = async (): Promise<boolean> => {
+      console.error("the sweep of generations no longer named failed; it is tried again later");
+      await this.#write(() => this.#sql.exec("UPDATE owner_backup_state SET sweep_retry = ?",
+                                             clock() + MANIFEST_RETRY_S));
+      return true;
+    };
+    let ns: string;
+    try {
+      ({ ns } = await this.#parts.space());
+    } catch {
+      // An older owner's first sweep may still need Files to mint its namespace key.
+      return retrySweep();
+    }
     let cursor: string | null = null;
     do {
       if (clock() >= until || this.#parts.halted()) {
@@ -710,10 +723,7 @@ export class Backups {
       try {
         ({ cursor } = await this.#parts.store.sweepManifests(ns, names, cursor));
       } catch {
-        console.error("the sweep of generations no longer named failed; it is tried again later");
-        await this.#write(() => this.#sql.exec("UPDATE owner_backup_state SET sweep_retry = ?",
-                                               clock() + MANIFEST_RETRY_S));
-        return true;
+        return retrySweep();
       }
     } while (cursor !== null);
     await this.#write(() => this.#sql.exec(

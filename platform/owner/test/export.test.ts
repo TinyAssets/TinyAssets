@@ -29,6 +29,7 @@ import {
 import type { ChunkStore } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
+import { ChangeLog } from "../src/changelog";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import {
@@ -39,7 +40,7 @@ import { MUSE } from "./ledger-support";
 import { erasedWhole } from "./erasure-support";
 import { clock } from "../src/clock";
 import { markErasing } from "../src/erasure";
-import { drainDue, failure, laneAt, starterSeed, storesOn, through } from "./support";
+import { drainDue, failure, laneAt, starterSeed, storesOn, through, unseededObject } from "./support";
 import { carried } from "../src/starter-package";
 
 afterEach(() => {
@@ -655,6 +656,53 @@ describe("an open export", () => {
 });
 
 describe("the nightly manifest", () => {
+  it("backs off an owed sweep when Files cannot supply its namespace key", async () => {
+    // Keep the next night distinct from the sweep retry, whatever time CI runs.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 0, 8, 12) });
+    // Migration 13 owes a sweep for an older opening, even one interrupted before key setup.
+    const { stub, name } = await unseededObject();
+    await sqlIn(stub, "INSERT INTO object_owner (only, owner) VALUES (1, ?)", name);
+    await sqlIn(stub, "UPDATE owner_backup_state SET began_at = ?, sweep = 1", clock());
+    expect(await sqlIn(stub, "SELECT ns, data_key FROM file_space"))
+      .toEqual([{ ns: null, data_key: null }]);
+    const result = await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
+      let mints = 0;
+      const { backups } = storesOn(state, through({ mintKey: async () => {
+        mints++;
+        throw new Error("Network connection lost.");
+      } }));
+      const at = clock();
+      await backups.run(at, at + 60);
+      const next = backups.next(at);
+      await backups.run(at, at + 60);
+      return { mints, at, next };
+    });
+    expect(result.mints).toBe(1);
+    expect(result.next).toBeGreaterThan(result.at);
+    expect(await sweepState({ stub })).toEqual([{ sweep: 1, sweep_retry: result.next }]);
+  });
+
+  it("reports a failed pass when no generation can keep its retry time", async () => {
+    const o = await owner();
+    await sqlIn(o.stub, LAST_YEARS);
+    await sqlIn(o.stub, "UPDATE owner_backups SET changed_at = ?", clock());
+    const result = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const { backups } = storesOn(state);
+      const now = clock();
+      expect(backups.next(now)).toBe(now);
+      const opening = vi.spyOn(ChangeLog.prototype, "begin").mockImplementationOnce(() => {
+        throw new Error("capture unavailable");
+      });
+      try {
+        return await backups.run(now, now + 10).then(() => null, (error: unknown) => String(error));
+      } finally {
+        opening.mockRestore();
+      }
+    });
+    expect(result).toContain("capture unavailable");
+    expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups WHERE state = 'writing'")).toEqual([]);
+  });
+
   it("is written by the owner's own schedule, under its key, and the older one let go",
      async () => {
     const o = await owner();
@@ -833,7 +881,7 @@ async function unnamed(ns: string, key: string, gen: string): Promise<void> {
   await env.FILES.putManifestRoot(ns, key, gen, [part], [], { s: 1, e: 0 });
 }
 
-const sweepState = (o: Owner) => sqlIn(o.stub,
+const sweepState = (o: Pick<Owner, "stub">) => sqlIn(o.stub,
                                        "SELECT sweep, sweep_retry FROM owner_backup_state");
 
 describe("the sweep of generations no row names", () => {
