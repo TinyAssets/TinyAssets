@@ -13,6 +13,23 @@ No owner ID, rule contents, source, cap amount or destination is included in the
 
 ## Shared text reader at integration, November 19
 
-- [x] Rechecked the policy reader and both consumers against the staged verbatim-row change. Keep the single `policyDocuments` call in the census and pass those documents into the bundle builder. Its account reader must select named columns through the shared `tableRows` implementation, including its explicit collection ordering.
+- [x] Rechecked the policy reader and both consumers against the staged verbatim-row change. The rehearsal passed the documents from the census into the builder. The later archive-revision check below supersedes that instruction for integration. Its account reader must select named columns through the shared `tableRows` implementation, including its explicit collection ordering.
 - [x] The ordinary regression on `a248b68e` distinguishes the two integrations on Node 22. The five-stage rehearsal at `70110c7d` without the shared text reader truncated an unrecognized stored document in its readable archive, even though its ordinary Node 24 run passed that case. Adding the verbatim reader to the same five stages passed all 181 ordinary importer cases and the full platform typecheck on Node 22. Five independent synthetic documents per source and runtime confirmed both the readable file and the separate archived SQLite copy, recorded at `bf36bfa9`.
 - [ ] Real representative census, legacy mapping decisions and integration on main remain open.
+
+## Archive revision review, November 19
+
+- [x] On 93f714d1 the normal bundle writer reads policy text before copying the
+  SQLite archive. In a controlled frozen-copy fault simulation on Node 22 and
+  24, the input changed during a carried file read. The same exported bundle
+  then held the earlier refused-policy text and the later SQLite document.
+  The ordinary regression failed on 93f714d1. Main f934871ad and the staged
+  archive-row implementation eeee6bba kept both copies together for this
+  ordering. The inverse collection-row ordering fails on main.
+- [ ] Hold the integration that forwards previously read documents to the
+  bundle writer. Live and readable policy output must come from the actual
+  archived database using the verbatim-text reader. The census must still
+  report policy settings for an owner refused before building and retain both
+  the unreadable-policy and size findings in its existing regression.
+  Confirm the counts for those owners and compare the reported classification
+  with the bytes actually published for owners that can be built.
