@@ -238,14 +238,16 @@ export function buildBundles(copy: Copy, options: Options): Summary {
                   subscription_id: owner.plan?.subscription_id ?? null });
   }
   erasureGuard(fleet, record.map((entry) => String(entry["owner"])));
+  const summary: Summary = { dry_run: dry, owners: fleet.owners.length,
+    erased: fleet.owners.filter(erased).length, erasure_pending: fleet.erasurePending,
+    refused, ...totals };
   if (!dry) {
     writeFileSync(join(options.private!, PRIVATE_RECORD),
-                  `${JSON.stringify({ format: BUNDLE_FORMAT, owners: record }, null, 2)}\n`,
+                  `${JSON.stringify({ format: BUNDLE_FORMAT, owners: record, summary }, null, 2)}\n`,
                   { flag: "wx", mode: 0o600 });
     writeFileSync(join(options.private!, DIGESTS),
                   `${JSON.stringify({ format: BUNDLE_FORMAT, digests }, null, 2)}\n`,
                   { flag: "wx", mode: 0o600 });
   }
-  return { dry_run: dry, owners: fleet.owners.length, erased: fleet.owners.filter(erased).length,
-           erasure_pending: fleet.erasurePending, refused, ...totals };
+  return summary;
 }

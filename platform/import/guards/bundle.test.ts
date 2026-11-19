@@ -297,6 +297,7 @@ describe("the bundle builder", () => {
     expect(lstatSync(join(priv, DIGESTS)).mode & 0o777).toBe(0o600);
     expect(Object.keys(json(join(priv, DIGESTS))["digests"] as object).sort())
       .toEqual([keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER), keyOf(NEWBIE)].sort());
+    expect(json(join(priv, PRIVATE_RECORD))["summary"]).toEqual(summary);
     const text = JSON.stringify(summary);
     for (const name of [ALICE, BOB, FOUNDER, keyOf(ALICE), keyOf(BOB), keyOf(FOUNDER)]) {
       expect(text).not.toContain(name);
@@ -461,12 +462,13 @@ describe("the bundle builder", () => {
   });
 
   it("leaves out an owner rule 0 refuses, counted, while the others go on", () => {
-    const { f, out, options } = setup();
+    const { f, out, priv, options } = setup();
     const db = new DatabaseSync(join(f.tree(BOB), ".centers.db"));
     db.exec("CREATE TABLE mystery (x)");
     db.close();
     const summary = buildBundles(f.copy, options);
     expect(summary).toMatchObject({ bundled: 2, excluded: 1, refused: { unknown_table: 1 } });
+    expect(json(join(priv, PRIVATE_RECORD))["summary"]).toEqual(summary);
     expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
   });
 
