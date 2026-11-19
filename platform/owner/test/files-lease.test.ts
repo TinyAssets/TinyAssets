@@ -52,6 +52,32 @@ const held = ({ lease_id, epoch }: Lease) => ({ lease_id, epoch });
 const FENCED = "sync_fenced: the sync lease was lost; this sync is fenced";
 
 describe("the sync lease", () => {
+  it("exposes a mirror base's mode until the owner purges that historical version", async () => {
+    const path = `${W}/script.sh`;
+    const observations = [];
+    for (const mode of [0, 1]) {
+      const r = await rig();
+      const lease = await acquire(r);
+      const inline = text("alpha");
+      await sync(r, lease, [{ op: "write", path, base: null, mode, inline }]);
+      const { entry: original } = await r.stub.fileRead(r.bind(null), { path });
+      await sync(r, lease, [{ op: "write", path, base: original.version, mode: 0, inline }]);
+      const query = { after: original.version - 1, limit: 1 };
+      const history = await r.stub.fileChanges(r.bind(null), query);
+      expect(history.changes[0]).toMatchObject({ path, version: original.version, mode });
+      expect((await r.stub.fileHistoryPurge(r.bind(null), { path })).purged).toBe(1);
+      const remaining = await r.stub.fileChanges(r.bind(null), query);
+      const current = await r.stub.fileRead(r.bind(null), { path });
+      expect(remaining.changes[0]?.version).toBeGreaterThan(original.version);
+      observations.push({
+        base: original.version, mode: current.entry.mode, version: current.entry.version,
+        etag: current.entry.etag, bytes: current.inline, cursor: remaining.cursor,
+        reset: remaining.reset, next: remaining.changes.map(row => [row.version, row.mode]),
+      });
+    }
+    expect(observations[0]).toEqual(observations[1]);
+  });
+
   it("commits executable-only changes against the original base", async () => {
     const r = await rig();
     const lease = await acquire(r);
