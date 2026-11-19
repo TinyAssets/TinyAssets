@@ -81,6 +81,7 @@ export interface Staged {
   readonly key: string;
   readonly owner: string;
   readonly bundle: string;
+  readonly indexedParts: readonly string[];
   readonly parts: readonly string[];
   readonly bytes: number;
 }
@@ -144,6 +145,7 @@ export function checkedBundle(dir: string, key: string): Staged {
     }
   }
   return { dir, key, owner: parsed["owner"], bundle: sha256(index),
+           indexedParts: Object.keys(parts),
            parts: [...files.filter((name) => name !== BUNDLE_INDEX), BUNDLE_INDEX], bytes };
 }
 
@@ -256,8 +258,8 @@ export function plannedLines(bundles: readonly Staged[], run: string, names: Imp
 
 /** Verify each manifest page and the local bytes it references before any bundle is sent. */
 function checkManifestParts(staged: Staged): void {
-  const parts = new Set(staged.parts);
-  for (const name of parts) {
+  const required = new Set([BUNDLE_INDEX, ...staged.indexedParts]);
+  for (const name of staged.indexedParts) {
     if (pageNumber("manifest", name) === null) {
       continue;
     }
@@ -266,14 +268,25 @@ function checkManifestParts(staged: Staged): void {
       if (entry.kind === "dir") {
         continue;
       }
-      const available = entry.size! <= INLINE_BYTES
-        ? parts.has(inlineName(entry.content_id!))
-        : Array.isArray(entry.chunks) && entry.chunks.length > 0 &&
-          entry.chunks.every((sha) => parts.has(chunkName(sha)));
-      if (!available) {
-        throw new Error("a bundle is missing content its manifest names");
+      if (entry.size! <= INLINE_BYTES) {
+        required.add(inlineName(entry.content_id!));
+      } else {
+        if (!Array.isArray(entry.chunks) || entry.chunks.length === 0) {
+          throw new Error("a bundle is missing the chunks its manifest requires");
+        }
+        for (const sha of entry.chunks) {
+          required.add(chunkName(sha));
+        }
       }
     }
+  }
+  for (const name of staged.parts) {
+    if (!required.delete(name)) {
+      throw new Error("a bundle holds an unreferenced part");
+    }
+  }
+  if (required.size > 0) {
+    throw new Error("a bundle is missing content its manifest names");
   }
 }
 

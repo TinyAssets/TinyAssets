@@ -8,7 +8,7 @@
  * from the configs (`deploy/facts.ts`), as the window's `facts.json` hands them to the job.
  */
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -229,6 +229,24 @@ describe("the staging step", () => {
       const { calls, fetcher } = apis();
       await expect(stage(out, "r1", NAMES, INPUTS, fetcher, () => undefined))
         .rejects.toThrow(/bundle/);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("refuses leftover file content when a new bundle was copied over a previous one", async () => {
+    const old = bundled();
+    const f = fixture();
+    const out = mkdtempSync(join(tmpdir(), "ta-stage-replacement-"));
+    const priv = mkdtempSync(join(tmpdir(), "ta-stage-private-"));
+    temps.push(f.work, out, priv);
+    writeFileSync(join(f.tree(ALICE), "novel", "notes", "ch1.md"), "A different chapter.\n");
+    buildBundles(f.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS,
+                           rehearsal: null });
+    cpSync(out, old, { recursive: true });
+    for (const inputs of [null, INPUTS]) {
+      const { calls, fetcher } = apis();
+      await expect(stage(old, "r1", NAMES, inputs, fetcher, () => undefined))
+        .rejects.toThrow(/unreferenced/);
       expect(calls).toEqual([]);
     }
   });

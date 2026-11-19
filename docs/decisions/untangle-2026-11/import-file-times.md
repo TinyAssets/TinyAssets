@@ -134,3 +134,9 @@ Candidate applies the existing file-time range in the common owner fit for censu
 - [ ] Run the full importer suite, platform TypeScript and the combined inline-content and cleanup regressions. Keep complete frozen-owner and fresh deletion checks separate from the per-bundle manifest.
 
 - [x] Source `d987a7d5` passed the full 171 ordinary importer cases and platform TypeScript on Node 24. Joined with inline-content and cleanup source `b7e8feda`, all 32 ordinary staging and window cases passed on Node 22, and full Node 24 platform TypeScript passed. The combined upload preparation uses one inventory walk, retaining both checks and the original cleanup reader. On each runtime the independent 3,150-byte inline and 12,288-byte chunk omissions were refused; restoring the original file each time reproduced the exact complete plan. All fixtures ran offline.
+
+### Reconcile on-disk parts with the current index
+
+- [x] Reviewed the writer, host stage, Doors reader and historical cleanup. Overlaying a newer complete bundle on an older one left an obsolete inline file. On `5e80f663` ordinary dry run still accepted that directory. The index and its manifest describe the current bundle, while the filesystem lists everything left behind.
+- [x] During upload preparation, derive the required set from the verified index and its own manifest pages. Compare that set to the files present before any request. A leftover file cannot supply another manifest page or become an extra upload. Files shared by several entries appear once. The original checks used by rehearsal cleanup remain available.
+- [x] All 12 ordinary staging tests passed on Node 24 after the change, including the new overlay regression and the earlier missing-file and missing-chunk cases. Full suite, typecheck and combined verification are pending.
