@@ -21,3 +21,8 @@ When the deletion comparison in #5688 and this change meet, its private original
   grouping, index lookup and validation. Verify both ordinary identities,
   the broader importer and the Doors consumer. Then repeat on main after
   coordinated integration. All of these stages remain independent.
+- [x] The close reader now carries the entire listed index through grouping.
+  It reads its object by name and checks the embedded identity against its
+  folder key. The two fixture variants also check all index GETs in order
+  and the admitted owner count. All 21 ordinary window tests passed locally
+  on Node 24.22.3. Verification with the staged consumers is in progress.

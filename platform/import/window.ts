@@ -350,9 +350,15 @@ async function indexStaged(window: Window, run: string, staged: Staged): Promise
                        stagedName(bundlePrefix(run, staged.key), BUNDLE_INDEX)) !== null;
 }
 
+interface StagedIndex {
+  readonly name: string;
+  readonly run: string;
+  readonly key: string;
+}
+
 /** Each bundle index the staging bucket holds under `prefix`: its name, run and key. */
 async function stagedIndexes(window: Window, prefix: string):
-    Promise<{ name: string; run: string; key: string }[]> {
+    Promise<StagedIndex[]> {
   return (await listKeys(window, window.names.staging_bucket, prefix)).flatMap((name) => {
     const [run = "", key = "", ...part] = name.split("/");
     return RUN.test(run) && HEX16.test(key) && part.join("/") === BUNDLE_INDEX
@@ -438,17 +444,22 @@ export interface CloseSummary {
 export async function close(window: Window, print: (line: string) => void):
     Promise<CloseSummary> {
   const staging = window.names.staging_bucket;
-  const runs = new Map<string, string[]>();
-  for (const { key, run } of await stagedIndexes(window, "")) {
-    runs.set(run, [...runs.get(run) ?? [], key]);
+  const runs = new Map<string, StagedIndex[]>();
+  for (const index of await stagedIndexes(window, "")) {
+    const group = runs.get(index.run);
+    if (group === undefined) {
+      runs.set(index.run, [index]);
+    } else {
+      group.push(index);
+    }
   }
   const listed = new Set(await cloudflareOf(window.inputs.apiToken, window.fetcher)
     .keys(window.inputs.account, await directoryId(window), OWNER_ENTRY));
   const left: string[] = [];
   let owners = 0;
   for (const [run, indexes] of [...runs].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    for (const [n, key] of indexes.sort().entries()) {
-      const name = stagedName(bundlePrefix(run, key), BUNDLE_INDEX);
+    indexes.sort((a, b) => a.key.localeCompare(b.key));
+    for (const [n, { name, key }] of indexes.entries()) {
       const text = await getText(window, staging, name);
       if (text === null) continue;
       const index: unknown = JSON.parse(text);

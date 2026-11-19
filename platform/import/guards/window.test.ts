@@ -508,7 +508,16 @@ describe("the window's close", () => {
     const w = world(bundles);
     const [admitted, missing] = bundles;
     for (const bundle of bundles) w.kv.set(`o:${bundle.owner}`, "{}");
-    expect((await close(w.window, quiet)).left).toEqual([]);
+    const reads: string[] = [];
+    const fetcher: Fetcher = async (request) => {
+      const url = new URL(request.url);
+      if (url.pathname.startsWith(`/${NAMES.staging_bucket}/`) && !url.search) {
+        reads.push(decodeURIComponent(url.pathname));
+      }
+      return w.window.fetcher(request);
+    };
+    expect(await close({ ...w.window, fetcher }, quiet)).toEqual({ owners: bundles.length, left: [] });
+    expect(reads).toEqual(bundles.map((bundle) => `/${NAMES.staging_bucket}/${indexAt(bundle)[0]}`));
     w.kv.delete(`o:${missing!.owner}`);
     expect((await close(w.window, quiet)).left).toHaveLength(1);
     w.staging.set(indexAt(missing!)[0], indexAt(admitted!)[1]);
