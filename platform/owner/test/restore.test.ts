@@ -268,6 +268,34 @@ describe("a restore", () => {
     }
   });
 
+  it("restores readable bytes and a neighboring file beside a historical invalid date", async () => {
+    const o = await owner();
+    const legacy = `${W}/legacy-date.txt`;
+    const neighbor = `${W}/neighbor.txt`;
+    for (const path of [legacy, neighbor]) {
+      await o.stub.fileWrite(o.bind(), { path, expected_etag: null, content: path });
+    }
+    const before = await o.stub.fileFetch(o.bind(), { id: neighbor });
+    // The old importer accepted this safe integer. New imports reject it.
+    const oldTime = 8_640_000_000_000_001;
+    await sqlIn(o.stub, "UPDATE file_entries SET mtime_ms = ? WHERE parent = ? AND name = ?",
+                oldTime, W, "legacy-date.txt");
+    expect((await o.stub.fileStat(o.bind(), { path: legacy })).entry?.mtime_ms).toBe(oldTime);
+
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const restored = await lose(o);
+    const begun = await restored.restoreBegin(platform(o.name), {
+      namespace: space!["ns"] as string, gen: gen.gen,
+    });
+    expect(begun.step).toBe("index");
+    expect((await stepped(restored, o.name)).at(-1)).toMatchObject({ step: "done", state: "admitted" });
+    for (const path of [legacy, neighbor]) {
+      expect((await restored.fileRead(o.bind(), { path })).inline).toEqual(new TextEncoder().encode(path));
+    }
+    expect(await restored.fileFetch(o.bind(), { id: neighbor })).toEqual(before);
+  });
+
   it("reads a production-shaped owner back into its own object, every table and counter as " +
      "at E, every chunk read back, nothing put to R2 and no row in an answer", async () => {
     const { o, gen, ns, rows, counters, usage } = await source();
