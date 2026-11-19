@@ -1333,6 +1333,27 @@ describe("a restore into a live owner", () => {
     const hold = await pinnedTo(o.stub, o.name, gen.gen);
     let stub = await wipedWith(o.stub, o.name, hold.confirm!);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    // A failed check, as a rebuilt column gone wrong leaves it: the restore failed.
+    await sqlIn(stub, "UPDATE owner_restore SET step = 'failed', failed = 'x'");
+    const failed = await pinOf(stub, o.name, hold.fresh!);
+    expect(failed).toMatchObject({ step: "failed", written: true, confirm: hold.confirm });
+    stub = await wipedWith(stub, o.name, failed.confirm!);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: hold.fresh! });
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: hold.fresh });
+    expect(await rowsOf(stub, FENCED)).toBe(present);
+  });
+
+  it("retains the undo generation when a loaded row fails its generation digest", async () => {
+    const o = await owner();
+    await sqlIn(o.stub, "INSERT INTO owner_notices (at, type, detail) VALUES (1, 'x', 'before')");
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const ns = space!["ns"] as string;
+    await o.stub.fileWrite(o.bind(), { path: `${W}/after.txt`, expected_etag: null,
+                                       content: `${PLAIN} after` });
+    const hold = await pinnedTo(o.stub, o.name, gen.gen);
+    let stub = await wipedWith(o.stub, o.name, hold.confirm!);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
     // A trigger leaves a loaded notice different from the immutable generation.
     await sqlIn(stub, "CREATE TRIGGER damage_notice AFTER INSERT ON owner_notices " +
       "WHEN NEW.type = 'x' BEGIN UPDATE owner_notices SET detail = 'changed' " +
@@ -1344,9 +1365,10 @@ describe("a restore into a live owner", () => {
     const failed = await pinOf(stub, o.name, hold.fresh!);
     expect(failed).toMatchObject({ step: "failed", written: true, confirm: hold.confirm });
     stub = await wipedWith(stub, o.name, failed.confirm!);
-    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: hold.fresh! });
-    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: hold.fresh });
-    expect(await rowsOf(stub, FENCED)).toBe(present);
+    expect(await stub.restoreSource(platform(o.name))).toMatchObject({
+      state: "pending", restore: { step: "wiped", gen: gen.gen, fresh: hold.fresh } });
+    expect(await stub.restoreBegin(platform(o.name), { namespace: ns, gen: hold.fresh! }))
+      .toMatchObject({ step: "index", gen: hold.fresh });
   });
 
   it("holds the owner through a pin cut short, refuses the wipe until its state is " +

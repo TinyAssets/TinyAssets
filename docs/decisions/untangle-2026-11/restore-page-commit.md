@@ -60,3 +60,10 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
 - [x] Independently checked the public owner restore on the staged runtime with a 97-byte legacy prefix. In the focused test, immediately after dropping the trigger, take the first line of the first segment from the real Files manifest. Insert it into `restore_rows(tbl,k,row,n)` using the exported table key, JSON row and original newline-inclusive byte count. Keep the cursor and counters at zero. The normal retry answered done and the complete restored-row digest matched, then the final count assertion failed: staged and peak both read 98 against the immutable generation's 195. This diagnostic seeds the older writer's prefix. The separate runtime-switch fixture produces it by interrupting the actual main writer.
 - [ ] The original multi-segment capture/peak case is still unverified on this head. Its ordinary rerun exited 137. The smaller segment case has its own completed verdict.
 - [ ] Establish the historical recovery route before enabling mixed-version restores. An active log record answers a same-generation begin in place. A release after wipe refuses. A repeated wipe on an active step returns its status. Existing confirmed wipe/restart is available from a failed restore and retains the namespace, original generation, undo generation and hold time. Verify recovery for both pinned and lost owners. Completed historical adoptions need a separate inventory because their staging rows have been cleared.
+
+- [ ] Pinned undo evidence. The ordinary run on `30545b0a` reached the second
+  confirmed wipe after a real digest failure and admission refusal. The Worker
+  then exited before the final digest assertion returned. A separate attempt
+  with a smaller owner exited 137. Preserve the existing full undo scenario and
+  check the real failure through the public restart of the retained generation
+  independently. An unfinished run supplies no passing test verdict.
