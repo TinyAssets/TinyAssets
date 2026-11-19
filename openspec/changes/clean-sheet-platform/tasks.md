@@ -336,6 +336,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`codex/cutover-legacy-release`; `cutover-legacy-release.md`).
   - [ ] At the final backup boundary, drain the old release producers and host mutators and
     quiesce installed restart services, preserving the old startup path for handback.
+  - [x] The deletion-request writer boundary is researched: drain and stop the old daemon and
+    broker before the final off-host comparison, after quiescing every restart path, to close
+    the process-side writer race (`cutover-legacy-release.md`).
+  - [ ] Prove the final comparison enumerates every post-backup off-host record, by a cited
+    complete-list contract or a monotonic writer manifest/high-water barrier the reader checks.
+  - [ ] The founder chooses whether attempts during that stop are pause-and-retry or use a new
+    durable authenticated forwarder.
+  - [ ] Once #5688's import lane is free, durably discard/exclude every final comparison match
+    before the first admit; this engineering gate does not wait for the product choice.
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
