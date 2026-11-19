@@ -680,7 +680,7 @@ class Segments {
 
 interface AutomatonLine {
   readonly tokens: Tokens;
-  readonly rule: () => number;
+  rule: number;
   readonly dirOnly: boolean;
 }
 
@@ -701,7 +701,7 @@ class Automaton {
   readonly hasRearm: boolean;
   readonly hasGadget: boolean;
 
-  constructor(lines: readonly AutomatonLine[], states: number) {
+  constructor(lines: Iterable<AutomatonLine>, states: number) {
     this.states = states;
     const W = Math.max(1, Math.ceil(states / 32));
     this.W = W;
@@ -749,7 +749,7 @@ class Automaton {
       if (!line.dirOnly) {
         bit(this.acceptAny, end);
       }
-      this.rule[end] = line.rule();
+      this.rule[end] = line.rule;
       at = end + 1;
     }
     this.hasRearm = rearm;
@@ -870,10 +870,8 @@ function compile(lines: readonly string[]): Compiled {
   const prefix = new Trie();
   const pathPrefix = new Trie();
   const anywhere = new Anywhere();
-  const automata = { name: [] as AutomatonLine[], path: [] as AutomatonLine[] };
+  const automata = { name: new Map<string, AutomatonLine>(), path: new Map<string, AutomatonLine>() };
   const counted = { name: 0, path: 0 };
-  // An automaton line met again takes its later place (the last match wins), and no states.
-  const seen = new Map<string, { rule: number }>();
   const unapplied: Unapplied[] = [];
   let bytes = 0;
   let full = false;
@@ -903,12 +901,15 @@ function compile(lines: readonly string[]): Compiled {
     const cls = classOf(tokens, parsed.name);
     const rule = rules.length;
     if (cls.kind === "automaton") {
-      const key = `${parsed.name ? "n" : "p"}${parsed.dirOnly ? "d" : "-"}${
-        String.fromCharCode(...parsed.bytes)}`;
-      const again = seen.get(key);
+      const entries = parsed.name ? automata.name : automata.path;
+      const key = `${parsed.dirOnly ? "d" : "-"}${String.fromCharCode(...parsed.bytes)}`;
+      const again = entries.get(key);
       if (again !== undefined) {
-        rules.push(record);
+        // The last accepting state wins. Move the existing states to this rule's place.
         again.rule = rule;
+        entries.delete(key);
+        entries.set(key, again);
+        rules.push(record);
         continue;
       }
       const cost = statesOf(tokens);
@@ -919,10 +920,7 @@ function compile(lines: readonly string[]): Compiled {
         continue;
       }
       rules.push(record);
-      const entry = { rule };
-      seen.set(key, entry);
-      (parsed.name ? automata.name : automata.path)
-        .push({ tokens, rule: () => entry.rule, dirOnly: parsed.dirOnly });
+      entries.set(key, { tokens, rule, dirOnly: parsed.dirOnly });
       counted[parsed.name ? "name" : "path"] += cost;
       continue;
     }
@@ -949,8 +947,8 @@ function compile(lines: readonly string[]): Compiled {
   prefix.trim();
   pathPrefix.trim();
   return { rules, names, paths, suffix, prefix, pathPrefix, anywhere,
-           nameAutomaton: new Automaton(automata.name, counted.name),
-           pathAutomaton: new Automaton(automata.path, counted.path), unapplied };
+           nameAutomaton: new Automaton(automata.name.values(), counted.name),
+           pathAutomaton: new Automaton(automata.path.values(), counted.path), unapplied };
 }
 
 /** The list's lines not applied, in file order, each with the ceiling it is past. */
@@ -972,7 +970,7 @@ export function wildcard(pattern: string, text: string): boolean {
   if (tokens === null) {
     return false;
   }
-  const automaton = new Automaton([{ tokens, rule: () => 0, dirOnly: false }],
+  const automaton = new Automaton([{ tokens, rule: 0, dirOnly: false }],
                                   statesOf(tokens));
   const D = Uint32Array.from(automaton.init);
   if (!automaton.run(D, new Uint32Array(automaton.W), utf8(text))) {
@@ -1208,7 +1206,7 @@ export function stepNanos(ms = 600): number {
     if (states + statesOf(tokens) > AUTOMATON_STATES) {
       return false;
     }
-    lines.push({ tokens, rule: () => 0, dirOnly: false });
+    lines.push({ tokens, rule: 0, dirOnly: false });
     states += statesOf(tokens);
     return true;
   };

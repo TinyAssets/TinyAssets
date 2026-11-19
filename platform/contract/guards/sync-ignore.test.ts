@@ -196,6 +196,19 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
     expect(differences(["\uFEFF\uFEFFname"], ["\uFEFFname", "name"])).toEqual([]);
   });
 
+  it("gives a repeated automaton rule its final place among overlapping rules", () => {
+    const paths = ["xa", "xb/file", "sub/xa", "sub/xb/file", "xc", "xq/file"];
+    for (const prefix of ["", "/"]) {
+      for (const suffix of ["", "/"]) {
+        const broad = `${prefix}x?${suffix}`;
+        const narrow = `${prefix}x[ab]${suffix}`;
+        for (const lines of [[broad, `!${narrow}`, broad], [`!${broad}`, narrow, `!${broad}`]]) {
+          expect(differences(lines, paths), lines.join("\n")).toEqual([]);
+        }
+      }
+    }
+  });
+
   it("never ignores itself, nor the folders on its way", () => {
     const matcher = ignoredBy(["*", ".ta/", ".ta/sync-ignore"]);
     expect([matcher(".ta", true), matcher(".ta/sync-ignore"), matcher(".ta/other")])

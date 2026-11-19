@@ -53,3 +53,9 @@ human-readable line report distinct from byte identity, respect the existing
 read bound and check mixed-byte rules against Git and the real file-sync path.
 This correction covers well-formed UTF-8 text rules without NUL. A full matcher review and the
 standing pinned-template performance checks remain open.
+
+## Repeated wildcard precedence
+
+- [x] On `e07b1dcf93decd82b98fb5712e9a4973b51e4a24`, Git ignored `xa` for the file lines `x?`, `!x[ab]`, `x?`, but the shared matcher sent it. The compiler updated the repeated rule number without moving its accepting state. This also affected anchored paths and directory walks.
+- [x] Reuse each admitted rule's states and place them at its last occurrence when compiling. A permanent Git differential on Node 22 failed on the previous source and passed on the corrected source, covering anchored and unanchored rules, both polarities, files, directories and descendants.
+- [ ] Run the ordinary contract suite and the pinned Git template and generated-list comparisons. Raw rule bytes, owner notice identity, and sandbox performance acceptance remain open.
