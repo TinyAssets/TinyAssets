@@ -67,3 +67,16 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
   with a smaller owner exited 137. Preserve the existing full undo scenario and
   check the real failure through the public restart of the retained generation
   independently. An unfinished run supplies no passing test verdict.
+- [x] Scoped Node 22 TypeScript passed on `592ee821`. An independent native
+  Workerd test used its Wrangler-built owner, a real Files Worker and local R2.
+  Its local owner subclass exposed two fixed fixture operations to seed a notice
+  and damage the loaded notice. Public owner export created the original
+  generation. Restore detected the row digest failure, refused admission and
+  retained the undo generation through the second confirmed wipe. Its public
+  begin answered index and done=false. The source status named the actual undo
+  generation. Undo then finished and, after admission, the owner read the file
+  written after the original generation. The in-tree test now checks the
+  generation on the status door that actually supplies it. Earlier attempts to
+  run the selected Vitest case lost the Worker or exited 137. This Workerd proof
+  applies to a checked failure with a pin. Active legacy staging and already
+  completed historical restores still need a recovery decision.

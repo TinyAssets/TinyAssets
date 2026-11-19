@@ -1368,6 +1368,8 @@ describe("a restore into a live owner", () => {
     expect(await stub.restoreSource(platform(o.name))).toMatchObject({
       state: "pending", restore: { step: "wiped", gen: gen.gen, fresh: hold.fresh } });
     expect(await stub.restoreBegin(platform(o.name), { namespace: ns, gen: hold.fresh! }))
+      .toMatchObject({ step: "index", done: false });
+    expect((await stub.restoreSource(platform(o.name))).restore)
       .toMatchObject({ step: "index", gen: hold.fresh });
   });
 
