@@ -31,7 +31,7 @@
  * `LIST_BYTES`. A line past either ceiling is not applied (its files go on syncing), and is
  * said, in file order.
  */
-import { utf8Bytes } from "./text.ts";
+import { utf8Text } from "./text.ts";
 
 export const SYNC_IGNORE = "/workspace/.ta/sync-ignore";
 /** The rule file from `/workspace`, which no line ever keeps out. */
@@ -112,16 +112,26 @@ function utf8(text: string): Uint8Array {
   return out.subarray(0, n);
 }
 
-/** Keep a BOM in a filename or pattern. Only the start of the whole rule file may drop one. */
-function decode(bytes: Uint8Array | readonly number[]): string {
-  const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-  return new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(data);
+/** An injective key for bytes. Chunk the conversion so a permitted line fits the call stack. */
+function byteKey(bytes: Uint8Array): string {
+  let key = "";
+  for (let at = 0; at < bytes.length; at += 8192) {
+    key += String.fromCharCode(...bytes.subarray(at, at + 8192));
+  }
+  return key;
 }
 
-/** Both readers preserve the file's bytes for the list ceiling and first-line handling. */
-export function syncIgnoreLines(bytes: Uint8Array): string[] {
-  return decode(bytes).split("\n");
+/** The filesystem only supplies valid UTF-8 names. Test the literal after unescaping it. */
+function literalText(bytes: readonly number[]): string | null {
+  try {
+    return utf8Text(Uint8Array.from(bytes), "keep");
+  } catch {
+    return null;
+  }
 }
+
+/** A file as stored, or the text lines of a generated list such as the defaults. */
+export type SyncIgnoreSource = Uint8Array | readonly string[];
 
 const SLASH = 47;
 
@@ -130,7 +140,7 @@ const SLASH = 47;
 /** One rule line: its pattern's bytes for matching, and git's flags. */
 interface Parsed {
   /** The line as git reads it, including meaningful spaces, escapes and a possible `!`. */
-  readonly line: string;
+  readonly spelling: Uint8Array;
   readonly bytes: Uint8Array;
   readonly negative: boolean;
   /** A trailing `/`: folders only. */
@@ -140,68 +150,69 @@ interface Parsed {
 }
 
 /** git's `trim_trailing_spaces`: trailing spaces go unless a backslash escapes them. */
-function trimTrailingSpaces(line: string): string {
+function trimTrailingSpaces(line: Uint8Array): Uint8Array {
   let lastSpace = -1;
   for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === " ") {
-      if (lastSpace < 0) {
-        lastSpace = i;
-      }
-    } else if (c === "\\") {
-      i++;
-      if (i >= line.length) {
-        return line;
-      }
-      lastSpace = -1;
+    if (line[i] === 32) {
+      if (lastSpace < 0) lastSpace = i;
     } else {
+      if (line[i] === 92) i++; // an escaped space belongs to the spelling
       lastSpace = -1;
     }
   }
-  return lastSpace < 0 ? line : line.slice(0, lastSpace);
+  return lastSpace < 0 ? line : line.subarray(0, lastSpace);
 }
 
-/** A line as git reads it (`add_patterns_from_buffer`, `parse_path_pattern`), or null. */
-function parse(raw: string, first = false): Parsed | null {
-  let line = first && raw.startsWith("\uFEFF") ? raw.slice(1) : raw;
-  if (line.endsWith("\r")) {
-    line = line.slice(0, -1);
-  }
-  if (line === "" || line.startsWith("#")) {
-    return null;
-  }
-  const spelling = trimTrailingSpaces(line);
-  line = spelling;
-  let negative = false;
-  if (line.startsWith("!")) {
-    negative = true;
-    line = line.slice(1);
-  }
-  let dirOnly = false;
-  if (line.endsWith("/")) {
-    dirOnly = true;
-    line = line.slice(0, -1);
-  }
-  if (line === "") {
-    return null;  // it matches nothing
-  }
-  const name = !line.includes("/");
-  if (!name && line.startsWith("/")) {
-    line = line.slice(1);  // `match_pathname` drops one leading `/`
-  }
-  return { line: spelling, bytes: utf8(line), negative, dirOnly, name };
+/** A physical line from the rule file. Git removes its final CR before reading to NUL. */
+function parse(raw: Uint8Array, first = false): Parsed | null {
+  const start = first && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf ? 3 : 0;
+  if (raw[start] === 35) return null; // comment
+  let end = raw.length;
+  if (raw[end - 1] === 13) end--;
+  const nul = raw.indexOf(0, start);
+  if (nul >= 0) end = Math.min(end, nul);
+  const spelling = trimTrailingSpaces(raw.subarray(start, end));
+  const negative = spelling[0] === 33;
+  const dirOnly = spelling[spelling.length - 1] === SLASH;
+  let bytes = spelling.subarray(negative ? 1 : 0, spelling.length - (dirOnly ? 1 : 0));
+  if (bytes.length === 0) return null;
+  const name = !bytes.includes(SLASH);
+  if (bytes[0] === SLASH) bytes = bytes.subarray(1);
+  return { spelling, bytes, negative, dirOnly, name };
 }
 
-/** The rule lines among `lines` (no comment, no blank), as the matcher reads each. */
-export function ruleLines(lines: readonly string[]): string[] {
-  const active: string[] = [];
-  for (const [at, raw] of lines.entries()) {
-    const parsed = parse(raw, at === 0);
-    if (parsed !== null) {
-      active.push(parsed.line);
+/** The end offset includes the physical line separator and any unparsed bytes after NUL. */
+function* parsedRules(source: SyncIgnoreSource): Generator<{ parsed: Parsed; end: number }> {
+  if (source instanceof Uint8Array) {
+    let start = 0;
+    while (start < source.length) {
+      const lf = source.indexOf(10, start);
+      const end = lf < 0 ? source.length : lf + 1;
+      const parsed = parse(source.subarray(start, lf < 0 ? end : lf), start === 0);
+      if (parsed !== null) yield { parsed, end };
+      start = end;
+    }
+  } else {
+    const encoder = new TextEncoder();
+    let end = 0;
+    for (const [i, line] of source.entries()) {
+      const raw = encoder.encode(line);
+      end += raw.length + (i + 1 < source.length ? 1 : 0);
+      const parsed = parse(raw, i === 0);
+      if (parsed !== null) yield { parsed, end };
     }
   }
-  return active;
+}
+
+/** Normalized spellings for display. A displayed replacement character is never an identity. */
+export function ruleLines(source: SyncIgnoreSource): string[] {
+  const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+  return Array.from(parsedRules(source), ({ parsed }) => decoder.decode(parsed.spelling));
+}
+
+/** Normalized byte identities for comparing a file edit against its previous rules. */
+export function ruleKeys(source: SyncIgnoreSource): string[] {
+  return Array.from(parsedRules(source), ({ parsed }) => byteKey(parsed.spelling));
 }
 
 // -- A pattern's tokens (wildmatch.c, by byte) ------------------------------------------------
@@ -303,7 +314,8 @@ function classAt(p: Uint8Array, at: number): { set: ByteSet; end: number } | nul
       if (j - start - 1 < 0 || p[j - 1] !== 58) {
         member[91] = 1;  // no `:]`: a plain `[`, the rest read on
       } else {
-        const test = POSIX[String.fromCharCode(...p.subarray(start, j - 1))];
+        const key = byteKey(p.subarray(start, j - 1));
+        const test = POSIX[key];
         if (test === undefined) {
           return null;  // a malformed [:class:]
         }
@@ -861,8 +873,8 @@ interface Compiled {
 }
 
 /** `lines` compiled: each rule line into one structure, in file order, the ceilings held. */
-function compile(lines: readonly string[]): Compiled {
-  const defaults = new Set(DEFAULT_IGNORES);
+function compile(lines: SyncIgnoreSource): Compiled {
+  const defaults = new Set(ruleKeys(DEFAULT_IGNORES));
   const rules: Rule[] = [];
   const names = new Map<string, Best>();
   const paths = new Segments();
@@ -873,26 +885,20 @@ function compile(lines: readonly string[]): Compiled {
   const automata = { name: new Map<string, AutomatonLine>(), path: new Map<string, AutomatonLine>() };
   const counted = { name: 0, path: 0 };
   const unapplied: Unapplied[] = [];
-  let bytes = 0;
+  const display = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
   let full = false;
   const literalInto = (into: Map<string, Best>, key: string, rule: number, dirOnly: boolean) => {
     const best = into.get(key) ?? { any: -1, all: -1 };
     better(best, rule, dirOnly);
     into.set(key, best);
   };
-  for (const [at, raw] of lines.entries()) {
-    // A continuing file must show the line ending within the bounded read.
-    bytes += utf8Bytes(raw) + (at + 1 < lines.length ? 1 : 0);
-    const parsed = parse(raw, at === 0);
-    if (parsed === null) {
-      continue;
-    }
-    if (bytes > LIST_BYTES) {
-      unapplied.push({ line: parsed.line, reason: "bytes" });
+  for (const { parsed, end } of parsedRules(lines)) {
+    if (end > LIST_BYTES) {
+      unapplied.push({ line: display.decode(parsed.spelling), reason: "bytes" });
       continue;
     }
     const record: Rule = { negative: parsed.negative,
-                           kind: defaults.has(parsed.line) ? "default" : "custom" };
+                           kind: defaults.has(byteKey(parsed.spelling)) ? "default" : "custom" };
     const tokens = tokenize(parsed.bytes, !parsed.name);
     if (tokens === null) {
       rules.push(record);  // a line git takes that matches nothing
@@ -902,7 +908,7 @@ function compile(lines: readonly string[]): Compiled {
     const rule = rules.length;
     if (cls.kind === "automaton") {
       const entries = parsed.name ? automata.name : automata.path;
-      const key = `${parsed.dirOnly ? "d" : "-"}${String.fromCharCode(...parsed.bytes)}`;
+      const key = `${parsed.dirOnly ? "d" : "-"}${byteKey(parsed.bytes)}`;
       const again = entries.get(key);
       if (again !== undefined) {
         // The last accepting state wins. Move the existing states to this rule's place.
@@ -916,7 +922,7 @@ function compile(lines: readonly string[]): Compiled {
       if (full || counted.name + counted.path + cost > AUTOMATON_STATES) {
         // Past the ceiling: this and every later automaton line, in file order.
         full = true;
-        unapplied.push({ line: parsed.line, reason: "states" });
+        unapplied.push({ line: display.decode(parsed.spelling), reason: "states" });
         continue;
       }
       rules.push(record);
@@ -925,14 +931,14 @@ function compile(lines: readonly string[]): Compiled {
       continue;
     }
     rules.push(record);
-    if (cls.kind === "literal") {
-      if (parsed.name) {
-        literalInto(names, decode(cls.bytes), rule, parsed.dirOnly);
+    if (cls.kind === "literal" || (cls.kind === "anywhere" && !cls.bytes.includes(SLASH))) {
+      const text = literalText(cls.bytes);
+      if (text === null) continue;
+      if (parsed.name || cls.kind === "anywhere") {
+        literalInto(names, text, rule, parsed.dirOnly);
       } else {
-        paths.add(decode(cls.bytes), rule, parsed.dirOnly);
+        paths.add(text, rule, parsed.dirOnly);
       }
-    } else if (cls.kind === "anywhere" && !cls.bytes.includes(SLASH)) {
-      literalInto(names, decode(cls.bytes), rule, parsed.dirOnly);  // `**/name` is `name`
     } else if (cls.kind === "anywhere") {
       anywhere.add(cls.bytes, rule, parsed.dirOnly);
     } else if (cls.kind === "suffix") {
@@ -952,13 +958,13 @@ function compile(lines: readonly string[]): Compiled {
 }
 
 /** The list's lines not applied, in file order, each with the ceiling it is past. */
-export function unappliedLines(lines: readonly string[]): Unapplied[] {
+export function unappliedLines(lines: SyncIgnoreSource): Unapplied[] {
   return compile(lines).unapplied;
 }
 
 /** What one line takes of `AUTOMATON_STATES`: its states, or 0 when an index takes it. */
 export function automatonStates(line: string): number {
-  const parsed = parse(line);
+  const parsed = parse(new TextEncoder().encode(line));
   const tokens = parsed === null ? null : tokenize(parsed.bytes, !parsed.name);
   return tokens === null || classOf(tokens, parsed!.name).kind !== "automaton" ? 0
     : statesOf(tokens);
@@ -1047,7 +1053,7 @@ interface Folder {
  * run's) ignores it, `default` when a default line does, or null. The sync-ignore file
  * itself, and the folders on its way, are never ignored.
  */
-export function ignoredBy(lines: readonly string[]): Matcher {
+export function ignoredBy(lines: SyncIgnoreSource): Matcher {
   const c = compile(lines);
   const byName = new Map<string, Best>();
   let held = 0;

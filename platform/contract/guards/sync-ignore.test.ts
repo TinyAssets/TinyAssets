@@ -44,11 +44,11 @@ function templates(dir = TEMPLATES): string[] {
  * `lines` as the repository's `.gitignore`: the files made on disk, each path and folder
  * asked.
  */
-function gitIgnores(lines: readonly string[], paths: readonly string[]):
+function gitIgnores(lines: readonly string[] | Uint8Array, paths: readonly string[]):
     { all: [string, boolean][]; ignored: Set<string> } {
   const repo = mkdtempSync(join(scratch, "r-"));
   execFileSync("git", ["init", "-q", repo], { env: ENV });
-  writeFileSync(join(repo, ".gitignore"), lines.join("\n"));
+  writeFileSync(join(repo, ".gitignore"), lines instanceof Uint8Array ? lines : lines.join("\n"));
   const folders = new Set<string>();
   for (const path of paths) {
     const parts = path.split("/");
@@ -135,7 +135,7 @@ function samples(lines: readonly string[]): string[] {
   return [...out];
 }
 
-function differences(lines: readonly string[], paths: readonly string[]): string[] {
+function differences(lines: readonly string[] | Uint8Array, paths: readonly string[]): string[] {
   const { all, ignored } = gitIgnores(lines, paths);
   const ours = ignoredBy(lines);
   return all.filter(([path, isDir]) => ignored.has(path) !== (ours(path, isDir) !== null))
@@ -194,6 +194,27 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
     const match = ignoredBy(lines);
     expect([match(" node_modules"), match("build")]).toEqual(["custom", "default"]);
     expect(differences(["\uFEFF\uFEFFname"], ["\uFEFFname", "name"])).toEqual([]);
+  });
+
+  it("uses the original bytes for literals, classes, wildcards and physical line endings", () => {
+    const paths = ["�", "©", "a", "foo", "sub/©", "a/©", "x", "x\r", "x ", "y"];
+    const rules = [
+      [0xff], [0xef, 0xbf, 0xbd], [91, 97, 0xff, 93], [42, 0xa9],
+      [0xc2, 92, 0xa9], [47, 97, 47, 0xc2, 92, 0xa9], [42, 42, 47, 0xc2, 92, 0xa9],
+      [120, 13, 0, 97, 10], [120, 0, 97, 13, 10], [120, 13], [120, 32, 0, 97, 10],
+      [120, 92, 32, 0, 97, 10], [0, 120, 10, 121, 10],
+    ];
+    for (const bytes of rules) {
+      expect(differences(Uint8Array.from(bytes), paths), bytes.join(",")).toEqual([]);
+    }
+  });
+
+  it("charges the original rule file through its physical line ending", () => {
+    const bytes = new Uint8Array(LIST_BYTES + 1).fill(0xff);
+    bytes.set([35, 0]);
+    bytes.set([10, 120, 10], LIST_BYTES - 2);
+    expect(ignoredBy(bytes.subarray(0, LIST_BYTES))("x")).toBe("custom");
+    expect(unappliedLines(bytes)).toEqual([{ line: "x", reason: "bytes" }]);
   });
 
   it("gives a repeated automaton rule its final place among overlapping rules", () => {

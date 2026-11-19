@@ -107,7 +107,7 @@ import {
 import { isPrintable, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import {
-  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, syncIgnoreLines,
+  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleKeys, SYNC_IGNORE,
   unappliedLines,
 } from "../../contract/src/sync-ignore";
 import type { Backups } from "./backup";
@@ -3336,20 +3336,19 @@ function syncIgnoreChanged(o: SyncIgnoreTold, present: boolean, now: number,
   if (present && change.content_id !== null) {
     // Whoever wrote it, its new lines are read (a set's work, the list at most an inline
     // file), never matched against the owner's files here.
-    const lines = (bytes: Uint8Array | null) => bytes === null ? null
-      : ruleLines(syncIgnoreLines(bytes));
-    const after = lines(o.files.inlineOf(change.content_id));
+    const raw = o.files.inlineOf(change.content_id);
     const before = o.files.contentBefore(SYNC_IGNORE, o.files.lastVersion(SYNC_IGNORE));
-    const was = new Set(before === null ? [] : lines(o.files.inlineOf(before.content_id))
-      ?? []);
-    const defaults = new Set(DEFAULT_IGNORES);
-    if (after === null || after.some((line) => !was.has(line) && !defaults.has(line))) {
+    const previous = before === null ? null : o.files.inlineOf(before.content_id);
+    const known = new Set(ruleKeys(DEFAULT_IGNORES));
+    if (previous !== null) {
+      for (const key of ruleKeys(previous)) known.add(key);
+    }
+    if (raw === null || ruleKeys(raw).some((key) => !known.has(key))) {
       held = " Its new lines may hold back files you keep from syncing their changes; " +
         "each sandbox sync reports the files they hold back.";
     }
     // Lines past a ceiling are not applied: said here, never in silence.
-    const raw = o.files.inlineOf(change.content_id);
-    const past = raw === null ? [] : unappliedLines(syncIgnoreLines(raw));
+    const past = raw === null ? [] : unappliedLines(raw);
     const states = past.filter((each) => each.reason === "states");
     if (states.length > 0) {
       held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${
