@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { inlineId } from "../../contract/src/content";
 import { migrate } from "../../contract/src/migrate";
 import { sha256Hex } from "../../contract/src/digest";
 import { randomHex } from "../../contract/src/ids";
@@ -161,7 +162,7 @@ const countersOf = (stub: Stub) => runInDurableObject(stub, (_instance: OwnerDO,
 });
 
 /** The object lost: its database deleted and its instance reset, its R2 objects kept. */
-async function lose(o: Owner): Promise<Stub> {
+async function lose(o: Pick<Owner, "name" | "stub">): Promise<Stub> {
   await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
     await state.storage.deleteAlarm();
     await state.storage.deleteAll();
@@ -234,6 +235,39 @@ async function source(): Promise<{ o: Owner; gen: Generated; ns: string; rows: s
 }
 
 describe("a restore", () => {
+  it("preserves signed imported dates after database loss and restore", async () => {
+    const name = `dates-${crypto.randomUUID()}`;
+    const stub = env.OWNER.getByName(name);
+    const bind = { owner: name, caller: name, origin: null, tiers: TIERS };
+    const dates = [-8_640_000_000_000_000, -1250, 0, 8_640_000_000_000_000];
+    const imported = `${W}/imported`;
+    const files = dates.map((mtime_ms, n) => {
+      const path = `${imported}/archive-${n}.txt`;
+      const bytes = new TextEncoder().encode(`original ${n}`);
+      return { kind: "file" as const, path, size: bytes.length, mode: 1 as const,
+               content_id: inlineId(bytes), bytes, mtime_ms };
+    });
+    await stub.importFiles({ ...platform(name), import: { bundle: "b".repeat(64) }, tiers: TIERS },
+                           { entries: [{ kind: "dir", path: imported }, ...files] });
+    await stub.admissionSet(platform(name), { admit: true });
+    const gen = await generate(stub);
+    const [space] = await sqlIn(stub, "SELECT ns FROM file_space");
+    const restored = await lose({ name, stub });
+    const begun = await restored.restoreBegin(platform(name), {
+      namespace: space!["ns"] as string, gen: gen.gen,
+    });
+    expect(begun.step).toBe("index");
+    expect((await stepped(restored, name)).at(-1)).toMatchObject({ step: "done", state: "admitted" });
+    for (const file of files) {
+      const read = await restored.fileRead(bind, { path: file.path });
+      expect(read.entry).toMatchObject({ mode: file.mode, mtime_ms: file.mtime_ms });
+      expect(read.inline).toEqual(file.bytes);
+      expect(inlineId(read.inline!)).toBe(file.content_id);
+      expect((await restored.fileFetch(bind, { id: file.path })).metadata.modified)
+        .toBe(new Date(file.mtime_ms).toISOString());
+    }
+  });
+
   it("reads a production-shaped owner back into its own object, every table and counter as " +
      "at E, every chunk read back, nothing put to R2 and no row in an answer", async () => {
     const { o, gen, ns, rows, counters, usage } = await source();
