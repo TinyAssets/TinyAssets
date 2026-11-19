@@ -30,11 +30,18 @@ nine expected chunk keys.
   range can be rendered by fileFetch. Fractional or out-of-range dates are
   refused. A missing optional time still uses the write's clock. No schema
   or bundle format change is needed.
-- [ ] Verify the ordinary historical host, signed Doors delivery, owner inline
-  and chunked readback, public ISO timestamp, importer checks and full
-  platform typecheck. At the source checkpoint the host's 23 ordinary
-  bundle tests had passed on Node 22. Other results are pending. Repeat the
-  checks together with staged consumers and after coordinator integration.
+- [x] Source a7d7a7d4 passed all 21 ordinary owner import cases on Node
+  22.23.5, including inline and chunked pre-epoch times and the public ISO
+  date. The signed pending-owner test that dropped the bundle on main passed
+  on this source. So did the full Node 24.22.3 platform typecheck. The
+  standalone host fixture passed all 23 ordinary bundle tests. Independent
+  Date comparisons covered 14,354 inputs on each Node runtime.
+- [x] With the 23 staged changes documented at fa92c218, shared folder
+  reader 72672304 and archive correction 8535a52d, all 26 ordinary bundle
+  tests passed on Node 22. Preserve both the F1 tier and this timestamp
+  when reconciling the chunk-upload test helper.
+- [ ] Complete the joined owner, signed Doors and typecheck verification.
+  Repeat after coordinator integration on main.
 
 The separate archive writer preserves historical times in ignored or refused
 trees at whole-second tar precision on 8535a52d. Ordinary file entries use
