@@ -25,10 +25,12 @@ import { join } from "node:path";
 import { keyed, object } from "../contract/src/checks";
 import { HEX16 } from "../contract/src/ids";
 import {
-  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, manifestEntries, pageNumber, PART, rehearsalRun,
+  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, chunkName, importMac, type ImportMessage, inlineName,
+  manifestEntries, pageNumber, PART, rehearsalRun,
   RUN, stagedName,
 } from "../contract/src/import-message";
 import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
+import { INLINE_BYTES } from "../contract/src/limits";
 import { QUEUES } from "../contract/src/queue-names";
 import { Cloudflare } from "../deploy/cloudflare";
 
@@ -252,6 +254,29 @@ export function plannedLines(bundles: readonly Staged[], run: string, names: Imp
   ];
 }
 
+/** Verify each manifest page and the local bytes it references before any bundle is sent. */
+function checkManifestParts(staged: Staged): void {
+  const parts = new Set(staged.parts);
+  for (const name of parts) {
+    if (pageNumber("manifest", name) === null) {
+      continue;
+    }
+    const entries = manifestEntries(JSON.parse(readFileSync(join(staged.dir, name), "utf8")));
+    for (const entry of entries) {
+      if (entry.kind === "dir") {
+        continue;
+      }
+      const available = entry.size! <= INLINE_BYTES
+        ? parts.has(inlineName(entry.content_id!))
+        : Array.isArray(entry.chunks) && entry.chunks.length > 0 &&
+          entry.chunks.every((sha) => parts.has(chunkName(sha)));
+      if (!available) {
+        throw new Error("a bundle is missing content its manifest names");
+      }
+    }
+  }
+}
+
 /**
  * The run: every bundle in `out` checked whole, then (unless `inputs` is null, a dry run)
  * each uploaded under `<run>/<key>/`, its index last, then its message sent; refused loudly at
@@ -270,11 +295,7 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
   }
   const totals = { bundles: bundles.length, objects: 0, bytes: 0, messages: 0 };
   for (const staged of bundles) {
-    for (const name of staged.parts) {
-      if (pageNumber("manifest", name) !== null) {
-        manifestEntries(JSON.parse(readFileSync(join(staged.dir, name), "utf8")));
-      }
-    }
+    checkManifestParts(staged);
     totals.objects += staged.parts.length;
     totals.bytes += staged.bytes;
     totals.messages += 1;
