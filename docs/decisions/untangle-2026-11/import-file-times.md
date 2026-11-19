@@ -40,8 +40,24 @@ nine expected chunk keys.
   reader 72672304 and archive correction 8535a52d, all 26 ordinary bundle
   tests passed on Node 22. Preserve both the F1 tier and this timestamp
   when reconciling the chunk-upload test helper.
-- [ ] Complete the joined owner, signed Doors and typecheck verification.
-  Repeat after coordinator integration on main.
+- [x] On that combined source, all 25 ordinary owner import and all 22
+  signed Doors import cases passed on Node 22, including importCheck, along
+  with the full Node 24 platform typecheck. The F1 tier fixture and the
+  historical-time fixture both remained in the same upload helper.
+- [x] The 47 owner-bound, starter and limits guards passed on Node 22 in a
+  full checkout with only the host's UNDICI-EHPA warning suppressed. With
+  the warning enabled, one starter stderr assertion failed and 46 passed.
+  An earlier unfiltered owner invocation in a sparse tree was interrupted.
+- [ ] Check historical stored values before applying any data repair. On
+  f934871ad an offline owner accepted 8640000000000001 ms. Its fileStat
+  returned that value and fileFetch raised Invalid time value. The exact
+  upper boundary formatted correctly. The diagnostic assertions passed but
+  the Worker also reported an unhandled rejection, so the run failed. This
+  synthetic result establishes neither occurrence nor scope in existing
+  accounts. a7d7a7d4 excludes new out-of-range imports. The file reader
+  promises an ISO modification date, so any disposition for old values
+  must preserve file access and avoid inventing a timestamp.
+- [ ] Repeat after coordinator integration on main.
 
 The separate archive writer preserves historical times in ignored or refused
 trees at whole-second tar precision on 8535a52d. Ordinary file entries use
