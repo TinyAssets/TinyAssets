@@ -27,8 +27,10 @@ capture=$(mktemp -d)
 (cd "$base/platform" && npm run record -- "$capture/base")
 (cd "$head/platform" && npm run record -- "$capture/head")
 (cd "$head/platform" && npm run record:diff -- "$capture/head" "$capture/head")
-(cd "$base/platform" && npm run record:diff -- "$capture/base" "$capture/head")
+(cd "$base/platform" && npm run record:diff -- "$capture/base" "$capture/head") > "$capture/comparison.log"
 ```
+
+Read `$capture/comparison.log` even when the final command exits 1. The older CLI can exit before a pipe has carried all its output. A regular output file preserves the complete comparison and the command keeps its original exit status.
 
 For a previously completed older capture, use the existing immutable archive in
 the final command in place of `$capture/base` and omit the first recording.
@@ -37,3 +39,5 @@ files, including successful coverage of every group for a sharded run. Compare
 from the older worktree only after the newer collector has verified its side.
 When original completion cannot be established, make a fresh base capture.
 Two captures from the updated collector use its ordinary `record:diff` directly.
+
+On Linux, the ordinary npm scripts from `f934871ad` and `02c2f1f0` recorded synthetic transcripts in separate directories. The newer collector verified its own capture. On Node 22.23.5 and 24.22.3 the older CLI returned 1 for a discovery difference and delivered 65,551 of 540,247 bytes through a pipe. Both final family results were missing. Directing the same command into a regular file delivered all 540,247 bytes and both final results, byte for byte with the corrected comparator on `df58c760`. Equal legacy inputs returned 0. The newer collector rejected a changed transcript after capture. These checks exercised the CLI and filesystem with substitute recorder children.
