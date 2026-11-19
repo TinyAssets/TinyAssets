@@ -709,10 +709,14 @@ describe("the matcher's memory in the sync agent's heap", () => {
           lines.push(shape(i));
           bytes += shape(i).length + 1;
         }
-        const matcher = ignoredBy(lines);
+        const file = Buffer.from(lines.join("\n") + "\n");
+        lines.length = 0;
+        const matcher = ignoredBy(file);
         matcher("a/b.c");
         perByte = Math.min(perByte, (settled() - base) / bytes);
-        expect(lines.length + (typeof matcher === "function" ? 0 : 1)).toBeGreaterThan(0);
+        // Keep both the stored rule bytes and the compiled matcher live through measurement.
+        expect(file.length).toBe(bytes);
+        expect(typeof matcher).toBe("function");
       }
       expect(perByte, label).toBeLessThanOrEqual(HEAP_PER_LIST_BYTE);
     }
