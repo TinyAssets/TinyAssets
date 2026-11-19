@@ -111,3 +111,13 @@ Occurrence in a real old volume is unknown.
   the shared projection on c6899cdd. Review generic readers of fleet and
   erasure facts before changing the common decoder. Keep the two explicit
   failures open until census and writing agree on the actual archived revision.
+
+- [x] A permanent positive control on the same source passed on Node 22 and
+  24. The actual writer preserved both legitimate strings that collide with
+  the malformed examples, with unreadable bytes in an unconsumed extra column
+  of a synthetic fleet database. Independent runs with null, ordinary TEXT,
+  ill-formed TEXT and BLOB in that unused column each completed with three
+  public owners and one private owner on both runtimes. A decoder that
+  indiscriminately rejects every unused legacy column would change this
+  behavior. Validate the fields a consumer actually interprets. Keep the
+  ordinary controls for owner, fleet and erasure readers when changing them.

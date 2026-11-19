@@ -485,6 +485,29 @@ describe("the bundle builder", () => {
       .toEqual(["bundle.json", "chunks", "inline", "manifest", "owner.json", "rows"]);
   });
 
+  it("preserves literal collection text when an unrelated historical column has unreadable bytes", () => {
+    const { f, out, options } = setup();
+    const shared = new DatabaseSync(join(f.work, "data", "_data", ".broker", "state", "owner-identities.db"));
+    try {
+      shared.exec("ALTER TABLE owner_identities ADD COLUMN future_note TEXT");
+      shared.exec("UPDATE owner_identities SET future_note=CAST(X'FF' AS TEXT)");
+    } finally {
+      shared.close();
+    }
+    const db = new DatabaseSync(join(f.account(ALICE), "conversations.db"));
+    try {
+      const update = db.prepare("UPDATE collection_rows SET body=? WHERE row_id=?");
+      update.run("97,255,98", "b1");
+      update.run("a\uFFFDb", "b2");
+    } finally {
+      db.close();
+    }
+    expect(census(f.copy, TIERS).ready).toBe(true);
+    expect(buildBundles(f.copy, options).bundled).toBe(3);
+    const live = rows(join(out, keyOf(ALICE))).filter((row) => row.kind === "collection");
+    expect(live.map((row) => [row.row_id, row.body])).toEqual([["b1", "97,255,98"], ["b2", "a\uFFFDb"]]);
+  });
+
   it.each([
     ["binary", "X'61FF62'"],
     ["ill-formed UTF-8", "CAST(X'61FF62' AS TEXT)"],
