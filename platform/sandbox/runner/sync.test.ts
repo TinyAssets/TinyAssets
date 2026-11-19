@@ -12,7 +12,7 @@
  *   sync-out over many paths; the matcher's, at `LIST_BYTES` of any class, within what the
  *   sandbox's heap leaves beside the agent (`sizing.ts`).
  */
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -472,6 +472,38 @@ describe("memory, whatever the tree holds", () => {
 });
 
 describe("kept files and same-size edits at sync-out", () => {
+  it.each(["bytes", "mode"] as const)("offers changed %s even with a settled timestamp", async (change) => {
+    const { place: p, local } = place();
+    const file = join(local, "script.sh");
+    const settled = 1_700_000_000;
+    writeFileSync(file, "alpha");
+    chmodSync(file, 0o644);
+    utimesSync(file, settled, settled);
+    const mirror = mirrorOf();
+    const modes: number[] = [];
+    const doors = await client((door, body) => {
+      if (door !== "commit") return { status: 404, body: {} };
+      const ops = body["ops"] as { path: string; mode: number }[];
+      for (const op of ops) {
+        if (op.path === "/workspace/script.sh") modes.push(op.mode);
+      }
+      return commitAll(body);
+    });
+    await syncOut(doors, p, mirror, LEASE, []);
+    expect(modes).toEqual([0]);
+    if (change === "mode") {
+      chmodSync(file, 0o755);
+    } else {
+      writeFileSync(file, "bravo");
+      utimesSync(file, settled, settled);
+    }
+    await syncOut(doors, p, mirror, LEASE, []);
+    expect(modes).toEqual([0, change === "mode" ? 1 : 0]);
+    await syncOut(doors, p, mirror, LEASE, []);
+    expect(modes).toHaveLength(2);
+    mirror.close();
+  });
+
   it("says a kept file whose changes a run's own line holds back", async () => {
     const { place: p, local } = place();
     mkdirSync(join(local, "src"), { recursive: true });
