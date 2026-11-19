@@ -1333,8 +1333,14 @@ describe("a restore into a live owner", () => {
     const hold = await pinnedTo(o.stub, o.name, gen.gen);
     let stub = await wipedWith(o.stub, o.name, hold.confirm!);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
-    // A failed check, as a rebuilt column gone wrong leaves it: the restore failed.
-    await sqlIn(stub, "UPDATE owner_restore SET step = 'failed', failed = 'x'");
+    // A trigger leaves a loaded notice different from the immutable generation.
+    await sqlIn(stub, "CREATE TRIGGER damage_notice AFTER INSERT ON owner_notices " +
+      "WHEN NEW.type = 'x' BEGIN UPDATE owner_notices SET detail = 'changed' " +
+      "WHERE seq = NEW.seq; END");
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({
+      step: "failed", failed: expect.stringContaining("owner_notices") });
+    expect((await failure(() => stub.admissionSet(platform(o.name), { admit: true }))).code)
+      .toBe("restoring");
     const failed = await pinOf(stub, o.name, hold.fresh!);
     expect(failed).toMatchObject({ step: "failed", written: true, confirm: hold.confirm });
     stub = await wipedWith(stub, o.name, failed.confirm!);
