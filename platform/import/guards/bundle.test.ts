@@ -502,6 +502,42 @@ describe("the bundle builder", () => {
     expect(readdirSync(out)).not.toContain(keyOf(ALICE));
   });
 
+  it.each(["UTF-16le", "UTF-16be"])("keeps the %s encoding of a filtered account store", (encoding) => {
+    const { f, out, options } = setup();
+    const path = join(f.account(ALICE), "policy.db");
+    rmSync(path);
+    const text = "\uFEFFold\0🍏";
+    const db = new DatabaseSync(path);
+    try {
+      db.exec(`PRAGMA encoding='${encoding}'`);
+      db.exec("CREATE TABLE policy (document TEXT NOT NULL); " +
+              "CREATE TABLE once_approvals (id INTEGER PRIMARY KEY)");
+      db.prepare("INSERT INTO policy VALUES (?)").run(text);
+      db.exec("INSERT INTO once_approvals VALUES (1)");
+    } finally {
+      db.close();
+    }
+    const result = buildBundles(f.copy, options);
+    expect(result.bundled).toBe(3);
+    const bundle = join(out, keyOf(ALICE));
+    const entries = manifest(bundle);
+    const archived = entries.find((e) => e.path === `${I}/.records/broker/policy.db`)!;
+    const copy = join(f.work, "test-policy-copy.db");
+    writeFileSync(copy, bytesOf(bundle, archived));
+    const kept = new DatabaseSync(copy, { readOnly: true });
+    try {
+      expect(kept.prepare("PRAGMA encoding").get()?.["encoding"]).toBe(encoding);
+      expect(kept.prepare("SELECT hex(document) AS bytes FROM policy").get()?.["bytes"])
+        .toBe(encoding === "UTF-16le" ? "FFFE6F006C00640000003CD84FDF" : "FEFF006F006C00640000D83CDF4F");
+      expect(kept.prepare("SELECT name FROM sqlite_master WHERE type='table'").all())
+        .toEqual([{ name: "policy" }]);
+    } finally {
+      kept.close();
+    }
+    expect(bytesOf(bundle, entries.find((e) => e.path === `${I}/policy.refused.json`)!))
+      .toEqual(Buffer.from(text));
+  });
+
   it("leaves out an owner rule 0 refuses, counted, while the others go on", () => {
     const { f, out, options } = setup();
     const db = new DatabaseSync(join(f.tree(BOB), ".centers.db"));

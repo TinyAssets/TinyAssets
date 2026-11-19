@@ -76,3 +76,17 @@ Occurrence in a real old volume is unknown.
   read binary values. Check source bytes before a filtered archive can
   transcode them, and the actual materialized revision before emitting rows.
   Preserve private cleanup and explicit refusal results for older runs.
+
+### Encoding of a filtered SQLite archive
+
+- [x] The earlier three-encoding checks exercised the row reader. The ordinary
+  census and builder had a separate failure when a valid UTF-16 store needed
+  a filtered archive. SQLite requires attached databases to have the same
+  text encoding. The new empty destination had defaulted to UTF-8.
+- [x] Two new ordinary tests failed for that reason on 094d29e7. The archive
+  writer now reads the source encoding through the immutable connection and
+  sets it before attaching the source. The tests passed for both byte orders,
+  including original bytes, a leading BOM, embedded NUL, non-BMP text, and
+  omission of the dropped approval table. The two lossy-value regressions
+  above still fail and are a separate open finding.
+- [ ] Verify the full importer and the archive projection integration.

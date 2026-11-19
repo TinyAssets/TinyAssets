@@ -184,6 +184,14 @@ export class Store {
 function tablesCopy(archived: Archived, to: string): void {
   const db = new DatabaseSync(to);
   try {
+    // SQLite requires attached databases to use the main database's encoding.
+    const source = openStore(archived.source);
+    try {
+      const encoding = source.prepare("PRAGMA encoding").get()!["encoding"] as string;
+      db.exec(`PRAGMA encoding = ${quoted(encoding)}`);
+    } finally {
+      source.close();
+    }
     db.prepare("ATTACH DATABASE ? AS src").run(storeUri(archived.source));
     for (const table of archived.tables) {
       const made = db.prepare("SELECT sql FROM src.sqlite_master WHERE type = 'table' AND name = ?")
