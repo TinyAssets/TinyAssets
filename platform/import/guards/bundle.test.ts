@@ -485,6 +485,23 @@ describe("the bundle builder", () => {
       .toEqual(["bundle.json", "chunks", "inline", "manifest", "owner.json", "rows"]);
   });
 
+  it.each([
+    ["binary", "X'61FF62'"],
+    ["ill-formed UTF-8", "CAST(X'61FF62' AS TEXT)"],
+  ])("holds an owner whose %s collection body cannot be carried as text", (_kind, value) => {
+    const { f, out, options } = setup();
+    const db = new DatabaseSync(join(f.account(ALICE), "conversations.db"));
+    try {
+      db.exec(`UPDATE collection_rows SET body=${value} WHERE row_id='b1'`);
+      expect(db.prepare("PRAGMA integrity_check").get()?.["integrity_check"]).toBe("ok");
+    } finally {
+      db.close();
+    }
+    const summary = buildBundles(f.copy, options);
+    expect(summary).toMatchObject({ bundled: 2, excluded: 1, refused: { bad_store: 1 } });
+    expect(readdirSync(out)).not.toContain(keyOf(ALICE));
+  });
+
   it("leaves out an owner rule 0 refuses, counted, while the others go on", () => {
     const { f, out, options } = setup();
     const db = new DatabaseSync(join(f.tree(BOB), ".centers.db"));

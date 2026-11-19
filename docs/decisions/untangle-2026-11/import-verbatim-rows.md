@@ -53,3 +53,26 @@ coordinator-controlled cutover rehearsals remain outstanding.
 - [x] The ordinary bundle regression at `a248b68e` passed on Node 22.23.5 and failed with the same fixture on main `f934871ad`. On main, SQLite contained the complete synthetic document, but the owner's readable `policy.refused.json` stopped at the first NUL. The archived SQLite copy retained the complete value. The legacy policy writer serializes JSON, which escapes embedded NULs. This check covers the existing archival promise for unrecognized stored text and establishes no frequency in real backups.
 - [x] Independently compared the SQLite source as a BLOB, the emitted database's BLOB, the readable artifact and the census disposition. Five synthetic documents ran on five source combinations on each of Node 22 and 24. On Node 22 main and the five-stage import rehearsal without this reader preserved one of five readable documents. This branch, the earlier file-index rehearsal and the six-stage rehearsal with this reader preserved all five. On Node 24 each source combination preserved all five. Every comparison retained the complete SQLite copy and correctly archived the refused document.
 - [ ] Coordinator integration must carry the shared SQLite row reader into both the separate policy census reader and bundle construction. The earlier unrecognized-policy census and current real rehearsal remain separate acceptance requirements.
+
+## Unfinished check for collection values that cannot be represented as text
+
+The original Conversations.write requires a Python string for the body.
+SQLite's declared TEXT column and integrity_check alone do not prove that
+a historical row holds valid text. This is a synthetic data-quality finding.
+Occurrence in a real old volume is unknown.
+
+- [x] On bf36bfa9 and the combined importer with c6899cdd, both Node 22 and
+  24 reported the census ready and bundled the owner. A three-byte BLOB
+  became the string "97,255,98". An ill-formed three-byte TEXT value became
+  the string "a�b". Valid text containing those literal characters produced
+  identical live rows in each pair. An embedded NUL remained intact. All five
+  source databases passed SQLite integrity_check on each runtime and tree.
+- [ ] Two ordinary bundle regressions currently fail on bf36bfa9. Both require
+  the owner with the unreadable collection value to be withheld and counted.
+  Valid comma-separated text, a real replacement character, NUL, leading BOM
+  and all supported SQLite encodings must keep their original meanings.
+- [ ] Reconcile original-store validation with the archive projection and
+  the shared SQLite reader. The latter also serves callers that legitimately
+  read binary values. Check source bytes before a filtered archive can
+  transcode them, and the actual materialized revision before emitting rows.
+  Preserve private cleanup and explicit refusal results for older runs.
