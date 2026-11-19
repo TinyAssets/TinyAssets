@@ -20,7 +20,7 @@ two files under one discarded namespace printed one object in each bucket on
   The ordinary window suite passed all 25 cases on Node 22 with the revised
   reporting and the multiple-object regression. The original report failed
   the regression.
-- [ ] Retain the bounded probes when combining with the S3 listing and close
+- [x] Retain the bounded probes when combining with the S3 listing and close
   grouping branches. The final observation still cannot fence a later writer.
 
 On 839b971e the ordinary Node 22 window suite passed all 25 cases. Seven
@@ -34,3 +34,13 @@ original Vitest expectations and cleanup under direct Node 22 and 24 execution.
 Ordinary Vitest on the combined tree exited 137, including a run filtered to
 the retained-namespace case. That runner result and the late-writer fence
 remain open.
+
+A fresh checkout with the locked dependencies combined the importer source
+and tests from this branch at 439fc49b, listing at c49f4ddf and grouping at
+a799066e. For the adjacent close loop, use the wipe branch's listing call
+and the grouping branch's per-run array update. On Node 24.22.3 the full
+ordinary importer command passed all 190 cases in nine files. The separate
+window command passed all 42, including both stopping boundaries for a
+one-key listing. TypeScript passed with the platform compiler options and
+all importer TypeScript roots. This resolves the ordinary combined-run gap.
+The last listing still cannot prevent a subsequent producer write.
