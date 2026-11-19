@@ -501,6 +501,30 @@ describe("the bundle builder", () => {
       .toEqual(["bundle.json", "chunks", "inline", "manifest", "owner.json", "rows"]);
   });
 
+  it.each([
+    ["policy.db", "policy", "document"],
+    ["conversations.db", "collection_rows", "body"],
+    ["conversations.db", "collection_rows", "seq"],
+    ["conversations.db", "collection_rows", "row_id"],
+  ])("holds only the owner missing %s %s.%s", (store, table, column) => {
+    const { f, out, priv, options } = setup();
+    const db = new DatabaseSync(join(f.account(ALICE), store));
+    try {
+      db.exec(`ALTER TABLE ${table} RENAME COLUMN ${column} TO old_column`);
+      expect(db.prepare("PRAGMA integrity_check").get()?.["integrity_check"]).toBe("ok");
+    } finally {
+      db.close();
+    }
+    expect(census(f.copy, TIERS).report["problems"]).toMatchObject({ bad_store: 1 });
+    const dry = buildBundles(f.copy, { ...options, out: null, private: null });
+    expect(dry).toMatchObject({ bundled: 2, excluded: 1, refused: { bad_store: 1 } });
+    expect(buildBundles(f.copy, options)).toMatchObject({
+      bundled: 2, excluded: 1, refused: { bad_store: 1 },
+    });
+    expect(readdirSync(out)).not.toContain(keyOf(ALICE));
+    expect(readdirSync(priv)).toContain(keyOf(FOUNDER));
+  });
+
   it("leaves out an owner rule 0 refuses, counted, while the others go on", () => {
     const { f, out, options } = setup();
     const db = new DatabaseSync(join(f.tree(BOB), ".centers.db"));

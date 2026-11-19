@@ -20,6 +20,7 @@ import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
 import { type Built, buildTree, policyDocuments, type Fit, fitOf, tierOf, UnreadablePolicy } from "./build";
+import { POLICY_ROWS } from "./rules";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
 
@@ -128,6 +129,9 @@ export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: stri
     { built: Built | null; fit: Fit | null; problems: Problem[] } {
   const first = precheck(owner, tiers)
     .filter((problem) => tiers !== null || problem.code === "over_tar_member");
+  for (const store of owner.tree.rows.unreadable) {
+    first.push({ code: "bad_store", at: `owner/${owner.key}/${store}` });
+  }
   if (first.length > 0) {
     return { built: null, fit: null, problems: first };
   }
@@ -220,6 +224,7 @@ export function census(copy: Copy, tiers: Tiers): Census {
         archivedPolicies += Number(measured.built.policyArchived);
       } else {
         // Pre-fit refusal leaves no materialized copy. The census still owes these counts.
+        if (owner.tree.rows.unreadable.includes(POLICY_ROWS.store)) continue;
         const sources = owner.tree.archived.map((archive) => ({ archive, file: archive.source }));
         documents = policyDocuments(sources, owner.tree.rows.policy);
       }

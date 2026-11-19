@@ -37,6 +37,7 @@ import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
 import { openFile, openStore, quoted, storeUri, tableRows } from "./backup";
+import { COLLECTION_ROWS, type LiveRows, POLICY_ROWS } from "./rules";
 import { type Archived, brokerRecord, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
 
@@ -74,8 +75,7 @@ interface StoreCopy {
   readonly file: string | Buffer;
 }
 
-function carriedRows(copies: readonly StoreCopy[], store: string, table: string,
-                     columns: string[], order: string[] = []): Record<string, unknown>[] {
+function carriedRows(copies: readonly StoreCopy[], { store, table, fields, order }: LiveRows): Record<string, unknown>[] {
   const source = copies.find(({ archive }) => archive.path === brokerRecord(store)
     && archive.tables.some((t) => t.table === table && t.use === "carry"));
   if (source === undefined) {
@@ -83,7 +83,7 @@ function carriedRows(copies: readonly StoreCopy[], store: string, table: string,
   }
   const db = openStore(source.file);
   try {
-    return tableRows(db, table, columns, order);
+    return tableRows(db, table, fields, order);
   } finally {
     db.close();
   }
@@ -94,7 +94,7 @@ export class UnreadablePolicy extends Error {}
 export function policyDocuments(copies: readonly StoreCopy[], expected: number): string[] {
   let documents: string[];
   try {
-    documents = carriedRows(copies, "policy.db", "policy", ["document"])
+    documents = carriedRows(copies, POLICY_ROWS)
       .map((row) => String(row["document"]));
   } catch (cause) {
     throw new UnreadablePolicy("cannot read the surveyed policy", { cause });
@@ -118,8 +118,7 @@ function rowsOf(copies: readonly StoreCopy[], documents: readonly string[]):
       refusedPolicy = text;
     }
   }
-  const collections = carriedRows(copies, "conversations.db", "collection_rows",
-    ["collection", "row_id", "private", "body"], ["collection", "seq"])
+  const collections = carriedRows(copies, COLLECTION_ROWS)
     .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
                           row_id: String(row["row_id"]), private: Number(row["private"]) ? 1 : 0,
                           body: String(row["body"]) }));

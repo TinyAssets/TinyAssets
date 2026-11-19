@@ -216,17 +216,33 @@ const BROKER_STATE: Level = level([
   ["ops.db", store("drop", RUNTIME)],
 ], named("fence.json architecture-signing.json", drop(RUNTIME)));
 
+/** Columns the old account stores project as live import rows, including their read order. */
+export interface LiveRows {
+  readonly store: string;
+  readonly table: string;
+  readonly fields: readonly string[];
+  readonly order: readonly string[];
+}
+
+export const POLICY_ROWS: LiveRows = {
+  store: "policy.db", table: "policy", fields: ["document"], order: [],
+};
+export const COLLECTION_ROWS: LiveRows = {
+  store: "conversations.db", table: "collection_rows",
+  fields: ["collection", "row_id", "private", "body"], order: ["collection", "seq"],
+};
+
 /** One owner's own broker stores (`.broker/accounts/<sha256(principal)>/`). */
 export const ACCOUNT: Level = level([
-  ["policy.db", store(uses({
-    carry: "policy", archive: "receipts proposals", drop: "once_approvals spend_reservations",
+  [POLICY_ROWS.store, store(uses({
+    carry: POLICY_ROWS.table, archive: "receipts proposals", drop: "once_approvals spend_reservations",
   }), "the policy document carries (the new validator decides); its receipts and proposals " +
       "are audit history; one-time approvals expire in minutes and the spend windows start " +
       "fresh")],
   ["message_ledger.db", store("archive", "mail to outside agents whose grants do not carry " +
                               "(ADR-036), kept as the owner's record")],
-  ["conversations.db", store(uses({
-    carry: "collection_rows", archive: "message_bodies", drop: "collection_seqs",
+  [COLLECTION_ROWS.store, store(uses({
+    carry: COLLECTION_ROWS.table, archive: "message_bodies", drop: "collection_seqs",
   }), "collections carry through the object's write path, their old writers and times in " +
       "the archive; the high-water seq is the new object's own")],
   ["credentials", drop(CREDENTIALS)],

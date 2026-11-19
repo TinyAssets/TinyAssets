@@ -25,7 +25,7 @@ import {
   type ErasureFacts, erasureFacts, imageTombstones, names, withImageFacts,
 } from "./erasure";
 import {
-  ACCOUNT, ACCOUNT_NAME, CENTER, CENTER_NAME, type EntryRule, type Level, ROOT, ruleOf,
+  ACCOUNT, ACCOUNT_NAME, CENTER, CENTER_NAME, COLLECTION_ROWS, type EntryRule, type Level, POLICY_ROWS, ROOT, ruleOf,
   SESSIONS, SHARED, SIDECAR, type StoreRule, tableUse, type Use,
 } from "./rules";
 
@@ -108,7 +108,7 @@ export interface Tree {
   hardlinks: number;
   sqliteInUser: number;
   /** The rows that carry live: the policy document, and the collections' rows and bodies. */
-  rows: { policy: number; collection: number; body_bytes: number };
+  rows: { policy: number; collection: number; body_bytes: number; unreadable: string[] };
 }
 
 export interface Admission {
@@ -209,7 +209,7 @@ export function hidden(name: Buffer | string): string {
 export function newTree(): Tree {
   return { carried: [], links: [], refused: [], archived: [], stores: [], problems: [],
            ignoredTrees: [], ignored: 0, specials: 0, hardlinks: 0, sqliteInUser: 0,
-           rows: { policy: 0, collection: 0, body_bytes: 0 } };
+           rows: { policy: 0, collection: 0, body_bytes: 0, unreadable: [] } };
 }
 
 function entriesOf(dir: Buffer): Buffer[] {
@@ -723,21 +723,26 @@ function surveyAccount(owner: Owner, dir: string): void {
   visitLevel(Buffer.from(dir), ACCOUNT, "account", {
     store: (name, path, rule, tables) => {
       archive(tree, brokerRecord(name), path, rule, tables);
-      const has = (table: string) => tables.some((t) => t.table === table);
-      if (name === "policy.db" && has("policy")) {
-        tree.rows.policy = tables.find((t) => t.table === "policy")!.rows;
-      }
-      if (name === "conversations.db" && has("collection_rows")) {
-        const db = openStore(path);
-        try {
-          const row = db.prepare("SELECT COUNT(*) AS n, " +
-                                 "COALESCE(SUM(length(CAST(body AS BLOB))), 0) AS bytes " +
-                                 "FROM collection_rows").get()!;
-          tree.rows.collection = Number(row["n"]);
-          tree.rows.body_bytes = Number(row["bytes"]);
-        } finally {
-          db.close();
+      const live = [POLICY_ROWS, COLLECTION_ROWS].find((source) => source.store === name);
+      const counted = tables.find((t) => t.table === live?.table && t.use === "carry");
+      if (live === undefined || counted === undefined) return;
+      if (live === POLICY_ROWS) tree.rows.policy = counted.rows;
+      else tree.rows.collection = counted.rows;
+      const db = openStore(path);
+      try {
+        const from = quoted(live.table);
+        const fields = db.prepare(`SELECT * FROM ${from} LIMIT 0`).columns()
+          .map((column) => column.name.toLowerCase());
+        if (![...live.fields, ...live.order].every((column) => fields.includes(column))) {
+          tree.rows.unreadable.push(name);
         }
+        if (live === COLLECTION_ROWS && fields.includes("body")) {
+          const row = db.prepare("SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) AS bytes " +
+                                 `FROM ${from}`).get()!;
+          tree.rows.body_bytes = Number(row["bytes"]);
+        }
+      } finally {
+        db.close();
       }
     },
   }, tree.problems, tree.stores);

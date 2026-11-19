@@ -53,7 +53,7 @@ the archived database in both directions on both runtimes.
 - [x] The previous policy revision failed the permanent writer regression. The
   corrected tree passed all 72 bundle and census cases, then a new census
   regression passed separately after a document changed during the build.
-- [ ] Verify the complete importer, platform types, and the joint rehearsal on
+- [x] Verify the complete importer, platform types, and the joint rehearsal on
   the published source. Representative data and the founder's mapping remain open.
 
 On 5b05e6bf all 172 ordinary Node 22 importer cases and the full Node 24
@@ -66,3 +66,20 @@ passed all 216 importer cases, 25 Owner import Workerd cases on Node 22,
 and the full platform typecheck on Node 24. Preserve the existing short-read
 helper at integration and the F1 precheck when reconciling the census imports.
 The next F1 change addresses a separate stale collection byte measurement.
+
+## Missing columns in an otherwise readable account database
+
+- [x] On 01d33a71 four ordinary regressions failed. SQLite integrity passed,
+  but a missing policy document, collection body, sequence or row identifier
+  stopped the dry or writing builder. The combined importer also stopped the
+  census for a missing collection body or identifier on both Node 22 and 24.
+  This used altered synthetic databases. The original Python stores declare
+  these fields. Their absence in a real backup has not been established.
+- [x] The survey and the builder now use the same projected and ordering
+  columns. An owner with a known missing column is counted as bad_store.
+  Other owners proceed. The size check can still report an oversized file
+  for the same owner. The four ordinary owner cases and existing combined
+  size and unreadable policy regression passed on Node 24.
+- [ ] Verify the full importer, typecheck, private exclusions and the combined
+  archive, folder, size and deletion stages. A database that changes during
+  the build still needs a fresh frozen copy.
