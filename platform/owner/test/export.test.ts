@@ -23,13 +23,14 @@ import {
   BURST_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots, SHIP_UNITS,
 } from "../src/holds";
 import {
-  decodeCursor, encodeLines, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, exported, NOT_EXPORTED,
+  decodeCursor, encodeLines, EXPORT_LIFE_S, EXPORT_PAGE_BYTES, EXPORTS_OPEN, exported, NOT_EXPORTED,
   readPage,
 } from "../src/export";
 import type { ChunkStore } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
+import { OpenExports } from "../src/open-exports";
 import { MIGRATIONS } from "../src/schema";
 import {
   type At, BURST, digest, exportFrom, generate, type Line, objectsOf, type Owner, owner, PAGE,
@@ -228,6 +229,42 @@ describe("the owner export", () => {
         .map((row) => row["name"] as string).sort();
       expect([...columns, ...Object.keys(omitted ?? {})].sort()).toEqual(held);
     }
+  });
+
+  it("keeps the oldest reader when its replacement fails to open", async () => {
+    const o = await owner();
+    const old = await exportFrom(o, null);
+    const resume = { export_id: old.exportId, cursor: old.cursors[0]! };
+    const before = await o.stub.ownerExport(o.session(), resume);
+    // The other readers opened later and pin the same generation.
+    await sqlIn(o.stub, "UPDATE owner_exports SET opened_at = opened_at - ?", EXPORTS_OPEN);
+    await sqlIn(o.stub, "WITH RECURSIVE readers(i) AS (VALUES(1) UNION ALL " +
+                         "SELECT i + 1 FROM readers WHERE i + 1 < ?) INSERT INTO owner_exports " +
+                         "SELECT printf('%032x', i), opened_at + i, ends_at, gen " +
+                         "FROM readers, owner_exports WHERE export_id = ?", EXPORTS_OPEN,
+                old.exportId);
+    const binding = o.session();
+    const error = await runInDurableObject(o.stub, async (instance: OwnerDO) => {
+      const open = OpenExports.prototype.open;
+      const stopped = vi.spyOn(OpenExports.prototype, "open").mockImplementationOnce(
+        function (this: OpenExports, now, gen) {
+          open.call(this, now, gen);
+          throw new Error("export open interrupted");
+        });
+      try {
+        return (await failure(() => instance.ownerExport(binding, { cursor: null }))).message;
+      } finally {
+        stopped.mockRestore();
+      }
+    });
+    expect(error).toBe("export open interrupted");
+    expect(await o.stub.ownerExport(o.session(), resume)).toEqual(before);
+
+    await o.stub.ownerExport(o.session(), { cursor: null });
+    expect((await failure(() => o.stub.ownerExport(o.session(), resume))).message)
+      .toBe("this export is not open: begin it again");
+    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM owner_exports"))
+      .toEqual([{ n: EXPORTS_OPEN }]);
   });
 
   it("reads one generation from two exports at once, one joining it while it runs",

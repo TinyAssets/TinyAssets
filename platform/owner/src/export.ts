@@ -74,7 +74,7 @@ import { HEX16 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
 import { CURSOR_CHARS } from "../../contract/src/limits";
 import type { Backups } from "./backup";
-import type { Call, Door, DoorUnits } from "./door";
+import type { Call, Door, DoorUnits, ObjectReads } from "./door";
 import type { OwnerEnv } from "./env";
 import type { Files } from "./files";
 import type { OpenExports } from "./open-exports";
@@ -484,7 +484,8 @@ export function endLine(at: number, seq: number): string {
  * What the `export` doors reach: the exports open, the generations they read, the files
  * plane's chunks and the bucket's manifests.
  */
-export interface ExportDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sync"> {
+export interface ExportDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "sync">,
+                                         Pick<ObjectReads, "storage"> {
   readonly env: Pick<OwnerEnv, "FILES">;
   readonly openExports: Pick<OpenExports, "open" | "named" | "end">;
   readonly backups: Pick<Backups, "forExport" | "finished" | "object">;
@@ -509,7 +510,9 @@ export const exportDoors = Object.freeze({
       door.check();
       const now = clock();
       const first = door.request.cursor === null || door.request.cursor === undefined;
-      const open = first ? o.openExports.open(now, o.backups.forExport(now))
+      // The reader that pins the generation and the reader it replaces commit together.
+      const open = first
+        ? o.storage.transactionSync(() => o.openExports.open(now, o.backups.forExport(now)))
         : o.openExports.named(door.request.export_id, now);
       const at = first ? { gen: open.gen, index: 0 } : decodeExportCursor(door.request.cursor);
       if (at.gen !== open.gen) {
