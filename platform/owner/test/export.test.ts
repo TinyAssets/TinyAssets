@@ -560,10 +560,14 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
   });
 });
 
-/** A generation finished long ago, so tonight's is due now. */
-const LAST_YEARS = "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
-  "bytes, s, schema, started_at, finished_at) VALUES ('ffffffffffffffff', '20200101', 'done', " +
-  "NULL, 0, '', 0, 1, 1, 1, 1)";
+/** A finished generation whose recorded start and cadence both predate tonight. */
+async function lastYears(o: Owner): Promise<void> {
+  const started = Date.UTC(2020, 0, 1) / 1000;
+  await sqlIn(o.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
+    "bytes, s, schema, started_at, finished_at) VALUES ('ffffffffffffffff', '20200101', " +
+    "'done', NULL, 0, '', 0, 1, 1, ?, ?)", started, started);
+  await sqlIn(o.stub, "UPDATE owner_backup_state SET began_at = ?", started);
+}
 
 /** A file written, then removed with its history: its chunk is garbage, in its grace. */
 async function writeThenDelete(o: Owner, path: string, seed: number): Promise<string> {
@@ -684,7 +688,7 @@ describe("the nightly manifest", () => {
 
   it("reports a failed pass when no generation can keep its retry time", async () => {
     const o = await owner();
-    await sqlIn(o.stub, LAST_YEARS);
+    await lastYears(o);
     await sqlIn(o.stub, "UPDATE owner_backups SET changed_at = ?", clock());
     const result = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const { backups } = storesOn(state);
@@ -714,7 +718,7 @@ describe("the nightly manifest", () => {
     expect(await laneAt(o.stub, "manifest")).toBe(tomorrow + spread(o.name));
     expect(await laneAt(o.stub, "manifest")).toBeGreaterThan(at);
     // Last night's was written long ago: tonight's is due now.
-    await sqlIn(o.stub, LAST_YEARS);
+    await lastYears(o);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });  // re-derives jobs
     await drainDue(o.stub);
     const rows = await sqlIn(o.stub, "SELECT gen, state FROM owner_backups");
@@ -760,7 +764,7 @@ describe("the nightly manifest", () => {
      "(review L7)", async () => {
     const o = await owner();
     await write(o, `${W}/k.bin`, filled(INLINE_BYTES + 10, 9));
-    await sqlIn(o.stub, LAST_YEARS);
+    await lastYears(o);
     // A generation under way with every part but none used already.
     const gen = "abcdefabcdefabcd";
     await sqlIn(o.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
@@ -789,7 +793,7 @@ describe("the nightly manifest", () => {
     const o = await owner();
     await olderKey(o);
     await write(o, `${W}/kept.bin`, filled(INLINE_BYTES + 10, 12));
-    await sqlIn(o.stub, LAST_YEARS);
+    await lastYears(o);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
     await drainDue(o.stub);
     const [{ gen }] = await sqlIn(o.stub, "SELECT gen FROM owner_backups") as [{ gen: string }];
@@ -816,7 +820,7 @@ describe("the nightly manifest", () => {
     const ns = await olderKey(o);
     const body = filled(INLINE_BYTES + 10, 11);
     await write(o, `${W}/kept.bin`, body);
-    await sqlIn(o.stub, LAST_YEARS);
+    await lastYears(o);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
     await drainDue(o.stub);
     const [{ gen }] = await sqlIn(o.stub, "SELECT gen FROM owner_backups") as [{ gen: string }];
@@ -842,7 +846,7 @@ describe("the nightly manifest", () => {
   it("is deleted with every copy of the owner's key when the owner is erased", async () => {
     const o = await owner();
     await write(o, `${W}/gone.bin`, filled(INLINE_BYTES + 10, 6));
-    await sqlIn(o.stub, LAST_YEARS);
+    await lastYears(o);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
     await drainDue(o.stub);
     const [{ gen }] = await sqlIn(o.stub, "SELECT gen FROM owner_backups") as [{ gen: string }];
