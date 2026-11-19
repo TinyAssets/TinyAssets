@@ -9,7 +9,7 @@ export function clock(): number {
 
 /**
  * The same now in whole milliseconds, for what keeps or compares milliseconds: Lifecycle's job
- * times, a manifest root's `at`, a credential's lease, a pass's `until`. Never `clock() * 1000`,
+ * times, a manifest root's `at`, a credential's lease, the code-mode timeout. Never `clock() * 1000`,
  * which past 2³¹ seconds (2038) is often not the whole number it was.
  */
 export function clockMs(): number {

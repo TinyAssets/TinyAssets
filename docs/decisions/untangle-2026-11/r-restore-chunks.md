@@ -29,7 +29,7 @@ A restore leaves unnamed the chunks the owner put after E. They have no row in t
      - A lost delete answer lists the same page again, finds those names gone, and moves on, so no name is asked to be deleted twice.
    - **What bounds a whole sweep's time.**
      - Its piece count: ⌈rows / 10,000⌉ for `names` (at most 122), plus ⌈listed / 1,000⌉ for `sweep`. Listed is the namespace's chunk objects: the rows' own, plus those put after E.
-     - Each piece is a bounded unit inside one `restore.step` call's `RESTORE_PASS_MS`. The kit asks again until `done`, and the record resumes a run cut off anywhere.
+     - Each piece is a bounded unit inside one `restore.step` call's `RESTORE_PASS_S`. The kit asks again until `done`, and the record resumes a run cut off anywhere.
      - The `chunks` step before it reads every chunk back, 64 a unit, and dominates the restore's time. No watchdog or budget comes near.
    - **`clear`** deletes the staged rows, `SLICE_ROWS` a unit, then the filter, then finishes. It reads the generation's root once, at the end, where it used to read it at every slice.
 5. **The files Worker's RPCs** (`files/src/index.ts`, `contract/src/files.ts` `ChunkStore`).

@@ -36,7 +36,7 @@ import {
 } from "./generation-support";
 import { MUSE, registerOn, signedIn } from "./ledger-support";
 import {
-  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
+  clockAt, drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
 } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -1283,6 +1283,23 @@ describe("a restore into a live owner", () => {
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: hold.fresh! });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: hold.fresh });
     expect(await rowsOf(stub, FENCED)).toBe(present);
+  });
+
+  it("returns a pending pin when a manifest part reaches the pass deadline", async () => {
+    const { o, gen, ns } = await source();
+    const files = gateFor(env.FILES_GATE, ns);
+    const start = Date.now() / 1000;
+    clockAt(start);
+    await files.arm("putManifestPart", { hold: "before" });
+    const running = pinOf(o.stub, o.name, gen.gen);
+    await files.held("putManifestPart");
+    clockAt(start + 30);
+    await files.release("putManifestPart");
+    const pending = await running;
+    expect(pending).toMatchObject({ step: "pinned", written: false, confirm: null });
+    expect(pending.fresh).not.toBeNull();
+    const done = await pinnedTo(o.stub, o.name, gen.gen);
+    expect(done).toMatchObject({ fresh: pending.fresh, written: true });
   });
 
   it("holds the owner through a pin cut short, refuses the wipe until its state is " +

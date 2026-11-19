@@ -21,9 +21,16 @@ R5w is lane R's `restore.wipe`, the step restore owes before anything live can b
 
    In the same unit, every run and stream is ended, as a suspension's prompt stop ends them. The sockets are then closed with the relay's `lost` kind, whose reconnect `restoring` refuses; a close kind of its own is a contract change for the apps, owed (`untangle/r-restore-close`). The hold is not a suspension: a suspension's reason would be written into the fresh generation, and the owner would be told "abuse" or "billing".
 6. **The present state is written first (Fact 13).** After the hold, the pin begins a fresh generation (`Backups.begin`), whatever the owner's change mark says: it must begin after the hold. A generation already under way began before the hold, so it is carried to its end first, and then a new one is begun.
-   - The pin drives the manifest lane's pass itself, at most `RESTORE_PASS_MS` a call, as `restoreStep` drives the load. While the record stands, no lane runs.
+   - The pin drives the manifest lane's pass itself, at most `RESTORE_PASS_S` a call, as `restoreStep` drives the load. While the record stands, no lane runs.
    - `Backups.run` now takes one pass at a time: a second pass asked meanwhile joins the first.
    - The kit asks the pin again until the generation is written.
+
+   **November 18 re-review.** O4b (#5626) moved manifest pass deadlines to seconds. The pin still supplied epoch milliseconds on `f934871ad`. On `0145337d2` the pin and restore step use the same 30-second budget. In the public Worker case a part completed at the deadline, the pin returned pending, and the next call finished the same fresh generation. Main began the root write in that first call.
+
+   **Open overlap decision.** An already-running scheduled pass has a 45-second budget. On both commits a local SQLite replay parked that pass on a part and asked for a pin at the same clock time. When the part completed 40 seconds later, the scheduled pass began its root, and the pin then returned pending. Decide whether an overlapping pin should return pending by its own 30-second deadline or keep waiting for the joined pass. Preserve the single writer, error delivery to the owner of the pass, and safe retry of the same hold. This is separate from the cutoff for a new piece of work in a pass the pin starts.
+
+   **Open retry decision.** If a manifest part cannot be stored, the generation records a five-minute retry. On main, `0145337d2` and the joined recovery rehearsal `f1a171c85`, a synthetic first part failed. A second pin at the same clock time wrote the part and root for the same fresh generation. The kit asks again after a pending answer. The same retry field also describes ordinary unfinished work and pool contention. Decide which of those waits a direct pin must honor and when the kit should ask again. The owner and kit need the same time for each applicable wait before changing either behavior.
+
 7. **Pinning.** The record's generation is the pin (`pinned()`).
    - The manifest lane's prune skips it (`Backups`' `pinned` part, `#prunable`, beside the fallback).
    - The pin survives the wipe: the wipe writes the record again, at `wiped`, in the same unit that remakes the schema.

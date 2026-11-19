@@ -596,7 +596,7 @@ export class Backups {
 
   /**
    * One pass: the rows of generations no longer kept deleted and any sweep owed made, then the
-   * one due begun or carried on, until the wall clock reaches `until` (ms). One it did not
+   * one due begun or carried on, until the wall clock reaches `until` (seconds). One it did not
    * finish goes on `MANIFEST_CONTINUE_S` later; an R2 call that fails backs the lane off in its
    * row (`MANIFEST_RETRY_S`); the pass itself completes. One at a time: a pass asked while one
    * runs (the lane's, or a restore's pin carrying its fresh generation) joins it.

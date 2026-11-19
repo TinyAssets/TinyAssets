@@ -79,7 +79,7 @@
  *   `pinned` step: every door but the restore's refused, every run and stream ended, no lane
  *   run), and then a fresh generation of its present state written (`fresh`), begun after
  *   the hold, so nothing the owner wrote is lost unwritten (Fact 13). Asked again until it is
- *   written, each call carrying the generation on for at most `RESTORE_PASS_MS`; its answer
+ *   written, each call carrying the generation on for at most `RESTORE_PASS_S`; its answer
  *   then names the words that confirm the wipe, `wipe-<owner>-<fresh>`.
  * - `restoreWipe {confirm}`: in one unit, every table the schema made dropped and the schema
  *   migrated afresh (`remigrate`), as a new object's start makes it, and the record written
@@ -252,7 +252,7 @@ type Step = "pinned" | "wiped" | "index" | "log" | "apply" | "check" | "chunks" 
   | "sweep" | "clear" | "done" | "failed";
 
 /** How long one `restoreStep` call takes new work: its answer is well inside the kit's wait. */
-const RESTORE_PASS_MS = 30_000;
+const RESTORE_PASS_S = 30;
 /** Logged rows one apply, check or clear unit takes (a base part's are one unit's). */
 const SLICE_ROWS = 500;
 /** Chunks one check unit reads back. */
@@ -1172,12 +1172,12 @@ export const restoreDoors = Object.freeze({
     return { namespace: await o.files.holdNamespace(ns), held: ns };
   },
   /**
-   * The restore carried on, a piece at a time, for at most `RESTORE_PASS_MS`; how far it is.
+   * The restore carried on, a piece at a time, for at most `RESTORE_PASS_S`; how far it is.
    * Refused while none was begun; a failed one answers its failure.
    */
   async restoreStep(o: RestoreDoorNeeds, door: Door<undefined>): Promise<RestoreAnswer> {
     await o.door(() => door.check());
-    const until = clock() + RESTORE_PASS_MS / 1000;
+    const until = clock() + RESTORE_PASS_S;
     const source: Bucket = o.env.FILES;
     while (await piece(o, door, source) && clock() < until) {
       // the next piece
@@ -1188,7 +1188,7 @@ export const restoreDoors = Object.freeze({
   /**
    * Generation `gen` of `namespace` pinned on this live owner, the owner held, and its present
    * state written as a fresh generation: the first call pins and holds, every call carries the
-   * fresh generation on for at most `RESTORE_PASS_MS` until it is written; its answer then names
+   * fresh generation on for at most `RESTORE_PASS_S` until it is written; its answer then names
    * the words that confirm the wipe. The generation is one of its own namespace's finished,
    * restorable ones, or one of another namespace that names this owner and that its own then
    * holds, so its erasure takes it from the pin on (`r8-lost-object.md`). A record past the pin,
@@ -1245,7 +1245,8 @@ export const restoreDoors = Object.freeze({
       }
     });
     if (!await o.door(() => holdOf(o, record(o.storage.sql)!).written)) {
-      await o.backups.run(clock(), clock() * 1000 + RESTORE_PASS_MS);
+      const now = clock();
+      await o.backups.run(now, now + RESTORE_PASS_S);
     }
     return o.door(() => {
       door.check();
