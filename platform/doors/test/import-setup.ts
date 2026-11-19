@@ -4,7 +4,7 @@
  * (`import/guards/fixture.ts`), and one live owner's bundle handed to the workerd tests whole,
  * each file's bytes by its name in the bundle. Deleted at the cutover with the importer.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,6 +34,8 @@ export default function setup(project: TestProject): void {
   const out = mkdtempSync(join(tmpdir(), "ta-doors-bundles-"));
   const priv = mkdtempSync(join(tmpdir(), "ta-doors-private-"));
   try {
+    const archived = new Date(-1250);
+    utimesSync(join(made.tree(ALICE), "novel", "workspace", "run.sh"), archived, archived);
     buildBundles(made.copy, { out, private: priv, exclude: new Set([FOUNDER]), tiers: TIERS });
     const key = keyOf(ALICE);
     const staged = checkedBundle(join(out, key), key);

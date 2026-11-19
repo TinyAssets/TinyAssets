@@ -1,8 +1,8 @@
 # Historical file modification times during import
 
 The survey reads the filesystem modification time and the builder writes its
-whole milliseconds into each ordinary file entry. Open the signed bundle
-through Doors and the same input can be lost for the entire owner. In a
+whole milliseconds into each ordinary file entry. Opening that signed bundle
+through Doors on main can drop the entire owner delivery. In a
 synthetic old-stack backup on main f934871ad, setting the fixture's existing
 executable to -1250 ms was enough. The unmodified build and stage produced a
 bundle and the queue acknowledged the delivery after reporting that the file
@@ -20,14 +20,21 @@ nine expected chunk keys.
   timestamp. The ordinary owner test specifically requires -1 to be invalid.
   SQLite stores the value as an integer, export includes it, the import check
   compares exact milliseconds, and the file reader renders it as an ISO date.
-- [ ] Resolve the supported timestamp range across these callers. Preserving
-  historical files in their original folders requires signed milliseconds
-  that the date renderer can represent. Keeping the existing rejection
-  requires the census and builder to identify an affected owner before
-  staging, with an agreed lossless disposition for that file. Until that
-  decision, a successful host rehearsal alone cannot establish importability.
-  Recheck both inline and chunked files, the check operation and the public
-  file reader on the chosen contract. This investigation changes no runtime.
+- [x] Merged [slice 5](https://github.com/TinyAssets/TinyAssets/pull/5477)
+  settled the disposition after [slice 4](https://github.com/TinyAssets/TinyAssets/pull/5475)
+  left the modification time outstanding. The import keeps each file's own
+  milliseconds in its existing folder and compares them during importCheck.
+  A test's blanket rejection of -1 was inconsistent with that requirement.
+- [x] Doors, owner import and the optional timestamp on file writes now share
+  one range check. Signed whole milliseconds within the ECMAScript Date
+  range can be rendered by fileFetch. Fractional or out-of-range dates are
+  refused. A missing optional time still uses the write's clock. No schema
+  or bundle format change is needed.
+- [ ] Verify the ordinary historical host, signed Doors delivery, owner inline
+  and chunked readback, public ISO timestamp, importer checks and full
+  platform typecheck. At the source checkpoint the host's 23 ordinary
+  bundle tests had passed on Node 22. Other results are pending. Repeat the
+  checks together with staged consumers and after coordinator integration.
 
 The separate archive writer preserves historical times in ignored or refused
 trees at whole-second tar precision on 8535a52d. Ordinary file entries use

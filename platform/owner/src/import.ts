@@ -52,7 +52,7 @@
  * file keeps its mtime from the old stack (`mtime_ms`, the files plane's own column).
  */
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
-import { keyed, object } from "../../contract/src/checks";
+import { fileMtime, keyed, object } from "../../contract/src/checks";
 import { HEX32, HEX64 } from "../../contract/src/ids";
 import {
   bodyId, CHECK_CHUNKS, CHECK_FILES, CHECK_PARTS, CHECK_ROWS, type CheckChunk, type CheckEntry,
@@ -180,7 +180,7 @@ function modeOf(value: unknown): 0 | 1 {
 
 /** A file's mtime from the old stack: a whole number of milliseconds. */
 function mtimeOf(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+  if (!fileMtime(value)) {
     throw invalid("an mtime is a whole number of milliseconds");
   }
   return value;

@@ -82,6 +82,7 @@
 import { AUTHORITY, HEX32, HEX64, randomHex } from "../../contract/src/ids";
 import type { RewrapAnswer, SyncOp } from "../../contract/src/owner";
 
+import { fileMtime } from "../../contract/src/checks";
 import { chunkedId, chunkPlan, cut, inlineId } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import { blobMax, KEY_BYTES, parseBlob } from "../../contract/src/envelope";
@@ -598,7 +599,7 @@ function mtimeOf(value: unknown): number | null {
   if (value === undefined) {
     return null;
   }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+  if (!fileMtime(value)) {
     throw new Refusal("invalid", "a file's mtime is a whole number of milliseconds");
   }
   return value;

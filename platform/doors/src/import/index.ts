@@ -57,7 +57,7 @@
  * object is read only when the bucket says it is at most `IMPORT_HOLD_BYTES` (one chunk, as
  * the upload door holds one), so at most one is in hand at once.
  */
-import { object } from "../../../contract/src/checks";
+import { fileMtime, object } from "../../../contract/src/checks";
 import { chunkedId, inlineId } from "../../../contract/src/content";
 import { readControl, tiersOf } from "../../../contract/src/control";
 import { sha256Hex } from "../../../contract/src/digest";
@@ -192,8 +192,7 @@ function entryOf(value: unknown): Entry {
   if (value["kind"] === "file" && (typeof value["size"] !== "number"
       || !Number.isSafeInteger(value["size"]) || value["size"] < 0
       || (value["mode"] !== 0 && value["mode"] !== 1) || typeof value["content_id"] !== "string"
-      || typeof value["mtime_ms"] !== "number" || !Number.isSafeInteger(value["mtime_ms"])
-      || value["mtime_ms"] < 0)) {
+      || !fileMtime(value["mtime_ms"]))) {
     throw new Refusal("invalid", "a bundle's file entry is out of shape");
   }
   return value as unknown as Entry;

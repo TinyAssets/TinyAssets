@@ -68,7 +68,7 @@ function chunked(path: string, bytes: Uint8Array, mode: 0 | 1 = 0) {
 }
 
 /** A chunked file through the import's upload: begun, its chunks put to `FILES`, committed. */
-async function upload(stub: Stub, owner: string, path: string, bytes: Uint8Array) {
+async function upload(stub: Stub, owner: string, path: string, bytes: Uint8Array, mtime = MTIME) {
   const { request, pieces } = chunked(path, bytes);
   const begun = await stub.importFileBegin(importing(owner), request);
   if (begun.skipped) {
@@ -83,7 +83,7 @@ async function upload(stub: Stub, owner: string, path: string, bytes: Uint8Array
   return stub.importFileCommit(importing(owner), { intent_id: begun.intent_id, path,
                                                    mode: request.mode,
                                                    content_id: request.content_id,
-                                                   mtime_ms: MTIME });
+                                                   mtime_ms: mtime });
 }
 
 const big = () => new Uint8Array(CHUNK_BYTES + 99).map((_b, i) => (i * 13 + 1) % 251);
@@ -339,16 +339,21 @@ describe("the import's bounds", () => {
 describe("the import's mtime", () => {
   it("keeps each file's mtime from the old stack, inline and chunked", async () => {
     const { stub, owner } = pending();
+    const historical = -1250;
     await stub.importFiles(importing(owner), { entries: [{ kind: "dir", path: I },
-                                                         inline(`${I}/a.md`, "alpha")] });
-    await upload(stub, owner, `${I}/big.bin`, big());
-    expect((await failure(() => stub.importFiles(importing(owner), {
-      entries: [{ ...inline(`${I}/b.md`, "beta"), mtime_ms: -1 }] }))).code).toBe("invalid");
+      { ...inline(`${I}/a.md`, "alpha"), mtime_ms: historical }] });
+    await upload(stub, owner, `${I}/big.bin`, big(), historical);
+    for (const invalid of [-1.5, Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER]) {
+      expect((await failure(() => stub.importFiles(importing(owner), {
+        entries: [{ ...inline(`${I}/b.md`, "beta"), mtime_ms: invalid }] }))).code).toBe("invalid");
+    }
     await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
     for (const path of [`${I}/a.md`, `${I}/big.bin`]) {
       const stat = await stub.fileStat(own(owner), { path });
-      expect([path, stat.entry?.mtime_ms]).toEqual([path, MTIME]);
+      expect([path, stat.entry?.mtime_ms]).toEqual([path, historical]);
     }
+    const fetched = await stub.fileFetch(own(owner), { id: `${I}/a.md` });
+    expect(fetched.metadata.modified).toBe("1969-12-31T23:59:58.750Z");
   });
 });
 

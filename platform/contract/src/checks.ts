@@ -56,6 +56,12 @@ export function whole(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER
     && value <= max;
 }
 
+/** Whole Unix milliseconds representable by the file reader's ECMAScript Date. */
+export function fileMtime(value: unknown): value is number {
+  const dateLimitMs = 8_640_000_000_000_000;
+  return whole(value, -dateLimitMs, dateLimitMs);
+}
+
 /** The value at `path` in `body`, or undefined. */
 export function valueAtPath(body: unknown, path: readonly string[]): unknown {
   return path.reduce<unknown>((at, key) => (object(at) ? at[key] : undefined), body);
