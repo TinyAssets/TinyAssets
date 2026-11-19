@@ -47,3 +47,8 @@ No starter content or version changes in this branch.
   versions follow starter versions. It does not specify when a listing-only
   edit requires a new starter version. Doors onboarding is a separate generated
   consumer. Confirm the directory policy before extending the check.
+- [x] The separate OKF size case passed on the tree staged at `368ab37a`
+  (one passed, eleven outside the selection). Its first run stopped when the
+  sandbox binding types were missing from a temporary generator output. A
+  serial two-CPU retry with the repository workflow present ran the ordinary
+  watcher apply and full regeneration to completion.
