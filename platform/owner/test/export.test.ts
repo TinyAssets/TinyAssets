@@ -29,6 +29,7 @@ import {
 import type { ChunkStore } from "../../contract/src/files";
 import { CHUNK_GONE, type Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
+import { ChangeLog } from "../src/changelog";
 import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import {
@@ -124,6 +125,38 @@ const busy = (count: number) => async ({ files, gate, n }: { files: Files; gate:
 };
 
 describe("the owner export", () => {
+  it("retries opening an export without a stray capture after its capture is interrupted", async () => {
+    const o = await owner();
+    const state = () => sqlIn(o.stub, "SELECT began_at, gen, capturing FROM owner_backup_state " +
+                                      "CROSS JOIN log_capture");
+    const before = await state();
+    const session = o.session();
+    const error = await runInDurableObject(o.stub, async (instance: OwnerDO) => {
+      const begin = ChangeLog.prototype.begin;
+      const capture = vi.spyOn(ChangeLog.prototype, "begin").mockImplementationOnce(function (
+        this: ChangeLog, gen: string,
+      ) {
+        begin.call(this, gen);
+        throw new Error("generation interrupted");
+      });
+      try {
+        return await instance.ownerExport(session, { cursor: null })
+          .then(() => null, (err: unknown) => String(err));
+      } finally {
+        capture.mockRestore();
+      }
+    });
+    expect(error).toContain("generation interrupted");
+    expect(await state()).toEqual(before);
+    expect(await sqlIn(o.stub, "SELECT gen FROM owner_backups")).toEqual([]);
+
+    const page = await o.stub.ownerExport(session, { cursor: null });
+    expect(page.export_id).toBeTruthy();
+    expect(await sqlIn(o.stub, "SELECT b.gen = c.gen AS attached FROM owner_backups b " +
+                              "CROSS JOIN log_capture c WHERE b.state = 'writing'"))
+      .toEqual([{ attached: 1 }]);
+  });
+
   it("lists every exported table's rows and every chunk, whose bytes round-trip", async () => {
     const o = await owner();
     // A policy written in the owner's session first: its receipt names that session.

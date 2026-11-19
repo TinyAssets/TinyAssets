@@ -1,0 +1,5 @@
+# Opening an owner backup
+
+Every new generation opens through the same owner backup method. An export can request one, the nightly lane can start one, a schema transition can restart one and a restore pin can request its undo. Opening timestamps the attempt, resets the change-log capture and inserts the generation row. The quiet WriteGate retains writes preceding an exception. These three local effects need one synchronous transaction so a failed opening cannot leave the log capturing for a generation the owner never recorded.
+
+The regression interrupts the opener after the change log starts capturing through the ordinary owner export, checks the timestamp and capture alongside the generation table, then retries the export. Already-open generation reuse and the unchanged-owner export fast path retain their existing behavior. The restore's fresh pointer belongs to the enclosing restore transition and has its own regression. Publishing parts to Files and handling previously interrupted records remain separate.

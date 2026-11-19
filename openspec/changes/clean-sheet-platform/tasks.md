@@ -503,6 +503,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
     (`live:` after `untangle/r7-rotation-driver`).
+  - [x] Exports, nightly backups and restore pins open their change-log capture and backup
+    row together (`codex/untangle-backup-open-atomic`, `backup-open-atomic.md`).
   - [x] `restore.wipe`, a live owner brought to pending and empty for a restore, the
     generation to restore pinned first, since a fresh generation's finish prunes every older
     unpinned one (`r5r.md` item 14). Restore (#5587) and owner migration 10's pin (#5589) landed;

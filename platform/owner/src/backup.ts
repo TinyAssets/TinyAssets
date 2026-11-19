@@ -731,15 +731,17 @@ export class Backups {
 
   /** In a unit: a new generation begun at `now`, its capture on; its id. */
   #open(now: number): string {
-    const gen = randomHex(8);
-    this.#sql.exec("UPDATE owner_backup_state SET began_at = ?", now);
-    const s = this.#parts.log.begin(gen);
-    this.#sql.exec(
-      "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, s, " +
-        `schema, started_at, seq) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?, ${NEXT_SEQ})`,
-      gen,
-      manifestDay(now), s, MIGRATIONS.length, now);
-    return gen;
+    return this.#parts.storage.transactionSync(() => {
+      const gen = randomHex(8);
+      this.#sql.exec("UPDATE owner_backup_state SET began_at = ?", now);
+      const s = this.#parts.log.begin(gen);
+      this.#sql.exec(
+        "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, s, " +
+          `schema, started_at, seq) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?, ${NEXT_SEQ})`,
+        gen,
+        manifestDay(now), s, MIGRATIONS.length, now);
+      return gen;
+    });
   }
 
   /**
