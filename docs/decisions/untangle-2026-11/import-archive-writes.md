@@ -18,7 +18,10 @@ method that closed the output descriptor.
   file-size limit. On both Node 22.23.5 and 24.22.3 the old writer returned a
   different archive. The fixed archive matched the unrestricted output byte
   for byte and GNU tar extracted the original member on both runtimes.
-- [ ] Full ordinary importer and platform TypeScript checks are in progress.
-  The first typecheck found two overload errors in the test stub. Its parameter
-  now narrows from unknown to Buffer. Recheck the published change alongside
-  the staged importer changes and again on main after coordination.
+- [x] The Node 22.23.5 ordinary importer passed all 168 tests on afefb732.
+  Two earlier typecheck attempts found overload errors in the test's short-write
+  stub. Narrowing the buffer with instanceof Uint8Array resolved them. With
+  this test correction, the full platform typecheck and all 24 bundle tests
+  passed on Node 24.22.3.
+- [ ] Verify the archive change with the staged importer and repeat on main
+  after coordinated integration.

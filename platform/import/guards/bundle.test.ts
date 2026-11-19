@@ -357,7 +357,8 @@ describe("the bundle builder", () => {
     const write = fs.writeSync;
     let partial = false;
     const spy = vi.spyOn(fs, "writeSync").mockImplementation((fd: number, data: unknown, ...args: unknown[]) => {
-      if (!partial && Buffer.isBuffer(data) && data.toString("ascii", 257, 262) === "ustar") {
+      if (!partial && data instanceof Uint8Array
+          && Buffer.from(data.subarray(257, 262)).toString("ascii") === "ustar") {
         partial = true;
         return write(fd, data, 0, 73);
       }
