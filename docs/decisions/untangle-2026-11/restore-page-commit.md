@@ -39,7 +39,7 @@ preservation of expired spend counters have their own ordering and recovery ques
 ## Interrupted log segment verification
 
 - [x] On staged test commit `278199e4`, the focused ordinary Node 22 Workerd case passed (63 outside its selection). The fixture writes two notices during a real generation. After a second-row failure, the restore still points to log segment zero with no rows, staged bytes or peak. Retry finishes and the restored rows equal the generation digest. The final staged bytes and peak match an independent reading of the generation. This isolates the fault from the original multi-segment peak test, which remains in the suite.
-- [ ] Verify the same fault on the current main source and the seven-branch combination. Earlier combined tree `9d4b4628` passed seven selected cases. Its original combined peak/fault case timed out at 86 seconds. The first standalone and combined reruns of that old case exited 137 before a verdict.
+- [x] Verified the same fault on main and the seven-branch combination in the public owner checks below. Earlier combined tree `9d4b4628` passed seven selected cases. Its original combined peak/fault case timed out at 86 seconds. The first standalone and combined reruns of that old case exited 137 before a verdict.
 - [ ] Determine how to handle an in-flight segment whose first row was already committed by the old writer and whose cursor still points to that segment. The new savepoint prevents a fresh partial write. Existing rows reduce the byte delta computed during replay, so a preserved cursor alone cannot certify the byte count.
 
 ### Switching writers at the interrupted cursor
@@ -106,3 +106,18 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
   22.23.5 using the pinned Workerd runner. All 64 ordinary cases passed,
   including both undo cases. The size-tagged case was outside this selection.
   The historical partial and completed restore decisions above remain open.
+
+- [x] The separate size-tagged case also passed on e9453549 with Node 22.23.5.
+  On the seven staged sources, the complete ordinary file then passed 67 cases
+  and the separate size run passed its one case, including restore when the
+  generation's total segments exceed the log budget. Node 24.22.3 passed the
+  full platform TypeScript check on the same combined sources.
+- [x] The seven inputs were apply e9453549, opener 47044108, rollback c407e4b7,
+  pass seconds 538cd9a9, begin e0aaf71a, pin 780d5c1c and finish 2bda742b,
+  all independently based on f934871ad. Restore source combined cleanly.
+  Retain both neighboring test declarations at the apply/begin and undo/pass
+  overlaps. A TypeScript syntax-tree comparison found all 61 distinct test
+  declarations from main and these branches in the combined file, each once.
+- [ ] Mixed-version activation still depends on historical recovery for both
+  an active partial record and a previously completed adoption. Recheck the
+  coordinated result on main before cutover.
