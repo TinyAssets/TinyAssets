@@ -121,3 +121,15 @@ Occurrence in a real old volume is unknown.
   indiscriminately rejects every unused legacy column would change this
   behavior. Validate the fields a consumer actually interprets. Keep the
   ordinary controls for owner, fleet and erasure readers when changing them.
+
+- [x] Rehearsed these controls with the shared live projection from the ordinary
+  policy census branch (source 5f702199, proof 3be7a5d3). The two previously
+  failing cases, the literal replacement/comma control and both UTF-16 archive
+  cases passed as part of 231 ordinary importer tests. The same joined source
+  passed 25 Owner import Workerd tests and full platform TypeScript. Independent
+  native SQLite fixtures for all three database encodings passed on Node 22
+  and 24 for public and private destinations. Both source branches are staged.
+- [ ] For integration, retain the policy census branch's single declared field
+  projection and owner-specific refusal alongside this branch's archive encoding
+  and compatibility tests. This branch alone still lacks that shared reader.
+  Recheck the joint behavior on main after coordinator integration.
