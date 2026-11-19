@@ -65,3 +65,29 @@ At 73,464 it reached all 14 receipts and version 8. V7 reached version 7 at
 both versions. The cutover census needs the admitted owner's complete tier check
 with the carried starter, its real writes and shared content. The existing F1
 production dependency and representative census remain open.
+
+### Two proposed packages already use version 8
+
+- [x] Compared the 14 carried files on main `f934871ad`, the digest branch
+  `7d314f374`, and OKF watcher PR #5692 at `3f8be4de9`. The watcher changes the
+  knowledge reference. The digest changes the schedule and rooms-and-board skills.
+  Both branches assign version 8. The watcher's deprecation note adds 335 UTF-8
+  bytes and the two digest edits add 182. All other carried files agree.
+- [x] Exercised both release orders in local workerd with the real Starter, owner
+  file and import code, SQLite migrations, and Files Worker on local R2. After v7
+  and either proposed v8, the union at v8 had no scheduled pass. The watch-first
+  owner still lacked both revised skills. The digest-first owner still lacked the
+  revised reference. Both had 14 receipts. A projected union at v9 reconciled
+  all 14 current content IDs on both owners. Including retained file versions,
+  each of these upgrades used 118,836 stored bytes.
+- [x] On fresh owners with the same six imported entries, measured the minimum
+  passing tier in bytes for main (73,282), watcher (73,617), digest (73,464),
+  and the projected union (73,799). At each exact limit the starter finished
+  with 14 receipts. One byte below each limit it kept 13 receipts, reported
+  starter_failed and left the reconciled version at 0. These are results for the
+  named synthetic backup.
+- [ ] Before either package ships, the release coordinator must establish which
+  package, if any, has already reached an owner as v8. If either v8 has shipped,
+  give the combined package a later version and regenerate both plugin surfaces.
+  Recheck migration from the released package and importer tier fit on the
+  selected commit. The watcher still points to its prior upstream repository.
