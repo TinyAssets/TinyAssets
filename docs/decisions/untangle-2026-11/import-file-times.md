@@ -143,3 +143,16 @@ Candidate applies the existing file-time range in the common owner fit for censu
 
 - [x] On staged source `486f8fe9`, all 172 ordinary importer cases and full Node 24 platform TypeScript passed. On Node 22 and 24, each of three real builder overlays left one obsolete inline file, one obsolete chunk, or four obsolete manifest pages. The previous host at `5e80f663` accepted all six overlays. This correction refused all six with zero network requests, and removing the obsolete files recovered the exact complete dry-run plan.
 - [x] Combined the seven branches recorded in bundle publication `86f4191f` with this source and inline validation `b7e8feda`. All 207 ordinary Node 24 importer cases, 25 Node 22 Owner import Worker cases, and full Node 24 platform TypeScript passed. The first disposable assembly omitted the published listing module and the deletion branch's workflow fixture. It failed collection and one workflow assertion. Both exact published files were included for the successful run. Combine the upload checks in the inventory pass and preserve the time and tier arguments of the Owner test upload helper.
+
+### Reconciliation of the earlier mixed-version checkout
+
+- [x] Compared all four tracked changes in the earlier Doors/Owner experiment
+  with this branch at 4de29399. The experimental Doors manifest-entry
+  validator is byte-identical to the shared contract function now used by
+  Doors. Its timestamp, whole-number and object checks match exactly. The
+  complete test setup, including the historical timestamp, also matches.
+- [x] The fourth change was a diagnostic test that expected the previous Owner
+  to leave the import unfinished. Its observations are preserved at a5ec62b8,
+  which also checked recovery in another process, completion and repeat
+  delivery. The normal resubmission regression is in 08b27231. No additional
+  runtime change remains to publish from those four files.
