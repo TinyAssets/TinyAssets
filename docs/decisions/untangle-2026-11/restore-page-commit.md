@@ -83,3 +83,18 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
 - On b692a671, Node 22 TypeScript reported zero diagnostics for the restore
   test and owner restore module with the corrected status assertion. The
   ordinary Vitest run for the pinned undo scenario is still outstanding.
+
+- [x] Checked the lost-owner counterpart to the pinned recovery above on the
+  public owner and Files Workers from b692a671. A local fixture exported a
+  file, added a later file, finished another generation, then cleared the
+  synthetic object's storage and evicted it. The fresh object had no restore
+  record. Restoring the newer generation encountered a deliberately changed
+  notice during verification and refused admission. With no surviving pin,
+  the failure returned a null undo generation. Its confirmation allowed the
+  second wipe. The older authenticated generation then reached done. After
+  admission, the earlier file read back correctly and the later file was
+  absent. The existing lost-owner tests in owner/test/restore.test.ts cover
+  restart from an earlier generation and from another held namespace. This
+  independent local run used the same namespace. Recovery from an active
+  historical partial segment and from already completed historical adoption
+  still needs a decision.
