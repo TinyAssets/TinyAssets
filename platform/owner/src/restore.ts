@@ -1128,14 +1128,17 @@ export const restoreDoors = Object.freeze({
         throw refused(why);  // another call began one, or wrote, while the root was read
       }
       wipedFor(record(o.storage.sql), ns, gen);
-      o.files.adoptSpace(ns, root.key);
-      // A wiped object's record goes on, its pin's fresh generation kept: the undo.
-      o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since, schema, " +
-                           "source) VALUES (1, ?, ?, 'index', 0, ?, ?, ?) ON CONFLICT (only) DO " +
-                           "UPDATE SET ns = excluded.ns, gen = excluded.gen, step = 'index', " +
-                           "at = 0, staged = 0, peak = 0, schema = excluded.schema, source = " +
-                           "excluded.source", ns,
-                         gen, clock(), MIGRATIONS.length, schema);
+      // A failed begin must leave the pending target empty and eligible for retry.
+      o.storage.transactionSync(() => {
+        o.files.adoptSpace(ns, root.key);
+        // A wiped object's record goes on, its pin's fresh generation kept: the undo.
+        o.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since, schema, " +
+                             "source) VALUES (1, ?, ?, 'index', 0, ?, ?, ?) ON CONFLICT (only) DO " +
+                             "UPDATE SET ns = excluded.ns, gen = excluded.gen, step = 'index', " +
+                             "at = 0, staged = 0, peak = 0, schema = excluded.schema, source = " +
+                             "excluded.source", ns,
+                           gen, clock(), MIGRATIONS.length, schema);
+      });
       return answer(o, record(o.storage.sql)!);
     });
   },

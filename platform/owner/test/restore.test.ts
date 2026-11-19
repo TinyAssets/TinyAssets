@@ -20,7 +20,7 @@ import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contra
 import { eraseWords, type RestoreAnswer, type RestoreHold } from "../../contract/src/owner";
 import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
-import type { Files } from "../src/files";
+import { Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
 import { CHUNK_ROW_BYTES, CHUNK_ROW_CHARGE } from "../src/manifest";
 import { addNames, emptyFilter, FILTER_BYTES } from "../src/names-filter";
@@ -234,6 +234,41 @@ async function source(): Promise<{ o: Owner; gen: Generated; ns: string; rows: s
 }
 
 describe("a restore", () => {
+  it("keeps a lost owner empty when its restore begin is interrupted, then adopts on retry",
+     async () => {
+    const o = await owner();
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const namespace = space!["ns"] as string;
+    const stub = await lose(o);
+    const binding = platform(o.name);
+    const asked = { namespace, gen: gen.gen };
+    const begin = () => stub.restoreBegin(binding, asked);
+    const error = await runInDurableObject(stub, async (instance: OwnerDO) => {
+      const adopt = Files.prototype.adoptSpace;
+      const interrupted = vi.spyOn(Files.prototype, "adoptSpace").mockImplementationOnce(
+        function (this: Files, ns, key) {
+          adopt.call(this, ns, key);
+          throw new Error("begin interrupted");
+        });
+      try {
+        return await instance.restoreBegin(binding, asked)
+          .then(() => null, (err: unknown) => String(err));
+      } finally {
+        interrupted.mockRestore();
+      }
+    });
+    expect(error).toContain("begin interrupted");
+    expect(await sqlIn(stub, "SELECT ns, data_key FROM file_space"))
+      .toEqual([{ ns: null, data_key: null }]);
+    expect(await sqlIn(stub, "SELECT step FROM owner_restore")).toEqual([]);
+    expect(await begin()).toEqual({ step: "index", done: false });
+    expect(await begin()).toEqual({ step: "index", done: false });
+    expect(await sqlIn(stub, "SELECT ns, gen, step FROM owner_restore"))
+      .toEqual([{ ns: namespace, gen: gen.gen, step: "index" }]);
+    expect(await sqlIn(stub, "SELECT ns FROM file_space")).toEqual([{ ns: namespace }]);
+  });
+
   it("reads a production-shaped owner back into its own object, every table and counter as " +
      "at E, every chunk read back, nothing put to R2 and no row in an answer", async () => {
     const { o, gen, ns, rows, counters, usage } = await source();
