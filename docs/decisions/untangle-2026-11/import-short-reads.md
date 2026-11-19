@@ -1,0 +1,5 @@
+# Import file reads as built (November 19, 2026)
+
+- [x] Re-reviewed the import host's actual file reads against the backup-copy requirement. The SHA-256 stream and tar reader already accumulate positive reads. The store-header reader, inline content reader and chunk reader assumed that one positioned read always fills its buffer. The sandbox runner already accumulates pieces within its own workspace boundary.
+- [x] On main `f934871ad`, all three ordinary Node 22 bundle regressions failed on unmodified old-stack fixture files. The header case refused the backup, and both content cases reported a changed file size. Tests delegate to the native descriptor with a shorter requested length and check the completed bundle against the source bytes.
+- [ ] Verify the correction through the ordinary importer and typecheck. The host now accumulates a requested range until it fills or the descriptor reaches EOF. The existing post-size probe still checks for growth. Verify early EOF, growth and short headers independently, then compare the staged importer consumers.

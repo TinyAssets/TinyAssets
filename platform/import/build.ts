@@ -36,7 +36,7 @@ import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
-import { layout, openFile, openStore, quoted, storeUri } from "./backup";
+import { layout, openFile, openStore, quoted, readAt, storeUri } from "./backup";
 import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
 
@@ -146,7 +146,7 @@ export class Store {
     try {
       if (size <= INLINE_BYTES) {
         const bytes = Buffer.alloc(size);
-        if (readSync(fd, bytes, 0, size, 0) !== size || readSync(fd, Buffer.alloc(1), 0, 1, size)) {
+        if (readAt(fd, bytes, 0) !== size || readSync(fd, Buffer.alloc(1), 0, 1, size)) {
           throw new Error("a file changed size while the import read it");
         }
         const id = inlineId(bytes);
@@ -160,10 +160,10 @@ export class Store {
       const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
       for (let offset = 0; offset < size; offset += CHUNK_BYTES) {
         const want = Math.min(CHUNK_BYTES, size - offset);
-        if (readSync(fd, buffer, 0, want, offset) !== want) {
+        const piece = buffer.subarray(0, want);
+        if (readAt(fd, piece, offset) !== want) {
           throw new Error("a file changed size while the import read it");
         }
-        const piece = buffer.subarray(0, want);
         const sha = sha256Hex(piece);
         shas.push(sha);
         if (this.#put(chunkName(sha), piece)) {

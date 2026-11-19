@@ -103,6 +103,19 @@ export function fileSha256(path: string | Buffer): string {
   return hash.digest("hex");
 }
 
+/** Fill a byte range from one file position, stopping at EOF. */
+export function readAt(fd: number, bytes: Buffer, position: number): number {
+  let filled = 0;
+  while (filled < bytes.length) {
+    const n = readSync(fd, bytes, filled, bytes.length - filled, position + filled);
+    if (n === 0) {
+      break;
+    }
+    filled += n;
+  }
+  return filled;
+}
+
 /** SQLite's own header: a file that starts with it is a store. */
 const SQLITE_MAGIC = Buffer.from("SQLite format 3\0", "latin1");
 
@@ -111,7 +124,7 @@ export function isStore(path: string | Buffer): boolean {
   const fd = openFile(path);
   try {
     const head = Buffer.alloc(SQLITE_MAGIC.length);
-    const n = readSync(fd, head, 0, head.length, 0);
+    const n = readAt(fd, head, 0);
     return n === 0 || (n === head.length && head.equals(SQLITE_MAGIC));
   } finally {
     closeSync(fd);

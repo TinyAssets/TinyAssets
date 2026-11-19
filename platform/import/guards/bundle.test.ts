@@ -10,11 +10,13 @@ import {
   appendFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync,
   symlinkSync, writeFileSync,
 } from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
 import { contentIdOf } from "../../contract/src/content";
@@ -75,6 +77,37 @@ function bytesOf(bundle: string, entry: Entry): Buffer {
 const I = "/workspace/imported";
 
 describe("the bundle builder", () => {
+  it.each([
+    ["store header", 16],
+    ["inline file", Buffer.byteLength("It was a dark night.\n")],
+    ["full chunk", CHUNK_BYTES],
+  ] as const)("preserves the bundle after a short positional read (%s)", (_kind, width) => {
+    const { f, out, options } = setup();
+    const read = fs.readSync;
+    let split = 0;
+    const spy = vi.spyOn(fs, "readSync").mockImplementation((fd: number, ...args: unknown[]) => {
+      if (args[2] === width && typeof args[3] === "number") {
+        args[2] = Math.floor(width / 2);
+        split++;
+      }
+      return Reflect.apply(read, fs, [fd, ...args]);
+    });
+    try {
+      syncBuiltinESMExports();
+      expect(buildBundles(f.copy, options)).toMatchObject({ bundled: 3, refused: {} });
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(split).toBeGreaterThan(0);
+    const bundle = join(out, keyOf(ALICE));
+    const entries = manifest(bundle);
+    for (const path of ["novel/notes/ch1.md", "novel/workspace/big.bin"]) {
+      const entry = entries.find((item) => item.path === `${I}/${path}`)!;
+      expect(bytesOf(bundle, entry).equals(readFileSync(join(f.tree(ALICE), path)))).toBe(true);
+    }
+  });
+
   it("writes each owner's tree with the platform's own content ids for the backup's bytes", () => {
     const { f, out, options } = setup();
     const summary = buildBundles(f.copy, options);
