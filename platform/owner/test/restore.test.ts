@@ -18,7 +18,7 @@ import { GET_READS, objectPrefix } from "../../contract/src/files";
 import { HELD_WAIT_MS } from "../../ci/fixtures";
 import { DELETE_BATCH, INLINE_BYTES, LOG_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { eraseWords, type RestoreAnswer, type RestoreHold } from "../../contract/src/owner";
-import { Backups, MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
+import { MANIFEST_UNRESTORABLE, RESTORABLE_LIFE_S } from "../src/backup";
 import { exported, NOT_EXPORTED } from "../src/export";
 import type { Files } from "../src/files";
 import type { WriteGate } from "../src/gate";
@@ -1210,13 +1210,14 @@ describe("a restore into a live owner", () => {
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
     const asked = { namespace: space!["ns"] as string, gen: original.gen };
     const binding = platform(o.name);
-    const error = await runInDurableObject(o.stub, async (instance: OwnerDO) => {
-      const begin = Backups.prototype.begin;
-      const opening = vi.spyOn(Backups.prototype, "begin").mockImplementationOnce(function (
-        this: Backups, now: number,
-      ) {
-        begin.call(this, now);
-        throw new Error("pin fresh interrupted");
+    const error = await runInDurableObject(o.stub, async (instance: OwnerDO, state) => {
+      const storage = state.storage.sql;
+      const exec = storage.exec.bind(storage);
+      const opening = vi.spyOn(storage, "exec").mockImplementation((query, ...bindings) => {
+        if (query.startsWith("UPDATE owner_restore SET fresh")) {
+          throw new Error("pin fresh interrupted");
+        }
+        return exec(query, ...bindings);
       });
       try {
         return await instance.restorePin(binding, asked)
