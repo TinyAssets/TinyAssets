@@ -1151,9 +1151,10 @@ export class Files {
       "SELECT version, path, op, kind, content_id, size, mode, writer, at FROM file_history " +
         "WHERE version > ? AND version <= ? ORDER BY version LIMIT ?", from, space.seq, most,
     ).toArray();
+    const cursor = rows.length === most ? rows.at(-1)!.version : space.seq;
     return {
       changes: rows,
-      cursor: rows.length === most ? rows.at(-1)!.version : space.seq,
+      cursor: Math.max(cursor, space.feed_floor),
       reset: from < space.feed_floor,
     };
   }

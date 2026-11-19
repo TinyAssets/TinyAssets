@@ -298,17 +298,21 @@ describe("the change feed", () => {
     const { cursor } = await r.stub.fileChanges(r.bind(null), { after: 0,
                                                                 limit: SEED.entries + 10 });
     await write(r, `${W}/kept`);
+    await write(r, `${W}/also-kept`);
     // With no retention, the delete's record is due as soon as it is written.
     await setFiles(r, { retention_days: 0 });
     await inFiles(r.stub, async (files, unit) => {
       await unit(() => files.remove(`${W}/gone`, { expected: null, writer: "owner" }));
       await files.run(Date.now() / 1000 + 1, passEnd());
     });
-    const page = await r.stub.fileChanges(r.bind(null), { after: cursor, limit: 10 });
+    const page = await r.stub.fileChanges(r.bind(null), { after: cursor, limit: 1 });
     expect(page.reset).toBe(true);
     expect(page.changes.map((c) => c.path)).toEqual([`${W}/kept`]);
-    expect((await r.stub.fileChanges(r.bind(null), { after: page.cursor, limit: 10 })).reset)
-      .toBe(false);
+    // The full scan covers both kept files. Only a change committed since it began is due.
+    await write(r, `${W}/during-rescan`);
+    const following = await r.stub.fileChanges(r.bind(null), { after: page.cursor, limit: 1 });
+    expect(following.reset).toBe(false);
+    expect(following.changes.map((c) => c.path)).toEqual([`${W}/during-rescan`]);
   });
 
   it("leaves the temporary area out of the feed", async () => {
