@@ -52,6 +52,10 @@ end.
 
 - [x] G1 `platform/gateway`: the keyring, sealing, the OAuth exchanges and raw forwarding.
 - [x] G2 The owner side: model connections and spend (`owner/src/connections.ts`, `usage.ts`).
+- [ ] Reconcile G2's direct-call reservation writer with ADR-034 and the real G4
+  egress caller. Use the five mapped requirements to carry their remaining
+  cases to egress or historical recovery before retiring code and tests. Keep old receipts, restored spend and
+  shared pricing (`untangle-2026-11/model-reservation-callers.md`).
 - [x] G3 The connect doors (`doors/src/connect.ts`) and the source records (`platform/sources/`).
 - [x] G4 The egress door, the sandbox's identity, its charge and its network document
   (`doors/src/egress.ts`, `owner/src/egress.ts`, `gateway/src/meter.ts`,
@@ -757,8 +761,8 @@ Measured on the stage as it runs:
   of mode `probe` (d3 §H).
 - [ ] Live numbers: R2 read latency from an owner object; the longest put in flight against
   `PUT_GRACE_MS`; the owner's sustained write rate against the change log's ship rate and
-  `LOG_BYTES`; `limits.subrequests` at 10,000,000; the usage receipts' rows per call; whether the
-  isolate's 128 MB counts uncollected garbage (a 16 MiB request body), and each Worker's
+  `LOG_BYTES`; `limits.subrequests` at 10,000,000; the egress receipt rows per API-key call, with
+  its run and source spend (G4); whether the isolate's 128 MB counts uncollected garbage (a 16 MiB request body), and each Worker's
   `memoryUsageBytes`, the gateway's and the doors' too, to reset the pool and baseline; an
   edit's wall time a chunk with R2, and the step at `SLOT_WAIT_MS`; a sandbox's real upload
   rate against `MIN_RATE`.
