@@ -628,13 +628,21 @@ describe("the copy, on a fake droplet", () => {
     expect(existsSync(published)).toBe(false);
     const retry = h.window(args, input);
     expect(retry.status, retry.out).toBe(3);
-    const record = JSON.parse(readFileSync(join(published, "private", PRIVATE_RECORD), "utf8")) as
-      { owners: { key: string; owner: string; excluded: boolean }[] };
+    const recordFile = join(published, "private", PRIVATE_RECORD);
+    const record = JSON.parse(readFileSync(recordFile, "utf8")) as
+      { owners: { key: string; owner: string; excluded: boolean }[]; summary: unknown };
+    const output = join(h.work("retry1"), "job.out.private");
+    const summary = JSON.parse(readFileSync(output, "utf8")) as unknown;
+    expect(summary).toMatchObject({ refused: { no_tier: 1 } });
+    expect(record.summary).toEqual(summary);
     const ready = record.owners.filter((owner) => !owner.excluded);
     expect(ready.map((owner) => owner.owner)).toContain(BOB);
     expect(ready.map((owner) => owner.owner)).not.toContain(ALICE);
     expect(readdirSync(join(published, "out")).sort()).toEqual(ready.map((owner) => owner.key).sort());
     expect(existsSync(join(published, "private", DIGESTS))).toBe(true);
+    expect(h.window(["census", "retry1", "rehearsal"]).status).toBe(3);
+    expect(JSON.parse(readFileSync(output, "utf8"))).not.toEqual(summary);
+    expect(JSON.parse(readFileSync(recordFile, "utf8")).summary).toEqual(summary);
   });
 
   it("bundles from the exclusion list on stdin, into its one writable folder, once", () => {
