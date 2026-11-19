@@ -38,8 +38,12 @@ const SESSION_NEEDED = "interactive owner session required";
 
 // -- Messages -------------------------------------------------------------------------
 
+function message(text, kind, ...extra) {
+  return h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra);
+}
+
 function say(text, kind = "good", ...extra) {
-  fill(notice, h("div", { class: `message ${kind}` }, h("span", {}, text), ...extra));
+  fill(notice, message(text, kind, ...extra));
 }
 
 /**
@@ -68,20 +72,20 @@ function paint(turn, ...children) {
 }
 
 /** A failure, in plain words; a change that needs a fresh sign-in offers one. */
-function report(error) {
+function report(error, target = notice) {
   if (error === STALE) {
     return;
   }
   if (error instanceof Refused && error.message === SESSION_NEEDED) {
-    say("To change this, sign in again: changes need a sign-in from the last 8 hours.", "bad",
-        h("button", { type: "button", onclick: () => signIn() }, "Sign in again"));
+    fill(target, message("To change this, sign in again: changes need a sign-in from the last 8 hours.", "bad",
+        h("button", { type: "button", onclick: () => signIn() }, "Sign in again")));
     return;
   }
   if (error instanceof Refused && error.status === 503) {
-    say(`TinyAssets is down for maintenance right now: ${error.message}`, "bad");
+    fill(target, message(`TinyAssets is down for maintenance right now: ${error.message}`, "bad"));
     return;
   }
-  say(error instanceof Error ? error.message : String(error), "bad");
+  fill(target, message(error instanceof Error ? error.message : String(error), "bad"));
 }
 
 // -- Routing --------------------------------------------------------------------------
@@ -204,10 +208,12 @@ function directoryPages(first, show) {
     return null;
   }
   let after = first.next;
+  const status = h("div", { role: "status" });
   const more = action("Read the next directory page", async () => {
     const page = await call("tools/agents_list", { after });
     if (more.isConnected) {
       show(page);
+      fill(status);
       after = page.next;
       if (!after) {
         more.remove();
@@ -215,10 +221,10 @@ function directoryPages(first, show) {
     }
   }, (error) => {
     if (more.isConnected) {
-      report(error);
+      report(error, status);
     }
   }, { class: "quiet" });
-  return more;
+  return [more, status];
 }
 
 async function agents(arg) {
@@ -543,7 +549,7 @@ async function rooms(arg = null) {
     for (const a of page.owner_agents.filter((a) => a.retired_at === null)) {
       room.append(h("option", { value: `dm:${a.agent_id}` }, `You and ${a.agent}`));
     }
-    post.disabled = room.options.length === 0;
+    post.hidden = room.options.length === 0;
     empty.hidden = room.options.length > 0 || Boolean(page.next);
     composer.hidden = !empty.hidden && body.value === "";
   });
@@ -815,13 +821,11 @@ async function apps(arg = null) {
       mains.append(doorbell(a, kinds));
     }
     for (const app of page.apps) {
-      if (app.id !== null) {
-        names.set(app.id, app.name);
-        if (!app.connected) {
-          unconnected.append(h("li", {}, h("a", {
-            href: app.connect_url, target: "_blank", rel: "noopener noreferrer",
-          }, `Connect ${app.name}`)));
-        }
+      names.set(app.id, app.name);
+      if (app.id !== null && !app.connected) {
+        unconnected.append(h("li", {}, h("a", {
+          href: app.connect_url, target: "_blank", rel: "noopener noreferrer",
+        }, `Connect ${app.name}`)));
       }
     }
     // A later directory page can supply the vendor's name for an unrenamed connected app.

@@ -1121,6 +1121,84 @@ test("a screen still loading never paints over the signed-out view (review L1)",
   assert.equal(await page.getByRole("heading", { name: "API keys", exact: true }).count(), 0);
 });
 
+test("directory paging preserves the room draft and an outstanding post", { timeout: 60_000 },
+     async () => {
+  const { body: directory } = await api("tools/agents_list");
+  const endpoint = "**/app/api/tools/agents_list";
+  const cursor = "second-directory-page";
+  const calls = [];
+  // Keep the live owner's rooms on page one. The continuation supplies the remaining apps.
+  await page.route(endpoint, async (route) => {
+    const { after } = route.request().postDataJSON();
+    calls.push(after);
+    await route.fulfill({ json: after === undefined
+      ? { ...directory, apps: [], next: cursor }
+      : { agents: [], owner_agents: [], apps: directory.apps } });
+  });
+  try {
+    await page.goto(`${ORIGIN}/app#rooms`);
+    const draft = page.getByLabel(/^Message/);
+    const post = page.getByRole("button", { name: "Post", exact: true });
+    await draft.fill("directory page while posting");
+    await holding("**/app/api/tools/room_post", async ({ first, release }) => {
+      await post.click();
+      await first;
+      const next = page.getByRole("button", { name: "Read the next directory page" });
+      await next.click();
+      await next.waitFor({ state: "detached" });
+      assert.equal(await draft.inputValue(), "directory page while posting");
+      assert.equal(await post.isDisabled(), true);
+      await release();
+    });
+    await page.getByText(/^Posted\. Mail/).waitFor();
+    assert.deepEqual(calls, [undefined, cursor]);
+  } finally {
+    await page.unroute(endpoint);
+  }
+});
+
+test("retrying a directory page resolves unnamed app labels and preserves policy edits",
+     { timeout: 60_000 }, async () => {
+  const endpoint = "**/app/api/tools/agents_list";
+  const grants = "**/app/api/grants";
+  const cursor = "next-apps";
+  const client = "a".repeat(64);
+  const calls = [];
+  await page.route(grants, (route) => route.fulfill({ json: { clients: [{
+    client, vendor: null, name: "", source: "oauth", mode: "full", scopes: [], profile: "custom",
+  }] } }));
+  await page.route(endpoint, async (route) => {
+    const { after } = route.request().postDataJSON();
+    calls.push(after);
+    if (after === cursor && calls.length === 2) {
+      await route.fulfill({ status: 503, json: { message: "directory temporarily offline" } });
+      return;
+    }
+    await route.fulfill({ json: { agents: [], owner_agents: [],
+      apps: after ? [{ id: null, name: "Other apps", connected: true }] : [],
+      ...(after ? {} : { next: cursor }) } });
+  });
+  try {
+    await page.goto(`${ORIGIN}/app#apps`);
+    const next = page.getByRole("button", { name: "Read the next directory page" });
+    const policy = page.getByRole("checkbox", { name: /Every tool/ });
+    const chosen = !(await policy.isChecked());
+    await policy.setChecked(chosen);
+    await next.click();
+    const error = page.getByText(/directory temporarily offline/);
+    await error.waitFor();
+    await next.click();
+    await next.waitFor({ state: "detached" });
+    assert.match(await page.getByRole("table").innerText(), /Other apps/);
+    assert.equal(await policy.isChecked(), chosen);
+    assert.equal(await error.count(), 0);
+    assert.deepEqual(calls, [undefined, cursor, cursor]);
+  } finally {
+    await page.unroute(endpoint);
+    await page.unroute(grants);
+  }
+});
+
 test("the app made no third-party request and threw nothing", () => {
   assert.deepEqual(errors, []);
   assert.deepEqual(outside, []);
