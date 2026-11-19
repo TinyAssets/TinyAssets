@@ -37,3 +37,12 @@ revision regression changes the synthetic original during a carried-file read
 and checks both the emitted SQLite copy and the readable refused document.
 The policy branch fails that assertion. Keep the pre-fit counts for owners
 that cannot produce a bundle; see its ordinary R5 census decision.
+
+On 70f30b5c all 170 ordinary Node 24 importer cases and full platform
+typecheck passed. In the twelve-stage rehearsal documented at febb2c4c,
+with this exact policy regression added, 212 ordinary Node 22 importer tests,
+25 Node 22 Owner import Workerd tests and the full Node 24 platform
+typecheck passed. The thirteen-way combination with the separate policy
+census remains open. Its 48 ordinary census tests passed while the new
+writer regression failed on 93f714d1. See 70896baf for the corrected
+integration dependency.
