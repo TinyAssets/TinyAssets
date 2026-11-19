@@ -22,3 +22,15 @@ two files under one discarded namespace printed one object in each bucket on
   the regression.
 - [ ] Retain the bounded probes when combining with the S3 listing and close
   grouping branches. The final observation still cannot fence a later writer.
+
+On 839b971e the ordinary Node 22 window suite passed all 25 cases. Seven
+importer suites passed 122 cases in a wider run. Host and runner failed
+collection in that checkout because the workflow fixture was missing. After
+restoring the fixture the full run exited 137.
+
+The local comparison combined 839b971e, e3293eb9 (S3 listing), and the
+a799066e per-run grouping loop. All 42 window test bodies passed with their
+original Vitest expectations and cleanup under direct Node 22 and 24 execution.
+Ordinary Vitest on the combined tree exited 137, including a run filtered to
+the retained-namespace case. That runner result and the late-writer fence
+remain open.
