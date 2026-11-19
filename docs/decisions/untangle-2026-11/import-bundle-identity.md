@@ -62,3 +62,10 @@ When the deletion comparison in #5688 and this change meet, its private original
   804 wire lines and seven discovery profiles matched byte for byte.
 - [ ] Compare the owner RPC and reviewer recordings for this source, then
   repeat consumer checks on main after coordinated integration.
+
+- [x] Built all six configured Workers with the repository's pinned local
+  build function, at the same filesystem paths on f934871ad and 72672304.
+  The hashed list contained eight runtime modules on each source. Only the
+  Doors ES module differed. The emitted Owner, Files, Gateway, sandbox
+  Worker and runner data, and Codemode Worker and WebAssembly were
+  byte-identical. The separate owner recorder families remain unrun here.
