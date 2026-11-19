@@ -36,8 +36,8 @@ import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
-import { layout, openFile, openStore, quoted, storeUri } from "./backup";
-import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
+import { openFile, openStore, quoted, storeUri, tableRows } from "./backup";
+import { type Archived, brokerRecord, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
 
 /** The files the import itself writes into an owner's tree beside what it carries. */
@@ -69,37 +69,43 @@ function byPath(a: string, b: string): number {
   return x.length - y.length;
 }
 
-function accountRows(owner: Owner, copy: Copy, store: string, table: string,
-                     sql: string): Record<string, unknown>[] {
-  const account = join(layout(copy.work).shared, ".broker", "accounts", owner.digest);
-  const at = join(account, store);
-  try {
-    lstatSync(at);
-  } catch {
+interface StoreCopy {
+  readonly archive: Archived;
+  readonly file: string | Buffer;
+}
+
+function carriedRows(copies: readonly StoreCopy[], store: string, table: string,
+                     columns: string[], order: string[] = []): Record<string, unknown>[] {
+  const source = copies.find(({ archive }) => archive.path === brokerRecord(store)
+    && archive.tables.some((t) => t.table === table && t.use === "carry"));
+  if (source === undefined) {
     return [];
   }
-  const db = openStore(at);
+  const db = openStore(source.file);
   try {
-    const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get(table);
-    return has === undefined ? [] : db.prepare(sql).all() as Record<string, unknown>[];
+    return tableRows(db, table, columns, order);
   } finally {
     db.close();
   }
 }
 
-/** The stored documents, before the new platform's validator decides what it can carry. */
-export function policyDocuments(owner: Owner, copy: Copy): string[] {
-  return accountRows(owner, copy, "policy.db", "policy", "SELECT document FROM policy")
-    .map((row) => String(row["document"]));
+export class UnreadablePolicy extends Error {}
+
+export function policyDocuments(copies: readonly StoreCopy[], expected: number): string[] {
+  let documents: string[];
+  try {
+    documents = carriedRows(copies, "policy.db", "policy", ["document"])
+      .map((row) => String(row["document"]));
+  } catch (cause) {
+    throw new UnreadablePolicy("cannot read the surveyed policy", { cause });
+  }
+  if (documents.length !== expected) {
+    throw new UnreadablePolicy("the surveyed policy count changed");
+  }
+  return documents;
 }
 
-/**
- * The owner's live rows: its policy document, then its collections' rows by collection and seq;
- * and the old policy as it was stored when the platform's validator refuses it (`validate`),
- * which is then no row: the owner keeps the default, and its document is archived verbatim.
- */
-function rowsOf(owner: Owner, copy: Copy, documents: readonly string[]):
+function rowsOf(copies: readonly StoreCopy[], documents: readonly string[]):
     { rows: Row[]; refusedPolicy: string | null } {
   const policy: Row[] = [];
   let refusedPolicy: string | null = null;
@@ -112,9 +118,8 @@ function rowsOf(owner: Owner, copy: Copy, documents: readonly string[]):
       refusedPolicy = text;
     }
   }
-  const collections = accountRows(owner, copy, "conversations.db", "collection_rows",
-                           "SELECT collection, row_id, private, body FROM collection_rows " +
-                           "ORDER BY collection, seq")
+  const collections = carriedRows(copies, "conversations.db", "collection_rows",
+    ["collection", "row_id", "private", "body"], ["collection", "seq"])
     .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
                           row_id: String(row["row_id"]), private: Number(row["private"]) ? 1 : 0,
                           body: String(row["body"]) }));
@@ -314,6 +319,7 @@ export interface Built {
   readonly store: Store;
   /** Whether the old policy was refused by the validator, and archived (`POLICY_REFUSED`). */
   readonly policyArchived: boolean;
+  readonly policyDocuments: readonly string[];
 }
 
 /**
@@ -322,8 +328,7 @@ export interface Built {
  * live rows. The files the import makes are made in `dir`'s `.work/` (or a temporary folder
  * of the job's own) and deleted after.
  */
-export function buildTree(owner: Owner, copy: Copy, dir: string | null,
-                          documents: readonly string[] = policyDocuments(owner, copy)): Built {
+export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
   const store = new Store(dir);
   const work = dir === null ? mkdtempSync(join(tmpdir(), "ta-import-work-"))
     : join(dir, ".work");
@@ -353,13 +358,16 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null,
       const at = join(work, String(generated));
       write(at);
       file(path, at, lstatSync(at).size, 0, mtime);
+      return at;
     };
+    const copies: StoreCopy[] = [];
     for (const archived of owner.tree.archived) {
       const mtime = Math.floor(lstatSync(archived.source).mtimeMs);
       if (archived.whole) {
         file(archived.path, archived.source, archived.size, 0, mtime);
       } else {
-        make(archived.path, (at) => tablesCopy(archived, at), mtime);
+        const copyFile = make(archived.path, (at) => tablesCopy(archived, at), mtime);
+        copies.push({ archive: archived, file: copyFile });
       }
     }
     if (owner.tree.links.length > 0) {
@@ -371,7 +379,8 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null,
     if (owner.tree.ignoredTrees.length > 0) {
       make(IGNORED, (at) => tarOf(at, owner.tree.ignoredTrees));
     }
-    const { rows, refusedPolicy } = rowsOf(owner, copy, documents);
+    const documents = policyDocuments(copies, owner.tree.rows.policy);
+    const { rows, refusedPolicy } = rowsOf(copies, documents);
     if (refusedPolicy !== null) {
       make(POLICY_REFUSED, (at) => writeFileSync(at, refusedPolicy, { flag: "wx" }));
     }
@@ -387,7 +396,7 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null,
       }
     }
     return { entries: [...entries.values()].sort((a, b) => byPath(a.path, b.path)),
-             rows, store, policyArchived: refusedPolicy !== null };
+             rows, store, policyDocuments: documents, policyArchived: refusedPolicy !== null };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

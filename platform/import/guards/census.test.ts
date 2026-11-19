@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
 import { PLATFORM } from "../../ci/paths";
@@ -19,6 +19,7 @@ import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import { IMPORTED } from "../../contract/src/paths";
 import { DEFAULT_IGNORES, ignoredBy } from "../../contract/src/sync-ignore";
 import { buildBundles } from "../bundle";
+import { Store } from "../build";
 import { census } from "../census";
 import { ERASURE_SOURCES } from "../erasure";
 import { TAR_MEMBER_MAX } from "../tar";
@@ -144,6 +145,35 @@ describe("the census", () => {
     });
     expect(JSON.stringify(result.report)).not.toContain(secret);
     expect(result.table).not.toContain(secret);
+  });
+
+  it("counts the policy in the archived revision when the owner can be built", () => {
+    const f = fresh();
+    const carried = join(f.tree(ALICE), "novel", "workspace", "run.sh");
+    const file = Store.prototype.file;
+    let changed = false;
+    const duringBuild = vi.spyOn(Store.prototype, "file").mockImplementation(function (this: Store,
+        source: string | Buffer, size: number) {
+      if (!changed && source.toString() === carried) {
+        const db = new DatabaseSync(join(f.account(ALICE), "policy.db"));
+        try {
+          db.prepare("UPDATE policy SET document = ?").run("unrecognized revision");
+          changed = true;
+        } finally {
+          db.close();
+        }
+      }
+      return file.call(this, source, size);
+    });
+    try {
+      const { report } = census(f.copy, TIERS);
+      expect(changed).toBe(true);
+      expect(report["legacy_policy"]).toMatchObject({
+        classified_documents: 1, unclassified_documents: 1, with_egress_ask: 0,
+      });
+    } finally {
+      duringBuild.mockRestore();
+    }
   });
 
   it("reports unrecognised policy separately and examines a policy even when its files cannot fit", () => {

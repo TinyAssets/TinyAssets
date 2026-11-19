@@ -19,7 +19,7 @@ import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, policyDocuments, type Fit, fitOf, tierOf } from "./build";
+import { type Built, buildTree, policyDocuments, type Fit, fitOf, tierOf, UnreadablePolicy } from "./build";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
 
@@ -124,15 +124,14 @@ export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
  * or counted and not kept), once nothing refuses it first. With `tiers` null (a backup,
  * which the limits do not bind) only what a tar cannot hold refuses it.
  */
-export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null,
-                        documents?: readonly string[]):
+export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
     { built: Built | null; fit: Fit | null; problems: Problem[] } {
   const first = precheck(owner, tiers)
     .filter((problem) => tiers !== null || problem.code === "over_tar_member");
   if (first.length > 0) {
     return { built: null, fit: null, problems: first };
   }
-  const built = buildTree(owner, copy, dir, documents);
+  const built = buildTree(owner, copy, dir);
   if (tiers === null) {
     return { built, fit: null, problems: [] };
   }
@@ -209,16 +208,26 @@ export function census(copy: Copy, tiers: Tiers): Census {
     if (owner.tree.problems.length > 0) {
       continue;
     }
-    // Count before fit: an otherwise oversize owner can still have policy to translate.
-    let documents: string[] | null;
+    let documents: readonly string[];
     try {
-      documents = owner.tree.rows.policy > 0 ? policyDocuments(owner, copy) : [];
-    } catch {
-      documents = null;
-    }
-    if (documents === null || documents.length !== owner.tree.rows.policy) {
-      problems.push({ code: "bad_store", at: `owner/${owner.key}/policy.db` },
-                    ...precheck(owner, tiers));
+      const measured = measure(owner, copy, tiers, null);
+      problems.push(...measured.problems);
+      if (measured.fit !== null) {
+        fits.set(owner.key, measured.fit);
+      }
+      if (measured.built !== null) {
+        documents = measured.built.policyDocuments;
+        archivedPolicies += Number(measured.built.policyArchived);
+      } else {
+        // Pre-fit refusal leaves no materialized copy. The census still owes these counts.
+        const sources = owner.tree.archived.map((archive) => ({ archive, file: archive.source }));
+        documents = policyDocuments(sources, owner.tree.rows.policy);
+      }
+    } catch (error) {
+      if (!(error instanceof UnreadablePolicy)) {
+        throw error;
+      }
+      problems.push({ code: "bad_store", at: `owner/${owner.key}/policy.db` });
       continue;
     }
     for (const text of documents) {
@@ -231,12 +240,6 @@ export function census(copy: Copy, tiers: Tiers): Census {
         settings.with_spend_settings += Number(found.caps > 0);
         settings.with_egress_ask += Number(found.ask);
       }
-    }
-    const measured = measure(owner, copy, tiers, null, documents);
-    problems.push(...measured.problems);
-    archivedPolicies += measured.built?.policyArchived === true ? 1 : 0;
-    if (measured.fit !== null) {
-      fits.set(owner.key, measured.fit);
     }
   }
   const problems = [...copyProblems, ...fleet.problems, ...[...owned.values()].flat()];

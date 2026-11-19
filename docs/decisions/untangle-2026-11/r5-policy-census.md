@@ -42,3 +42,16 @@ document changed from valid to unrecognized, 93f714d1 emitted one valid
 live policy and no refused file. In the reverse direction it emitted no live
 policy and a refused file. The archive-row writer eeee6bba agreed with
 the archived database in both directions on both runtimes.
+
+## Reconciliation with the archive writer
+
+- [x] The builder reads policy text and collection rows from the SQLite files it
+  puts into the bundle, using the staged verbatim reader. The census classifies
+  those exact documents for a built owner. When an owner fails the size check
+  before a copy is built, the census reads the store identified by the survey.
+  A policy read failure retains the size finding as well as the bad-store finding.
+- [x] The previous policy revision failed the permanent writer regression. The
+  corrected tree passed all 72 bundle and census cases, then a new census
+  regression passed separately after a document changed during the build.
+- [ ] Verify the complete importer, platform types, and the joint rehearsal on
+  the published source. Representative data and the founder's mapping remain open.

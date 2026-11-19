@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
 import { contentIdOf } from "../../contract/src/content";
@@ -26,6 +26,7 @@ import {
 import {
   buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, PRIVATE_RECORD,
 } from "../bundle";
+import { Store } from "../build";
 import { census } from "../census";
 import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
@@ -153,6 +154,46 @@ describe("the bundle builder", () => {
     expect(json(join(out, keyOf(BOB), "owner.json"))).toMatchObject({
       admission: { state: "suspended", reasons: ["billing"] }, tier: "free" });
     expect(rows(join(out, keyOf(BOB)))).toEqual([]);
+  });
+
+  it("keeps the readable refused policy and the archived database on the same revision", () => {
+    const { f, out, options } = setup();
+    const carriedFile = join(f.tree(ALICE), "novel", "workspace", "run.sh");
+    const updated = "later unrecognized document";
+    const file = Store.prototype.file;
+    let changed = false;
+    const duringBuild = vi.spyOn(Store.prototype, "file").mockImplementation(function (this: Store,
+        source: string | Buffer, size: number) {
+      if (!changed && source.toString() === carriedFile) {
+        const db = new DatabaseSync(join(f.account(ALICE), "policy.db"));
+        try {
+          db.prepare("UPDATE policy SET document = ?").run(updated);
+          changed = true;
+        } finally {
+          db.close();
+        }
+      }
+      return file.call(this, source, size);
+    });
+    try {
+      buildBundles(f.copy, options);
+    } finally {
+      duringBuild.mockRestore();
+    }
+    expect(changed).toBe(true);
+    const bundle = join(out, keyOf(ALICE));
+    const entries = manifest(bundle);
+    const dbEntry = entries.find((e) => e.path.endsWith("/broker/policy.db"))!;
+    const saved = join(f.work, "archived-policy.db");
+    writeFileSync(saved, bytesOf(bundle, dbEntry));
+    const archived = new DatabaseSync(saved, { readOnly: true });
+    try {
+      expect(archived.prepare("SELECT document FROM policy").get()!["document"]).toBe(updated);
+    } finally {
+      archived.close();
+    }
+    const readable = entries.find((e) => e.path.endsWith("/policy.refused.json"))!;
+    expect(bytesOf(bundle, readable).toString("utf8")).toBe(updated);
   });
 
   it("archives a policy the platform's validator refuses, verbatim, and keeps the default, " +
