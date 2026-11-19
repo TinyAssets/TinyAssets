@@ -10,5 +10,6 @@ Rehearsed the opener `eb845985` with restore begin `e0aaf71a`, apply `10b99ee4`,
 
 - [x] Compare the seven changes against their callers and earlier subset evidence. A pass started by a pin uses its own corrected budget. Joining an older scheduled pass and polling a recorded retry remain separate concerns.
 - [x] Five restore regressions and one export regression passed through the ordinary Workerd entrypoint on the seven-branch tree above (61 and 28 cases outside the respective selections).
-- [ ] Verify the separate interrupted staged-byte test and nested write-gate rollback on the same tree. The staged-byte test reached the injected SQLite constraint. A final test-runner verdict is required for each.
+- [x] The nested write-gate rollback case also passed (five outside the selection). Seven selected Workerd tests passed across the three entries.
+- [ ] On the same tree the ordinary interrupted staged-byte case reached the injected SQLite constraint, the Worker exited unexpectedly and the test timed out at 86 seconds (one failed, 65 outside the selection, one unhandled pool error). Retry this case on the apply branch and this seven-branch combination in isolation. Verify the staged total, cursor and restored rows after retry before closing it.
 - [ ] Historical partial writes, joining an older 45-second pass, direct polling during a recorded five-minute retry, and main and pre-cutover verification remain open.
