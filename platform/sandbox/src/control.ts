@@ -70,7 +70,6 @@ import { sha256Hex } from "../../contract/src/digest";
 import { AUTHORITY, HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
-import { pastedSigninCode } from "../../sources/src/signin";
 import { readControl, type SandboxCeilings } from "../../contract/src/control";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import {
@@ -82,7 +81,7 @@ import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { SEALED_ROUTE } from "../../contract/src/routing-mac";
 import {
   METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkDocument, type NetworkReapply,
-  type SandboxSignin, type SandboxStart, type Started,
+  pastedSigninCode, type SandboxSignin, type SandboxStart, type Started,
 } from "../../contract/src/sandbox";
 
 import { install } from "../e2b/install";

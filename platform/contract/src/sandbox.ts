@@ -12,7 +12,9 @@
  * - the Worker's own log of the owner's sandboxes (`MeterEvent`), read `METER_BATCH` at a time.
  */
 
+import { SIGNIN_PASTE_MAX } from "./limits.ts";
 import type { EgressMode } from "./policy-document.ts";
+import { isPrintable, utf8Bytes } from "./text.ts";
 
 /** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
 export type CredentialKind = "vendor_login_in_sandbox" | "api_key";
@@ -164,6 +166,15 @@ export interface SandboxSignin {
    */
   readonly route: string;
   readonly urls: { readonly events: string; readonly signin: string };
+}
+
+/** An owner's paste for the CLI's stdin: one printable line that fits with its newline. */
+export function pastedSigninCode(value: unknown): string | null {
+  if (typeof value !== "string" || !isPrintable(value)) {
+    return null;
+  }
+  const code = value.trim();
+  return code !== "" && utf8Bytes(code) <= SIGNIN_PASTE_MAX ? code : null;
 }
 
 /**

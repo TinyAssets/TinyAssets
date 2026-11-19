@@ -70,8 +70,9 @@ import { createInterface } from "node:readline";
 import { RUN_BASICS } from "../../sources/src/run-env";
 import { type Served, signsIn } from "../../sources/src/served";
 import {
-  pastedSigninCode, SIGNIN_REFUSALS, type SigninRefusal, signinShape,
+  SIGNIN_REFUSALS, type SigninRefusal, signinShape,
 } from "../../sources/src/signin";
+import { pastedSigninCode } from "../../contract/src/sandbox";
 import { RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { utf8Text } from "../../contract/src/text";

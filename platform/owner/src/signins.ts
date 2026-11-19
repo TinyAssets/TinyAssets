@@ -32,7 +32,7 @@ import { AUTHORITY, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
 import { servedRecord, signsIn } from "../../sources/src/served";
 import {
-  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, pastedSigninCode, signinShape,
+  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
 } from "../../sources/src/signin";
 
 import { Refusal } from "../../contract/src/refusal";
@@ -54,7 +54,7 @@ import { clock } from "./clock";
 import { sealRoute } from "../../contract/src/routing-mac";
 import type { Runs } from "./runs";
 import { eventsRequest, signinRequest } from "./reports";
-import type { Started } from "../../contract/src/sandbox";
+import { pastedSigninCode, type Started } from "../../contract/src/sandbox";
 import type { SigninEventsRequest } from "../../contract/src/owner";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
