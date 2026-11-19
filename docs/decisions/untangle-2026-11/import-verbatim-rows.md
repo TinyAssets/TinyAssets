@@ -47,3 +47,9 @@ skipped them on redelivery, matched their complete row digest and returned all
 five on collection reads after admission, including a placed body. This covers
 the destination independently of the host fixture. An actual census and all
 coordinator-controlled cutover rehearsals remain outstanding.
+
+## Archived policy documents
+
+- [x] The ordinary bundle regression at `a248b68e` passed on Node 22.23.5 and failed with the same fixture on main `f934871ad`. On main, SQLite contained the complete synthetic document, but the owner's readable `policy.refused.json` stopped at the first NUL. The archived SQLite copy retained the complete value. The legacy policy writer serializes JSON, which escapes embedded NULs. This check covers the existing archival promise for unrecognized stored text and establishes no frequency in real backups.
+- [x] Independently compared the SQLite source as a BLOB, the emitted database's BLOB, the readable artifact and the census disposition. Five synthetic documents ran on five source combinations on each of Node 22 and 24. On Node 22 main and the five-stage import rehearsal without this reader preserved one of five readable documents. This branch, the earlier file-index rehearsal and the six-stage rehearsal with this reader preserved all five. On Node 24 each source combination preserved all five. Every comparison retained the complete SQLite copy and correctly archived the refused document.
+- [ ] Coordinator integration must carry the shared SQLite row reader into both the separate policy census reader and bundle construction. The earlier unrecognized-policy census and current real rehearsal remain separate acceptance requirements.
