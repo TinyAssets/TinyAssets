@@ -107,5 +107,21 @@ same archive. An early size refusal still needs its separate source check.
 
 Two ordinary regressions failed on 661d8798. Both passed after this change,
 along with the archived-policy revision and combined size/refusal controls.
-Full-suite and combined verification are pending. Historical cohort and fresh
-deletion comparison remain open.
+On 5f702199 all 178 standalone importer tests passed on Node 22. In the
+seventeen-stage rehearsal all 231 importer tests passed on Node 24. Full
+Node 24 platform TypeScript passed on both. On each tree and runtime,
+twelve independent SQLite fixtures covered UTF-8, UTF-16LE and UTF-16BE,
+valid text containing BOM/NUL/non-BMP, literal replacement text, malformed
+TEXT and BLOB. Both public and private bundle outcomes matched the census.
+
+A separate regression changes the source policy after its archived copy
+is made, then forces a collection refusal. The census still counts the
+archived policy. Reintroducing the source reread counted only one of the
+two classified policies and lost the egress-ask count. The first mutation
+experiment left the update in SQLite's WAL and could not distinguish the
+two revisions. The permanent fixture checkpoints that write before the
+immutable reader can reopen the source. All 50 standalone and 51 joined
+ordinary census tests passed with the regression.
+
+Historical cohort certification, original producer and exclusions, fresh
+deletion comparison and integration on main remain open.

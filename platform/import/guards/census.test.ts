@@ -176,6 +176,45 @@ describe("the census", () => {
     }
   });
 
+  it("counts the archived policy when malformed collection text holds its owner", () => {
+    const f = fresh();
+    const expected = census(f.copy, TIERS).report["legacy_policy"];
+    const collections = new DatabaseSync(join(f.account(ALICE), "conversations.db"));
+    collections.exec("UPDATE collection_rows SET body=X'FF' WHERE row_id='b1'");
+    collections.close();
+    const policyPath = join(f.account(ALICE), "policy.db");
+    const policy = new DatabaseSync(policyPath);
+    const original = policy.prepare("SELECT document FROM policy").get()!["document"];
+    const file = Store.prototype.file;
+    let changed = false;
+    const capture = vi.spyOn(Store.prototype, "file").mockImplementation(function (this: Store, source, size) {
+      if (!changed && typeof source === "string" && source !== policyPath
+          && readFileSync(source).subarray(0, 16).equals(Buffer.from("SQLite format 3\0"))) {
+        const db = new DatabaseSync(source, { readOnly: true });
+        try {
+          if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='policy'").get()
+              && db.prepare("SELECT document FROM policy").get()?.["document"] === original) {
+            policy.prepare("UPDATE policy SET document=?").run("later unreadable revision");
+            policy.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+            changed = true;
+          }
+        } finally {
+          db.close();
+        }
+      }
+      return file.call(this, source, size);
+    });
+    try {
+      const { report } = census(f.copy, TIERS);
+      expect(changed).toBe(true);
+      expect(report["problems"]).toMatchObject({ bad_store: 1 });
+      expect(report["legacy_policy"]).toEqual(expected);
+    } finally {
+      capture.mockRestore();
+      policy.close();
+    }
+  });
+
   it("reports unrecognised policy separately and examines a policy even when its files cannot fit", () => {
     const f = fresh();
     const db = new DatabaseSync(join(f.account(FOUNDER), "policy.db"));
