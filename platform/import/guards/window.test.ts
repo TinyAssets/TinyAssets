@@ -483,19 +483,26 @@ describe("the window's list pagination", () => {
 
   it("follows an opaque continuation and stops a cycle before requesting the page again", async () => {
     const w = world([]).window;
-    const read = (pages: string[], seen: (string | null)[]) =>
+    const read = (pages: string[], seen: (string | null)[], most?: number) =>
       listKeys({ ...w, fetcher: async (req) => {
-        seen.push(new URL(req.url).searchParams.get("continuation-token"));
+        const query = new URL(req.url).searchParams;
+        if (most !== undefined) expect(query.get("max-keys")).toBe(String(most));
+        seen.push(query.get("continuation-token"));
         const body = pages.shift();
         if (body === undefined) throw new Error("unexpected request");
         return new Response(page(body));
-      } }, NAMES.staging_bucket, "");
+      } }, NAMES.staging_bucket, "", most);
     const seen: (string | null)[] = [];
     const contents = "<KeyCount>1</KeyCount><Contents><Key>a&#47;b</Key>" +
       "<Owner><ID>owner</ID></Owner><Size>2</Size></Contents>";
     expect(await read([contents + more + token, "<ContinuationToken>a&amp;b</ContinuationToken>" +
       "<KeyCount>1</KeyCount><Contents><Key>c&amp;d</Key></Contents>" + done], seen))
       .toEqual(["a/b", "c&d"]);
+    expect(seen.splice(0)).toEqual([null, "a&b"]);
+    // Wipe asks for one key. An empty truncated page cannot prove absence, and once a
+    // key is found even a further continuation needs no request.
+    const another = "<NextContinuationToken>later</NextContinuationToken>";
+    expect(await read([none + more + token, contents + more + another], seen, 1)).toEqual(["a/b"]);
     expect(seen.splice(0)).toEqual([null, "a&b"]);
     await expect(read([none + more + token, none + more + token], seen)).rejects.toThrow(/repeated S3 continuation/);
     expect(seen).toEqual([null, "a&b"]);

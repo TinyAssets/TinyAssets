@@ -10,3 +10,17 @@ Local tests covered a complete two-page list, entity-encoded keys and cursors, r
 
 - https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html
 - https://developers.cloudflare.com/r2/api/s3/api/
+
+### Bounded wipe listings
+
+- [x] With a one-key limit, the reader follows an empty truncated page. Once
+  it finds a key, it stops even if that page offers another continuation.
+  Both requests advertise one key. The window fixture checks the decoded key,
+  opaque cursor and actual request count.
+- [x] All 36 window test bodies passed under direct Node 22 and 24 execution
+  using the Vitest assertions and fixture cleanup. Two independent Node 22
+  controls stopped at the empty page or read beyond the first key. The first
+  returned an empty list and the second issued an unexpected third request.
+- [ ] Complete the ordinary Vitest run on this revised test. The focused
+  command was killed. A later writer after the last observation remains an
+  independent import protocol dependency.
