@@ -21,6 +21,7 @@ Local tests covered a complete two-page list, entity-encoded keys and cursors, r
   using the Vitest assertions and fixture cleanup. Two independent Node 22
   controls stopped at the empty page or read beyond the first key. The first
   returned an empty list and the second issued an unexpected third request.
-- [ ] Complete the ordinary Vitest run on this revised test. The focused
-  command was killed. A later writer after the last observation remains an
-  independent import protocol dependency.
+- [x] On c49f4ddf the ordinary Node 24 Vitest window suite passed all 36
+  cases. The earlier focused Node 22 attempt exited 137.
+- [ ] Fence a later producer after the final listing before claiming that a
+  wipe is complete across concurrent writes.
