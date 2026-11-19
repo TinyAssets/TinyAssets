@@ -27,3 +27,9 @@
 5. **Left as it is.**
    - Each recorder keeps its own `clean`. The doors' two files share one, but the builder's and the reviewer's differ in two patterns. No line of one recorder is ever compared with another's, and making them one would rewrite every line for nothing.
    - The reviewer's admission state `pending` is still set by SQL. No door makes an admitted owner, with its agents and runs, pending again.
+
+## November 19 verification
+
+The combined rebuild snapshot `ce85dfe5e` was compared with `f934871ad`. All 804 wire records, 13,622 Owner RPC records and 73,945 reviewer records matched byte for byte. The RPC comparison covered 278 Worker cases and the reviewer comparison covered 279. The seven tool-discovery profiles contained only the expected description edits. The app profile matched exactly.
+
+A separate regression in the recorder CLI could truncate a large comparison when its output went through a pipe. On this branch the CLI wrote all 315,783 expected bytes through a pipe and through npm on both Node 22 and 24. The regression test lives in `platform/ci/guards/record-output.test.ts`. Re-run the behavior comparison when the combined runtime changes.
