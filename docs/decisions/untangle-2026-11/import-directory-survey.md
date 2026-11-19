@@ -19,6 +19,11 @@ owners and left out the unexpected file.
   normal and wrong-kind sessions and injected a storage I/O error at each
   optional root. Main continued on both errors. The corrected survey stopped
   on each, and avoided the redundant per-account probe.
-- [ ] Complete the full importer and platform typecheck and the combined
-  importer rehearsal. Historical subsets still need the original full owner
-  list and deletion comparison.
+- [x] All 168 ordinary importer cases and the full platform typecheck passed on
+  b1017a39 using Node 22. With the eleven stages in a22b487e, all 211
+  ordinary importer cases and full platform types passed using Node 24.
+  Each of two healthy frozen-input runs with different exclusion lists produced
+  all 41 files byte-identically to main, including private records, on each of
+  Node 22 and 24. The same comparisons passed independently on eeee6bba.
+- [ ] Historical subsets still need the original full owner list and deletion
+  comparison. The staged policy census has a separate source-order dependency.
