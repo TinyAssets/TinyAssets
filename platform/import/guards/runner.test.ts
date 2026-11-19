@@ -18,7 +18,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
-  readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
+  readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -32,7 +32,7 @@ import { parse } from "yaml";
 import { TIERS } from "../../ci/fixtures";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { MOUNT_OPTIONS } from "../backup";
-import { DIGESTS } from "../bundle";
+import { DIGESTS, PRIVATE_RECORD } from "../bundle";
 import { STAGE_INPUTS } from "../cli";
 import { checkStores, copyMain, forbidden, released } from "../copy";
 import {
@@ -157,6 +157,20 @@ function host() {
   };
   const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
   return { f, dir, remote, remotes, hostRoot, manifest, publish, disk, work, window, calls, lock };
+}
+
+function sharedLayerHost() {
+  const h = host();
+  // A shared-layer-only backup can go through the real job without mounting an image.
+  h.manifest.snapshots.length = 0;
+  const db = new DatabaseSync(join(h.f.work, "data", "_data", ".broker", "state",
+                                   "owner-identities.db"));
+  try {
+    db.exec("DELETE FROM owner_volumes");
+  } finally {
+    db.close();
+  }
+  return h;
 }
 
 /** Text that names no owner of the fixture, by principal or key, and no path of `work`. */
@@ -565,16 +579,7 @@ describe("the copy, on a fake droplet", () => {
   });
 
   it("publishes the whole owner set only after the offline bundle job finishes", () => {
-    const h = host();
-    // A shared-layer-only backup can go through the real job without mounting an image.
-    h.manifest.snapshots.length = 0;
-    const db = new DatabaseSync(join(h.f.work, "data", "_data", ".broker", "state",
-                                     "owner-identities.db"));
-    try {
-      db.exec("DELETE FROM owner_volumes");
-    } finally {
-      db.close();
-    }
+    const h = sharedLayerHost();
     h.publish();
     const work = h.work("publish1");
     expect(h.window(["census", "publish1", "rehearsal"]).status).toBe(0);
@@ -601,6 +606,35 @@ describe("the copy, on a fake droplet", () => {
     expect(new Set(views)).toEqual(new Set(["false"]));
     expect(existsSync(join(work, "bundle", "out"))).toBe(true);
     expect(existsSync(join(work, "bundle", "private", DIGESTS))).toBe(true);
+  });
+
+  it("retries an unpublished result and publishes the completed set with a named refusal", () => {
+    const h = sharedLayerHost();
+    const plans = new DatabaseSync(join(h.f.work, "data", "_data", ".broker", "plans.db"));
+    try {
+      plans.prepare("UPDATE plans SET tier = ? WHERE owner = ?").run("unknown-tier", ALICE);
+    } finally {
+      plans.close();
+    }
+    h.publish();
+    expect(h.window(["census", "retry1", "rehearsal"]).status).toBe(3);
+    const args = ["bundle", "retry1", "rehearsal"];
+    const input = `${FOUNDER}\n`;
+    const preload = join(h.dir, "interrupt-release.cjs");
+    writeFileSync(preload, 'if (process.argv.includes("release")) process.exit(8);\n');
+    const failed = h.window(args, input, { env: { NODE_OPTIONS: `--require=${preload}` } });
+    expect(failed.status).toBe(4);
+    const published = join(h.work("retry1"), "bundle");
+    expect(existsSync(published)).toBe(false);
+    const retry = h.window(args, input);
+    expect(retry.status, retry.out).toBe(3);
+    const record = JSON.parse(readFileSync(join(published, "private", PRIVATE_RECORD), "utf8")) as
+      { owners: { key: string; owner: string; excluded: boolean }[] };
+    const ready = record.owners.filter((owner) => !owner.excluded);
+    expect(ready.map((owner) => owner.owner)).toContain(BOB);
+    expect(ready.map((owner) => owner.owner)).not.toContain(ALICE);
+    expect(readdirSync(join(published, "out")).sort()).toEqual(ready.map((owner) => owner.key).sort());
+    expect(existsSync(join(published, "private", DIGESTS))).toBe(true);
   });
 
   it("bundles from the exclusion list on stdin, into its one writable folder, once", () => {
