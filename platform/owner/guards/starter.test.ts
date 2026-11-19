@@ -71,7 +71,7 @@ describe("the starter package", () => {
     }
   });
 
-  it("keeps main's retired paths and advances the version for a change owners reconcile", async () => {
+  it("keeps main's retired paths and advances the version for changed owner files or plugin skills", async () => {
     // Starter.next() gives a reconciled owner no more work at the same or a lower version.
     // Compare the package as the owner reads it: the OKF watcher's pin alone needs no bump.
     const main = spawnSync("git", ["show", "origin/main:platform/starter/starter.json"],
@@ -84,6 +84,11 @@ describe("the starter package", () => {
     if (current.version === previous.version) {
       expect(current, "raise the starter version for changes owners must reconcile")
         .toEqual(starterPackage(previous));
+      const { pluginSkillPaths } = await import(join(PLATFORM, "plugins", "build.mjs")) as
+        { pluginSkillPaths: (files: Bundled["files"]) => string[] };
+      expect(pluginSkillPaths(bundled.files).sort(),
+             "raise the version for the skills shipped by the plugins")
+        .toEqual(pluginSkillPaths(previous.files).sort());
     }
     const { dropped } = await import(join(STARTER, "bundle.mjs")) as
       { dropped: (before: Bundled, after: Bundled) => string[] };

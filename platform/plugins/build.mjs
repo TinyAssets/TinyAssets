@@ -51,12 +51,18 @@ function json(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** The starter workspace paths included in both directory plugins. */
+export function pluginSkillPaths(files) {
+  return files.filter((file) => file.path.startsWith(SKILLS) && file.plugin !== false)
+    .map((file) => file.path);
+}
+
 /** The skills' files the plugins carry, as `skills/<name>/...`. */
 function skillFiles() {
-  return Object.fromEntries(STARTER.files
-    .filter((file) => file.path.startsWith(SKILLS) && file.plugin !== false)
-    .map((file) => [join("skills", file.path.slice(SKILLS.length)),
-                    readFileSync(join(HERE, "..", "starter", file.path.slice(1)), "utf8")]));
+  return Object.fromEntries(pluginSkillPaths(STARTER.files).map((path) => [
+    join("skills", path.slice(SKILLS.length)),
+    readFileSync(join(HERE, "..", "starter", path.slice(1)), "utf8"),
+  ]));
 }
 
 /**
