@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync,
-  symlinkSync, writeFileSync,
+  symlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,6 +77,9 @@ const I = "/workspace/imported";
 describe("the bundle builder", () => {
   it("writes each owner's tree with the platform's own content ids for the backup's bytes", () => {
     const { f, out, options } = setup();
+    const script = join(f.tree(ALICE), "novel", "workspace", "run.sh");
+    const historicalTime = new Date(-1250);
+    utimesSync(script, historicalTime, historicalTime);
     const summary = buildBundles(f.copy, options);
     expect(summary).toMatchObject({ dry_run: false, owners: 16, bundled: 3, excluded: 1, erased: 1,
                                     erasure_pending: 11,
@@ -113,7 +116,6 @@ describe("the bundle builder", () => {
       `dir ${I}/wiki`,
       `file ${I}/wiki/home.md`,
     ]);
-    const tree = f.tree(ALICE);
     for (const entry of entries.filter((e) => e.kind === "file")) {
       const bytes = bytesOf(bundle, entry);
       expect(entry.size, entry.path).toBe(bytes.length);
@@ -126,8 +128,7 @@ describe("the bundle builder", () => {
     expect(bytesOf(bundle, big).equals(bigBytes())).toBe(true);
     const run = entries.find((entry) => entry.path.endsWith("/run.sh"))!;
     expect([run.mode, run.mtime_ms, run.chunks])
-      .toEqual([1, Math.floor(lstatSync(join(tree, "novel", "workspace", "run.sh")).mtimeMs),
-                undefined]);
+      .toEqual([1, historicalTime.getTime(), undefined]);
     expect(entries.find((entry) => entry.path.endsWith("/ch1.md"))!.mode).toBe(0);
     // Every small file's content is inline, every large one's in chunks.
     for (const entry of entries.filter((e) => e.kind === "file")) {
