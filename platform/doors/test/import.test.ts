@@ -204,6 +204,24 @@ describe("the import consumer", () => {
     expect(before.policy).toBe((await held(await staged(fresh()))).policy);
   });
 
+  it("resumes the original signed bundle after only its rows were committed", async () => {
+    const message = await staged(fresh());
+    const first = batch(message);
+    const partial = world();
+    await importQueue(first.batch, partial.env, { ms: 0, bytes: 0 });
+    expect(first.acked).toEqual([0]);
+    expect(partial.sent).toHaveLength(1);
+    expect(partial.puts).toEqual([]);
+    const before = await held(message);
+    expect(before.rows.count).toBeGreaterThan(0);
+    expect(before.entries).toEqual([]);
+
+    // Resubmit the original signed message even if its continuation was lost.
+    expect(await drain(world(), message)).toMatchObject({ outcome: "acked" });
+    expect(clean(await checkOf(message))).toBe(true);
+    expect((await held(message)).rows).toEqual(before.rows);
+  });
+
   it("goes on from its own continuation, one slice at a time, to the same owner state", async () => {
     const owner = fresh();
     const w = world();

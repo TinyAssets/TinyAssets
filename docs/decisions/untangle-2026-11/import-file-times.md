@@ -66,3 +66,14 @@ nine expected chunk keys.
 The separate archive writer preserves historical times in ignored or refused
 trees at whole-second tar precision on 8535a52d. Ordinary file entries use
 milliseconds and go through the owner directly.
+
+- [x] In local Workerd, the original Doors queue consumer from f934871ad
+  acknowledged the historical fixture and stopped with two collection rows,
+  zero file entries and zero chunk writes. Resubmitting the identical signed
+  message to the combined corrected consumer on the very same storage kept
+  both rows, restored 28 entries with nine chunk puts and passed importCheck
+  and public readback. Another delivery added zero puts and left the complete
+  check identical. Both consumer versions used the same staged owner and
+  Files Workers. An acknowledged delivery requires explicit resubmission.
+- [ ] Run the new ordinary regression that interrupts the delivery after its
+  rows and resubmits the original message.
