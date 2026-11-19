@@ -761,7 +761,10 @@ Measured on the stage as it runs:
   isolate's 128 MB counts uncollected garbage (a 16 MiB request body), and each Worker's
   `memoryUsageBytes`, the gateway's and the doors' too, to reset the pool and baseline; an
   edit's wall time a chunk with R2, and the step at `SLOT_WAIT_MS`; a sandbox's real upload
-  rate against `MIN_RATE`.
+  rate against `MIN_RATE`. Measure the ten-million setting on the current owner. The
+  [store-probe record](store-probe.md) demonstrates one million on an earlier topology.
+  Resolve the original reset and billing questions against the current owner before
+  reusing or retiring that harness.
 - [ ] The stage ends with the product's own erase door, then `handback`: both first live
   proofs. The stage is deleted, not kept (d3 §H).
 

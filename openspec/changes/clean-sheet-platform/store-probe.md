@@ -14,13 +14,13 @@ S1-S3: `limits.subrequests` 1,000,000; `OPEN_MAX` 64; `contextRetentionMs` and
 when the thread host closes it. No pre-warm: a new thread's store opens about 0.3 s cold,
 once.
 
-Still owed, live: **P8**, `deleteAll()` on a populated store frees its billed bytes within
+The October design left two live questions open. **P8**, `deleteAll()` on a populated store frees its billed bytes within
 a billing day (design-decision §6), which every drop's wipe and the owner's erasure
 (S4-S5) rely on, and a destroyed store then bills nothing at all: a store keeps no mark
 once destroyed (S4-S5 review M3), so it is as empty as one never made. In workerd a store
 never made, and one after a bare `deleteAll`, both read `databaseSize` 4,096; the old
 destroyed mark kept 8,192, about 2.9 GB a year at 1,000 runs a day. And **P5**, a store
-reset mid-run.
+reset mid-run. The November [disposition review](../../../docs/decisions/untangle-2026-11/storeprobe-disposition.md) traces what survives the removal of the per-thread store. Hold a new dispatch until the outstanding question and its current measurement target are identified.
 
 - **P3.** Production accepts the `PISTORE` → `ThreadStore` binding with no `script_name`
   under `disable_ctx_exports`, and it reaches only `ThreadStore` (`ctx.exports` is
