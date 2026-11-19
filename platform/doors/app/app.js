@@ -196,15 +196,48 @@ async function writeNew(path, text) {
   }
 }
 
+/** agents_list pages outside agents, owner agents and connected apps as a single sequence.
+ * One click adds one page to this screen. Existing forms and their drafts stay mounted. */
+function directoryPages(first, show) {
+  show(first);
+  if (!first.next) {
+    return null;
+  }
+  let after = first.next;
+  const more = action("Read the next directory page", async () => {
+    const page = await call("tools/agents_list", { after });
+    if (more.isConnected) {
+      show(page);
+      after = page.next;
+      if (!after) {
+        more.remove();
+      }
+    }
+  }, (error) => {
+    if (more.isConnected) {
+      report(error);
+    }
+  }, { class: "quiet" });
+  return more;
+}
+
 async function agents(arg) {
   const turn = turnOf("agents", arg);
   if (arg !== null) {
     return agent(arg);
   }
-  const [{ owner_agents: owned }, { sources }, { connections }, { capabilities }] =
+  const [directory, { sources }, { connections }, { capabilities }] =
     await Promise.all([call("tools/agents_list"), call("sources"), call("connections/list"),
                        call("capabilities")]);
-  const live = owned.filter((a) => a.retired_at === null);
+  const list = h("ul", {});
+  const empty = h("p", { class: "muted" }, "You have no agents yet.");
+  const more = directoryPages(directory, (page) => {
+    for (const a of page.owner_agents.filter((a) => a.retired_at === null)) {
+      list.append(h("li", {}, h("a", { href: `#agents/${encodeURIComponent(a.agent)}` }, a.agent),
+                    h("small", {}, `Since ${when(a.created_at)}`)));
+    }
+    empty.hidden = list.childElementCount > 0 || Boolean(page.next);
+  });
   // Each engine's credentials are its record's; a subscription's only while its sign-in is
   // switched on.
   const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
@@ -257,11 +290,7 @@ async function agents(arg) {
   };
   paint(turn,
        h("h1", {}, "Agents"),
-       h("section", {},
-         live.length === 0 ? h("p", { class: "muted" }, "You have no agents yet.")
-           : h("ul", {}, live.map((a) =>
-             h("li", {}, h("a", { href: `#agents/${encodeURIComponent(a.agent)}` }, a.agent),
-               h("small", {}, `Since ${when(a.created_at)}`))))),
+       h("section", {}, list, empty, more),
        h("section", {},
          h("h2", {}, "New agent"),
          h("p", { class: "muted" }, "An agent is a folder of files: its agent.json and its " +
@@ -497,12 +526,27 @@ function heads(rows) {
 
 async function rooms(arg = null) {
   const turn = turnOf("rooms", arg);
-  const [inbox, board, { owner_agents: owned }] = await Promise.all([
+  const [inbox, board, directory] = await Promise.all([
     call("tools/inbox_digest", { limit: 100, after: 0 }),
     call("tools/board_digest", { limit: 100, after: 0 }), call("tools/agents_list")]);
-  const room = h("select", {}, owned.filter((a) => a.retired_at === null).map((a) =>
-    h("option", { value: `dm:${a.agent_id}` }, `You and ${a.agent}`)));
+  const room = h("select", {});
   const body = h("textarea", {});
+  const post = action("Post", async () => {
+    await call("tools/room_post", { room_id: room.value, client_message_id: randomText(16),
+                                    body: body.value, parent_id: null });
+    body.value = "";
+    say("Posted. Mail to your own agent starts its run; its reply comes here.");
+  }, report);
+  const composer = h("div", {}, field("Room", room), field("Message", body), post);
+  const empty = h("p", { class: "muted" }, "Make an agent first.");
+  const more = directoryPages(directory, (page) => {
+    for (const a of page.owner_agents.filter((a) => a.retired_at === null)) {
+      room.append(h("option", { value: `dm:${a.agent_id}` }, `You and ${a.agent}`));
+    }
+    post.disabled = room.options.length === 0;
+    empty.hidden = room.options.length > 0 || Boolean(page.next);
+    composer.hidden = !empty.hidden && body.value === "";
+  });
   const mail = inbox.mail.messages;
   paint(turn,
        h("h1", {}, "Rooms and board"),
@@ -516,16 +560,7 @@ async function rooms(arg = null) {
            await call("tools/mailbox_ack", { through: mail.at(-1).seq });
            await rooms();
          }, report, { class: "quiet" })),
-       h("section", {},
-         h("h2", {}, "Post"),
-         owned.length === 0 ? h("p", { class: "muted" }, "Make an agent first.")
-           : [field("Room", room), field("Message", body),
-              action("Post", async () => {
-                await call("tools/room_post", { room_id: room.value,
-                  client_message_id: randomText(16), body: body.value, parent_id: null });
-                body.value = "";
-                say("Posted. Mail to your own agent starts its run; its reply comes here.");
-              }, report)]),
+       h("section", {}, h("h2", {}, "Post"), more, empty, composer),
        h("section", {}, h("h2", {}, "Rooms"), heads(inbox.rooms.rows)),
        h("section", {}, h("h2", {}, "Board"), heads(board.rows)));
 }
@@ -740,7 +775,7 @@ async function sources(arg = null) {
 
 async function apps(arg = null) {
   const turn = turnOf("apps", arg);
-  const [policy, { clients }, { tools }, { agents: mains, apps: known }, { kinds }] =
+  const [policy, { clients }, { tools }, directory, { kinds }] =
     await Promise.all([
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
     call("agent/doorbell/kinds")]);
@@ -768,10 +803,34 @@ async function apps(arg = null) {
     await apps();
   };
   const outside = clients.filter((c) => c.source !== "api_key" && c.mode !== "revoked");
-  // Each app by the vendor its sign-in named (`apps.json`), unless the owner renamed it.
-  const named = (c) => c.name || known.find((app) => app.id === c.vendor)?.name
-    || c.client.slice(0, 12);
-  const unconnected = known.filter((app) => app.id !== null && !app.connected);
+  const names = new Map();
+  const named = (c) => c.name || names.get(c.vendor) || c.client.slice(0, 12);
+  const labels = new Map(outside.map((c) => [c.client, h("span", {}, named(c))]));
+  const mains = h("div", {});
+  const noMains = h("p", { class: "muted" }, "No main agent has joined yet.");
+  const unconnected = h("ul", { class: "apps" });
+  const allConnected = h("p", { class: "muted" }, "Every assistant TinyAssets knows is connected.");
+  const more = directoryPages(directory, (page) => {
+    for (const a of page.agents.filter((a) => a.disabled_reason === null)) {
+      mains.append(doorbell(a, kinds));
+    }
+    for (const app of page.apps) {
+      if (app.id !== null) {
+        names.set(app.id, app.name);
+        if (!app.connected) {
+          unconnected.append(h("li", {}, h("a", {
+            href: app.connect_url, target: "_blank", rel: "noopener noreferrer",
+          }, `Connect ${app.name}`)));
+        }
+      }
+    }
+    // A later directory page can supply the vendor's name for an unrenamed connected app.
+    for (const client of outside) {
+      labels.get(client.client).textContent = named(client);
+    }
+    noMains.hidden = mains.childElementCount > 0 || Boolean(page.next);
+    allConnected.hidden = unconnected.childElementCount > 0 || Boolean(page.next);
+  });
   paint(turn,
        h("h1", {}, "Connected apps"),
        h("section", {},
@@ -794,18 +853,12 @@ async function apps(arg = null) {
          h("h2", {}, "Your main agents"),
          h("p", { class: "muted" }, "A main agent is an app's own agent (a Claude scheduled " +
            "task, ChatGPT, a Grok routine) that joined your rooms and board."),
-         mains.filter((a) => a.disabled_reason === null).length === 0
-           ? h("p", { class: "muted" }, "No main agent has joined yet.")
-           : mains.filter((a) => a.disabled_reason === null).map((a) => doorbell(a, kinds))),
+         more, mains, noMains),
        h("section", {},
          h("h2", {}, "Connect another assistant"),
          h("p", { class: "muted" }, "Every assistant you connect shares this same workspace: " +
            "what you tell one, the others know."),
-         unconnected.length === 0
-           ? h("p", { class: "muted" }, "Every assistant TinyAssets knows is connected.")
-           : h("ul", { class: "apps" }, unconnected.map((app) => h("li", {},
-             h("a", { href: app.connect_url, target: "_blank", rel: "noopener noreferrer" },
-               `Connect ${app.name}`))))),
+         unconnected, allConnected),
        h("section", {},
          h("h2", {}, "Apps you connected"),
          outside.length === 0 ? h("p", { class: "muted" }, "No app is connected.")
@@ -817,7 +870,7 @@ async function apps(arg = null) {
                  h("option", { value: "custom", selected: c.profile === "custom" }, "Your choice above"),
                  h("option", { value: "directory", selected: c.profile === "directory" },
                    "The public directory's set (no code mode)"));
-               return h("tr", {}, h("td", {}, named(c),
+               return h("tr", {}, h("td", {}, labels.get(c.client),
                  c.vendor !== null && c.vendor_verified === 0 && c.name === ""
                    ? h("span", { class: "muted" }, " (its own name, not verified)") : null),
                  h("td", {}, c.mode === "full" ? "Everything" : `${c.scopes.length} scopes`),
