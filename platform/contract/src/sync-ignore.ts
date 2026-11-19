@@ -2,7 +2,7 @@
  * The sandbox sync's ignore list, read by both sides: the runner's sync agent
  * (`sandbox/runner/sync.ts`), which keeps what it names in the sandbox, and the owner's
  * object, which tells the owner what each change to it holds back (`owner-do.ts`): both
- * compile its lines (`ruleLines`, `unappliedLines`), so it is the contract's. Pure, so the
+ * compile its lines (`ruleKeys`, `unappliedLines`), so it is the contract's. Pure, so the
  * runner's bundle takes it whole.
  *
  * The sync-ignore file: what the sync never offers. Regenerable trees (dependencies, build
@@ -182,7 +182,7 @@ function parse(raw: Uint8Array, first = false): Parsed | null {
 }
 
 /** The end offset includes the physical line separator and any unparsed bytes after NUL. */
-function* parsedRules(source: SyncIgnoreSource): Generator<{ parsed: Parsed; end: number }> {
+function* parsedRules(source: SyncIgnoreSource): Generator<{ parsed: Parsed; end: number; original?: string }> {
   if (source instanceof Uint8Array) {
     let start = 0;
     while (start < source.length) {
@@ -199,15 +199,13 @@ function* parsedRules(source: SyncIgnoreSource): Generator<{ parsed: Parsed; end
       const raw = encoder.encode(line);
       end += raw.length + (i + 1 < source.length ? 1 : 0);
       const parsed = parse(raw, i === 0);
-      if (parsed !== null) yield { parsed, end };
+      if (parsed !== null) {
+        // Only the first file marker can shift the start of a normalized spelling.
+        const original = parsed.spelling.byteOffset === raw.byteOffset ? line : line.slice(1);
+        yield { parsed, end, original };
+      }
     }
   }
-}
-
-/** Normalized spellings for display. A displayed replacement character is never an identity. */
-export function ruleLines(source: SyncIgnoreSource): string[] {
-  const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
-  return Array.from(parsedRules(source), ({ parsed }) => decoder.decode(parsed.spelling));
 }
 
 /** Normalized byte identities for comparing a file edit against its previous rules. */
@@ -316,7 +314,7 @@ function classAt(p: Uint8Array, at: number): { set: ByteSet; end: number } | nul
       } else {
         const key = byteKey(p.subarray(start, j - 1));
         const test = POSIX[key];
-        if (test === undefined) {
+        if (!Object.hasOwn(POSIX, key) || test === undefined) {
           return null;  // a malformed [:class:]
         }
         for (let b = 0; b < 256; b++) {
@@ -892,9 +890,15 @@ function compile(lines: SyncIgnoreSource): Compiled {
     better(best, rule, dirOnly);
     into.set(key, best);
   };
-  for (const { parsed, end } of parsedRules(lines)) {
+  const reportLine = (parsed: Parsed, original: string | undefined) => {
+    const text = display.decode(parsed.spelling);
+    // TextEncoder maps each unpaired surrogate to one replacement code unit. The decoded
+    // length therefore also selects the original JavaScript spelling for string-list callers.
+    return original === undefined ? text : original.slice(0, text.length);
+  };
+  for (const { parsed, end, original } of parsedRules(lines)) {
     if (end > LIST_BYTES) {
-      unapplied.push({ line: display.decode(parsed.spelling), reason: "bytes" });
+      unapplied.push({ line: reportLine(parsed, original), reason: "bytes" });
       continue;
     }
     const record: Rule = { negative: parsed.negative,
@@ -922,7 +926,7 @@ function compile(lines: SyncIgnoreSource): Compiled {
       if (full || counted.name + counted.path + cost > AUTOMATON_STATES) {
         // Past the ceiling: this and every later automaton line, in file order.
         full = true;
-        unapplied.push({ line: display.decode(parsed.spelling), reason: "states" });
+        unapplied.push({ line: reportLine(parsed, original), reason: "states" });
         continue;
       }
       rules.push(record);

@@ -21,7 +21,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   AUTOMATON_STATES, automatonStates, defaultSyncIgnore, ignoredBy, LIST_BYTES,
-  REMEMBERED_NAME_BYTES, ruleLines, unappliedLines,
+  REMEMBERED_NAME_BYTES, ruleKeys, unappliedLines,
 } from "../src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -189,8 +189,9 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
     const paths = ["a.tmp", "note", "\uFEFFnote", "sub/other", "sub/\uFEFFother", " node_modules",
                    "node_modules", " #memo", "end ", "end", "build"];
     expect(differences(lines, paths)).toEqual([]);
-    expect(ruleLines(lines)).toEqual(["*.tmp", "\uFEFFnote", "**/\uFEFFother", " node_modules",
-                                     " #memo", "end\\ ", "build"]);
+    expect(ruleKeys(lines)).toEqual(["*.tmp", "\uFEFFnote", "**/\uFEFFother", " node_modules",
+                                     " #memo", "end\\ ", "build"].map((line) =>
+      Buffer.from(line, "utf8").toString("latin1")));
     const match = ignoredBy(lines);
     expect([match(" node_modules"), match("build")]).toEqual(["custom", "default"]);
     expect(differences(["\uFEFF\uFEFFname"], ["\uFEFFname", "name"])).toEqual([]);
@@ -215,6 +216,12 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
     bytes.set([10, 120, 10], LIST_BYTES - 2);
     expect(ignoredBy(bytes.subarray(0, LIST_BYTES))("x")).toBe("custom");
     expect(unappliedLines(bytes)).toEqual([{ line: "x", reason: "bytes" }]);
+  });
+
+  it("recognizes only the POSIX class names Git defines", () => {
+    for (const name of ["constructor", "toString", "__proto__", "alpha", "digit"]) {
+      expect(differences([`[[:${name}:]]`], ["a", "7", "-"]), name).toEqual([]);
+    }
   });
 
   it("gives a repeated automaton rule its final place among overlapping rules", () => {
