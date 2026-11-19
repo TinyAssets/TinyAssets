@@ -14,8 +14,17 @@ two rows appeared in the result even though its archive was absent.
   disposition and broker archive path. Whole-file archives and dropped tables
   retain their existing treatment.
 - [x] Both focused regression cases pass on this change.
-- [ ] Record the full importer and TypeScript results. Reconcile the row
-  queries with the staged verbatim-text reader and check the joined behavior.
+- [x] On eeee6bba, all 169 ordinary Node 24 importer tests and the full platform
+  TypeScript check passed. Both new tests failed on main f934871ad. A separate
+  full-build control changed the original SQLite row after the builder finished
+  reading the archived database. On Node 22 and 24, main emitted different row
+  bodies in the archive and live data. On this branch both held the earlier body.
+- [x] Combined the nine stages documented at 4de29399 with eeee6bba and the
+  verbatim-text reader bf36bfa9. Open the inventoried copy and call the
+  existing tableRows reader on it. Keep the earlier readAt helper and both
+  sets of regression tests. All 210 ordinary Node 24 importer cases and the full
+  platform TypeScript check passed on that local rehearsal. Integration on main
+  remains with the coordinator.
 
 The cutover still requires a frozen source copy. This change aligns the two
 representations within each generated bundle. Earlier bundles and previously
