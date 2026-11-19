@@ -1099,28 +1099,6 @@ test("a save re-lists its own folder, never the folder the owner went to since (
   assert.equal(await page.getByRole("heading", { name: `Files in ${folder}` }).count(), 0);
 });
 
-test("a screen still loading never paints over the signed-out view (review L1)",
-     { timeout: 60_000 }, async () => {
-  await page.goto(`${ORIGIN}/app#home`);
-  await page.getByRole("heading", { name: "Home", exact: true }).waitFor();
-  await holding("**/app/api/grants", async (grants) => {
-    const from = await parsedSoFar();
-    await page.goto(`${ORIGIN}/app#keys`);
-    await grants.first;
-    // Signed out while API keys still loads; then its answer comes.
-    await page.getByRole("button", { name: "Sign out" }).click();
-    await page.getByRole("heading", { name: "Your TinyAssets" }).waitFor();
-    const answered = page.waitForResponse((response) =>
-      response.url().endsWith("/app/api/grants"));
-    await grants.release();
-    await answered;
-    // The keys screen's two answers handled, the held one last.
-    await handled(from, ["/app/api/grants", "/app/api/capabilities"]);
-  });
-  assert.equal(await page.getByRole("heading", { name: "Your TinyAssets" }).count(), 1);
-  assert.equal(await page.getByRole("heading", { name: "API keys", exact: true }).count(), 0);
-});
-
 test("directory paging preserves the room draft and an outstanding post", { timeout: 60_000 },
      async () => {
   const { body: directory } = await api("tools/agents_list");
@@ -1197,6 +1175,84 @@ test("retrying a directory page resolves unnamed app labels and preserves policy
     await page.unroute(endpoint);
     await page.unroute(grants);
   }
+});
+
+test("Agents, Rooms and Connected apps keep edits across the real directory boundary",
+     { timeout: 60_000 }, async () => {
+  // A long allowed name gives each agent a realistic share of the directory's byte budget.
+  // Write the definition through the owner so the normal file reaction registers every agent.
+  let second;
+  for (let batch = 0; !second?.owner_agents.length; batch++) {
+    for (let offset = 0; offset < 20; offset++) {
+      const name = `paging-${String(batch * 20 + offset).padStart(4, "0")}-${"a".repeat(48)}`;
+      const dir = `/workspace/agents/${name}`;
+      assert.equal((await api("tools/file_mkdir", { path: dir, expected_etag: null })).status, 200);
+      const put = await api("files/write", { path: `${dir}/agent.json`,
+                                             expected_etag: "", text: "{}" });
+      assert.equal(put.status, 200);
+      assert.ok(put.body.entry);
+    }
+    const first = await api("tools/agents_list");
+    assert.equal(first.status, 200);
+    if (first.body.next) {
+      const next = await api("tools/agents_list", { after: first.body.next });
+      assert.equal(next.status, 200);
+      second = next.body;
+    }
+  }
+  const later = second.owner_agents.find((a) => a.retired_at === null).agent;
+  const app = second.apps.find((a) => a.id !== null && !a.connected);
+  const more = page.getByRole("button", { name: "Read the next directory page" });
+
+  await page.goto(`${ORIGIN}/app#agents`);
+  const name = page.getByLabel(/^Name/);
+  await name.fill("unfinished-agent");
+  const agent = page.getByRole("link", { name: later, exact: true });
+  assert.equal(await agent.count(), 0);
+  await more.click();
+  await agent.waitFor();
+  assert.equal(await name.inputValue(), "unfinished-agent");
+
+  await page.goto(`${ORIGIN}/app#rooms`);
+  const draft = page.getByLabel(/^Message/);
+  const room = page.getByRole("combobox");
+  await draft.fill("unsent room draft");
+  const selected = await room.inputValue();
+  await more.click();
+  await room.locator("option", { hasText: `You and ${later}` }).waitFor({ state: "attached" });
+  assert.equal(await room.inputValue(), selected);
+  assert.equal(await draft.inputValue(), "unsent room draft");
+
+  await page.goto(`${ORIGIN}/app#apps`);
+  const every = page.getByRole("checkbox", { name: /Every tool/ });
+  const chosen = !(await every.isChecked());
+  await every.setChecked(chosen);
+  await more.click();
+  await page.getByRole("link", { name: `Connect ${app.name}`, exact: true }).waitFor();
+  await more.waitFor({ state: "detached" });
+  assert.equal(await every.isChecked(), chosen);
+});
+
+test("a screen still loading never paints over the signed-out view (review L1)",
+     { timeout: 60_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#home`);
+  await page.getByRole("heading", { name: "Home", exact: true }).waitFor();
+  await holding("**/app/api/grants", async (grants) => {
+    const from = await parsedSoFar();
+    await page.goto(`${ORIGIN}/app#keys`);
+    await grants.first;
+    // Signed out while API keys still loads; then its answer comes.
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("heading", { name: "Your TinyAssets" }).waitFor();
+    const answered = page.waitForResponse((response) =>
+      response.url().endsWith("/app/api/grants"));
+    await grants.release();
+    await answered;
+    // The keys screen's two answers handled, the held one last.
+    await handled(from, ["/app/api/grants", "/app/api/capabilities"]);
+  });
+  assert.equal(await page.getByRole("heading", { name: "Your TinyAssets" }).count(), 1);
+  assert.equal(await page.getByRole("heading", { name: "API keys", exact: true }).count(), 0);
 });
 
 test("the app made no third-party request and threw nothing", () => {
