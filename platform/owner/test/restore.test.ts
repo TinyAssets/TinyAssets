@@ -234,6 +234,36 @@ async function source(): Promise<{ o: Owner; gen: Generated; ns: string; rows: s
 }
 
 describe("a restore", () => {
+  it("retries the first log segment from the same cursor and staged byte count", async () => {
+    const o = await owner();
+    let written = false;
+    const gen = await generate(o.stub, { afterUnit: async ({ gate }) => {
+      if (!written) {
+        written = true;
+        await gate.write(() => gate.storage.sql.exec(
+          "INSERT INTO owner_notices (at, type, detail) VALUES (1, 'log', 'first'), " +
+          "(2, 'log', 'second')"));
+      }
+    } });
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const ns = space!["ns"] as string;
+    const staged = await stagedOf(ns, gen.gen);
+    expect(staged.end).toBeGreaterThan(0);
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
+    await sqlIn(stub, "CREATE TRIGGER reject_log_row BEFORE INSERT ON restore_rows WHEN " +
+      "EXISTS (SELECT 1 FROM restore_rows) BEGIN SELECT RAISE(ABORT, 'segment interrupted'); END");
+    expect((await failure(() => stepped(stub, o.name))).message).toMatch(/segment interrupted/);
+    expect(await sqlIn(stub, "SELECT step, at, after, staged, peak, " +
+      "(SELECT count(*) FROM restore_rows) AS rows FROM owner_restore")).toEqual([
+      { step: "log", at: 0, after: null, staged: 0, peak: 0, rows: 0 }]);
+    await sqlIn(stub, "DROP TRIGGER reject_log_row");
+    expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen: gen.gen });
+    expect(await rowsOf(stub)).toBe(gen.atE);
+    expect(await sqlIn(stub, "SELECT staged, peak FROM owner_restore"))
+      .toEqual([{ staged: staged.end, peak: staged.peak }]);
+  });
+
   it("rolls back a failed load page and resumes an identical receipt kept by an older loader",
      async () => {
     const o = await owner();
@@ -392,15 +422,6 @@ describe("a restore", () => {
       .toEqual([{ staged: staged.peak }]);
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen: gen.gen });
-    // Interrupt one segment after its first change, while the durable byte total still
-    // describes the previous cursor. The partial row and byte count must roll back together.
-    await sqlIn(stub, "CREATE TRIGGER reject_log_row BEFORE INSERT ON restore_rows WHEN " +
-      "(SELECT coalesce(sum(n), 0) FROM restore_rows) > (SELECT staged FROM owner_restore) " +
-      "BEGIN SELECT RAISE(ABORT, 'segment interrupted'); END");
-    await expect(stepped(stub, o.name)).rejects.toThrow(/segment interrupted/);
-    expect(await sqlIn(stub, "SELECT staged = (SELECT coalesce(sum(n), 0) FROM restore_rows) " +
-      "AS accounted FROM owner_restore")).toEqual([{ accounted: 1 }]);
-    await sqlIn(stub, "DROP TRIGGER reject_log_row");
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done" });
     expect(await rowsOf(stub)).toBe(gen.atE);
     // And the restore staged as much: its own count, and the generation it adopts.
