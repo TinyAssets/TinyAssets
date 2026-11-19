@@ -225,6 +225,28 @@ describe("rule 0", () => {
     expect(JSON.stringify(report) + table).not.toContain("my_secret_plot");
   });
 
+  it("holds the owner when its sessions directory is a regular file", () => {
+    const f = fresh();
+    const sessions = join(f.tree(ALICE), ".agent-sessions");
+    const saved = join(f.work, "saved-sessions");
+    renameSync(sessions, saved);
+    expect(census(f.copy, TIERS).ready).toBe(true);
+
+    writeFileSync(sessions, "unexpected session data");
+    const { ready, report, table } = census(f.copy, TIERS);
+    expect(ready).toBe(false);
+    expect(report["problems"]).toEqual({ unknown_entry: 1 });
+    expect(table).toContain("problem unknown_entry\troot/.agent-sessions");
+    const options = { out: null, private: null, exclude: new Set([FOUNDER]), tiers: TIERS };
+    expect(buildBundles(f.copy, options)).toMatchObject({
+      bundled: 2, excluded: 1, refused: { unknown_entry: 1 },
+    });
+
+    rmSync(sessions);
+    renameSync(saved, sessions);
+    expect(buildBundles(f.copy, options)).toMatchObject({ bundled: 3, refused: {} });
+  });
+
   it("refuses an account folder that is a link, never following it", () => {
     const f = fresh();
     const real = f.account(ALICE);

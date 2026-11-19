@@ -594,12 +594,8 @@ export function survey(copy: Copy): Fleet {
   const accounts = join(where.shared, ".broker", "accounts");
   let orphanAccounts = 0;
   let accountNames: Buffer[] = [];
-  if (lstatExists(accounts)) {
-    if (lstatSync(accounts).isDirectory()) {
-      accountNames = entriesOf(Buffer.from(accounts));
-    } else {
-      problems.push({ code: "unknown_entry", at: "shared/.broker/accounts" });
-    }
+  if (optionalDirectory(accounts, "shared/.broker/accounts", problems)) {
+    accountNames = entriesOf(Buffer.from(accounts));
   }
   const accountDirs = new Set<string>();
   for (const name of accountNames) {
@@ -704,20 +700,21 @@ export function survey(copy: Copy): Fleet {
            } };
 }
 
-function lstatExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
+/** An absent optional directory is empty. A present entry must be a directory. */
+function optionalDirectory(path: string, where: string, problems: Problem[]): boolean {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat === undefined) {
     return false;
   }
+  if (!stat.isDirectory()) {
+    problems.push({ code: "unknown_entry", at: where });
+    return false;
+  }
+  return true;
 }
 
 /** The owner's own broker stores: the carried and archived ones under `.records/broker/`. */
 function surveyAccount(owner: Owner, dir: string): void {
-  if (!lstatExists(dir)) {
-    return;
-  }
   const tree = owner.tree;
   visitLevel(Buffer.from(dir), ACCOUNT, "account", {
     store: (name, path, rule, tables) => {
@@ -822,7 +819,7 @@ function surveyVolume(owner: Owner, copy: Copy, pin: { snapshot_id: string; sha2
     }, tree.problems, tree.stores);
   }
   const sessions = join(mounted.root, ".agent-sessions");
-  if (lstatExists(sessions) && lstatSync(sessions).isDirectory()) {
+  if (optionalDirectory(sessions, "root/.agent-sessions", tree.problems)) {
     for (const name of entriesOf(Buffer.from(sessions))) {
       const center = nameText(name);
       if (center === null || !names.has(center)
