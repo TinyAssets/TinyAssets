@@ -217,10 +217,12 @@ describe("the staging step", () => {
     const dir = join(out, keyOf(ALICE), "inline");
     const name = readdirSync(dir).find((file) => statSync(join(dir, file)).size > 0)!;
     truncateSync(join(dir, name), 0);
-    const { calls, fetcher } = apis();
-    await expect(stage(out, "r1", NAMES, INPUTS, fetcher, () => undefined))
-      .rejects.toThrow(/bundle/);
-    expect(calls).toEqual([]);
+    for (const inputs of [null, INPUTS]) {
+      const { calls, fetcher } = apis();
+      await expect(stage(out, "r1", NAMES, inputs, fetcher, () => undefined))
+        .rejects.toThrow(/inline/);
+      expect(calls).toEqual([]);
+    }
   });
 
   it("stops at the first refusal, and at an account with no import queue", async () => {

@@ -413,6 +413,20 @@ describe("the window's admit", () => {
 });
 
 describe("the window's wipe", () => {
+  it("discards the matching staged rehearsal when a local inline file was truncated", async () => {
+    const { out, record, bundles } = bundled();
+    const bundle = bundles.find((item) => item.parts.some((name) => name.startsWith("inline/")))!;
+    const name = bundle.parts.find((part) =>
+      part.startsWith("inline/") && readFileSync(join(bundle.dir, part)).byteLength > 0)!;
+    const path = join(bundle.dir, name);
+    const original = readFileSync(path);
+    const w = world([bundle]);
+    writeFileSync(path, original.subarray(0, original.byteLength - 1));
+    expect(await wipe(out, RUN, w.window, record, quiet)).toEqual({
+      records: 0, staged: 0, namespaces: 1, objects: 0 });
+    expect(w.sent.map((message) => [message.op, message.owner])).toEqual([["discard", bundle.owner]]);
+  });
+
   it("discards every owner, deletes the rehearsal's records and staging, and proves each " +
      "listing empty", async () => {
     const { out, record, bundles } = bundled();

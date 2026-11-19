@@ -8,8 +8,8 @@
  *
  * - The bundles are the out folder's (`<out>/<key>/`), each checked whole before anything is
  *   sent: its index (`bundle.json`) names the metadata parts by SHA-256. Inline files and
- *   chunks carry their content ids in their names. The owner's folder must match its key. A bundle that fails stops
- *   the run before any upload.
+ *   chunks carry their content ids in their names. The owner's folder must match its key.
+ *   A bundle that fails stops the run before any upload.
  * - Each goes to `<run>/<key>/` in the bucket, its index last, then its message; a run sent
  *   again puts the same bytes at the same names and the same message, which the consumer
  *   takes idempotently, so a job killed anywhere is run again whole.
@@ -136,10 +136,6 @@ export function checkedBundle(dir: string, key: string): Staged {
       throw new Error("a bundle holds a file no bundle has");
     }
     const content = readFileSync(join(dir, name));
-    if (name.startsWith("inline/")
-        && (content.byteLength > INLINE_BYTES || inlineName(inlineId(content)) !== name)) {
-      throw new Error("a bundle's inline file does not match its content id");
-    }
     if (name.startsWith("chunks/") && sha256(content) !== name.slice("chunks/".length)) {
       throw new Error("a bundle's chunk is not its hash");
     }
@@ -276,6 +272,16 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
   }
   const totals = { bundles: bundles.length, objects: 0, bytes: 0, messages: 0 };
   for (const staged of bundles) {
+    // These bytes will be sent. A discard of an already-staged rehearsal needs its original
+    // index even when a local copy of its inline content has since been damaged.
+    for (const name of staged.parts) {
+      if (name.startsWith("inline/")) {
+        const bytes = readFileSync(join(staged.dir, name));
+        if (bytes.byteLength > INLINE_BYTES || inlineName(inlineId(bytes)) !== name) {
+          throw new Error("a bundle's inline file does not match its content id");
+        }
+      }
+    }
     totals.objects += staged.parts.length;
     totals.bytes += staged.bytes;
     totals.messages += 1;
