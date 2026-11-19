@@ -227,3 +227,10 @@ history rows both carry inline bytes. Above it, equal placed bodies reuse the
 same content. The census needs the owner's actual write and retention rules
 when deciding fit. Add both sides of this boundary to the shared replay's
 acceptance cases before relying on it for admission.
+
+- [ ] The owner import suite now checks two equal rows at the placement boundary
+  and one byte above it. It checks idempotent replay, waits for the carried
+  starter to finish, and compares each owner with an empty seeded owner.
+  Node 22 TypeScript reported zero diagnostics on the updated import test file.
+  The six independent Workerd cases above passed. The new ordinary Vitest case
+  still requires a completed run.

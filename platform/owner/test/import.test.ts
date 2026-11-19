@@ -192,6 +192,26 @@ describe("the import's rows", () => {
     expect((await stub.collectionGet(own(owner), { collection: "board", row_id: "b2" }))
       .row?.body).toBe(large);
   });
+  it("charges both inline row histories and reuses equal placed bodies across imported rows", async () => {
+    const reference = await ownerObject();
+    const seedBytes = (await reference.stub.storageUsage(own(reference.name))).used_bytes;
+    for (const size of [PLACE_BYTES, PLACE_BYTES + 1]) {
+      const { owner, stub } = pending();
+      const body = JSON.stringify("x".repeat(size - 2));
+      const rows = ["first", "second"].map((row_id) => ({
+        kind: "collection" as const, collection: "board", row_id, private: 0 as const, body,
+      }));
+      expect(await stub.importRows(importing(owner), { rows })).toEqual({ written: 2, skipped: 0 });
+      expect(await stub.importRows(importing(owner), { rows })).toEqual({ written: 0, skipped: 2 });
+      await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
+      await seeded(stub, owner);
+      const usage = await stub.storageUsage(own(owner));
+      // Each inline current and history row holds its bytes. All four placed references
+      // share the same content.
+      expect(usage.used_bytes - seedBytes).toBe(size === PLACE_BYTES ? 4 * size : size);
+    }
+  });
+
 });
 
 describe("the import's files", () => {
