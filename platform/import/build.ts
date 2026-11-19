@@ -36,8 +36,8 @@ import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
-import { layout, openFile, openStore, quoted, storeUri } from "./backup";
-import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
+import { openFile, openStore, quoted, storeUri } from "./backup";
+import { type Archived, brokerRecord, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
 
 /** The files the import itself writes into an owner's tree beside what it carries. */
@@ -70,24 +70,22 @@ function byPath(a: string, b: string): number {
 }
 
 /**
- * The owner's live rows: its policy document, then its collections' rows by collection and seq;
+ * Project the live rows from the kept SQLite copies that supplied the bundle bytes:
+ * the policy document, then the collections by collection and seq;
  * and the old policy as it was stored when the platform's validator refuses it (`validate`),
  * which is then no row: the owner keeps the default, and its document is archived verbatim.
  */
-function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string | null } {
-  const account = join(layout(copy.work).shared, ".broker", "accounts", owner.digest);
+function rowsOf(copies: readonly { archive: Archived; file: string }[]):
+    { rows: Row[]; refusedPolicy: string | null } {
   const read = (store: string, table: string, sql: string): Record<string, unknown>[] => {
-    const at = join(account, store);
-    try {
-      lstatSync(at);
-    } catch {
+    const source = copies.find(({ archive }) => archive.path === brokerRecord(store)
+      && archive.tables.some((t) => t.table === table && t.use === "carry"));
+    if (source === undefined) {
       return [];
     }
-    const db = openStore(at);
+    const db = openStore(source.file);
     try {
-      const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-        .get(table);
-      return has === undefined ? [] : db.prepare(sql).all() as Record<string, unknown>[];
+      return db.prepare(sql).all() as Record<string, unknown>[];
     } finally {
       db.close();
     }
@@ -344,13 +342,16 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
       const at = join(work, String(generated));
       write(at);
       file(path, at, lstatSync(at).size, 0, mtime);
+      return at;
     };
+    const copies: { archive: Archived; file: string }[] = [];
     for (const archived of owner.tree.archived) {
       const mtime = Math.floor(lstatSync(archived.source).mtimeMs);
       if (archived.whole) {
         file(archived.path, archived.source, archived.size, 0, mtime);
       } else {
-        make(archived.path, (at) => tablesCopy(archived, at), mtime);
+        const copyFile = make(archived.path, (at) => tablesCopy(archived, at), mtime);
+        copies.push({ archive: archived, file: copyFile });
       }
     }
     if (owner.tree.links.length > 0) {
@@ -362,7 +363,7 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
     if (owner.tree.ignoredTrees.length > 0) {
       make(IGNORED, (at) => tarOf(at, owner.tree.ignoredTrees));
     }
-    const { rows, refusedPolicy } = rowsOf(owner, copy);
+    const { rows, refusedPolicy } = rowsOf(copies);
     if (refusedPolicy !== null) {
       make(POLICY_REFUSED, (at) => writeFileSync(at, refusedPolicy, { flag: "wx" }));
     }

@@ -31,6 +31,7 @@ import {
 
 /** Where the archived stores go, in that tree and in each center's. */
 export const RECORDS = ".records";
+export const brokerRecord = (name: string): string => `${IMPORTED}/${RECORDS}/broker/${name}`;
 
 export type Code =
   // the backup copy itself
@@ -721,7 +722,7 @@ function surveyAccount(owner: Owner, dir: string): void {
   const tree = owner.tree;
   visitLevel(Buffer.from(dir), ACCOUNT, "account", {
     store: (name, path, rule, tables) => {
-      archive(tree, `${IMPORTED}/${RECORDS}/broker/${name}`, path, rule, tables);
+      archive(tree, brokerRecord(name), path, rule, tables);
       const has = (table: string) => tables.some((t) => t.table === table);
       if (name === "policy.db" && has("policy")) {
         tree.rows.policy = tables.find((t) => t.table === "policy")!.rows;

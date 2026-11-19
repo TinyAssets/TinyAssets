@@ -7,14 +7,14 @@
  */
 import { execFileSync } from "node:child_process";
 import {
-  appendFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync,
+  appendFileSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync,
   symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
 import { contentIdOf } from "../../contract/src/content";
@@ -26,6 +26,8 @@ import {
 import {
   buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, PRIVATE_RECORD,
 } from "../bundle";
+import { isStore } from "../backup";
+import { buildTree, Store } from "../build";
 import { census } from "../census";
 import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
@@ -153,6 +155,61 @@ describe("the bundle builder", () => {
     expect(json(join(out, keyOf(BOB), "owner.json"))).toMatchObject({
       admission: { state: "suspended", reasons: ["billing"] }, tier: "free" });
     expect(rows(join(out, keyOf(BOB)))).toEqual([]);
+  });
+
+  it("takes live rows only from the stores included in the surveyed owner's archive", () => {
+    const { f } = setup();
+    const bob = survey(f.copy).owners.find((owner) => owner.principal === BOB)!;
+    mkdirSync(f.account(BOB), { recursive: true });
+    copyFileSync(join(f.account(ALICE), "conversations.db"),
+                 join(f.account(BOB), "conversations.db"));
+
+    const earlier = buildTree(bob, f.copy, null);
+    expect(earlier.entries.some((e) => e.path.endsWith("/broker/conversations.db"))).toBe(false);
+    expect(earlier.rows).toEqual([]);
+
+    const current = survey(f.copy).owners.find((owner) => owner.principal === BOB)!;
+    const later = buildTree(current, f.copy, null);
+    expect(later.entries.some((e) => e.path.endsWith("/broker/conversations.db"))).toBe(true);
+    expect(later.rows.filter((row) => row.kind === "collection")).toHaveLength(2);
+  });
+
+  it("projects the same collection rows the finished archive contains", () => {
+    const { f, out, options } = setup();
+    const file = Store.prototype.file;
+    let captured: string | undefined;
+    const snapshot = vi.spyOn(Store.prototype, "file").mockImplementation(function (this: Store,
+        source: string | Buffer, size: number) {
+      const result = file.call(this, source, size);
+      if (captured === undefined && typeof source === "string" && isStore(source)) {
+        const copy = new DatabaseSync(source, { readOnly: true });
+        try {
+          if (copy.prepare("SELECT 1 FROM sqlite_master WHERE name = 'collection_rows'").get()) {
+            captured = String(copy.prepare("SELECT body FROM collection_rows WHERE row_id='b1'")
+              .get()!["body"]);
+            const original = new DatabaseSync(join(f.account(ALICE), "conversations.db"));
+            try {
+              original.prepare("UPDATE collection_rows SET body=? WHERE row_id='b1'")
+                .run('{"t":"later"}');
+            } finally {
+              original.close();
+            }
+          }
+        } finally {
+          copy.close();
+        }
+      }
+      return result;
+    });
+    try {
+      buildBundles(f.copy, options);
+    } finally {
+      snapshot.mockRestore();
+    }
+    expect(captured).toBe('{"t":"first"}');
+    expect(rows(join(out, keyOf(ALICE)))).toContainEqual(expect.objectContaining({
+      row_id: "b1", body: captured,
+    }));
   });
 
   it("archives a policy the platform's validator refuses, verbatim, and keeps the default, " +
