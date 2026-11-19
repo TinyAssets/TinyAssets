@@ -16,7 +16,7 @@ import { inlineId } from "../../contract/src/content";
 import { canonical } from "../../contract/src/canonical";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
-  answerName, bundleIdentity, type CheckChunk, type CheckEntry, doneName, type Entry, importMac,
+  answerName, bundleIdentity, bundleLocation, bundlePrefix, type CheckChunk, type CheckEntry, doneName, type Entry, importMac,
   type ImportMessage, NO_ROWS, rehearsalName, type Row, rowsSum,
 } from "../../contract/src/import-message";
 import { type Answers, clean, differences, expectedOf } from "../../import/check";
@@ -69,7 +69,7 @@ function made(owner: string, files = bundleFiles()): { files: Map<string, Uint8A
 
 /** A bundle staged in the bucket, and its message signed under `key`. */
 async function staged(owner: string, files = made(owner), key = KEY): Promise<ImportMessage> {
-  const prefix = `t${randomBytes(4).toString("hex")}/${bundleIdentity(owner).key}`;
+  const prefix = bundlePrefix(`t${randomBytes(4).toString("hex")}`, bundleIdentity(owner).key);
   for (const [name, bytes] of files.files) {
     await doorsEnv.IMPORT_STAGING.put(`${prefix}/${name}`, bytes);
   }
@@ -329,7 +329,7 @@ describe("the import consumer's gates, each before anything is written", () => {
     await dropped(owner, w, message);
     // A signed index for this owner placed under a different owner folder.
     const misplaced = await staged(owner);
-    const wrongPrefix = `${misplaced.prefix.split("/")[0]}/${bundleIdentity(fresh()).key}`;
+    const wrongPrefix = bundlePrefix(bundleLocation(misplaced.prefix)!.run, bundleIdentity(fresh()).key);
     const original = await doorsEnv.IMPORT_STAGING.get(`${misplaced.prefix}/bundle.json`);
     await doorsEnv.IMPORT_STAGING.put(`${wrongPrefix}/bundle.json`, await original!.arrayBuffer());
     await dropped(owner, w, { ...misplaced, prefix: wrongPrefix });

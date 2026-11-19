@@ -19,8 +19,7 @@ When the deletion comparison in #5688 and this change meet, its private original
   missing admission and received zero.
 - [x] Keep the listed object name and parsed folder key together through
   grouping, index lookup and validation. Verify both ordinary identities,
-  the broader importer and the Doors consumer. Then repeat on main after
-  coordinated integration. All of these stages remain independent.
+  the broader importer and the Doors consumer. Main integration remains open.
 - [x] The close reader now carries the entire listed index through grouping.
   It reads its object by name and checks the embedded identity against its
   folder key. The two fixture variants also check all index GETs in order
@@ -40,5 +39,15 @@ When the deletion comparison in #5688 and this change meet, its private original
   yielded exactly 1,013 index GETs in the same order and the same 93 missing
   admissions and ordinals. Each ordering passed on standalone and combined
   source on both Node 22 and 24.
-- [ ] When the prefix and identity stages meet, use the shared parser for the
-  Doors index-key lookup as well. Recheck the reconciled sources on main.
+- [x] The identity stage now adopts the shared bundleLocation reader from
+  e0a847e3 at its original contract path. The signed message, staging scan,
+  dead-letter reader and Doors index-key lookup use the same run and folder
+  grammar. The independent prefix stage still owns its queue log change.
+  This resolves the previously deferred Doors lookup while keeping both
+  branches based on main.
+- [x] Compared 17,343 distinct prefix inputs with 13453f71 on Node 22.23.5
+  and 24.22.3. Signed-message parsing preserved all 4,386 accepted values
+  and all 12,957 refusals on each runtime. The folder reader returned the
+  original run and key for every accepted input.
+- [ ] Finish ordinary importer, Doors and typecheck verification, then repeat
+  the comparison on main after coordinated integration.

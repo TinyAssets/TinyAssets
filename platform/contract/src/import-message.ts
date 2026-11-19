@@ -56,7 +56,6 @@ export const RUN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** What a message asks of the consumer. */
 export const IMPORT_OPS = Object.freeze(["import", "check", "discard", "admit"] as const);
 export type ImportOp = (typeof IMPORT_OPS)[number];
-const PREFIX = /^[a-z0-9][a-z0-9-]{0,63}\/[0-9a-f]{16}$/;
 const MAC = /^[A-Za-z0-9_-]{43}$/;
 
 /** Where a continuation goes on from: the bundle's step, and the entry within it. */
@@ -119,7 +118,7 @@ export function importMessage(value: unknown): ImportMessage {
   const owner = principal(body["owner"]);
   const { bundle, prefix, mac, cursor, ask } = body;
   if (typeof bundle !== "string" || !HEX64.test(bundle) || typeof prefix !== "string"
-      || !PREFIX.test(prefix) || typeof mac !== "string" || !MAC.test(mac)
+      || bundleLocation(prefix) === null || typeof mac !== "string" || !MAC.test(mac)
       || (asks && (typeof ask !== "string" || !HEX16.test(ask)))) {
     throw new Error("an import message's bundle, prefix, mac or ask is out of shape");
   }
@@ -188,6 +187,18 @@ export function pageNumber(kind: Paged, name: string): number | null {
 
 /** Where run `run`'s bundle of the owner keyed `key` sits in the staging bucket. */
 export const bundlePrefix = (run: string, key: string): string => `${run}/${key}`;
+
+/** Read the run and owner folder from a staging prefix, excluding keys below that folder. */
+export function bundleLocation(prefix: string): { run: string; key: string } | null {
+  const slash = prefix.indexOf("/");
+  if (slash < 0) {
+    return null;
+  }
+  const run = prefix.slice(0, slash);
+  const key = prefix.slice(slash + 1);
+  return RUN.test(run) && HEX16.test(key) ? { run, key } : null;
+}
+
 /** A part's object in the staging bucket, below its bundle's prefix. */
 export const stagedName = (prefix: string, part: string): string => `${prefix}/${part}`;
 

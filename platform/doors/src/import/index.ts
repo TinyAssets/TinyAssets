@@ -63,7 +63,7 @@ import { readControl, tiersOf } from "../../../contract/src/control";
 import { sha256Hex } from "../../../contract/src/digest";
 import { HEX64 } from "../../../contract/src/ids";
 import {
-  answerName, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, CHECK_PARTS, chunkName,
+  answerName, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, bundleLocation, CHECK_PARTS, chunkName,
   type Cursor, doneName, type Entry, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_KEY, importKeyBytes,
   importMessage, type ImportMessage, indexAtKey, inlineName, macHolds, type Paged, pageName, pageNumber,
   rehearsalRun, stagedName,
@@ -136,7 +136,7 @@ async function indexOf(env: DoorsEnv, message: ImportMessage): Promise<Index> {
     throw new Refusal("invalid", "the bundle's index is not the bundle its message names");
   }
   const index: unknown = JSON.parse(new TextDecoder().decode(bytes));
-  if (!indexAtKey(index, message.prefix.split("/")[1]!) || index.owner !== message.owner
+  if (!indexAtKey(index, bundleLocation(message.prefix)!.key) || index.owner !== message.owner
       || !object(index["parts"])
       || !Object.values(index["parts"]).every((sha) => typeof sha === "string" && HEX64.test(sha))
       || !(BUNDLE_OWNER in index["parts"])) {

@@ -40,13 +40,13 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  answerName, BUNDLE_INDEX, BUNDLE_OWNER, type BundleOwner, bundlePrefix, doneName, type Entry, indexAtKey,
+  answerName, BUNDLE_INDEX, BUNDLE_OWNER, bundleLocation, type BundleOwner, bundlePrefix, doneName, type Entry, indexAtKey,
   IMPORT_KEY, importMac, type ImportMessage, type ImportOp, importMessage, NO_ROWS, type Paged,
-  pageNumber, rehearsalRun, type Row, rowsSum, RUN, stagedName,
+  pageNumber, rehearsalRun, type Row, rowsSum, stagedName,
 } from "../contract/src/import-message";
 import { DEFAULT_TIER } from "../contract/src/control";
 import { objectPrefix } from "../contract/src/files";
-import { HEX16, OWNER_ENTRY } from "../contract/src/ids";
+import { OWNER_ENTRY } from "../contract/src/ids";
 import type { ImportNames } from "../contract/src/import-names";
 import { QUEUES } from "../contract/src/queue-names";
 import type { Cloudflare } from "../deploy/cloudflare";
@@ -359,10 +359,10 @@ interface StagedIndex {
 /** Each bundle index the staging bucket holds under `prefix`: its name, run and key. */
 async function stagedIndexes(window: Window, prefix: string):
     Promise<StagedIndex[]> {
+  const suffix = `/${BUNDLE_INDEX}`;
   return (await listKeys(window, window.names.staging_bucket, prefix)).flatMap((name) => {
-    const [run = "", key = "", ...part] = name.split("/");
-    return RUN.test(run) && HEX16.test(key) && part.join("/") === BUNDLE_INDEX
-      ? [{ name, run, key }] : [];
+    const location = name.endsWith(suffix) ? bundleLocation(name.slice(0, -suffix.length)) : null;
+    return location === null ? [] : [{ name, ...location }];
   });
 }
 
@@ -546,9 +546,9 @@ export async function deadLetters(window: Window, out: string | null, run: strin
       let label = "out of shape";
       try {
         const parsed = importMessage(pulledBody(message.body));
-        const [at, key] = parsed.prefix.split("/");
-        label = run !== null && at !== run ? `another run, ${parsed.op}`
-          : `bundle ${ordinals.get(key!) ?? "?"}, ${parsed.op}`;
+        const location = bundleLocation(parsed.prefix)!;  // importMessage checked it
+        label = run !== null && location.run !== run ? `another run, ${parsed.op}`
+          : `bundle ${ordinals.get(location.key) ?? "?"}, ${parsed.op}`;
       } catch {
         // counted as out of shape
       }
