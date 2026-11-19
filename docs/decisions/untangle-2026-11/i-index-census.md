@@ -279,6 +279,8 @@ SQLite file. The archive writer materializes only the selected tables.
   two Worker accounting regressions also passed separately with the exact
   carried starter packages from 1004f546 and 3f8be4de (two cases per package).
   The coordinator still owns their release order.
-- [ ] Rerun the whole importer and owner import test file with the precheck
-  change. The measured fit still needs shared owner accounting for starter
-  content, row history and the index, followed by representative rehearsal.
+- [x] On 16161c75, all 169 ordinary importer cases, all 25 ordinary owner
+  import Workerd cases and the full platform TypeScript check passed on Node
+  24.22.3 with the locked dependencies.
+- [ ] The measured fit still needs shared owner accounting for starter content,
+  row history and the index, followed by representative rehearsal.
