@@ -229,7 +229,8 @@ when deciding fit. Add both sides of this boundary to the shared replay's
 acceptance cases before relying on it for admission.
 
 - [x] On 56d55ef0 the ordinary Node 24.22.3 owner Workerd command passed both
-  import regressions, with 22 cases outside the filter. The row case checks
+  import regressions, with 22 cases outside the filter. A second run on the
+  same commit passed all 24 ordinary cases in the owner import test file. The row case checks
   identical bodies at the placement boundary and one byte above it, including
   idempotent replay and usage against a seeded reference owner. The file case
   checks that imported inline and chunked files share their bytes with the
