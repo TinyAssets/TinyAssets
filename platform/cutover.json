@@ -20,9 +20,6 @@
         { "delete": "platform/doors/src/import", "what": "the doors' import side: the import queue's consumer, its one entry" },
         { "delete": "platform/doors/test/import.test.ts", "what": "the consumer's tests" },
         { "delete": "platform/doors/test/import-setup.ts", "what": "the consumer's tests' bundle, built by the importer" },
-        { "delete": "platform/cutover.json", "what": "this manifest, once the rest of it is done" },
-        { "delete": "platform/ci/kit/cutover.ts", "what": "the manifest's reader" },
-        { "delete": "platform/ci/guards/cutover.test.ts", "what": "the manifest's guard" },
         { "delete": "scripts/platform_setup.py", "what": "the founder's one-time setup, done (deploy/checklist.md): its keyring maker is a copy of keyring-new's, which the kit keeps (o-keyrings.md)" },
         { "delete": "tests/test_platform_setup.py", "what": "the setup's tests" },
 
@@ -30,8 +27,8 @@
         { "edit": "platform/package-lock.json", "names": ["\"import\""], "what": "the import workspace, by npm install" },
         { "edit": ".github/workflows/tests.yml", "names": ["npm run test -w import", "tests/test_platform_setup.py"], "what": "the import leg, and the setup's tests in the process leg" },
         { "edit": "platform/ci/budgets.json", "names": ["import/guards"], "what": "the import guards' budget" },
-        { "edit": "platform/ci/kit/layers.ts", "names": ["the importer", "platform/cutover.json"], "what": "the importer's layer, and the cutover layer's note and reach" },
-        { "edit": "platform/ci/kit/imports.ts", "names": ["cutoverLayer", "isGone"], "imports": ["platform/ci/kit/cutover.ts"], "what": "the cutover layer" },
+        { "edit": "platform/ci/kit/layers.ts", "names": ["the importer"], "what": "the importer's layer" },
+        { "edit": "platform/ci/kit/kernels.ts", "names": ["the importer"], "what": "the retired importer layer in the list of readers held to the shared contract checks" },
         { "edit": "platform/ci/guards/isolation.test.ts", "names": ["platform/import/probe.ts"], "what": "the importer's layer cases" },
         { "edit": "platform/ci/guards/environment.test.ts", "names": ["import-window.yml"], "what": "the window's workflow among the known production workflows" },
 
@@ -114,7 +111,12 @@
         { "delete": "tests/test_handles_canary.py", "what": "its guard, and the old record's" },
         { "edit": "scripts/canary_handles.json", "names": ["\"old\""], "what": "the old stack's record, by which the platform's canary knows the platform dark" },
         { "edit": "platform/deploy/canary.ts", "names": ["oldAnswers", "sides.old"], "what": "the dark side: no handback is left to give the routes back to the old stack" },
-        { "edit": "platform/deploy/alarm.ts", "names": ["dark: the old stack serves"], "what": "the alarm's dark stand-down, with the canary's dark side" }
+        { "edit": "platform/deploy/alarm.ts", "names": ["dark: the old stack serves"], "what": "the alarm's dark stand-down, with the canary's dark side" },
+        { "edit": "platform/ci/kit/layers.ts", "names": ["platform/cutover.json"], "what": "the cutover layer's note and the ci kit's reach to its manifest" },
+        { "edit": "platform/ci/kit/imports.ts", "names": ["cutoverLayer", "isGone"], "imports": ["platform/ci/kit/cutover.ts"], "what": "remove the cutover layer after its last phase" },
+        { "delete": "platform/ci/guards/cutover.test.ts", "what": "the manifest's guard, after checking the last phase" },
+        { "delete": "platform/ci/kit/cutover.ts", "what": "the manifest's reader, once the last checks are done" },
+        { "delete": "platform/cutover.json", "what": "this manifest, once the rest of it is done" }
       ]
     }
   }

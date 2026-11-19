@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { type CutoverLayer, cutoverLayer, type Entry, isGone, LIVE, type Manifest, MANIFEST,
-         PHASES } from "../kit/cutover";
+         type Phase, PHASES } from "../kit/cutover";
 import { keyed, object } from "../../contract/src/checks";
 import { layerProblems, repoScripts } from "../kit/imports";
 import { treeFiles } from "../kit/sources";
@@ -98,8 +98,9 @@ const pathOf = (entry: Entry): string | null =>
 /** How an entry is not what the tree holds today. */
 function entryProblems(manifest: Manifest, tree: Tree): string[] {
   const problems: string[] = [];
+  const plan = entries(manifest);
   const { gone } = cutoverLayer(manifest);
-  const edited = new Set<string>();
+  const edits = new Map<string, { phase: Phase; entry: Extract<Entry, { edit: string }> }[]>();
   const holds = (path: string, names: readonly string[], what: string) => {
     const found = tree.text(path);
     for (const name of names) {
@@ -108,7 +109,7 @@ function entryProblems(manifest: Manifest, tree: Tree): string[] {
       }
     }
   };
-  for (const { phase, entry } of entries(manifest)) {
+  for (const { phase, entry } of plan) {
     const path = pathOf(entry);
     if (path !== null && !tree.exists(path)) {
       problems.push(`${phase}: ${path} is not there`);
@@ -118,14 +119,27 @@ function entryProblems(manifest: Manifest, tree: Tree): string[] {
       problems.push(`${phase}: ${path} lies inside a path the manifest deletes`);
     }
     if ("edit" in entry) {
-      if (edited.has(entry.edit)) {
-        problems.push(`${phase}: ${entry.edit} is edited twice`);
+      const earlier = edits.get(entry.edit) ?? [];
+      for (const previous of earlier) {
+        if (previous.phase === phase) {
+          problems.push(`${phase}: ${entry.edit} is edited twice`);
+        } else {
+          const repeated = entry.names.filter((name) => previous.entry.names.includes(name));
+          const imports = (entry.imports ?? []).filter((to) => previous.entry.imports?.includes(to));
+          for (const item of [...repeated, ...imports]) {
+            problems.push(`${phase}: ${entry.edit} already removes ${item} in ${previous.phase}`);
+          }
+        }
       }
-      edited.add(entry.edit);
+      earlier.push({ phase, entry });
+      edits.set(entry.edit, earlier);
       holds(entry.edit, entry.names, `the edit of ${entry.edit}`);
       for (const to of entry.imports ?? []) {
-        if (!isGone(gone, to)) {
+        const retirement = plan.find(({ entry: item }) => "delete" in item && isGone([item.delete], to));
+        if (!retirement) {
           problems.push(`the edit of ${entry.edit} names an import of ${to}, which stays`);
+        } else if (PHASES.indexOf(phase) > PHASES.indexOf(retirement.phase)) {
+          problems.push(`${phase}: ${entry.edit} removes an import of ${to} after ${retirement.phase} deletes it`);
         }
       }
     } else if ("move" in entry) {
@@ -224,6 +238,45 @@ describe("the cutover's manifest", () => {
       "cutover: platform/b.ts moves to platform/c.ts, which is there already",
       "cutover: platform/b.ts moves its names into platform/d.ts, not there",
       "the queue tinyassets-probe names tinyassets-probe, which platform/b.ts does not hold",
+    ]);
+  });
+
+  it("keeps each phase's edits and imports of a file that survives them both", () => {
+    const kept = "platform/kept.ts", first = "platform/window.ts", last = "platform/rollback.ts";
+    const tree = treeOf({ [kept]: "window rollback", [first]: "", [last]: "" });
+    const cutover = manifestOf({ edit: kept, names: ["window"], imports: [first], what: "window" },
+                               { delete: first, what: "window" });
+    const hold = { why: "the hold ends", entries: [
+      { edit: kept, names: ["rollback"], imports: [last], what: "rollback" },
+      { delete: last, what: "rollback" },
+    ] };
+    const both: Manifest = { ...cutover, phases: { ...cutover.phases, hold } };
+    expect(entryProblems(both, tree)).toEqual([]);
+    expect(cutoverLayer(both).entries.get(kept)).toEqual([first, last]);
+    const duplicate = { ...both, phases: { ...both.phases, hold: { ...hold, entries: [
+      { edit: kept, names: ["window"], imports: [first], what: "twice" }, ...hold.entries.slice(1),
+    ] } } };
+    expect(entryProblems(duplicate, tree)).toEqual([
+      "hold: platform/kept.ts already removes window in cutover",
+      "hold: platform/kept.ts already removes platform/window.ts in cutover",
+      "hold: platform/kept.ts removes an import of platform/window.ts after cutover deletes it",
+    ]);
+
+    const remaining = { ...both, phases: { ...both.phases, cutover: { why: "done", entries: [] } } };
+    expect(entryProblems(remaining, treeOf({ [kept]: "rollback", [last]: "" }))).toEqual([]);
+    expect(cutoverLayer(remaining).entries.get(kept)).toEqual([last]);
+  });
+
+  it("removes a surviving import no later than its target disappears", () => {
+    const kept = "platform/kept.ts", file = "platform/lib/read.ts", other = "platform/lib-old/read.ts";
+    const tree = treeOf({ [kept]: "read other", [file]: "", [other]: "" });
+    const cutover = manifestOf({ delete: "platform/lib", what: "retire the directory" });
+    const hold = { why: "the hold ends", entries: [
+      { delete: other, what: "retire the other file" },
+      { edit: kept, names: ["read", "other"], imports: [file, other], what: "remove both imports" },
+    ] };
+    expect(entryProblems({ ...cutover, phases: { ...cutover.phases, hold } }, tree)).toEqual([
+      `hold: ${kept} removes an import of ${file} after cutover deletes it`,
     ]);
   });
 

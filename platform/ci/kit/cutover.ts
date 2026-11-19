@@ -51,11 +51,13 @@ export interface CutoverLayer {
 
 export function cutoverLayer(of: Manifest = MANIFEST): CutoverLayer {
   const all = PHASES.flatMap((phase) => of.phases[phase].entries);
-  return {
-    gone: all.flatMap((entry) => ("delete" in entry ? [entry.delete] : [])),
-    entries: new Map(all.flatMap((entry) => ("edit" in entry && entry.imports !== undefined
-      ? [[entry.edit, entry.imports] as const] : []))),
-  };
+  const entries = new Map<string, string[]>();
+  for (const entry of all) {
+    if ("edit" in entry && entry.imports !== undefined) {
+      entries.set(entry.edit, [...(entries.get(entry.edit) ?? []), ...entry.imports]);
+    }
+  }
+  return { gone: all.flatMap((entry) => ("delete" in entry ? [entry.delete] : [])), entries };
 }
 
 /** Whether `path`, from the repository root, is one `gone` names or lies inside one. */

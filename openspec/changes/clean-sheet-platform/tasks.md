@@ -778,6 +778,9 @@ Measured on the stage as it runs:
 
 ### Step 16. The 14-day hold, then manifest phase 3
 
+- [x] The manifest keeps its reader, guard and layer references through the hold. Different
+  phases can name different removals from one surviving file. At each phase, retire the
+  completed entries along with their changes so the guard checks what still exists.
 - [ ] On the founder's word: the droplet, the final backup and `tinyassets-final-backup` with
   its `deploy/platform.json` entry; mode `handback` and the route record; the handles canary's
   old side; the old proxy Worker `tinyassets-mcp-proxy`, its tunnel, the `mcp.` record and its
