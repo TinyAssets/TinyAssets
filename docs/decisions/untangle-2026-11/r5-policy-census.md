@@ -154,3 +154,8 @@ from the corrected runs. No production data was used.
 On the preceding shared-text change the
 seventeen-stage join also passed 25 Owner import Workerd tests, and both full
 platform typechecks passed after adding the archive-revision regression.
+
+On the same seventeen-stage rehearsal of 44dd859c, the ordinary Owner import
+file passed all 25 Workerd tests and the Doors import file passed all 23,
+both on Node 22. The original private and public bits traversed their respective
+local bundle paths in the separate historical-schema checks above.
