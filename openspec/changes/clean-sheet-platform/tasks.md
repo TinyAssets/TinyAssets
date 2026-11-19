@@ -817,6 +817,9 @@ Moved before the window, into lane R (d3 §F3, §G).
   desktop shell's twin (list3 P33). The stores also require: Sign in with Apple wherever Google
   or GitHub sign-in is offered (4.8); account deletion inside the app, with `erasureAnswer`
   wired at the erase door first (5.1.1(v), d3 §C6); the shell's native features (4.2).
+  - [ ] Trace installed-shell sign-in returns separately from legacy notification taps and inline
+    replies. Resolve the original recipient and request, or their retirement, before claiming
+    shell parity ([installed shell consumers](../../../docs/decisions/untangle-2026-11/mobile-route-consumers.md)).
 - [ ] Billing: a billing door, Stripe's endpoint on it, and `storage_full`'s upgrade (list3 P38).
   Until then a tier changes through the operator path.
 - [ ] Connectors for the owner's own agents: the agent's `mcp.json` merged into the run config,
