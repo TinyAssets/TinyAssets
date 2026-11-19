@@ -96,8 +96,13 @@ describe("MCP Events at the MCP door", () => {
     expect(listed.events.map((event) => [event.name, event.delivery])).toEqual(
       [[EVENT, ["webhook"]]]);
     expect(listed.events[0]!.inputSchema.required).toEqual(["command_center_id"]);
-    expect(listed.events[0]!.payloadSchema.required).toEqual(
-      ["agent_id", "command_center_id", "changes", "cursor", "after", "read"]);
+    expect(listed.events[0]!.payloadSchema).toMatchObject({
+      required: ["agent_id", "command_center_id", "changes", "cursor", "after", "read"],
+      properties: {
+        changes: { items: { enum: ["mail", "rooms", "board"] } },
+        read: { items: { enum: ["inbox_digest", "board_digest"] } },
+      },
+    });
   });
 
   it("verifies the callback, then stores it under the id the server derives", async () => {

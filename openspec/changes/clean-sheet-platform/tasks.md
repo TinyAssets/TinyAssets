@@ -82,6 +82,10 @@ end.
 
 ## 7. Wakes and outside agents
 
+- [x] The MCP event schema and owner doorbell share the change-to-digest mapping. Wake
+  subscriptions and the owner inbox share the stored app-room collection prefix
+  (`untangle-2026-11/wake-schema.md`).
+
 - [x] Wakes and doorbells (slice W): wake kinds as data (`contract/wake-kinds.json`), one
   doorbell (`owner/src/wakes.ts`, `gateway/src/doorbell.ts`), MCP Events at the MCP door
   (`doors/src/events.ts`). By choice, not built: a verification cache (each subscribe verifies

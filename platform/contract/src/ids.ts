@@ -36,6 +36,9 @@ export const OWNER_ENTRY = "o:";
  */
 export const AUTHORITY = /^(?:owner|[0-9a-f]{64})$/;
 
+/** Persisted app room collection names start here, including those followed by a wake. */
+export const ROOM_COLLECTION_PREFIX = "room:";
+
 /** Where a namespaced issuer's owners start (the doors' `ownerOf`). */
 export const FOREIGN_OWNER = "iss-";
 /** Where the cutover import's rehearsals' owners start (`rehearsalName`). */

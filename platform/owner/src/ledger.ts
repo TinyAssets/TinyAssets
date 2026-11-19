@@ -98,7 +98,7 @@ import { AGENT_ID, codePoints, printable, utf8Bytes, utf8Decoder } from "../../c
 import { sha256Hex } from "../../contract/src/digest";
 import { canonical } from "../../contract/src/canonical";
 import { keyed, whole } from "../../contract/src/checks";
-import { HEX16, HEX64, randomHex, SUBSCRIPTION_ID } from "../../contract/src/ids";
+import { HEX16, HEX64, randomHex, ROOM_COLLECTION_PREFIX, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 
 import { filerOf, may, NOT_GRANTED, OWNER, scopeOf } from "./authority";
@@ -106,7 +106,6 @@ import {
   type Adopt, adopted, bodyOffset, inlineWindow, PAGE_BYTES, type Placed,
   READ_TRIES, type Window,
 } from "./bodies";
-import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
 import {
@@ -3364,11 +3363,11 @@ export const ledgerDoors = Object.freeze({
       const mail = new Set(o.ledger.placedNext(account.origin, r["limit"], INBOX_PART)
         .contents);
       return { contents: [...mail, ...contentsOf(o.collections.changed(
-        account.caller, { prefix: ROOM_PREFIX }, r["after"], r["limit"]).rows)],
+        account.caller, { prefix: ROOM_COLLECTION_PREFIX }, r["after"], r["limit"]).rows)],
                maxOf: (contentId) => mail.has(contentId) ? INBOX_PART : headWindow(chars) };
     }, (windows) => {
       const { account, r } = door.check();
-      const changes = o.collections.changed(account.caller, { prefix: ROOM_PREFIX },
+      const changes = o.collections.changed(account.caller, { prefix: ROOM_COLLECTION_PREFIX },
                                                 r["after"], r["limit"]);
       return {
         mail: o.ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null, 0, clock(),

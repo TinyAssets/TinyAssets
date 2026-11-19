@@ -27,8 +27,9 @@ import { type McpServer, ProtocolError, type StandardSchemaV1 } from "@modelcont
 import {
   callbackSecret, callbackUrl, eventKind, type WakeKind,
 } from "../../contract/src/wake-records";
+import { ROOM_COLLECTION_PREFIX } from "../../contract/src/ids";
 import { COMMAND_CENTER_MAX } from "../../contract/src/limits";
-import { follows, subscriptionId } from "../../contract/src/wake-kinds";
+import { CHANGES, follows, subscriptionId, wakeReads } from "../../contract/src/wake-kinds";
 
 import type { Bound } from "./binder";
 import type { DoorsEnv } from "./env";
@@ -43,7 +44,7 @@ function inputSchema() {
     command_center_id: { type: "string", description: "The command center your agent is in." },
     board: { type: "boolean", description: "Also wake on a change to the owner's board." },
     rooms: { type: "array", items: { type: "string" },
-             description: "Also wake on a change to these rooms (room:<app>:<room>)." },
+             description: `Also wake on a change to these rooms (${ROOM_COLLECTION_PREFIX}<app>:<room>).` },
   },
   required: ["command_center_id"],
   additionalProperties: false,
@@ -57,10 +58,10 @@ function payloadSchema() {
   properties: {
     agent_id: { type: "string" },
     command_center_id: { type: "string" },
-    changes: { type: "array", items: { type: "string", enum: ["mail", "rooms", "board"] } },
+    changes: { type: "array", items: { type: "string", enum: CHANGES } },
     cursor: { type: "integer", minimum: 0 },
     after: { type: "integer", minimum: 0 },
-    read: { type: "array", items: { type: "string", enum: ["inbox_digest", "board_digest"] } },
+    read: { type: "array", items: { type: "string", enum: wakeReads(CHANGES) } },
   },
   required: ["agent_id", "command_center_id", "changes", "cursor", "after", "read"],
   additionalProperties: false,

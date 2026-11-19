@@ -44,6 +44,7 @@ import {
   type Adopt, adopted, type Bodies, bodyOffset, PAGE_BYTES, type Placed,
   READ_PAGE_BYTES,
 } from "./bodies";
+import { ROOM_COLLECTION_PREFIX } from "../../contract/src/ids";
 import { BODY_BYTES_MAX } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
@@ -729,10 +730,7 @@ export class Collections {
   }
 }
 
-/** The board (`collections.ts`), and every room's prefix: `room:<app>:<room>`. */
 export const BOARD = "board";
-
-export const ROOM_PREFIX = "room:";
 
 export function conflicted<T>(act: () => T): T | Conflicted {
   try {
@@ -838,7 +836,7 @@ export interface CollectionsDoorNeeds extends Pick<DoorUnits, "sync"> {
 function ring(o: CollectionsDoorNeeds, account: Account, collection: string, after: number):
     void {
   const change = collection === BOARD ? "board"
-    : collection.startsWith(ROOM_PREFIX) ? "rooms" : null;
+    : collection.startsWith(ROOM_COLLECTION_PREFIX) ? "rooms" : null;
   if (account.origin !== null || account.run !== null || change === null
       || !o.collections.touched([collection], after)) {
     return;

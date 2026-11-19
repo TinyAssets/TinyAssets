@@ -6,13 +6,24 @@
 import { sha256Hex } from "./digest.ts";
 import { Refusal } from "./refusal.ts";
 import { codePoints, isPrintable } from "./text.ts";
+import { ROOM_COLLECTION_PREFIX } from "./ids.ts";
 import { ARGUMENTS_CHARS } from "./limits.ts";
 import { type RingRequest, ringRequest } from "./gateway.ts";
 import type { WakeKind } from "./wake-records.ts";
 
-/** What a wake says changed: mail to the agent, a room's rows, or the board's. */
-export type Change = "mail" | "rooms" | "board";
-export const CHANGES: readonly Change[] = Object.freeze(["mail", "rooms", "board"]);
+/** The changes each digest reads, in the order advertised and sent on the wire. */
+const DIGEST_CHANGES = {
+  inbox_digest: ["mail", "rooms"],
+  board_digest: ["board"],
+} as const;
+export type Change = (typeof DIGEST_CHANGES)[keyof typeof DIGEST_CHANGES][number];
+export const CHANGES = Object.freeze(Object.values(DIGEST_CHANGES).flat());
+
+export function wakeReads(changes: readonly Change[]): string[] {
+  return Object.entries(DIGEST_CHANGES)
+    .filter(([, kinds]) => kinds.some((kind) => changes.includes(kind)))
+    .map(([digest]) => digest);
+}
 
 /** What a subscription follows besides the mail addressed to its agent. */
 export interface Follows {
@@ -33,9 +44,6 @@ export interface WakeContent {
   /** The digests that answer just this change. */
   readonly read: readonly string[];
 }
-
-/** A room collection's prefix (`owner-do.ts`). */
-const ROOM_PREFIX = "room:";
 
 /** JSON with every object's keys sorted, so equal values compare equal. */
 export function canonicalJson(value: unknown): string {
@@ -64,7 +72,7 @@ export function follows(args: unknown, allowed: readonly string[] = []): Follows
   }
   const { board = false, rooms = [] } = args as { board?: unknown; rooms?: unknown };
   if (typeof board !== "boolean" || !Array.isArray(rooms)
-      || !rooms.every((room) => typeof room === "string" && room.startsWith(ROOM_PREFIX)
+      || !rooms.every((room) => typeof room === "string" && room.startsWith(ROOM_COLLECTION_PREFIX)
                       && codePoints(room) <= 256 && isPrintable(room))
       || new Set(rooms).size !== rooms.length) {
     throw new Refusal("invalid",

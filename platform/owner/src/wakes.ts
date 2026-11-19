@@ -36,7 +36,7 @@ import {
 } from "./ledger";
 import { type Lane, LANE_CALL_MS } from "./schedule";
 import {
-  type Change, doorbellRequest, type WakeContent,
+  type Change, doorbellRequest, type WakeContent, wakeReads,
 } from "../../contract/src/wake-kinds";
 import type { Resealed, RingAnswer, RingRequest } from "../../contract/src/gateway";
 import type { Swept } from "../../contract/src/owner";
@@ -176,12 +176,8 @@ interface DoorbellDeps {
 
 /** What a wake says to one subscription: just the changes it follows. */
 function wakeContent(target: WakeTarget, changes: readonly Change[]): WakeContent {
-  const read = [
-    ...(changes.includes("mail") || changes.includes("rooms") ? ["inbox_digest"] : []),
-    ...(changes.includes("board") ? ["board_digest"] : []),
-  ];
   return { agent_id: target.agent_id, command_center_id: target.command_center_id,
-           changes, cursor: target.cursor, after: target.after, read };
+           changes, cursor: target.cursor, after: target.after, read: wakeReads(changes) };
 }
 
 /**
