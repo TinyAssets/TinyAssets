@@ -80,3 +80,6 @@ This extends the historical hold to a cursor that has **never advanced**. Retryi
   run the selected Vitest case lost the Worker or exited 137. This Workerd proof
   applies to a checked failure with a pin. Active legacy staging and already
   completed historical restores still need a recovery decision.
+- On b692a671, Node 22 TypeScript reported zero diagnostics for the restore
+  test and owner restore module with the corrected status assertion. The
+  ordinary Vitest run for the pinned undo scenario is still outstanding.
