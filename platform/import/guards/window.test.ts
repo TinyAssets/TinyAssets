@@ -13,7 +13,7 @@
  * deploy kit's, read from the configs (`deploy/facts.ts`), as the window's `facts.json` hands
  * them to the job.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -655,6 +655,27 @@ describe("the window's close", () => {
     await wipe(out, RUN, w.window, record, quiet);
     expect(w.sent.filter((message) => message.op === "discard").slice(before)
       .map((message) => message.owner)).toEqual([bundles[0]!.owner]);
+    expect(await close(w.window, quiet)).toEqual({ owners: 0, left: [] });
+  });
+
+  it("resumes a partially staged rehearsal after its matching bundle is recovered", async () => {
+    const { out, record, bundles } = bundled();
+    expect(bundles.length).toBeGreaterThan(1);
+    const staged = bundles[0]!;
+    const w = world([staged]);
+    const keys = [...w.staging.keys()];
+    const recovery = mkdtempSync(join(tmpdir(), "ta-window-recovered-"));
+    temps.push(recovery);
+    const saved = join(recovery, staged.key);
+    renameSync(staged.dir, saved);
+    await expect(wipe(out, RUN, w.window, record, quiet)).rejects.toThrow(/do not name/);
+    expect(w.sent).toEqual([]);
+    expect([...w.staging.keys()]).toEqual(keys);
+
+    renameSync(saved, staged.dir);
+    expect(await wipe(out, RUN, w.window, record, quiet)).toEqual({
+      records: 0, staged: 0, namespaces: 1, objects: 0 });
+    expect(w.sent.map(({ op, owner }) => [op, owner])).toEqual([["discard", staged.owner]]);
     expect(await close(w.window, quiet)).toEqual({ owners: 0, left: [] });
   });
 
