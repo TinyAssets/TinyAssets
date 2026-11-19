@@ -56,5 +56,9 @@ When the deletion comparison in #5688 and this change meet, its private original
   platform typecheck. The combined contract preserved the same 4,386 accepted
   values and 12,957 refusals on each runtime. Only the Doors lookup and its
   test fixture changed relative to that rehearsal.
-- [ ] Compare the public behavior recordings with main and repeat the
-  importer and Doors checks after coordinated integration.
+- [x] The repository's Node 22 Doors wire and discovery recorders passed
+  on both f934871ad and 72672304 (47 wire cases and one discovery case per
+  source). After the recorder's normal cursor normalization and sort, all
+  804 wire lines and seven discovery profiles matched byte for byte.
+- [ ] Compare the owner RPC and reviewer recordings for this source, then
+  repeat consumer checks on main after coordinated integration.
