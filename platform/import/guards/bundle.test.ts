@@ -7,14 +7,16 @@
  */
 import { execFileSync } from "node:child_process";
 import {
-  appendFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync,
+  appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
   symlinkSync, writeFileSync,
 } from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TIERS } from "../../ci/fixtures";
 import { contentIdOf } from "../../contract/src/content";
@@ -28,7 +30,7 @@ import {
 } from "../bundle";
 import { census } from "../census";
 import { survey } from "../survey";
-import { TarWriter, TAR_MEMBER_MAX } from "../tar";
+import { TAR_MEMBER_MAX, writeTar } from "../tar";
 import {
   ALICE, BAD_DIR, BAD_NAME, bigBytes, BOB, DORA, ERASED, ERASING, type Fixture, fixture, FOUNDER,
   keyOf, NEWBIE, sha, sparse,
@@ -350,15 +352,51 @@ describe("the bundle builder", () => {
     expect(manifest(bundle).some((e) => e.path.includes("/node_modules"))).toBe(false);
   });
 
+  it("keeps the complete archive when a regular-file header write is short", () => {
+    const { f, out, options } = setup();
+    const write = fs.writeSync;
+    let partial = false;
+    const spy = vi.spyOn(fs, "writeSync").mockImplementation((fd: number, data: unknown, ...args: unknown[]) => {
+      if (!partial && Buffer.isBuffer(data) && data.toString("ascii", 257, 262) === "ustar") {
+        partial = true;
+        return write(fd, data, 0, 73);
+      }
+      return Reflect.apply(write, fs, [fd, data, ...args]);
+    });
+    try {
+      syncBuiltinESMExports();
+      buildBundles(f.copy, options);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(partial).toBe(true);
+    const bundle = join(out, keyOf(ALICE));
+    for (const name of ["refused.tar", "ignored.tar"]) {
+      const entry = manifest(bundle).find((e) => e.path === `${I}/${name}`)!;
+      const names = execFileSync("tar", ["-tf", "-"], { input: bytesOf(bundle, entry) });
+      expect(names.length).toBeGreaterThan(0);
+    }
+  });
+
   it("refuses a tar member past the header's size field, before writing it", () => {
     const dir = mkdtempSync(join(tmpdir(), "ta-tar-"));
     temps.push(dir);
     sparse(join(dir, "huge"), TAR_MEMBER_MAX + 1);
-    const tar = new TarWriter(openSync(join(dir, "out.tar"), "w"));
-    expect(() => tar.add(Buffer.from("huge"), Buffer.from(join(dir, "huge"))))
-      .toThrow(/past the format/);
-    tar.end();
-    expect(lstatSync(join(dir, "out.tar")).size).toBe(1024);
+    const at = join(dir, "out.tar");
+    const opens = vi.spyOn(fs, "openSync");
+    try {
+      syncBuiltinESMExports();
+      expect(() => writeTar(at, [{ member: Buffer.from("huge"), source: Buffer.from(join(dir, "huge")) }]))
+        .toThrow(/past the format/);
+      const fd = opens.mock.results[0]?.value;
+      expect(opens.mock.calls[0]?.[0]).toBe(at);
+      expect(() => fs.fstatSync(fd)).toThrow(expect.objectContaining({ code: "EBADF" }));
+    } finally {
+      opens.mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(lstatSync(at).size).toBe(0);
   });
 
   it("refuses an owner the old stack never admitted, and backs one up as absent", () => {

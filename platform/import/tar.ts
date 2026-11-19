@@ -7,11 +7,12 @@
  * tar and Python's `tarfile` read both). Deterministic: owner and group 0, no user or group
  * name, the node's own mode and mtime.
  */
-import { closeSync, lstatSync, readdirSync, readlinkSync, readSync, writeSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, writeFileSync } from "node:fs";
 
 import { CHUNK_BYTES } from "../contract/src/limits";
 
 import { openFile } from "./backup";
+import type { Refusal } from "./survey";
 
 const BLOCK = 512;
 const LONG_NAME = "././@LongLink";
@@ -61,23 +62,17 @@ function long(type: "L" | "K", bytes: Buffer): Buffer[] {
           padding(data.length)];
 }
 
-/** Writes tar members to an open file descriptor; `end` writes the closing blocks. */
-export class TarWriter {
+/** Encode members on the archive descriptor owned by writeTar. */
+class TarWriter {
   readonly #fd: number;
-  #bytes = 0;
 
   constructor(fd: number) {
     this.#fd = fd;
   }
 
-  get bytes(): number {
-    return this.#bytes;
-  }
-
   #write(...parts: Buffer[]): void {
     for (const part of parts) {
-      writeSync(this.#fd, part);
-      this.#bytes += part.length;
+      writeFileSync(this.#fd, part);
     }
   }
 
@@ -94,25 +89,24 @@ export class TarWriter {
 
   /**
    * The node at `source` as member `name`, and everything below it, never following a link.
-   * A socket, FIFO or device is left out. Returns the members written.
+   * A socket, FIFO or device is left out.
    */
-  add(name: Buffer, source: Buffer): number {
+  add(name: Buffer, source: Buffer): void {
     const stat = lstatSync(source);
     if (stat.isSymbolicLink()) {
       this.#head(name, "2", 0, stat.mode, stat.mtimeMs, readlinkSync(source, { encoding: "buffer" }));
-      return 1;
+      return;
     }
     if (stat.isDirectory()) {
       this.#head(Buffer.concat([name, Buffer.from("/")]), "5", 0, stat.mode, stat.mtimeMs);
-      let members = 1;
       for (const child of readdirSync(source, { encoding: "buffer" }).sort(Buffer.compare)) {
-        members += this.add(Buffer.concat([name, Buffer.from("/"), child]),
-                            Buffer.concat([source, Buffer.from("/"), child]));
+        this.add(Buffer.concat([name, Buffer.from("/"), child]),
+                 Buffer.concat([source, Buffer.from("/"), child]));
       }
-      return members;
+      return;
     }
     if (!stat.isFile()) {
-      return 0;
+      return;
     }
     this.#head(name, "0", stat.size, stat.mode, stat.mtimeMs);
     const fd = openFile(source);
@@ -131,11 +125,19 @@ export class TarWriter {
       closeSync(fd);
     }
     this.#write(padding(stat.size));
-    return 1;
   }
+}
 
-  end(): void {
-    this.#write(Buffer.alloc(2 * BLOCK));
-    closeSync(this.#fd);
+/** Write a complete archive, releasing its descriptor even when a member fails. */
+export function writeTar(at: string, members: readonly Refusal[]): void {
+  const fd = openSync(at, "wx", 0o600);
+  try {
+    const tar = new TarWriter(fd);
+    for (const { member, source } of members) {
+      tar.add(member, source);
+    }
+    writeFileSync(fd, Buffer.alloc(2 * BLOCK));
+  } finally {
+    closeSync(fd);
   }
 }

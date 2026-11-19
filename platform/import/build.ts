@@ -18,7 +18,7 @@
  * builder makes them in the bundle's.
  */
 import {
-  closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync,
+  closeSync, lstatSync, mkdirSync, mkdtempSync, readSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,8 +37,8 @@ import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
 import { layout, openFile, openStore, quoted, storeUri } from "./backup";
-import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
-import { TarWriter } from "./tar";
+import { type Archived, type Copy, type Owner, type Problem } from "./survey";
+import { writeTar } from "./tar";
 
 /** The files the import itself writes into an owner's tree beside what it carries. */
 export const README = `${IMPORTED}/README.md`;
@@ -291,14 +291,6 @@ function backupTime(copy: Copy): number {
   return Date.parse(`${stamp[1]}T${stamp[2]}:${stamp[3]}:${stamp[4]}Z`);
 }
 
-function tarOf(at: string, members: readonly Refusal[]): void {
-  const tar = new TarWriter(openSync(at, "wx", 0o600));
-  for (const member of members) {
-    tar.add(member.member, member.source);
-  }
-  tar.end();
-}
-
 export interface Built {
   /** Every entry, parents first. */
   readonly entries: readonly Entry[];
@@ -357,10 +349,10 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
       make(LINKS, (at) => writeFileSync(at, linksText(owner), { flag: "wx" }));
     }
     if (owner.tree.refused.length > 0) {
-      make(REFUSED, (at) => tarOf(at, owner.tree.refused));
+      make(REFUSED, (at) => writeTar(at, owner.tree.refused));
     }
     if (owner.tree.ignoredTrees.length > 0) {
-      make(IGNORED, (at) => tarOf(at, owner.tree.ignoredTrees));
+      make(IGNORED, (at) => writeTar(at, owner.tree.ignoredTrees));
     }
     const { rows, refusedPolicy } = rowsOf(owner, copy);
     if (refusedPolicy !== null) {
