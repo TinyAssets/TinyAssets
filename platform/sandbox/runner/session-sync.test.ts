@@ -11,8 +11,12 @@ it("stages changed session bytes when a copy preserves the timestamp and length"
   const root = mkdtempSync(join(tmpdir(), "session-sync-"));
   const state = join(root, "state");
   const home = join(root, "sync");
-  vi.doMock(import("./protocol"), async (original) => ({ ...await original(), STATE_DIR: state }));
-  vi.doMock(import("./users"), async (original) => ({ ...await original(), SYNC_HOME: home }));
+  vi.doMock("./protocol", async (original) => ({
+    ...await original<typeof import("./protocol")>(), STATE_DIR: state,
+  }));
+  vi.doMock("./users", async (original) => ({
+    ...await original<typeof import("./users")>(), SYNC_HOME: home,
+  }));
   try {
     // Let the real file's timestamps settle from the scanner's perspective.
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
