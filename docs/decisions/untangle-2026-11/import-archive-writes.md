@@ -54,3 +54,9 @@ method that closed the output descriptor.
   With the 23 stages above and shared import folder reader 72672304, all
   26 ordinary bundle cases passed on Node 22. Coordinator integration on
   main remains open.
+
+- [x] On Node 22 and 24, Python tarfile and GNU tar independently read a
+  directory, a 135-byte filename and a symlink to it at pre-epoch, epoch
+  and modern times. Extracted timestamps, file bytes and link targets
+  matched on 8535a52d. For the epoch and modern fixtures, the entire archive
+  was byte-identical to the previous writer on both runtimes.
