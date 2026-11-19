@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { fileMtime } from "../contract/src/checks";
 import { chunkedId, inlineId } from "../contract/src/content";
 import {
   DEFAULT_TIER, TIER_NAMES, type TierName, type TierNumbers, type Tiers,
@@ -421,6 +422,9 @@ export function fitOf(owner: Owner, built: Built, tiers: Tiers): Fit {
       fit.problems.push({ code, at });
     }
   };
+  if (built.entries.some((entry) => entry.kind === "file" && !fileMtime(entry.mtime_ms))) {
+    fit.problems.push({ code: "file_mtime", at });
+  }
   over("over_file_bytes", fit.largest, FILE_DEFAULTS.max_file_bytes);
   const tier = tierOf(owner, tiers);
   if (tier === undefined) {

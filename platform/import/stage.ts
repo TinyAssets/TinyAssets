@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { keyed, object } from "../contract/src/checks";
 import { HEX16 } from "../contract/src/ids";
 import {
-  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, PART, rehearsalRun,
+  BUNDLE_FORMAT, BUNDLE_INDEX, bundlePrefix, importMac, type ImportMessage, manifestEntries, pageNumber, PART, rehearsalRun,
   RUN, stagedName,
 } from "../contract/src/import-message";
 import { IMPORT_NAME_KEYS, type ImportNames } from "../contract/src/import-names";
@@ -270,6 +270,11 @@ export async function stage(out: string, run: string, names: ImportNames, inputs
   }
   const totals = { bundles: bundles.length, objects: 0, bytes: 0, messages: 0 };
   for (const staged of bundles) {
+    for (const name of staged.parts) {
+      if (pageNumber("manifest", name) !== null) {
+        manifestEntries(JSON.parse(readFileSync(join(staged.dir, name), "utf8")));
+      }
+    }
     totals.objects += staged.parts.length;
     totals.bytes += staged.bytes;
     totals.messages += 1;

@@ -26,6 +26,7 @@ import {
 import {
   buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, PRIVATE_RECORD,
 } from "../bundle";
+import { buildTree, fitOf } from "../build";
 import { census } from "../census";
 import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
@@ -469,6 +470,20 @@ describe("the bundle builder", () => {
     const summary = buildBundles(f.copy, options);
     expect(summary).toMatchObject({ bundled: 2, excluded: 1, refused: { unknown_table: 1 } });
     expect(readdirSync(out).sort()).toEqual([keyOf(ALICE), keyOf(NEWBIE)].sort());
+  });
+
+  it("reports file times outside the owner reader's range in the bundle fit", () => {
+    const { f } = setup();
+    const owner = survey(f.copy).owners.find((item) => item.principal === ALICE)!;
+    const built = buildTree(owner, f.copy, null);
+    const file = built.entries.find((entry) => entry.kind === "file")!;
+    const limit = 8_640_000_000_000_000;
+    for (const time of [-limit - 1, -limit, -1, limit, limit + 1]) {
+      const entries = built.entries.map((entry) => entry === file ? { ...entry, mtime_ms: time } : entry);
+      const fit = fitOf(owner, { ...built, entries }, TIERS);
+      expect(fit.problems.map((problem) => problem.code))
+        .toEqual(Math.abs(time) > limit ? ["file_mtime"] : []);
+    }
   });
 
   it("leaves out an owner past the platform's limits, counted, while the others go on", () => {

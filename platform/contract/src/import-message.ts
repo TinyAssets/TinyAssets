@@ -27,9 +27,10 @@
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
-import { keyed, object, whole } from "./checks.ts";
+import { fileMtime, keyed, object, whole } from "./checks.ts";
 import { chunkedId, cut } from "./content.ts";
 import { HEX16, HEX64 } from "./ids.ts";
+import { Refusal } from "./refusal.ts";
 import { principal } from "./text.ts";
 
 /**
@@ -203,6 +204,34 @@ export interface Entry {
   readonly content_id?: string;
   /** A chunked file's chunks, in order (`chunks/<sha256>`). */
   readonly chunks?: readonly string[];
+}
+
+/** A rows or manifest page's items, as the producer and consumer read them. */
+export function bundlePageItems(page: unknown, key: "rows" | "entries"): unknown[] {
+  const items = object(page) ? page[key] : undefined;
+  if (!Array.isArray(items)) {
+    throw new Refusal("invalid", `a bundle's page holds no ${key}`);
+  }
+  return items;
+}
+
+function entryOf(value: unknown): Entry {
+  if (!object(value) || typeof value["path"] !== "string"
+      || (value["kind"] !== "dir" && value["kind"] !== "file")) {
+    throw new Refusal("invalid", "a bundle's manifest entry is out of shape");
+  }
+  if (value["kind"] === "file" && (typeof value["size"] !== "number"
+      || !Number.isSafeInteger(value["size"]) || value["size"] < 0
+      || (value["mode"] !== 0 && value["mode"] !== 1) || typeof value["content_id"] !== "string"
+      || !fileMtime(value["mtime_ms"]))) {
+    throw new Refusal("invalid", "a bundle's file entry is out of shape");
+  }
+  return value as unknown as Entry;
+}
+
+/** Read one manifest page before staging it or delivering its entries to an owner. */
+export function manifestEntries(page: unknown): Entry[] {
+  return bundlePageItems(page, "entries").map(entryOf);
 }
 
 export type Row =

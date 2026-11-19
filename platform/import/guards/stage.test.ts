@@ -8,7 +8,7 @@
  * from the configs (`deploy/facts.ts`), as the window's `facts.json` hands them to the job.
  */
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -192,6 +192,27 @@ describe("the staging step", () => {
     expect(await stageMain(["stage", out, "--run", "r1", "--facts", factsFile()], env,
                            () => undefined, fetcher)).toBe(0);
     expect(calls.filter((call) => call.method === "POST").length).toBe(3);
+  });
+
+  it("holds a previously built bundle with an unrenderable file time before any send", async () => {
+    const out = bundled();
+    const dir = join(out, keyOf(ALICE));
+    const name = "manifest/0.json";
+    const page = JSON.parse(readFileSync(join(dir, name), "utf8"));
+    const file = page.entries.find((entry: { kind: string }) => entry.kind === "file");
+    file.mtime_ms = 8_640_000_000_000_001;
+    const bytes = JSON.stringify(page);
+    writeFileSync(join(dir, name), bytes);
+    const indexPath = join(dir, "bundle.json");
+    const index = JSON.parse(readFileSync(indexPath, "utf8"));
+    index.parts[name] = createHash("sha256").update(bytes).digest("hex");
+    writeFileSync(indexPath, JSON.stringify(index));
+    const { calls, fetcher } = apis();
+    for (const inputs of [null, INPUTS]) {
+      await expect(stage(out, "r1", NAMES, inputs, fetcher, () => undefined))
+        .rejects.toThrow(/file entry/);
+    }
+    expect(calls).toEqual([]);
   });
 
   it("refuses a bundle that is not whole before anything is sent", async () => {

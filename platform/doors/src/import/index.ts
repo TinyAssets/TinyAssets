@@ -57,15 +57,15 @@
  * object is read only when the bucket says it is at most `IMPORT_HOLD_BYTES` (one chunk, as
  * the upload door holds one), so at most one is in hand at once.
  */
-import { fileMtime, object } from "../../../contract/src/checks";
+import { object } from "../../../contract/src/checks";
 import { chunkedId, inlineId } from "../../../contract/src/content";
 import { readControl, tiersOf } from "../../../contract/src/control";
 import { sha256Hex } from "../../../contract/src/digest";
 import { HEX64 } from "../../../contract/src/ids";
 import {
-  answerName, BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, CHECK_PARTS, chunkName,
+  answerName, BUNDLE_FORMAT, BUNDLE_INDEX, BUNDLE_OWNER, type BundleIndex, bundlePageItems, CHECK_PARTS, chunkName,
   type Cursor, doneName, type Entry, IMPORT_BATCH_BYTES, IMPORT_FILES, IMPORT_KEY, importKeyBytes,
-  importMessage, type ImportMessage, inlineName, macHolds, type Paged, pageName, pageNumber,
+  importMessage, type ImportMessage, inlineName, macHolds, manifestEntries, type Paged, pageName, pageNumber,
   rehearsalRun, stagedName,
 } from "../../../contract/src/import-message";
 import { INLINE_BYTES } from "../../../contract/src/limits";
@@ -175,29 +175,6 @@ async function verified(env: DoorsEnv, message: ImportMessage, index: Index): Pr
   }
 }
 
-/** A list a page holds under `key`, or a drop. */
-function listOf(page: Record<string, unknown>, key: string): unknown[] {
-  const list = page[key];
-  if (!Array.isArray(list)) {
-    throw new Refusal("invalid", `a bundle's page holds no ${key}`);
-  }
-  return list;
-}
-
-function entryOf(value: unknown): Entry {
-  if (!object(value) || typeof value["path"] !== "string"
-      || (value["kind"] !== "dir" && value["kind"] !== "file")) {
-    throw new Refusal("invalid", "a bundle's manifest entry is out of shape");
-  }
-  if (value["kind"] === "file" && (typeof value["size"] !== "number"
-      || !Number.isSafeInteger(value["size"]) || value["size"] < 0
-      || (value["mode"] !== 0 && value["mode"] !== 1) || typeof value["content_id"] !== "string"
-      || !fileMtime(value["mtime_ms"]))) {
-    throw new Refusal("invalid", "a bundle's file entry is out of shape");
-  }
-  return value as unknown as Entry;
-}
-
 /** A slice's bounds: production's, unless a test passes smaller. */
 export interface SliceBounds {
   readonly ms: number;
@@ -261,10 +238,10 @@ class Slice {
       }
       const page = await part(this.#env, this.#message, this.#index, each.part);
       if (each.kind === "rows") {
-        await this.#call(stub.importRows(binding, { rows: listOf(page, "rows") }));
+        await this.#call(stub.importRows(binding, { rows: bundlePageItems(page, "rows") }));
         continue;
       }
-      const stopped = await this.#files(listOf(page, "entries").map(entryOf), entry);
+      const stopped = await this.#files(manifestEntries(page), entry);
       if (stopped !== null) {
         return { step, entry: stopped };
       }
