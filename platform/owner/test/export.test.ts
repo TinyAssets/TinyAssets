@@ -17,7 +17,7 @@ import { PLATFORM_ONLY } from "../src/admission";
 import { Refusal } from "../../contract/src/refusal";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import {
-  GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S, spread,
+  GENERATION_SIZES, MANIFEST_BUSY_RETRY_S, MANIFEST_CEILING, MANIFEST_CONTINUE_S, manifestDay, spread,
 } from "../src/backup";
 import {
   BURST_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots, SHIP_UNITS,
@@ -963,6 +963,116 @@ describe("the sweep of generations no row names", () => {
     expect([settled.sweep, settled.sweep_retry]).toEqual([0, null]);
     expect(await objectsOf(ns, kept.gen)).toContain("root");
   });
+
+  it("finishes a sweep after an export expires between pages without opening an early nightly", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 9, 12, 12) });
+    const o = await owner();
+    const earlier = await generate(o.stub);
+    await exportFrom(o, null);
+    vi.setSystemTime(Date.now() + 5_000);
+    await write(o, `${W}/first.txt`, source(1));
+    const newest = await generate(o.stub);
+    await write(o, `${W}/dirty.txt`, source(2));
+    const start = clock();
+    await sqlIn(o.stub, "UPDATE owner_exports SET ends_at = ? WHERE gen = ?", start + 1, earlier.gen);
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET sweep = 1");
+
+    const seen = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const pages: string[][] = [];
+      let partsWritten = 0;
+      const { backups } = storesOn(state, through({
+        sweepManifests: (ns, keep, cursor) => {
+          pages.push([...keep]);
+          if (cursor === null) {
+            vi.setSystemTime((start + 2) * 1000);
+            return Promise.resolve({ deleted: 0, cursor: "second" });
+          }
+          return env.FILES.sweepManifests(ns, keep, null);
+        },
+        putManifestPart: (...args) => {
+          partsWritten++;
+          return env.FILES.putManifestPart(...args);
+        },
+      }));
+      await backups.run(start, start + 60);
+      return { pages, partsWritten, writing: backups.writing(), done: backups.manifests() };
+    });
+    expect(seen.partsWritten).toBe(0);
+    expect(seen.pages).toEqual([[earlier.gen, newest.gen], [newest.gen]]);
+    expect(seen.writing).toBeNull();
+    expect(seen.done.map(({ gen }) => gen)).toEqual([newest.gen]);
+  });
+
+  it("waits for a pin acquired during a sweep to release before opening a due nightly", async () => {
+    const o = await owner();
+    await generate(o.stub);
+
+    const held = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      let pages = 0;
+      let writes = 0;
+      const { backups } = storesOn(state, through({
+        sweepManifests: async (ns, keep, cursor) => {
+          const page = await env.FILES.sweepManifests(ns, keep, cursor);
+          // The restore claimed the source; the pin has not started its fresh undo yet.
+          state.storage.sql.exec("INSERT INTO owner_restore (only, ns, gen, step, at, since) " +
+                                 "VALUES (1, ?, ?, 'pinned', 0, ?)", ns, latest.gen, clock());
+          pages++;
+          return page;
+        },
+        putManifestPart: (...args) => {
+          writes++;
+          return env.FILES.putManifestPart(...args);
+        },
+      }));
+      const latest = backups.manifests().at(-1)!;
+      expect(backups.writing()).toBeNull();
+      // Age the actual finished generation and make its nightly due in this same turn.
+      const earlier = clock() - 2 * 86_400;
+      state.storage.sql.exec("UPDATE owner_backups SET day = ?, changed_at = ? WHERE gen = ?",
+                             manifestDay(earlier), clock(), latest.gen);
+      state.storage.sql.exec("UPDATE owner_backup_state SET began_at = ?, sweep = 1", earlier);
+      await backups.run(clock(), clock() + 45);
+      return { source: latest.gen, pages, writes, writing: backups.writing(),
+               newest: backups.manifests().at(-1)?.gen };
+    });
+    expect([held.pages, held.writes, held.writing, held.newest]).toEqual([1, 0, null, held.source]);
+
+    expect(await o.stub.restoreRelease({ owner: o.name, caller: PLATFORM_CALLER, origin: null }))
+      .toEqual({ released: true });
+    const resumed = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const { backups } = storesOn(state);
+      await backups.run(clock(), clock() + 45);
+      return backups.writing() ?? backups.manifests().at(-1)!.gen;
+    });
+    expect(resumed).not.toBe(held.source);
+  });
+
+  it.each([0, 30])("decides whether to open after a sweep crosses midnight with %i seconds left",
+    async (remaining) => {
+      const o = await owner();
+      const older = await generate(o.stub);
+      await write(o, `${W}/dirty.txt`, source(1));
+      const today = new Date();
+      const midnight = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(),
+                                today.getUTCDate() + 3) / 1000;
+      const start = midnight - 1;
+      vi.useFakeTimers({ toFake: ["Date"], now: start * 1000 });
+      await sqlIn(o.stub, "UPDATE owner_backup_state SET sweep = 1");
+      const opened = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+        const { backups } = storesOn(state, through({
+          sweepManifests: async (...args) => {
+            const page = await env.FILES.sweepManifests(...args);
+            if (page.cursor === null) vi.setSystemTime(midnight * 1000);
+            return page;
+          },
+        }));
+        await backups.run(start, midnight + remaining);
+        return state.storage.sql.exec<{ started_at: number; day: string }>(
+          "SELECT started_at, day FROM owner_backups WHERE gen != ?", older.gen).toArray();
+      });
+      const day = new Date(midnight * 1000).toISOString().slice(0, 10).replaceAll("-", "");
+      expect(opened).toEqual(remaining === 0 ? [] : [{ started_at: midnight, day }]);
+    });
 
   it("stops, still owed, at a restore's hold begun while it runs: a wipe between its pages " +
      "leaves no row, and neither generation the record names is swept", async () => {

@@ -479,6 +479,16 @@ export class Backups {
       started_at: row.started_at, finished_at: row.finished_at! }));
   }
 
+  #nightlyAt(done: readonly GenerationRow[], now: number): number | null {
+    if (done.length > 0 && !this.#changed(done)) return null;
+    // The night after the later of the newest's day and the last begun's, so one given up is
+    // tried the next night, not at once.
+    const began = this.#began();
+    const day = [done.at(-1)?.day ?? manifestDay(now), began === null ? "" : manifestDay(began)]
+      .sort().at(-1)!;
+    return dayStart(day) + DAY_S + spread(this.#parts.owner());
+  }
+
   /** When the lane next has work, in seconds, never before `now`; null before any owner. */
   next(now: number): number | null {
     if (!this.#parts.serves()) {
@@ -497,13 +507,7 @@ export class Backups {
       .map((row) => wholeAt(row, now) ? this.#pinned(row.gen, now) ?? now : now);
     const ends = done.filter((row) => row.changed_at !== null)
       .map((row) => row.changed_at! + RESTORABLE_LIFE_S);
-    // The night after the later of the newest's day and the last begun's, so one given up is
-    // tried the next night, not at once.
-    const began = this.#began();
-    const day = [done.at(-1)?.day ?? manifestDay(now), began === null ? "" : manifestDay(began)]
-      .sort().at(-1)!;
-    const nightly = done.length > 0 && !this.#changed(done) ? null
-      : Math.max(now, dayStart(day) + DAY_S + spread(this.#parts.owner()));
+    const nightly = this.#nightlyAt(done, now);
     const { sweep, sweep_retry: sweepRetry } = this.#sweepState();
     const swept = sweep > 0 ? sweepRetry ?? now : null;
     const times = [...older, ...ends, nightly, swept].filter((at): at is number => at !== null)
@@ -596,31 +600,34 @@ export class Backups {
 
   /**
    * One pass: the rows of generations no longer kept deleted and any sweep owed made, then the
-   * one due begun or carried on, until the wall clock reaches `until` (ms). One it did not
+   * one due begun or carried on, until the wall clock reaches `until` (seconds). One it did not
    * finish goes on `MANIFEST_CONTINUE_S` later; an R2 call that fails backs the lane off in its
    * row (`MANIFEST_RETRY_S`); the pass itself completes. One at a time: a pass asked while one
    * runs (the lane's, or a restore's pin carrying its fresh generation) joins it.
    */
-  run(now: number, until: number): Promise<void> {
-    this.#pass ??= this.#run(now, until).finally(() => {
+  run(_now: number, until: number): Promise<void> {
+    this.#pass ??= this.#run(until).finally(() => {
       this.#pass = null;
     });
     return this.#pass;
   }
 
-  async #run(now: number, until: number): Promise<void> {
+  async #run(until: number): Promise<void> {
     try {
       await this.#write(() => this.#prune(clock()));
-      if (!await this.#sweep(until)) {
+      if (!await this.#sweep(until) || this.#parts.halted()) {
         return;
       }
-      const due = this.next(now);
-      let writing = this.#rows().find((row) => row.state === "writing");
-      const done = this.#rows().filter((row) => row.state === "done");
-      if (writing === undefined && due !== null && now >= due
-          && (done.length === 0 || this.#changed(done))) {
-        const gen = await this.#write(() => this.#open(now));
-        writing = this.#rows().find((row) => row.gen === gen);
+      const rows = this.#rows();
+      const now = clock();
+      let writing = rows.find((row) => row.state === "writing");
+      if (writing === undefined && now < until
+          && this.#parts.serves() && this.#parts.pinned() === null) {
+        const due = this.#nightlyAt(rows, now);
+        if (due !== null && now >= due) {
+          const gen = await this.#write(() => this.#open(now));
+          writing = this.#rows().find((row) => row.gen === gen);
+        }
       }
       if (writing !== undefined && !await this.#carry(writing, until)) {
         await this.#write(() => this.#sql.exec(
