@@ -31,8 +31,7 @@ import {
 } from "../../contract/src/policy-document";
 import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
-import { settled, settledOwner } from "./starter-support";
-import { crowd, failure, gateFor, spaceOf, TIERS } from "./support";
+import { crowd, failure, gateFor, ownerObject, seeded, spaceOf, TIERS } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const BUNDLE = "b".repeat(64);
@@ -275,8 +274,8 @@ describe("the import's files", () => {
   });
 
   it("shares imported inline and chunked contents with the starter after admission", async () => {
-    const reference = await settledOwner();
-    const seedBytes = (await reference.stub.storageUsage(reference.bind(null))).used_bytes;
+    const reference = await ownerObject();
+    const seedBytes = (await reference.stub.storageUsage(own(reference.name))).used_bytes;
     const pkg = carried();
     const guide = pkg.files.find(file => file.path.endsWith("/schedule/SKILL.md"))!;
     const spec = pkg.files.find(file => file.path.endsWith("/knowledge/references/okf-spec.md"))!;
@@ -287,12 +286,11 @@ describe("the import's files", () => {
     expect(await upload(stub, owner, `${I}/reference.md`, bytesOf(spec.text)))
       .toEqual({ written: 1, skipped: 0 });
     await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
-    const bind = () => own(owner);
-    await settled({ stub, bind });
-    expect((await stub.starterReceipts(bind())).receipts).toHaveLength(pkg.files.length);
-    expect((await stub.storageUsage(bind())).used_bytes).toBe(seedBytes);
+    await seeded(stub, owner);
+    expect((await stub.starterReceipts(own(owner))).receipts).toHaveLength(pkg.files.length);
+    expect((await stub.storageUsage(own(owner))).used_bytes).toBe(seedBytes);
     for (const path of [`${I}/guide.md`, `${I}/reference.md`, guide.path, spec.path]) {
-      expect((await stub.fileStat(bind(), { path })).entry?.kind).toBe("file");
+      expect((await stub.fileStat(own(owner), { path })).entry?.kind).toBe("file");
     }
   });
 

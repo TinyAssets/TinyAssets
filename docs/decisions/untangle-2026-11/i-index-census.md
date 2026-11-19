@@ -187,3 +187,12 @@ and the representative whole census remain open.
   The test verifies the starter receipts and all four paths. The first ordinary
   Worker run and the concurrent scoped TypeScript attempt each exited 137. Both
   verdicts are pending a serial run.
+- [x] An independent local Worker run exercised the public owner and Files
+  RPC methods on the original v7 package. Three fresh named owners ran the
+  genuine Wrangler-built owner entry and local R2. The ordinary seed alone and
+  the seed after importing matching copies at two distinct paths each used
+  71,540 stored bytes. Changing one byte in each imported copy used 112,598.
+  All three reached v7 with 14 receipts. Both imported paths and both starter
+  paths existed in the two import cases. This fixture waited for the real alarm.
+  The in-tree test now uses the existing ownerObject and seeded helpers. The
+  Vitest entrypoint and scoped typecheck still need completed verdicts.

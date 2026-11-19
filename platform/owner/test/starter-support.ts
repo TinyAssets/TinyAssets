@@ -50,12 +50,12 @@ export async function notices(r: Rig, type: string): Promise<string[]> {
 }
 
 /** The version the owner's starter last reconciled whole. */
-export async function versionOf(r: Pick<Rig, "stub" | "bind">): Promise<number> {
+export async function versionOf(r: Rig): Promise<number> {
   return (await r.stub.starterReceipts(r.bind(null))).version;
 }
 
 /** The object's lanes run until its own seed has landed. */
-export async function settled(r: Pick<Rig, "stub" | "bind">): Promise<void> {
+export async function settled(r: Rig): Promise<void> {
   for (let tries = 0; tries < 100; tries++) {
     if (await versionOf(r) === SEED) {
       return;
