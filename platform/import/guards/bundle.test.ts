@@ -26,6 +26,7 @@ import {
 import {
   buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, PRIVATE_RECORD,
 } from "../bundle";
+import { buildTree, fitOf } from "../build";
 import { census } from "../census";
 import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
@@ -132,6 +133,33 @@ describe("the bundle builder", () => {
     // Every small file's content is inline, every large one's in chunks.
     for (const entry of entries.filter((e) => e.kind === "file")) {
       expect(entry.chunks === undefined, entry.path).toBe(entry.size! <= INLINE_BYTES);
+    }
+  });
+
+  it.each(["grows", "shrinks"])("fits the emitted collection body when it %s", (direction) => {
+    const { f } = setup();
+    const store = new DatabaseSync(join(f.account(ALICE), "conversations.db"));
+    const small = JSON.stringify("x");
+    const large = JSON.stringify("🌲".repeat(300));
+    const changed = direction === "grows" ? large : small;
+    try {
+      const update = store.prepare("UPDATE collection_rows SET body=? WHERE row_id='b1'");
+      update.run(direction === "grows" ? small : large);
+      const owner = survey(f.copy).owners.find((item) => item.principal === ALICE)!;
+      update.run(changed);
+      const built = buildTree(owner, f.copy, null);
+      expect(built.rows).toContainEqual(expect.objectContaining({ row_id: "b1", body: changed }));
+      const fileBytes = built.store.chunkBytes + built.store.inlineBytes;
+      const emitted = built.rows.flatMap((row) => row.kind === "collection" ? [row.body] : []);
+      const exact = fileBytes + Buffer.byteLength(emitted.join(""), "utf8");
+      const tier = { ...TIERS.paid, storage_bytes: exact };
+      expect(fitOf(owner, built, { ...TIERS, paid: tier })).toMatchObject({
+        stored: exact, problems: [],
+      });
+      expect(fitOf(owner, built, { ...TIERS, paid: { ...tier, storage_bytes: exact - 1 } })
+        .problems).toContainEqual({ code: "over_storage", at: `owner/${owner.key}` });
+    } finally {
+      store.close();
     }
   });
 

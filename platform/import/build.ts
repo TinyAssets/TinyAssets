@@ -34,6 +34,7 @@ import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { chunkName, type Entry, inlineName, type Row } from "../contract/src/import-message";
 import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
 import { validate } from "../contract/src/policy-document";
+import { utf8Bytes } from "../contract/src/text";
 import { carried } from "../owner/src/starter-package";
 
 import { layout, openFile, openStore, quoted, storeUri } from "./backup";
@@ -408,11 +409,13 @@ export function fitOf(owner: Owner, built: Built, tiers: Tiers): Fit {
     ancestors(path).forEach((parent) => all.add(parent));
   }
   all.delete(WORKSPACE);
+  const bodyBytes = built.rows.reduce((sum, row) =>
+    sum + (row.kind === "collection" ? utf8Bytes(row.body) : 0), 0);
   const fit = {
     entries: all.size,
     inline_bytes: built.store.inlineBytes,
     largest: built.entries.reduce((a, entry) => Math.max(a, entry.size ?? 0), 0),
-    stored: built.store.chunkBytes + built.store.inlineBytes + owner.tree.rows.body_bytes,
+    stored: built.store.chunkBytes + built.store.inlineBytes + bodyBytes,
     problems: [] as Problem[],
   };
   const at = `owner/${owner.key}`;

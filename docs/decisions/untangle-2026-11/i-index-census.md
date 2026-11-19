@@ -303,3 +303,16 @@ SQLite file. The archive writer materializes only the selected tables.
   bundle and census cases and built the ordinary importer CLI.
 - [ ] Repeat the comparison on main after the relevant stages land. Shared
   owner accounting and the representative rehearsal remain open.
+
+## Collection bytes used for fit
+
+- [x] On 18623a74 the fit check still used collection sizes from the earlier
+  source survey. In two synthetic interrupted-copy controls it undercounted
+  and overcounted the emitted rows by 1,199 bytes. In the latter case it
+  refused the exact tier that fit. Both ordinary regressions failed.
+- [x] Read the collection bodies from the built rows and use the same UTF-8
+  counter as the Owner collection writer. Both focused tests now pass at the
+  exact tier and its one-byte boundary. The survey retains its source census.
+- [ ] Verify the full importer and the combined archive and policy branches.
+  Complete shared Owner accounting and a representative rehearsal are separate
+  obligations.
