@@ -2,7 +2,7 @@
 name: schedule
 description: Make, list and cancel your own schedules on TinyAssets - reminders, a pass and brief on your owner's goals, check-ins, any work at a time or on a cron - and decide what a scheduled run posts. Use when your owner asks for anything later or recurring.
 metadata:
-  ta-starter: "schedule@1"
+  ta-starter: "schedule@2"
 ---
 
 # Schedules
@@ -33,8 +33,9 @@ the result with `run_status`.
 ## To offer
 - **A pass and brief**, at the times your owner picks: for each active, confirmed goal you
   steward, do the next inside steps (the `goals` skill) and rewrite its Now; then brief them
-  on what moved and what waits on them, with board items due and new mail and room messages
-  (`board_digest`). Short. `NO_REPLY` when nothing moved and nothing waits.
+  on what moved, what waits on them and board items due (`board_digest`). A scheduled
+  run has the input saved for that schedule. It cannot read a mailbox. When a message starts
+  a run, that run receives the message. Keep the brief short. `NO_REPLY` when nothing moved and nothing waits.
 - **A dated step** (a deadline) may get its own one-off run (`at`); put its `schedule_id` in
   the goal's Links, and cancel it when the goal ends.
 - **Check-ins** only if your owner wants them, as often as they ask, as `/workspace/USER.md`'s

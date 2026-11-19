@@ -88,6 +88,9 @@ end.
   again) and retries of a `5xx` (the wake settles failed; the next change rings).
 - [x] Slice BRAIN, the doors half of the shared brain (`doors/src/instructions.ts`,
   `contract/apps.json`, `platform/plugins/`).
+- [x] The starter's scheduled brief uses its saved input and the board. Each admitted mail
+  run receives its own message. After a board digest reset the shared skill pages the current collection
+  and resumes from the saved board change cursor.
 - [ ] **Owed by BRAIN, live**, on the stage (§10 step 8). Proof is observed tool calls and
   `writer` values, never an agent's say-so; the user only connects, signs in and answers.
   1. **DCR on** (`DCR_ENABLED: "true"`). For each `dcr` app (Grok via Cursor's backend, Gemini,
@@ -655,6 +658,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     question;
   - `RUNS_KEPT`, the policy and egress receipts, and the settled wakes' week and 1,000
     recorded in `limits-audit.md` as deliberate retentions, each with its reason (§P item 6).
+
+- [ ] F1's import census checks the owner's storage tier through admission and the carried
+  starter reconciliation. Replay the candidate package and imported content through the same
+  owner writes, including shared content. Verify the reconciled version and report a failed
+  pass. The index charge and the stored bytes must each fit. See
+  `docs/decisions/untangle-2026-11/starter-brief.md`.
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 

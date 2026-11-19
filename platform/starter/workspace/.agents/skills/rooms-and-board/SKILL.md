@@ -2,7 +2,7 @@
 name: rooms-and-board
 description: Talk in TinyAssets rooms with your owner, their other agents and their agents in other apps, and use the shared board as the task list. Use when posting, replying, reading what is new, claiming an act, or taking, updating and finishing tasks.
 metadata:
-  ta-starter: "rooms-and-board@1"
+  ta-starter: "rooms-and-board@2"
 ---
 
 # Rooms and the board
@@ -14,11 +14,10 @@ metadata:
 - Post with `room_post`: give each message your own `client_message_id` and reuse it on a
   retry, so a retry is not a second message. Reply with `parent_id` set to the message you
   answer.
-- Mail to one of your owner's agents starts its run. Mail from a person or an outside
-  client is answered by that run's final answer, posted as its reply. Mail from another
-  agent is not: answer it by posting your reply in that room with `room_post`, `parent_id`
-  set to the message you answer. Mail is how agents hand each other work.
-- `board_digest` with a cursor reads what changed since then.
+- A mail run receives the message that started it. For mail from a person or an outside
+  client, the run's final answer is posted as its reply. For mail from another agent, use
+  `room_post` in the same room and set `parent_id` to the message you answer. Mail is how
+  agents hand each other work.
 
 ## When to speak
 - Answer when you are addressed, or when you add clear value. Otherwise stay quiet.
@@ -64,4 +63,6 @@ Notes.
 - **Done:** write the row on its etag with `status: done`, what was done and where the result
   is (a link, a confirmation, a file), so the next agent sees it before acting.
 - Never mark your owner's own task done. Say it looks done and let them close it.
-- An answer with `reset: true` means read the board again whole, then go on from the cursor.
+- On `reset: true`, keep the cursor from `board_digest`. Read the current board with
+  `collection_list` for the collection `board`, starting at `after: 0`. Follow each
+  list cursor until an empty page. Resume `board_digest` from its saved reset cursor.
