@@ -15,3 +15,36 @@
 - [x] Session cache upgrade and rollback. Eight calls per Node 22 and 24 used the original and corrected bundled staging functions against the same synthetic store and cache. Old to new, back to old and forward to new delivered every rewritten five-byte session. Both settled repeat reads were quiet, and two recent rewrites were delivered. The sandbox Worker and guard suite passed 140 cases on the corrected runtime. A test-only mock initially caused two TypeScript errors from production path literals; the corrected fixture passed all 15 session and format cases on each Node version and the full workspace typecheck. The new runner and probe bundles built successfully.
 
 - [x] Combined behavior. Reconciled `aa341901` with the staged runner digest `493276e2`, ignore matcher `534e6bcb` and the renewal, runner-write and import/restore changes. The three runner test files had 36 passes and four size cases excluded on Node 22. Both known workspace identity regressions still failed. Both native Owner mode/history cases passed on that combination, and the full workspace typecheck and runner bundle build passed. An independent refusal/retry check exposed loss before change detection even starts. [Refused workspace retry, base tests and next dependencies](https://github.com/TinyAssets/TinyAssets/commit/5a694c62f72536a197ba566bf8ace79964c11daf). Preserve held local edits across incoming updates before adopting a new disk format.
+
+## Two conversations using the same engine store
+
+- [x] On 44e44370 two Codex run homes copied the same two synthetic session
+  files. Each run edited a different file. Each call that returned a home
+  to the store held the normal engine lock. The run finishing last restored
+  the other file to its original bytes. Reversing the finish order reversed
+  which edit was lost. Both outcomes occurred on Node 22 and 24 using the
+  actual makeHome and keepHome functions with temporary state directories.
+  Conversation serialization does not serialize distinct conversations.
+- [x] Added an ordinary runner regression with two different conversations
+  and a held CLI so the homes overlap. It requires both session edits in the
+  final store. Privileged execution remains outstanding. This is a staged
+  regression and design finding.
+- [ ] Compare what each home inherited before writing a session back. Include
+  reboot recovery, sign-in, probes and a file genuinely edited in both
+  homes. Format one records the copied credential digests but no session
+  baselines. Reconcile historical homes and the expand/contract rule before
+  choosing a durable representation. Preserve both copies when a genuine
+  divergence still needs a decision.
+- [x] A separate 8,388,639-byte synthetic session went through sync-in,
+  import into the engine store, home creation, writeback, staging and
+  sync-out on Node 22 and 24. The resulting bytes and mirror digest matched.
+  Allocation observations showed one whole-file buffer at store import and
+  home creation each, two at writeback and two at initial staging, plus a
+  whole Latin-1 string at staging even with no scan terms. A settled repeat
+  staged nothing. The upload read in 4,194,304-byte pieces. These are
+  observations of individual allocations, not measurements of process RSS.
+- [ ] Use the existing chunk reader and atomic writer to bound session
+  copying across those consumers. A different hash function alone cannot
+  remove the whole-file reads. Preserve per-store locks, no-follow reads,
+  refusal and retry semantics, and correct cache identity. The number of
+  paths in the cache and the mirror lookup needs separate review.

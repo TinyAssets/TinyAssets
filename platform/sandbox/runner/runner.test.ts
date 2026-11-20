@@ -1576,6 +1576,31 @@ describe("the sync", () => {
       .toEqual([]);
   });
 
+  it("keeps both conversations' session edits when their homes overlap", async () => {
+    const store = "/var/lib/ta/store/codex/.codex/sessions";
+    for (const file of ["a.jsonl", "b.jsonl"]) {
+      box.write(`${store}/${file}`, "baseline");
+    }
+    const first = startDoc(doors, "codex", { config: config("codex") });
+    const second = startDoc(doors, "codex", { config: config("codex"),
+                                              conversation: `cv_${"d".repeat(32)}` });
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, holdUntil: "/release-first",
+                       writes: { "~/.codex/sessions/a.jsonl": "first edit" } });
+    box.start(first);
+    box.runner("launch", first.run);
+    await waitFor(() => box.ran("codex").length === 1);
+    box.cli("codex", { lines: SHAPES["codex"]!.lines,
+                       writes: { "~/.codex/sessions/b.jsonl": "second edit" } });
+    box.start(second);
+    box.runner("launch", second.run);
+    expect((await doors.ended_(25_000, second.run)).body["end"]).toEqual({ exit_code: 0 });
+    expect(readFileSync(box.path(`${store}/b.jsonl`), "utf8")).toBe("second edit");
+    box.write("/release-first", "");
+    expect((await doors.ended_(25_000, first.run)).body["end"]).toEqual({ exit_code: 0 });
+    expect(readFileSync(box.path(`${store}/a.jsonl`), "utf8")).toBe("first edit");
+    expect(readFileSync(box.path(`${store}/b.jsonl`), "utf8")).toBe("second edit");
+  });
+
   it("sends a session refused at a full storage again by the next run, though that run " +
      "never touches it", async () => {
     const session = "/workspace/.sessions/owner/claude-code/.claude/projects/main/cs-1.jsonl";
