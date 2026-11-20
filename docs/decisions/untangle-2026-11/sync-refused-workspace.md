@@ -134,3 +134,32 @@
   rerun reached the actual response assertion. A type-only correction
   uses the existing commit request type for the mutable operation list.
   Full Node 24 platform TypeScript then passed on the corrected tree.
+
+### The upload reservation before the lost commit
+
+- [x] The runner already resends both upload-begin and commit requests.
+  Independent loopback servers read the entire body before dropping the
+  connection. On Node 22 and 24, each door sent identical bytes twice on
+  that disconnect, a 429 or a 503. A successful response, a 401, invalid
+  success JSON and an interruption after the success headers each sent
+  the request once. An interrupted body rejected the call. These were
+  28 transport checks. The Owner tests separately verify stored effects.
+- [x] A local Worker processed two identical upload begins on one lease.
+  After losing the first reply and saving the file with the second, the
+  bytes matched but one unused reservation remained. A control used the
+  same two begins for two genuine equal-content files. Both committed,
+  both read back, and zero reservations remained. The lost-reply assertion
+  failed on 5427abd7 with the new tests applied; the control passed.
+- [ ] A begin request identifies the lease, size and chunks, but no file
+  or logical upload attempt. Reusing the same intent unconditionally would
+  tie two genuine files to a single consumable upload. The importer's
+  open-upload lookup deliberately excludes leased uploads. Distinguish
+  delivery identity from content matching for both begin and commit.
+  Check lease release and the joined tree before closing this review.
+
+- [x] The lease-release control passed on the standalone and joined local
+  Workers. One reservation remained after the lost reply and successful
+  file commit; the ordinary end of the last run released it. Two real
+  files with identical chunks kept independent uploads and left zero
+  reservations before release. Each four-case run had two recovery
+  failures and two passing controls, with 59 unrelated cases filtered.

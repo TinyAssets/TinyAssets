@@ -668,6 +668,41 @@ describe("the sync token", () => {
     }
   });
 
+  it.each([true, false])("releases upload claims after identical begins (lost reply: %s)",
+     async lostReply => {
+    const r = await gated();
+    const lease = await leased(r);
+    const binding = lease.synced();
+    const bytes = new Uint8Array(6000).fill(37);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const begin = { ...held(lease), size: bytes.length, chunks: [sha256] };
+    // The first answer either failed to reach the runner or belongs to a separate file.
+    const first = await r.stub.fileSyncUploadBegin(binding, begin);
+    const second = await r.stub.fileSyncUploadBegin(binding, begin);
+    const uploads = lostReply ? [second] : [first, second];
+    const paths = uploads.map((_, index) => `/workspace/upload-${index}.bin`);
+    for (const upload of uploads) {
+      await r.stub.fileSyncUploadChunks(binding, { ...held(lease), intent_id: upload.intent_id,
+                                                 chunks: [{ sha256, bytes }] });
+    }
+    const result = await r.stub.fileSyncCommit(binding, { ...held(lease), ops:
+      uploads.map((upload, index) => ({ op: "write", path: paths[index]!, base: null,
+                                        intent_id: upload.intent_id })) });
+    expect(result.outcomes.map(each => each.outcome)).toEqual(uploads.map(() => "committed"));
+    for (const path of paths) {
+      const { entry } = await r.stub.fileStat(r.bind(), { path });
+      const { chunks } = await r.stub.fileReadChunks(r.bind(), {
+        path, version: entry!.version, first: 0, count: 1 });
+      expect(chunks[0]).toEqual(bytes);
+    }
+    const reservations = () => r.sql("SELECT COUNT(*) AS n FROM file_intents WHERE lease = ?",
+                                     lease.lease_id);
+    const beforeRelease = await reservations();
+    await over(r, lease);
+    expect(await reservations()).toEqual([{ n: 0 }]);
+    expect(beforeRelease).toEqual([{ n: 0 }]);
+  });
+
   it("recovers both committed paths after a mixed batch loses its reply", async () => {
     const r = await gated();
     const lease = await leased(r);
