@@ -74,3 +74,9 @@
   base of an older staged offer. Include both homes changing one path,
   interrupted runs and warm-store loss. Preserve the last recoverable copy
   through cleanup. The baseline and ordering decisions are still open.
+
+### Existing homes after an interruption
+
+- [x] On 2208c72f, five synthetic histories went through the actual home creator and keeper on Node 22 and 24, once for ordinary writeback and once for completed sign-in (ten cases per runtime). In three histories, the current home bytes, current store bytes and complete serialized snapshot were identical across histories. Only the home had changed in the first, only the store in the second, and both in the third. All three wrote the home bytes to the store. This preserved the local edit in the first case, reversed the newer store edit in the second and lost one edit in the third.
+- [x] A newly created home transcript and an untouched inherited transcript removed from the store also gave identical home bytes, absent store entry and serialized snapshot. Both ended with the transcript in the store. These comparisons establish what the format-one snapshot and current byte values can tell recovery. Filesystem timestamps were not used as evidence of origin.
+- [ ] Resolve historical homes separately from new snapshots. Retain both candidates and the fact of a missing store entry when origin is unknown. Define where interrupted work survives cleanup and how it re-enters reconciliation. For new homes, verify a baseline for each inherited session and one shared rule for ordinary finish, sign-in and reboot. The delayed upload has its own base to preserve. The earlier two-conversation root regression and coordinator integration remain open.
