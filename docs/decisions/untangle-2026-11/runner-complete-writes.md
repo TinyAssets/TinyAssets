@@ -260,3 +260,20 @@
   consumed the deletion and advanced its cursor. Until a reset, that old
   cache has no fresh observation. Import concurrent with withdrawal, existing
   warm stores and divergent home writeback still require reconciliation.
+- [x] On edda729a, full standalone platform types passed on Node 24. The
+  combined runner including 0359ca8a passed 28 focused Node 22 cases and
+  full Node 24 platform types. The known warm conflict remains separate.
+- [x] Two local Owner Workerd cases captured the real sync feed when the
+  owner removed a file and when the owner removed its parent. The first
+  sent the child's deletion, the second sent child and parent deletions.
+  Both kept the unrelated file. Two earlier diagnostic attempts used the
+  wrong binding for an owner stat. Both passed after using the owner session
+  for stats and the sandbox lease for sync. No production calls.
+- [x] On each of Node 22 and 24, eight offline histories per tree used
+  separate processes for receiving the files, reconciling, and importing.
+  Both Owner feeds were replayed against 8d515af9, edda729a and the combined
+  runner (48 histories total). Feed withdrawals retained the unrelated file
+  and pending local edit. The reset projection also removed an incoming
+  orphan without a mirror row. A failed listing kept the cursor and
+  preexisting downloads. The durable base for an unsent edit remained
+  available after reopening the database.
