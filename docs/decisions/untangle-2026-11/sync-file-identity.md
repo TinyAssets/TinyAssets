@@ -106,3 +106,27 @@
   Full standalone Node 24 platform types passed. Combined with the other
   staged runner changes, all 20 focused Node 22 runner tests, all 140
   sandbox Worker/guard tests and full Node 24 platform types passed.
+
+### A transcript disappears between listing and staging
+
+- [x] On 6ad5a399, a transcript removed after the directory walk aborted the
+  whole staging operation. A separate process replacing its directory with a
+  regular file had the same effect. Unrelated transcripts were left unstaged.
+  The workspace code in this same module already treats these two ordinary
+  filesystem outcomes as an absent file.
+- [x] Session staging now uses that same file check. It keeps nanosecond
+  identity for sessions and fractional millisecond timestamps for workspace
+  consumers. The ordinary regression failed on 6ad5a399 and passes with the
+  fix. Five separate-writer cases on each of Node 22 and 24 checked removal,
+  parent replacement, a new directory, an equal-length edit and a genuine
+  permission error on both revisions. The surviving transcript and the new
+  equal-length contents were staged, and permission errors stayed visible.
+  Standalone full Node 24 types and 21 focused combined Node 22 tests passed.
+- [x] Rechecked the recorded disk format across 162 live GitHub heads on
+  November 19 at 17:38 Pacific. All 159 heads with the format record have the
+  same format-one file as main f934871ad. The other three have no record at
+  that path. Both versions of the format reader write one and read one. The
+  recorded home snapshot has no inherited transcript baseline. Neither this
+  staging fix nor the disposable hash cache supplies historical provenance.
+  Recovering both versions of a divergent transcript through cleanup and
+  planning an expand/contract release remain open.

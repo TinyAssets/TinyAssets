@@ -37,7 +37,7 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, type Stats } from "node:fs";
+import { type BigIntStats, existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -118,7 +118,10 @@ export async function stageSessions(
       }
       const path = `${SESSIONS}/${authority}/${each.id}/${rel}`;
       const at = Date.now();
-      const stat = lstatSync(join(store, rel), { bigint: true });
+      const stat = fileStat(join(store, rel), { bigint: true });
+      if (stat === null) {
+        continue;
+      }
       const cutoff = BigInt(at - RACY_MS);
       const stamp = stat.ctimeMs >= cutoff || stat.mtimeMs >= cutoff ? null
         : [stat.dev, stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs].join(":");
@@ -694,9 +697,11 @@ async function upload(client: SyncClient, op: Op,
 }
 
 /** A path's local identity now: a regular file's stat, or null when it is gone or not one. */
-function fileStat(local: string): Stats | null {
+function fileStat(local: string): Stats | null;
+function fileStat(local: string, options: { bigint: true }): BigIntStats | null;
+function fileStat(local: string, options?: { bigint: true }): Stats | BigIntStats | null {
   try {
-    const stat = lstatSync(local);
+    const stat = options === undefined ? lstatSync(local) : lstatSync(local, options);
     return stat.isFile() ? stat : null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT"
