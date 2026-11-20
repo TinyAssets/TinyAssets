@@ -60,3 +60,15 @@ signed-in client checks remain separate steps.
   custom inventory, and an explicit grant profile change selects directory.
   The Owner resolves the profile from the grant in codemode.ts. The site
   now explains that choice beside the three contract inventories.
+- [x] On 704220fa, the standalone design system built, 41 site tests passed,
+  and the 28-page export included the grant explanation. Two initial
+  standalone fixture inventories omitted repository inputs to the site
+  tests. The final run included the workflow and the full mark receipt.
+  With the public Connect and mark changes together, the same 41 tests
+  and export passed. All six Connect sections, their 18 steps, their nine
+  source URLs, and the three rendered profile lists still matched.
+- [x] The only overlapping files between the two-site tree and the mark
+  change were the platform checklist and public website spec. Both combined
+  cleanly in an offline three-way comparison, retaining all 14 added
+  nonempty lines. This check concerns those three stages only. The fresh
+  browser sweep and coordinated release are still open.
