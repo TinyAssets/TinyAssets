@@ -39,3 +39,9 @@ guide's address list and connection instructions before opening Chromium.
   sitemap reference and the legal page's canonical URL still pointed at
   the old host. Reconcile these public crawl references with the site's
   origin. The fresh browser sweep and route readiness remain open.
+
+- [x] Replaced the copied crawler host in robots.txt and sitemap.xml with
+  the site origin. The legal page uses its own route under the existing
+  metadata base. The ordinary sweep checks the exported crawler references
+  and the legal canonical URL. Both the standalone and combined site test
+  suites passed all 41 checks. Final export comparisons follow.

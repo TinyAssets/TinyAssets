@@ -6,7 +6,7 @@ import styles from "./page.module.css";
 export const metadata: Metadata = {
   title: "Legal",
   description: `Privacy policy and terms of service for ${legal.brand}.`,
-  alternates: { canonical: "https://tinyassets.io/legal" },
+  alternates: { canonical: "/legal/" },
 };
 
 export default function LegalPage() {

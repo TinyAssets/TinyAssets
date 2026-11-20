@@ -183,7 +183,7 @@ test("plans name no price, do not claim a live cutoff, and upgrade only in the a
     );
   }
 
-  for (const asset of ["app/llms.txt/route.ts", "public/robots.txt", "lib/site.ts", "lib/legal.ts", "lib/legal-info.json"]) {
+  for (const asset of ["app/llms.txt/route.ts", "app/robots.txt/route.ts", "lib/site.ts", "lib/legal.ts", "lib/legal-info.json"]) {
     const body = source(asset);
     assert.doesNotMatch(body, /\$?\bUSD 20\b|\$20\b/, `${asset} must not name a price`);
     assert.doesNotMatch(
@@ -200,7 +200,7 @@ test("plans name no price, do not claim a live cutoff, and upgrade only in the a
 test("robots.txt keeps every named crawler in the group that carries the exclusions", () => {
   // RFC 9309: a crawler obeys its most specific matching group and does NOT
   // fall back to "*". A named agent in its own group silently loses these.
-  const robots = source("public/robots.txt");
+  const robots = source("app/robots.txt/route.ts");
   const groups = robots
     .split(/\n\s*\n/)
     .filter((block) => /^\s*User-agent:/im.test(block));
@@ -215,7 +215,7 @@ test("robots.txt keeps every named crawler in the group that carries the exclusi
   for (const path of ["/account", "/auth/", "/editor/", "/admin/"]) {
     assert.ok(group.includes(`Disallow: ${path}`), `${path} stays out of every index`);
   }
-  assert.match(robots, /Sitemap: https:\/\/tinyassets\.io\/sitemap\.xml/);
+  assert.ok(robots.includes("Sitemap: ${SITE.origin}/sitemap.xml"));
 });
 
 test("the inline mark is generated from the one geometry source", () => {

@@ -21,8 +21,10 @@ import json
 import socketserver
 import sys
 import threading
+import xml.etree.ElementTree as ET
 from functools import partial
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -81,6 +83,15 @@ def main() -> int:
         if address not in guide.split() or address not in connection:
             print(f"exported llms.txt is missing {address}", file=sys.stderr)
             return 1
+    robots = (OUT / "robots.txt").read_text(encoding="utf-8").splitlines()
+    if f"Sitemap: {origin}/sitemap.xml" not in robots:
+        print("robots.txt points away from the site's sitemap", file=sys.stderr)
+        return 1
+    sitemap = ET.parse(OUT / "sitemap.xml")
+    urls = sitemap.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+    if not urls or any(urlsplit(loc.text or "")[:2] != ("https", identity["host"]) for loc in urls):
+        print("sitemap entries must use the site host", file=sys.stderr)
+        return 1
     srv = serve()
     base = f"http://127.0.0.1:{PORT}"
     failures: list[str] = []
@@ -118,6 +129,10 @@ def main() -> int:
                     h1s = page.locator("main h1").count()
                     if h1s != 1:
                         failures.append(f"{label} {route}: expected one H1, got {h1s}")
+                    if route == "/legal/":
+                        canonical = page.locator('link[rel="canonical"]').get_attribute("href")
+                        if canonical != origin + route:
+                            failures.append(f"{label} {route}: wrong canonical {canonical}")
                     if route == "/connect/":
                         if page.locator("main h1").inner_text() != (
                             "Talk to your agent from the tool you use."
