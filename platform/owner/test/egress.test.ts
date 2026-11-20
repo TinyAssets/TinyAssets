@@ -668,6 +668,34 @@ describe("the sync token", () => {
     }
   });
 
+  it("recovers both committed paths after a mixed batch loses its reply", async () => {
+    const r = await gated();
+    const lease = await leased(r);
+    const binding = lease.synced();
+    const small = new TextEncoder().encode("local edit");
+    const large = new Uint8Array(6000).fill(23);
+    const hash = createHash("sha256").update(large).digest("hex");
+    const upload = await r.stub.fileSyncUploadBegin(binding, {
+      ...held(lease), size: large.length, chunks: [hash] });
+    await r.stub.fileSyncUploadChunks(binding, { ...held(lease), intent_id: upload.intent_id,
+                                                chunks: [{ sha256: hash, bytes: large }] });
+    const shortPath = "/workspace/replay-small.txt";
+    const longPath = "/workspace/replay-large.bin";
+    const request = { ...held(lease), ops: [
+      { op: "write", path: shortPath, base: null, inline: small },
+      { op: "write", path: longPath, base: null, intent_id: upload.intent_id },
+    ] } as const;
+    const first = await r.stub.fileSyncCommit(binding, request);
+    expect(first.outcomes.map(o => o.outcome)).toEqual(["committed", "committed"]);
+    const deliveredAgain = await r.stub.fileSyncCommit(binding, request);
+    expect((await r.stub.fileRead(r.bind(), { path: shortPath })).inline).toEqual(small);
+    const { entry } = await r.stub.fileStat(r.bind(), { path: longPath });
+    const { chunks } = await r.stub.fileReadChunks(r.bind(), {
+      path: longPath, version: entry!.version, first: 0, count: 1 });
+    expect(chunks[0]).toEqual(large);
+    expect(deliveredAgain.outcomes).toEqual(first.outcomes);
+  });
+
   it("uploads a file past an inline write as its lease's writer, which its commit takes",
      async () => {
     const r = await gated();

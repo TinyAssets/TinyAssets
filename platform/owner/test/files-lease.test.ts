@@ -301,6 +301,25 @@ describe("a sync commit", () => {
       .map((e) => e.path))).toEqual([`${W}/ok`, `${W}/out`]);
   });
 
+  it("recovers the saved conflict copy after the first reply is lost", async () => {
+    const r = await rig();
+    const path = `${W}/note.txt`;
+    const original = entryOf(await write(r, path, "original"));
+    const lease = await acquire(r);
+    await write(r, path, "remote replacement");
+    const ops: SyncOp[] = [{ op: "write", path, base: original.version,
+                             inline: text("retained edit"), mode: 1 }];
+    const copies: string[] = [];
+    for (let delivery = 0; delivery < 2; delivery++) {
+      const { outcomes: [result] } = await sync(r, lease, ops);
+      if (result?.outcome !== "conflict" || !result.copy) throw new Error("missing saved copy");
+      copies.push(result.copy.path);
+      expect(await readText(r, result.copy.path)).toBe("retained edit");
+    }
+    expect(await readText(r, path)).toBe("remote replacement");
+    expect(copies[1]).toBe(copies[0]);
+  });
+
   it("names copies within 255 bytes, never over another file, and one per conflict", async () => {
     const r = await rig();
     const long = `${W}/${"é".repeat(125)}x.md`;

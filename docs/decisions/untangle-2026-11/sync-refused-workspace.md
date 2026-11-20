@@ -109,3 +109,18 @@
   Five real Owner Worker tests and the combined full typecheck passed.
   A text-rendering check exercised the 600-character preview; Chromium
   launch failed at its socket, so browser verification is outstanding.
+
+### Lost commit replies and the ordinary Owner tests
+
+- [x] Two earlier local diagnostics used copies of the Owner suites. Their
+  distinct cases now live beside the real lease and upload tests. The first
+  checks whether retry recovers the same conflict-copy path and preserves
+  the newer API bytes. The second checks whether an inline and an uploaded
+  write can recover their original outcomes after a lost reply. It reads
+  both stored files before comparing the responses.
+- [ ] Both tests assert the recovery that the runner needs. The earlier
+  experiments recorded a second copy and a refusal for an already consumed
+  upload. The current protocol has a lease and operations but no identity
+  for an individual delivery. A genuine second edit is still allowed to
+  produce another copy. Reconcile this with the runner before retrying
+  uncertain batches. These are staged regressions, with verification open.
