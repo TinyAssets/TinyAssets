@@ -17,10 +17,10 @@ import { type Served, served } from "../../sources/src/served";
 
 import { HOMES, isKept, keptPaths, SYSTEM } from "./engine";
 import { HEARTBEAT_MS } from "./frames";
-import { remove, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
+import { remove, safeCopy, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
 import { withLock } from "./pid-lock";
 import { COMMAND_MS, STATE_DIR } from "./protocol";
-import { give, group, type Identity, killAll, SHARED_GROUP, take } from "./users";
+import { give, group, type Identity, killAll, SHARED_GROUP, SYNC_HOME, take } from "./users";
 
 const STATE = STATE_DIR;
 /** Each engine's store: what a run's home is made from and kept back into. */
@@ -94,6 +94,26 @@ export async function withStore<T>(rec: Served, act: () => T): Promise<T> {
     `the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`), act);
 }
 
+/** Fill missing engine-store sessions from sync-in while holding the same lock as home writeback. */
+export async function importSessions(): Promise<void> {
+  const staged = join(SYNC_HOME, "in");
+  for (const rec of RECORDS.values()) {
+    const from = join(staged, rec.id);
+    if (!existsSync(from)) continue;
+    const store = join(STORE, rec.id);
+    const { sessions } = keptPaths(rec);
+    await withStore(rec, () => {
+      for (const rel of sortedWalk(from)) {
+        const target = join(store, rel);
+        if (isKept(sessions, rel) && !existsSync(target)) {
+          safeDirs("/", store, 0o700);
+          safeCopy(staged, join(from, rel), store, target, 0o600);
+        }
+      }
+    });
+  }
+}
+
 /**
  * The engine's store generation: a sign-in that writes new secrets and a sign-out each move
  * it on (a sign-in that only began, failed or was stopped moves nothing), and a run's home
@@ -159,15 +179,15 @@ async function makeHome(name: string, rec: Served, signedIn: boolean): Promise<s
   const copied: Record<string, string> = {};
   const made = await withStore(rec, () => {
     for (const rel of sortedWalk(store)) {
-      if (isKept(signedIn ? [...secrets, ...sessions] : sessions, rel)
-          && (signedIn || !isKept(secrets, rel))) {
+      if (isKept(secrets, rel)) {
+        if (!signedIn) continue;
         const bytes = safeRead(store, join(store, rel));
         if (bytes !== null) {
           safeWrite(home, join(home, rel), bytes, 0o600);
-          if (isKept(secrets, rel)) {
-            copied[rel] = sha256Hex(bytes);
-          }
+          copied[rel] = sha256Hex(bytes);
         }
+      } else if (isKept(sessions, rel)) {
+        safeCopy(store, join(store, rel), home, join(home, rel), 0o600);
       }
     }
     return generation(rec);

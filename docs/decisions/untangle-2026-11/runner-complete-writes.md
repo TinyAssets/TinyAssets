@@ -70,3 +70,23 @@
 - [ ] Run the ownership case on the privileged runner and compare on main
   after coordinator integration. This change addresses failed writes. The
   separately staged refused-workspace investigation still owns unsent edits.
+
+### Incoming engine session copies
+
+- [x] Traced the downloaded session from sync-in through store import and
+  home creation to writeback and upload. The copy into the engine store
+  neither used the store lock nor bounded the source read. Home creation
+  also allocated the entire transcript. The earlier synthetic replay on
+  44e44370 observed an 8,388,639-byte allocation at each step.
+- [x] The common regular-file copy reads one descriptor, writes through the
+  existing atomic writer, and publishes only after the copy finishes. Import
+  checks for an existing destination under the same per-engine lock as
+  home creation and writeback. The ordinary Node 24 test verified a held
+  lock, preservation of a newer stored value, a multi-chunk copy and its
+  private mode. Independent Node 22 and 24 replays of the same synthetic
+  three-chunk session preserved all bytes through upload. The largest source
+  buffer observed at store import and home creation was 4,194,304 bytes each.
+- [ ] Check joined callers, whole platform types, sandbox tests and the
+  privileged runner. Home writeback and outgoing staging still read whole
+  sessions. The path-count cost, historical snapshot, overlapping edits
+  and retry ordering remain separate open findings on the identity branch.

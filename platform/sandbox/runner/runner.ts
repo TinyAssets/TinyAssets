@@ -97,7 +97,8 @@ import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxD
          type JobKind, JOBS, INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer,
          RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
          STATE_DIR } from "./protocol";
-import { type Bounded, CONVERSATIONS, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM,
+import { type Bounded, CONVERSATIONS, dropHome, engineEnv, homeOf, importSessions, keepHome,
+         KILLED_BY_TERM,
          loginFiles, nextGeneration, readJson, record, RECORDS, shared, sortedWalk,
          spawnBounded, STORE, systemOf, withRunUser, withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
@@ -374,28 +375,6 @@ class Job {
   unlisten(): void {
     this.#channel?.close();
     this.#channel = null;
-  }
-}
-
-/** The engines' sessions the sync agent took from the feed, into each store it lacks. */
-function importSessions(): void {
-  const staged = `${SYNC_HOME}/in`;
-  for (const rel of sortedWalk(staged)) {
-    const [engine, ...rest] = rel.split("/");
-    const rec = RECORDS.get(engine ?? "");
-    const inHome = rest.join("/");
-    if (rec === undefined || !isKept(keptPaths(rec).sessions, inHome)) {
-      continue;
-    }
-    const store = join(STORE, rec.id);
-    const target = join(store, inHome);
-    if (!existsSync(target)) {
-      const bytes = safeRead(staged, join(staged, rel));
-      if (bytes !== null) {
-        safeDirs("/", store, 0o700);
-        safeWrite(store, target, bytes, 0o600);
-      }
-    }
   }
 }
 
@@ -1103,7 +1082,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       throw new SyncFenced("the sync door fenced the lease");
     }
     synced = true;
-    importSessions();
+    await importSessions();
     const agentDir = `${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);

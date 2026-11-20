@@ -21,6 +21,8 @@ import { closeSync, constants, type Dir, fchmodSync, fchownSync, fstatSync, lsta
          writeSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
+import { CHUNK_BYTES } from "../../contract/src/limits";
+
 export class LinkRefused extends Error {
   override readonly name = "LinkRefused";
 }
@@ -191,6 +193,44 @@ function openRegular(base: string, path: string): number | null {
   return regular ? fd : null;
 }
 
+/** Fill a buffer at the given position, stopping at EOF even after a short read. */
+function readInto(fd: number, buffer: Buffer, offset: number): number {
+  let filled = 0;
+  while (filled < buffer.length) {
+    const got = readSync(fd, buffer, filled, buffer.length - filled, offset + filled);
+    if (got === 0) break;
+    filled += got;
+  }
+  return filled;
+}
+
+/** Copy one regular file atomically, with at most one chunk of its contents in memory. */
+export function safeCopy(base: string, path: string, destBase: string, dest: string,
+                         mode: number): void {
+  const fd = openRegular(base, path);
+  if (fd === null) return;
+  try {
+    const size = fstatSync(fd).size;
+    const buffer = Buffer.alloc(Math.min(size, CHUNK_BYTES));
+    const out = safeStream(destBase, dest, mode);
+    try {
+      for (let offset = 0; offset < size;) {
+        const block = buffer.subarray(0, size - offset);
+        const filled = readInto(fd, block, offset);
+        out.append(block.subarray(0, filled));
+        if (filled < block.length) break;
+        offset += filled;
+      }
+      out.commit();
+    } catch (error) {
+      out.abort();
+      throw error;
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** A regular file's bytes, read with no link followed on its path; null when not one. */
 export function safeRead(base: string, path: string): Buffer | null {
   return safeReadHead(base, path, Number.POSITIVE_INFINITY)?.bytes ?? null;
@@ -210,14 +250,8 @@ export function safeReadHead(base: string, path: string, max: number):
     const size = fstatSync(fd).size;
     const want = Math.min(size, max);
     const out = Buffer.alloc(want);
-    for (let read = 0; read < want;) {
-      const got = readSync(fd, out, read, want - read, read);
-      if (got === 0) {
-        return { bytes: out.subarray(0, read), size };
-      }
-      read += got;
-    }
-    return { bytes: out, size };
+    const filled = readInto(fd, out, 0);
+    return { bytes: out.subarray(0, filled), size };
   } finally {
     closeSync(fd);
   }
@@ -239,14 +273,7 @@ export async function safePieces(base: string, path: string, pieceBytes: number,
   try {
     const piece = Buffer.alloc(pieceBytes);
     for (let index = 0, offset = 0; ; index += 1) {
-      let filled = 0;
-      while (filled < pieceBytes) {
-        const got = readSync(fd, piece, filled, pieceBytes - filled, offset + filled);
-        if (got === 0) {
-          break;
-        }
-        filled += got;
-      }
+      const filled = readInto(fd, piece, offset);
       if (filled === 0 && index > 0) {
         return true;
       }
