@@ -90,3 +90,15 @@
   privileged runner. Home writeback and outgoing staging still read whole
   sessions. The path-count cost, historical snapshot, overlapping edits
   and retry ordering remain separate open findings on the identity branch.
+
+- [x] On 5acdfb60 all 140 standalone sandbox Worker/guard tests and six
+  focused file tests passed (one ownership case excluded). The first full
+  typecheck rejected the allocation assertion's inferred unknown argument.
+  The corrected assertion converts the recorded size to a number.
+- [x] Rehearsed the corrected assertion and source with the saved sandbox
+  stages, conflict-copy reporting and two-conversation regression. On Node 22
+  all 18 session-import, session-cache, disk-format and file tests passed.
+  The 64 layer/kernel checks, 140 sandbox tests with the ordinary runner and
+  probe builds, and full platform TypeScript passed. The separate privileged
+  entrypoint stopped at the root preflight, exit 2. Distinct runs can still
+  overwrite newer transcripts during outgoing writeback or delayed upload.

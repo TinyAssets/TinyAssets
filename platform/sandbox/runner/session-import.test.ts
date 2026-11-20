@@ -35,7 +35,7 @@ it("imports missing sessions under the engine lock, one chunk at a time", async 
       writeFileSync(join(store, "current.jsonl"), "current");
     });
     await importing;
-    const largest = Math.max(...allocations.mock.calls.map(([size]) => size));
+    const largest = Math.max(...allocations.mock.calls.map(([size]) => Number(size)));
     allocations.mockRestore();
     expect(largest).toBeLessThanOrEqual(CHUNK_BYTES);
     expect(readFileSync(join(store, "new.jsonl")).equals(bytes)).toBe(true);
