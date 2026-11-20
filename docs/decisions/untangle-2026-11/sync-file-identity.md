@@ -170,3 +170,20 @@
   edda729a transcript withdrawal fix passed 28 focused cases and full
   Node 24 platform types. The join retained the existing shared streaming
   digest import when adding the contract's shape and hex checks.
+
+### The version attached to a delayed transcript offer
+
+- [x] Reconciled the earlier local two-directory delivery experiment with
+  the existing Owner conflict test. The Owner test covers what happens
+  after the original base reaches it. The saved runner experiment checked
+  the old behavior through a separate output file and environment flags.
+  An ordinary runner test now asserts the intended base at the sender,
+  using staged files and a reopened SQLite mirror.
+- [x] In both histories the sender ultimately holds the same local bytes
+  and sees remote version 2. An edit created after version 2 was downloaded
+  correctly offered base 2. An edit made and staged at version 1, before
+  the next download, also offered base 2. That regression remains red.
+- [ ] Keep the first known base with the pending bytes through upload,
+  refusal and restart. A home inherited before staging may have an even
+  earlier base. Include format-one recovery, a later legitimate edit and
+  a correctly saved conflict copy before adopting a format change.
