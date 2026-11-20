@@ -599,12 +599,14 @@ function quiet(state: RunState): boolean {
     || state.last_kind === "result" || state.last_kind === "usage";
 }
 
-function answer(value: StateAnswer | QuietAnswer): number {
-  process.stdout.write(JSON.stringify(value));
-  return OK;
+/** Resolve after the whole JSON reply has reached stdout, including a pipe under pressure. */
+function answer(value: StateAnswer | QuietAnswer | SyncAnswer, code: number = OK): Promise<number> {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(JSON.stringify(value), (error) => error ? reject(error) : resolve(code));
+  });
 }
 
-function stateCommand(): number {
+function stateCommand(): Promise<number> {
   const live = liveRuns();
   // A sign-in in progress keeps its sandbox from the idle reap; it is quiet (no model call).
   return answer({ live: live.length + liveJobs("signin").length,
@@ -669,6 +671,9 @@ async function recover(): Promise<number> {
 
 // -- the sync agent, as its own user ---------------------------------------------------
 
+type SyncAnswer = SyncReport | { known: Record<string, string | null> }
+  | { ok: true } | { fenced: true };
+
 interface SyncJob {
   /** In, out, or `known`: the mirror's hash of each of `paths`, read under the lock. */
   readonly direction: "in" | "out" | "known";
@@ -712,29 +717,29 @@ async function syncAgent(job: SyncJob):
   child.stdin!.on("error", () => undefined);
   child.stdin!.end(JSON.stringify(job));
   const status = await agent.exit;
-  // Its report whole, however many paths.
-  const done = { status, stdout: Buffer.concat(out).toString("utf8"),
-                 stderr: Buffer.concat(err).toString("utf8") };
-  let report: Record<string, unknown> | null = null;
-  try {
-    report = JSON.parse(done.stdout) as Record<string, unknown>;
-  } catch {
-    report = null;
+  if (status === FENCED) {
+    return { report: null, code: status };
   }
-  if (done.status !== OK && done.status !== FENCED) {
-    throw new Error(`the sync agent failed (${done.status}): ${done.stderr}`);
+  if (status !== OK) {
+    throw new Error(`the sync agent failed (${status}): ${Buffer.concat(err).toString("utf8")}`);
   }
-  return { report, code: done.status };
+  // A partial success reply cannot settle an upload or stand in for an empty mirror.
+  const report = JSON.parse(Buffer.concat(out).toString("utf8")) as Record<string, unknown>;
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error("the sync agent returned an invalid report");
+  }
+  return { report, code: status };
 }
 
 /** The sync agent's own side (as `ta-sync`), one at a time in the sandbox by its lock. */
 async function syncCommand(): Promise<number> {
   const job = JSON.parse(readFileSync(0, "utf8")) as SyncJob;
-  return withLock(`${SYNC_HOME}/sync.lock`, Number.POSITIVE_INFINITY,
-                  () => new Error("the sync agent's lock is held"), () => syncLocked(job));
+  const value = await withLock(`${SYNC_HOME}/sync.lock`, Number.POSITIVE_INFINITY,
+                               () => new Error("the sync agent's lock is held"), () => syncLocked(job));
+  return answer(value, "fenced" in value ? FENCED : OK);
 }
 
-async function syncLocked(job: SyncJob): Promise<number> {
+async function syncLocked(job: SyncJob): Promise<SyncAnswer> {
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
     const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
@@ -747,9 +752,8 @@ async function syncLocked(job: SyncJob): Promise<number> {
     try {
       if (job.direction === "known") {
         // What the owner's files hold of each path, as this sandbox last synced it.
-        process.stdout.write(JSON.stringify({ known: Object.fromEntries((job.paths ?? [])
-          .map((path) => [path, mirror.get(path)?.sha256 ?? null])) }));
-        return OK;
+        return { known: Object.fromEntries((job.paths ?? [])
+          .map((path) => [path, mirror.get(path)?.sha256 ?? null])) };
       }
       if (job.direction === "in") {
         await syncIn(client, place, mirror);
@@ -758,19 +762,15 @@ async function syncLocked(job: SyncJob): Promise<number> {
         const made = project(WORKSPACE, job.agent, record(job.engine).cli.skills_paths,
                              previous);
         safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
-        process.stdout.write(JSON.stringify({ ok: true }));
-        return OK;
+        return { ok: true };
       }
-      const report = await syncOut(client, place, mirror, job.lease, job.atoms);
-      process.stdout.write(JSON.stringify(report));
-      return OK;
+      return await syncOut(client, place, mirror, job.lease, job.atoms);
     } finally {
       mirror.close();
     }
   } catch (error) {
     if (error instanceof SyncFenced) {
-      process.stdout.write(JSON.stringify({ fenced: true }));
-      return FENCED;
+      return { fenced: true };
     }
     throw error;
   }
@@ -1200,9 +1200,14 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       roomForEnd();
       if (synced) {
         const secrets = atoms();
-        const refused = await stageSessions(start.authority, run, secrets, async (paths) =>
-          ((await syncAgent({ ...job("known"), paths })).report?.["known"] ?? {}) as
-            Record<string, string | null>);
+        const refused = await stageSessions(start.authority, run, secrets, async (paths) => {
+          const { report } = await syncAgent({ ...job("known"), paths });
+          const known = report?.["known"];
+          if (!known || typeof known !== "object" || Array.isArray(known)) {
+            throw new Error("the sync agent returned no mirror lookup");
+          }
+          return known as Record<string, string | null>;
+        });
         for (const path of refused) {
           outbox.push({ type: "ta.sync_refused", path, code: "secret_bytes" });
         }

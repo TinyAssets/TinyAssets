@@ -114,3 +114,22 @@
   intentional test edits. The full ordinary workspace sync suite finished
   with 26 passes, nine known failures and four size cases excluded. The
   nine failures matched the preceding combined checkout by test name.
+
+### Sync replies over a pipe
+
+- [x] On 7a5f26d1 the ordinary sync command produced all 936,901 expected
+  bytes for 12,000 synthetic mirror paths when stdout was a regular file.
+  Over a pipe to a Node parent it exited zero after 146,176 bytes. A
+  two-path control delivered all 161 bytes both ways. Node 22 and 24 agreed.
+  The parent already waits for process close. Its JSON parse failure treated
+  the reply as absent, so a mirror lookup could act as though no paths were
+  held and an outgoing sync could drop its stage without reporting outcomes.
+- [x] Serialize the reply after releasing the mirror lock and await the
+  stdout write callback before exiting. Reject an incomplete success reply
+  in the caller. Preserve the existing nonzero failure and fence handling.
+  The same two inputs produced all 161 and 936,901 bytes through both sinks
+  on Node 22 and 24 with the producer correction. Added the large lookup
+  to the existing ordinary sandbox integration suite.
+- [ ] Finish the corrected caller/producer rehearsal with stage reporting,
+  verify ordinary build and types, and run the privileged test on a capable
+  worker. The path count and transcript ordering issues remain open.

@@ -1398,6 +1398,18 @@ describe("the sync", () => {
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/notes.md");
   });
 
+  it("delivers the complete mirror lookup through the sync command's stdout pipe", () => {
+    const paths = Array.from({ length: 12_000 }, (_, i) =>
+      `/workspace/.sessions/owner/codex/.codex/sessions/transcript-${i}.jsonl`);
+    const job = { direction: "known", origin: "https://example.invalid", token: "",
+      lease: { lease_id: "test", epoch: 1 }, authority: "owner", agent: "main", engine: "codex",
+      run: "test", atoms: [], paths };
+    const done = box.exec([NODE, `${RUNNERS}/${box.digest}/runner.mjs`, COMMAND.sync],
+                          JSON.stringify(job));
+    expect(done.status).toBe(0);
+    expect(JSON.parse(done.stdout)).toEqual({ known: Object.fromEntries(paths.map(p => [p, null])) });
+  });
+
   it("ends the run loudly when the sync agent dies before reading a job past the pipe's " +
      "buffer", async () => {
     // A thousand kept sessions make the `known` job well past 64 KiB.
