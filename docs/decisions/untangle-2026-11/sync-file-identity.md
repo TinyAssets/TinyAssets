@@ -151,3 +151,16 @@
   Node 22. The joined suite passed 21 and full Node 24 types. The wider
   joined workspace suite still has the same nine recovery, mode and
   reset failures, with 26 passing and four size cases excluded.
+
+### Recovery from unreadable session hash records
+
+- [x] Three ordinary staging regressions failed on 5eb42782. A JSON null
+  stopped the entire scan. A matching file stamp with its digest missing
+  or truncated left the broken entry in place and staged an already-held
+  transcript. The sync mirror and engine store still had the original data.
+- [x] Validate the disposable cache at its reader using the contract's
+  object and digest checks. Rehash an unusable entry from the store.
+  All six focused staging, refusal and walk cases passed on Node 24,
+  including a later run where the mirror genuinely lacks the transcript.
+- [ ] Check the combined runner and compatibility with existing caches.
+  Original-version recovery for delayed and conflicting edits remains open.

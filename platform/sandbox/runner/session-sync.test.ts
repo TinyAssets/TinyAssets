@@ -48,3 +48,46 @@ it("stages changed session bytes when a copy preserves the timestamp and length"
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.each(["null cache", "missing digest", "malformed digest"])(
+  "rebuilds the disposable session hash after a %s", async damage => {
+    const root = mkdtempSync(join(tmpdir(), "session-cache-"));
+    const state = join(root, "state");
+    const sync = join(root, "sync");
+    vi.resetModules();
+    vi.doMock("./protocol", async original => ({
+      ...await original<typeof import("./protocol")>(), STATE_DIR: state,
+    }));
+    vi.doMock("./users", async original => ({
+      ...await original<typeof import("./users")>(), SYNC_HOME: sync,
+    }));
+    try {
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+      const { stageSessions, SESSIONS_SEEN } = await import("./sync");
+      const rel = ".codex/sessions/example.jsonl";
+      const file = join(state, "store", "codex", rel);
+      const path = "/workspace/.sessions/owner/codex/" + rel;
+      mkdirSync(dirname(file), { recursive: true });
+      mkdirSync(sync);
+      writeFileSync(file, "saved transcript");
+      const held = { [path]: sha256Hex(readFileSync(file)) };
+      const known = async () => held;
+      await stageSessions("owner", "first", [], known);
+      const valid = JSON.parse(readFileSync(SESSIONS_SEEN, "utf8"));
+      expect(typeof valid[path].stamp).toBe("string");
+      const damaged = damage === "null cache" ? null : {
+        [path]: { ...valid[path], sha256: damage === "missing digest" ? undefined : "partial" },
+      };
+      writeFileSync(SESSIONS_SEEN, JSON.stringify(damaged));
+      await stageSessions("owner", "repair", [], known);
+      expect(JSON.parse(readFileSync(SESSIONS_SEEN, "utf8"))).toEqual(valid);
+      expect(existsSync(join(sync, "out/repair/codex", rel))).toBe(false);
+      await stageSessions("owner", "unsent", [], async () => ({ [path]: null }));
+      expect(readFileSync(join(sync, "out/unsent/codex", rel), "utf8")).toBe("saved transcript");
+    } finally {
+      vi.restoreAllMocks();
+      vi.doUnmock("./protocol");
+      vi.doUnmock("./users");
+      rmSync(root, { recursive: true, force: true });
+    }
+  });

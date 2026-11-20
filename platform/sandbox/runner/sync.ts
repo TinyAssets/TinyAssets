@@ -35,6 +35,8 @@
  *   bytes (`guards.ts`) is refused here and reported, never sent. The agents' scratch
  *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
+import { object } from "../../contract/src/checks";
+import { HEX64 } from "../../contract/src/ids";
 import { sha256Hex } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
 import { type BigIntStats, existsSync, lstatSync, type Stats } from "node:fs";
@@ -81,10 +83,18 @@ interface SeenSession {
   readonly refusedAgainst?: string;
 }
 
+/** Only a complete cached identity can stand in for reading a transcript. */
+function seenSession(value: unknown): value is SeenSession {
+  return object(value) && (value["stamp"] === null || typeof value["stamp"] === "string")
+    && typeof value["sha256"] === "string" && HEX64.test(value["sha256"])
+    && (value["refusedAgainst"] === undefined || typeof value["refusedAgainst"] === "string");
+}
+
 /** The engines' sessions as last hashed (`SESSIONS_SEEN`), or none. */
-function readSeen(): Record<string, SeenSession> {
+function readSeen(): Record<string, unknown> {
   try {
-    return existsSync(SESSIONS_SEEN) ? readJson<Record<string, SeenSession>>(SESSIONS_SEEN) : {};
+    const value = readJson<unknown>(SESSIONS_SEEN);
+    return object(value) ? value : {};
   } catch {
     return {};  // unreadable: every session is hashed again, nothing skipped
   }
@@ -125,7 +135,8 @@ export async function stageSessions(
       const cutoff = BigInt(at - RACY_MS);
       const stamp = stat.ctimeMs >= cutoff || stat.mtimeMs >= cutoff ? null
         : [stat.dev, stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs].join(":");
-      const was = seen[path];
+      const cached = seen[path];
+      const was = seenSession(cached) ? cached : undefined;
       let sha = stamp !== null && was?.stamp === stamp ? was.sha256 : null;
       if (sha === null) {
         const bytes = safeRead(store, join(store, rel));
