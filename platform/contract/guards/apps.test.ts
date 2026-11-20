@@ -4,7 +4,7 @@
  * doors serve an outside agent, the apps' connect sentences and the plugins among it, is the
  * doors' own guard (`doors/guards/served.test.ts`).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import raw from "../apps.json" with { type: "json" };
 import { appList, checkedApps, connectUrl, refusedRegistrationLine, registrationRefusal,
@@ -135,6 +135,28 @@ describe("apps.json", () => {
                            "https://claude.ai/cb#f"]) {
       expect(() => checkedApps({ ...raw, apps: [{ ...one, match: { ...one.match,
         redirects: [pattern] } }] }), pattern).toThrow(/match\.redirects/);
+    }
+  });
+
+  it("configures the advertised MCP resource in the connector dialog, CLI and editor", async () => {
+    const { default: identity } = await import("../identity.json", { with: { type: "json" } });
+    const fixture = { ...identity, host: "guides.example", mcp: "/connector-fixture" };
+    vi.resetModules();
+    vi.doMock("../identity.json", () => ({ default: fixture }));
+    try {
+      const { appList } = await import("../src/apps");
+      const { MCP_RESOURCE } = await import("../src/identity");
+      expect(MCP_RESOURCE).toBe("https://guides.example/connector-fixture");
+      const apps = appList();
+      const dialog = new URL(apps.find((app) => app.id === "claude")!.connect.link!);
+      const cli = apps.find((app) => app.id === "chatgpt")!.connect.code!;
+      const config = JSON.parse(apps.find((app) => app.id === "cursor")!.connect.code!);
+      expect.soft(dialog.searchParams.get("connectorUrl")).toBe(MCP_RESOURCE);
+      expect.soft(cli.match(/--url (\S+)/)?.[1]).toBe(MCP_RESOURCE);
+      expect.soft(config.mcpServers.TinyAssets.url).toBe(MCP_RESOURCE);
+    } finally {
+      vi.doUnmock("../identity.json");
+      vi.resetModules();
     }
   });
 

@@ -82,3 +82,16 @@ guide's address list and connection instructions before opening Chromium.
 - [ ] The fresh ordinary sweep on the corrected branch passed its static
   preflight and stopped at Chromium launch because Playwright's executable
   was unavailable. No browser navigation ran on that attempt.
+- [ ] The displayed server address and the actual vendor setup can
+  disagree. Changing only identity.host and identity.mcp on the site
+  stage left seven old addresses in the instructions for five apps.
+  The staged vendor-wake catalog at 17a2e42c added an eighth. Claude's
+  connector link also carried the old address in its encoded query.
+  The ordinary contract regression changes the identity and reads the
+  actual dialog query, Codex command and Cursor config. All three
+  assertions failed and seven existing app guards passed. The site's
+  top address followed the new identity in both real static exports.
+  Use the shared catalog reader for both the site and Worker consumers,
+  keep vendor destinations and source text, and test the combined
+  vendor-wake entry. The guide's own absolute page address is a separate
+  catalog field used by Owner for its per-app links.
