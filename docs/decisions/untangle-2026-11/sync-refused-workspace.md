@@ -98,3 +98,14 @@
 - [ ] Verify the combined source here. A reported copy requires that a write
   reached the Owner. Recovery when the pending bytes never reached it remains
   open. Full privileged and main integration checks are still outstanding.
+
+- [x] On cda05092 full platform types passed on Node 24. The ordinary
+  Node 22 sync suite passed 24, failed the seven outstanding recovery
+  cases, and excluded four size cases. The reporting regressions passed.
+  The 64 isolation and kernel checks also passed on the matching candidate.
+  Together with the eleven sandbox stages, runner file-cleanup fix and
+  directory tests, the combined suite passed 26, failed the same seven
+  plus two previously recorded identity cases, and excluded four sizes.
+  Five real Owner Worker tests and the combined full typecheck passed.
+  A text-rendering check exercised the 600-character preview; Chromium
+  launch failed at its socket, so browser verification is outstanding.
