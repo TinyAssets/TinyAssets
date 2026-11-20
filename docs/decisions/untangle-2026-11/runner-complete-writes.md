@@ -61,5 +61,12 @@
   Linux filesystem regression failed on that branch and passed with cleanup
   in the shared stream writer. Its caller still receives the rename error.
   Both single-piece writes and streamed downloads use this implementation.
-- [ ] Verify the other file-operation controls, the typecheck and the joined
-  runner. Privileged sandbox acceptance and post-merge comparison remain open.
+- [x] Source 5c6a3e60 passed five ordinary file-operation tests on Node 22,
+  including the new failure case and the concurrent directory writer, and
+  full platform TypeScript on Node 24. The same five tests, 140 sandbox
+  Worker and guard tests and full types passed on the eleven-stage sandbox
+  rehearsal with this fix. One ownership case was excluded from both focused
+  runs. The normal privileged runner stopped at its root preflight (exit 2).
+- [ ] Run the ownership case on the privileged runner and compare on main
+  after coordinator integration. This change addresses failed writes. The
+  separately staged refused-workspace investigation still owns unsent edits.
