@@ -129,6 +129,7 @@ test("the reachability strip reports the sign-in boundary", () => {
   assert.match(reach, /\bfetchVitals\b/);
   assert.match(reach, /sign-in required/);
   assert.match(reach, /connector supplies a bearer/);
+  assert.doesNotMatch(reach, /reading .* from your browser|vitals\.fetchedAt/);
   assert.doesNotMatch(reach, /get_status/);
   assert.doesNotMatch(reach, /\bactive run\b|\ba run is moving\b/i);
 });

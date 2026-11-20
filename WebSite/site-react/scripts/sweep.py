@@ -71,6 +71,13 @@ def main() -> int:
     if not (OUT / "index.html").is_file():
         print("out/index.html missing: run `npm run build` first", file=sys.stderr)
         return 2
+    fine_print = (OUT / "fine-print/index.html").read_text(encoding="utf-8")
+    _, section_start, rest = fine_print.partition('id="reachability"')
+    section = rest.partition("</section>")[0]
+    if not section_start or "sign-in required" not in section or "<dt>read</dt>" in section:
+        print("fine print must show the sign-in boundary before hydration, without a read time",
+              file=sys.stderr)
+        return 1
     srv = serve()
     base = f"http://127.0.0.1:{PORT}"
     failures: list[str] = []
