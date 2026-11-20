@@ -73,6 +73,14 @@ def main() -> int:
     if not (OUT / "index.html").is_file():
         print("out/index.html missing: run `npm run build` first", file=sys.stderr)
         return 2
+    identity = json.loads((HERE.parents[2] / "platform/contract/identity.json").read_text())
+    origin = f"https://{identity['host']}"
+    guide = (OUT / "llms.txt").read_text(encoding="utf-8")
+    connection = guide.partition("## Connection\n")[2].split("\n## ", 1)[0]
+    for address in (origin + identity["mcp"], origin + identity["first_party"]["resource"]):
+        if address not in guide.split() or address not in connection:
+            print(f"exported llms.txt is missing {address}", file=sys.stderr)
+            return 1
     srv = serve()
     base = f"http://127.0.0.1:{PORT}"
     failures: list[str] = []

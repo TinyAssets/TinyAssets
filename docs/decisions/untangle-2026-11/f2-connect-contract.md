@@ -18,3 +18,16 @@ install the React site, run the site's tests, then build its static export and r
 `scripts/sweep.py` from that site. Real registration still belongs to the stage's
 connector checks. Publication follows the route cutover. The site's wider profile
 content and the founder's privacy and deletion copy remain with that release.
+
+### Machine-readable connection guide, November 19
+
+The Connect page takes the app and connector addresses from the identity
+contract, but the exported llms.txt carried separate literals. The static
+text route now uses the same site addresses as the HTML. It preserves the
+existing public wording and URL. The ordinary site sweep checks the exported
+guide's address list and connection instructions before opening Chromium.
+
+- [x] All 41 site tests passed on the candidate.
+- [ ] Verify identical output with the current identity, then rebuild with a
+  different host, app path and MCP path. The browser sweep and route readiness
+  are still open for the single site release.
