@@ -723,12 +723,29 @@ async function syncAgent(job: SyncJob):
   if (status !== OK) {
     throw new Error(`the sync agent failed (${status}): ${Buffer.concat(err).toString("utf8")}`);
   }
-  // A partial success reply cannot settle an upload or stand in for an empty mirror.
-  const report = JSON.parse(Buffer.concat(out).toString("utf8")) as Record<string, unknown>;
-  if (!report || typeof report !== "object" || Array.isArray(report)) {
+  return { report: readSyncReport(Buffer.concat(out).toString("utf8"), job.paths), code: status };
+}
+
+/** Parse the completed reply without copying fragments of its contents into a runner event. */
+export function readSyncReport(text: string, paths?: readonly string[]): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("the sync agent returned an incomplete JSON reply");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("the sync agent returned an invalid report");
   }
-  return { report, code: status };
+  const report = value as Record<string, unknown>;
+  if (paths !== undefined) {
+    const known = report["known"];
+    if (!known || typeof known !== "object" || Array.isArray(known)
+        || !paths.every((path) => Object.hasOwn(known, path))) {
+      throw new Error("the sync agent returned an incomplete mirror lookup");
+    }
+  }
+  return report;
 }
 
 /** The sync agent's own side (as `ta-sync`), one at a time in the sandbox by its lock. */
@@ -1201,12 +1218,9 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       if (synced) {
         const secrets = atoms();
         const refused = await stageSessions(start.authority, run, secrets, async (paths) => {
-          const { report } = await syncAgent({ ...job("known"), paths });
-          const known = report?.["known"];
-          if (!known || typeof known !== "object" || Array.isArray(known)) {
-            throw new Error("the sync agent returned no mirror lookup");
-          }
-          return known as Record<string, string | null>;
+          const done = await syncAgent({ ...job("known"), paths });
+          if (done.code === FENCED) throw new SyncFenced("the sync door fenced the lease");
+          return done.report!["known"] as Record<string, string | null>;
         });
         for (const path of refused) {
           outbox.push({ type: "ta.sync_refused", path, code: "secret_bytes" });

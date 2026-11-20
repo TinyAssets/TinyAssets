@@ -133,3 +133,14 @@
 - [ ] Finish the corrected caller/producer rehearsal with stage reporting,
   verify ordinary build and types, and run the privileged test on a capable
   worker. The path count and transcript ordering issues remain open.
+- [x] Independent caller review found the same sync reader, producer and
+  runner entry point on 156 of 162 reviewed branch heads. Preserve explicit
+  runner termination because an exceptional run can still own a listener.
+  The outgoing report is generated while holding the lock, then written
+  after the lock releases. The parent waits for process close.
+- [x] Reject an incomplete mirror map as well as truncated JSON. The
+  diagnostic for a cut-off success reply omits its contents because the
+  runner can forward it into a conversation. Three ordinary Node 24
+  reader regressions and full platform TypeScript passed. The joined
+  producer retained all 936,901 bytes on both Node versions. The privileged
+  entrypoint for the permanent large lookup stopped at root preflight (2).
