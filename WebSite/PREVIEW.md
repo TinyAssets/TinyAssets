@@ -28,7 +28,7 @@ requirement for live readings.
 3. `npm test` (authenticated-read boundary, public boundary).
 4. `npm run build`, then `python scripts/sweep.py` for the rendered check
    (every route and alias, phone and desktop, zero console errors).
-5. Open a pull request. Merging does not deploy.
+5. Open a pull request for review. A merge to main that changes this site starts the Pages publisher. Coordinate the release before merging.
 
 ## Hot reload
 

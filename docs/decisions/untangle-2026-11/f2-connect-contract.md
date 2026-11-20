@@ -45,3 +45,19 @@ guide's address list and connection instructions before opening Chromium.
   metadata base. The ordinary sweep checks the exported crawler references
   and the legal canonical URL. Both the standalone and combined site test
   suites passed all 41 checks. Final export comparisons follow.
+- [x] On 08af61c1, the standalone Node 24 export and joined Node 20 export
+  both retained the original robots and sitemap bytes. The new legal
+  canonical matched the public legal route, including its trailing slash.
+  The separate alternate-host Node 20 export used its own host in every
+  reference. On all three exports, the pre-browser checks accepted the
+  original files, refused separate stale-host mutations in llms.txt,
+  robots.txt and sitemap.xml, and accepted the restored files.
+- [ ] The browser previously stopped before navigation. These export checks
+  leave the viewport, clipboard and redirect checks open on this revision.
+  Release still follows route readiness. None of these changes is on main.
+- [x] Corrected the preview guide's instruction that merging does not
+  deploy. Read the publisher on f934871ad, the standalone Connect, mark
+  and site-cutover plan branches, and the combined Connect/profile tree.
+  On each, a change to the Connect page on main matches the push filter
+  and a successful build enables the Pages deploy. Changing the preview
+  text alone is outside the filter. This was an offline workflow review.
