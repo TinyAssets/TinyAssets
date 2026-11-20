@@ -25,3 +25,10 @@
   no-request guard. All 41 site tests passed standalone and all 41
   passed with the Connect, profiles and mark changes. Static export and
   browser acceptance are recorded separately.
+- [x] On 8c25e159 the standalone Node 24 export and the combined Node 20
+  export both completed. In both HTML responses the sign-in notice was
+  present before hydration, with no browser read claim or read time.
+  The client manifest retained only the component's stylesheet.
+  The standalone sweep advanced past the static regression and stopped
+  before navigation because the Playwright Chromium binary was missing.
+  Browser acceptance and the coordinated route release remain open.
