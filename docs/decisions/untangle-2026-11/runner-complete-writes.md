@@ -53,3 +53,13 @@
   test stopped at unshare on this host. These suites do not certify either
   the pending workspace design or privileged acceptance. Recheck with the
   pinned sandbox and after integration on main.
+
+### Failed publication of a runner file
+
+- [x] On 1da3cd6f the ordinary single-piece writer received ENAMETOOLONG
+  at rename and left a temporary file in the destination directory. The new
+  Linux filesystem regression failed on that branch and passed with cleanup
+  in the shared stream writer. Its caller still receives the rename error.
+  Both single-piece writes and streamed downloads use this implementation.
+- [ ] Verify the other file-operation controls, the typecheck and the joined
+  runner. Privileged sandbox acceptance and post-merge comparison remain open.

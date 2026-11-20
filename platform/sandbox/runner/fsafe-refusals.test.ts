@@ -4,7 +4,7 @@
  * walker's order and refusals.
  */
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync,
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync,
          writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +46,16 @@ describe("fsafe's read path", () => {
 });
 
 describe("fsafe's write path", () => {
+  it("removes the temporary file when the destination rename fails", () => {
+    const base = join(t, "workspace");
+    mkdirSync(base);
+    const bytes = Buffer.from("pending edit");
+    const path = join(base, "x".repeat(256));
+    expect(() => safeWrite(base, path, bytes, 0o600)).toThrow(
+      expect.objectContaining({ code: "ENAMETOOLONG" }));
+    expect(readdirSync(base)).toEqual([]);
+  });
+
   it("replaces a link and a FIFO at its name, never writes through one, never over a " +
      "directory, and sets its mode and owner", () => {
     const w = join(t, "w");

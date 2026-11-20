@@ -17,7 +17,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, type Dir, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync,
-         opendirSync, openSync, readSync, renameSync, rmSync, unlinkSync,
+         opendirSync, openSync, readSync, renameSync, rmSync,
          writeSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -112,9 +112,15 @@ export function safeStream(base: string, path: string, mode: number,
       closeSync(fd);
     }
   };
+  const abort = () => {
+    try {
+      close();
+    } finally {
+      rmSync(temp, { force: true });
+    }
+  };
   const failed = (error: unknown): never => {
-    close();
-    unlinkSync(temp);
+    abort();
     throw error;
   };
   return {
@@ -133,20 +139,16 @@ export function safeStream(base: string, path: string, mode: number,
         if (owner !== undefined) {
           fchownSync(fd, owner.uid, owner.gid);
         }
+        close();
+        if (kind(path) === "dir") {
+          throw new LinkRefused(`${path} is a directory`);
+        }
+        renameSync(temp, path);
       } catch (error) {
         failed(error);
       }
-      close();
-      if (kind(path) === "dir") {
-        unlinkSync(temp);
-        throw new LinkRefused(`${path} is a directory`);
-      }
-      renameSync(temp, path);
     },
-    abort() {
-      close();
-      rmSync(temp, { force: true });
-    },
+    abort,
   };
 }
 
