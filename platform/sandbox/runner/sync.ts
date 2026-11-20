@@ -78,7 +78,7 @@ interface SeenSession {
   readonly stamp: string | null;
   readonly sha256: string;
   /** The digest of the secrets it was refused against, when it held one's bytes. */
-  readonly refused?: string;
+  readonly refusedAgainst?: string;
 }
 
 /** The engines' sessions as last hashed (`SESSIONS_SEEN`), or none. */
@@ -132,15 +132,15 @@ export async function stageSessions(
         sha = sha256Hex(bytes);
       }
       next[path] = { stamp, sha256: sha,
-                     ...(was?.sha256 === sha && was.refused !== undefined
-                       ? { refused: was.refused } : {}) };
+                     ...(was?.sha256 === sha && was.refusedAgainst !== undefined
+                       ? { refusedAgainst: was.refusedAgainst } : {}) };
       sessions.push({ rec: each, rel, digest: sha, path });
     }
   }
   const held = sessions.length === 0 ? {} : await known(sessions.map((each) => each.path));
   const refused: string[] = [];
   for (const session of sessions) {
-    if (held[session.path] === session.digest || next[session.path]!.refused === against) {
+    if (held[session.path] === session.digest || next[session.path]!.refusedAgainst === against) {
       continue;
     }
     const store = `${STORE}/${session.rec.id}`;
@@ -150,7 +150,9 @@ export async function stageSessions(
     }
     if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
       refused.push(`{home}/${session.rel}`);
-      next[session.path] = { ...next[session.path]!, refused: against };
+      // The store can change during the mirror lookup. Only the bytes inspected
+      // here earned this refusal. The earlier stat belongs to the first read.
+      next[session.path] = { stamp: null, sha256: sha256Hex(bytes), refusedAgainst: against };
       continue;
     }
     safeWrite(SYNC_HOME, join(out, session.rec.id, session.rel), bytes, 0o644, undefined,

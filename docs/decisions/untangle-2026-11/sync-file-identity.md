@@ -80,3 +80,21 @@
 - [x] On 2208c72f, five synthetic histories went through the actual home creator and keeper on Node 22 and 24, once for ordinary writeback and once for completed sign-in (ten cases per runtime). In three histories, the current home bytes, current store bytes and complete serialized snapshot were identical across histories. Only the home had changed in the first, only the store in the second, and both in the third. All three wrote the home bytes to the store. This preserved the local edit in the first case, reversed the newer store edit in the second and lost one edit in the third.
 - [x] A newly created home transcript and an untouched inherited transcript removed from the store also gave identical home bytes, absent store entry and serialized snapshot. Both ended with the transcript in the store. These comparisons establish what the format-one snapshot and current byte values can tell recovery. Filesystem timestamps were not used as evidence of origin.
 - [ ] Resolve historical homes separately from new snapshots. Retain both candidates and the fact of a missing store entry when origin is unknown. Define where interrupted work survives cleanup and how it re-enters reconciliation. For new homes, verify a baseline for each inherited session and one shared rule for ordinary finish, sign-in and reboot. The delayed upload has its own base to preserve. The earlier two-conversation root regression and coordinator integration remain open.
+
+### Refusal after the store changes during lookup
+
+- [x] A runner can read one transcript revision, await the mirror lookup,
+  then inspect different bytes for staging. On 7f4eb1c4 the ordinary
+  regression refused the later revision but attributed its refusal to the
+  earlier clean bytes. Restoring the clean bytes left the next run without
+  its staged transcript (ENOENT).
+- [x] The refusal now belongs to the exact bytes inspected after the lookup.
+  Its next check reads those bytes again because the earlier file metadata
+  cannot establish their revision. The disposable cache ignores the old
+  refusal field, so an existing false refusal cannot continue suppressing
+  a clean transcript. An upgrade can repeat one legitimate refusal notice.
+  Two ordinary staging tests passed on each of Node 22 and 24, including
+  the repeated refused revision, the restored clean revision, and the old
+  cache. No change to the durable mirror or its base version.
+- [ ] Verify joined runner callers. This correction is independent of deciding
+  which historical transcript wins or preserving both on divergent edits.
