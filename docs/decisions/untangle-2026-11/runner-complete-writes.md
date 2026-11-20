@@ -177,3 +177,10 @@
   the two complete plan documents found only the expected change in the
   paired runner digest. This is staged source and a regression. Actual
   pinned-image checks remain outstanding.
+- [x] On d7d0c143 all eleven ordinary template guards and full Node 24
+  platform types passed. With the staged runner and session changes, 141
+  sandbox tests and full Node 24 platform types passed. The combined offline
+  plan also delivered the same complete 3,120 bytes through an initially
+  full pipe on each of Node 22 and 24. The overlap in probes.ts keeps the
+  staged login argument owner and complete prompt check while returning its
+  answer through the shared writer. Actual pinned-image acceptance is open.
