@@ -187,3 +187,10 @@
   refusal and restart. A home inherited before staging may have an even
   earlier base. Include format-one recovery, a later legitimate edit and
   a correctly saved conflict copy before adopting a format change.
+
+- [x] On ab1093b5 the two sender histories ran on Node 22 and 24. An
+  already-staged version-one edit was offered with base two. The later edit
+  correctly offered base two. Both results repeated on the joined runner.
+  Standalone and joined full Node 24 TypeScript passed when run serially
+  after concurrent attempts exited 137. The joined sandbox's 141 ordinary
+  Worker and guard checks passed. These checks leave the earlier edit open.
