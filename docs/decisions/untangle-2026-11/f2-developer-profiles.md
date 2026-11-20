@@ -72,3 +72,11 @@ signed-in client checks remain separate steps.
   cleanly in an offline three-way comparison, retaining all 14 added
   nonempty lines. This check concerns those three stages only. The fresh
   browser sweep and coordinated release are still open.
+- [x] Repeated the publisher's build steps on its declared Node major
+  (20.20.2). Both 704220fa and the joined site installed from their
+  lockfiles, built the design system and site, passed 41 tests each, and
+  exported 28 pages each. The rebuilt joined HTML preserved the Connect
+  instructions and the recorded tool inventories above. Checked the actual
+  workflow path filters against relative imports from app, components and
+  lib. Both standalone external inputs and all four joined inputs are
+  covered. These were local builds. The browser and route gates remain open.
