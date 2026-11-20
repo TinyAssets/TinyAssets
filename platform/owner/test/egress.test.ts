@@ -633,6 +633,29 @@ describe("an egress call", () => {
 });
 
 describe("the sync token", () => {
+  it("reads both transcript revisions after a delayed sandbox write conflicts", async () => {
+    const r = await gated();
+    const lease = await leased(r);
+    const binding = lease.synced();
+    const path = "/workspace/.sessions/owner/codex/.codex/sessions/example.jsonl";
+    const write = (text: string) => r.stub.fileSyncCommit(binding, {
+      ...held(lease), ops: [{ op: "write", path, base: null, mode: 0,
+                              inline: new TextEncoder().encode(text) }],
+    });
+    expect((await write("newer")).outcomes[0]?.outcome).toBe("committed");
+    const before = (await r.stub.fileChanges(binding, { after: 0, limit: 1000 })).cursor;
+    const outcome = (await write("earlier")).outcomes[0]!;
+    if (outcome.outcome !== "conflict" || outcome.copy === null) {
+      throw new Error("expected the delayed transcript to have a conflict copy");
+    }
+    const after = await r.stub.fileChanges(binding, { after: before, limit: 1000 });
+    expect(after.changes.map(change => change.path)).toContain(outcome.copy.path);
+    for (const [at, expected] of [[path, "newer"], [outcome.copy.path, "earlier"]] as const) {
+      const read = await r.stub.fileRead(binding, { path: at });
+      expect(new TextDecoder().decode(read.inline!)).toBe(expected);
+    }
+  });
+
   it("works on the sync doors for its lease and epoch alone, and never on egress", async () => {
     const r = await gated();
     const lease = await leased(r);

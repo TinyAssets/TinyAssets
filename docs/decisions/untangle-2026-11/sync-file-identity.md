@@ -130,3 +130,24 @@
   staging fix nor the disposable hash cache supplies historical provenance.
   Recovering both versions of a divergent transcript through cleanup and
   planning an expand/contract release remain open.
+
+### The owner's transcript conflict reaches its original sandbox
+
+- [x] Converted the saved two-offer lease experiment into an ordinary
+  Owner regression. The real sandbox sync binding commits the newer
+  transcript, then offers the earlier contents with the original absent
+  base. The Owner reports a conflict, the binding sees the copy in the
+  change feed, and reads the distinct newer and earlier bytes at their
+  respective paths. One focused Node 22 Workerd test passed (60 outside
+  the filter).
+- [x] Actual Owner feed and read responses through the standalone runner
+  led a warm store to reoffer the earlier bytes with the newly observed
+  version. Returning that captured operation to a real Owner committed it
+  without another conflict. Both paths then read as the earlier contents.
+  A cold store issued no such operation. The open runner regression and
+  consumer evidence are on the normal runner-complete-writes branch at
+  cf63f490. Preserve the origin of a pending edit across later feed reads.
+- [x] On 62162522 the standalone focused runner suite passed 17 on
+  Node 22. The joined suite passed 21 and full Node 24 types. The wider
+  joined workspace suite still has the same nine recovery, mode and
+  reset failures, with 26 passing and four size cases excluded.
