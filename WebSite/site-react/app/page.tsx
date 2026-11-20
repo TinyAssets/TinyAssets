@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { RitualLabel } from "@tiny/design-system";
 import { OwnerDecision } from "../components/OwnerDecision";
-import { SITE } from "../lib/site";
+import { addressLabel, SITE } from "../lib/site";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
@@ -207,7 +207,7 @@ export default function HomePage() {
           <h2>One public repository, MIT.</h2>
           <p>
             The platform code is on GitHub. Specifications describe what has shipped. The only
-            public connector URL is <span className="ev">tinyassets.io/mcp</span>.
+            public connector URL is <span className="ev">{addressLabel(SITE.mcp)}</span>.
           </p>
           <div className="actions">
             <a className="btn btn--ghost btn--md" href={SITE.repo} target="_blank" rel="noreferrer">

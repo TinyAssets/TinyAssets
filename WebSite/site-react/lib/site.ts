@@ -43,6 +43,11 @@ export const SITE = {
   contact: legal.contact,
 } as const;
 
+/** Public address as printed beside a link or in a setup instruction. */
+export function addressLabel(address: string): string {
+  return address.replace(/^https:\/\//, "");
+}
+
 export const NAV = [
   { href: "/start/", label: "Join" },
   { href: "/build/", label: "How it works" },

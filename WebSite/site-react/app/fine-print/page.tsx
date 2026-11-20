@@ -3,7 +3,7 @@ import Link from "next/link";
 import { RitualLabel } from "@tiny/design-system";
 import { Reachability } from "../../components/Reachability";
 import { OwnerDecision } from "../../components/OwnerDecision";
-import { SITE } from "../../lib/site";
+import { addressLabel, SITE } from "../../lib/site";
 
 export const metadata: Metadata = {
   title: "Fine print",
@@ -160,8 +160,8 @@ export default function FinePrintPage() {
       <section className="section section--tight">
         <div className="container narrow">
           <p className="note">
-            Canonical surfaces: the site is <span className="ev">tinyassets.io</span>, the endpoint is{" "}
-            <span className="ev">tinyassets.io/mcp</span>, the code is{" "}
+            Canonical surfaces: the site is <span className="ev">{addressLabel(SITE.origin)}</span>, the endpoint is{" "}
+            <span className="ev">{addressLabel(SITE.mcp)}</span>, the code is{" "}
             <span className="ev">github.com/TinyAssets/TinyAssets</span>. Anything else is not us.
             Terms, privacy and disclosures: <Link href="/legal/">legal</Link>.
           </p>

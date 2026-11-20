@@ -2,7 +2,7 @@ import * as React from "react";
 import Link from "next/link";
 import { TinyAssetsMark } from "./TinyAssetsMark";
 import { legal } from "../lib/legal";
-import { SITE } from "../lib/site";
+import { addressLabel, SITE } from "../lib/site";
 import styles from "./Footer.module.css";
 
 export function Footer() {
@@ -51,7 +51,7 @@ export function Footer() {
       <div className={`container ${styles.bottom}`}>
         <span className="ev">© 2026 {legal.brand} · MIT code · CC0 public shapes</span>
         <span className="ev">
-          <a href={SITE.mcp}>tinyassets.io/mcp</a> is the only public endpoint
+          <a href={SITE.mcp}>{addressLabel(SITE.mcp)}</a> is the only public endpoint
         </span>
       </div>
     </footer>

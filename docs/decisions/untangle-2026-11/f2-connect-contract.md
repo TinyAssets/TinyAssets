@@ -123,3 +123,13 @@ guide's address list and connection instructions before opening Chromium.
   using the resource reference, all eight passed on Node 22 and full
   platform types passed. Shipped output and literal custom catalogs
   matched on Node 22 and 24. Recheck the actual combined release head.
+- [x] On 982cb100 the alternate-address export changed the footer link
+  target but printed the old server beside it on all 27 exported HTML
+  files. Home and Fine Print also printed the old server and Start
+  printed the old app address. The footer and those three pages now
+  format their labels from the same addresses used for navigation.
+  The current and alternate exports both passed the HTML comparison on
+  all 27 files and all 41 standalone site tests passed. The ordinary
+  browser sweep checks the footer label and its destination together.
+  Addresses in the founder-owned legal policy remain for the legal
+  copy review before the coordinated site release.

@@ -152,6 +152,13 @@ def main() -> int:
                                 failures.append(f"{label} {route}: wrong steps for {app['id']}")
                         if canonical != APPS["page"]:
                             failures.append(f"{label} {route}: wrong canonical {canonical}")
+                    footer_endpoint = page.locator("footer a").filter(
+                        has_text=identity["host"] + identity["mcp"]
+                    )
+                    if (footer_endpoint.count() != 1 or
+                        footer_endpoint.get_attribute("href") != origin + identity["mcp"] or
+                        footer_endpoint.inner_text() != identity["host"] + identity["mcp"]):
+                        failures.append(f"{label} {route}: footer server label and target disagree")
                     if not page.locator("footer").count():
                         failures.append(f"{label} {route}: no footer")
                     overflow = page.evaluate(

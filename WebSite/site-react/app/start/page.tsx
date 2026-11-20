@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { RitualLabel } from "@tiny/design-system";
-import { SITE } from "../../lib/site";
+import { addressLabel, SITE } from "../../lib/site";
 
 export const metadata: Metadata = {
   title: "Start",
@@ -84,7 +84,7 @@ export default function StartPage() {
           <div className="cols cols--2">
             <div className="sheet" id="app">
               <span className="eyebrow">Web app</span>
-              <h3>tinyassets.io/app</h3>
+              <h3>{addressLabel(SITE.app)}</h3>
               <p>
                 Sign in, connect, talk. This is the reference surface and the one every other
                 surface wraps.
