@@ -684,7 +684,7 @@ describe("the sync token", () => {
     const request = { ...held(lease), ops: [
       { op: "write", path: shortPath, base: null, inline: small },
       { op: "write", path: longPath, base: null, intent_id: upload.intent_id },
-    ] } as const;
+    ] } satisfies Parameters<typeof r.stub.fileSyncCommit>[1];
     const first = await r.stub.fileSyncCommit(binding, request);
     expect(first.outcomes.map(o => o.outcome)).toEqual(["committed", "committed"]);
     const deliveredAgain = await r.stub.fileSyncCommit(binding, request);

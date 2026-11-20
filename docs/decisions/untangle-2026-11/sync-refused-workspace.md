@@ -124,3 +124,13 @@
   for an individual delivery. A genuine second edit is still allowed to
   produce another copy. Reconcile this with the runner before retrying
   uncertain batches. These are staged regressions, with verification open.
+
+- [x] On 9d684773 the ordinary Node 22 Worker retry produced a second
+  conflict filename. Both copies held the retained edit and the API's bytes
+  survived. The mixed retry returned a conflict and a refusal although the
+  two stored files matched. Both new recovery assertions failed; the
+  existing distinct-edit and normal upload controls passed. The first
+  two-file command timed out starting the upload Worker. Its individual
+  rerun reached the actual response assertion. A type-only correction
+  uses the existing commit request type for the mutable operation list.
+  Full Node 24 platform TypeScript then passed on the corrected tree.
