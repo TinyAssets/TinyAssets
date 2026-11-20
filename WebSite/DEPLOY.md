@@ -1,12 +1,10 @@
 # Deploy `tinyassets.io`
 
 **Production source:** `WebSite/site-react/` (Next.js static export). A push
-to `main` that changes site source runs `.github/workflows/deploy-site-react.yml`.
-The paths are `WebSite/site-react/**`, `WebSite/design-system/**`,
-`WebSite/shared/**`, `platform/contract/apps.json`, `platform/contract/identity.json`,
-and `.github/workflows/deploy-site-react.yml`, so a
-change to the publisher itself publishes the current site. A manual run of
-the same workflow, with `confirm` set to `deploy`, remains for a rollback or
+to `main` starts the Pages publisher when the changed files match its
+[`on.push.paths` filter](../.github/workflows/deploy-site-react.yml). The
+filter includes site source, contract inputs and the publisher itself.
+A manual run with `confirm: deploy` remains available for a rollback or
 a republish.
 
 The Svelte rollback tree and its `deploy-site.yml` were retired on 2026-09-02.
@@ -40,7 +38,7 @@ of `main`.
 
 ## Publish
 
-A merge that touches the paths above starts the workflow. For a rollback, or
+A merge that touches a path in the push filter starts the workflow. For a rollback, or
 to publish a revision those paths did not change:
 
 1. Open GitHub Actions and select `deploy-site-react`.

@@ -61,3 +61,8 @@ guide's address list and connection instructions before opening Chromium.
   On each, a change to the Connect page on main matches the push filter
   and a successful build enables the Pages deploy. Changing the preview
   text alone is outside the filter. This was an offline workflow review.
+- [x] The combined publisher also watches profiles.json. All three site
+  guides copied a shorter list and omitted that input. Each now links to
+  the workflow's actual push filter. The three relative links resolved
+  to the tracked workflow. Its filter covered the three imported platform
+  contracts and the shared public reader in the combined site.

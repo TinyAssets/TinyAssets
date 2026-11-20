@@ -1,11 +1,9 @@
 # Previewing & approving the site
 
 This is the production source for `tinyassets.io`. These preview paths do not
-change the live site. A push to `main` that changes site source
-(`WebSite/site-react/**`, `WebSite/design-system/**`, `WebSite/shared/**`)
-or its contract inputs (`platform/contract/apps.json` and `platform/contract/identity.json`),
-or `deploy-site-react.yml`, runs that workflow. A manual run with
-`confirm: deploy` is the rollback. See `../DEPLOY.md`.
+change the live site. A push to `main` that matches the
+[Pages publisher's push filter](../../.github/workflows/deploy-site-react.yml)
+starts a deployment. See [the deployment guide](../DEPLOY.md) for release and rollback.
 
 ## 1. Local hot-reload
 
