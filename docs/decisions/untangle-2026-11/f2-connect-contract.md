@@ -66,3 +66,19 @@ guide's address list and connection instructions before opening Chromium.
   the workflow's actual push filter. The three relative links resolved
   to the tracked workflow. Its filter covered the three imported platform
   contracts and the shared public reader in the combined site.
+
+- [x] Compared the crawler files, legal page, site test, sweep and publisher
+  at 162 live branch tips, including main f934871ad. Only Connect ba600559
+  moved the three public files into export routes. Two historical hotfix
+  tips retain different legal, sitemap and guide content, including the
+  retired token page. They remain separate from this release.
+- [x] Against developer profiles ff77e978, the sweep has one textual
+  conflict immediately before the local server starts. Keep both the
+  profile catalog read and the crawler checks. The tested joined file
+  was exactly the result of retaining both blocks. Against mark bf2c2e59,
+  the site boundary test combined automatically and matched the tested
+  file byte for byte. The P7 header branch changed publisher comments
+  only. Its combined workflow parsed identically to the two-site workflow.
+- [ ] The fresh ordinary sweep on the corrected branch passed its static
+  preflight and stopped at Chromium launch because Playwright's executable
+  was unavailable. No browser navigation ran on that attempt.
