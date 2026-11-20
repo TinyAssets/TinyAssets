@@ -95,3 +95,15 @@ guide's address list and connection instructions before opening Chromium.
   keep vendor destinations and source text, and test the combined
   vendor-wake entry. The guide's own absolute page address is a separate
   catalog field used by Owner for its per-app links.
+- [x] The shared app catalog reader now resolves the MCP resource in
+  authored instructions and encodes it once when it is a vendor query
+  value. The Connect site reads that same catalog. The site and the
+  contract use the same public address exports. Literal historical
+  catalogs and explicit guide-page URLs remain supported. The publisher
+  watches the four source modules the site now consumes.
+  The eight app guards and four Doors served-text guards passed. A real
+  alternate-address export including the vendor-wake desktop instruction
+  contained zero old addresses in its instruction text. For that join,
+  apply the resource reference to the additional desktop step as well.
+  All six app records and six guide anchors matched expectations in both
+  the shipped and the alternate vendor catalogs.

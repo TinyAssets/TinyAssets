@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { RitualLabel } from "@tiny/design-system";
-import catalog from "../../../../platform/contract/apps.json";
+import { checkedApps } from "../../../../platform/contract/src/apps";
 import { SITE } from "../../lib/site";
 import { CopyButton } from "./copy-button";
 import styles from "./connect.module.css";
+
+const catalog = checkedApps();
 
 export const metadata: Metadata = {
   title: "Connect TinyAssets",

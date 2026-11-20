@@ -146,7 +146,9 @@ def main() -> int:
                         for app in APPS["apps"]:
                             section = page.locator(f'main section[id="{app["id"]}"]')
                             steps = section.locator("ol > li").all_text_contents()
-                            if steps != app["connect"]["steps"]:
+                            expected = [s.replace("{mcp}", origin + identity["mcp"])
+                                        for s in app["connect"]["steps"]]
+                            if steps != expected:
                                 failures.append(f"{label} {route}: wrong steps for {app['id']}")
                         if canonical != APPS["page"]:
                             failures.append(f"{label} {route}: wrong canonical {canonical}")

@@ -25,6 +25,10 @@ on:
       # Public addresses and connection instructions are static export inputs.
       - 'platform/contract/apps.json'
       - 'platform/contract/identity.json'
+      - 'platform/contract/src/apps.ts'
+      - 'platform/contract/src/checks.ts'
+      - 'platform/contract/src/identity.ts'
+      - 'platform/contract/src/refusal.ts'
       - '.github/workflows/deploy-site-react.yml'
   workflow_dispatch:
     inputs:

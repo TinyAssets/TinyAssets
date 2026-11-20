@@ -25,6 +25,7 @@
 import raw from "../apps.json" with { type: "json" };
 
 import { keyed, object } from "./checks.ts";
+import { MCP_RESOURCE } from "./identity.ts";
 
 export interface AppConnect {
   /** A deep link where the vendor has one. */
@@ -143,6 +144,11 @@ export function ownRedirect(app: App, uri: string): boolean {
     });
 }
 
+/** The endpoint in authored setup instructions. Vendor links embed it as a query value. */
+function setupText(value: string): string {
+  return value.replaceAll("{mcp}", () => MCP_RESOURCE);
+}
+
 /** The file, held to its shape: each app's every field, ids, hosts and names distinct. */
 export function checkedApps(value: unknown = raw): Apps {
   if (!object(value) || !Array.isArray(value["apps"])) {
@@ -189,10 +195,13 @@ export function checkedApps(value: unknown = raw): Apps {
                              names: texts(match["names"], `${id}.match.names`, NAME),
                              redirects: redirectPatterns(match["redirects"], id) }),
       connect: Object.freeze({
-        ...(connect["link"] === undefined ? {} : { link: https(connect["link"], `${id}.link`) }),
-        ...(connect["say"] === undefined ? {} : { say: text(connect["say"], `${id}.say`) }),
-        steps,
-        ...(connect["code"] === undefined ? {} : { code: text(connect["code"], `${id}.code`) }),
+        ...(connect["link"] === undefined ? {} : {
+          link: https(connect["link"], `${id}.link`)
+            .replaceAll("{mcp}", () => encodeURIComponent(MCP_RESOURCE)),
+        }),
+        ...(connect["say"] === undefined ? {} : { say: setupText(text(connect["say"], `${id}.say`)) }),
+        steps: Object.freeze(steps.map(setupText)),
+        ...(connect["code"] === undefined ? {} : { code: setupText(text(connect["code"], `${id}.code`)) }),
       }),
       source: sources, checked: app["checked"] as string,
     });
