@@ -133,3 +133,24 @@ guide's address list and connection instructions before opening Chromium.
   browser sweep checks the footer label and its destination together.
   Addresses in the founder-owned legal policy remain for the legal
   copy review before the coordinated site release.
+
+### Five staged branches together
+
+- [x] Rehearsed Connect 9d75f896, developer profiles ff77e978, the mark
+  bf2c2e59, read status ef837894 and vendor wake 17a2e42c against their
+  common main content f934871ad. For the sweep keep the identity/crawler,
+  profile catalog and fine-print preflight blocks. In the route loop
+  keep the developer tool-list assertions and the new footer assertion.
+  The vendor catalog merges textually but needs the resource reference
+  in its Grok desktop step. No other conflicting file required a choice.
+- [x] From the resulting checkout with clean installs, the Node 24 site
+  passed 41 tests and the full static export. On Node 22 all 298 ordinary
+  contract tests passed, 18 size cases were excluded, and the full platform
+  typecheck passed. Every one of 27 footer labels matched its target.
+  All six app sections, 18 steps, four vendor copy texts and three vendor
+  links matched the resolved catalog. Fine Print served the sign-in notice
+  without a read time. The publisher watched all seven shared platform
+  inputs. The ordinary browser sweep passed static preflight and stopped
+  at launch because Playwright Chromium was unavailable.
+- [ ] Recheck the reviewable release head in a browser and verify route
+  readiness before the single coordinated release.
