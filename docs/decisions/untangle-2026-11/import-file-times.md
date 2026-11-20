@@ -156,3 +156,29 @@ Candidate applies the existing file-time range in the common owner fit for censu
   which also checked recovery in another process, completion and repeat
   delivery. The normal resubmission regression is in 08b27231. No additional
   runtime change remains to publish from those four files.
+
+### Reconciliation of the two saved cross-platform rehearsals
+
+- [x] Compared all 45 changed tracked platform files in the first saved
+  rehearsal to the import, F1, restore and runner components and published
+  branches. Thirty-six matched the components byte for byte and five
+  matched individual published files. The remaining four reproduced
+  exactly from the folder reader (72672304), signed historical times
+  (a7d7a7d4 and 9389036f), retry (08b27231) and archive (8535a52d).
+  The joined bundle test retains its truncateSync import and passes both
+  the F1 tiers argument and file time. All 45 match the second rehearsal's
+  starting files.
+- [x] The second checkout has 53 changed tracked platform files against
+  main and three additional local test files. Eighteen of its 19 further
+  tracked edits reproduced byte for byte from f0443205, 98e2c484,
+  493276e2, 534e6bcb and aa341901. The nineteenth was the earlier
+  four-date restore test, superseded by 8222dfec. The extra restore
+  file matches the saved suite with that published test substituted.
+  The extra session test matches aa341901 and the pending-edit test
+  is verbatim in the published refused-workspace suite.
+- [x] Each checkout also has one changed tracked workflow outside platform.
+  Both copies exactly match the import window workflow on 3dd64974.
+- [x] These comparisons account for the source and tests in those two
+  saved rehearsals. They add no new runtime test result. Previously
+  recorded suite results apply to their original trees. Historical
+  cohort certification and coordinator integration remain open.
