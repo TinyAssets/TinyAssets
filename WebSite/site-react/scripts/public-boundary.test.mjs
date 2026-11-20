@@ -34,11 +34,10 @@ const shapes = source("components/PublicShapes.tsx");
 const reach = source("components/Reachability.tsx");
 const pages = readTree(siteRoot);
 
-test("the live client exposes only two fail-closed browser readers", () => {
+test("the live client exposes only the fail-closed public list reader", () => {
   const exported = [...live.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]);
-  assert.deepEqual(exported.sort(), ["fetchPublicUniverses", "fetchVitals"]);
+  assert.deepEqual(exported.sort(), ["fetchPublicUniverses"]);
   assert.match(live, /PUBLIC_READ_NEEDS_SIGN_IN/);
-  assert.match(live, /authRequired:\s*true/);
   assert.doesNotMatch(live, /\bfetch\s*\(|publicGraphCall\(|requirePublicUniverseCollection\(/);
 });
 
@@ -50,11 +49,8 @@ test("the live client never requests private-capable targets or operator status"
   assert.doesNotMatch(live, /read_graph runs?\b/i);
 });
 
-test("vitals report authorization without deriving activity", () => {
-  assert.doesNotMatch(live, /lastSignalSource\?:\s*["']run["']|lastSignalSource\s*=\s*["']run["']/);
-  assert.doesNotMatch(live, /\bactiveRun\b/);
-  assert.match(live, /activityVisible:\s*false/);
-  assert.doesNotMatch(live, /last_activity_at/);
+test("the public reachability notice makes no activity or timestamp claim", () => {
+  assert.doesNotMatch(reach, /<dt>(?:activity|read)<\/dt>|fetchedAt|lastMovedAt/);
 });
 
 test("the public browser opens no MCP session", () => {
@@ -126,7 +122,7 @@ test("the public list labels its snapshot and sign-in boundary", () => {
 });
 
 test("the reachability strip reports the sign-in boundary", () => {
-  assert.match(reach, /\bfetchVitals\b/);
+  assert.doesNotMatch(reach, /\bfetchVitals\b/);
   assert.match(reach, /sign-in required/);
   assert.match(reach, /connector supplies a bearer/);
   assert.doesNotMatch(reach, /reading .* from your browser|vitals\.fetchedAt/);

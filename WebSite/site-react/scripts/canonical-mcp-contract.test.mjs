@@ -883,7 +883,7 @@ test("the authenticated boundary is gated on the production site deploy", () => 
   assert.equal(existsSync(previewWorkflowPath), false);
 
   const reactLive = readFileSync(resolve(here, "../lib/live.ts"), "utf8");
-  assert.match(reactLive, /authRequired:\s*true/);
+  assert.match(reactLive, /throw new Error\(PUBLIC_READ_NEEDS_SIGN_IN\)/);
   assert.doesNotMatch(reactLive, /\bfetch\s*\(|assertPublicBrowserEndpoint\(/);
 });
 

@@ -16,39 +16,3 @@ export const PUBLIC_READ_NEEDS_SIGN_IN =
 export async function fetchPublicUniverses(_limit = 100): Promise<any[]> {
   throw new Error(PUBLIC_READ_NEEDS_SIGN_IN);
 }
-
-export type Vitals = {
-  reachable: boolean;
-  authRequired?: boolean;
-  fetchedAt: string;
-  deployedAt?: string | null;
-  gitSha?: string | null;
-  queue?: {
-    pending: number;
-    running: number;
-    succeeded: number;
-    failed: number;
-    depth: number;
-  } | null;
-  lastMovedAt?: string | null;
-  universeCount?: number;
-  goalCount?: number | null;
-  workflowActive?: boolean;
-  lastSignalSource?: "universe-activity" | null;
-  activityVisible?: boolean;
-  error?: string;
-};
-
-/**
- * Report authorization state without touching the protected endpoint. This
- * prevents the site from describing an expected 401 as an outage.
- */
-export async function fetchVitals(): Promise<Vitals> {
-  return {
-    reachable: false,
-    authRequired: true,
-    fetchedAt: new Date().toISOString(),
-    activityVisible: false,
-    error: "live engine readings are available to signed-in connectors",
-  };
-}

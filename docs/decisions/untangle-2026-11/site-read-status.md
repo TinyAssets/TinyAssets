@@ -15,3 +15,13 @@
 - [ ] Render the known sign-in boundary directly. Verify the exported page
   before hydration and preserve the separate Commons snapshot and the
   authenticated connector boundary. Recheck with the other staged site work.
+- [x] The public route now renders its sign-in notice as ordinary static
+  markup. Removed its sole client effect and the private site module's
+  unused synthetic reading, including its timestamp and activity fields.
+  The Commons consumer still labels its checked-in snapshot. The other
+  public list reader still refuses the unauthenticated call. On the first
+  test run the production-site guard still required the removed flag.
+  Its check now verifies the real list refusal alongside its existing
+  no-request guard. All 41 site tests passed standalone and all 41
+  passed with the Connect, profiles and mark changes. Static export and
+  browser acceptance are recorded separately.
