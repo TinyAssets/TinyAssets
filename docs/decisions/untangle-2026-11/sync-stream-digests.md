@@ -22,7 +22,8 @@ The Node 22 runner and probes build as a pair. Changing the runner changes both 
 - [x] In the first CI layer/kernel run, the layer inventory counted thirteen
   local node_modules symlinks as repository entries (63 pass, one failure).
   A clean offline npm ci using the platform lockfile installed 282 packages.
-  On the same source all 64 layer/kernel checks then passed without changing
-  a guard or its scope.
+  With that installation all 64 layer/kernel checks, 140 ordinary sandbox
+  Worker/guard tests, 355 source tests and full Node 24 platform TypeScript
+  passed on the same source.
 - [ ] These are local build and regression results. Pinned image acceptance,
   recovery of refused local edits and integration on main remain open.
