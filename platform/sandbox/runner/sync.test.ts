@@ -12,7 +12,7 @@
  *   sync-out over many paths; the matcher's, at `LIST_BYTES` of any class, within what the
  *   sandbox's heap leaves beside the agent (`sizing.ts`).
  */
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -218,6 +218,38 @@ it.each([false, true])("retries a new child after storage refusal (parent remove
       await syncIn(doors, p, mirror);
       await syncOut(doors, p, mirror, LEASE, []);
       expect(offered).toEqual([initial, initial]);
+    } finally {
+      mirror.close();
+    }
+  });
+
+it.each(["change", "reset"])("removes only the empty directory the owner withdrew (%s)",
+  async (delivery) => {
+    const { place: p, root, local } = place();
+    const path = "/workspace/remote";
+    const db = join(root, "mirror.db");
+    let mirror = openMirror(db);
+    let cursor = 1;
+    const doors = await client((door, body) => {
+      if (door === "list") return { status: 200, body: { entries: [], next: null } };
+      if (door !== "changes") throw Error(door);
+      const after = Number(body["after"]);
+      const reset = after < cursor && cursor === 2 && delivery === "reset";
+      const changes = after === cursor || reset ? [] :
+        [{ path, kind: cursor === 1 ? "dir" : null, version: cursor }];
+      return { status: 200, body: { changes, cursor, reset } };
+    });
+    try {
+      await syncIn(doors, p, mirror);
+      expect(statSync(join(local, "remote")).isDirectory()).toBe(true);
+      mkdirSync(join(local, "local-only"));
+      mirror.close();
+      mirror = openMirror(db);
+      cursor = 2;
+      await syncIn(doors, p, mirror);
+      expect(mirror.cursor()).toBe(2);
+      expect(statSync(join(local, "local-only")).isDirectory()).toBe(true);
+      expect(existsSync(join(local, "remote"))).toBe(false);
     } finally {
       mirror.close();
     }

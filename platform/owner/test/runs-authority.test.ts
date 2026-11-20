@@ -467,6 +467,19 @@ describe("a client's sandbox's readable set (review round 3, M1)", () => {
     expect(again.changes.map((change) => change.path))
       .toContain("/workspace/agents/other/AGENTS.md");
     expect(again.reset).toBe(false);
+    const dir = "/workspace/agents";
+    const list = (binding: Binding) => r.stub.fileList(binding, { dir, limit: 100 });
+    const named = (page: Awaited<ReturnType<typeof list>>) => page.entries.map(e => e.path);
+    expect(named(await list(syncOf(r, start)))).toContain(dir + "/other");
+    const other = await startOf(r.stub, second.run_id);
+    await r.stub.runEvents(runnerBinding(r, other), { frames: [], end: { exit_code: 0 } });
+    const narrower = await r.stub.fileChanges(syncOf(r, start), { after: again.cursor,
+                                                                  limit: 1000 });
+    expect(narrower.reset).toBe(true);
+    expect(named(await list(syncOf(r, start)))).not.toContain(dir + "/other");
+    expect(named(await list(r.bind()))).toContain(dir + "/other");
+    expect((await r.stub.fileChanges(syncOf(r, start), { after: narrower.cursor,
+                                                        limit: 1000 })).reset).toBe(false);
   });
 });
 

@@ -41,3 +41,33 @@
   the local edit as required by ADR-032. Reoffering the base-null child alone
   cannot express a previously deleted directory. Full platform types passed
   for the standalone regression; it remains red until retry is implemented.
+
+### Directory history across a reset
+
+- [x] On 8fc06bb0 a new ordinary runner regression syncs an empty owner
+  directory, creates a separate local directory and reopens its SQLite
+  mirror. An incremental deletion removes the owner directory. A reset with
+  an empty listing leaves both directories on disk after the cursor advances.
+  The local-only neighbor survives in each case. The incremental case passed
+  and the reset case failed on both Node 22 and Node 24.
+- [x] A separate Node 22 replay of a refused child kept its bytes through a
+  reset and offered them again at the original path with base null. The
+  earlier incremental-deletion case instead lost those bytes. On Node 24,
+  two replays started the same child under an API-created directory and
+  under a new local-only directory. At restart both mirrors had cursor 1
+  and no row for the directory or child. After the same reset and empty
+  listing both sent the same bytes with base null. The real Owner's
+  previously verified commit would recreate the API-deleted parent.
+- [x] The existing Node 22 Owner Workerd test now exercises a narrowing as
+  well as a widening of the readable set. With two runs on one lease, the
+  second agent's directory was listed. After that run ended, the first
+  run's feed requested a reset and its list omitted the second directory.
+  The owner's own list still included it. The next feed read cleared the
+  reset. The selected test passed, with 33 unrelated cases filtered.
+- [ ] Preserve the origin of directories across reopen and check current
+  visibility before interpreting an omitted directory. The current file
+  mirror cannot distinguish the two original histories retrospectively.
+  Resolve how to recover a refused child whose parent was deleted while
+  honoring the current grant and keeping the original parent absent. Test
+  both forms of delivery, local-only directories and old mirrors. A retry
+  count alone does not verify the resulting owner tree.
