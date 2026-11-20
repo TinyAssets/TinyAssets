@@ -164,3 +164,9 @@
   including a later run where the mirror genuinely lacks the transcript.
 - [ ] Check the combined runner and compatibility with existing caches.
   Original-version recovery for delayed and conflicting edits remains open.
+- [x] On 0359ca8a, six focused tests also passed on Node 22 and full
+  platform types passed on Node 24. In the combined runner the seven
+  focused files passed 26 tests on Node 22. Adding the separate
+  edda729a transcript withdrawal fix passed 28 focused cases and full
+  Node 24 platform types. The join retained the existing shared streaming
+  digest import when adding the contract's shape and hex checks.
