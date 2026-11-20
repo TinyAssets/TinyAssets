@@ -28,6 +28,14 @@ existing public wording and URL. The ordinary site sweep checks the exported
 guide's address list and connection instructions before opening Chromium.
 
 - [x] All 41 site tests passed on the candidate.
-- [ ] Verify identical output with the current identity, then rebuild with a
-  different host, app path and MCP path. The browser sweep and route readiness
-  are still open for the single site release.
+- [x] On 08709eb0 the site exported the original 2,551 guide bytes exactly.
+  With the developer-profile and mark stages, the publisher's Node 20
+  build passed all 41 site tests and emitted the same bytes. Both builds
+  finished all 29 static generation steps, including the new text route.
+- [x] With a synthetic host and two different paths, the original a2df7280
+  HTML changed but its guide retained the previous addresses. The repaired
+  export changed every relevant address and preserved all other bytes.
+- [ ] The same alternate export revealed eight sitemap entries, the robots
+  sitemap reference and the legal page's canonical URL still pointed at
+  the old host. Reconcile these public crawl references with the site's
+  origin. The fresh browser sweep and route readiness remain open.
