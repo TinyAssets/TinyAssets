@@ -17,7 +17,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, type Dir, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync,
-         opendirSync, openSync, readSync, renameSync, rmSync,
+         opendirSync, openSync, readSync, renameSync, rmSync, unlinkSync,
          writeSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -369,6 +369,18 @@ function escapedName(raw: Buffer): string {
       : `\\x${b.toString(16).padStart(2, "0")}`;
   }
   return out;
+}
+
+/** Withdraw one cached file, leaving directories and their other contents alone. */
+export function removeFile(base: string, path: string): void {
+  const segments = below(base, path);
+  let parent = base;
+  for (const name of segments.slice(0, -1)) {
+    parent = join(parent, name);
+    if (!lstatSync(parent, { throwIfNoEntry: false })?.isDirectory()) return;
+  }
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (entry && !entry.isDirectory()) unlinkSync(path);
 }
 
 /** A tree removed, links removed as links (Node's `rm` never follows one). */

@@ -241,3 +241,22 @@
   session index rule did not match the suffixed copy, which remains in the
   owner's files. Only the initial Codex fixture and returned operation went
   through the real local Owner. The projections did not invoke vendor CLIs.
+
+### Withdrawing a deleted transcript from incoming downloads
+
+- [x] On 8d515af9, both an ordinary deletion and a full reset advanced
+  the cursor but left the old download in place. Starting with an empty
+  engine store then imported the deleted transcript. The engine replan
+  section 2.1 makes the owner's files the durable source of a cold restore.
+  A local Owner Worker separately confirmed that deleting the file or its
+  parent sends the child's deletion and leaves the sibling available.
+- [x] Withdraw obsolete incoming files on the change feed. After a complete
+  reset listing, check the actual incoming files against that listing. A
+  download can survive a stop between file rename and insertion of its mirror
+  row. Preserve the engine store and its last observed base for pending edits.
+  Both regressions now pass, including that interruption. Five focused
+  runner cases passed on Node 24. Only the incoming cache is reconciled.
+- [ ] Verify both runtimes and joined behavior. An old runner may have already
+  consumed the deletion and advanced its cursor. Until a reset, that old
+  cache has no fresh observation. Import concurrent with withdrawal, existing
+  warm stores and divergent home writeback still require reconciliation.

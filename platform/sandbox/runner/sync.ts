@@ -44,7 +44,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Served } from "../../sources/src/served";
 
 import { isKept, keptPaths } from "./engine";
-import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
+import { remove, removeFile, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
          walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
 import { STATE_DIR } from "./protocol";
@@ -251,6 +251,7 @@ interface Mirror {
   /** A reset's seen set: begun, marked, then what was not seen, page by page. */
   resetBegin(): void;
   seen(path: string): void;
+  wasSeen(path: string): boolean;
   unseen(after: string, limit: number): string[];
   resetEnd(): void;
   close(): void;
@@ -305,6 +306,7 @@ export function openMirror(path: string): Mirror {
               "WITHOUT ROWID");
     },
     seen: (at) => { db.prepare("INSERT OR IGNORE INTO seen VALUES (?)").run(at); },
+    wasSeen: (at) => db.prepare("SELECT 1 FROM seen WHERE path = ?").get(at) !== undefined,
     unseen: (after, limit) => (db.prepare(
       "SELECT path FROM files WHERE path > ? AND path NOT IN (SELECT path FROM seen) " +
         "ORDER BY path LIMIT ?").all(after, limit) as { path: string }[]).map((row) => row.path),
@@ -404,12 +406,17 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
                      kind: string | null): Promise<void> {
   if (path === SESSIONS || path.startsWith(`${SESSIONS}/`)) {
     const session = sessionOf(place, path);
-    if (session === null || kind !== "file") {
+    if (session === null) {
       return;
     }
-    const got = await fetchInto(client, path, place.sessionsIn,
-                                join(place.sessionsIn, session.engine, session.rel),
-                                () => 0o600, 0o700);
+    const local = join(place.sessionsIn, session.engine, session.rel);
+    if (kind !== "file") {
+      // The inbound copy is disposable. The engine store may have unsent edits,
+      // whose original base is still in the mirror.
+      removeFile(place.sessionsIn, local);
+      return;
+    }
+    const got = await fetchInto(client, path, place.sessionsIn, local, () => 0o600, 0o700);
     if (got !== null) {
       mirror.put(path, { version: got.version, size: got.size, mtime_ms: 0,
                          sha256: got.sha256 });
@@ -469,6 +476,13 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
       mirror.resetBegin();
       try {
         await listApply(client, place, mirror, WORKSPACE);
+        // A previous run can stop after publishing a download but before
+        // recording its mirror row. Reconcile the files actually available to import.
+        for (const rel of walkFiles(place.sessionsIn)) {
+          if (!mirror.wasSeen(`${SESSIONS}/${place.authority}/${rel}`)) {
+            removeFile(place.sessionsIn, join(place.sessionsIn, rel));
+          }
+        }
         for (let after = "", gone = mirror.unseen(after, PAGE); gone.length > 0;
              gone = mirror.unseen(after, PAGE)) {
           for (const path of gone) {
