@@ -228,3 +228,16 @@
   import check) and the one open warm-store failure. An initial typecheck
   found the synthetic door body needed narrowing. The test now narrows it.
   The first full standalone retry exited 137 under concurrent checks.
+- [x] On cf63f490 the corrected standalone full Node 24 typecheck passed
+  on a serial retry. Joined full types also passed. The exact warm-store
+  operation emitted by the runner was sent to the real Owner with its
+  original path, base, mode and bytes. It committed the overwrite.
+- [x] Using that Owner feed as a synthetic projection for each of the six
+  session path rules across the five shipped engine records, the real
+  runner performed 12 warm/cold runs on Node 22 and 12 on Node 24. For all
+  six rules a cold store sent zero canonical writes and a stale warm store
+  offered the earlier contents against the newer version. The five directory
+  rules also brought the conflict sibling into the store. Kimi's exact
+  session index rule did not match the suffixed copy, which remains in the
+  owner's files. Only the initial Codex fixture and returned operation went
+  through the real local Owner. The projections did not invoke vendor CLIs.
