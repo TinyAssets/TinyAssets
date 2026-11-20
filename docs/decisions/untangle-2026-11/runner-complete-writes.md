@@ -321,3 +321,18 @@
   Nine earlier workspace cases and the warm conflict replay still fail.
 - [ ] The original outbound edit base remains open on the identity branch.
   Keep the privileged runner and pinned sandbox checks open for integration.
+
+### First read of an engine transcript before upload
+
+- [x] On 06fb7298 a cold scan allocated 8,388,639 bytes for a transcript
+  that the owner already held. The ordinary runner test reached the
+  allocation assertion with no outbound file. The initial fingerprint now
+  uses the existing descriptor-based piece reader and shared streaming
+  SHA-256. A stat only sizes its buffer. The digest covers the bytes read
+  from the descriptor, including an empty file or a short final piece.
+  No individual source buffer exceeded 4,194,304 bytes in that case.
+  Eleven standalone transcript tests passed on Node 24.
+- [ ] Verify the scanner together with the stronger file-identity and
+  refusal branches. The second read that stages new bytes and the run-home
+  writeback still allocate whole transcripts. Keep the open edit-base and
+  lost-reply cases separate from the cost of fingerprinting a held file.

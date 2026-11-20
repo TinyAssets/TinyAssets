@@ -36,7 +36,7 @@
  *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
 import { object } from "../../contract/src/checks";
-import { sha256Hex } from "../../contract/src/digest";
+import { sha256Hex, sha256Stream } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
@@ -126,11 +126,14 @@ export async function stageSessions(
       let sha = was !== undefined && was.size === stat.size && was.mtime_ms === stat.mtimeMs
         && stat.mtimeMs < at - RACY_MS ? was.sha256 : null;
       if (sha === null) {
-        const bytes = safeRead(store, join(store, rel));
-        if (bytes === null) {
-          continue;
-        }
-        sha = sha256Hex(bytes);
+        const hash = sha256Stream();
+        // The stat sizes the buffer only. Hash the file actually opened through EOF.
+        const pieceBytes = Math.max(INLINE_BYTES, Math.min(Number(stat.size), CHUNK_BYTES));
+        const read = await safePieces(store, join(store, rel), pieceBytes, piece => {
+          hash.update(piece);
+        });
+        if (!read) continue;
+        sha = hash.digest("hex");
       }
       next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
                      ...(was?.sha256 === sha && was.refused !== undefined
