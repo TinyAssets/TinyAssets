@@ -144,3 +144,18 @@
   reader regressions and full platform TypeScript passed. The joined
   producer retained all 936,901 bytes on both Node versions. The privileged
   entrypoint for the permanent large lookup stopped at root preflight (2).
+- [x] On e56edbc3 the parent and its separate child processed 4,096
+  two-byte synthetic transcripts already recorded in the real on-disk
+  mirror. Only the test directories and the child user switch were
+  substituted. On 7a5f26d1 the lookup returned no usable map and
+  stageSessions copied all 4,096 transcripts. On the fix all 4,096
+  answers arrived and zero files were staged. Both Node 22 and 24
+  produced the same outcomes. Six child controls on each version
+  covered cut-off JSON, blank output, lease fence (4), ordinary failure
+  with stderr (17), a valid answer and a well-formed missing answer.
+- [x] With the prior sandbox stages and saved conflict-path work, all
+  21 focused runner tests on Node 22, all 140 sandbox Worker/guard
+  tests on Node 24 and full Node 24 platform TypeScript passed. The
+  root integration case and pinned-image acceptance still need their
+  respective environments. Other probe executables have their own exit
+  paths. Their output completion has not been verified by these tests.
