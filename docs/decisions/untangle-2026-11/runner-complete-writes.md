@@ -184,3 +184,19 @@
   full pipe on each of Node 22 and 24. The overlap in probes.ts keeps the
   staged login argument owner and complete prompt check while returning its
   answer through the shared writer. Actual pinned-image acceptance is open.
+
+### Template check reporting
+
+- [x] The workflow and local pair checker use the same Node command. Its
+  final log describes the pair already recorded. Its error log explains
+  the nonzero status. On 5b7c2722, two ordinary workflow cases lost the
+  final success report or refusal when those streams completed asynchronously.
+  The caller separately checks the pair tag before proceeding.
+- [x] The command now sets its exit status and lets Node drain both streams.
+  All 27 template and workflow tests and full Node 24 platform types passed.
+  Running the ordinary pair command with the existing fake service on Node
+  22 and 24, and holding a native pipe full, previously received zero bytes
+  on success and on refusal. The correction returned the entire success
+  log (4,181 bytes here, matching the recorded pair) or the refusal reason
+  (278 bytes), with exit 0 or 1 respectively. A refused run left the pair
+  record empty. Pinned-image acceptance remains open.

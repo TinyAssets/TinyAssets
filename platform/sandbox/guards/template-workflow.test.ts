@@ -155,7 +155,7 @@ const short = (sha: string) => `<${sha.slice(0, 8)}>`;
 
 /** The checks as the workflow's step runs them, against the fake E2B. */
 function checks(mode: string, env: Record<string, string> = {}):
-    { status: number | null; err: string; calls: string[]; record: string } {
+    { status: number | null; err: string; out: string; calls: string[]; record: string } {
   const name = `${mode}-${Object.values(env).join("-")}`;
   const log = join(dir, `${name}.log`);
   const record = join(dir, `${name}.passed.json`);
@@ -166,13 +166,15 @@ function checks(mode: string, env: Record<string, string> = {}):
   writeFileSync(join(dir, "python3"), `#!/bin/sh\necho "python3 $*" >> '${log}'\nexit 0\n`,
                 { mode: 0o755 });
   const argv = checksArgv(mode as "pair" | "build");
-  const run = spawnSync(process.execPath, ["--import", pathToFileURL(mock).href, ...argv,
+  const run = spawnSync(process.execPath, ["--import", pathToFileURL(mock).href,
+                                           "--import", join(PLATFORM, "sandbox", "guards",
+                                                            "delayed-output.mjs"), ...argv,
                                            "--record", record],
                         { cwd: ROOT, encoding: "utf8",
                           env: { PATH: `${dir}:${process.env["PATH"] ?? ""}`,
                                  HOME: process.env["HOME"] ?? "", E2B_API_KEY: "e2b_test_key",
                                  E2B_LOG: log, ...env } });
-  return { status: run.status, err: run.stderr, record: readFileSync(record, "utf8"),
+  return { status: run.status, err: run.stderr, out: run.stdout, record: readFileSync(record, "utf8"),
            calls: readFileSync(log, "utf8").trim().split("\n").filter((line) => line !== "") };
 }
 
@@ -225,6 +227,9 @@ describe("the template's checks", () => {
     const pair = `${PINNED.slice(PINNED.indexOf(":") + 1)}-r${runner.sha.slice(0, 16)}-p${
       probes.sha.slice(0, 16)}`;
     expect(ran.calls.at(-1)).toBe(`tag ${PINNED} ${pair}`);
+    expect(JSON.parse(ran.out.trimEnd().split("\n").at(-1)!)).toMatchObject({
+      template: PINNED, runner: runner.sha, probes: probes.sha,
+    });
     const [entry] = JSON.parse(ran.record) as Record<string, unknown>[];
     expect(entry).toMatchObject({ tag: PINNED.slice(PINNED.indexOf(":") + 1), runner: runner.sha,
                                   probes: probes.sha, matcher: { step_ns: 1.25, ok: true } });

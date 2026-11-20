@@ -35,17 +35,8 @@ it("finishes the probe plan before exiting when stdout completes asynchronously"
   const probe = join(PLATFORM, "sandbox", "dist", BUNDLES.probes);
   const plan = execFileSync(process.execPath, [probe, "plan"]);
   expect(JSON.parse(plan.toString()).sandboxes.length).toBeGreaterThan(0);
-  const delay = `
-    import { Writable } from "node:stream";
-    const output = process.stdout;
-    Object.defineProperty(process, "stdout", { value: new Writable({
-      write(chunk, encoding, done) {
-        setImmediate(() => output.write(chunk, encoding, done));
-      }
-    }) });
-  `;
   const actual = execFileSync(process.execPath, [
-    "--import", "data:text/javascript," + encodeURIComponent(delay), probe, "plan",
+    "--import", join(PLATFORM, "sandbox", "guards", "delayed-output.mjs"), probe, "plan",
   ]);
   expect(actual.equals(plan)).toBe(true);
 });

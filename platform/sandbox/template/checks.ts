@@ -233,8 +233,10 @@ export async function main(argv: readonly string[]): Promise<number> {
 
 if (process.argv[1] !== undefined
     && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2)).then((code) => process.exit(code), (error: unknown) => {
+  main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  }, (error: unknown) => {
     process.stderr.write(`checks: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
