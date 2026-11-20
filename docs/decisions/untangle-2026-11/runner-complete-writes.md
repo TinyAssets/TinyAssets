@@ -306,3 +306,18 @@
 - [ ] Verify the joined candidate, mixed versions and ordinary workspace
   reset consumers. Warm-store divergence, existing cached deletions and
   privileged/pinned sandbox acceptance remain open.
+
+### Independent read and listing comparison, November 19
+
+- [x] On 9133b2b9 the full five-case Doors suite passed with local Workers.
+  A missing file and a refused route to a file that still existed returned
+  the same 404. The correctly scoped listing distinguished those histories.
+  Each of Node 22 and 24 ran twelve loopback sync histories on the standalone
+  source and twelve with the joined changes. Four real withdrawals completed.
+  Eight ambiguous or invalid listings preserved the incoming copy and cursor
+  for retry. This included a filtered empty page and UTF-8 name ordering.
+- [x] The joined runner passed 35 focused cases and full Node 24 TypeScript.
+  The wider workspace run had 27 passes, ten failures and four size exclusions.
+  Nine earlier workspace cases and the warm conflict replay still fail.
+- [ ] The original outbound edit base remains open on the identity branch.
+  Keep the privileged runner and pinned sandbox checks open for integration.
