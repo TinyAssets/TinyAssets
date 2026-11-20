@@ -102,3 +102,15 @@
   probe builds, and full platform TypeScript passed. The separate privileged
   entrypoint stopped at the root preflight, exit 2. Distinct runs can still
   overwrite newer transcripts during outgoing writeback or delayed upload.
+- [x] Independently exercised 8e51fa94 on Node 22 and 24. With a native
+  file-size limit of 4,200,000 bytes, copying an 8,388,639-byte file failed
+  after the first full chunk. The previous destination stayed intact, no
+  temporary name remained, and an ordinary retry copied all bytes with
+  mode 0600. In two actual processes a live store holder wrote a newer file
+  while the importer waited. The importer kept that file and copied the
+  other 8,388,639-byte session exactly on both runtimes.
+- [x] The joined source suite passed all 355 cases. All 152 test definitions
+  checked across the four overlapping files survived the rehearsal with the
+  intentional test edits. The full ordinary workspace sync suite finished
+  with 26 passes, nine known failures and four size cases excluded. The
+  nine failures matched the preceding combined checkout by test name.
