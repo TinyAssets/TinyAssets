@@ -336,3 +336,14 @@
   refusal branches. The second read that stages new bytes and the run-home
   writeback still allocate whole transcripts. Keep the open edit-base and
   lost-reply cases separate from the cost of fingerprinting a held file.
+
+- [x] On 735dd4cb, standalone and joined full Node 24 types passed. Both
+  trees passed all 141 sandbox Worker and guard tests. The joined runner
+  passed 16 focused cases on Node 22. Separate descriptor-level reads of
+  seven sizes on Node 22 and 24 covered empty, exact-chunk and partial
+  final chunks. Forced short reads preserved the full digest. Replacing
+  the pathname during a read kept the initial descriptor's bytes; the
+  next scan saw the replacement. Each observation held before and after
+  the change and on the joined candidate. A first fixture placed its
+  replacement beside the transcript and legitimately discovered two files.
+  The corrected fixture kept the replacement outside the scanned store.
