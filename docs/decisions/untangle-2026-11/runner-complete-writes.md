@@ -159,3 +159,21 @@
   root integration case and pinned-image acceptance still need their
   respective environments. Other probe executables have their own exit
   paths. Their output completion has not been verified by these tests.
+
+### Paired probe command output
+
+- [x] Reviewed the four stdout replies in the paired probe executable. The
+  plan, sign-in, route and matcher handlers all wrote JSON and could return
+  their status before stdout completed. The local plan command needs no
+  vendor or sandbox. On 43997671 it returned success with zero of its 3,120
+  answer bytes when a real pipe was full until after the write returned.
+  The ordinary asynchronous-output regression also failed. The template
+  coordinator parses the plan before proceeding. A missing check reply
+  fails its result check.
+- [x] The runner and all four probe replies now share one stdout writer
+  that resolves after the write callback. Their existing JSON framing and
+  status codes are preserved. The ordinary offline plan delivered all
+  3,120 bytes under the same pipe pressure on Node 22 and 24. Comparing
+  the two complete plan documents found only the expected change in the
+  paired runner digest. This is staged source and a regression. Actual
+  pinned-image checks remain outstanding.

@@ -44,6 +44,7 @@ import { binPath, invocation, isKept, keptPaths } from "./engine";
 import { lineEvent } from "./frames";
 import { remove, safeDirs, safeWrite } from "./fsafe";
 import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
+import { writeAnswer } from "./output";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { CONVERSATIONS, engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared,
@@ -192,10 +193,10 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   const why = shown.url === null ? "no sign-in URL shown"
     : local ? "the URL sends the browser back to localhost"
       : refused === null ? null : SIGNIN_REFUSALS[refused];
-  process.stdout.write(JSON.stringify({
+  return writeAnswer(JSON.stringify({
     engine, region, ok: why === null, reason: why,
-    host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }));
-  return why === null ? OK : NO;
+    host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }),
+    why === null ? OK : NO);
 }
 
 // -- the route probe --------------------------------------------------------------------
@@ -477,16 +478,14 @@ async function routeProbe(engine: string, provider: string,
     throw new Error(`engine ${engine} runs on no API key of provider ${provider}`);
   }
   const result = await probeRoute(rec, provider, resolvers);
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-  return result["ok"] === true ? OK : NO;
+  return writeAnswer(`${JSON.stringify(result)}\n`, result["ok"] === true ? OK : NO);
 }
 
 /** The sync-ignore automaton's step, timed here, within `STEP_NS` or failed. */
-function matcherProbe(): number {
+function matcherProbe(): Promise<number> {
   const step = stepNanos();
   const ok = step <= STEP_NS;
-  process.stdout.write(`${JSON.stringify({ step_ns: step, ceiling_ns: STEP_NS, ok })}\n`);
-  return ok ? OK : NO;
+  return writeAnswer(`${JSON.stringify({ step_ns: step, ceiling_ns: STEP_NS, ok })}\n`, ok ? OK : NO);
 }
 
 /**
@@ -505,8 +504,7 @@ function unpaired(): string | null {
 export async function main(argv: readonly string[]): Promise<number> {
   const [command, ...args] = argv;
   if (command === PROBE.plan) {
-    process.stdout.write(`${JSON.stringify(plan(TA_RUNNER_SHA))}\n`);
-    return OK;
+    return writeAnswer(`${JSON.stringify(plan(TA_RUNNER_SHA))}\n`, OK);
   }
   if (command !== PROBE.login && command !== PROBE.route && command !== PROBE.matcher) {
     process.stderr.write(`probes: no command ${String(command)}\n`);

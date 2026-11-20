@@ -31,6 +31,25 @@ import { PLATFORM } from "../../ci/paths";
 import { NAME, spec, stage, tag } from "../template/image";
 import { BUILD, BUNDLES, bundles, pairTag, pinned, tsTool } from "../template/pair";
 
+it("finishes the probe plan before exiting when stdout completes asynchronously", () => {
+  const probe = join(PLATFORM, "sandbox", "dist", BUNDLES.probes);
+  const plan = execFileSync(process.execPath, [probe, "plan"]);
+  expect(JSON.parse(plan.toString()).sandboxes.length).toBeGreaterThan(0);
+  const delay = `
+    import { Writable } from "node:stream";
+    const output = process.stdout;
+    Object.defineProperty(process, "stdout", { value: new Writable({
+      write(chunk, encoding, done) {
+        setImmediate(() => output.write(chunk, encoding, done));
+      }
+    }) });
+  `;
+  const actual = execFileSync(process.execPath, [
+    "--import", "data:text/javascript," + encodeURIComponent(delay), probe, "plan",
+  ]);
+  expect(actual.equals(plan)).toBe(true);
+});
+
 const TEMPLATE = join(PLATFORM, "sandbox", "template");
 /**
  * The release of E2B's SDK that `SDK` is written to the letter of, and that `requirements.txt`

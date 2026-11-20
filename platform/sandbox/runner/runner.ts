@@ -81,6 +81,7 @@ import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
+import { writeAnswer } from "./output";
 import { project } from "./project";
 import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
          scratchCleared, type ScratchCleared,
@@ -601,9 +602,7 @@ function quiet(state: RunState): boolean {
 
 /** Resolve after the whole JSON reply has reached stdout, including a pipe under pressure. */
 function answer(value: StateAnswer | QuietAnswer | SyncAnswer, code: number = OK): Promise<number> {
-  return new Promise((resolve, reject) => {
-    process.stdout.write(JSON.stringify(value), (error) => error ? reject(error) : resolve(code));
-  });
+  return writeAnswer(JSON.stringify(value), code);
 }
 
 function stateCommand(): Promise<number> {
