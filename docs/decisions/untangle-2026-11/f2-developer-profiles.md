@@ -42,3 +42,15 @@ signed-in client checks remain separate steps.
   System Chromium stopped during startup when its singleton socket was
   refused. Prior standalone browser evidence remains valid; a fresh joined
   browser run, route readiness and the single site release remain open.
+
+- [x] Included all 13 changed website and mark-generator paths from draft
+  #5685 at bf2c2e59. Each path started at the common-base version on the
+  two-branch tree. All 41 site tests passed again, including inline mark
+  parity, and the static build generated all 28 pages. The exported Connect
+  page preserved all six app anchors, 18 instructions verbatim, nine
+  distinct source URLs and the earlier Codex anchor. The developer page
+  again matched all three recorded public tool lists in order.
+- [ ] Fresh joined browser acceptance is open. The normal Playwright install
+  received a truncated browser archive. The 41 tests and the static export
+  completed independently of the browser sweep. Route readiness and the
+  coordinated site release remain open.
