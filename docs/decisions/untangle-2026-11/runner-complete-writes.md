@@ -277,3 +277,18 @@
   orphan without a mirror row. A failed listing kept the cursor and
   preexisting downloads. The durable base for an unsent edit remained
   available after reopening the database.
+
+### The file disappears after the change feed or reset list is read
+
+- [x] The direct deletion and reset controls passed on fcedaeff. Two new
+  ordinary cases failed: the path was still listed as a file but a later
+  read could no longer supply it. Both imported stale cached bytes.
+- [x] A separate Doors/Owner Workerd case compared a missing file with a
+  failed read route for an existing file. Both returned identical status,
+  headers and body, including the not_found code. The ordinary read for
+  that same existing file returned its original bytes. The runner's missing
+  flag alone cannot establish that the owner deleted it.
+- [ ] Check the readable directory listing before withdrawing a download
+  on a failed read. A listed file whose read cannot be confirmed must
+  remain recoverable on retry. Cover missing parents, paging, filtered
+  empty pages and old runners. The two new cases are staged red.

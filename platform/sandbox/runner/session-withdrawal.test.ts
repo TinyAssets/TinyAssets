@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { expect, it, vi } from "vitest";
 
-it.each(["feed", "reset"])("withdraws deleted inbound transcripts after a %s", async mode => {
+it.each(["feed", "reset", "feed read", "reset read"])("withdraws deleted inbound transcripts after a %s", async mode => {
   const root = mkdtempSync(join(tmpdir(), "ta-session-withdrawal-"));
   const state = join(root, "state");
   const sync = join(root, "sync");
@@ -31,24 +31,34 @@ it.each(["feed", "reset"])("withdraws deleted inbound transcripts after a %s", a
                     sessionsOut: join(sync, "out/run"), authority: "owner", records: RECORDS };
     mkdirSync(place.sessionsIn, { recursive: true });
     mkdirSync(place.local);
+    const reset = mode.startsWith("reset");
+    const lateDeletion = mode.endsWith("read");
+    let changed = false;
     vi.spyOn(client, "post").mockImplementation(async (door, body) => {
       if (door === "changes") {
         if (!body || typeof body !== "object" || !("after" in body)) throw Error("missing cursor");
         if (body.after === 0) return { changes: entries, cursor: 3, reset: false };
-        if (body.after === 3) return { changes: mode === "feed"
-          ? entries.slice(0, 2).map((e, i) => ({ ...e, kind: null, version: 4 + i })) : [],
-          cursor: 5, reset: mode === "reset" };
+        if (body.after === 3) {
+          changed = true;
+          const changes = reset ? [] : entries.slice(0, 2).map((e, i) => ({
+            ...e, kind: lateDeletion ? "file" : null, version: 4 + i,
+          }));
+          return { changes, cursor: 5, reset };
+        }
         return { changes: [], cursor: 5, reset: false };
       }
       if (door === "list" && body && typeof body === "object" && "dir" in body) {
         const dir = String(body.dir);
-        if (dir === prefix) return { entries: entries.slice(2), next: null };
+        if (dir === prefix) return { entries: lateDeletion ? entries : entries.slice(2), next: null };
         const child = prefix.slice(dir.length + 1).split("/")[0];
         return { entries: [{ path: dir + "/" + child, kind: "dir" }], next: null };
       }
       if (door === "read" && body && typeof body === "object" && "path" in body) {
         const entry = entries.find(e => e.path === body.path);
-        if (entry) return { entry: { ...entry, mode: 0 }, inline: Buffer.from(entry.path).toString("base64") };
+        if (changed && lateDeletion && entry !== entries[2]) return { missing: true };
+        if (entry) return {
+          entry: { ...entry, mode: 0 }, inline: Buffer.from(entry.path).toString("base64"),
+        };
       }
       throw Error(door);
     });
