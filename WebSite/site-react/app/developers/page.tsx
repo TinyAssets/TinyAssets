@@ -52,8 +52,8 @@ export default function DevelopersPage() {
           <section aria-labelledby="tool-profiles">
             <h3 id="tool-profiles">MCP tool profiles</h3>
             <p>
-              Custom connectors use the custom profile by default. The directory profile defines
-              the tool set for directory clients. An agent running in a sandbox uses the run profile.
+              Connector grants use the custom profile by default. A grant assigned the
+              directory profile uses that tool list. An agent running in a sandbox uses the run profile.
             </p>
             {Object.entries(profiles).map(([name, profile]) => (
               <details key={name}>

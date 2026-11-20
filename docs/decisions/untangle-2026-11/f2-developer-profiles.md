@@ -54,3 +54,9 @@ signed-in client checks remain separate steps.
   received a truncated browser archive. The 41 tests and the static export
   completed independently of the browser sweep. Route readiness and the
   coordinated site release remain open.
+
+- [x] Clarified which list a connector sees. On f934871ad the existing Worker
+  recorder reads the same listed client twice. Its new grant receives the
+  custom inventory, and an explicit grant profile change selects directory.
+  The Owner resolves the profile from the grant in codemode.ts. The site
+  now explains that choice beside the three contract inventories.
