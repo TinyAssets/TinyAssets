@@ -107,3 +107,19 @@ guide's address list and connection instructions before opening Chromium.
   apply the resource reference to the additional desktop step as well.
   All six app records and six guide anchors matched expectations in both
   the shipped and the alternate vendor catalogs.
+- [x] On 43b62a21 the serial contract suite passed 298 with 18 large
+  cases outside the filter after an earlier parallel worker was killed.
+  Full platform TypeScript and both Owner connected-app Worker cases
+  passed. The site passed 41 on Node 24 alone and 41 on Node 20 with
+  developer profiles and mark. Both static exports completed. Comparing
+  their HTML and the alternate vendor export verified all six sections,
+  18 steps, four per-app copy texts and three vendor links in each.
+  No fresh Chromium navigation is claimed.
+- [x] A three-way file merge of the base, 43b62a21 and the vendor-wake
+  catalog applies cleanly but silently retains the old server in Grok's
+  desktop step. The ordinary app regression now compares every app's
+  setup before and after the identity change. The uncorrected catalog
+  failed for Grok alone (seven other tests passed). With that step
+  using the resource reference, all eight passed on Node 22 and full
+  platform types passed. Shipped output and literal custom catalogs
+  matched on Node 22 and 24. Recheck the actual combined release head.

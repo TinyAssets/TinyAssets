@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import raw from "../apps.json" with { type: "json" };
+import { MCP_RESOURCE as shippedResource } from "../src/identity";
 import { appList, checkedApps, connectUrl, refusedRegistrationLine, registrationRefusal,
          vendorOf } from "../src/apps";
 
@@ -141,6 +142,7 @@ describe("apps.json", () => {
   it("configures the advertised MCP resource in the connector dialog, CLI and editor", async () => {
     const { default: identity } = await import("../identity.json", { with: { type: "json" } });
     const fixture = { ...identity, host: "guides.example", mcp: "/connector-fixture" };
+    const shipped = appList();
     vi.resetModules();
     vi.doMock("../identity.json", () => ({ default: fixture }));
     try {
@@ -154,6 +156,12 @@ describe("apps.json", () => {
       expect.soft(dialog.searchParams.get("connectorUrl")).toBe(MCP_RESOURCE);
       expect.soft(cli.match(/--url (\S+)/)?.[1]).toBe(MCP_RESOURCE);
       expect.soft(config.mcpServers.TinyAssets.url).toBe(MCP_RESOURCE);
+      for (const [index, app] of shipped.entries()) {
+        const expected = JSON.stringify(app.connect)
+          .replaceAll(shippedResource, () => MCP_RESOURCE)
+          .replaceAll(encodeURIComponent(shippedResource), () => encodeURIComponent(MCP_RESOURCE));
+        expect(apps[index]?.connect, app.id).toEqual(JSON.parse(expected));
+      }
     } finally {
       vi.doUnmock("../identity.json");
       vi.resetModules();
