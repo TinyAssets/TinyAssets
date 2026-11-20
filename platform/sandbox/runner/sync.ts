@@ -501,9 +501,15 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
   }
 }
 
+/** The original path and where the owner saved its write, if it made a copy. */
+interface Conflict {
+  readonly path: string;
+  readonly copy: string | null;
+}
+
 export interface SyncReport {
   readonly committed: number;
-  readonly conflicts: readonly string[];
+  readonly conflicts: readonly Conflict[];
   /**
    * Files refused: by the owner's object or its doors (their words, and their code), or here
    * (`secret_bytes`: the file holds a secret's bytes, its code alone).
@@ -713,7 +719,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                               lease: { lease_id: string; epoch: number },
                               atoms: readonly string[]): Promise<SyncReport> {
   const refused: Refused[] = [];
-  const conflicts: string[] = [];
+  const conflicts: Conflict[] = [];
   const skipped: { path: string; code: SkipCode }[] = [];
   /** Kept files a custom line holds back, and of those the ones with changes here. */
   let kept = 0;
@@ -760,6 +766,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                                                   ops: sent });
     const outcomes = answer["outcomes"] as { path: string; outcome: string;
                                              entry?: { version: number } | null;
+                                             copy?: { path: string } | null;
                                              reason?: string; code?: string }[];
     mirror.batch(() => {
       for (const outcome of outcomes) {
@@ -773,7 +780,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                                        mtime_ms: op!.mtime_ms!, sha256: op!.sha256! });
           }
         } else if (outcome.outcome === "conflict") {
-          conflicts.push(outcome.path);
+          conflicts.push({ path: outcome.path, copy: outcome.copy?.path ?? null });
         } else {
           refused.push({ path: outcome.path, reason: outcome.reason ?? "refused",
                          code: outcome.code ?? "refused" });

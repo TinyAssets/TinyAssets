@@ -71,3 +71,30 @@
   honoring the current grant and keeping the original parent absent. Test
   both forms of delivery, local-only directories and old mirrors. A retry
   count alone does not verify the resulting owner tree.
+- [x] Two separate Node 22 Owner Worker replays used the real lease-bound
+  commit on 5c6a3e60, whose Owner source matches main. Both sent a mkdir
+  with the old directory version and a child write with base null in one
+  batch. With the parent deleted, mkdir reported conflict and the child
+  recreated the directory. With a different directory created at the same
+  path, mkdir reported success despite the old version and the child landed.
+  A separate mkdir operation cannot condition a child write. Full Node 22
+  platform types passed with the two permanent directory tests on 0cbf54bb,
+  after a concurrent Node 24 typecheck exited 137.
+
+### Reporting the saved copy
+
+- [x] The Owner already returns the path where it saved a conflicting write.
+  The runner discarded that path and reported only the originally requested
+  path. Sync-out now carries the returned copy through its own sync report.
+  The existing conflict event names the original; a second event marks the
+  actual saved copy, when present. Each frame carries one path so legal
+  heavily escaped names remain within the shared frame bound. The runner
+  uses the same executable for the sync subprocess and its report consumer.
+- [x] On the candidate before combining with the directory regression, both
+  new ordinary runner cases passed on Node 22 and 24. Four real Owner
+  conflict cases and full platform types passed. The Node 24 sync suite had
+  23 passes, six earlier refused-edit failures and four size cases filtered.
+  Run events are a live report. Long names still exceed the app's preview.
+- [ ] Verify the combined source here. A reported copy requires that a write
+  reached the Owner. Recovery when the pending bytes never reached it remains
+  open. Full privileged and main integration checks are still outstanding.

@@ -31,6 +31,8 @@ import {
 import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
   from "../../contract/src/limits";
 import { AGENT_PEAK, HEAP_PER_LIST_BYTE, SANDBOX_HEAP } from "./sizing";
+import { Outbox } from "./frames";
+import { reportSync } from "./runner";
 import { openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
@@ -218,6 +220,43 @@ it.each([false, true])("retries a new child after storage refusal (parent remove
       await syncIn(doors, p, mirror);
       await syncOut(doors, p, mirror, LEASE, []);
       expect(offered).toEqual([initial, initial]);
+    } finally {
+      mirror.close();
+    }
+  });
+
+it.each(["folder", ("\x01".repeat(240) + "/").repeat(15) + "folder"])(
+  "reports the actual conflict copy and distinguishes a removal with no copy (%#)", async (folder) => {
+    const { place: p, local } = place();
+    const mirror = mirrorOf();
+    const path = `/workspace/${folder}/new.txt`;
+    const gone = "/workspace/gone.txt";
+    const copy = `/workspace/${folder}.ta-conflict-7-2/new.txt`;
+    mkdirSync(join(local, folder), { recursive: true });
+    writeFileSync(join(local, folder, "new.txt"), "kept locally");
+    mirror.put(gone, { version: 5, size: 0, mtime_ms: 0, sha256: "" });
+    const doors = await client((door, body) => {
+      if (door !== "commit") throw Error(door);
+      const ops = body["ops"] as { path: string; op: string }[];
+      return { status: 200, body: { outcomes: ops.map(op => {
+        if (op.path === path) {
+          return { path, outcome: "conflict", current: null, copy: { path: copy } };
+        }
+        if (op.path === gone) {
+          return { path: gone, outcome: "conflict", current: null, copy: null };
+        }
+        return { path: op.path, outcome: "committed", entry: { version: 6 } };
+      }) } };
+    });
+    try {
+      const report = await syncOut(doors, p, mirror, LEASE, []);
+      const outbox = new Outbox();
+      reportSync(outbox, report);
+      expect(outbox.peek().map(frame => frame.event)).toEqual([
+        { type: "ta.sync_conflicts", paths: [path] },
+        { type: "ta.sync_conflicts", saved_copy: true, paths: [copy] },
+        { type: "ta.sync_conflicts", paths: [gone] },
+      ]);
     } finally {
       mirror.close();
     }

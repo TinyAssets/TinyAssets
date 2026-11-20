@@ -812,7 +812,7 @@ const EVENT_PATHS = 100;
  * `ta.uploads_open` likewise, never an upgrade; what was skipped (changed or gone while the
  * sync ran) once; the conflicts.
  */
-function reportSync(outbox: Outbox, report: SyncReport | null): void {
+export function reportSync(outbox: Outbox, report: SyncReport | null): void {
   const refused = report?.refused ?? [];
   const walls = ["storage_full", "uploads_open"] as const;
   const wall = (code: string) => walls.find((each) => each === code) ?? null;
@@ -835,8 +835,12 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
                   files: skipped.length + (report?.skipped_unlisted ?? 0),
                   skipped: skipped.slice(0, EVENT_PATHS) });
   }
-  if ((report?.conflicts ?? []).length > 0) {
-    outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts });
+  for (const { path, copy } of report?.conflicts ?? []) {
+    // One path per frame: even two legal paths together may exceed the frame after JSON escaping.
+    outbox.push({ type: "ta.sync_conflicts", paths: [path] });
+    if (copy !== null) {
+      outbox.push({ type: "ta.sync_conflicts", saved_copy: true, paths: [copy] });
+    }
   }
   // Lines past a ceiling are not applied, never in silence: which, how many, and why.
   const unapplied = report?.unapplied ?? [];
