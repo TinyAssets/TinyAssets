@@ -98,3 +98,11 @@
   cache. No change to the durable mirror or its base version.
 - [ ] Verify joined runner callers. This correction is independent of deciding
   which historical transcript wins or preserving both on divergent edits.
+- [x] On 873d5be6, eight mixed old/new calls on each of Node 22 and 24
+  used a fresh process per staging call and a separate writer during lookup.
+  The prior runner continued to omit the clean revision on retry. Upgrade
+  recovered it, the unchanged refused revision gave one notice, rollback
+  staged the clean bytes, and a second upgrade recovered another old cache.
+  Full standalone Node 24 platform types passed. Combined with the other
+  staged runner changes, all 20 focused Node 22 runner tests, all 140
+  sandbox Worker/guard tests and full Node 24 platform types passed.
