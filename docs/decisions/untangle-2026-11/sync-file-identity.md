@@ -48,3 +48,29 @@
   remove the whole-file reads. Preserve per-store locks, no-follow reads,
   refusal and retry semantics, and correct cache identity. The number of
   paths in the cache and the mirror lookup needs separate review.
+
+### Delivery order between conversations
+
+- [x] On 44e44370 two independent run directories staged older and newer
+  bytes for one path. Both delivery orders ran on Node 24 with the real
+  staging and upload code and one persistent mirror. In a separate Node 22
+  Owner Worker test the newer content created version 34. The delayed older
+  offer used version 34 as its base and the Owner accepted the replacement
+  without a conflict. A public read returned the older bytes. Another sync
+  can recover the newer content if the warm store still retains it.
+- [x] Independently varied the number of already-held two-byte sessions.
+  For 1, 64 and 256 files the single mirror lookup contained 1, 64 and 256
+  paths (60, 3,831 and 15,507 JSON bytes). The local cache contained 151,
+  9,655 and 38,803 bytes. All three stages offered zero changed files.
+  This is path-count evidence, separate from the byte length of a transcript.
+- [x] The ordinary scheduling controls allow overlap between distinct
+  conversations and serialize one conversation. Platform types passed for
+  the new two-conversation regression at 2937dcf5. The privileged runner
+  stopped at its root preflight, exit 2. Joined native controls on Node 22
+  and 24 still reproduced loss in both finish orders after changing inbound
+  copies to bounded reads.
+- [ ] Resolve the provenance of bytes at both writeback and upload. A new
+  mirror version describes current remote state and cannot establish the
+  base of an older staged offer. Include both homes changing one path,
+  interrupted runs and warm-store loss. Preserve the last recoverable copy
+  through cleanup. The baseline and ordering decisions are still open.
