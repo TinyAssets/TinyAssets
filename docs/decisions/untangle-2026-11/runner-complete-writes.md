@@ -215,3 +215,16 @@
   warm-store changes, the recorded conflict outcome, and the next offer's
   base. Keep the existing case in which an incoming file must not replace
   a new local edit. This is an open regression, staged for review.
+- [x] A local Owner Worker with a sandbox lease returned version 34 for
+  the newer file and version 35 for the conflict copy. Its actual feed and
+  inline reads went into the runner on Node 22 and 24. A cold store produced
+  zero offers. A stale warm store offered the earlier bytes against version
+  34. A third store with an independent new local edit also offered against
+  version 34. Replacing every warm file from the feed would discard that
+  third edit. The unchanged Owner accepted an offer of the earlier bytes
+  against version 34 and returned the earlier bytes at both paths.
+- [x] The new regression and prior import check ran together on the
+  standalone and joined runners. Each had two passes (cold and the existing
+  import check) and the one open warm-store failure. An initial typecheck
+  found the synthetic door body needed narrowing. The test now narrows it.
+  The first full standalone retry exited 137 under concurrent checks.

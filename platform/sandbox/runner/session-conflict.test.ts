@@ -34,7 +34,9 @@ it.each(["cold", "warm"])("preserves the owner's transcript after a conflict (%s
         changes: [...files].map(([path, file]) => ({ path, version: file.version, kind: "file" })),
         cursor: 35, reset: false,
       };
-      if (door !== "read") throw Error(door);
+      if (door !== "read" || body === null || typeof body !== "object" || !("path" in body)) {
+        throw Error(door);
+      }
       const file = files.get(String(body.path))!;
       return { entry: { version: file.version, kind: "file", mode: 0 },
                inline: Buffer.from(file.text).toString("base64") };
