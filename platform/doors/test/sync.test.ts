@@ -146,3 +146,28 @@ describe("the sync doors", () => {
     expect(browser.status).toBe(404);
   });
 });
+
+it("uses the directory listing to distinguish a missing file from a failed read route", async () => {
+  const { sync, inside } = await leased();
+  const headers = { [SYNC_HEADER]: sync, ...inside };
+  const missing = await door("read", { path: "/workspace/missing.md" }, headers);
+  const unrouted = await door("read?retired=1", { path: "/workspace/notes.md" }, headers);
+  expect(missing.status).toBe(404);
+  expect(unrouted.status).toBe(missing.status);
+  expect(await unrouted.text()).toBe(await missing.text());
+  const readable = await door("read", { path: "/workspace/notes.md" }, headers);
+  expect(readable.status).toBe(200);
+  expect(await readable.json()).toMatchObject({ inline: "aGk=" });
+
+  const paths: string[] = [];
+  let after: string | null = null;
+  do {
+    const response = await door("list", { dir: "/workspace", limit: 1, after }, headers);
+    expect(response.status).toBe(200);
+    const page = await response.json() as { entries: { path: string }[]; next: string | null };
+    paths.push(...page.entries.map(entry => entry.path));
+    after = page.next;
+  } while (after !== null);
+  expect(paths).toContain("/workspace/notes.md");
+  expect(paths).not.toContain("/workspace/missing.md");
+});

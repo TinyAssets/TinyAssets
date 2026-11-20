@@ -292,3 +292,17 @@
   on a failed read. A listed file whose read cannot be confirmed must
   remain recoverable on retry. Cover missing parents, paging, filtered
   empty pages and old runners. The two new cases are staged red.
+- [x] The incoming reader now uses the same paged directory iterator as a
+  reset. If a read fails, a completed readable listing must confirm the
+  file is absent or has changed kind before the incoming copy goes. If the
+  parent list is itself unavailable, a successful ancestor list must show
+  that a directory on the path is absent or has become a file. An ambiguous
+  read leaves the download, cursor and original edit base available for retry.
+- [x] The two new regressions from 34c4bfbd pass. Twelve focused runner
+  tests passed on Node 24, including an empty filtered page, missing and
+  replaced parents, and two kinds of unconfirmed listing. A separate local
+  five-case Doors/Owner suite read the surviving file and followed the
+  one-name directory pages to distinguish it from the missing file.
+- [ ] Verify the joined candidate, mixed versions and ordinary workspace
+  reset consumers. Warm-store divergence, existing cached deletions and
+  privileged/pinned sandbox acceptance remain open.

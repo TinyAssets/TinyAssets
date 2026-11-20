@@ -35,6 +35,7 @@
  *   bytes (`guards.ts`) is refused here and reported, never sent. The agents' scratch
  *   (`/scratch`, `scratch.ts`) is outside `/workspace`, so never synced.
  */
+import { object } from "../../contract/src/checks";
 import { sha256Hex } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, type Stats } from "node:fs";
@@ -51,7 +52,7 @@ import { STATE_DIR } from "./protocol";
 import { readJson, RECORDS, STORE } from "./session";
 import { SYNC_HOME } from "./users";
 import { SYNC_HEADER, type SyncDoor } from "../../contract/src/egress";
-import { CLIENT_READ_ONLY, WORKSPACE } from "../../contract/src/paths";
+import { CLIENT_READ_ONLY, nameOf, parentOf, storedPath, WORKSPACE } from "../../contract/src/paths";
 import {
   CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
 } from "../../contract/src/limits";
@@ -420,6 +421,9 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
     if (got !== null) {
       mirror.put(path, { version: got.version, size: got.size, mtime_ms: 0,
                          sha256: got.sha256 });
+    } else {
+      await confirmMissingFile(client, path);
+      removeFile(place.sessionsIn, local);
     }
     return;
   }
@@ -445,24 +449,63 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
                      sha256: got.sha256 });
 }
 
-/** Every path of the readable tree, by listing, applied as each page comes (a reset). */
-async function listApply(client: SyncClient, place: Place, mirror: Mirror,
-                         dir: string): Promise<void> {
+/** The readable entries of a directory. A filtered page can be empty and still have a next name. */
+async function* listed(client: SyncClient, dir: string): AsyncGenerator<{
+  path: string; kind: "dir" | "file";
+}> {
   let after: string | null = null;
   for (;;) {
     const page = await client.post("list", { dir, limit: MAX_LIST,
-                                             ...(after === null ? {} : { after }) });
-    for (const entry of page["entries"] as { path: string; kind: string }[]) {
-      await apply(client, place, mirror, entry.path, entry.kind);
-      mirror.seen(entry.path);
-      if (entry.kind === "dir") {
-        await listApply(client, place, mirror, entry.path);
+                                            ...(after === null ? {} : { after }) });
+    const entries = page["entries"];
+    const next = page["next"];
+    const invalid = () => new Error(`incomplete sync listing for ${dir}`);
+    if (!Array.isArray(entries) || entries.length > MAX_LIST) throw invalid();
+    if (next !== null && (typeof next !== "string" || nameOf(storedPath(dir + "/" + next)) !== next
+        || (after !== null && Buffer.compare(Buffer.from(next), Buffer.from(after)) <= 0))) {
+      throw invalid();
+    }
+    let previous = after === null ? null : Buffer.from(after);
+    const end = next === null ? null : Buffer.from(next);
+    for (const entry of entries) {
+      if (!object(entry) || (entry["kind"] !== "file" && entry["kind"] !== "dir")) throw invalid();
+      const path = storedPath(entry["path"]);
+      const name = Buffer.from(nameOf(path));
+      if (parentOf(path) !== dir || (previous !== null && name.compare(previous) <= 0)
+          || (end !== null && name.compare(end) > 0)) throw invalid();
+      previous = name;
+      yield { path, kind: entry["kind"] };
+    }
+    if (next === null) return;
+    after = next;
+  }
+}
+
+/** A read 404 can also come from the route. Withdraw the download only when a
+ * successful listing shows that the file, or a directory leading to it, is gone. */
+async function confirmMissingFile(client: SyncClient, path: string): Promise<void> {
+  for (let child = path; child !== WORKSPACE; child = parentOf(child)) {
+    const dir = parentOf(child);
+    try {
+      let present = false;
+      for await (const entry of listed(client, dir)) {
+        if (entry.path === child) present = entry.kind === (child === path ? "file" : "dir");
       }
+      if (!present) return;
+      throw new Error(`the owner still lists ${child}; could not confirm the missing read of ${path}`);
+    } catch (error) {
+      if (!(error instanceof SyncRefused && error.status === 404) || dir === WORKSPACE) throw error;
     }
-    after = page["next"] as string | null;
-    if (after === null) {
-      return;
-    }
+  }
+}
+
+/** Every path of the readable tree, by listing, applied as each page comes (a reset). */
+async function listApply(client: SyncClient, place: Place, mirror: Mirror,
+                         dir: string): Promise<void> {
+  for await (const entry of listed(client, dir)) {
+    await apply(client, place, mirror, entry.path, entry.kind);
+    mirror.seen(entry.path);
+    if (entry.kind === "dir") await listApply(client, place, mirror, entry.path);
   }
 }
 
