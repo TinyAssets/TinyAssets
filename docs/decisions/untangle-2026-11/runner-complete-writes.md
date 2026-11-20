@@ -200,3 +200,18 @@
   log (4,181 bytes here, matching the recorded pair) or the refusal reason
   (278 bytes), with exit 0 or 1 respectively. A refused run left the pair
   record empty. Pinned-image acceptance remains open.
+
+### Reopening a session after the owner saved a conflict copy
+
+- [x] The ordinary runner regression on 30206a7f ingests the two paths of a
+  resolved transcript conflict and runs the real store import and next
+  staging step. A cold store keeps both and offers neither again. A warm
+  store holding the earlier transcript imports the conflict copy but keeps
+  the earlier bytes at the original path. It offers those bytes again after
+  its mirror has advanced to the owner's newer version. The cold control
+  passed. The warm-store regression failed.
+- [ ] Preserving the original base on the first delayed offer alone does
+  not resolve this next cycle. Reconcile the inbound revision, any unsent
+  warm-store changes, the recorded conflict outcome, and the next offer's
+  base. Keep the existing case in which an incoming file must not replace
+  a new local edit. This is an open regression, staged for review.
