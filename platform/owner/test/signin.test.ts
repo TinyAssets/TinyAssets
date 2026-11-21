@@ -10,6 +10,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { staleRefusal } from "../../contract/src/control";
 import { until } from "../../ci/workerd";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import { WriteGate } from "../src/gate";
@@ -233,6 +234,26 @@ describe("a sign-in", () => {
     // Each ended, its lease given back.
     expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
     expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+    // The two with no answer it can read stopped in the sandbox, in case their CLI launched;
+    // the refused one launched nothing.
+    const { signins, signinCancels } = await recorder(r.stub);
+    expect(signinCancels).toEqual(signins.map(({ id }) => ({ authority: "owner", id })));
+    expect(signinCancels).toHaveLength(2);
+  });
+
+  it("sends a start refused for the moment again, the same start, and begins", async () => {
+    const r = await gated();
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signin", { refuse: { code: "object_overloaded",
+                                         message: "this account is busy", retryAfterS: 0 } });
+    const begun = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
+    const sent = (await gate.calls()).filter((call) => call.method === "signin")
+      .map((call) => (call.args as [string, SandboxSignin])[1]);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(sent[0]!.id).toBe(begun.id);
+    expect((await recorder(r.stub)).signins.map(({ id }) => id)).toEqual([begun.id]);
+    expect((await r.stub.signinList(r.bind())).signins.map(({ id }) => id)).toEqual([begun.id]);
   });
 
   it("signs a client's sandbox in only inside itself", async () => {
@@ -451,16 +472,27 @@ describe("the per-source switch, in the owner's object", () => {
                                                    { engine: "gemini" }))).message)
       .toBe(SIGNIN_OFF);
     expect((await recorder(r.stub)).signins).toEqual([]);
-    // A door that hands none reads the list last handed: still off.
-    expect((await failure(() => r.stub.signinStart(r.bind({ signins: undefined }),
-                                                   { engine: "gemini" }))).message)
-      .toBe(SIGNIN_OFF);
   });
 
-  it("always lets a source switched off be signed out", async () => {
+  it("starts no sign-in on switches not read fresh, the doors' kept copy, for a while",
+     async () => {
     const r = await gated();
-    expect(await r.stub.signinStart(r.bind({ signins: [] }), { engine: "codex", mode: "out" }))
-      .toMatchObject({ engine: "codex", mode: "out", state: "starting" });
+    // A door that hands none was served from a kept copy: on or off, the sign-in waits.
+    for (const engine of ["claude-code", "gemini"]) {
+      const failed = await failure(() => r.stub.signinStart(r.bind({ signins: undefined }),
+                                                           { engine }));
+      expect([failed.code, failed.message])
+        .toEqual(["unavailable", staleRefusal("signin").message]);
+    }
+    expect((await recorder(r.stub)).signins).toEqual([]);
+  });
+
+  it("always lets a source switched off be signed out, the switches fresh or not", async () => {
+    for (const signins of [[], undefined]) {
+      const r = await gated();
+      expect(await r.stub.signinStart(r.bind({ signins }), { engine: "codex", mode: "out" }))
+        .toMatchObject({ engine: "codex", mode: "out", state: "starting" });
+    }
   });
 
   it("takes no pasted code once the source is switched off", async () => {

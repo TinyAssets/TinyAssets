@@ -50,6 +50,17 @@ async function control(value: unknown): Promise<void> {
   }
 }
 
+/**
+ * `who`'s object with its control record's namespace down (an outage): every read of it
+ * throws. The object's own `env`, as the runtime handed it, is the one way in.
+ */
+async function outage(who: string): Promise<void> {
+  await runInDurableObject(stub(who), (instance) => {
+    const object = instance as unknown as { env: Record<string, unknown> };
+    object.env = { ...object.env, CONTROL: { get: () => Promise.reject(new Error("KV down")) } };
+  });
+}
+
 async function e2b(path: string, body?: unknown): Promise<Record<string, unknown>> {
   const response = await env.E2B.fetch(`https://fake.test${path}`, body === undefined ? {}
     : { method: "POST", body: JSON.stringify(body) });
@@ -309,52 +320,33 @@ describe("a start", () => {
     expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
 
-  it("keeps the last scratch retention read when the record cannot be read, never none",
+  it("starts on the copy of the record it last read, by any read, while KV can't be read",
      async () => {
     await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
     const who = owner();
     expect(await stub(who).start(start(ON_KEY)))
       .toEqual({ started: true });
-    await writeControl(env.CONTROL, "not json");
+    // A renewal look reads the record as it is now: that read is the copy kept.
+    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 7 });
+    await e2b("/age", { id: (await seen()).sandboxes[0]!.id, s: CEILING - WINDOW + 5 });
+    await runDurableObjectAlarm(stub(who));
+    await outage(who);
     const second = `run_${hex(32, "2")}`;
     expect(await stub(who).start(start({ run: second, ...ON_KEY,
                                         tokens: null, network: null })))
       .toEqual({ started: true });
     const state = await seen();
-    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(second)}`]!;
-    expect(JSON.parse(doc).scratch_retention_days).toBe(30);
+    const doc = state.files[`${state.sandboxes.at(-1)!.id}:${inboxDoc(second)}`]!;
+    expect(JSON.parse(doc).scratch_retention_days).toBe(7);
   });
 
-  // The kept retention is the one a start last handed to a runner: a read that hands none
-  // (a start refused before its upload, a renewal look) keeps nothing.
-  for (const [what, between] of [
-    ["a start refused at its sign-in", async (who: string) => {
-      expect(await stub(who).start(start({ run: `run_${hex(32, "2")}`, tokens: null,
-                                          network: null })))
-        .toEqual({ started: false, code: "signin_required" });
-    }],
-    ["a renewal look", async (who: string) => {
-      await e2b("/age", { id: (await seen()).sandboxes[0]!.id, s: CEILING - WINDOW + 5 });
-      await runDurableObjectAlarm(stub(who));
-    }],
-  ] as const) {
-    it(`keeps the retention the last start handed, not one ${what} read`, async () => {
-      await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
-      const who = owner();
-      expect(await stub(who).start(start(ON_KEY)))
-        .toEqual({ started: true });
-      await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 7 });
-      await between(who);
-      await writeControl(env.CONTROL, "not json");
-      const third = `run_${hex(32, "3")}`;
-      expect(await stub(who).start(start({ run: third, ...ON_KEY,
-                                          tokens: null, network: null })))
-        .toEqual({ started: true });
-      const state = await seen();
-      const doc = state.files[`${state.sandboxes.at(-1)!.id}:${inboxDoc(third)}`]!;
-      expect(JSON.parse(doc).scratch_retention_days).toBe(30);
-    });
-  }
+  it("starts nothing while KV can't be read and no copy was ever kept", async () => {
+    const who = owner();
+    await outage(who);
+    expect(await stub(who).start(start())).toEqual({ started: false,
+                                                     code: "sandbox_unconfigured" });
+    expect((await seen()).sandboxes).toEqual([]);
+  });
 
   it("joins the live sandbox with no create and no lease secrets; another engine's hosts added",
      async () => {
@@ -403,13 +395,19 @@ describe("a start", () => {
       .toEqual({ started: false, code: "sandbox_unconfigured" });
   });
 
-  it("starts on the last numbers read when the record cannot be read", async () => {
+  it("starts nothing new on a record that reads but is not well formed, nor in an outage after",
+     async () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     await stub(who).start(start());
     await writeControl(env.CONTROL, "not json");
     expect(await stub(who).start(start({ run: `run_${hex(32, "5")}`, tokens: null,
-                                        network: null }))).toEqual({ started: true });
+                                        network: null })))
+      .toEqual({ started: false, code: "sandbox_unconfigured" });
+    await outage(who);
+    expect(await stub(who).start(start({ run: `run_${hex(32, "6")}`, tokens: null,
+                                        network: null })))
+      .toEqual({ started: false, code: "sandbox_unconfigured" });
   });
 
   it("resumes the paused sandbox, its memory kept, and prepares it again", async () => {
@@ -495,6 +493,23 @@ describe("the platform's line", () => {
     await rung(second);
     expect(await stub(second).start(start())).toEqual({ started: true });
     expect(await turn("nobody")).toBe(true);
+  });
+
+  it("starts, its sandbox prepared, though the line refuses its leave after the create",
+     async () => {
+    await e2b("/script", { full: true, signin: { "claude-code": 0 } });
+    const who = owner();
+    await stub(who).start(start());  // no room: it waits, first in line
+    await e2b("/script", { full: false });
+    // The line overloaded as the start leaves it: the start goes on, never refused after the
+    // create (a start sent again would find a sandbox never prepared).
+    await env.SLOTS_GATE.arm({ method: "took", refuse: { code: "object_overloaded",
+                                                          message: "the line is busy" } });
+    expect(await stub(who).start(start())).toEqual({ started: true });
+    expect((await seen()).commands.map((command) => command.argv[1]))
+      .toEqual(["install", "prepare", "signin-check", "launch"]);
+    // Still first in line, until its ring finds no run waiting and it leaves.
+    expect(await turn("nobody")).toBe(false);
   });
 
   it("rings the first in line when a sandbox of the platform pauses", async () => {
@@ -704,7 +719,7 @@ describe("the look before the runtime ceiling", () => {
     expect(calls.filter((call) => call.path.endsWith("/pause"))).toEqual([]);
   });
 
-  it("renews on the last numbers read when the record is unreadable", async () => {
+  it("renews on the last numbers read when the record is malformed", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
     await stub(who).start(start());

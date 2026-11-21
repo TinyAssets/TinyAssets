@@ -90,13 +90,14 @@ export interface Binding {
   /**
    * The tier numbers of the platform's control record (`admission.ts`), as the binder read
    * them for a run door: never a request field, and never the owner's tier, which is the
-   * object's own row.
+   * object's own row. None when the binder could not read the record fresh (`tiersOf`).
    */
   readonly tiers?: unknown;
   /**
    * The served records whose vendor sign-in the platform's control record switches on, as
    * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
-   * object keeps the last list it was handed for the runs its own lane starts.
+   * object keeps the last list it was handed for the runs its own lane starts. None when the
+   * binder could not read the record fresh (`signinsRead`): then no sign-in starts.
    */
   readonly signins?: unknown;
   /**

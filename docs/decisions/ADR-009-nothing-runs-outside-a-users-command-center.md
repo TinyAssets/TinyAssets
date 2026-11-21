@@ -4,6 +4,8 @@
 
 Accepted. Amended by ADR-027 (a shared real-time relay is infrastructure).
 
+Superseded by ADR-032 (founder, 2026-11-21), except: every execution has one owner, and the platform runs no actor of its own (ADR-039 decision 2.5).
+
 ## Date
 
 2026-08-29

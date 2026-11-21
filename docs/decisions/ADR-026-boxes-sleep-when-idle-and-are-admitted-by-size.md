@@ -5,6 +5,8 @@
 Accepted (founder, 2026-10-26). Clarifies ADR-019's lifecycle rule and
 amends ADR-022's interim "stop on idle".
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the zero idle tail (ADR-039 decision 2.16).
+
 ## Date
 
 2026-10-26

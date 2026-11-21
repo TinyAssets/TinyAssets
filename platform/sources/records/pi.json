@@ -196,12 +196,31 @@
     "definition": {
       "instructions": {
         "file": "AGENTS.md",
-        "shadowed_by": []
+        "shadowed_by": [
+          "AGENTS.override.md"
+        ]
       },
       "skills": {
-        "paths": [
-          ".pi/skills"
+        "paths": [],
+        "argv_each": [
+          "--skill",
+          "{skill}"
         ]
+      },
+      "native": {
+        "refuses": [
+          ".pi/settings.json",
+          ".pi/mcp.json",
+          ".pi/extensions",
+          ".pi/prompts",
+          ".pi/SYSTEM.md",
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "argv": [
+          "--no-approve"
+        ],
+        "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/security.md",
+        "read": "2026-11-21"
       },
       "mcp": {
         "servers": "mcpServers",
@@ -252,9 +271,6 @@
       "runs": {
         "exec": true
       },
-      "refuses": [
-        ".pi/settings.json"
-      ],
       "kinds": {
         "shell": [
           "bash",
@@ -282,9 +298,7 @@
         "join": ","
       }
     },
-    "unattended_argv": [
-      "--approve"
-    ],
+    "unattended_argv": [],
     "home_env": {
       "PI_CODING_AGENT_DIR": "{home}/.pi/agent"
     },

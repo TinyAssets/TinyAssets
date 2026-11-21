@@ -1,8 +1,9 @@
 /**
  * The handles canary's new side (`scripts/canary_handles.json`, read by the platform's
  * canary, `deploy/canary.ts`): the doors' handle set, held to the doors' real tool
- * table so it cannot drift, and the authorization server the canary tells the sides apart
- * by, held to the doors' own issuer.
+ * table so it cannot drift; and the authorization servers the canary tells the sides apart
+ * by: the doors' issuer, which is their origin wherever the identity puts their host, and
+ * the old stack's, another.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,15 +11,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { REPO } from "../../ci/paths";
+import { ORIGIN } from "../../contract/src/identity";
 import { ISSUER } from "../src/config";
 import { DEFAULT_PROFILE, profileNames, toolNames } from "../../contract/src/doors";
 
-interface Side {
-  readonly authorization_server: string;
-  readonly handles: readonly string[];
-}
 const record = JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.json"), "utf8")) as
-  { old: Side; new: Side };
+  { old: { authorization_server: string; handles: string[] }; new: { handles: string[] } };
 const sorted = (names: readonly string[]) => [...names].sort();
 
 describe("the handles canary's new side", () => {
@@ -28,8 +26,9 @@ describe("the handles canary's new side", () => {
     expect(new Set(record.new.handles).size).toBe(record.new.handles.length);
   });
 
-  it("names the doors' own issuer, and the old side another", () => {
-    expect(record.new.authorization_server).toBe(ISSUER);
+  it("tells the doors by their own issuer, their origin, and the old side by another", () => {
+    // The canary reads the doors' resource document as theirs when it names their origin.
+    expect(ISSUER).toBe(ORIGIN);
     expect(record.old.authorization_server).not.toBe(ISSUER);
   });
 

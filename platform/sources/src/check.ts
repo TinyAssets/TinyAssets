@@ -23,7 +23,8 @@ import { CREDENTIAL_NAME, forbids, SOURCE_ID } from "../../contract/src/text";
 import { CODE_LOADING_ENV, RUN_BASICS } from "./run-env";
 import {
   type ApiKeyEnv, type CliSpec, type ConnectMethod, type Decide, type Definition,
-  type DefinitionHooks, type DefinitionMcp, type Engine, type HostedUse,
+  type DefinitionHooks, type DefinitionMcp, type DefinitionNative, type DefinitionSkills,
+  type Engine, type HostedUse,
   type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
   type Region, type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
 } from "./schema";
@@ -171,6 +172,7 @@ const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
   "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}", "{system}",
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}",
+  "{skill}",
 ]);
 /** The placeholders only the hook's template takes (`cli.decide.template`). */
 const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze([
@@ -314,7 +316,7 @@ function runFilePath(value: unknown): string[] | null {
   return homePath(value, false);
 }
 
-/** Whether one home path is the other or under it, a `*` segment matching any one. */
+/** Whether one path is the other or under it (by segments), a `*` segment matching any one. */
 function overlaps(a: readonly string[], b: readonly string[]): boolean {
   const shorter = Math.min(a.length, b.length);
   for (let i = 0; i < shorter; i += 1) {
@@ -475,7 +477,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   const decide = decideSpec(check, fields["decide"], argv, template, declared);
 
   const engine = engineSpec(check, fields["engine"], argv);
-  const definition = definitionSpec(check, fields["definition"], mcp, decide);
+  const definition = definitionSpec(check, fields["definition"], argv, mcp, decide);
   const tools = check.keys(fields["tools"], "cli.tools", [], ["allow", "deny"]);
   for (const side of ["allow", "deny"] as const) {
     if (tools[side] !== undefined) {
@@ -617,7 +619,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   for (const [index, secret] of secretSegments.entries()) {
     if (sessionSegments.some((session) => overlaps(secret, session))) {
       check.fail(`cli.secret_paths ${secrets[index]} is outside every session path: a ` +
-                 "secret never syncs (ADR-031 decision 2)");
+                 "secret never syncs (ADR-039 decision 2.20)");
     }
   }
   const login = signsIn ? loginSpec(check, fields["login"], argv) : undefined;
@@ -686,6 +688,9 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       // The run's own secret only in its MCP file's header, never an argument.
       if (found === "{run_secret}" && what !== "cli.mcp.template") {
         check.fail(`${what} uses {run_secret}, which only cli.mcp.template's header carries`);
+      }
+      if (found === "{skill}" && what !== "cli.definition.skills.argv_each") {
+        check.fail(`${what} uses {skill}, which only cli.definition.skills.argv_each carries`);
       }
       if (HOOK_PLACEHOLDERS.includes(found) && what !== "cli.decide.template") {
         check.fail(`${what} uses ${found}, which only cli.decide.template carries`);
@@ -986,27 +991,67 @@ const SERVER_CARRY = Object.freeze({
 });
 
 /**
- * How the agent's definition reaches the engine (`Definition`): its instructions; the skills
- * folders, relative to the agent's directory; where its own MCP servers go, which is the run
- * door's own place (the record's MCP file, its template holding the door at `servers`, and the
- * door's name in `names`'s list; or the door's `flag` pair), each transport's entry carrying the
- * server's own values once each; and the engine's name of every hook event, its hooks held to
- * the `decide` hook's root-owned layer, so present exactly when that hook is.
+ * How the agent's definition reaches the engine (`Definition`): its instructions; its skills,
+ * linked into folders relative to the agent's directory or given one argv a skill; the engine's
+ * own layers it keeps out, none of them a path the definition renders; where its own MCP
+ * servers go, which is the run door's own place (the record's MCP file, its template holding
+ * the door at `servers`, and the door's name in `names`'s list; or the door's `flag` pair), each
+ * transport's entry carrying the server's own values once each; and the engine's name of every
+ * hook event, its hooks held to the `decide` hook's root-owned layer, so present exactly when
+ * that hook is.
  */
-function definitionSpec(check: ReturnType<typeof checker>, value: unknown, mcp: Mcp,
-                        decide: Decide): Definition {
-  const fields = check.keys(value, "cli.definition", ["instructions", "skills", "mcp", "hooks"]);
-  const skills = check.keys(fields["skills"], "cli.definition.skills", ["paths"]);
-  const paths = check.strings(skills["paths"], "cli.definition.skills.paths", /^.{1,256}$/su, 16);
-  if (paths.length === 0 || !paths.every(relative)) {
-    check.fail("cli.definition.skills.paths lists at least one path relative to the agent's " +
-               "directory");
-  }
+function definitionSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                        mcp: Mcp, decide: Decide): Definition {
+  const fields = check.keys(value, "cli.definition", ["instructions", "skills", "native", "mcp",
+                                                      "hooks"]);
+  const instructions = instructionsSpec(check, fields["instructions"]);
+  const skills = definitionSkills(check, fields["skills"], argv);
   return Object.freeze({
-    instructions: instructionsSpec(check, fields["instructions"]),
-    skills: Object.freeze({ paths: Object.freeze(paths) }),
+    instructions, skills,
+    native: definitionNative(check, fields["native"], argv,
+                             [instructions.file, ...instructions.shadowed_by, ...skills.paths]),
     mcp: definitionMcp(check, fields["mcp"], mcp),
     hooks: definitionHooks(check, fields["hooks"], decide),
+  });
+}
+
+function definitionSkills(check: ReturnType<typeof checker>, value: unknown, argv: Argv):
+    DefinitionSkills {
+  const what = "cli.definition.skills";
+  const fields = check.keys(value, what, ["paths"], ["argv_each"]);
+  const paths = check.strings(fields["paths"], `${what}.paths`, /^.{1,256}$/su, 16);
+  const each = fields["argv_each"] === undefined ? undefined
+    : argv(fields["argv_each"], `${what}.argv_each`, 4);
+  if (!paths.every(relative) || (paths.length === 0 && each === undefined)) {
+    check.fail(`${what} links each skill into paths relative to the agent's directory, or ` +
+               "gives it argv_each, or both");
+  }
+  if (each !== undefined && each.join(" ").split("{skill}").length !== 2) {
+    check.fail(`${what}.argv_each carries {skill}, the skill's directory, once`);
+  }
+  return Object.freeze({ paths: Object.freeze(paths),
+                         ...(each === undefined ? {} : { argv_each: Object.freeze(each) }) });
+}
+
+function definitionNative(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                          rendered: readonly string[]): DefinitionNative {
+  const what = "cli.definition.native";
+  const fields = check.keys(value, what, ["refuses", "cite", "read"], ["argv"]);
+  const refuses = check.strings(fields["refuses"], `${what}.refuses`, /^.{1,256}$/su, 16);
+  if (refuses.length === 0 || !refuses.every(relative) || new Set(refuses).size !== refuses.length
+      || refuses.some((path) => rendered.some((own) =>
+        overlaps(path.split("/"), own.split("/"))))) {
+    check.fail(`${what}.refuses lists the engine's own settings paths, distinct and relative ` +
+               "to its cwd, none of them one the definition renders (its instructions, what " +
+               "shadows them, its skills folders)");
+  }
+  const loads = fields["argv"] === undefined ? undefined
+    : argv(fields["argv"], `${what}.argv`, 8);
+  check.https(fields["cite"], `${what}.cite`);
+  check.text(fields["read"], DATE, `${what}.read`);
+  return Object.freeze({
+    refuses: Object.freeze(refuses), ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
+    cite: fields["cite"] as string, read: fields["read"] as string,
   });
 }
 
@@ -1154,7 +1199,7 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   }
   const fields = check.keys(value, "cli.decide", ["file", "template", "runs", "kinds", "mcp",
                                                   "fails", "cite", "read"],
-                            ["argv", "alterable", "pins", "refuses"]);
+                            ["argv", "alterable", "pins"]);
   const runs = (object(fields["runs"]) ? fields["runs"] : {}) as Record<string, unknown>;
   const way = Object.keys(runs).length === 1 ? Object.keys(runs)[0] : undefined;
   const http = runs["http"];
@@ -1218,11 +1263,6 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
       }
     }
   }
-  const refuses = fields["refuses"] === undefined ? undefined
-    : check.strings(fields["refuses"], "cli.decide.refuses", /^.{1,256}$/su, 8);
-  if (refuses !== undefined && (refuses.length === 0 || !refuses.every(relative))) {
-    check.fail("cli.decide.refuses lists paths relative to the agent's directory");
-  }
   const kinds = fields["kinds"];
   if (!object(kinds) || Object.keys(kinds).length === 0 || !Object.entries(kinds).every(
     ([kind, names]) => isHookKind(kind) && Array.isArray(names) && names.length > 0
@@ -1244,7 +1284,6 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   return Object.freeze({
     ...fields, ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
     ...(pins === undefined ? {} : { pins: Object.freeze({ ...pins as Record<string, string> }) }),
-    ...(refuses === undefined ? {} : { refuses: Object.freeze(refuses) }),
     kinds: Object.freeze(Object.fromEntries(Object.entries(kinds as Record<string, string[]>)
       .map(([kind, names]) => [kind, Object.freeze([...names])]))),
     mcp: Object.freeze(mcp),

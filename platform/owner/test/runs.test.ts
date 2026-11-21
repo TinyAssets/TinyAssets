@@ -29,7 +29,7 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerFile, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
 import { RANKING } from "../../contract/src/paths";
-import { secretOf } from "../../ci/workerd";
+import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, spaceOf } from "./support";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
 
@@ -449,6 +449,54 @@ describe("a run's settle", () => {
     expect((await recorder(r.stub)).cancels).toHaveLength(2);
     // None holds the lease: the last live run's settle gave it back.
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    // A start with no answer is never sent again: it may have launched.
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === lost.run_id))
+      .toHaveLength(1);
+  });
+
+  it("sends a start refused for the moment again, the same start, while the run holds its " +
+     "grant; one whose wait ends past the bound, or whose run was cancelled, is failed by " +
+     "the refusal's own code", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    const submit = (id: string) => r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                                      { message: "x", client_send_id: id });
+    const overloaded = (retryAfterS: number) => ({ refuse: {
+      code: "object_overloaded", message: "this account is busy", retryAfterS } });
+    const sent = async (run: string) => (await gate.calls())
+      .filter((call) => call.method === "start"
+              && (call.args as [string, SandboxStart])[1].run === run)
+      .map((call) => (call.args as [string, SandboxStart])[1]);
+    await gate.arm("start", overloaded(0), 2);
+    const again = await submit("t-1");
+    expect(again).toMatchObject({ state: "running", code: null });
+    // Sent three times, each the same start (its tokens and secret with it), and launched once.
+    const starts = await sent(again.run_id);
+    expect(starts).toHaveLength(3);
+    expect(starts[1]).toEqual(starts[0]);
+    expect(starts[2]).toEqual(starts[0]);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === again.run_id))
+      .toHaveLength(1);
+    // A wait past `LANE_CALL_MS`: the refusal stands at once, and nothing is cancelled.
+    await gate.arm("start", overloaded(60));
+    const past = await submit("t-2");
+    expect(past).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await sent(past.run_id)).toHaveLength(1);
+    expect((await recorder(r.stub)).cancels).toEqual([]);
+    // Cancelled while its start waits: never sent again.
+    await gate.arm("start", overloaded(1));
+    const waiting = submit("t-3");
+    let run = "";
+    await until(async () => {
+      run = (await gate.calls()).filter((call) => call.method === "start")
+        .map((call) => (call.args as [string, SandboxStart])[1].run).at(-1) ?? "";
+      return run !== past.run_id && run !== again.run_id && run !== "";
+    }, "the refused start");
+    await r.stub.agentCancel(r.bind(), { run_id: run });
+    expect(await waiting).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await sent(run)).toHaveLength(1);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === run)).toEqual([]);
   });
 });
 

@@ -4,6 +4,8 @@
 
 Accepted. The bundle write path is not built.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: knowledge is files, indexes derived (ADR-039 decision 2.11).
+
 ## Date
 
 2026-07-25

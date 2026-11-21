@@ -10,6 +10,8 @@ Built on `platform/` (2026-11-21, `untangle/mcp-keys`): `/mcp` takes a key throu
 `/api` door's own key check, held to the key's grant
 (`docs/decisions/untangle-2026-11/mcp-keys.md`). No per-agent rate limit is built (Fact 15).
 
+Superseded by ADR-032 (founder, 2026-11-21), except: its keys on `/mcp` and `/api` (ADR-039 decision 2.18).
+
 ## Date
 
 2026-10-26

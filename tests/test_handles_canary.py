@@ -51,7 +51,6 @@ def test_the_old_side_is_the_old_canarys_own_record():
     # either fails.
     assert public.CANONICAL_HANDLES == frozenset(OLD)
     assert [RECORD["old"]["authorization_server"]] == list(public.EXPECTED_AUTHORIZATION_SERVERS)
-    assert RECORD["new"]["authorization_server"] == "https://tinyassets.io"
     assert len(OLD) == len(RECORD["old"]["handles"])
     assert len(NEW) == len(RECORD["new"]["handles"])
 
