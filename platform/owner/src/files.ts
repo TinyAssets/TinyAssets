@@ -638,6 +638,13 @@ export class Files {
   #pastFigure = false;
   /** What the sync commit in hand says its sync agent counted held back (`heldBackOf`). */
   #heldBack: HeldBack | null = null;
+  /**
+   * The housekeeping passes' chunk deletes in flight on this instance (`run`): each one's
+   * chunks, from the unit that marks them `deleting`, and its end (their rows removed, or left
+   * `deleting` for a later pass), which a placed write that met one waits for (`deleteLanded`).
+   */
+  readonly #deleting = new Set<{ readonly chunks: ReadonlySet<string>;
+                                 readonly landed: Promise<void> }>();
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, full: Full, reactions: () => readonly FileReaction[],
@@ -2659,6 +2666,23 @@ export class Files {
     if ((until - clock()) * 1000 < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
+    const landing = Promise.withResolvers<void>();
+    const deleting = { chunks: new Set<string>(), landed: landing.promise };
+    this.#deleting.add(deleting);
+    try {
+      await this.#deleteDue(now, until, deleting.chunks);
+    } finally {
+      this.#deleting.delete(deleting);
+      landing.resolve();
+    }
+  }
+
+  /**
+   * The housekeeping pass's chunk delete: the due chunks marked `deleting`, each added to
+   * `marked` in the unit that marks it, deleted from `FILES`, and their rows removed.
+   */
+  async #deleteDue(now: number, until: number, marked: Set<string>): Promise<void> {
+    const sql = this.#sql;
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
@@ -2689,6 +2713,7 @@ export class Files {
       for (const sha256 of found) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",
                  now + GC_RETRY_S, sha256);
+        marked.add(sha256);
       }
       return found;
     }));
@@ -2736,6 +2761,20 @@ export class Files {
   /** The owner's namespace, or null when nothing was ever stored. A read. */
   storedNamespace(): string | null {
     return this.#space().ns;
+  }
+
+  /**
+   * The end of the chunk delete in flight on this instance that takes any of `chunks`, or
+   * null when none does: a begin that met one of them `deleting` begins again once it lands
+   * (`Bodies.placing`), and one left `deleting` by a delete that failed is refused.
+   */
+  deleteLanded(chunks: readonly string[]): Promise<void> | null {
+    for (const deleting of this.#deleting) {
+      if (chunks.some((sha256) => deleting.chunks.has(sha256))) {
+        return deleting.landed;
+      }
+    }
+    return null;
   }
 
   /** Once every `FILES` write this instance has in flight has landed or failed. */

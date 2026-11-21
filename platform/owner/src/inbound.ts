@@ -17,7 +17,7 @@
  * an entry the owner has since changed or withdrawn is refused here (`binding_withdrawn`),
  * whatever KV's lag.
  *
- * **Dedupe.** An event is the owner's mail to the binding's agent (`dm:<agent>`), keyed by
+ * **Dedupe.** An event is the owner's mail to the binding's agent, in their room, keyed by
  * the binding, its revision and the event's own id, so a sender's retry is the same mail
  * (the ledger's own client-message dedupe) and is answered `deduped` with its receipt; the
  * same id with other bytes is refused. The mail starts the agent's run as any mail does
@@ -330,6 +330,7 @@ export interface InboundDoorNeeds extends Pick<DoorUnits, "sync"> {
   readonly inbound: Inbound;
   readonly bodies: Pick<Bodies, "placing">;
   readonly ledger: {
+    roomOf(a: string, b: string): string;
     prepare(origin: null, roomId: string, clientMessageId: string, body: string,
             parentId: null): { readonly message_id: string } | null;
     post(origin: null, roomId: string, clientMessageId: string, body: string, parentId: null,
@@ -344,7 +345,7 @@ export interface InboundDoorNeeds extends Pick<DoorUnits, "sync"> {
  * enabled, as the call bound it): an owner-held proof on the raw bytes, and its mail's
  * room, key and envelope; or the no-op a tripped breaker answers.
  */
-function inboundEvent({ route, r }: Call, now: number):
+function inboundEvent(o: InboundDoorNeeds, { route, r }: Call, now: number):
     { done: InboundAnswer }
     | { row: Row; room: string; cmid: string; envelope: string } {
   const row = route!;
@@ -377,7 +378,8 @@ function inboundEvent({ route, r }: Call, now: number):
   const envelope = JSON.stringify({ inbound: {
     binding: row.binding_id, event_id: eventId, event_at: eventAt,
     raw_base64: Buffer.from(body).toString("base64") } });
-  return { row, room: `dm:${nativeId(row.agent)}`, cmid: `inb_${key}`, envelope };
+  return { row, room: o.ledger.roomOf(OWNER, nativeId(row.agent)), cmid: `inb_${key}`,
+           envelope };
 }
 
 /**
@@ -452,7 +454,7 @@ export const inboundDoors = Object.freeze({
       return await o.bodies.placing((): {
           body: unknown; writer: string } | { done: InboundAnswer } => {
         const now = clock();
-        const event = inboundEvent(door.check(), now);
+        const event = inboundEvent(o, door.check(), now);
         if ("done" in event) {
           return event;
         }
@@ -467,7 +469,7 @@ export const inboundDoors = Object.freeze({
         return { body: event.envelope, writer: OWNER };
       }, (placed) => {
         const now = clock();
-        const event = inboundEvent(door.check(), now);
+        const event = inboundEvent(o, door.check(), now);
         if ("done" in event) {
           return event.done;
         }

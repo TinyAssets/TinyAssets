@@ -41,7 +41,8 @@ import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/b
 import type { Located } from "../src/bodies";
 import { clock } from "../src/clock";
 import { markErasing } from "../src/erasure";
-import { LEDGER_LIMITS } from "../src/ledger";
+import { OWNER } from "../src/authority";
+import { LEDGER_LIMITS, pairRoom } from "../src/ledger";
 import { EDIT_BYTES_MAX } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
@@ -623,7 +624,7 @@ export class LegOwner extends OwnerDO {
     const { ledger } = this.#stores;
     const { fails } = this.#gate.storage.sql.exec<{ fails: number }>(
       "SELECT archive_fails AS fails FROM ledger_usage").one();
-    return fails === 0 && !(ledger.archiveDue() || ledger.purgedAgents().length > 0
+    return fails === 0 && !(ledger.archiveDue() || ledger.purgedRooms().length > 0
                             || ledger.archiveCompactPending());
   }
 
@@ -779,7 +780,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // thousand more), so the lane seals a tail of them: 8 MiB of records (8,489 of these),
       // its arrays near the doubling's worst (at 16,384).
       const agents = await stub.legAgents();
-      await stub.legSmall(`dm:${agents[0]}`, 0, 25_000 + mib * 1000);
+      await stub.legSmall(pairRoom(OWNER, agents[0]!), 0, 25_000 + mib * 1000);
       LEG.ready.push({ name, who, agents, want: 1 });
     } else if (path === "merge") {
       // At the production limits: the muse's sealed mail, Dot's merged into it, and Pat's
@@ -788,11 +789,12 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       const sizing = await object(env, `${name}-sizing`);
       const [to] = await sizing.legAgents();
       const own = await sizing.legOverhead((await sizing.roomPost(owner(`${name}-sizing`), {
-        room_id: `dm:${to}`, client_message_id: "a0000", body: "x", parent_id: null }))
+        room_id: pairRoom(OWNER, to!), client_message_id: "a0000", body: "x", parent_id: null }))
         .message_id) + 1 - RECORD_TRAILER_BYTES;
       const mail = mergeMail(own);
       const agents = await stub.legAgents();
-      const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`), mail);
+      const lasts = await stub.legInterleaved(agents.map((agent) => pairRoom(OWNER, agent)),
+                                              mail);
       await ring(stub, who, agents[0]!, "r0");
       await settled(stub, (seen) => seen.segments >= 1);
       const sealed = await stub.legArchived();
@@ -822,7 +824,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       const agents = await stub.legAgents();
       const post = async (on: DurableObjectStub<LegOwner>, k: number, bytes: number,
                           as = who, to = agents) =>
-        (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
+        (await on.roomPost(as, { room_id: pairRoom(OWNER, to[k]!), client_message_id: `b${k}`,
                                   body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
                                   parent_id: null })).message_id;
       // A record's own bytes past its body's, read from a message of the same shape on an
@@ -841,7 +843,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // before it): with them, the hot mail stays past half its ceiling through the last
       // seal, and the unread within `maxUnacked`.
       const rings = path === "rewrite" ? 2 : 1;
-      await stub.legUnread(`dm:${agents[0]}`, LEDGER_LIMITS.maxMessages / 2 - rings);
+      await stub.legUnread(pairRoom(OWNER, agents[0]!), LEDGER_LIMITS.maxMessages / 2 - rings);
       if (path === "rewrite") {
         await ring(stub, who, agents[0]!, "r0");
         await settled(stub, (seen) => seen.segments >= 1);
@@ -866,8 +868,8 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
 /** An owner's post to the agent `agent`: its door syncs the lanes, so the archive's runs. */
 async function ring(stub: DurableObjectStub<LegOwner>, who: Binding, agent: string,
                     cmid: string): Promise<void> {
-  await stub.roomPost(who, { room_id: `dm:${agent}`, client_message_id: cmid, body: "ring",
-                             parent_id: null });
+  await stub.roomPost(who, { room_id: pairRoom(OWNER, agent), client_message_id: cmid,
+                             body: "ring", parent_id: null });
 }
 
 /**
@@ -876,6 +878,14 @@ async function ring(stub: DurableObjectStub<LegOwner>, who: Binding, agent: stri
  * whole seconds up to three decimals, so 4 characters a row (`".123"`).
  */
 const TIMES_SLACK = 3 * ".123".length;
+
+/**
+ * The most the merge case's seqs widen a record past the measured one's (its object's first,
+ * one digit): the case posts under `10 ** MAIL_SEQ_DIGITS` messages, and two of a record's
+ * rows (the message, its recipient) carry its seq.
+ */
+const MAIL_SEQ_DIGITS = 5;
+const SEQ_SLACK = 2 * (MAIL_SEQ_DIGITS - 1);
 
 /** The merge case's muse acks its mail each this many of its messages, so as many wait unread. */
 const MUSE_ACKS = 50;
@@ -894,12 +904,12 @@ interface MergeMail {
 /**
  * The merge case's counts, from one record of its mail's shape (`own`, the bytes a seal
  * counts it at) and the ledger's ceilings, so a change to a record's size or a ceiling moves
- * them with it. A seal holds `fewest` to `most` such records (each post's times, and a client
- * message id up to three characters shorter or longer than the measured one's). The rings are the
- * muse's three unread messages, the run's among them.
+ * them with it. A seal holds `fewest` to `most` such records (each post's times, a client
+ * message id up to three characters shorter or longer than the measured one's, and a seq up
+ * to `SEQ_SLACK` wider). The rings are the muse's three unread messages, the run's among them.
  */
 function mergeMail(own: number): MergeMail {
-  const widest = own + TIMES_SLACK + 3;
+  const widest = own + TIMES_SLACK + 3 + SEQ_SLACK;
   const fewest = Math.floor(SEGMENT_MIN_BYTES / widest);
   const most = Math.ceil(SEGMENT_MIN_BYTES / (own - TIMES_SLACK - 3));
   const rings = 3;
@@ -912,14 +922,16 @@ function mergeMail(own: number): MergeMail {
   const dot = LEDGER_LIMITS.maxUnacked - pat - MUSE_ACKS - rings;
   // Every one of Dot's and Pat's interleaved, and the seal taken from the interleaved mail.
   const interleaved = Math.max(most, Math.ceil(pat / 2), dot);
-  if (muse - interleaved < 0 || muse - most + dot < most) {
+  if (muse - interleaved < 0 || muse - most + dot < most
+      || muse + dot + pat + rings >= 10 ** MAIL_SEQ_DIGITS) {
     throw new Error(`the merge case's counts do not hold at ${own} bytes a record: ${
       JSON.stringify({ fewest, most, muse, pat, dot, interleaved })}`);
   }
-  // The run's merge takes Pat's records within the segment's keys (the first `fewest` of the
-  // muse's, two of Pat's to each) while they fit `MOVE_BYTES` beside the segment's bytes.
+  // The run's merge takes Pat's records within the segment's keys (the muse's first `fewest`
+  // at least, two of Pat's after each but the last) while they fit `MOVE_BYTES` beside the
+  // segment's bytes.
   return { interleaved, more: muse - interleaved, dot, pat,
-           take: (bytes) => Math.min(pat, 2 * fewest,
+           take: (bytes) => Math.min(pat, 2 * (fewest - 1),
                                      Math.floor((MOVE_BYTES - bytes) / widest)) };
 }
 

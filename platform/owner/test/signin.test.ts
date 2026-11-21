@@ -19,7 +19,7 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
 } from "./runs-support";
-import { drainDue, failure } from "./support";
+import { drainDue, failure, gateFor } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
@@ -216,6 +216,23 @@ describe("a sign-in", () => {
       .toEqual({ started: false, code: "sandbox_waiting" });
     expect((await s.stub.signinList(s.bind())).signins).toEqual([]);
     expect(await s.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+  });
+
+  it("ends a start that did not answer, answered out of shape or was refused, each by its " +
+     "own code", async () => {
+    const r = await gated();
+    const start = () => r.stub.signinStart(r.bind(), { engine: "codex" });
+    await scripted(r.stub, { signinAnswer: "throw" });
+    expect(await start()).toEqual({ started: false, code: "start_lost" });
+    await scripted(r.stub, { signinAnswer: { started: "yes" } as never });
+    expect(await start()).toEqual({ started: false, code: "start_malformed" });
+    await scripted(r.stub, { signinAnswer: { started: true } });
+    await gateFor(env.SANDBOX_GATE, r.name).arm("signin", { refuse: {
+      code: "sandbox_runner_protocol", message: "the sandbox's runner speaks another protocol" } });
+    expect(await start()).toEqual({ started: false, code: "sandbox_runner_protocol" });
+    // Each ended, its lease given back.
+    expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
   });
 
   it("signs a client's sandbox in only inside itself", async () => {

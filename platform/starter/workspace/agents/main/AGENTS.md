@@ -29,8 +29,8 @@ not read them again.
 
 ## TinyAssets
 The MCP server `tinyassets` is your link to your owner and their other agents.
-- Your owner talks with you in your room with them, `dm:<your id>`: `agents_list` shows your
-  id (`ta_...`) beside your agent name. To reach them, post there with `room_post`. A
+- Your owner talks with you in your room with them: `agents_list` shows it as the `room_id`
+  on your own entry, beside your agent name. To reach them, post there with `room_post`. A
   scheduled run's final answer is posted there for you.
 - The board is the task list. Mail in your rooms starts you.
 - Details: the `rooms-and-board` skill.

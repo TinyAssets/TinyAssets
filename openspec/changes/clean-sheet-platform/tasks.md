@@ -131,8 +131,8 @@ end.
   - Gemini loading its `{system}` settings on a run past the sign-in; Kimi's skills, read once
     signed in;
   - onboarding writes `SOUL.md` and `USER.md`; "remember X" lands in knowledge and is recalled
-    on another engine; a brief the agent made posts to `dm:main`; a main agent finds the
-    knowledge with `search` and `fetch` (ChatGPT deep research, `ui-test`);
+    on another engine; a brief the agent made posts to the owner's room with main; a main
+    agent finds the knowledge with `search` and `fetch` (ChatGPT deep research, `ui-test`);
   - a wake-up pasted for a really registered main agent;
   - a sandbox-down drill.
 
@@ -763,7 +763,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (d3 §F2).
 - [ ] The data shapes already known to be wrong, fixed before real data, as decided in d3 §P
   (list3 P48), each in its own lane PR:
-  - rooms and room members with opaque ids, in lane O after T1c and before S4;
+  - rooms and room members with opaque ids, in lane O after T1c and before S4: built in
+    `untangle/shapes-rooms`, owner migration 19; the remaining PRs' order is `shapes.md`;
   - collection history (§P item 3): H1 merged (#5538); S1, the stream extraction into
     `owner/src/stream.ts`, after T1b4, receipts and rooms; H2, the erasures stream; H3, the
     history stream, bounding the deleter's name or taking the factor into the guard's term;
@@ -1084,8 +1085,9 @@ Each needs its research first (Fact 14; list3 P49). The data shapes among them a
 real data, in step 5 (d3 §P).
 
 - [ ] S4, rooms and status: group rooms of three or more (the owner, main agents and TinyAssets
-  agents, one post waking each member it addresses), on step 5's rooms table; `inbox_digest`
-  over the owner's and outside agents' mailboxes.
+  agents, one post waking each member it addresses), on step 5's rooms table, re-deriving
+  `maxRooms` and the one-recipient-a-message bound (`shapes.md`); `inbox_digest` over the
+  owner's and outside agents' mailboxes.
 - [ ] S6, the app manifest and agent players, with the app's view of mail-started runs and
   agents' chains; the owner app is among the interfaces it lets the owner customize, and its app
   serving comes before the cutover (Step 5; `founder-answers.md` call 7).

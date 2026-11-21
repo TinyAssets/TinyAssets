@@ -28,7 +28,6 @@ import { describe, expect, it } from "vitest";
 
 import * as CONTRACT from "../../contract/src/limits";
 import { PLATFORM } from "../../ci/paths";
-import { LOG_WIDE } from "../src/changelog";
 import {
   CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES, HISTORY_BYTES,
   SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
@@ -94,8 +93,8 @@ const ID = (column: string) => (n: number) => `length(${column}) = ${n}`;
 const CAPTURE = /^CREATE TRIGGER \w+_logged_(?:insert|update|delete) /;
 const CAPTURE_UPDATE = /^CREATE TRIGGER \w+_logged_update /;
 /** The capture triggers the migrations make, and the updates among them. */
-const CAPTURES = 135;
-const UPDATES = 46;
+const CAPTURES = 147;
+const UPDATES = 50;
 /** The triggers that count a content's chunk list's rows from its size. */
 const CHUNK_LIST = new RegExp("^CREATE TRIGGER (?:file_contents_(?:added|removed)|" +
   "file_scope_contents_(?:added|removed)|file_content_chunks_planned) ");
@@ -246,9 +245,11 @@ export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze
   ["CREATE TRIGGER file_temps_removed", 2, TEMP_BYTES("OLD")],
   ["CREATE TRIGGER file_scope_contents_added", 2, SCOPE_REF_BYTES("NEW")],
   ["CREATE TRIGGER file_scope_chunks_removed", 2, SCOPE_REF_BYTES("OLD")],
-  [CAPTURE, CAPTURES + UPDATES, `THEN image ELSE '${LOG_WIDE}' END`],
+  // The wide mark, in place of an image past `IMAGE_MAX`: the change log reads any line
+  // that is no row and no gone as one (`changelog.ts` `segment`).
+  [CAPTURE, CAPTURES + UPDATES, `THEN image ELSE '{"t":"wide"}' END`],
   [CAPTURE, CAPTURES, `(SELECT line FROM change_log WHERE seq = log_capture.last) = ` +
-    `'${LOG_WIDE}')`],
+    `'{"t":"wide"}')`],
 ]);
 
 /** How `head`'s statements fail to spell `text` `count` times, each at least once; or null. */
@@ -441,7 +442,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(594);
+    expect(places).toBe(638);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

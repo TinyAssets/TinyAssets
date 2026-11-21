@@ -91,7 +91,7 @@
       "tool": {
         "name": "room_post", "title": "Post to room", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
-        "description": "Post a message to a room of the owner's account: dm:<agent> with the owner, or dm:<agent>+<agent> between two agents. Mail to one of the owner's own agents starts its run, whose result is its reply."
+        "description": "Post a message to a room of the owner's account: the room_id agents_list shows for the agent to reach. Mail to one of the owner's own agents starts its run, whose result is its reply."
       }
     },
     {
