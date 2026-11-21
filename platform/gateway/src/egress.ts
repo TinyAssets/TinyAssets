@@ -11,9 +11,9 @@
  *
  * The gateway exempts this module from the platform's module-state rule for exactly three
  * symbols (`guards/rules.ts`, `MODULE_STATE`): the scope, the captured runtime fetch, and
- * the one write of the global. The scope holds no data
- * between calls (each call's guard lives only in its own async context), and the
- * interposer is the same function for every owner.
+ * the one write of the global. The scope holds no data between calls (each call's guard
+ * lives only in its own async context), and the interposer is the same function for every
+ * owner.
  *
  * The scope follows promises and timers, not events: a listener registered with an
  * `EventTarget` inside a scope but dispatched from outside it runs unscoped, so a fetch

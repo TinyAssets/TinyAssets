@@ -1,8 +1,8 @@
 /**
- * The doorbell's secrets and sends (slice W, ruling H1): like every credential, a wake's
- * secret (a Claude `/fire` token, a Grok routine key, an MCP Events `whsec_` key) is
- * sealed here and opened only here. The owner's object holds the blob; the doors hand the
- * plaintext straight to the seal; nothing else ever sees it.
+ * The doorbell's secrets and sends: like every credential, a wake's secret (a Claude `/fire`
+ * token, a Grok routine key, an MCP Events `whsec_` key) is sealed here and opened only here.
+ * The owner's object holds the blob; the doors hand the plaintext straight to the seal;
+ * nothing else ever sees it.
  *
  * - `sealDoorbell`: the owner's pasted token (the doors' connect entrypoint), checked
  *   against its wake kind's record (`contract/wake-kinds.json`: its host, path and secret
@@ -62,7 +62,6 @@ export type Send = (request: Request) => Promise<Response>;
 export const ECHO_MAX_BYTES = 1024;
 const DOORBELL_KEYS = Object.freeze(["auth", "kind", "record", "sealed_at", "secret", "url"]);
 
-/** A subscribed callback's push, by its record; `invalid_request` when it has none. */
 function pushOf(record: unknown): Push {
   const kind = typeof record === "string" ? kindNamed(record) : null;
   if (kind === null || kind.push === null) {
@@ -102,7 +101,6 @@ function plaintext(input: unknown): DoorbellSecret {
   }
 }
 
-/** Seals a pasted doorbell token for its subscription. */
 export async function sealDoorbell(env: KeyringEnv, owner: string, subscription: string,
                                    version: number, input: unknown): Promise<Sealed> {
   return sealValue(env, wakeBinding(owner, subscription, version), plaintext(input),
@@ -145,10 +143,7 @@ function same(a: string, b: string): boolean {
   return left.byteLength === right.byteLength && crypto.subtle.timingSafeEqual(left, right);
 }
 
-/**
- * Verifies a subscribed callback with a signed challenge, then seals it. `send` is the
- * runtime's fetch; a test's records.
- */
+/** Verifies a subscribed callback with a signed challenge, then seals it. */
 export async function verifyDoorbell(env: KeyringEnv, owner: string, subscription: string,
                                      version: number, input: unknown,
                                      send: Send = (request) => fetch(request)):

@@ -1,8 +1,8 @@
 /**
- * The gateway's one bounded reader (untangle B7): the only answer bodies it reads whole, an
- * OAuth endpoint's (`oauth.ts`) and a doorbell's verification echo (`doorbell.ts`), each
- * read to a bound of its own. A provider's model answer is never read whole: it streams
- * through (`forward.ts`).
+ * The gateway's one bounded reader: the only answer bodies it reads whole, an OAuth
+ * endpoint's (`oauth.ts`) and a doorbell's verification echo (`doorbell.ts`), each read to a
+ * bound of its own. A provider's model answer is never read whole: it streams through
+ * (`forward.ts`).
  */
 import { utf8Decoder } from "../../contract/src/text";
 

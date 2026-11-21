@@ -1,7 +1,7 @@
 /**
- * The doorbell's secrets and sends (slice W, ruling H1): a wake's secret is sealed here and
- * opened only here, sent only to the URL it was sealed with, with its record's auth; an MCP
- * Events callback is verified by a signed single-use challenge before it is sealed.
+ * The doorbell's secrets and sends: a wake's secret is sealed here and opened only here,
+ * sent only to the URL it was sealed with, with its record's auth; an MCP Events callback is
+ * verified by a signed single-use challenge before it is sealed.
  */
 import { createHmac } from "node:crypto";
 
@@ -198,7 +198,10 @@ describe("a callback's verification", () => {
     const timeout = Object.assign(new Error("slow"), { name: "TimeoutError" });
     const cases: [Response | Error | ((r: Request) => Promise<Response>), string][] = [
       [Response.json({ challenge: "not it" }), "challenge_failed"],
-      [new Response("x".repeat(ECHO_MAX_BYTES + 1)), "challenge_failed"],
+      // The right challenge, past the bound the answer is read to.
+      [async (request: Request) => new Response(JSON.stringify({
+        challenge: (JSON.parse(await request.text()) as { challenge: string }).challenge,
+      }).padEnd(ECHO_MAX_BYTES + 1)), "challenge_failed"],
       [new Response("not json"), "challenge_failed"],
       [new Response("secret page", { status: 404 }), "http_4xx"],
       [new Response(null, { status: 302, headers: { Location: "https://evil.example/" } }),

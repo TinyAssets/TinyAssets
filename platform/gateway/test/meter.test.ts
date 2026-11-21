@@ -1,6 +1,6 @@
 /**
- * Metering a sandbox's raw model call with pi-ai's own adapters (G4): what pi-ai sends as
- * a model call for each API, learned with no network, and the usage it reads back.
+ * Metering a sandbox's raw model call with pi-ai's own adapters: what pi-ai sends as a model
+ * call for each API, learned with no network, and the usage it reads back.
  */
 import { describe, expect, it } from "vitest";
 
@@ -57,7 +57,7 @@ function streamOf(text: string): ReadableStream<Uint8Array> {
   return new Response(text).body!;
 }
 
-describe("the engines' own calls against the API rules (slice E review, M6)", () => {
+describe("the engines' own calls against the API rules", () => {
   const records = bundledRecords().map(sourceRecord);
   const scopeOf = (id: string) => {
     const { upstream, endpoints } = records.find((record) => record.id === id)!;
@@ -290,7 +290,7 @@ describe("the meter pi-ai's adapter teaches", () => {
   });
 });
 
-describe("the reviewer's escapes, closed (review round 2)", () => {
+describe("what a metered call could escape its reservation by", () => {
   it("settles a stream that reports no usage unknown, and makes a streamed call ask for it",
      async () => {
     const catalog = builtinCatalog();
@@ -466,7 +466,7 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
   });
 });
 
-describe("the price beyond tokens (review round 3)", () => {
+describe("the price beyond tokens", () => {
   it("takes an uncatalogued served id only as the named model's dated or versioned snapshot",
      async () => {
     for (const [served, named, ok] of [
@@ -553,7 +553,7 @@ describe("the price beyond tokens (review round 3)", () => {
   });
 });
 
-describe("a tier left to the account (review round 3, Anthropic)", () => {
+describe("a tier left to the account", () => {
   it("is set to the one pi-ai prices when absent, by the rules' data, and kept when named",
      async () => {
     const meter = (await new Meters(builtinCatalog(), ANTHROPIC.upstream, "sk-x").any())!;
