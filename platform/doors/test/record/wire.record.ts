@@ -1,5 +1,5 @@
 /**
- * The wire recorder (`npm run record`, `ci/record.ts`): refusals driven through every door
+ * The wire recorder (`ci/record.ts`): refusals driven through every door
  * surface (each tool on the API, the app and MCP; busy, suspended and erasing owners; the
  * app's other routes; the sandbox's egress, run events and sync doors; inbound hooks; MCP's
  * events extension), each answer one `REC` line, ids taken out (`clean`), so base and head

@@ -1,5 +1,5 @@
 /**
- * The builder's RPC recorder (`npm run record`, `ci/record.ts`): every public door of
+ * The builder's RPC recorder (`ci/record.ts`): every public door of
  * `OwnerDO`, called over RPC with a spread of bindings and request shapes, as the owner and
  * as a live run, each answer one `RPC` line, ids taken out (`clean`), so base and head print
  * the same lines for the same behaviour.

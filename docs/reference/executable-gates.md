@@ -1,13 +1,13 @@
 # Executable gates
 
-Done-check: in `platform/`, `npm run typecheck`, touched files' tests and the
+Done-check: in `platform/`, `npm run typecheck`, touched files' tests, the
 `ci/guards/` they can break; from the root, touched `pytest` files,
 `check_shapes.py`, `ci_structural_guards.py`, `openspec validate
-clean-sheet-platform`, and `test_hygiene_gate.py` on the body (each cut test:
-`Test-Removal:`). Each passes by exit code (pipefail). After a red CI job,
-rerun only its failing tests. After merging main, a change to a file
-`platform/cutover.json` names runs `guards/cutover.test.ts`, fixing entries
-it broke.
+clean-sheet-platform`, and `test_hygiene_gate.py` on the body
+(`Test-Removal:`). Exit codes decide (pipefail). Suites and recorders: CI's
+(`Recorders-Differ: rv` names one to differ). After a red CI job, rerun
+only its failures. After merging main, a change to a file the manifest
+names runs `guards/cutover.test.ts`.
 
 To land, post the verdict as a `COMMENT` review on the commit read, first
 line `APPROVE` or `BLOCK`; auto-merge, armed at open, queues it. A verdict
