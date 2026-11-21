@@ -95,12 +95,12 @@ the deploy kit's copies and the Workers' configs.
 - [ ] Claude Code's pinned `cleanupPeriodDays: 30` (`sources/records/claude-code.json`
   `cli.decide.pins`) is the engine's own transcript retention at its default. Research comes
   first: what value keeps every session, and what the held-call card's 30 days (`cardTtlS`)
-  rests on then. It follows #5732, which edits the same record (`untangle/fact15-defaults-2`).
+  rests on then (`untangle/fact15-defaults-2`).
 - [ ] The lives of requests held for the owner (`CARD_TTL_S` 7 days, `ACTION_LIMITS.cardTtlS`
   30 days and `approvalTtlS` a day, `POLICY_LIMITS.proposalTtlS` 90 days) each go into one of
   Fact 15's kinds (`untangle/fact15-caps`).
 - [ ] Each ceiling's share of the 10 GB room gets its reason (`untangle/fact15-caps`), and a
   guard holds every cap and retention in source to `limits-audit.md` (`untangle/limits-guard`).
 - [ ] `tasks.md` Step 5's call-11 line (#5730) is ticked by whichever of
-  `untangle/fact15-defaults-2`, `untangle/fact15-caps` and `untangle/limits-guard` lands last.
-  This change cannot tick it: the line is not on main yet, and it names all three.
+  `untangle/fact15-defaults-2`, `untangle/fact15-caps` and `untangle/limits-guard` lands last,
+  since it names all three.
