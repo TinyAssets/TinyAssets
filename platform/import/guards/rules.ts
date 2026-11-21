@@ -5,13 +5,13 @@
  * The importer is a job, not a Worker (untangle A1): it reads the platform's vocabulary
  * from the contract, so its expected content ids, path rules and limits are the platform's
  * own, and no Worker's `src`; what it may import is the layer table's (`ci/kit/layers.ts`).
- * It runs each old policy through the platform's own validator
- * (`contract/src/policy-document.ts`). Its TypeScript is Node's file system and SQLite: it
- * starts no child process and opens no socket of its own, and its one network is `fetch`,
- * named in `stage.ts` alone (`NETWORK`), which its staging and window steps are handed: the
- * staging and files buckets over R2's S3 API, the import queue and its dead-letter queue over
- * the Queues HTTP API, and the directory over the KV API, with the credentials the run is
- * handed.
+ * It maps each old policy to the new rules and holds what it writes to the platform's own
+ * validator (`contract/src/policy-document.ts`). Its TypeScript is Node's file system and
+ * SQLite: it starts no child process and opens no socket of its own, and its one network is
+ * `fetch`, named in `stage.ts` alone (`NETWORK`), which its staging and window steps are
+ * handed: the staging and files buckets over R2's S3 API, the import queue and its
+ * dead-letter queue over the Queues HTTP API, and the directory over the KV API, with the
+ * credentials the run is handed.
  *
  * Outside this guard, as it is outside the TypeScript: the host script (`host.py`) and the
  * window's shell (`window.sh`), which make the copy, mount its images and run the job.

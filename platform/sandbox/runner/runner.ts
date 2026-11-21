@@ -37,9 +37,9 @@
  * - `quiet-wait <until_ms>`: until every live CLI is quiet (between turns, as its events
  *   show) or `until`, then the live runs and whether they are quiet (`QuietAnswer`): the
  *   renewal's look for a quiet moment, signalling nothing.
- * - `renew-wait <deadline_ms>`: until every live CLI is quiet or the deadline, then each
- *   run's runner, told on its channel (`tell`), posts `ta.renewing` and holds its posts;
- *   `renewed`: each posts `ta.renewed` and goes on.
+ * - `renew-wait <deadline_ms>`: each live run's runner, told on its channel at once (`tell`;
+ *   the Worker's look chose the moment), posts `ta.renewing` and holds its posts, its answer
+ *   waited for until the deadline; `renewed`: each posts `ta.renewed` and goes on.
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
@@ -656,17 +656,8 @@ async function renewWait(deadline: number): Promise<number> {
   if (!Number.isSafeInteger(deadline)) {
     throw new Error("renew-wait takes its deadline, in ms");
   }
-  for (;;) {
-    const live = liveRuns();
-    if (live.length === 0) {
-      return OK;
-    }
-    if (live.every(({ state }) => quiet(state)) || Date.now() >= deadline) {
-      await told(VERB.renewing, deadline);
-      return OK;
-    }
-    await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
-  }
+  await told(VERB.renewing, deadline);
+  return OK;
 }
 
 async function recover(): Promise<number> {

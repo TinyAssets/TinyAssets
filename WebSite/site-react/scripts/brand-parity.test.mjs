@@ -29,7 +29,7 @@ function filesBelow(directory) {
 
 test("every committed mark matches the canonical generator receipt", () => {
   assert.equal(provenance.schema_version, 1);
-  assert.equal(provenance.canonical_source, "tinyassets/desktop/icon_gen.py");
+  assert.equal(provenance.canonical_source, "WebSite/brand/mark.py");
   assert.match(provenance.mark_version, /^[0-9a-f]{12}$/);
 
   for (const [kind, entries] of [

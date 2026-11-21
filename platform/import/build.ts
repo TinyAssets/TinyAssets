@@ -11,9 +11,8 @@
  * (each link and its target: never followed, never made), `refused.tar` (the names the
  * files plane cannot store, and links whose target is not UTF-8) and `ignored.tar` (what the sync's defaults leave out of a
  * live tree, kept verbatim all the same, Fact 9), the archived stores' table copies, and
- * `policy.refused.json`: an old policy document the platform's validator refuses
- * (`contract/src/policy-document.ts`), kept verbatim while the owner keeps the default policy,
- * so a document the new rules refuse never stops an owner's import.
+ * `policy.json`: the owner's old policy document, verbatim, beside its mapping to the new
+ * rules (`policy.ts`), which is the owner's policy row.
  * The census makes them in a temporary folder of its own and deletes them; the bundle
  * builder makes them in the bundle's.
  */
@@ -33,10 +32,10 @@ import { CHUNK_BYTES, INLINE_BYTES } from "../contract/src/limits";
 import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { chunkName, type Entry, inlineName, type Row } from "../contract/src/import-message";
 import { ancestors, IMPORTED, PROFILE, WORKSPACE } from "../contract/src/paths";
-import { validate } from "../contract/src/policy-document";
 import { carried } from "../owner/src/starter-package";
 
 import { layout, openFile, openStore, quoted, storeUri } from "./backup";
+import { type Mapped, mapPolicy, readmeLines } from "./policy";
 import { type Archived, type Copy, type Owner, type Problem, type Refusal } from "./survey";
 import { TarWriter } from "./tar";
 
@@ -45,7 +44,7 @@ export const README = `${IMPORTED}/README.md`;
 export const LINKS = `${IMPORTED}/links.txt`;
 export const REFUSED = `${IMPORTED}/refused.tar`;
 export const IGNORED = `${IMPORTED}/ignored.tar`;
-export const POLICY_REFUSED = `${IMPORTED}/policy.refused.json`;
+export const POLICY_ARCHIVE = `${IMPORTED}/policy.json`;
 
 /** The tier the owner's plan names, by name, or `DEFAULT_TIER`. */
 export const tierName = (owner: Owner): string => owner.plan?.tier ?? DEFAULT_TIER;
@@ -69,12 +68,17 @@ function byPath(a: string, b: string): number {
   return x.length - y.length;
 }
 
+/** The owner's old policy as it was stored (none when it had none), and its mapping. */
+export interface PolicyImport {
+  readonly old: string | null;
+  readonly mapped: Mapped;
+}
+
 /**
- * The owner's live rows: its policy document, then its collections' rows by collection and seq;
- * and the old policy as it was stored when the platform's validator refuses it (`validate`),
- * which is then no row: the owner keeps the default, and its document is archived verbatim.
+ * The owner's live rows: its policy mapped to the new rules (`policy.ts`), unless the mapping
+ * refuses it, then its collections' rows by collection and seq.
  */
-function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string | null } {
+function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; policy: PolicyImport } {
   const account = join(layout(copy.work).shared, ".broker", "accounts", owner.digest);
   const read = (store: string, table: string, sql: string): Record<string, unknown>[] => {
     const at = join(account, store);
@@ -92,25 +96,18 @@ function rowsOf(owner: Owner, copy: Copy): { rows: Row[]; refusedPolicy: string 
       db.close();
     }
   };
-  const policy: Row[] = [];
-  let refusedPolicy: string | null = null;
-  for (const row of read("policy.db", "policy", "SELECT document FROM policy")) {
-    const text = String(row["document"]);
-    try {
-      const document: unknown = JSON.parse(text);
-      validate(document);
-      policy.push({ kind: "policy", document });
-    } catch {
-      refusedPolicy = text;
-    }
-  }
+  const stored = read("policy.db", "policy", "SELECT document FROM policy");
+  const old = stored.length === 0 ? null : String(stored[0]!["document"]);
+  const mapped = mapPolicy(old);
   const collections = read("conversations.db", "collection_rows",
                            "SELECT collection, row_id, private, body FROM collection_rows " +
                            "ORDER BY collection, seq")
     .map((row): Row => ({ kind: "collection", collection: String(row["collection"]),
                           row_id: String(row["row_id"]), private: Number(row["private"]) ? 1 : 0,
                           body: String(row["body"]) }));
-  return { rows: [...policy, ...collections], refusedPolicy };
+  const policy: Row[] = "document" in mapped ? [{ kind: "policy", document: mapped.document }]
+    : [];
+  return { rows: [...policy, ...collections], policy: { old, mapped } };
 }
 
 /** Content a tree holds, each piece once, as the files plane charges it; written to `dir`. */
@@ -204,7 +201,7 @@ function tablesCopy(archived: Archived, to: string): void {
  * move is explained: written once per imported owner, and deleted by the owner with the folder,
  * so nothing about the move ships in the starter, the plugins or the MCP instructions.
  */
-function readme(owner: Owner, policyArchived: boolean): string {
+function readme(owner: Owner, policy: PolicyImport): string {
   const tree = owner.tree;
   const lines = [
     "# Your files from the old TinyAssets",
@@ -270,10 +267,8 @@ function readme(owner: Owner, policyArchived: boolean): string {
                "(dependencies, build outputs, caches, by the sync's default list), unchanged, " +
                "so nothing of yours is left behind.", "");
   }
-  if (policyArchived) {
-    lines.push("`policy.refused.json` is your old policy, unchanged: the new platform's rules " +
-               "refuse it, so you start with the default policy. Set yours again in the app.",
-               "");
+  if ("document" in policy.mapped) {
+    lines.push(...readmeLines(policy.mapped, policy.old !== null));
   }
   return `${lines.join("\n")}`;
 }
@@ -304,8 +299,8 @@ export interface Built {
   readonly entries: readonly Entry[];
   readonly rows: readonly Row[];
   readonly store: Store;
-  /** Whether the old policy was refused by the validator, and archived (`POLICY_REFUSED`). */
-  readonly policyArchived: boolean;
+  /** The old policy, archived verbatim when there was one (`POLICY_ARCHIVE`), and its mapping. */
+  readonly policy: PolicyImport;
 }
 
 /**
@@ -362,14 +357,12 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
     if (owner.tree.ignoredTrees.length > 0) {
       make(IGNORED, (at) => tarOf(at, owner.tree.ignoredTrees));
     }
-    const { rows, refusedPolicy } = rowsOf(owner, copy);
-    if (refusedPolicy !== null) {
-      make(POLICY_REFUSED, (at) => writeFileSync(at, refusedPolicy, { flag: "wx" }));
+    const { rows, policy } = rowsOf(owner, copy);
+    if (policy.old !== null) {
+      make(POLICY_ARCHIVE, (at) => writeFileSync(at, policy.old!, { flag: "wx" }));
     }
-    if (entries.size > 0) {
-      make(README, (at) => writeFileSync(at, readme(owner, refusedPolicy !== null),
-                                         { flag: "wx" }));
-    }
+    // Every owner's rules came across, the old defaults at least: the README says which.
+    make(README, (at) => writeFileSync(at, readme(owner, policy), { flag: "wx" }));
     for (const path of [...entries.keys()]) {
       for (const parent of ancestors(path)) {
         if (!entries.has(parent)) {
@@ -378,7 +371,7 @@ export function buildTree(owner: Owner, copy: Copy, dir: string | null): Built {
       }
     }
     return { entries: [...entries.values()].sort((a, b) => byPath(a.path, b.path)),
-             rows, store, policyArchived: refusedPolicy !== null };
+             rows, store, policy };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

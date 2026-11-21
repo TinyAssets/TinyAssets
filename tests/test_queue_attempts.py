@@ -69,12 +69,53 @@ LEG = "platform-tests (owner, npm run test:workerd -w owner)"
     # Fail closed: a failed job that names no test, only the aggregate, unreadable data.
     ({LEG: [VITEST], "platform-app": []}, ["docs/a.md"], None, True),
     ({"required-tests": []}, ["docs/a.md"], None, True),
-    (None, ["docs/a.md"], None, True),
     ({LEG: [VITEST]}, None, None, True),
 ])
 def test_a_removal_counts_only_when_it_failed_a_test_the_diff_selected(
         jobs, changed, selection, counts) -> None:
-    assert qa.attempt_counts(jobs, changed=changed, selection=selection)[0] is counts
+    assert qa.attempt_counts(jobs, stopped=set(), changed=changed,
+                             selection=selection)[0] is counts
+
+
+def _run_44079286405(monkeypatch, shard_step: str, shard_log: str):
+    """Merge group run 44079286405 as the API answers: shard 5/6 failed, then the aggregate."""
+    listing = "\n".join([
+        '{"id": 134025918203, "name": "required-tests shard 5/6", '
+        f'"failed_step": "{shard_step}"}}',
+        '{"id": 134028557126, "name": "required-tests", '
+        '"failed_step": "Decide the gate over this entry\'s selection"}',
+    ])
+    logs = {
+        "134025918203": shard_log,
+        "134028557126": "2026-11-17T12:08:10.9604694Z - missing shard(s) [5] of 6: "
+                        "no manifest uploaded\n",
+    }
+    monkeypatch.setattr(qa, "_gh", lambda *args: (
+        logs[args[1].split("/")[-2]] if args[1].endswith("/logs") else listing))
+    jobs, stopped = qa._failed_jobs("o/r", 44079286405)
+    return qa.attempt_counts(jobs, stopped=stopped, changed=["platform/owner/src/a.ts"],
+                             selection=["tests/test_owner_router.py"])
+
+
+def test_a_shard_whose_image_build_was_refused_failed_no_test(monkeypatch) -> None:
+    # #5678's removal counted for this run: the registry's 429, before any test ran.
+    refused = "\n".join([
+        "2026-11-17T12:03:19.0956616Z #2 ERROR: unexpected status from HEAD request to "
+        "https://mirror.gcr.io/v2/library/python/manifests/3.11-slim: 429 Too Many Requests",
+        f"2026-11-17T12:04:59.1442447Z {qa.NO_TEST_RAN} mirror.gcr.io was still busy "
+        "after 4 attempts: 429 Too Many Requests",
+        "2026-11-17T12:04:59.1542537Z ##[error]Process completed with exit code 1.",
+    ])
+    counts, failing, why = _run_44079286405(monkeypatch, "Run this shard of the selection",
+                                            refused)
+    assert (counts, failing) == (False, []) and "stopped before any test ran" in why
+    # The same shard, stopped in GitHub's own checkout step, failed no test either.
+    assert _run_44079286405(monkeypatch, "Run actions/checkout@v4", "")[0] is False
+    # It still counts when nothing shows the tests never started: a step of the
+    # workflow's own failed, or the runner's log names no test.
+    assert _run_44079286405(monkeypatch, "Install", "")[0] is True
+    assert _run_44079286405(monkeypatch, "Run this shard of the selection",
+                            refused.replace(qa.NO_TEST_RAN, "[oracle]"))[0] is True
 
 
 def test_the_removals_own_run_is_this_queue_entrys_newest_failed_one() -> None:
@@ -120,8 +161,8 @@ def test_a_removal_whose_evidence_cannot_be_read_counts(monkeypatch) -> None:
     monkeypatch.setattr(qa, "_runs", lambda repo, since: [
         {"id": 3, "head_branch": "gh-readonly-queue/main/pr-7-c", "conclusion": "failure",
          "created_at": "2026-11-04T11:01:00Z"}])
-    monkeypatch.setattr(qa, "_failed_jobs", lambda repo, run: {
-        "platform-tests (owner, x -w owner)": ["platform/owner/a.test.ts > s"]})
+    monkeypatch.setattr(qa, "_failed_jobs", lambda repo, run: ({
+        "platform-tests (owner, x -w owner)": ["platform/owner/a.test.ts > s"]}, set()))
     monkeypatch.setattr(qa, "_changed", lambda repo, number: ["docs/a.md"])
     monkeypatch.setattr(qa, "_selection", bad_selection)
     assert qa.classify_removal("o/r", 7, "2026-11-04T12:00:00Z")[0] is True

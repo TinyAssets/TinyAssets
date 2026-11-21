@@ -81,9 +81,12 @@ describe("the census", () => {
       archived_stores: 8,
     });
     expect((report["files"] as { largest: number }).largest).toBe(4 * 1024 * 1024 + 10);
-    // Both policies have the old stack's shape, which the validator no longer takes (d3 §N6).
-    expect(report["rows"]).toEqual({ policies: 2, policies_archived: 2, collection_rows: 2,
-                                     body_bytes: 27 });
+    expect(report["rows"]).toEqual({ policies: 2, collection_rows: 2, body_bytes: 27 });
+    // Alice's and the founder's old policies, and bob's and the new owner's none: no one set a
+    // rule, so each gets the four old defaults that have a place, and not the four that have
+    // none (d3 §N7); alice's egress asked.
+    expect(report["policy"]).toEqual({ none: 2, never_set: 4, entries: 0, egress_ask: 1,
+                                       rules_written: 16, not_carried: { no_act: 4, unseen: 12 } });
     expect(report["stores"]).toMatchObject({
       "account/policy.db/policy carry": 2, "account/policy.db/once_approvals drop": 1,
       "account/policy.db/receipts archive": 1, "account/conversations.db/collection_rows carry": 2,

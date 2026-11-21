@@ -105,12 +105,24 @@ function answered(command: WorkerCommand, done: Exec): { code: number; out: stri
   return { code: done.exitCode, out: done.stdout };
 }
 
-/** Measured: the longest pause, 705 ms (`e2b-resume-measurement.md`, 40 cycles). */
+/**
+ * Measured: the longest of 40 pauses with 150 MiB of memory in use, 705 ms
+ * (`e2b-resume-measurement.md`). One just after 6 GB were written took 7.0 s
+ * (`sandbox-probe.md`): a renewal at the edge that slow lands on E2B's own pause (the edge).
+ */
 const PAUSE_MAX_MS = 705;
 /** Measured: the longest resume call, 895 ms to the first byte (the same 40 cycles). */
 const RESUME_MAX_MS = 895;
-/** Measured: `ta-runner renewing` with a live run, 252 ms (`sandbox-probe.md`). */
-const RENEWING_MS = 252;
+/**
+ * How long a renewal waits for its runs' answers to `renewing` (`renew-wait`'s deadline), so
+ * that none has a post in flight at the pause (`runner.ts` `Job`): at most two posts, the one
+ * in flight and then its held frames, `ta.renewing` among them, each within the 252 ms that
+ * `ta-runner renewing` took with a live run, its frame posted (`sandbox-probe.md`), and the
+ * drain's look at the post in flight every 50 ms: 554 ms, 79% of the bound. A run that has
+ * not answered by then (its door slow or refusing) is paused regardless: its post is sent
+ * again after the resume, and the owner reads only the frames past its last `seq`.
+ */
+const RENEWING_MS = 700;
 /** Measured: `prepare`'s lockdown, about 7 s once a boot (`sandbox-probe.md`). */
 const PREPARE_MS = 7_000;
 /**
@@ -1277,16 +1289,20 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * One renewal: the runner posts `renewing` and holds its posts (`renew-wait` now: every
-   * live run, one launched since the quiet look included); the row is marked renewing, so a
-   * look that fails after the pause resumes it; its slot is held in the line across the
-   * pause and the resume (`reserve`), so the first owner waiting cannot create into the
-   * moment it frees; the sandbox is paused with its memory and resumed at once.
+   * One renewal: each live run, one launched since the quiet look included, told at once to
+   * post `renewing` and hold its posts, its answer waited for to `RENEWING_MS` on, or to the
+   * longest pause before `endAt` when that is sooner, so a look late at the edge never waits
+   * its pause past `endAt` (`renew-wait`); the row is marked renewing, so a look that fails
+   * after the pause resumes it; its slot is held in the line across the pause and the resume
+   * (`reserve`), so the
+   * first owner waiting cannot create into the moment it frees; the sandbox is paused with
+   * its memory and resumed at once.
    */
   async #renew(row: Row, handle: Box, endAt: number, ceilings: SandboxCeilings):
       Promise<void> {
     const e2b = this.#e2b();
-    await this.#run(handle, [COMMAND.renewWait, String(Date.now())]);
+    await this.#run(handle, [COMMAND.renewWait,
+                             String(Math.min(Date.now() + RENEWING_MS, endAt - PAUSE_MAX_MS))]);
     await this.#hold(handle.sandboxID);
     this.#sql.exec("UPDATE sandboxes SET renewing = 1 WHERE authority = ?", row.authority);
     const paused = await this.#pause(handle.sandboxID, endAt);

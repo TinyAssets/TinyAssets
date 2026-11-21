@@ -220,9 +220,9 @@ const BROKER_STATE: Level = level([
 export const ACCOUNT: Level = level([
   ["policy.db", store(uses({
     carry: "policy", archive: "receipts proposals", drop: "once_approvals spend_reservations",
-  }), "the policy document carries (the new validator decides); its receipts and proposals " +
-      "are audit history; one-time approvals expire in minutes and the spend windows start " +
-      "fresh")],
+  }), "the policy document carries, mapped to the new rules (policy.ts); its receipts and " +
+      "proposals are audit history; one-time approvals expire in minutes and the spend " +
+      "windows start fresh")],
   ["message_ledger.db", store("archive", "mail to outside agents whose grants do not carry " +
                               "(ADR-036), kept as the owner's record")],
   ["conversations.db", store(uses({

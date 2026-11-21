@@ -292,6 +292,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
+- [x] The oracle image builds on the root `Dockerfile`'s digest-pinned base, read from there,
+  and retries a busy registry (a 429, 5xx or stall: merge group run 44079286405) up to four
+  times. `queue_attempts.py` no longer counts a job that stopped before any test ran
+  (GitHub's own step, or the venue's `NO_TEST_RAN` line), which had cost #5678 a counted
+  removal and #5471 its handoff (`fix/oracle-pull-retry`;
+  `untangle-2026-11/oracle-pull-retry.md`).
 
 ### Step 1. Now: B25, T0b, E2
 
@@ -398,13 +404,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
     platform Workers are entries in the deploy kit's `retired` list (`deploy/platform.json`),
     the one remover of a platform Worker (d3 §O2).
-    - `untangle/b24-manifest`: `scripts/platform_setup.py` is on the cutover list
-      (`o-keyrings.md`). Its inventory of `scripts/` takes what still names it: `platform.json`
-      `made`'s `why`, `deploy.ts`'s kit note, `checklist.md`'s setup line,
-      `platform-deploy.yml`'s header, `docs/host-actions.md`, `.github/test-durations.json`,
-      `deploy/review-app.html` (it runs the setup's `review-app` step, and only the setup's tests
-      read it) and `tests/test_workflow_production_environment.py`'s note. It also decides where
-      the setup's `workos` and `review-app` steps go, since the deletion takes them too.
+    - [x] Inventory the founder's one-time setup and its readers (`b24-setup-inventory.md`).
+      The cutover manifest lists the form, tests, workflow and documentation changes. The
+      founder's WorkOS and installed review App recovery instructions live in `docs/host-actions.md`.
+    - `untangle/b24-manifest`: the rest of the repository inventory (the old stack, the
+      workflows, the gate scripts, the docs, the rules, the specs and the site) and the dry-run
+      job that applies all three phases to a temporary tree.
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
@@ -594,9 +599,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     the agent's engine record; a held call the hook deferred resumes on no input, and its
     conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
     pass lands, since the runner writes the files (`untangle/r5-hooks`).
-  - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
-    the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
-    notice. Until it lands, an old document is archived whole (`policy.refused.json`).
+  - [x] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
+    the mapping, the old defaults written explicitly (d3 §N7), and the archive file
+    (`policy.json`); the notice's words as data (`import/notice.json`). A spend cap refuses
+    its owner (`policy_spend`) until its mapping is built from the census's numbers, if it finds
+    any (`untangle/r5-import`; `r5-import.md`).
+  - [ ] The notice's words approved, or rewritten, by the founder, before the real window
+    (`live:` founder_batch item 6; `platform/import/notice.json`, nothing sent).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
@@ -626,10 +635,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`pass-sandbox.md` §4).
   - [x] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
     (`pass-sandbox.md` §2).
-  - [ ] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
+  - [x] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
     deadline (`control.ts` `#renew`), and `tell` waits for an answer only to it, so no run's
     posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
-    bound first (`pass-sandbox.md` §2).
+    bound first (`pass-sandbox.md` §2). Done: `RENEWING_MS` past the Worker's now, 700 ms,
+    and never past `endAt` less the longest pause (#5680; `untangle-2026-11/renew-deadline.md`).
+  - [ ] `runner.ts` `RunState.renewing`, written for the tests alone, dropped with the next
+    state format (`renew-deadline.md` §4).
   - [ ] `gateway/src`'s surface only its tests use goes: `Hold`'s pool (every caller passes
     `gatewaySlots()`), `weighedBody`'s and `readHeld`'s nullable `hold`, the doorbell's `send`,
     `meter.ts` `sentHeaders` (its source-record check to `sources/`), and six exports nothing
@@ -655,8 +667,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
   account-deletion pages corrected, in the founder's copy.
-- [ ] The mark's source, `tinyassets/desktop/icon_gen.py`, moved out before the old stack is
-  deleted, or the site stops deploying (d3 §C6 F4).
+- [x] The mark's source is `WebSite/brand/mark.py`; the cutover manifest lists the old copy
+  and the retired tray and onboarding exports and checks (d3 §C6 F4, `site-mark.md`).
 - [ ] The live stage's four PRs, after B13, B14's canary and `control` (d3 §H).
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
@@ -705,7 +717,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,
-    spend caps and egress `ask` in the import.
+    spend caps and egress `ask` in the import (the census's `policy` counts and its
+    `policy_spend` problem, `r5-import.md`).
 
 ### Step 8. The live stage (d3 §F1, §H), in order
 
