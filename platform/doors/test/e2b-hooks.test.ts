@@ -184,8 +184,7 @@ describe("E2B's lifecycle webhook", () => {
     const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
     const stub = vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
       sandboxBilled: () => Promise.reject(busy) }) as never);
-    const answer = await deliver(JSON.stringify(event(who)));
-    stub.mockRestore();
+    const answer = await deliver(JSON.stringify(event(who))).finally(() => stub.mockRestore());
     expect([answer.status, answer.headers.get("Retry-After"), await answer.json()])
       .toEqual([429, "1", { error: "this account is busy; try again shortly" }]);
   });

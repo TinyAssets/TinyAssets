@@ -823,8 +823,8 @@ describe("no caller is counted or capped by the doors", () => {
     const keyList = vi.fn(() => Promise.reject(busy));
     const stub = vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
       keyList }) as never);
-    const answer = await appPost("keys/list", app.access_token, null, {});
-    stub.mockRestore();
+    const answer = await appPost("keys/list", app.access_token, null, {})
+      .finally(() => stub.mockRestore());
     expect([answer.status, answer.headers.get("Retry-After"), await answer.json()])
       .toEqual([429, "1", { error: "this account is busy; try again shortly" }]);
     expect(keyList).toHaveBeenCalledTimes(1);
