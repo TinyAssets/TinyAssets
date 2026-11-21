@@ -4,7 +4,8 @@
  * Its checked-in config is not deployable (no routes, placeholder KV ids): the deploy kit
  * (`platform/deploy/`) writes the deployed one. The upstream sign-in is the configured
  * owner issuer's (`upstream.ts` `upstreamOf`), or `UNWIRED` until the deploy configures it,
- * so a sign-in fails loudly; the source records are the bundled ones.
+ * so a sign-in fails loudly; the source records are the bundled ones. Every answer names the
+ * version that served it (`versioned`).
  */
 import { QUEUES } from "../../contract/src/queue-names";
 
@@ -17,9 +18,22 @@ import { importQueue } from "./import";
 import { operatorQueue } from "./operator";
 import { bundledSources } from "../../sources/src/catalog";
 
+/** The header naming the version that served an answer: its id (`CF_VERSION_METADATA`). */
+export const VERSION_HEADER = "x-tinyassets-version";
+
+/**
+ * `answer`, naming `version`: Cloudflare ignores a version override for a version outside
+ * the deployment and still answers, so a check reads which version served it here.
+ */
+function versioned(answer: Response, version: WorkerVersionMetadata): Response {
+  const named = new Response(answer.body, answer);
+  named.headers.set(VERSION_HEADER, version.id);
+  return named;
+}
+
 export default Object.freeze({
-  fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
-    serve(request, env, ctx, bundledSources()),
+  fetch: async (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
+    versioned(await serve(request, env, ctx, bundledSources()), env.CF_VERSION_METADATA),
   // Four queues, each by its producer's name and to its one consumer: the sandbox line's
   // doorbell (`ring.ts`), the erasure's outside record (`erase.ts`), the operator channel
   // (`operator.ts`) and the cutover's import window (`import/`). A batch of any other queue is
