@@ -12,19 +12,35 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { REPO } from "../../ci/paths";
+import { APP_PATH, CONNECTED_PATH, SIGNED_IN_PATH } from "../src/config";
+import type { DoorsEnv } from "../src/env";
+import { servePage } from "../src/pages";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const APP = join(DOORS, "app");
 
+/** The status the doors answer `path` with, each file they read from `app/` put in `read`. */
+async function served(path: string, read: string[]): Promise<number> {
+  const env = { ASSETS: { fetch: async (request: Request) => {
+    const file = new URL(request.url).pathname.slice(1);
+    read.push(file);
+    return existsSync(join(APP, file)) ? new Response(readFileSync(join(APP, file)))
+      : new Response(null, { status: 404 });
+  } } } as unknown as DoorsEnv;
+  return (await servePage(new Request(`https://doors.test${path}`), env)).status;
+}
+
 describe("the owner app's files", () => {
-  it("are exactly the pages, scripts and style the doors serve", () => {
-    const files = readdirSync(APP).sort();
-    expect(files).toEqual(["api.js", "app.css", "app.js", "connected.html", "connected.js",
-                           "index.html", "signed-in.html", "signed-in.js", "view.js"]);
-    const pages = readFileSync(join(DOORS, "src", "pages.ts"), "utf8");
-    for (const file of files) {
-      expect(pages, file).toContain(`"${file}"`);
+  it("are exactly the pages, scripts and style the doors serve", async () => {
+    const files = readdirSync(APP);
+    const read: string[] = [];
+    for (const page of [APP_PATH, SIGNED_IN_PATH, CONNECTED_PATH]) {
+      expect(await served(page, read), page).toBe(200);
     }
+    for (const file of files.filter((name) => !name.endsWith(".html"))) {
+      expect(await served(`${APP_PATH}/static/${file}`, read), file).toBe(200);
+    }
+    expect(read.sort()).toEqual(files.sort());
   });
 
   it("name no other origin, parse no HTML string and evaluate no code", () => {

@@ -1,4 +1,4 @@
-// The owner's app (tasks 2, the owner app): a thin surface over the doors' owner routes
+// The owner's app: a thin surface over the doors' owner routes
 // (`/app/api/*`). It builds no feature editor (Direction 3): an agent is its files, which
 // the owner reads and writes here as text, and everything else is one door's answer shown
 // in plain words. Every request goes to this origin only.
@@ -19,7 +19,7 @@ const SECTIONS = Object.freeze([
 ]);
 
 /**
- * The doors this app knows are not on the platform yet, each with its slice: only these say
+ * The doors this app knows are not on the platform yet: only these say
  * "not here yet", shown before anything is clicked. Any other missing door is a bug, and its
  * refusal is shown as it came. Each entry goes when its door lands.
  */
@@ -532,7 +532,7 @@ async function rooms(arg = null) {
 
 // -- Model sources --------------------------------------------------------------------
 
-// The vendor's own sign-in inside your sandbox (slice SIGNIN): TinyAssets starts the
+// The vendor's own sign-in inside your sandbox: TinyAssets starts the
 // vendor's own CLI's login there and shows only what it prints for you to do: a link to the
 // vendor's own sign-in page, which opens in your browser (TinyAssets never sees your
 // password), a code to type there, and a box for the code the vendor's page gives back.

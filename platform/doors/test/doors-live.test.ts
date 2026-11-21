@@ -1,9 +1,9 @@
 /**
- * Slice L's doors, in workerd through the real owner Worker: the platform's explicit admit
+ * The doors, in workerd through the real owner Worker: the platform's explicit admit
  * at sign-up and the erasure's outside record (an erased owner's name resolving nothing
  * again), whether the owner's own door or the operator's `owner.erase` began it; the key
  * store; `/hooks/inbound`'s two shapes (a bad HMAC, a replay, the gate, the breaker); no
- * caller counted or capped by the doors (slice L's review, N1); and the file door's bytes,
+ * caller counted or capped by the doors; and the file door's bytes,
  * streamed to `FILES` by the binder.
  */
 import { createHash, createHmac } from "node:crypto";
@@ -686,7 +686,7 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
 
   // That the object answers mailbox_full at the hot ceiling, never counting it to the breaker,
   // is the owner's test (`owner/test/admit.test.ts`); here, the doors' answer to it.
-  it("is told to send an event again when the object's mailbox is full (review E-2)",
+  it("is told to send an event again when the object's mailbox is full",
      async () => {
     const who = owner();
     await signInApp({ owner: who });
@@ -738,13 +738,13 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
   });
 });
 
-describe("no caller is counted or capped by the doors (slice L's review)", () => {
+describe("no caller is counted or capped by the doors", () => {
   /** More failures from one address than the removed failure bound (115) allowed. */
   const MANY = 117;
   /** A credential of the right shape that no grant holds. */
   const stale = () => `${owner()}:${"a".repeat(16)}:${"b".repeat(32)}`;
 
-  it("serves a valid key from an address that sent many bad MCP bearers (review N1, attack 1)",
+  it("serves a valid key from an address that sent many bad MCP bearers",
      async () => {
     const app = await signInApp({ owner: owner() });
     const minted = await json<{ key: string }>(
@@ -763,8 +763,7 @@ describe("no caller is counted or capped by the doors (slice L's review)", () =>
     expect(valid.status).toBe(200);
   });
 
-  it("serves a live refresh from an address that sent many failed refreshes (review N1, " +
-     "attack 2)", async () => {
+  it("serves a live refresh from an address that sent many failed refreshes", async () => {
     const client = await registerClient();
     const backend = `198.51.100.251-${crypto.randomUUID()}`;
     const live = await connect(client, { owner: owner() });
@@ -851,7 +850,7 @@ describe("the file door's bytes", () => {
                                       "Content-Type": "application/octet-stream", ...headers } }));
   }
 
-  it("reach the files Worker's upload entrypoint alone: no read and no key call (review M5-1)",
+  it("reach the files Worker's upload entrypoint alone: no read and no key call",
      async () => {
     const files = (env as unknown as {
       FILES: Record<string, (...args: unknown[]) => Promise<unknown>> }).FILES;

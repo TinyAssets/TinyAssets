@@ -11,7 +11,7 @@
  *
  * The owner surface's `grants/set` refuses a set to `revoked` (`app.ts`), so a client is
  * revoked only here or by its key's revoke: no path that revokes a client in the object
- * leaves its refresh tokens alive (rename review N1). An API key's client revoked here (the
+ * leaves its refresh tokens alive. An API key's client revoked here (the
  * owner app's "Turn off", which holds the grant row, not the key id) also loses its key's
  * directory entry, as `keys/revoke` deletes it, so no entry outlives its key.
  *

@@ -7,8 +7,7 @@
  * deletes a person's identity at the owner's erasure. The live one is `oidc.ts`: User
  * Management's code exchange and its access token's signature, issuer, client, subject and
  * `auth_time` against the issuer's JWKS, refusing a token without `auth_time` (there is no
- * clock fallback). Until the
- * deploy configures it, `UNWIRED` refuses loudly (`upstreamOf`).
+ * clock fallback). Until the deploy configures it, `UNWIRED` refuses loudly (`upstreamOf`).
  * The binder names the owner from the issuer and subject: AuthKit's (`OWNER_ISSUER`)
  * subjects stay owner ids as they are, so no identity migration is owed at cutover, and
  * any later issuer's are namespaced.

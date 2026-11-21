@@ -3,11 +3,11 @@
  * connect's browser binding (below). The only source that reads a request's `Cookie`
  * header (the binder guard).
  *
- * The cookie is `__Host-ta-owner`: Secure, HttpOnly, Path=/, SameSite=Strict, eight
- * hours. It carries no owner and the doors never look it up: the object minted it and
- * checks its own row (`sessions.ts`), and the owner comes from a separate verified
- * credential. It is forwarded as the binding's `session` only when every rule below
- * holds, so a cross-site page can never make the owner's browser widen anything:
+ * The cookie is `__Host-ta-owner`: Secure, HttpOnly, Path=/, SameSite=Strict, for the
+ * session's life (`SESSION_TTL_S`). It carries no owner and the doors never look it up: the
+ * object minted it and checks its own row (`sessions.ts`), and the owner comes from a
+ * separate verified credential. It is forwarded as the binding's `session` only when every
+ * rule below holds, so a cross-site page can never make the owner's browser widen anything:
  * - the path is the owner surface, `/app/api/*`;
  * - the method is not GET, HEAD or OPTIONS;
  * - the media type is exactly `application/json`;
@@ -18,9 +18,9 @@
  * `interactive owner session required`. On `/mcp`, `/api` and `/hooks` the `Cookie`
  * header is removed before anything else sees the request.
  *
- * Strict, not the Python's Lax: the cookie only ever needs to ride our own page's
- * same-origin POSTs, and a Strict cookie set on the sign-in callback's response is kept
- * though that navigation came from the identity provider.
+ * Strict, not Lax: the cookie only ever needs to ride our own page's same-origin POSTs, and
+ * a Strict cookie set on the sign-in callback's response is kept though that navigation
+ * came from the identity provider.
  */
 import { ORIGIN } from "../../contract/src/identity";
 import { sha256Hex } from "../../contract/src/digest";

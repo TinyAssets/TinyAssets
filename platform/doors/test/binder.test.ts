@@ -192,7 +192,7 @@ describe("the other bindings", () => {
 });
 
 describe("the owner a sign-in names", () => {
-  /** The doors once two providers' slices have listed their issuers. */
+  /** The doors once two providers' issuers are listed. */
   const LISTED: DoorsEnv = { ...doorsEnv,
     FOREIGN_ISSUERS: JSON.stringify(["https://auth.openai.com", "https://other.example"]) };
 
@@ -211,7 +211,7 @@ describe("the owner a sign-in names", () => {
   it.each([
     ["the owner issuer with a trailing slash", `${ISSUER}/`],
     ["the owner issuer's host in capitals", "https://UPSTREAM.test"],
-    ["an issuer no slice has listed", "https://auth.openai.com"],
+    ["an issuer no one has listed", "https://auth.openai.com"],
     ["a listed issuer with a trailing slash", "https://auth.openai.com/"],
   ])("refuses %s loudly, never a new owner", async (_what, issuer) => {
     // The unlisted issuer against today's empty list; the rest against a list with two.

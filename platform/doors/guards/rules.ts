@@ -10,27 +10,27 @@
  *   and reaches every owner's object by name; only `src/binder.ts` names it.
  * - `GATEWAY`, `EGRESS`, `FILES` and `FILES_LOCATE` (`SERVICES`): one entrypoint each of the
  *   gateway and files Workers, each serving exactly what is listed, so the doors make no model
- *   call, hold no keyring and read no chunk, generation or key (review M5-1): of a generation,
+ *   call, hold no keyring and read no chunk, generation or key: of a generation,
  *   only the owner its header names (`locate`, the operator channel's `restore.locate`).
  * - `OAUTH_KV`, `DIRECTORY` and `CONTROL`: three KV namespaces, distinct, with placeholder ids
- *   (`not-provisioned-…`), so a deploy fails until cutover creates them.
+ *   (`not-provisioned-…`), so the checked-in config cannot deploy: the kit writes the ids.
  * - Four vars, each as checked in its inert value: `DCR_ENABLED` `"false"`; `OWNER_ISSUER`
  *   and `UPSTREAM` unset (`not-configured`), so every sign-in fails loudly until the deploy
  *   kit fills both from the issuer's live discovery (`deploy/deploy.ts`); and
- *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
+ *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's issuer is listed, so any other
  *   issuer is refused, never taken for a new owner.
  * - Four secrets, declared by name (`secrets.required`, which binds nothing):
  *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
  *   too (`SHARED_SECRETS`); `WORKOS_API_KEY`, the upstream's client secret;
- *   `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret (slice P); and
+ *   `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret; and
  *   `OPERATOR_KEYRING`, the ring the operator channel's messages are MAC'd under.
- * - No `ratelimits`: no number of ours bounds any caller (the founder's rule, slice L's
- *   review); Cloudflare's own DDoS protection is in front of every Worker.
+ * - No `ratelimits`: no number of ours bounds any caller (the founder's rule); Cloudflare's
+ *   own DDoS protection is in front of every Worker.
  * - `ASSETS`: the owner app's files (`app/`), Workers Static Assets, the Worker first on every
  *   request, so only `src/pages.ts`'s named pages and files are served, each with its
  *   headers; no HTML handling or not-found page of the assets' own.
  * - The consumer of every queue the platform's Workers produce onto, and of no other: the
- *   sandbox line's ring (slice S, `src/ring.ts`), which turns `{owner}` into that owner's
+ *   sandbox line's ring (`src/ring.ts`), which turns `{owner}` into that owner's
  *   `sandboxRung` and nothing else, the erasure queue, the operator channel's and the import
  *   window's.
  * - The operator channel (`src/operator.ts`, `OPERATOR_CHANNEL`), permanent: the operator
@@ -76,8 +76,8 @@ export const OBJECTS = Object.freeze({
 
 /**
  * The doors' service bindings, in order, by binding: each Worker's folder, the one entrypoint
- * bound, which extends `WorkerEntrypoint` itself (RPC serves inherited methods too, review
- * L6-1), and exactly the members it serves.
+ * bound, which extends `WorkerEntrypoint` itself (RPC serves inherited methods too), and
+ * exactly the members it serves.
  */
 export const SERVICES = Object.freeze({
   GATEWAY: Object.freeze({ worker: "gateway", entrypoint: "ConnectGateway",
