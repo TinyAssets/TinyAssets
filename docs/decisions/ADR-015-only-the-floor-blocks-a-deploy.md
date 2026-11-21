@@ -5,6 +5,8 @@
 Accepted. Its review line ("Adversarial review ... covers floor-class changes
 and gate files only") is superseded by ADR-038: every PR is reviewed.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the floor, the only thing that blocks a deploy (ADR-039 decision 2.9).
+
 ## Date
 
 2026-08-20

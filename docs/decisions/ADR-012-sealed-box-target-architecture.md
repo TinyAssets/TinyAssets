@@ -5,6 +5,8 @@
 Accepted; amended by ADR-019 (one box per owner, the loop in the box, gVisor
 driver) and ADR-031 (D5 for consumer subscriptions)
 
+Superseded by ADR-032 (founder, 2026-11-21), except: state and credentials outside every sandbox (ADR-032 decisions 1 and 3, ADR-039 decision 2.13) and foundational patches brought forward (Direction 5, ADR-039 decision 2.4).
+
 ## Date
 
 2026-10-02 (sealed box approved 2026-10-01)

@@ -9,6 +9,8 @@ human`), amended by ADR-033 (founder, 2026-11-01). Amends ADR-022 (its P2b row: 
 subscriptions, and constrains ADR-023 (hosted CLIs), ADR-024 (device
 runner) and the outside-agent wake recipes.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: decisions 2, 4, 5 and 6 and decision 3's unmodified binary, as ADR-033 left them (ADR-039 decision 2.20).
+
 ## Date
 
 2026-10-26

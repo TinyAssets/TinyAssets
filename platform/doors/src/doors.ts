@@ -58,9 +58,10 @@ function webClient(): Response {
 
 /**
  * `/mcp`, for both credentials an outside caller holds, served by one handler: an owner's
- * key (ADR-028), checked as the `/api` door checks it (`presentedKey`) and held to its own
- * grant, or an OAuth token for `/mcp`. Any other bearer, a key that does not verify included,
- * is the OAuth resource's, so it is answered the one `401` naming the resource's metadata.
+ * key (ADR-039 decision 2.18), checked as the `/api` door checks it (`presentedKey`) and
+ * held to its own grant, or an OAuth token for `/mcp`. Any other bearer, a key that does not
+ * verify included, is the OAuth resource's, so it is answered the one `401` naming the
+ * resource's metadata.
  */
 async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                        sources: Sources): Promise<Response> {
