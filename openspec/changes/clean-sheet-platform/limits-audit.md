@@ -145,7 +145,10 @@ owner's object, the table below gives the storage budget.
 - Policy receipts (`POLICY_LIMITS.receiptsPerBucket`) explain recent changes and decisions.
   Owner changes, agent proposals, refusals and action decisions each keep their own window.
   A burst of refusals therefore cannot displace the owner's change history. The current
-  policy and outstanding approval cards have their own records.
+  policy and outstanding approval cards have their own records. The action decisions
+  (`action_receipts`, `owner/src/actions.ts`) are not exported, so neither an export nor a
+  generation carries them, and a restored owner starts with none: the table stays apart
+  until a migration may change an exported table (`owner/src/export.ts` `NOT_EXPORTED`).
 - Egress receipts (`EGRESS_LIMITS.receiptsKept` and `refusalsKept`) explain recent sandbox
   requests and refusals. Once a call settles, its charge is accounted for on the run and in
   the spending counters. Discarding its receipt does not refund the call. Refusals have
