@@ -56,9 +56,9 @@ export function kernels(fix: string, kernel: string,
 }
 
 /**
- * The literal guard's finding (`deploy/guards/literals.test.ts`): the file
- * `from`, by its path from the repository root, spells live names `count` times outside the
- * configs and `deploy/platform.json`. It names none, so the entry that owes it spells none.
+ * The literal guard's finding (`deploy/guards/literals.test.ts`): the file `from`, by its path
+ * from the repository root, spells live names `count` times outside the configs and
+ * `deploy/platform.json`. It names none, so the entry that owes it spells none.
  */
 export const literalBreak = (from: string, count: number): string =>
   `${from}: live names ×${count}`;

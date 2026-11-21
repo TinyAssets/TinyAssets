@@ -1,6 +1,6 @@
 /**
- * The kit's operator path (d3 §G): what its modes `control` and
- * `owner` (`deploy.ts`) read and send.
+ * The kit's operator path (d3 §G): what its modes `control` and `owner` (`deploy.ts`) read and
+ * send.
  *
  * - **`control`** edits the control record (`contract/src/control.ts`) in KV itself, never
  *   through the doors, so the kill switch works when they don't. Its edits (`--set`,
@@ -215,9 +215,9 @@ export const WAIT_MS = 120_000;
  * inside the apply job's 30 minutes (`platform-deploy.yml`) with an ask's `WAIT_MS` to spare,
  * never by the job's timeout: mode `restore` asking a pin to write the owner's present state
  * (it stops loudly, the owner still held; a run again carries the same generation on, the
- * longest, the worst stream's, under 42 minutes: `owner/src/backup.ts`, and a release gives the pin up),
- * and mode `rotation` sweeping the directory (it stops at a page's end, its record saying
- * where a run again goes on).
+ * longest, the worst stream's, under 42 minutes: `owner/src/backup.ts`, and a release gives the
+ * pin up), and mode `rotation` sweeping the directory (it stops at a page's end, its record
+ * saying where a run again goes on).
  */
 export const RUN_MS = 20 * 60_000;
 

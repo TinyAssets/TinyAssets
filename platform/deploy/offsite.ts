@@ -1,6 +1,6 @@
 /**
- * The off-account copy (d3 §G): every night the files bucket is
- * copied to a Backblaze B2 bucket outside the Cloudflare account, by `offsite-copy.yml`.
+ * The off-account copy (d3 §G): every night the files bucket is copied to a Backblaze B2 bucket
+ * outside the Cloudflare account, by `offsite-copy.yml`.
  *
  * - **What it holds:** the files bucket alone, byte for byte at the same keys. That bucket is
  *   every owner's chunks and nightly generations (`files/src/keys.ts`), each object sealed

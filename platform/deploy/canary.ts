@@ -1,10 +1,10 @@
 /**
- * The platform's canary (d3 §J2, §A7): the platform checked from
- * outside, through its public routes, as a user's client reaches it. It runs on GitHub's
- * runners (`.github/workflows/platform-canary.yml`), started every ten minutes by the doors'
- * clock (`doors/src/canary-clock.ts`), and after each deploy by the kit (`deploy.ts`). A
- * check run inside Cloudflare could not prove the routes: a Worker's fetch of its own zone's
- * routes never reaches them.
+ * The platform's canary (d3 §J2, §A7): the platform checked from outside, through its public
+ * routes, as a user's client reaches it. It runs on GitHub's runners
+ * (`.github/workflows/platform-canary.yml`), started every ten minutes by the doors' clock
+ * (`doors/src/canary-clock.ts`), and after each deploy by the kit (`deploy.ts`). A check run
+ * inside Cloudflare could not prove the routes: a Worker's fetch of its own zone's routes never
+ * reaches them.
  *
  *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--unkeyed]
  *        [--clock] [--full] [--result <file>]
