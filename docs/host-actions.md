@@ -25,7 +25,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Smallest founder-only action |
 |---|---|
-| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Left: delete any repository-level copy of a production secret (Settings → Secrets and variables → Actions → Repository secrets), since a branch dispatch or a pull request can read those. Every workflow now reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment, so each other repository secret goes once its environment holds the same value; `MERGE_ATTRIBUTION_TOKEN`, the four `ANDROID_UPLOAD_*`, `ANDROID_DEBUG_KEYSTORE_B64` and `ANDROID_GOOGLE_SERVICES_JSON_B64` are copied into `production` first. For WorkOS, first check the main-only `production` environment for `WORKOS_API_KEY`. Keep an existing value. If absent, store the key from the WorkOS Production dashboard using the local prompt for `gh secret set WORKOS_API_KEY --env production`, then read back the environment secret's name and update time. Once the founder confirms the intended production key is in place and all remaining readers use that environment, remove only the repository copies of `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN`. |
+| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Left: delete any repository-level copy of a production secret (Settings → Secrets and variables → Actions → Repository secrets), since a branch dispatch or a pull request can read those. Every workflow now reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment, so each other repository secret goes once its environment holds the same value; `MERGE_ATTRIBUTION_TOKEN`, the four `ANDROID_UPLOAD_*`, `ANDROID_DEBUG_KEYSTORE_B64` and `ANDROID_GOOGLE_SERVICES_JSON_B64` are copied into `production` first. For WorkOS, first check the main-only `production` environment for `WORKOS_API_KEY`. Keep an existing value. If absent, store the key from the WorkOS Production dashboard (an `sk_` key, never `sk_test_`) using the local prompt for `gh secret set WORKOS_API_KEY --env production`, then read back the environment secret's name and update time. Once the founder confirms the intended production key is in place and all remaining readers use that environment, remove only the repository copies of `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN`. |
 
 ---
 
@@ -582,13 +582,15 @@ Actions app, so the `review` context must be pinned to an App of its own, which 
 organization owner can make. Nothing requires `review` until the last row; until then the
 receipt still gates.
 
-The installed App can recover a lost key under the same identity. Verify the installation
-is limited to `TinyAssets/TinyAssets`, has no active webhook, and grants only
-**checks: write** and **metadata: read**. The `review` environment must allow `main` only,
-with no required reviewer. Verify the environment settings below. In the organization's settings, generate a key on the existing App.
-Store it as `REVIEW_APP_PRIVATE_KEY` in that environment from the founder's machine.
-Keep `REVIEW_APP_ID` and the ruleset pin. Before retiring a previous working key, verify
-a fresh `review` check on a reviewed head succeeded under the pinned App. Replacing the
+The installed App can recover a lost key under the same identity, with only a browser and
+`gh`. First check, in the organization's settings (Developer settings → GitHub Apps), that it
+is installed on `TinyAssets/TinyAssets` alone, has no active webhook and grants only
+**checks: write** and **metadata: read**, and that `review` passes the main-only row below.
+Then generate a private key on the App's page and, on the founder's own machine, pipe the
+downloaded `.pem` into `gh secret set REVIEW_APP_PRIVATE_KEY --env review --repo TinyAssets/TinyAssets`
+(PowerShell: `Get-Content <file> -Raw | gh secret set ...`), and delete the file.
+Keep `REVIEW_APP_ID` and the ruleset pin. Delete the old key on the App's page only once a
+fresh `review` check on a reviewed head has succeeded under the pinned App. Replacing the
 App itself gives it a new ID and requires a reviewed ruleset change.
 
 | Item | Smallest founder-only action |

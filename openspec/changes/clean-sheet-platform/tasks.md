@@ -395,6 +395,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] Inventory the founder's one-time setup and its readers (`b24-setup-inventory.md`).
       The cutover manifest lists the form, tests, workflow and documentation changes. The
       founder's WorkOS and installed review App recovery instructions live in `docs/host-actions.md`.
+    - `untangle/b24-manifest`: the rest of the repository inventory (the old stack, the
+      workflows, the gate scripts, the docs, the rules, the specs and the site) and the dry-run
+      job that applies all three phases to a temporary tree.
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain

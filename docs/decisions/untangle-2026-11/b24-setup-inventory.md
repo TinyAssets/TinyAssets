@@ -19,4 +19,4 @@ ruleset pin still apply. Only the one-time creation form goes with the setup. Re
 the App itself requires the existing ruleset change process.
 
 This is one part of B24. The rest of the repository inventory and the temporary-tree
-dry run of all three phases remain open.
+dry run of all three phases remain open, on `untangle/b24-manifest` (its line in tasks.md).
