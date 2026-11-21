@@ -98,7 +98,7 @@ the deploy kit's copies and the Workers' configs.
   `cli.decide.pins`) is the engine's own transcript retention at its default. Research comes
   first: what value keeps every session, and what the held-call card's 30 days (`cardTtlS`)
   rests on then; the same research reads whether any other engine record's CLI (Codex,
-  Gemini, pi) lets its sessions go at its own unpinned default (`untangle/fact15-defaults-2`).
+  Gemini, Kimi, pi) lets its sessions go at its own unpinned default (`untangle/fact15-defaults-2`).
 - [ ] The lives of requests held for the owner (`CARD_TTL_S` 7 days, `ACTION_LIMITS.cardTtlS`
   30 days and `approvalTtlS` a day, `POLICY_LIMITS.proposalTtlS` 90 days) each go into one of
   Fact 15's kinds (`untangle/fact15-caps`).
