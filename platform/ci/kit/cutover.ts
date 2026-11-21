@@ -18,12 +18,13 @@ export const LIVE = Object.freeze(["worker", "route", "bucket", "queue", "secret
 /**
  * An entry, each with `what` it is:
  * - `delete`: a path, a file or a folder, deleted whole;
- * - `edit`: a file that stays, less the `names` it holds (each found in it today, one token
- *   or a heading line), and less its `imports`: each file the cutover deletes that it loads
- *   today, by an import or by a path it hands a tool (a test config's setup file);
+ * - `edit`: a file that stays, less each of the `names` it holds today (`edited`), and less
+ *   its `imports`: each file the cutover deletes that it loads today, by an import or by a
+ *   path it hands a tool (a test config's setup file);
  * - `move`: a file to `to`, or with `names`, those of it into the file `to`; inside a path
  *   the cutover deletes, it is a carry-out, made before the deletes;
- * - `live`: an object of kind `live` by its `name`, which the file `in` names today.
+ * - `live`: an object of kind `live` by its `name`, which the file `in` names today;
+ * - `keep`: a path that stays as it is although it names what goes, and why.
  */
 export type Entry =
   | { readonly delete: string; readonly what: string }
@@ -32,7 +33,78 @@ export type Entry =
   | { readonly move: string; readonly to: string; readonly names?: readonly string[];
       readonly what: string }
   | { readonly live: (typeof LIVE)[number]; readonly name: string; readonly in: string;
-      readonly what: string };
+      readonly what: string }
+  | { readonly keep: string; readonly what: string };
+
+/**
+ * `text`, the file at `path`, less each of `names` wherever it stands. A name that is whole
+ * lines (a name that starts with its indent, only where a line does) goes with the block it
+ * heads: a Markdown heading's section, a TOML table, or else the lines after it indented
+ * deeper (a YAML key's value, a list item, a Python body), with the line at its indent that
+ * closes it (`)`, `}`, `fi`). Any other name goes as its text.
+ */
+export function edited(path: string, text: string, names: readonly string[]): string {
+  let out = "";
+  let from = 0;
+  for (const [start, end] of reaches(path, text, names)) {
+    out += text.slice(from, Math.max(from, start));
+    from = Math.max(from, end);
+  }
+  return out + text.slice(from);
+}
+
+/** What a move with `names` takes from `text`, the file at `path`, into its `to`. */
+export function taken(path: string, text: string, names: readonly string[]): string {
+  return reaches(path, text, names).map(([start, end]) => text.slice(start, end)).join("\n")
+    .replace(/\n*$/, "\n");
+}
+
+/** Where each of `names` reaches in `text` (`edited`), as offsets, in order. */
+function reaches(path: string, text: string,
+                 names: readonly string[]): (readonly [number, number])[] {
+  const lines = text.split("\n");
+  const starts: number[] = [];
+  lines.reduce((start, line) => (starts.push(start), start + line.length + 1), 0);
+  const lineAt = (offset: number) => starts.findLastIndex((start) => start <= offset);
+  const indent = (line: string) => /^\s*/.exec(line)![0].length;
+  const heading = (line: string) => path.endsWith(".md") ? /^(#{1,6}) /.exec(line)?.[1]!.length
+    : path.endsWith(".toml") && line.startsWith("[") ? 0 : undefined;
+  const cut: (readonly [number, number])[] = [];
+  for (const name of names) {
+    for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+      const first = lineAt(at);
+      const last = lineAt(at + name.length - 1);
+      const before = text.slice(starts[first], at);
+      if (/^\s/.test(name) && before !== "") {
+        continue;
+      }
+      if (before.trim() !== "" || lines[last]!.slice(at + name.length - starts[last]!).trim()
+          !== "") {
+        cut.push([at, at + name.length]);
+        continue;
+      }
+      const level = heading(lines[first]!);
+      let end = last + 1;
+      for (let next = end; next < lines.length; next += 1) {
+        const line = lines[next]!;
+        if (level !== undefined ? (heading(line) ?? 7) <= level
+          : line.trim() !== "" && indent(line) <= indent(lines[first]!)) {
+          break;
+        }
+        if (level !== undefined || line.trim() !== "") {
+          end = next + 1;
+        }
+      }
+      if (level === undefined && end < lines.length
+          && indent(lines[end]!) === indent(lines[first]!)
+          && /^(?:[)\]}]+[,;]?|fi|done|esac)$/.test(lines[end]!.trim())) {
+        end += 1;
+      }
+      cut.push([starts[first]!, end < lines.length ? starts[end]! : text.length]);
+    }
+  }
+  return cut.sort(([a], [b]) => a - b);
+}
 
 export interface Manifest {
   readonly about: string;
