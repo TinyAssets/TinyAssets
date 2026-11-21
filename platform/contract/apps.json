@@ -143,12 +143,12 @@
         "steps": [
           "On gemini.google.com in a browser, open Settings, then Connected Apps, then Add a custom app.",
           "Enter the server address https://tinyassets.io/mcp and sign in to TinyAssets.",
-          "Gemini offers custom apps on a personal Google account, to people 18 or older in the US, with Keep Activity on.",
+          "Gemini offers custom apps on a personal Google account, to people 18 or older in the US, with History on.",
           "To make sure Gemini uses it in a chat, type @ and pick TinyAssets."
         ]
       },
       "source": "https://support.google.com/gemini/answer/17209137",
-      "checked": "2026-11-03"
+      "checked": "2026-11-21"
     },
     {
       "id": "cursor",

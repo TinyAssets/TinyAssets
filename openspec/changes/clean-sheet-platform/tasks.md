@@ -350,9 +350,10 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   ADR-032's two-region trigger has no per-region series. Research first (canary owners placed
   by location hint, or Cloudflare's per-location analytics for the owner namespace), then
   build it with the canary's keyed checks, which wait for `routes`.
-- [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
-  plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
-  they differ (d3 §C8, list3 P16).
+- [x] The vendors' wake pages re-read (d3 §C8, list3 P16; `untangle-2026-11/wake-pages.md`):
+  MCP Events states no plan tier (Work chats and dots; the live test tries a personal paid and a
+  Business account); Grok's routine webhook confirmed, its host still unpublished; Muse has no
+  wake API; `wake-kinds.json` and `apps.json` corrected.
 
 ### Step 3. This re-cut, P3, the manifest's inventory
 
@@ -835,9 +836,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] 7. The wakes: each vendor end to end (a ChatGPT dot and Work chat subscribing, a Claude
   `/fire`, a Grok webhook routine, Muse's catch-up); the SSRF probe (a callback whose DNS
   answers 127.0.0.1, 10.x or 169.254.169.254 is refused by `global_fetch_strictly_public`);
-  Grok's webhook host, pinned as data once seen; whether Claude's over-limit fire answers
-  `429`. E2B's lifecycle webhook: whether a kill of a paused sandbox carries the pause's
-  execution and `sandbox_execution_id`, and E2B's retry timing against `BILLED_WINDOW_S`.
+  Grok's webhook host, pinned as data once seen. E2B's lifecycle webhook: whether a kill of a
+  paused sandbox carries the pause's execution and `sandbox_execution_id`, and E2B's retry
+  timing against `BILLED_WINDOW_S`.
 - [ ] 8. The founder's own test (§8).
 
 Measured on the stage as it runs:

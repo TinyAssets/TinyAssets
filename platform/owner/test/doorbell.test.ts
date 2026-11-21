@@ -838,12 +838,13 @@ describe("a send's answer", () => {
     expect((await received(r)).every((request) => request.redirect === "manual")).toBe(true);
   });
 
-  it("tells the owner when a pasted token is refused as dead, and keeps it", async () => {
+  it.each([401, 404])("tells the owner when a pasted token is refused as dead (%i), and keeps it",
+                      async (status) => {
     const r = await rung();
     await control([r.owner]);
     const claude = await r.register(MUSE, "Claude", "routine_fire");
-    await pasted(r, claude, "claude_routine_fire",
-                 `https://api.anthropic.com/v1/claude_code/routines/trig_status_401_${r.path}/fire`);
+    await pasted(r, claude, "claude_routine_fire", "https://api.anthropic.com/v1/claude_code/" +
+                 `routines/trig_status_${status}_${r.path}/fire`);
     await r.post(null, `dm:${claude}`);
     await rings(r, 1);
     const notices = (await r.stub.noticeList(r.session(null))).notices;
