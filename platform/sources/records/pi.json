@@ -136,7 +136,19 @@
             "path": ""
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "message_end",
+              "message.stopReason": "error"
+            },
+            "pattern": {
+              "message.errorMessage": "insufficient_quota|quota exceeded|out of budget|billing|credit balance|insufficient credits|rate.?limit|too many requests|resource_exhausted|\\(429\\)|^429\\b"
+            },
+            "path": ""
+          }
+        ]
       }
     },
     "instructions": {

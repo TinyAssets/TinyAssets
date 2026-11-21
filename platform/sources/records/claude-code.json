@@ -170,13 +170,6 @@
               "is_error": true
             },
             "path": "result"
-          },
-          {
-            "match": {
-              "type": "system",
-              "subtype": "api_retry"
-            },
-            "path": "error"
           }
         ],
         "usage": [
@@ -200,6 +193,36 @@
             "match": {
               "type": "result",
               "stop_reason": "tool_deferred"
+            },
+            "path": ""
+          }
+        ],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "rate_limit_event",
+              "rate_limit_info.status": "rejected"
+            },
+            "path": "rate_limit_info.resetsAt"
+          },
+          {
+            "match": {
+              "type": "assistant",
+              "error": "rate_limit"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "assistant",
+              "error": "billing_error"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "assistant",
+              "error": "account_on_hold"
             },
             "path": ""
           }

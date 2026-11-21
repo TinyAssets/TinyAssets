@@ -14,16 +14,21 @@
  * conversation's session id (`init`), the run's result text (`final_text`, the last match,
  * or every match joined where the matcher says `accumulate`), its first error, and whether
  * the engine stopped at a tool call it deferred (`deferred`: Claude Code's `defer`, the turn
- * ended `tool_deferred`), which a resume of its session answers.
+ * ended `tool_deferred`), which a resume of its session answers, and whether the vendor
+ * refused it for its own rate limit, quota or billing (`vendor_limit`, ADR-034 decision 7),
+ * with the reset the vendor stated, if any.
  */
 import { Refusal } from "./refusal.ts";
 
 /**
  * One event matcher, as a source record's `engine.events` holds it: an event whose fields at
- * `match` equal those values, read at `path`.
+ * `match` equal those values, and whose fields at `pattern` are text those regular
+ * expressions find (case-insensitive: an engine that reports a limit only in prose), read at
+ * `path`.
  */
 export interface EventMatcher {
   readonly match: Readonly<Record<string, string | number | boolean>>;
+  readonly pattern?: Readonly<Record<string, string>>;
   /** A dotted path into the event; empty for the event itself. */
   readonly path: string;
   /** Every match's value is joined in order (a streamed text), not only the last. */
@@ -43,6 +48,12 @@ export interface EngineEvents {
    * session for a resume (none for an engine that cannot defer).
    */
   readonly deferred: readonly EventMatcher[];
+  /**
+   * The vendor's refusal for its own rate limit, quota or billing (ADR-034 decision 7), its
+   * `path` at the reset it states, in seconds since the epoch; a matcher whose path reads no
+   * number states none.
+   */
+  readonly vendor_limit: readonly EventMatcher[];
 }
 
 export const FRAME_VERSION = 1;
@@ -136,9 +147,16 @@ export function valueAt(event: unknown, path: string): unknown {
   return at;
 }
 
-/** Whether `event` has each of the matcher's fields at its value. */
+/** The flags a matcher's `pattern` is read with, as the record check compiles it. */
+export const PATTERN_FLAGS = "iu";
+
+/** Whether `event` has each of the matcher's fields at its value, and its text at each pattern. */
 export function meets(event: unknown, matcher: EventMatcher): boolean {
-  return Object.entries(matcher.match).every(([path, value]) => valueAt(event, path) === value);
+  return Object.entries(matcher.match).every(([path, value]) => valueAt(event, path) === value)
+    && Object.entries(matcher.pattern ?? {}).every(([path, pattern]) => {
+      const text = valueAt(event, path);
+      return typeof text === "string" && new RegExp(pattern, PATTERN_FLAGS).test(text);
+    });
 }
 
 /** The first of `matchers` the event meets, or undefined. */
@@ -175,11 +193,20 @@ export interface Read {
   readonly error: string | null;
   /** Whether it is the engine's stop at a deferred tool call. */
   readonly deferred: boolean;
+  /** The vendor's limit it reports, and the reset the vendor stated (seconds), or null. */
+  readonly vendor_limit: { readonly reset: number | null } | null;
+}
+
+/** The reset a vendor's limit event states at `path`: a finite count of seconds, else null. */
+function resetAt(event: unknown, path: string): number | null {
+  const reset = valueAt(event, path);
+  return typeof reset === "number" && Number.isFinite(reset) ? reset : null;
 }
 
 /** `event`, read by `events`. */
 export function readEvent(events: EngineEvents, event: unknown): Read {
   const error = first(events.error, event);
+  const limit = first(events.vendor_limit, event);
   const result = first(events.final_text, event);
   const init = first(events.session_id, event);
   const kind: FrameKind = error !== undefined ? "error" : result !== undefined ? "result"
@@ -195,5 +222,6 @@ export function readEvent(events: EngineEvents, event: unknown): Read {
     error: error === undefined ? null
       : textOf(valueAt(event, error.path)) ?? "the engine reported an error",
     deferred: first(events.deferred, event) !== undefined,
+    vendor_limit: limit === undefined ? null : { reset: resetAt(event, limit.path) },
   };
 }
