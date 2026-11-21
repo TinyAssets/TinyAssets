@@ -363,6 +363,10 @@ describe("the pair", () => {
     expect(built.probes.sha).toBe(probes.sha);
     expect(built.runner.inputs).not.toContain("sandbox/runner/probes.ts");
     expect(built.runner.inputs).not.toContain("sandbox/runner/route.ts");
+    // Neither carries the doors' identity, so the doors' host (the live stage's, d3 §H) never
+    // moves the pair: the stage runs production's bytes.
+    expect(built.runner.inputs).not.toContain("contract/identity.json");
+    expect(built.probes.inputs).not.toContain("contract/identity.json");
     const text = built.runner.bytes.toString("utf8");
     for (const name of ["sandboxEnv", "egressBaseUrl", "runEnv", "stepNanos", "bundledRecords",
                         "routeVerdict"]) {
