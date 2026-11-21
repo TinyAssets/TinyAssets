@@ -1,14 +1,14 @@
 """Whether Python files and TOML files hold together, read from stdin and never run.
 
 The cutover guard (`ci/guards/cutover.test.ts`) hands it the tree each phase leaves, as JSON:
-`{"<phase>": {"<path>": "<text>", ...}, ...}`. It prints each problem, as JSON:
+`{"<phase>": {"<path>": {"text": "<text>", "modules": {"<module>": "<path>"}}}}`, each file
+with the file of each module it imports, as the guard found it. It prints each problem, as JSON:
 - a `.py` file that does not compile;
 - a name a `.py` file reads that nothing binds: not the module, not a builtin, and not an
   enclosing function (Python raises `NameError` when that line runs);
 - a name a `.py` file imports (`from x import name`), or reads from a module it imports by
   an alias (`import x as m`, `m.name`), from a module of the same tree that does not define
-  it, where `x` is found as the scripts find it: beside the file, in a folder above it, or
-  from the root;
+  it;
 - a `.toml` file that does not parse.
 Only the standard library: `symtable` resolves the scopes as the compiler does.
 """
@@ -18,7 +18,6 @@ from __future__ import annotations
 import ast
 import builtins
 import json
-import posixpath
 import symtable
 import sys
 import tomllib
@@ -50,23 +49,16 @@ def star(tree: ast.Module) -> bool:
                for node in ast.walk(tree))
 
 
-def find(path: str, module: str, files: dict[str, str]) -> str | None:
-    """The file `module` names from `path`: beside it, in a folder above it, or from the root."""
-    parts = posixpath.dirname(path).split("/") if "/" in path else []
-    folders = ["/".join(parts[:len(parts) - at]) for at in range(len(parts))] + [""]
-    stem = module.replace(".", "/")
-    for folder in folders:
-        at = posixpath.join(folder, stem) if folder else stem
-        for each in (f"{at}.py", f"{at}/__init__.py"):
-            if each in files:
-                return each
-    return None
+def find(path: str, module: str, files: dict[str, dict]) -> str | None:
+    """The file `module` names from `path`, as the guard found it (`pythonModules`)."""
+    return files[path]["modules"].get(module)
 
 
-def problems(files: dict[str, str]) -> list[str]:
+def problems(files: dict[str, dict]) -> list[str]:
     found: list[str] = []
     modules: dict[str, tuple[ast.Module, set[str]]] = {}
-    for path, text in files.items():
+    for path, file in files.items():
+        text = file["text"]
         if path.endswith(".toml"):
             try:
                 tomllib.loads(text)

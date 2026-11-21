@@ -148,6 +148,12 @@ export function isGone(gone: readonly string[], path: string): boolean {
  */
 export function pythonLoads(from: string, source: string,
                             has: (path: string) => boolean): string[] {
+  return [...new Set(pythonModules(from, source, has).values())].sort();
+}
+
+/** The file each module `source` imports by name is (`pythonLoads`), by its dotted name. */
+export function pythonModules(from: string, source: string,
+                              has: (path: string) => boolean): Map<string, string> {
   const first = (list: string) => list.split(",").map((each) => each.trim().split(/\s+/)[0]!)
     .filter((each) => each !== "");
   const modules: string[] = [];
@@ -158,16 +164,16 @@ export function pythonLoads(from: string, source: string,
   }
   const parts = from.split("/").slice(0, -1);
   const folders = parts.map((_, at) => parts.slice(0, parts.length - at).join("/")).concat([""]);
-  const found = new Set<string>();
+  const found = new Map<string, string>();
   for (const module of modules) {
     const path = module.replaceAll(".", "/");
     const file = folders.map((folder) => folder === "" ? path : `${folder}/${path}`)
       .flatMap((at) => [`${at}.py`, `${at}/__init__.py`]).find(has);
     if (file !== undefined) {
-      found.add(file);
+      found.set(module, file);
     }
   }
-  return [...found].sort();
+  return found;
 }
 
 /** A leg of `platform-tests`' matrix: its name and the one command it runs. */
