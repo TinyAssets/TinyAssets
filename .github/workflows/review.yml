@@ -193,8 +193,26 @@ jobs:
           }
           trap on_exit EXIT
 
+          # A read. GitHub's 5xx answers pass (a 502 stopped #5689's decision), so one
+          # is asked again, 5 s then 10 s later, as drain_review_gate.py's `_gh_read`
+          # does; any other failure fails at once. Only a whole answer is printed.
+          get() {
+            local out i
+            for i in 1 2 3; do
+              if out="$(gh api "$@" 2> "$RUNNER_TEMP/get.err")"; then
+                printf '%s\n' "$out"
+                return 0
+              fi
+              cat "$RUNNER_TEMP/get.err" >&2
+              if [ "$i" = 3 ] || ! grep -q 'HTTP 5[0-9][0-9]' "$RUNNER_TEMP/get.err"; then
+                return 1
+              fi
+              sleep $((i * 5))
+            done
+          }
+
           # The PR's head and base as they are now, from the API, never from the event.
-          read -r HEAD BASE < <(gh api "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
+          read -r HEAD BASE < <(get "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
           if ! [[ "$HEAD" =~ ^[0-9a-f]{40}$ && "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::PR #${PR} has no head or base"
             exit 1
@@ -216,9 +234,9 @@ jobs:
             GROUP=()
           fi
 
-          gh api --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
+          get --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
             | jq -s . > "$RUNNER_TEMP/reviews.json"
-          gh api --paginate "repos/${REPO}/issues/${PR}/timeline?per_page=100" --jq '.[]' \
+          get --paginate "repos/${REPO}/issues/${PR}/timeline?per_page=100" --jq '.[]' \
             | jq -s . > "$RUNNER_TEMP/timeline.json"
 
           # The base, the head and every commit a review names, as git objects only.
