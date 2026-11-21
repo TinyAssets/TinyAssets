@@ -1,4 +1,6 @@
-# The live stage's four PRs, as cut on 2026-11-21
+# stage as built (2026-11-21)
+
+The live stage's four PRs as cut today, and the first of them, `untangle/stage-zone`, as built.
 
 Step 5's item "the live stage's four PRs, after B13, B14's canary and `control` (d3 §H)", re-cut at `origin/main` `88e74e1cd` against the design of d3 §H (`untangle-2026-11-remaining-build.md` §H, from `stage_research.md` of 2026-11-11), §F1, and Step 8's list, which is what the stage must run. The founder's direction of 2026-11-21 governs: the stage is the critical path, nothing is built before the cutover that the cutover deletes, and the comments and tests passes come after the cutover.
 
@@ -41,6 +43,14 @@ PR 1 is built now. PRs 1 and 2 are sequential, not parallel: PR 2's host-under-t
 
 - **Nothing built here is deleted by the cutover.** PR 1 is the identity's permanent shape. PR 2's three changes are general to any host the identity names, and they stay: after PR 4 the record step finds the zone's own record and does nothing, and `handback` stays until the hold's end as it already does. No stage mode, flag or branch exists in product code.
 - **No tests pass rides PR 1.** It rewrites only the test lines that spell the doors' origin, because PR 3 breaks each of them; nothing else in those files is touched.
+
+## Owed
+
+- [ ] PR 2, `untangle/stage-kit`: `routes` makes and hands back the host's DNS record, finds E2B's hook by name and moves its URL, and the canary reads the old side at the zone (item 2 above).
+- [ ] PR 3, `untangle/stage-host`: `host` is `stage.tinyassets.io`, the plugins regenerated, the stage's end on the manifest; then live: the `routes` run that opens the stage, on the founder's go.
+- [ ] PR 4, `untangle/stage-end`: `host` is `tinyassets.io` again, once the stage ends; merged before the window opens.
+- [ ] live: Step 6's pair check and pin PR take the runner and probes bundles this PR moved (they no longer inline `identity.json`); no template build has run since, so it is the check Step 6 already owes.
+- [ ] live: the owner app's socket on the stage host under the CSP's `wss://` host, first seen at the stage's first signed-in page.
 
 ## Founder steps (from `stage_research.md` §9, still current)
 
