@@ -1,12 +1,11 @@
 /**
  * Every refusal and failure the gateway reports, by a fixed code only.
  *
- * The rule is the Python's (`tinyassets/broker/model_connect.py:110-112`): provider prose
- * can echo credentials, so only our fixed code crosses the boundary. No error the gateway
- * returns, throws or streams carries a secret, an upstream body, an upstream message, or
- * the text of an exception it caught. An RPC caller gets a refusal (`contract/src/refusal.ts`)
- * whose code is one of `GATEWAY_CODES` and whose message is that code; an HTTP caller sees
- * it as `{error: {code, message}}` with the code's status.
+ * Provider prose can echo credentials, so only our fixed code crosses the boundary. No error
+ * the gateway returns, throws or streams carries a secret, an upstream body, an upstream
+ * message, or the text of an exception it caught. An RPC caller gets a refusal
+ * (`contract/src/refusal.ts`) whose code is one of `GATEWAY_CODES` and whose message is that
+ * code; an HTTP caller sees it as `{error: {code, message}}` with the code's status.
  */
 import {
   type GatewayCode, isGatewayCode, Refusal, REFUSALS, refusalOf,
@@ -41,11 +40,6 @@ export function failureResponse(code: GatewayCode, extra?: Readonly<Record<strin
                                       : { "retry-after": String(retry) }) } });
 }
 
-/**
- * The code for an upstream HTTP status. 401 and 403 mean the credential, 408 a request
- * the provider timed out, 429 its limit, any other 4xx a request it refused; 503 and 529
- * a provider overloaded, any other 5xx its own failure.
- */
 export function upstreamCode(status: number): GatewayCode {
   if (status === 401 || status === 403) {
     return "upstream_unauthorized";

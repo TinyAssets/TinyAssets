@@ -1,5 +1,5 @@
 /**
- * The egress door (tasks 4 G4), in workerd, through the real owner Worker and the real
+ * The egress door, in workerd, through the real owner Worker and the real
  * gateway Worker (its `EgressGateway` entrypoint, as the config binds it), against the fake
  * providers' Groq.
  *
@@ -553,7 +553,7 @@ describe("the egress door", () => {
     expect(await spends(box.owner)).toMatchObject([{ state: "unknown", cost: null }]);
   });
 
-  it("hands the sandbox slice two tokens, its network and its clients' environment once",
+  it("hands the sandbox two tokens, its network and its clients' environment once",
      async () => {
     const box = await sandbox();
     expect(verifyToken(env.ROUTING_MAC_KEY, "egress", box.opened.egress_token))

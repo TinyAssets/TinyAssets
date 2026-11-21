@@ -57,7 +57,7 @@ describe("source", () => {
   const bad = (patch: (record: Record<string, unknown>) => unknown) =>
     patch(structuredClone(OPENAI) as unknown as Record<string, unknown>);
   it.each([
-    // An API no sandbox call can be metered on: no rules, no source record (untangle v:S5).
+    // An API no sandbox call can be metered on: no rules, no source record.
     ...["pi-messages", "azure-openai-responses", "google-vertex"].map((api) =>
       [`the API ${api}`, bad((r) => ({ ...r, upstream: { ...(r["upstream"] as object), api } }))] as
         [string, unknown]),

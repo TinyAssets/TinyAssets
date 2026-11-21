@@ -1,6 +1,6 @@
 /**
  * Every blob the gateway's keyring ever sealed stays readable, and every blob it seals now
- * opens on the code that sealed before (untangle A5): the keyring, a binding over the one
+ * opens on the code that sealed before: the keyring, a binding over the one
  * sealed envelope (`contract/src/envelope.ts`), against main's own copy of the scheme as it
  * stood at `ci/keyring-vectors.json`'s commit, the last before the envelope, read from git
  * and run as it was.

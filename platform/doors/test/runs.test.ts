@@ -1,5 +1,5 @@
 /**
- * Runs at the doors (slice R), in workerd, through the real owner Worker with a recording
+ * Runs at the doors, in workerd, through the real owner Worker with a recording
  * fake behind its `SANDBOX` (`vitest.config.ts`): the run tools on `/mcp` and `/api`, the owner's
  * `/app/api/agent/*` routes, the tier numbers the control record holds, a run's own MCP door
  * and event door on the egress host, the sandbox's sign-in report door, and the owner
@@ -202,7 +202,7 @@ describe("a run's own doors on the egress host", () => {
     // and cancels (the founder, 2026-11-03).
     expect(tools.filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.name))
       .toEqual(["run_graph", "run_status", "run_cancel"]);
-    // Nor a mailbox tool (slice ID): the inbox digest's mail part is a mailbox read.
+    // Nor a mailbox tool: the inbox digest's mail part is a mailbox read.
     expect(tools.some((tool) => ["mailbox_read", "mailbox_ack", "inbox_digest"]
       .includes(tool.name))).toBe(false);
     // Exactly the run profile, code mode on by default.
@@ -464,7 +464,7 @@ describe("a run's live events", () => {
   });
 
   it("relay a frame whose session id is outside its shape, and answer the run's refusal of the " +
-     "id as the object holds it (app review)", async () => {
+     "id as the object holds it", async () => {
     const { who, app } = await owned();
     const run = await (await appPost("agent/submit", app.access_token, null, {
       message: "go", client_send_id: "bad-sid" })).json<{ run_id: string;

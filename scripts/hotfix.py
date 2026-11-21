@@ -52,37 +52,16 @@ def eligible(path):
 
 
 def require_review(branch, commit, paths):
-    # pr-scope-guard and drain_review_gate require a receipt for EVERY PR.
-    # There is no longer a selective floor path list; use that canonical gate.
-    from scripts.drain_review_gate import published_approval_urls, review_allows_merge
+    # Every PR needs a passing `review` check (review.yml: an APPROVE PR review that
+    # carries to the head, ADR-038). There is no selective floor path list.
+    from scripts.drain_review_gate import review_passed_at
 
-    pr = json.loads(run("gh", "pr", "view", branch, "--json", "number,body,headRefOid"))
+    pr = json.loads(run("gh", "pr", "view", branch, "--json", "number,headRefOid"))
     repo = json.loads(run("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
-    stream = []
-    for endpoint in (
-        f"issues/{pr['number']}/comments",
-        f"pulls/{pr['number']}/reviews",
-        f"pulls/{pr['number']}/comments",
-    ):
-        stream.append(
-            run(
-                "gh",
-                "api",
-                "--paginate",
-                f"repos/{repo}/{endpoint}",
-                "--jq",
-                '.[] | {url: .html_url, association: .author_association, body: (.body // "")}',
-            ).decode()
-        )
-    trusted = published_approval_urls("\n".join(stream), head=commit)
-    if pr["headRefOid"] != commit or not review_allows_merge(
-        head=commit,
-        body=pr["body"],
-        artifact_must_be_comment_on=(repo, pr["number"]),
-        trusted_comment_urls=trusted,
-    ):
+    if pr["headRefOid"] != commit or not review_passed_at(repo, commit, pr["number"]):
         raise ValueError(
-            "floor-class hotfix requires a Drain-Review APPROVE receipt for branch head"
+            "floor-class hotfix requires a passing `review` check (an APPROVE PR review) "
+            "for the branch head"
         )
 
 

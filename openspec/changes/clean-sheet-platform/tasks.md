@@ -243,21 +243,25 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   - [x] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
     holding a check an App posts to the workflow named for it, and `enqueue-merge.yml`
     listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
-  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until then
-    `enqueue-merge` refuses on the drift);
+  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until its
+    read-back, `untangle/p2-receipt-delete` does not merge);
   - [x] a verdict counts only from an account that can push (GitHub's permission read, from
     every grant), and a permission it cannot read is no verdict, never a pass; lands before
     the receipt goes, which would let a read-only member's `APPROVE` pass alone
     (`untangle/p2-review-writers`; `untangle-2026-11/p2-review-writers.md`);
-  - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
-    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`). With no
-    body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
-    (`review` on `workflow_run`, which it skips): decide there whether it follows that run or
-    auto-merge alone queues the PR.
+    - [x] its `live:` proof: `review` run 44020160475, the first after #5666 merged, decided
+      #5667's merge group `dcfd9df870ae` as `APPROVE: reviewed at this head`, with the
+      permission read working (`p2-review-writers.md` item 9);
+  - [x] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
+    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`, after
+    the `PUT`'s read-back): auto-merge alone queues the PR, so `enqueue-merge` goes, and its
+    drift check moves to auto-enroll, which arms every PR at open
+    (`untangle-2026-11/p2-receipt-delete.md`).
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
-  measured, `enqueue_merge.py` reading each check's newest run as GitHub does
-  (`untangle/p6-process-code`; `untangle-2026-11/p2-review-required.md` item 6).
+  measured, and `drain_review_gate.py` named for what it holds now, the review check and the
+  Untangle check, with the host's landing script told (`untangle/p6-process-code`;
+  `untangle-2026-11/p2-receipt-delete.md`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
@@ -627,8 +631,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     swallowed errors decided, and four checks that could never fail made to (the r2-keys
     guard's builder, prefix and exemption rules; the root rewrap's etag) (#5679;
     `untangle-2026-11/pass-files.md`).
+  - [x] `platform/gateway/`, both passes in one PR, with the area's list2 items and its own
+    swallowed errors decided, the fake's twelve dead commands gone, and three checks that
+    could never fail made to (the doorbell's echo bound, two OAuth redirect checks, a misfit
+    plaintext at open) (`untangle/pass-gateway`; `untangle-2026-11/pass-gateway.md`).
+  - [x] `platform/doors/`, both passes in one PR, with `d2:N56` and `d2:N57` decided and the
+    app-files guard held to what the doors serve (`untangle/pass-doors`;
+    `untangle-2026-11/pass-doors.md`).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
+  - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
+    `pass-doors.md` §3).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
@@ -642,6 +655,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     and never past `endAt` less the longest pause (#5680; `untangle-2026-11/renew-deadline.md`).
   - [ ] `runner.ts` `RunState.renewing`, written for the tests alone, dropped with the next
     state format (`renew-deadline.md` §4).
+  - [ ] `gateway/src`'s surface only its tests use goes: `Hold`'s pool (every caller passes
+    `gatewaySlots()`), `weighedBody`'s and `readHeld`'s nullable `hold`, the doorbell's `send`,
+    `meter.ts` `sentHeaders` (its source-record check to `sources/`), and six exports nothing
+    reads (`pass-gateway.md` §3).
+  - [ ] An overloaded owner object is answered as a contract refusal on each surface: today
+    `doors.ts` `serve` answers it plain text, `429` with its own `Retry-After: 1`, the egress
+    door's included, whose callers read `{error: {code, message}}` (`pass-doors.md` §3;
+    `untangle/doors-overloaded`).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 

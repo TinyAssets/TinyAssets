@@ -22,7 +22,6 @@ function noStore(headers: HeadersInit): Headers {
   return out;
 }
 
-/** A JSON answer. */
 export function answer(status: number, body: unknown, headers: HeadersInit = {}): Response {
   return Response.json(body, { status, headers: noStore(headers) });
 }
@@ -32,14 +31,12 @@ export function failure(status: number, message: string, headers: HeadersInit = 
   return answer(status, { error: message }, headers);
 }
 
-/** A plain-text answer. */
 export function plain(status: number, message: string, headers: HeadersInit = {}): Response {
   const out = noStore(headers);
   out.set("Content-Type", "text/plain; charset=utf-8");
   return new Response(message, { status, headers: out });
 }
 
-/** A `302` to `location`. */
 export function redirect(location: string, headers: HeadersInit = {}): Response {
   const out = noStore(headers);
   out.set("Location", location);

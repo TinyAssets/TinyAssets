@@ -144,7 +144,7 @@ export async function signOut() {
 const FINAL_CLOSES = [4400, 4403, 4410, 4440];
 /**
  * The waits before a new socket after a drop: the first, then each one doubled up to the
- * last, back to the first once a socket has stayed open as long as the last (review L1).
+ * last, back to the first once a socket has stayed open as long as the last.
  * Half a minute at most, so a tab left open on a dead network asks for a ticket about twice
  * a minute, and a run's frames come back soon after the network does.
  */
@@ -155,7 +155,7 @@ const RECONNECT_MOST_MS = 30_000;
  * A live socket on one of the owner's conversations: a single-use ticket first (behind the
  * token), then the socket with the ticket as its one credential. `onFrame` gets each frame
  * once: the doors send a live run's kept frames again to each new socket, so a frame at or
- * below the last `seq` seen for its run is dropped (review M1). A socket that drops is
+ * below the last `seq` seen for its run is dropped. A socket that drops is
  * followed by a new one (a new ticket), after a wait that doubles while sockets keep
  * dropping, and `onAttach` is called again so the caller reads the state as it now stands.
  * `onClose` gets the close code and reason when it ends for good: closed here, a final close

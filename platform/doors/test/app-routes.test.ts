@@ -1,5 +1,5 @@
 /**
- * The owner app's own routes on the owner surface (the app slice), each one door: the
+ * The owner app's own routes on the owner surface, each one door: the
  * account (tier, the control record's numbers, file usage), notices, policy (code mode's
  * switch and the owner's custom tools), a client's profile (`grants/set`, never a revoke),
  * an agent's files as text, the source records' public facts, the tool table's names, and
@@ -76,7 +76,7 @@ describe("the owner app's account route", () => {
     const account = await answered(await appPost("account", app.access_token, null, {}));
     expect(account["tier"]).toBe("free");
     expect(account["tiers"]).toEqual(TIERS);
-    // A new owner holds its starter files (the starter slice), as many as its seed has written.
+    // A new owner holds its starter files, as many as its seed has written.
     expect(account["usage"]).toMatchObject({ entries: expect.any(Number),
                                              chunk_bytes: expect.any(Number),
                                              inline_bytes: expect.any(Number) });
@@ -154,7 +154,7 @@ describe("the owner app's settings routes", () => {
 });
 
 describe("the owner surface's answers", () => {
-  it("are never sniffed or framed, refusals and connect routes alike (review L7)", async () => {
+  it("are never sniffed or framed, refusals and connect routes alike", async () => {
     const app = await signInApp({ owner: owner() });
     for (const response of [await appPost("account", app.access_token, null, {}),
                             await appPost("no/such/route", app.access_token, null, {}),
@@ -224,7 +224,7 @@ describe("the owner app's file routes", () => {
       .toBe(text);
   });
 
-  it("take no change to an agent's definition from the token alone (review M1)", async () => {
+  it("take no change to an agent's definition from the token alone", async () => {
     const app = await signInApp({ owner: owner() });
     const { access_token: token, session } = app;
     await answered(await appPost("tools/file_mkdir", token, session,

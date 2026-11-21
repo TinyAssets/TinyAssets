@@ -1,7 +1,7 @@
 /**
  * The doors Worker's fixed facts: the public identity's paths, the OAuth issuer and resources,
- * the first-party clients, and the environment it binds (`wrangler.jsonc`, held by
- * `guards/config.test.ts`).
+ * the first-party clients and token lifetimes, and the readers of its vars (`env.ts` types
+ * its bindings).
  *
  * The public identity is the contract's `identity.json`, its one copy, which the deploy kit
  * (`deploy/facts.ts`) and the plugins (`plugins/build.mjs`) read too: `host`, the public

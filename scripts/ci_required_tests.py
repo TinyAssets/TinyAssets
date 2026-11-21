@@ -19,8 +19,8 @@ Every already-broken test is enumerated by node id, in the diff, with a reason.
 The list may only shrink: an entry that stops failing is a hard error, so fixed
 tests cannot rot in the file and quietly re-cover a regression later.
 
-Honesty note (same spirit as pr-scope-guard.yml)
------------------------------------------------
+Honesty note
+------------
 A contributor CAN add their own broken test to the quarantine file to get green.
 This is a declaration control, not a security boundary. What it does buy: doing
 so is an explicit, reviewable line in the PR's diff, instead of an invisible

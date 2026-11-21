@@ -1,5 +1,5 @@
 /**
- * The MCP door's tool profiles and code mode (slice M), over the real MCP client SDK and
+ * The MCP door's tool profiles and code mode, over the real MCP client SDK and
  * the real codemode Worker: each client is served exactly its own grant's profile (`custom`,
  * the owner's own choice, until the owner names `directory`), `code` while the owner's
  * policy has code mode on, its default; one `code` call runs a script of several tool

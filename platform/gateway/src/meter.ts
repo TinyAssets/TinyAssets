@@ -1,28 +1,27 @@
 /**
- * Metering a sandbox's raw model call with pi-ai's own code (tasks 4 G4; Direction 2: no
- * provider code here). Two uses of pi-ai's adapter for the sealed source's API, each with
- * a fetch of ours in place of the network:
+ * Metering a sandbox's raw model call with pi-ai's own code (Direction 2: no provider code
+ * here). Two uses of pi-ai's adapter for the sealed source's API, each with a fetch of ours
+ * in place of the network:
  *
- * The credential's own secret is handed to the adapter, as the loop's calls hand it, since
- * pi-ai shapes a call by it (OpenAI's Responses API omits the output cap for a Sign in with
- * ChatGPT token); it never leaves: each fetch here is ours, and reaches no network.
+ * The credential's own secret is handed to the adapter, as any caller of pi-ai hands it,
+ * since pi-ai shapes a call by it (OpenAI's Responses API omits the output cap for a Sign in
+ * with ChatGPT token); it never leaves: each fetch here is ours, and reaches no network.
  *
  * - **Learning the call** (`learnMeter`, through a call's `Meters`): the adapter is asked
  *   once a model, with a placeholder model id and a placeholder output cap, and its fetch
  *   records the request it built and answers `400` (no retry). So pi-ai itself says, for
- *   this API at this base URL, which
- *   method and path a model call is, where the model id goes (a path segment, or a body
- *   field) and which body field caps the output tokens. A request on any other path is not
- *   a model call this module can meter (`unmetered`).
+ *   this API at this base URL, which method and path a model call is, where the model id
+ *   goes (a path segment, or a body field) and which body field caps the output tokens. A
+ *   request on any other path is not a model call this module can meter (`unmetered`).
  * - **Reading the answer** (`meteredUsage`): the provider's answer, teed as it streams to
  *   the sandbox, is handed to the same adapter through its fetch, so pi-ai parses the
- *   stream exactly as it parses the loop's. Its final message's usage, priced by the
- *   catalog's records (`calculateCost`, tiers included) of both the model the request named
- *   and the model the answer says served it, the dearer, is the call's real cost. Anything
- *   short of that is `null`, which the owner's object settles `unknown`, keeping the whole
- *   reservation: a stream pi-ai cannot read to a `done` (not its stream format, a cut, an
- *   abort, a non-streaming JSON answer, which pi-ai's adapters do not parse); a `done` with
- *   no usage (zero tokens: a stream sent without its usage report); a served model the
+ *   stream exactly as it parses any stream it asked for. Its final message's usage, priced
+ *   by the catalog's records (`calculateCost`, tiers included) of both the model the request
+ *   named and the model the answer says served it, the dearer, is the call's real cost.
+ *   Anything short of that is `null`, which the owner's object settles `unknown`, keeping the
+ *   whole reservation: a stream pi-ai cannot read to a `done` (not its stream format, a cut,
+ *   an abort, a non-streaming JSON answer, which pi-ai's adapters do not parse); a `done`
+ *   with no usage (zero tokens: a stream sent without its usage report); a served model the
  *   catalog does not price; and a router the catalog prices at nothing (`openrouter/auto`),
  *   unless the answer names the dearer model it served.
  *
@@ -44,7 +43,7 @@ import { within } from "./egress";
 /** The model id and output cap the learning run asks with: neither is any real value. */
 const MODEL_MARK = "ta-meter-model-0e7f";
 const TOKENS_MARK = 4_321;
-/** The context each run asks with: one short user message, made afresh for each run. */
+
 function context(): Context {
   return { messages: [{ role: "user", content: "x", timestamp: 0 }] } as unknown as Context;
 }
@@ -187,8 +186,9 @@ export class Meters {
 
 /**
  * The headers pi-ai's adapter sends with the source's model call, learned by one run that
- * reaches no network, as `learnMeter` learns the call: the sources guard holds a record's
- * sealed auth header and scheme to them. Null when no model of the source can be asked.
+ * reaches no network, as `learnMeter` learns the call: the gateway's meter tests hold each
+ * bundled source record's sealed auth header and scheme to them. Null when no model of the
+ * source can be asked.
  */
 export async function sentHeaders(catalog: Catalog, upstream: Upstream,
                                   apiKey: string): Promise<Headers | null> {

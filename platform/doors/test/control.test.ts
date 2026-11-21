@@ -71,13 +71,13 @@ describe("the control record", () => {
   it("is read exactly", () => {
     expect(parseControl(OPEN)).toEqual({ ...OPEN, sandbox: null, scratch_retention_days: null,
                                          signins: null });
-    // Each source's sign-in switch rides the same record (slice SIGNIN).
+    // Each source's sign-in switch rides the same record.
     expect(parseControl({ ...OPEN, signins: { codex: true, "claude-code": false } }))
       .toMatchObject({ signins: { codex: true, "claude-code": false } });
     for (const signins of [[], "on", { codex: "yes" }, { "No Such": true }]) {
       expect(parseControl({ ...OPEN, signins })).toBeNull();
     }
-    // The sandbox's three numbers ride the same record, all or none (slice S).
+    // The sandbox's three numbers ride the same record, all or none.
     const S = { sandbox_runtime_ceiling_s: 3600, sandbox_concurrency_ceiling: 20,
                 sandbox_renewal_window_s: 600 };
     expect(parseControl({ ...OPEN, ...S })).toEqual({

@@ -6,6 +6,8 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
+import { until } from "../../ci/workerd";
+
 import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
@@ -172,15 +174,8 @@ describe("forward", () => {
     } finally {
       vi.useRealTimers();
     }
-    for (let tries = 0; ; tries++) {
-      const state = await (await fetch("https://status.test/cancelled?id=idle")).json() as
-        { cancelled: boolean };
-      if (state.cancelled || tries === 100) {
-        expect(state.cancelled).toBe(true);
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await until(async () => (await (await fetch("https://status.test/cancelled?id=idle"))
+      .json() as { cancelled: boolean | null }).cancelled === true, "the provider's request cut");
   });
 
   it("ends a call its provider never answers at the forward deadline, and not before",
