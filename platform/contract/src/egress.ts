@@ -28,8 +28,6 @@
  * for Anthropic's, `…/r/<run>/c/<connection>/v1` for OpenAI's, so a client appends its own
  * API path.
  */
-import identity from "../identity.json" with { type: "json" };
-
 import { object } from "./checks.ts";
 import type { EgressScope } from "./egress-scope.ts";
 import type { NetworkRule } from "./sandbox.ts";
@@ -37,11 +35,14 @@ import { Refusal } from "./refusal.ts";
 import { CONNECTION_ID, HEX64, RUN_ID, SIGNIN_ID } from "./ids.ts";
 import { forbids } from "./text.ts";
 
-// Read from `identity.json`, their one copy, as text, so this module holds strings alone.
-/** Our zone: the public host's, the egress host's, and every name a callback never reaches. */
-export const ZONE = `${identity.host}`;
-/** The egress door's host: always allowed, the one host E2B's transform is set on. */
-export const EGRESS_HOST = `${identity.egress}`;
+/**
+ * The egress door's host: always allowed, the one host E2B's transform is set on, and a custom
+ * domain of the doors Worker (the deploy kit's mode `routes`). Its one home is here, not
+ * `identity.json`: the sandbox's runner and probes are bundled from this module, so their
+ * pair carries this host and none of the doors' identity, whose host the live stage changes
+ * (d3 §H) while the pair stays the same bytes.
+ */
+export const EGRESS_HOST = "egress.tinyassets.io";
 export const EGRESS_ORIGIN = `https://${EGRESS_HOST}`;
 /**
  * The one resolver the sandbox may reach. Which resolver is best is unverified (research

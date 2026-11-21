@@ -18,8 +18,10 @@ import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import { CLOCK_SECRETS } from "../contract/src/canary.ts";
-import { ZONE } from "../contract/src/egress.ts";
-import { ORIGIN, routeTakes, UPSTREAM_CALLBACK } from "../contract/src/identity.ts";
+import { EGRESS_HOST } from "../contract/src/egress.ts";
+import {
+  HOST, ORIGIN, routeTakes, UPSTREAM_CALLBACK, ZONE,
+} from "../contract/src/identity.ts";
 import type { ImportNames } from "../contract/src/import-names.ts";
 import { OPERATOR_OPS, type OperatorOp } from "../contract/src/operator-message.ts";
 import platform from "./platform.json" with { type: "json" };
@@ -194,11 +196,9 @@ export const IDENTITY = (() => {
 /** The doors Worker, which serves the identity: the routes are handed to it. */
 export const DOORS = NAMES[IDENTITY]!;
 
-/** The doors' public routes (mode `routes`, the cutover's), on the zone. */
+/** The doors' public routes (mode `routes`, the cutover's), on the doors' host. */
 export const ROUTES: readonly string[] = Object.freeze(
-  identity.routes.map((path) => `${ZONE}${path}`));
-/** The sandbox's egress host, a custom domain of the doors Worker (mode `routes`). */
-export const EGRESS_DOMAIN = identity.egress;
+  identity.routes.map((path) => `${HOST}${path}`));
 
 /** Each Worker's record, by folder: what `platform.json` gives it, and what its config says. */
 export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze(
@@ -211,7 +211,7 @@ export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze
         ...given.clock === true ? CLOCK_SECRETS : []]),
       upstream: serves,
       routes: Object.freeze(serves ? [...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
-                                      { pattern: EGRESS_DOMAIN, custom_domain: true }] : []),
+                                      { pattern: EGRESS_HOST, custom_domain: true }] : []),
       migrates: ((config["migrations"] ?? []) as unknown[]).length > 0,
     })];
   })));

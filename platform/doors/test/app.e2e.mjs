@@ -8,7 +8,7 @@
 // entrypoint and the owner's its whole service, so a new owner's starter seed really writes
 // its files.
 //
-// The browser believes it talks to https://tinyassets.io: its resolver sends our hosts to the
+// The browser believes it talks to the doors' origin: its resolver sends our hosts to the
 // local workerd (`--host-resolver-rules`), so every request it makes, the app's live socket
 // too, reaches the doors over the network. Two other hosts answer, each a top-level navigation by
 // design: the identity provider (`upstream.test`, which signs the owner in at once) and the
@@ -31,12 +31,12 @@ import { installed } from "../../ci/deps.ts";
 import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts";
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
+import { EGRESS_HOST, EGRESS_ORIGIN } from "../../contract/src/egress.ts";
+import { HOST, ORIGIN } from "../../contract/src/identity.ts";
 import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
-const ORIGIN = "https://tinyassets.io";
-const EGRESS = "https://egress.tinyassets.io";
 const UPSTREAM = AUTHKIT.OWNER_ISSUER;
 const SOURCE_AUTH = "https://auth.test";
 /** The hosts the doors' sign-in reaches, the fake AuthKit's: its record's token and JWKS. */
@@ -52,7 +52,7 @@ const HAND_OFF = `
 export default {
   fetch(request, env) {
     const url = new URL(request.url);
-    const back = new URL(url.searchParams.get("redirect_uri") ?? "https://tinyassets.io/");
+    const back = new URL(url.searchParams.get("redirect_uri") ?? `${ORIGIN}/`);
     const state = url.searchParams.get("state") ?? "";
     if (url.hostname === "upstream.test" && url.pathname === "/authorize") {
       const signIn = JSON.stringify({ subject: env.WHO,
@@ -137,7 +137,7 @@ before(async () => {
   // No proxy: the browser reaches only the local workerd, by the rules below.
   const env = Object.fromEntries(Object.entries(process.env)
     .filter(([name]) => !/proxy/i.test(name)));
-  const local = ["tinyassets.io", "egress.tinyassets.io", "upstream.test", "auth.test"]
+  const local = [HOST, EGRESS_HOST, "upstream.test", "auth.test"]
     .map((host) => `MAP ${host}:443 127.0.0.1:${port}`).join(", ");
   browser = await chromium.launch({ env, args: [
     "--no-proxy-server",
@@ -240,7 +240,7 @@ const LEASE_TOKENS = new Map();
 
 /** What E2B's transform sets on every call through the door: the egress token and generation. */
 function stampedOf(opened) {
-  return opened.network.network.rules["egress.tinyassets.io"][0].transform.headers;
+  return opened.network.network.rules[EGRESS_HOST][0].transform.headers;
 }
 
 /** The lease's egress token: only the network's transform carries it, as E2B sets it. */
@@ -264,7 +264,7 @@ async function starts() {
 async function report(start, body) {
   await starts();
   const tokens = LEASE_TOKENS.get(start.lease.lease_id);
-  const answer = await mf.dispatchFetch(`${EGRESS}/r/${start.run}/events`, {
+  const answer = await mf.dispatchFetch(`${EGRESS_ORIGIN}/r/${start.run}/events`, {
     method: "POST", body: JSON.stringify(body),
     headers: { "Content-Type": "application/json", "x-ta-sandbox": tokens.egress_token,
                "x-ta-network-generation": "1", "x-ta-runner": tokens.runner_token } });
@@ -472,7 +472,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
   let signin = await asked(0);
   assert.equal(signin.engine, "claude-code");
   const post = async (body) => {
-    const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
+    const answer = await mf.dispatchFetch(`${EGRESS_ORIGIN}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
                  ...stampedOf(signin),
@@ -561,7 +561,7 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
   }
   assert.ok(signin, "the app did not ask the sandbox to start the sign-in");
   const post = async (body) => {
-    const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
+    const answer = await mf.dispatchFetch(`${EGRESS_ORIGIN}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
                  ...stampedOf(signin),

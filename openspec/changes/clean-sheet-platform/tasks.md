@@ -716,7 +716,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   account-deletion pages corrected, in the founder's copy.
 - [x] The mark's source is `WebSite/brand/mark.py`; the cutover manifest lists the old copy
   and the retired tray and onboarding exports and checks (d3 §C6 F4, `site-mark.md`).
-- [ ] The live stage's four PRs, after B13, B14's canary and `control` (d3 §H).
+- [ ] The live stage's four PRs (d3 §H), in order, as cut in `untangle-2026-11/stage.md`: the
+  zone and the host, the egress host out of the identity so the pair is the same bytes on the
+  stage (`untangle/stage-zone`); the kit at a host under the zone (`untangle/stage-kit`); the
+  host `stage.tinyassets.io` (`untangle/stage-host`); the host back (`untangle/stage-end`).
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
   (d3 §F2).
