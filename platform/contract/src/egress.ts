@@ -156,6 +156,11 @@ export function withGeneration<N extends { readonly rules: object }>(network: N,
 export const RUN_HEADER = "x-ta-run";
 /** The runner's own secret, beside the egress token, on its event and sign-in posts. */
 export const RUNNER_HEADER = "x-ta-runner";
+/**
+ * A run's decide door's credential (`decideCredential`), which its CLI's hook sends: from the
+ * run's environment (`DECIDE_ENV`), never its address, which only the root-owned hook names.
+ */
+export const DECIDE_HEADER = "x-ta-decide";
 /** The sync agent's lease token on its sync doors (the lease's `sync` kind). */
 export const SYNC_HEADER = "x-ta-sync";
 /** The gateway's own header on its answer, a blob resealed at the next version, for the object. */
@@ -174,6 +179,8 @@ export const EGRESS_BEAT_S = 60;
 
 /** The sandbox's report of the engines' sign-ins, the runner's. */
 const SIGNIN_DOOR = "/signin";
+/** Every run's decide door, one path for all, the run named by its credential's header. */
+const DECIDE_DOOR = "/decide";
 /** The sync agent's doors, each `/sync/<door>`. */
 export const SYNC_DOORS = Object.freeze(["changes", "list", "read", "chunks", "commit",
   "upload_begin", "upload_chunks", "upload_abort"] as const);
@@ -187,13 +194,15 @@ const RUN_SEGMENT = "r";
 /**
  * A door on the egress host, as its path names it (`egressDoor`): a run's model call (its
  * run, its secret or none when its header carries it, a connection, the provider's own
- * path), a run's MCP door (by its own secret), a run's event door (the runner's), the
- * sandbox's sign-in report, a sign-in's events (the runner's), or a sync agent's door.
+ * path), a run's MCP door (by its own secret), the runs' decide door (each run by its
+ * credential's header, `DECIDE_HEADER`), a run's event door (the runner's), the sandbox's
+ * sign-in report, a sign-in's events (the runner's), or a sync agent's door.
  */
 export type EgressDoor =
   | { readonly door: "model"; readonly run: string; readonly secret: string | undefined;
       readonly connection: string; readonly path: string }
   | { readonly door: "mcp"; readonly run: string; readonly secret: string | undefined }
+  | { readonly door: "decide" }
   | { readonly door: "events"; readonly run: string }
   | { readonly door: "signin" }
   | { readonly door: "signin_events"; readonly signin: string }
@@ -211,6 +220,9 @@ export function egressDoor(path: string): EgressDoor | null {
   }
   if (path === SIGNIN_DOOR) {
     return { door: "signin" };
+  }
+  if (path === DECIDE_DOOR) {
+    return { door: "decide" };
   }
   if (`/${parts[1]}` === SIGNIN_DOOR) {
     const signin = parts[2] ?? "";
@@ -265,6 +277,31 @@ export function runUrls(run: string, secret: string):
                          mcp_bare: `${EGRESS_ORIGIN}${runPath(run)}/mcp`,
                          events: `${EGRESS_ORIGIN}${runPath(run)}/events`,
                          signin: `${EGRESS_ORIGIN}${SIGNIN_DOOR}` });
+}
+
+/**
+ * The runs' decide door, which a run's CLI's pre-tool hook asks of each tool call it sees
+ * (R5 P-hooks), and the run's credential for it (`<run>:<secret>`, `DECIDE_HEADER`): on the
+ * origin of the run's MCP door (the start's `urls.mcp`), which carries both, so the start
+ * document names no other URL. The address is the same for every run, so a hook file every
+ * run of an engine shares names it, and the credential, which the run's environment holds,
+ * is all an agent could change: a forged one is refused.
+ */
+export function decideDoor(mcpUrl: string): { readonly url: string; readonly credential: string } {
+  const url = new URL(mcpUrl);
+  const door = egressDoor(url.pathname);
+  if (door?.door !== "mcp" || door.secret === undefined) {
+    throw new Refusal("invalid", "a run's MCP URL carries its run and secret");
+  }
+  return Object.freeze({ url: `${url.origin}${DECIDE_DOOR}`,
+                         credential: `${door.run}:${door.secret}` });
+}
+
+/** The run and secret a decide credential names, each in its grammar, or null. */
+export function decideCredential(value: string | null): { run: string; secret: string } | null {
+  const [run, secret, ...rest] = (value ?? "").split(":");
+  return rest.length === 0 && RUN_ID.test(run ?? "") && HEX64.test(secret ?? "")
+    ? { run: run!, secret: secret! } : null;
 }
 
 /** A sign-in's event door, and the sandbox's sign-in report door, on the egress host. */

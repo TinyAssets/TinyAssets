@@ -398,6 +398,35 @@ The owner SHALL answer a held call only in its session, by the card's id and the
 - **WHEN** the owner writes its policy while a card is pending
 - **THEN** the card is neither shown nor answered, and the call asked again is decided under the new rules
 
+### Requirement: A run's CLI's own tool calls are decided at its hook
+Where a run's engine record names a pre-tool hook (`decide`), the run's decide door SHALL answer which of the CLI's tools the owner's rules name, and SHALL decide each call the hook sends as each act it is (its tool kind's, or a rule's tools'), as that act's door call is decided, refused with the card where held. The runner SHALL write the hook only when a rule names a tool it matches, and SHALL fail the run when the hook's helper cannot reach the door before the CLI starts.
+
+#### Scenario: A shell command held at the hook
+- **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }` and a run's Claude Code calls `Bash`
+- **THEN** the call is refused `held_for_owner` with a card naming `Bash`, and a `Read` is let be
+
+### Requirement: Nothing the agent writes changes what its hook answers
+A run's hook SHALL take the door's address only from its root-owned file, and the run's environment SHALL carry only the run's credential, which the door SHALL refuse when forged. A hooked run's CLI SHALL load no settings layer, hook or variable a file the agent writes reaches, at its start or live, or the run SHALL be refused; where a CLI allows neither, its record SHALL say so, and its note SHALL say no rule holds there.
+
+#### Scenario: A spoofed credential
+- **WHEN** the agent's settings set the decide credential to an answer that allows
+- **THEN** the run is refused before its CLI starts, and a hook asked with that credential refuses the call
+
+#### Scenario: The agent's own settings beside the hook
+- **WHEN** the agent's directory holds a Gemini `.gemini/settings.json` that disables the hook by name
+- **THEN** a hooked Gemini run is refused before its CLI starts, and a hooked Claude Code run loads neither its project's nor its local settings, and its home's settings file is root's
+
+#### Scenario: The helper cannot reach the door
+- **WHEN** a run's hook is written and its start check is refused
+- **THEN** the run fails before its CLI starts
+
+### Requirement: The owner sees where each rule holds
+`policyRead` SHALL say, beside each action rule, where it holds and where it can't (`holds_at`, `not_enforced`), from `contract/acts.json` and the engines' records.
+
+#### Scenario: A rule nothing sees on one engine
+- **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }`
+- **THEN** its note holds it at every engine whose hook the agent can't alter, and names `codex`, `kimi`, `main_agent` and `sandbox_programs` among where it can't hold
+
 ### Requirement: A yes to a run's held call resumes its conversation
 A run's held call SHALL be bound to the run's conversation: the owner's yes SHALL admit the call only in that conversation, and SHALL write a run waiting there, under the held run's own authority, on an input that names the card, which starts once the conversation is free. A no SHALL resume nothing. A run whose engine stopped at a tool call it deferred (its record's `deferred` matcher) SHALL settle with the code `tool_deferred`, and its result SHALL post no reply.
 

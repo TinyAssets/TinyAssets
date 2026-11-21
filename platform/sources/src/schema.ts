@@ -26,6 +26,10 @@
  *   among them; and a sign-in with regions takes the owner's choice as `{region}`. The
  *   checker holds shape only: no vendor is named there.
  *
+ * A CLI's own pre-tool hook (`decide`, R5 P-hooks; d3 §N3) is data too: where its root-owned
+ * config goes, its template, the CLI's own names for each tool kind and for an MCP tool, and
+ * whether a hook that cannot start lets the call through; or why none holds.
+ *
  * A gateway source (`api_key`, `oauth`) names the pi-ai provider (`custom` for a declared
  * endpoint), the API its models speak, the base URL, how the secret is sent (`auth`), the
  * setup check (`verify_url`), the only endpoints the secret may reach, and its `engines`:
@@ -39,6 +43,7 @@
  * A record from outside the platform's own (an MCP server's authorization server, a source
  * from an owner's package) is marked `curated: false`; none exists yet.
  */
+import type { HookKind } from "../../contract/src/acts";
 import type { Endpoint, Upstream } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -214,6 +219,58 @@ export interface LoginSpec {
   readonly logout_argv?: readonly string[];
 }
 
+/**
+ * The CLI's own pre-tool hook, written only for a run whose owner has a rule it can hold. It
+ * asks the runs' decide door (`contract/src/egress.ts` `decideDoor`) of each tool call it
+ * matches: the door's address is the hook file's, which root owns, and the run's credential
+ * the run's environment's (`DECIDE_ENV`), so all an agent could forge is a credential the door
+ * refuses. How the CLI runs it (`runs`):
+ * - `http`: the CLI posts the call to the door itself, no process started, and the door answers
+ *   in the CLI's own words: an empty object lets it be, `deny` (a JSON template, `{reason}`
+ *   the door's) refuses it.
+ * - `shell`: the CLI runs the hook helper's command line (`sandbox/runner/decide.ts`) through
+ *   this shell and its arguments, which the runner's start check runs it through as well.
+ * - `exec`: the record's own file starts the helper by its argv, with no shell.
+ * The helper reads the call as every CLI here hands it (`tool_name`, `tool_input`) and
+ * answers exit 0 and `{}` to let it be, exit 2 with the reason on stderr to refuse it.
+ * - `file`: where the config goes. Under `{system}`, the run's own (merged into the record's
+ *   file of that path, if any); else a root path under `/etc` every run of the engine shares
+ *   (a managed settings file), which the latest run's start writes for the owner's rules.
+ * - `template`: the file, `{matcher}` the anchored pattern of the CLI's tool names to match;
+ *   `{decide_url}`, `{decide_header}` and `{decide_env}` the door, its credential's header and
+ *   the variable it is in (`http`); `{decide}` the helper's command line, `{decide_argv}` its
+ *   argv as JSON. Each is filled as its quoted value.
+ * - `argv`: what a hooked run adds to the CLI's command line: what loads a file of the run's
+ *   own, and what keeps the CLI from loading a settings layer the agent can write.
+ * - `pins`: the CLI's own settings files in the run's home a hooked run writes, root-owned and
+ *   not replaceable by the run's user, so the layer they are is never the agent's.
+ * - `refuses`: the files, from the agent's directory, that the CLI loads beside the hook and
+ *   the agent can write: a hooked run is refused while one is there.
+ * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
+ *   it lacks, no rule holds at its hook.
+ * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
+ * - `fails`: whether a hook that cannot start lets the call through (`open`, closed by the
+ *   runner's start check alone) or blocks it.
+ * - `alterable`: how the agent can change what the hook answers, where it can, from files it
+ *   writes: the hook is written all the same, and the owner's note says no rule holds there.
+ * - `cite`, `read`: the vendor's page for all of it, and when it was read.
+ */
+export type HookRuns =
+  | { readonly http: { readonly deny: string } }
+  | { readonly shell: readonly string[] }
+  | { readonly exec: true };
+
+export type Decide =
+  | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
+      readonly runs: HookRuns;
+      readonly pins?: Readonly<Record<string, string>>;
+      readonly refuses?: readonly string[];
+      readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
+      readonly mcp: { readonly prefix: string; readonly join: string };
+      readonly fails: "open" | "closed"; readonly alterable?: string;
+      readonly cite: string; readonly read: string }
+  | { readonly unsupported: string };
+
 /** An engine (`connect: ["cli"]`): a provider's own CLI, run whole in the sandbox. */
 export interface CliSpec {
   readonly install: Install;
@@ -228,6 +285,7 @@ export interface CliSpec {
   readonly instructions: Instructions;
   readonly skills_paths: readonly string[];
   readonly mcp: Mcp;
+  readonly decide: Decide;
   /**
    * Where the CLI's model calls carry the run's own secret as a header (`x-ta-run`) rather
    * than in their base URL's path: the variable it reads extra headers from, and the

@@ -8,8 +8,8 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { type ChildProcess, spawn, type SpawnOptions, spawnSync } from "node:child_process";
-import { chownSync, existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync,
-         writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, lchownSync, lstatSync, mkdirSync, readdirSync,
+         readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { RUN_BASICS } from "../../sources/src/run-env";
@@ -255,8 +255,11 @@ export async function keepHome(home: string, rec: Served, signin = false): Promi
 /**
  * The run's config files (its MCP config, its settings, its models file) are root's,
  * readable and never writable by its CLI, so an agent cannot rewrite its own MCP door or
- * trust; a directory in the home that holds nothing but them is root's too. In `{system}`,
- * root's, readable by the run's own group alone.
+ * trust; a directory in the home that holds nothing but them is root's too. One that holds
+ * what the CLI keeps as well (its home, its sessions, its secrets) is root's, writable by the
+ * run's group and sticky, so the CLI writes its own files there and never removes or replaces
+ * a config file (R5 P-hooks: a settings layer a hooked run pins is never the agent's). In
+ * `{system}`, root's, readable by the run's own group alone.
  */
 function configOwned(rec: Served, home: string, system: string,
                      files: Iterable<string>, as: Identity): void {
@@ -271,6 +274,8 @@ function configOwned(rec: Served, home: string, system: string,
     lchownSync(file, 0, 0);
     for (let dir = dirname(file); dir.startsWith(`${home}/`); dir = dirname(dir)) {
       if (kept.some((path) => path === dir || path.startsWith(`${dir}/`))) {
+        lchownSync(dir, 0, as.gid);
+        chmodSync(dir, 0o1770);
         break;
       }
       lchownSync(dir, 0, 0);
