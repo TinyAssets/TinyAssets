@@ -55,11 +55,13 @@ refused by the module-state rule (`ci/kit/module-state.ts`).
 
 ## 3. Found and left
 
-- **`asEvent` answers a transient refusal as `Forbidden`.** `unavailable`, `restoring` and now
-  `object_overloaded` reach an MCP Events client as `-32024` with the message as its reason.
-  The design sketch's codes have none for "for the moment". The overload is answered there
-  as every transient refusal is, and giving the family its own answer changes every one of
-  them. That is a sub-line of the re-check loop line.
+The overload is answered on MCP Events as every transient refusal is. Giving the family its
+own answer changes every one of them, so it is owed:
+
+- [ ] `doors/src/refused.ts` `asEvent` answers a transient refusal (`unavailable`,
+  `restoring`, `object_overloaded`) as `Forbidden` (`-32024`, the message its reason): the
+  design sketch's codes have none for the moment. One answer for the family
+  (`untangle/events-transient`).
 
 ## 4. Proof
 
