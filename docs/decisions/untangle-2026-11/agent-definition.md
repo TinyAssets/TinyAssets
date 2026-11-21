@@ -81,9 +81,7 @@ defines.
 ## What each later slice reads
 
 - **D2 (`untangle/agent-definition-runner`): native layers out, and the instruction checks.**
-  `definition.instructions` (`file`, `shadowed_by` in the cwd and its ancestors under
-  `/workspace`, `max_bytes`), and `definition.skills.paths`, which gains pi's `argv_each`; the
-  record gains `definition.native`.
+  Landed: see "D2: a run reads the definition and nothing beside it" below.
 - **D3 (`untangle/agent-definition-door`): the doors serve the definition.** `AGENT_FILES`
   (`AGENTS.md`, `SOUL.md`, `.agents/skills`) for the resources, prompts and Skills extension,
   and the skill union moved out of `project.ts` into this module, its second reader.
@@ -100,9 +98,59 @@ defines.
   template and answer words the record gains then. ADR-034 decisions 2 and 11 gain their
   Status lines when it lands.
 
+## D2: a run reads the definition and nothing beside it (2026-11-21)
+
+`untangle/agent-definition-runner`, slice D2 of research §4.4, with the coordinator's call that
+every engine's native settings are refused on every run, not only Gemini's or a hooked run's.
+
+1. **Each record's `definition.native`** (`sources/src/schema.ts` `DefinitionNative`): `refuses`,
+   the engine's own settings paths (Claude Code `.claude/settings.json`, `.claude/settings.local.json`,
+   `.mcp.json`, `.claude/agents`; Codex `.codex/config.toml`, `.codex/hooks.json`, `.codex/skills`;
+   Gemini `.gemini/settings.json`, `.gemini/skills`; pi `.pi/settings.json`, `.pi/mcp.json`,
+   `.pi/extensions`, `.pi/prompts`, `.pi/SYSTEM.md`, `.pi/APPEND_SYSTEM.md`; Kimi `.mcp.json`,
+   `.kimi-code/mcp.json`, `.kimi-code/AGENTS.md`, `.kimi-code/skills`, read from its 2.4.1
+   bundle), each with its page; and `argv`, added on every run (pi's `--no-approve`, which
+   replaces its `unattended_argv` `--approve`). The record check holds that no refused path is
+   one the definition renders (its instructions, their shadows, its skills folders).
+   `decide.refuses` is gone: the one list holds on every run, hooked or not.
+2. **One refusal, before each start of the CLI** (`sandbox/runner/guards.ts`
+   `definitionRefusal`, run by `runner.ts` `definitionHeld` before the start check and again
+   before a resume after a renewal): in the cwd and each ancestor under `/workspace`, a
+   `shadowed_by` file is `instructions_shadowed` (Claude Code's gains `.claude/CLAUDE.md`, pi's
+   `AGENTS.override.md`, per `docs/configuration.md`); a `native.refuses` path is
+   `engine_settings_refused` (it replaces `hook_settings_refused`); instructions past
+   `max_bytes` (Codex's 32 KiB) are `instructions_too_large`, never cut. Each goes out as
+   `ta.refused` with its path, and the app says it in words (`doors/app/view.js`). The
+   env-file refusals run beside it at both starts (review: a resume skipped them, so an
+   `.env` the agent wrote mid-run reached a resumed CLI).
+3. **Skills by argv where the engine takes them so** (`definition.skills.argv_each`, `{skill}`
+   the skill's directory, only there): pi's `paths` is empty and its argv carries `--skill`
+   per skill of the union (`project.ts` `skillsOf`, in name order within each source, the
+   agent's own first), so its untrusted `.agents/skills` and `.pi/skills` never load.
+
+Departures:
+- **`max_bytes` counts every copy** in the cwd and its ancestors under `/workspace` together:
+  Codex's cap is on the total it reads, and it reads the ancestors when a `.git` marks a root
+  above the cwd. Without one it reads the cwd's alone, so an ancestor's `AGENTS.md` can refuse
+  a run Codex would not have cut; refusing errs loud (Fact 8).
+- **`.pi/skills` is not refused**: the projection linked pi's skills there before, so the
+  folder stays, emptied of its links at the next sync-in; `--no-approve` leaves it unread.
+- **Claude Code's `--setting-sources user` stays on hooked runs only** until B1 says it keeps
+  `AGENTS.md` and `.claude/skills`; its project settings are refused at start on every run.
+  Claude Code reloads them live (R5 item 14), so on an unhooked run a file the agent writes
+  mid-session is read by that session until its CLI ends; the next start is refused. That
+  session's agent holds no rule a layer could lift, and its shell already does what one could.
+  Gemini and Codex read theirs at start, and `--no-approve` holds for pi's whole process.
+- **`skillsOf` is exported from `project.ts`** for the run's argv; D3 moved its rule into the
+  contract (`skillUnion`), which it now reads.
+
 ## Owed
 
-- [ ] D2: every run keeps the agent's engine-native settings out, refusing a Gemini run whose folder holds `.gemini/settings.json` (coordinator's call), and checks `definition.instructions` (a shadowing file in the cwd or an ancestor refused, Claude Code's `.claude/CLAUDE.md` added to its `shadowed_by` per research §4.2, past `max_bytes` refused on Codex), pi on `--no-approve` with `--skill` per skill; owed live checks B1 to B4 of the research (`untangle/agent-definition-runner`).
+- [x] D2: every run keeps the agent's engine-native settings out, refusing a Gemini run whose folder holds `.gemini/settings.json` (coordinator's call), and checks `definition.instructions` (a shadowing file in the cwd or an ancestor refused, Claude Code's `.claude/CLAUDE.md` added to its `shadowed_by` per research §4.2, past `max_bytes` refused on Codex), pi on `--no-approve` with `--skill` per skill; owed live checks B1 to B4 of the research (`untangle/agent-definition-runner`).
+- [ ] live: at the dark redeploy, B1: Claude Code 2.1.309 with `--setting-sources user` still loads the cwd's `AGENTS.md` and its `.claude/skills` links; if not, its record renders them by argv (`--append-system-prompt-file`, `--plugin-dir`).
+- [ ] live: at the dark redeploy, B2: a run on a fresh `CLAUDE_CONFIG_DIR` loads `AGENTS.md` (its `system/init`, or a probe question), not skipped as a first session.
+- [ ] live: at the dark redeploy, B3: Codex 0.166.0 reads no `.codex/config.toml` or `.codex/hooks.json` from the agent's folder in a fresh `CODEX_HOME`, so the start's refusal is the only path they take.
+- [ ] live: at the dark redeploy, B4: pi 1.4.0 with `--no-approve` and `--skill` per skill (and `-e` on a hooked run) in `--mode json` lists the skills, connects the run's door, and loads no `.pi/` file of the agent's.
 - [x] D3: the doors serve the definition (`AGENT_FILES`) as resources, prompts and the Skills extension on SDK 2.4.0, the skill union moved here from `project.ts` (`untangle/agent-definition-door`). Done (`agent-definition-door.md`).
 - [ ] D4: the agent's own MCP servers run, `agentMcp` read at admission and filtered by the egress allowlist, rendered by `definition.mcp`, the run door one entry of the same template; Gemini's `--allowed-mcp-server-names` taking each name is checked there (`untangle/agent-mcp`).
 - [ ] D5: one hook definition, `agentHooks` rendered for a runner-owned dispatcher in the decide hook's root-owned layer, which drops any allow or rewrite from a hook's answer; ADR-034 decisions 2 and 11 Status lines (`untangle/agent-hooks`).

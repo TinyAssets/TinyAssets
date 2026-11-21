@@ -65,15 +65,15 @@ export interface SkillTree {
  * `agent`'s skills, each name once with the directory it is served from: the agent's own
  * (`.agents/skills` in its directory), then the owner's shared abilities
  * (`/workspace/.agents/skills`), then the owner's skills (`/workspace/skills`), the first that
- * holds a name winning it. A skill is a directory, its name not hidden, holding `SKILL.md`.
- * The runner projects these into each engine's skills paths and the doors serve them to a main
- * agent, so both read one union.
+ * holds a name winning it, in name order within each source. A skill is a directory, its name
+ * not hidden, holding `SKILL.md`. The runner projects these into each engine's skills paths (or
+ * its argv, in this order) and the doors serve them to a main agent, so both read one union.
  */
 export function skillUnion(agent: string, tree: SkillTree): ReadonlyMap<string, string> {
   const chosen = new Map<string, string>();
   for (const source of [agentPath(agent, AGENT_FILES.skills), `${ABILITIES_DIR}/skills`,
                         SKILLS_DIR]) {
-    for (const name of tree.dirs(source)) {
+    for (const name of [...tree.dirs(source)].sort()) {
       if (!name.startsWith(".") && !chosen.has(name)
           && tree.file(`${source}/${name}/${SKILL_FILE}`)) {
         chosen.set(name, `${source}/${name}`);
