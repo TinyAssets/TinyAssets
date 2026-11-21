@@ -1,23 +1,10 @@
 name: Uptime canary
 
-# Row H of the self-host migration (cloud-canary + out-of-band alarm sink).
-# Spec: openspec/specs/uptime-and-alarms/spec.md.
-#
-# Host directive 2026-04-20: retire mcp.tinyassets.io/mcp as a public URL.
-# Canonical is tinyassets.io/mcp ONLY. Canary probes the single canonical.
-#
-# What this closes:
-#   - Pre-Row-H, Layer-1 uptime canary ran on the HOST's Windows Task
-#     Scheduler. Host box offline = no canary = no alarm = no signal
-#     that the platform is down. Host-fate-sharing defeats the canary.
-#   - This workflow requests a five-minute schedule on GitHub's infrastructure
-#     plus manual/deploy-completion triggers. Independent of the daemon host,
-#     but GitHub may delay or drop scheduled jobs; this is not a cadence SLA.
-#   - On 2 consecutive reds, automation opens / updates a GitHub issue
-#     labeled `p0-outage` through scripts/incident_issue.js (the same
-#     module deploy-prod uses for deploy-failed). Out-of-band alarm sink —
-#     zero new deps, reuses issue infrastructure, host gets emailed by GitHub.
-#   - On GREEN after reds, comments "RECOVERED" + closes the issue.
+# Probe the canonical tinyassets.io/mcp endpoint from GitHub so a daemon-host
+# outage can still raise an alarm (openspec/specs/uptime-and-alarms/spec.md).
+# GitHub may delay or drop scheduled jobs, so manual and deploy-completion
+# triggers also run the probe. scripts/incident_issue.js maintains the
+# `p0-outage` issue and GitHub delivers the out-of-band notification.
 #
 # Consecutive-state: open P0 issue IS the state. First red = log only.
 # Second measured Layer-1 red = open issue. Literal green = recovery.

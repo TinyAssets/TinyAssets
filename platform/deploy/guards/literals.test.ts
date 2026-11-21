@@ -52,9 +52,12 @@ const HOMES: ReadonlySet<string> = new Set([
   ...[...CONFIGS.keys()].map((worker) => `platform/${worker}/wrangler.jsonc`),
   "platform/deploy/platform.json"]);
 
-/** A name's own spelling: no letter, digit, `-` or `_` touches it. */
+/**
+ * A name's own spelling: no letter, digit or `-` touches it, and no `_` follows it. A `_` may
+ * lead it, as an R2 policy's resource joins a bucket's name after `<account>_default_`.
+ */
 const whole = (name: string): RegExp =>
-  new RegExp(`(?<![\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "g");
+  new RegExp(`(?<![A-Za-z0-9-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "g");
 
 /** Each file of `files` but a home that spells any of `names`, and the workspace that owes it. */
 function findings(files: ReadonlyMap<string, string>, names: readonly string[]): Found[] {
@@ -96,9 +99,11 @@ describe("the literal guard", () => {
     const bucket = BUCKETS[0]!;
     const files = new Map([
       ["platform/doors/src/a.ts", `bind("${owner}", "${bucket}"); // ${owner}`],
-      ["platform/doors/src/b.ts", `const env = "${owner}-staging", other = "x${owner}";`],
+      ["platform/doors/src/b.ts",
+       `const env = "${owner}-staging", other = "x${owner}", snake = "${owner}_y";`],
       [".github/workflows/x.yml", `run: wrangler deploy --name ${owner}`],
       ["platform/sandbox/template/c.ts", `"${owner}:s1"`],
+      ["platform/deploy/d.md", `{ "r2.bucket." + a + "_default_${bucket}": "*" }`],
       ["platform/owner/wrangler.jsonc", `{ "name": "${owner}", "bucket": "${bucket}" }`],
       ["platform/deploy/platform.json", `{ "bucket": "${bucket}" }`],
     ]);
@@ -106,6 +111,7 @@ describe("the literal guard", () => {
       { workspace: "doors", what: literalBreak("platform/doors/src/a.ts", 3) },
       { workspace: "ci", what: literalBreak(".github/workflows/x.yml", 1) },
       { workspace: "sandbox", what: literalBreak("platform/sandbox/template/c.ts", 1) },
+      { workspace: "deploy", what: literalBreak("platform/deploy/d.md", 1) },
     ]);
   });
 

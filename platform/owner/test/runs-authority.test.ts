@@ -13,9 +13,9 @@ import { type Binding, nativeId, PLATFORM_CALLER } from "../../contract/src/bind
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../contract/src/socket-shape";
-import { AGENT_DISABLED } from "../src/agent-file";
+import { AGENT_DISABLED, agentFilePath } from "../src/agent-file";
 import { AGENT_CHANGED } from "../src/launch";
-import { Files } from "../src/files";
+import { INLINE_BYTES } from "../../contract/src/limits";
 import { SIGNIN_REQUIRED } from "../../contract/src/sandbox";
 import { NO_CONVERSATION, RUN_ENDED, RUNS_KEPT, TIER_RUNS } from "../src/runs";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
@@ -30,7 +30,7 @@ import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, sandboxOf, scripted, startOf, syncOf, TIERS }
   from "./runs-support";
 import { secretOf } from "../../ci/workerd";
-import { drainDue, failure, laneAt, storesOn } from "./support";
+import { drainDue, failure, gateFor, laneAt, spaceOf, storesOn } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -871,28 +871,23 @@ describe("the reviewer's untested cases (review M-6)", () => {
 
   it("refuses an admission whose agent.json changed after it was read", async () => {
     const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    const refused = await r.in(async (instance, state) => {
-      const open = Files.prototype.open;
-      // The file changes between its read and the admission's unit (its etag moves).
-      Files.prototype.open = function (this: Files, path: unknown) {
-        const content = open.call(this, path);
-        state.storage.sql.exec("UPDATE file_entries SET mode = 1 - mode WHERE name = " +
-                                 "'agent.json'");
-        return content;
-      } as typeof open;
-      try {
-        await instance.agentSubmit(r.bind({ tiers: TIERS }),
-                                   { message: "x", client_send_id: "e-1" });
-        return "admitted";
-      } catch (error) {
-        return (error as Error).message;
-      } finally {
-        Files.prototype.open = open;
-      }
-    });
-    expect(refused).toBe(AGENT_CHANGED);
-    expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+    const path = agentFilePath("main");
+    // Padding keeps the JSON valid and puts its bytes behind FILES.
+    expect(await r.stub.fileWrite(r.session(), {
+      path, expected_etag: null, content: text(JSON.stringify(SIGNED_IN).padEnd(INLINE_BYTES + 1)),
+    })).toHaveProperty("entry");
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    await files.arm("getChunks", { hold: "after" });
+    const refused = failure(() => r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+      { message: "x", client_send_id: "e-1" }));
+    await files.held("getChunks");
+    try {
+      await defineAgent(r.stub, r.session(), "main", SIGNED_IN);
+    } finally {
+      await files.release("getChunks");
+    }
+    expect((await refused).message).toBe(AGENT_CHANGED);
+    expect((await r.stub.runList(r.bind(), {})).runs).toEqual([]);
   });
 
   it("ends every live run in the sandbox when the owner is erased", async () => {

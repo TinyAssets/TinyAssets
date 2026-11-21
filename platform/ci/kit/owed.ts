@@ -63,15 +63,6 @@ export function kernels(fix: string, kernel: string,
 export const literalBreak = (from: string, count: number): string =>
   `${from}: live names ×${count}`;
 
-/**
- * What each file owes the literal guard until `fix` removes them: the times it spells a live
- * name, by its path from the repository root.
- */
-export function literals(fix: string, counts: Readonly<Record<string, number>>): Owed[] {
-  return Object.entries(counts).map(([from, count]) =>
-    Object.freeze({ guard: "literals", what: literalBreak(from, count), fix }));
-}
-
 /** The file that holds a workspace's `OWED`. */
 export const rulesOf = (workspace: string): string => `platform/${workspace}/guards/rules.ts`;
 
