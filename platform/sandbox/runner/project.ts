@@ -10,6 +10,7 @@
 import { existsSync, lstatSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 
+import { AGENT_FILES } from "../../contract/src/agent-definition";
 import { ABILITIES_DIR, AGENTS_DIR, SKILLS_DIR, WORKSPACE } from "../../contract/src/paths";
 
 import { safeDirs } from "./fsafe";
@@ -52,7 +53,7 @@ export function project(workspace: string, agent: string, skillsPaths: readonly 
   }
   const local = (path: string) => join(workspace, relative(WORKSPACE, path));
   const agentDir = join(local(AGENTS_DIR), agent);
-  const sources = [join(agentDir, ".agents", "skills"), join(local(ABILITIES_DIR), "skills"),
+  const sources = [join(agentDir, AGENT_FILES.skills), join(local(ABILITIES_DIR), "skills"),
                    local(SKILLS_DIR)];
   const chosen = new Map<string, string>();
   for (const source of sources) {

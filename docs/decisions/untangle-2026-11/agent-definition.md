@@ -90,7 +90,11 @@ defines.
 - **D4 (`untangle/agent-mcp`): the agent's own servers.** `agentMcp` at admission, filtered by
   the egress policy (`checkDestination`); `definition.mcp` to render each server beside the run
   door. The run door itself becomes one entry of the same `http` template then, so
-  `cli.mcp.template` loses its hand-written entry.
+  `cli.mcp.template` loses its hand-written entry. A setting a server needs on one engine only
+  (Codex's `startup_timeout_sec`, Gemini's `timeout`) is fixed text in that record's `stdio` or
+  `http` entry, never a field of `mcp.json`; a stdio server that will not start without a
+  credential-shaped variable gets its placeholder from the connection it is bound to, which D4
+  designs (review, 2026-11-21).
 - **D5 (`untangle/agent-hooks`): one hook definition.** `agentHooks` at admission, rendered into
   `{system}/hooks.json` for the dispatcher; `definition.hooks.events`, and the dispatcher's
   template and answer words the record gains then. ADR-034 decisions 2 and 11 gain their
@@ -98,7 +102,7 @@ defines.
 
 ## Owed
 
-- [ ] D2: every run keeps the agent's engine-native settings out, refusing a Gemini run whose folder holds `.gemini/settings.json` (coordinator's call), and checks `definition.instructions` (a shadowing file in the cwd or an ancestor refused, past `max_bytes` refused on Codex), pi on `--no-approve` with `--skill` per skill; owed live checks B1 to B4 of the research (`untangle/agent-definition-runner`).
+- [ ] D2: every run keeps the agent's engine-native settings out, refusing a Gemini run whose folder holds `.gemini/settings.json` (coordinator's call), and checks `definition.instructions` (a shadowing file in the cwd or an ancestor refused, Claude Code's `.claude/CLAUDE.md` added to its `shadowed_by` per research §4.2, past `max_bytes` refused on Codex), pi on `--no-approve` with `--skill` per skill; owed live checks B1 to B4 of the research (`untangle/agent-definition-runner`).
 - [ ] D3: the doors serve the definition (`AGENT_FILES`) as resources, prompts and the Skills extension on SDK 2.4.0, the skill union moved here from `project.ts` (`untangle/agent-definition-door`).
 - [ ] D4: the agent's own MCP servers run, `agentMcp` read at admission and filtered by the egress allowlist, rendered by `definition.mcp`, the run door one entry of the same template; Gemini's `--allowed-mcp-server-names` taking each name is checked there (`untangle/agent-mcp`).
 - [ ] D5: one hook definition, `agentHooks` rendered for a runner-owned dispatcher in the decide hook's root-owned layer, which drops any allow or rewrite from a hook's answer; ADR-034 decisions 2 and 11 Status lines (`untangle/agent-hooks`).
