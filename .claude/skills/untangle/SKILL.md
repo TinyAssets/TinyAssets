@@ -49,15 +49,14 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - After each batch of merges, a fresh step-5 search runs across everything
   merged and open, for drift between PRs; unopened branches wait until it clears.
 - CI is the one full run, and a coordinator's prompt asks for no check this
-  section doesn't. Builder and reviewer run typecheck, the touched files'
-  tests, the guards the change can break and its mutations, once a PR (the
-  done-check: `docs/reference/executable-gates.md`), one mutation per
-  declared change; workspace suites and the recorders are CI's, so a
-  builder pushes a draft early and CI runs during review. Read only what
-  applies. A reviewer reruns two or three of the builder's mutations and one
-  of each new guard's, and runs the rest for its own fixes only. One review
-  a PR, a second only after a security block. One PR in flight per lane,
-  never stacked. Merge `origin/main` in; never rebase.
+  section doesn't. Builder and reviewer run the done-check once a PR
+  (`docs/reference/executable-gates.md`): typecheck, touched tests, the guards
+  the change can break, one mutation per declared change. Workspace suites
+  and the recorders are CI's: push a draft early, so CI runs during review.
+  Read only what applies. A reviewer reruns two or three of the builder's
+  mutations and one of each new guard's, and runs the rest for its own fixes
+  only. One review a PR, a second only after a security block. One PR in
+  flight per lane, never stacked. Merge `origin/main` in; never rebase.
 - On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
   deploy harness, the recorders) take the host's run lock; a timeout under load
   is rerun under it, never a finding. When done, delete what you wrote outside
@@ -153,7 +152,7 @@ You're done when:
 - A typical change lands in one place.
 - Every import is reasonable, and nothing imports anything more volatile than itself.
 - Subagents have no issues left that are worth fixing.
-- Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end: CI's recorders compare base and head (`ci/record.ts`).
+- Intended behavior is the same as when you started, apart from bugs the refactor fixed. CI's recorders test this (`ci/record.ts`).
 
 **Tips**
 

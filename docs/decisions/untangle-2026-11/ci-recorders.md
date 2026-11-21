@@ -83,8 +83,9 @@ reviewers stop running whole workspace suites and the recorders before a PR open
 8. **Found:** at main `88e74e1cd`, the wire recorder's `wire: inbound hooks` test gets 404
    `not_found` for every event, `inbound ok` included (its URL is the door's own,
    `https://tinyassets.io/hooks/inbound/<token>`). So a change to `inbound.ts`'s capability
-   refusals shows in no recorder; this PR's first mutation, there, came out the same. The fix
-   is `untangle/recorder-inbound`'s.
-9. **Left:** the shards' time on CI is first measured by this PR's own run (`live:`). The
-   watchdog, 45 minutes, is about six times the estimate in item 4 until then; if CI's shard
-   runs past 7 minutes, the count rises before the watchdog moves.
+   refusals shows in no recorder; this PR's first mutation, there, came out the same.
+   - [ ] The wire recorder sees the capability door's answers (`untangle/recorder-inbound`).
+9. **Left:** the watchdog, 45 minutes, is about six times the estimate in item 4 until CI
+   measures the shards.
+   - [ ] The shards' time read from this PR's own run (`live:` its `platform-recorders` legs);
+     past 7 minutes a shard, the count rises before the watchdog moves.
