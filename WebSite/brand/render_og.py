@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-from tinyassets.desktop.icon_gen import mark_svg  # noqa: E402
+from WebSite.brand.mark import mark_svg  # noqa: E402
 
 OUT = REPO / "WebSite" / "site-react" / "public" / "og-image.png"
 
