@@ -163,7 +163,7 @@ export interface WorkerFacts {
   readonly optional: readonly string[];
   /** Whether it is deployed with the owner issuer and WorkOS's record (`identity`). */
   readonly upstream: boolean;
-  /** The routes mode `routes` hands it: identity.json's, and the egress custom domain. */
+  /** The routes mode `routes` hands it: identity.json's, and egress.json's custom domain. */
   readonly routes: readonly Readonly<Record<string, string | boolean>>[];
   /** Whether its config declares Durable Object migrations, so `--migrate` may name it. */
   readonly migrates: boolean;

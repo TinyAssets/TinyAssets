@@ -146,7 +146,7 @@ let tree: string | null = null;
 function copied(): string {
   if (tree === null) {
     tree = temp("ta-tree-");
-    for (const part of ["contract/src", "contract/identity.json", "sources", "sandbox/runner",
+    for (const part of ["contract/src", "contract/egress.json", "sources", "sandbox/runner",
                         "sandbox/template", "sandbox/build"]) {
       cpSync(join(PLATFORM, part), join(tree, part), { recursive: true });
     }
