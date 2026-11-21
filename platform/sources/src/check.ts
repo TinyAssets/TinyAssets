@@ -622,6 +622,10 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   }
   const login = signsIn ? loginSpec(check, fields["login"], argv) : undefined;
   if (login !== undefined) {
+    if (engine.model_argv === undefined) {
+      check.fail("cli.engine.model_argv is present on a record that signs in: a run on the " +
+                 "sign-in passes cli.login.model");
+    }
     for (const state of login.state_checks ?? []) {
       const segments = homePath(state.path, false);
       if (segments === null || !secretSegments.some((secret) =>
@@ -1028,11 +1032,13 @@ const HOSTED_USE: readonly HostedUse[] = Object.freeze(["allowed", "unclear", "f
 
 /** A URL parameter's name, as a record pins it. */
 const PARAM_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+/** A model id as a CLI's `--model` takes it: a vendor's id, or its alias with a `/` prefix. */
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 
 /** The vendor's own sign-in in the sandbox (`LoginSpec`), checked whole, frozen. */
 function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv): LoginSpec {
   const fields = check.keys(value, "cli.login", ["argv", "url_pattern", "url", "expires",
-                                                 "hosted_use"], [
+                                                 "hosted_use", "model"], [
     "status_argv", "status_equals", "accepts_code", "code_pattern", "state_checks",
     "complete_on_state", "logout_argv"]);
   argv(fields["argv"], "cli.login.argv", 16);
@@ -1071,6 +1077,9 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
     check.fail("cli.login.hosted_use.verdict is allowed, unclear or forbidden");
   }
   check.text(hosted["citation"], CITATION, "cli.login.hosted_use.citation");
+  const model = check.keys(fields["model"], "cli.login.model", ["id", "citation"]);
+  check.text(model["id"], MODEL_ID, "cli.login.model.id");
+  check.text(model["citation"], CITATION, "cli.login.model.citation");
   for (const key of ["url_pattern", "code_pattern"] as const) {
     const pattern = fields[key];
     if (pattern === undefined) {

@@ -386,12 +386,11 @@ export interface SigninCodeRequest extends SigninRequestById {
 }
 /**
  * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
- * that signs in with the vendor's own login, whether its record's `status_argv` succeeded,
- * and the models it read the engine offers. Presence only: never a credential.
+ * that signs in with the vendor's own login, whether its record's `status_argv` succeeded.
+ * Presence only: never a credential.
  */
 export interface SigninRequest {
-  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean;
-                               readonly models?: readonly string[] }[];
+  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean }[];
 }
 
 // -- THE DOORS: the `signins` rows' handlers (`owner/doors.json`) ---------------------------------
@@ -562,9 +561,9 @@ export const signinsDoors = Object.freeze({
   /**
    * The runner's report of the engines' sign-ins (`SigninRequest`), on the egress host by
    * the egress token of the live lease: each engine's row (signed in or not, when it was
-   * checked, the models it offers), never a credential; `auto` ranks the signed-in ones
-   * with the owner's connections. A sign-in that lapsed (signed in, now not) leaves a
-   * "sign in again" notice, and `auto` stops picking that engine.
+   * checked), never a credential; `auto` ranks the signed-in ones, each by its record's
+   * plan model, with the owner's connections. A sign-in that lapsed (signed in, now not)
+   * leaves a "sign in again" notice, and `auto` stops picking that engine.
    */
   signinReport(o: SigninsDoorNeeds, { lease: held, r }: Call<SigninRequest>):
       { recorded: number; lapsed: string[] } {
@@ -597,8 +596,7 @@ export const signinsDoors = Object.freeze({
       return { recorded: reports.length, lapsed };
     }
     for (const report of reports) {
-      if (o.runs.reportSignin(report.engine, report.signed_in, report.models, clock())
-            .lapsed) {
+      if (o.runs.reportSignin(report.engine, report.signed_in, clock()).lapsed) {
         lapsed.push(report.engine);
         o.notices.add("signin_lapsed", `${report.engine}: sign in again`, clock());
       }

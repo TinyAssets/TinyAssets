@@ -21,9 +21,10 @@
  *    and the owner's own tier (`admission.ts`);
  * 7. the source is chosen (`choose`): `agent.json`'s engine, or `auto`'s strongest connected
  *    source that has an engine (Direction 4): the owner's connections and its signed-in
- *    engines (`engine_signins`, each as the runner reports its record's `status_argv`)
- *    ranked together, a subscription preferred to a key of the provider it covers, and a
- *    lapsed sign-in refused (`SIGNIN_LAPSED`), never a silent fall back to another source;
+ *    engines (`engine_signins`, each as the runner reports its record's `status_argv`,
+ *    each by its record's plan model, `cli.login.model`) ranked together, a subscription
+ *    preferred to a key of the provider it covers and run on its plan's model, and a lapsed
+ *    sign-in refused (`SIGNIN_LAPSED`), never a silent fall back to another source;
  *    for an unattended run (a schedule's, a mail's) only a credential its record allows
  *    unattended (ADR-033 decision 3, `UNATTENDED_REFUSED`);
  * 8. the owner's own limits hold (`OWNER_LIMIT`): an API-key run's source and the owner's
@@ -67,7 +68,7 @@ import { CONVERSATION_ID, randomHex, RUN_ID, SCHEDULE_ID } from "../../contract/
 import { sha256Hex } from "../../contract/src/digest";
 
 import { bundledSources } from "../../sources/src/catalog";
-import { servedRecord, signsIn } from "../../sources/src/served";
+import { planProvider, servedRecord, signsIn } from "../../sources/src/served";
 import {
  type EngineEvents, EVENTS_RACED, type Frame, FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";
@@ -228,8 +229,6 @@ export interface RunHost {
 export interface SignIn {
   readonly engine: string;
   readonly signed_in: boolean;
-  /** The models the engine offers on the sign-in, as the runner read them from the CLI. */
-  readonly models: readonly string[];
   readonly checked_at: number;
   readonly changed_at: number;
 }
@@ -410,17 +409,7 @@ const UNSETTLED = "settled_at IS NULL";
 /** The id a subscription takes among the connections it is ranked with. */
 const PLAN = "plan:";
 
-/**
- * The provider an engine's plan covers: its record's one API-key provider (Claude Code's
- * `anthropic`), else the engine itself. Data only: no provider is named here.
- */
-function providerOf(apiKeyEnv: Readonly<Record<string, unknown>> | undefined, engine: string):
-    string {
-  const providers = Object.keys(apiKeyEnv ?? {});
-  return providers.length === 1 ? providers[0]! : engine;
-}
-
-/** A model a plan offers, as the ranking reads it: its id; no catalog price. */
+/** A plan's model (`cli.login.model`), as the ranking reads it: its id; no catalog price. */
 function planModel(model: string): Candidate["model"] {
   return { id: model, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as
     Candidate["model"];
@@ -1027,7 +1016,7 @@ export class Runs {
     const client = authority !== OWNER;
     const signins = new Map<string, SignIn>(client
       ? (this.#host.lease(now, authority)?.signins ?? []).map((engine) =>
-        [engine, { engine, signed_in: true, models: [], checked_at: now, changed_at: 0 }])
+        [engine, { engine, signed_in: true, checked_at: now, changed_at: 0 }])
       : this.signins().map((signin) => [signin.engine, signin]));
     const lapsed = (engine: string) => new Refusal("signin_lapsed", `${SIGNIN_LAPSED} (${engine})`);
     let unattendedOnly = false;
@@ -1068,8 +1057,10 @@ export class Runs {
           if (!client && signins.get(file.engine)?.signed_in === false) {
             throw lapsed(file.engine);
           }
+          // A record runs on the sign-in exactly when it has one (the record check), so its
+          // plan's model is there.
           return { engine: file.engine, credential, connection: null, source: null,
-                   model: file.model };
+                   model: file.model ?? record.cli.login!.model.id };
         }
         const key = keyFor(file.engine);
         if (key !== undefined) {
@@ -1079,9 +1070,13 @@ export class Runs {
       }
     } else {
       // The owner's subscriptions (each engine signed in, or lapsed) ranked with its
-      // connections, by the same ranking, each by the models the runner read it offers; a
-      // subscription covering a key's provider is preferred to the key (the plan is used).
+      // connections, by the same ranking, each by the model its record's plan runs
+      // (`cli.login.model`), which its run is given; a subscription covering a key's provider
+      // is preferred to the key (the plan is used). A model the agent names picks among the
+      // sources that offer it (a key's connection lists it, a plan's record names it), so it
+      // never reaches another vendor's CLI.
       const plans = new Map<string, string>();  // provider -> engine
+      const planModels = new Map<string, string>();  // engine -> its plan's model
       const planned: UsableSource[] = [];
       for (const signin of signins.values()) {
         const record = servedRecord(signin.engine);
@@ -1089,15 +1084,16 @@ export class Runs {
         if (!signsIn(record) || !this.#signinOn(signin.engine)) {
           continue;
         }
-        const provider = providerOf(record.cli.api_key_env, signin.engine);
+        const provider = planProvider(record);
         plans.set(provider, signin.engine);
+        planModels.set(signin.engine, record.cli.login.model.id);
         planned.push({ connection: `${PLAN}${signin.engine}`, source: signin.engine, provider,
                        display_name: signin.engine, created_at: signin.changed_at,
-                       models: (signin.models.length === 0 ? [""] : signin.models)
-                         .map((model) => planModel(model)) });
+                       models: [planModel(record.cli.login.model.id)] });
       }
       for (const candidate of ranked([...keys, ...planned])) {
-        if (file.connection !== null && candidate.connection !== file.connection) {
+        if ((file.connection !== null && candidate.connection !== file.connection)
+            || (file.model !== null && candidate.model.id !== file.model)) {
           continue;
         }
         const plan = candidate.connection.startsWith(PLAN) ? candidate.source
@@ -1106,10 +1102,8 @@ export class Runs {
           if (signins.get(plan)?.signed_in !== true) {
             throw lapsed(plan);  // stops picking it, and never falls back silently
           }
-          const model = candidate.connection.startsWith(PLAN) && candidate.model.id !== ""
-            ? candidate.model.id : null;
           return { engine: plan, credential: "vendor_login_in_sandbox", connection: null,
-                   source: null, model: file.model ?? model };
+                   source: null, model: file.model ?? planModels.get(plan)! };
         }
         if (candidate.connection.startsWith(PLAN)) {
           continue;  // a plan its record does not allow here (unattended)
@@ -1148,28 +1142,29 @@ export class Runs {
 
   /** Every engine's sign-in as last reported. A read. */
   signins(): SignIn[] {
-    return this.#sql.exec<{ engine: string; signed_in: number; models: string;
-                            checked_at: number; changed_at: number }>(
-      "SELECT * FROM engine_signins ORDER BY engine").toArray()
+    return this.#sql.exec<{ engine: string; signed_in: number; checked_at: number;
+                            changed_at: number }>(
+      "SELECT engine, signed_in, checked_at, changed_at FROM engine_signins ORDER BY engine")
+      .toArray()
       .map((row) => ({ engine: row.engine, signed_in: row.signed_in === 1,
-                       models: JSON.parse(row.models) as string[], checked_at: row.checked_at,
-                       changed_at: row.changed_at }));
+                       checked_at: row.checked_at, changed_at: row.changed_at }));
   }
 
   /**
-   * In a unit: the runner's report of `engine`'s sign-in (its record's `status_argv`), and
-   * the models it read the engine offers; whether it lapsed (was signed in, now is not).
+   * In a unit: the runner's report of `engine`'s sign-in (its record's `status_argv`);
+   * whether it lapsed (was signed in, now is not).
    */
-  reportSignin(engine: string, signedIn: boolean, models: readonly string[], now: number):
-      { lapsed: boolean } {
+  reportSignin(engine: string, signedIn: boolean, now: number): { lapsed: boolean } {
     const before = this.#sql.exec<{ signed_in: number }>(
       "SELECT signed_in FROM engine_signins WHERE engine = ?", engine).toArray()[0];
+    // `models` is the frozen schema's column, read by nothing: a plan's model is its
+    // record's (`cli.login.model`). Its drop is owed (strongest-plan.md).
     this.#sql.exec("INSERT INTO engine_signins (engine, signed_in, models, checked_at, " +
-                     "changed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (engine) DO UPDATE SET " +
-                     "signed_in = excluded.signed_in, models = excluded.models, " +
+                     "changed_at) VALUES (?, ?, '[]', ?, ?) ON CONFLICT (engine) DO UPDATE " +
+                     "SET signed_in = excluded.signed_in, " +
                      "checked_at = excluded.checked_at, changed_at = CASE WHEN " +
                      "signed_in = excluded.signed_in THEN changed_at ELSE excluded.changed_at " +
-                     "END", engine, signedIn ? 1 : 0, JSON.stringify(models), now, now);
+                     "END", engine, signedIn ? 1 : 0, now, now);
     return { lapsed: before?.signed_in === 1 && !signedIn };
   }
 

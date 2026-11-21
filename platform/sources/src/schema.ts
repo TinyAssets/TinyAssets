@@ -200,6 +200,12 @@ export interface LoginSpec {
   /** The vendor's code's lifetime, whole seconds, and where that is documented or measured. */
   readonly expires: { readonly s: number; readonly citation: string };
   readonly hosted_use: { readonly verdict: HostedUse; readonly citation: string };
+  /**
+   * The model a run on the sign-in is given: the vendor's default for a plan on the pinned
+   * version, as `engine.model_argv`'s `{model}` takes it, and where that is documented or
+   * read. `auto` ranks the plan by it, and the run passes it.
+   */
+  readonly model: { readonly id: string; readonly citation: string };
   readonly status_argv?: readonly string[];
   readonly status_equals?: Readonly<Record<string, string | number | boolean>>;
   readonly state_checks?: readonly StateCheck[];

@@ -19,6 +19,7 @@
     { "provider": "*", "model": "gpt-5.1*" },
     { "provider": "*", "model": "gemini-2.5-pro*" },
     { "provider": "*", "model": "grok-*" },
+    { "provider": "*", "model": "kimi-for-coding" },
     { "provider": "*", "model": "gpt-5" },
     { "provider": "*", "model": "claude-haiku-*" },
     { "provider": "*", "model": "gemini-2.5-flash*" }
