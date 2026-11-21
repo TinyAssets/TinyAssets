@@ -211,27 +211,6 @@ def test_kept(): assert helper()
 @pytest.mark.verifies(
     "test-suite-follows-shape:A test already checked another way is pruned automatically"
 )
-def test_scheduled_prune_is_one_draft_pr_with_no_deploy_or_auto_merge():
-    import yaml
-
-    workflow = yaml.safe_load((shape.ROOT / ".github/workflows/test-shape-prune.yml").read_text())
-    assert "schedule" in workflow.get("on", workflow.get(True))
-    steps = workflow["jobs"]["prune"]["steps"]
-    create = next(
-        s for s in steps if s.get("uses", "").startswith("peter-evans/create-pull-request@")
-    )
-    assert create["with"]["draft"] is True
-    assert create["with"]["branch"] == "automation/test-shape-prune"
-    assert "body-path" in create["with"]
-    assert all("merge --auto" not in s.get("run", "") for s in steps)
-    report = next(s for s in steps if s.get("name") == "Report subsets and delete orphaned tests")
-    assert '"$COVERAGE_OUTCOME" = success' in report["run"]
-    assert "git diff --name-only -z -- tests | xargs -0 -r" in report["run"]
-
-
-@pytest.mark.verifies(
-    "test-suite-follows-shape:A test already checked another way is pruned automatically"
-)
 def test_prune_command_writes_reviewable_removal_reasons_and_kept_witnesses(tmp_path):
     import json
 

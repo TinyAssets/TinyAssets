@@ -444,6 +444,12 @@ function landing(from: string, specifier: string, has: (path: string) => boolean
   return tries.find(has) ?? at;
 }
 
+/** The files `source`, at `from`, reaches by relative specifiers, each where it lands. */
+export function relativeLoads(from: string, source: string,
+                              has: (path: string) => boolean): string[] {
+  return relativeImports(from, source).map((specifier) => landing(from, specifier, has));
+}
+
 /**
  * Each import of `from` (held as `layer`, in workspace `ws`) its layer does not allow, as a
  * violation: `<from> imports <where it lands>`, or the specifier itself where it is no

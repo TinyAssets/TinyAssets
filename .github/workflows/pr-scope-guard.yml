@@ -128,8 +128,9 @@ jobs:
 
       # A change to more than prose names, in its body's Untangle check, the PR,
       # branch or live wait of each item it leaves owed (the untangle skill, "The PR
-      # body"). The body is author-controlled text: it is read through the
-      # environment and never interpolated into the script.
+      # body"), and any change keeps each open owed item (`- [ ]`) of the decision
+      # files until it is ticked. The body is author-controlled text: it is read
+      # through the environment and never interpolated into the script.
       - name: Untangle check (the body)
         if: github.event_name == 'pull_request_target'
         env:
@@ -147,11 +148,12 @@ jobs:
             {
               echo "### PR scope guard"
               echo ""
-              echo "**Blocked — the body's Untangle check is missing or names no fix for an owed item.**"
+              echo "**Blocked — the Untangle check is missing, an owed item names no fix, or the change drops one.**"
               echo ""
               echo "A PR that changes more than prose needs an **Untangle check** heading in its"
               echo "body, and each item there that is left, owed or later names its PR (#123),"
-              echo "branch (untangle/, fix/, process/, land/) or live: wait."
+              echo "branch (untangle/, fix/, process/, land/) or live: wait. An open owed item"
+              echo "(- [ ]) in docs/decisions/ names its fix too, and stays until its PR ticks it."
               echo ""
               sed 's/^/> /' "$RUNNER_TEMP/untangle-why.txt"
             } >> "$GITHUB_STEP_SUMMARY"
