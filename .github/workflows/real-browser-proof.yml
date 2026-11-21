@@ -2,11 +2,8 @@ name: real-browser-proof
 
 # Why this exists
 # ---------------
-# Some proofs only mean anything in a real browser. The custom-UI frame is the
-# first: a bundle's <form> must fire `submit` for its own script (the sandbox
-# grants allow-forms) while `form-action 'none'` keeps any real submission from
-# assert on the sandbox string cannot show that Chrome actually delivers the
-# event; only Chromium can.
+# Some proofs only mean anything in a real browser: a static assert on a page's
+# markup or CSP cannot show what Chromium actually does with it.
 #
 # The required shards install Chromium and assert these cases in their union.
 # This job provides the same proof before a PR enters the merge queue. It runs
