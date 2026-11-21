@@ -119,9 +119,10 @@ working, and the leg is that run.
 | `x2:2.5` `TimeoutLiteral.call`, `.node`, `budgets.mjs`'s report mode | Gone | Done. |
 | `v2:V2-ST5` `ci/budgets.json` names tests that no longer exist | Each names a test that exists, but the deploy guards' record, which names its test by an older title | **Fixed:** it names the test's title. |
 
-The deploy kit's guards were read in full for the same shapes. Each mode's row runs whole
-against the fake world and its plan and calls are read back, and each refusal is asserted with
-what it changed (nothing). Nothing else could never fail. Two lines of "the deploy kit's facts"
+The deploy kit's guards were read for the same shapes, by the scan and by each describe's world
+and assertions. Each mode's row runs whole against the fake world and its plan and calls are
+read back, and each refusal is asserted with what it changed (nothing). No other check was
+found that could never fail. Two lines of "the deploy kit's facts"
 look like copies of `facts.ts` and are kept: `[...WORKERS].sort()` against the folders is the
 order's one check that it drops no Worker, and `MIGRATES` against the configs' migrations is
 what anchors the `--migrate` refusals the same test drives from it.
@@ -135,3 +136,9 @@ what anchors the `--migrate` refusals the same test drives from it.
   - `owner/memory/leg.mjs` with `v8Flags = []`: the removed check passed it (the proof it could
     never fail); the leg itself fails on it at its first `/gc`.
   - Each kept guard named in §2 was read against its plants; the plants are its mutations.
+
+## 4. A process fix found on the way
+
+The gates page's done-check named `ci_structural_guards.py --head HEAD`, an option the script
+lost when it took `--selection` (#5496), so the check as written fails on its arguments before it
+runs. It now names the script alone, which runs every structural guard.
