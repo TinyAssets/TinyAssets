@@ -1,45 +1,53 @@
 # Decisions Index
 
-Accepted and proposed first; superseded last. An ADR is never edited after
-acceptance except its Status line (ADR-005).
+The platform's set first; the superseded ADRs after it. An ADR is never edited after
+acceptance except its Status line (ADR-039 decision 1).
 
-- [ADR-005-retire-plan-md.md](ADR-005-retire-plan-md.md) — PLAN.md retired · one home per kind of fact · approval gate is README § Direction plus ADR acceptance
-- [ADR-006-the-platform-has-no-llm.md](ADR-006-the-platform-has-no-llm.md) — only a powered command center calls an LLM, on its owner's credentials
-- [ADR-007-vendor-neutral-connections.md](ADR-007-vendor-neutral-connections.md) — any model or platform through generic connection primitives · OAuth first · no vendor code
-- [ADR-008-cloud-only-platform.md](ADR-008-cloud-only-platform.md) — the platform runs only in the cloud · the founder's desktop is never infrastructure (amended by ADR-024)
-- [ADR-009-nothing-runs-outside-a-users-command-center.md](ADR-009-nothing-runs-outside-a-users-command-center.md) — every execution belongs to one owner, who can see, pause and delete it · no platform fleet (amended by ADR-027)
-- [ADR-010-private-by-default.md](ADR-010-private-by-default.md) — every creation path writes `private` · exposure is an explicit owner act · privacy guidance is commons content
-- [ADR-011-owner-door-complete-model-door-bounded.md](ADR-011-owner-door-complete-model-door-bounded.md) — the app's reads are complete · only the model door bounds · `AccountType` is the one per-account input
-- [ADR-012-sealed-box-target-architecture.md](ADR-012-sealed-box-target-architecture.md) — one sealed box per command center (amended by ADR-019, ADR-031) · control plane is the only always-on layer · capacity later
-- [ADR-019-one-box-per-owner.md](ADR-019-one-box-per-owner.md) — one box per owner runs tools, browser and CLIs (amended by ADR-023, ADR-025, ADR-026, ADR-030, ADR-032) · gVisor driver · owner-only policy enforced at the box boundary · email via the owner's connector
-- [ADR-013-primitives-not-operators.md](ADR-013-primitives-not-operators.md) — ship the missing primitive, not an operator · irreducibility finding for new handles · no graph-size caps · test via the app agent · generator, evaluator and ground truth separate
-- [ADR-014-an-agent-is-a-node.md](ADR-014-an-agent-is-a-node.md) — an agent node runs the `converse` turn under the owner's grant
-- [ADR-015-only-the-floor-blocks-a-deploy.md](ADR-015-only-the-floor-blocks-a-deploy.md) — the six floor classes · everything else is tracked and re-judged after live use · outages equal severity (review line superseded by ADR-038)
-- [ADR-016-identity-follows-the-account.md](ADR-016-identity-follows-the-account.md) — WorkOS AuthKit · one principal across every client · no anonymous principal · Claude/ChatGPT/browser parity
-- [ADR-017-knowledge-is-files-okf-by-default.md](ADR-017-knowledge-is-files-okf-by-default.md) — OKF bundle is the default canonical knowledge form · indexes are derived
-- [ADR-018-command-centers-are-exportable.md](ADR-018-command-centers-are-exportable.md) — one action exports a runnable, publish-ready folder · not yet built
-- [ADR-020-lean-ci-successor.md](ADR-020-lean-ci-successor.md) — affected tests and structural guards on PRs; full suite after merge
-- [ADR-023-core-agent-loop-runs-outside-every-box.md](ADR-023-core-agent-loop-runs-outside-every-box.md) — the core loop leaves the box (where C6 put it) for a loop-worker pool, never the daemon · tools reached through a box tool door · user customizations run in the box at extension points (amended by ADR-032, ADR-034)
-- [ADR-024-a-paired-device-runs-only-its-owners-work.md](ADR-024-a-paired-device-runs-only-its-owners-work.md) — a paired device is a placement for its owner's own work, never infrastructure · outbound polls park at the broker · amends ADR-008
-- [ADR-025-the-trusted-ledger-and-conversations-live-outside-the-box.md](ADR-025-the-trusted-ledger-and-conversations-live-outside-the-box.md) — the broker keeps the messaging ledger · bodies, board and turn-based rooms live in a trusted conversation store · messaging never wakes a box (store technology superseded by ADR-032)
-- [ADR-026-boxes-sleep-when-idle-and-are-admitted-by-size.md](ADR-026-boxes-sleep-when-idle-and-are-admitted-by-size.md) — zero idle tail · admission by memory size class, not a flat count · suspend and restore in the main build-out
-- [ADR-027-a-shared-real-time-relay-is-infrastructure.md](ADR-027-a-shared-real-time-relay-is-infrastructure.md) — one thin relay object per match forwards opaque frames · devices do the work · amends ADR-009
-- [ADR-028-scoped-api-keys-on-mcp-for-agents-without-oauth.md](ADR-028-scoped-api-keys-on-mcp-for-agents-without-oauth.md) — owner-minted per-agent API keys may call `/mcp` and `/api` as that agent · needs floor review
-- [ADR-029-one-app-manifest.md](ADR-029-one-app-manifest.md) — `apps/{slug}/app.json` carries the one manifest with a `multiplayer` block · N11 reads it
-- [ADR-030-the-box-holds-only-tools-user-code-and-owner-files.md](ADR-030-the-box-holds-only-tools-user-code-and-owner-files.md) — slim box harness · owner MCP, app and `/api` requests served on the trusted side through `BoxProvider` (amended by ADR-032, ADR-034)
-- [ADR-031-subscription-use-follows-each-vendors-sanctioned-paths.md](ADR-031-subscription-use-follows-each-vendors-sanctioned-paths.md) — API keys for anything unattended · TinyAssets never holds consumer login tokens · hosted CLIs are human-started · wakes use each vendor's own door (amended by ADR-033)
-- [ADR-032-clean-sheet-platform.md](ADR-032-clean-sheet-platform.md) — one SQLite-backed Durable Object per owner holds the trusted side and the pi-durable loop (pi's own mechanisms; user hooks in a separate Worker's object over RPC) · edge Workers are the only binder · a gateway Worker holds sealed credentials · owner files in object storage · a Firecracker sandbox only for `bash` · supersedes ADR-022, the droplet, box storage, broker-held SQLite and the router/broker serving design (amended by ADR-034, and by the founder's answers of 2026-11-21)
+## The platform's set
+
+- [ADR-032-clean-sheet-platform.md](ADR-032-clean-sheet-platform.md) — one SQLite-backed Durable Object per owner holds the trusted side · edge Workers are the only binder · a gateway Worker holds sealed credentials · owner files in object storage · a Firecracker sandbox per owner · supersedes ADR-001 to ADR-031 (amended by ADR-034, ADR-035 and ADR-039)
 - [ADR-033-any-source-powers-any-agent.md](ADR-033-any-source-powers-any-agent.md) — any connected source powers any agent, scheduled and unattended included, where its vendor allows · a subscription CLI runs the whole turn as the agent's engine · TinyAssets' loop uses plan credentials only through a vendor-approved program
-- [ADR-034-agents-run-on-unmodified-engines.md](ADR-034-agents-run-on-unmodified-engines.md) — every agent runs on an unmodified engine (a provider CLI in the sandbox on a subscription or an egress-keyed API key, the user's main agent over MCP, or pi's CLI) · an agent is files plus TinyAssets state · the unit of work is a run · pi leaves the owner object (amended by the founder's answers of 2026-11-21)
-- [ADR-036-mail-is-never-let-go.md](ADR-036-mail-is-never-let-go.md) — at full storage new mail is refused `storage_full`, acked mail never let go · acked mail moves to archive segments (files-plane content, one fence row a segment) instead of eviction, `storage_busy` at the hot ceiling · mail counted at its real bytes · one owner-wide unread ceiling, no mailbox counts · supersedes ADR-035 decision 5 for mail
-- [ADR-035-large-bodies-live-in-r2.md](ADR-035-large-bodies-live-in-r2.md) — a body past 2,048 bytes (a collection row's, a history entry's, a message's) lives in R2 through the files plane, its row a content id · written R2 first, then the reference, an orphan swept · charged to its writer's files scope within the tier's storage, retention making room first · rows and history counted in laid-out bytes · erased by namespace with the owner · amends ADR-032 decisions 1 and 5 (its collection-history retention superseded by the founder's answers of 2026-11-21)
-- [ADR-037-memory-is-bounded-by-structure.md](ADR-037-memory-is-bounded-by-structure.md) — an isolate's live memory is counts the code enforces times costs it constructs · large data only as streams or 4 MiB chunks, a path taking units of its isolate's pool per step while its bytes are in hand · past it `busy`, retryable, no acknowledged write lost · `file_edit` freed of `WHOLE_BYTES` · CI proves size-independence by differences at checkpoints; garbage and the holds not yet under a unit named, never fitted
-- [ADR-038-every-pr-is-reviewed-by-one-check.md](ADR-038-every-pr-is-reviewed-by-one-check.md) — every PR is reviewed, and the one gate is the required `review` check, which only the review App posts · the verdict is a `COMMENT` PR review on the commit read, first line `APPROVE` or `BLOCK` · the receipt is gone · supersedes ADR-015's review line
-- [ADR-004-merge-attribution-and-the-deploy-gap.md](ADR-004-merge-attribution-and-the-deploy-gap.md) — merged-is-not-deployed and PRs stuck BEHIND are ONE root cause: the default `GITHUB_TOKEN` cannot originate the events this repo's automation needs · measured #2259 vs #2260 · host mints a PAT/App token
-- [ADR-003-required-test-aggregator.md](ADR-003-required-test-aggregator.md) — `required-tests`: the first required check that tests behaviour · runs unconditionally · no-new-failures ratchet · host `gh api` command to make it required
-- [ADR-022-box-backend-gvisor-on-the-droplet.md](ADR-022-box-backend-gvisor-on-the-droplet.md) — gVisor on the droplet as the one box backend · superseded by ADR-032
-- [ADR-001-truth-hierarchy-and-freshness.md](ADR-001-truth-hierarchy-and-freshness.md) — superseded by ADR-005
-- [ADR-002-static-vs-dynamic-context-budget.md](ADR-002-static-vs-dynamic-context-budget.md) — superseded by ADR-005
+- [ADR-034-agents-run-on-unmodified-engines.md](ADR-034-agents-run-on-unmodified-engines.md) — every agent runs on an unmodified engine (a provider CLI in the sandbox on a subscription or an egress-keyed API key, the user's main agent over MCP, or pi's CLI) · an agent is files plus TinyAssets state · the unit of work is a run · pi leaves the owner object (amended by ADR-039)
+- [ADR-035-large-bodies-live-in-r2.md](ADR-035-large-bodies-live-in-r2.md) — a body past 2,048 bytes (a collection row's, a history entry's, a message's) lives in R2 through the files plane, its row a content id · written R2 first, then the reference, an orphan swept · charged to its writer's files scope within the tier's storage · erased by namespace with the owner · amends ADR-032 decisions 1 and 5 (decision 5 superseded for mail by ADR-036, for collection history by ADR-039)
+- [ADR-036-mail-is-never-let-go.md](ADR-036-mail-is-never-let-go.md) — at full storage new mail is refused `storage_full`, acked mail never let go · acked mail moves to archive segments instead of eviction, `storage_busy` at the hot ceiling · mail counted at its real bytes · one owner-wide unread ceiling · supersedes ADR-035 decision 5 for mail
+- [ADR-037-memory-is-bounded-by-structure.md](ADR-037-memory-is-bounded-by-structure.md) — an isolate's live memory is counts the code enforces times costs it constructs · large data only as streams or 4 MiB chunks · past it `busy`, retryable, no acknowledged write lost · CI proves size-independence by differences at checkpoints
+- [ADR-038-every-pr-is-reviewed-by-one-check.md](ADR-038-every-pr-is-reviewed-by-one-check.md) — every PR is reviewed, and the one gate is the required `review` check, which only the review App posts · the verdict is a `COMMENT` PR review on the commit read, first line `APPROVE` or `BLOCK` · supersedes ADR-015's review line
+- [ADR-039-the-founders-answers-of-2026-11-21.md](ADR-039-the-founders-answers-of-2026-11-21.md) — ADR-001 to ADR-031 are history, and what stands of them is its decision 2 · one agent definition reaches every engine · code mode off until H2 · limits only Fact 15's kinds · runs past the tier's ceiling wait · the control record served from its last good copy
+
+## Superseded by ADR-032 (founder, 2026-11-21)
+
+What stands of each is held by ADR-039 decision 2, item named.
+
+- [ADR-001-truth-hierarchy-and-freshness.md](ADR-001-truth-hierarchy-and-freshness.md) — `PLAN.md`, `STATUS.md` and freshness rules (superseded first by ADR-005)
+- [ADR-002-static-vs-dynamic-context-budget.md](ADR-002-static-vs-dynamic-context-budget.md) — the always-loaded set and its budget (superseded first by ADR-005)
+- [ADR-003-required-test-aggregator.md](ADR-003-required-test-aggregator.md) — `required-tests`, the first required check that tested behaviour · stands: 2.21
+- [ADR-004-merge-attribution-and-the-deploy-gap.md](ADR-004-merge-attribution-and-the-deploy-gap.md) — the default token's merges raise no push · stands: 2.22
+- [ADR-005-retire-plan-md.md](ADR-005-retire-plan-md.md) — `PLAN.md` retired, one home per kind of fact · stands: decision 1, 2.1
+- [ADR-006-the-platform-has-no-llm.md](ADR-006-the-platform-has-no-llm.md) — the platform has no LLM · stands: 2.2
+- [ADR-007-vendor-neutral-connections.md](ADR-007-vendor-neutral-connections.md) — vendor-neutral connections · stands: 2.3
+- [ADR-008-cloud-only-platform.md](ADR-008-cloud-only-platform.md) — cloud only, the founder's desktop never infrastructure · stands: 2.4
+- [ADR-009-nothing-runs-outside-a-users-command-center.md](ADR-009-nothing-runs-outside-a-users-command-center.md) — every execution has one owner · stands: 2.5
+- [ADR-010-private-by-default.md](ADR-010-private-by-default.md) — private by default · stands: 2.6
+- [ADR-011-owner-door-complete-model-door-bounded.md](ADR-011-owner-door-complete-model-door-bounded.md) — the owner door complete, the model door bounded · stands: 2.7
+- [ADR-012-sealed-box-target-architecture.md](ADR-012-sealed-box-target-architecture.md) — a sealed box per command center · stands: 2.4, 2.13
+- [ADR-013-primitives-not-operators.md](ADR-013-primitives-not-operators.md) — ship primitives, not operators · stands: 2.8
+- [ADR-014-an-agent-is-a-node.md](ADR-014-an-agent-is-a-node.md) — an agent node runs the `converse` turn
+- [ADR-015-only-the-floor-blocks-a-deploy.md](ADR-015-only-the-floor-blocks-a-deploy.md) — only the floor blocks a deploy · stands: 2.9
+- [ADR-016-identity-follows-the-account.md](ADR-016-identity-follows-the-account.md) — identity follows the account · stands: 2.10
+- [ADR-017-knowledge-is-files-okf-by-default.md](ADR-017-knowledge-is-files-okf-by-default.md) — knowledge is files, OKF by default · stands: 2.11
+- [ADR-018-command-centers-are-exportable.md](ADR-018-command-centers-are-exportable.md) — the owner can always leave with everything · stands: 2.12
+- [ADR-019-one-box-per-owner.md](ADR-019-one-box-per-owner.md) — one box per owner, an owner-only policy layer · stands: 2.13
+- [ADR-020-lean-ci-successor.md](ADR-020-lean-ci-successor.md) — affected tests on PRs, the full suite after merge · stands: 2.21
+- [ADR-022-box-backend-gvisor-on-the-droplet.md](ADR-022-box-backend-gvisor-on-the-droplet.md) — gVisor on the droplet (superseded 2026-10-27)
+- [ADR-023-core-agent-loop-runs-outside-every-box.md](ADR-023-core-agent-loop-runs-outside-every-box.md) — the core loop outside every box · stands: 2.13
+- [ADR-024-a-paired-device-runs-only-its-owners-work.md](ADR-024-a-paired-device-runs-only-its-owners-work.md) — a paired device runs only its owner's work · stands: 2.14
+- [ADR-025-the-trusted-ledger-and-conversations-live-outside-the-box.md](ADR-025-the-trusted-ledger-and-conversations-live-outside-the-box.md) — the trusted ledger outside the box · stands: 2.15
+- [ADR-026-boxes-sleep-when-idle-and-are-admitted-by-size.md](ADR-026-boxes-sleep-when-idle-and-are-admitted-by-size.md) — zero idle tail, admission by size · stands: 2.16
+- [ADR-027-a-shared-real-time-relay-is-infrastructure.md](ADR-027-a-shared-real-time-relay-is-infrastructure.md) — a shared real-time relay is infrastructure · stands: 2.17
+- [ADR-028-scoped-api-keys-on-mcp-for-agents-without-oauth.md](ADR-028-scoped-api-keys-on-mcp-for-agents-without-oauth.md) — scoped API keys on MCP · stands: 2.18
+- [ADR-029-one-app-manifest.md](ADR-029-one-app-manifest.md) — one app manifest · stands: 2.19
+- [ADR-030-the-box-holds-only-tools-user-code-and-owner-files.md](ADR-030-the-box-holds-only-tools-user-code-and-owner-files.md) — the box holds only tools, user code and owner files · stands: 2.13
+- [ADR-031-subscription-use-follows-each-vendors-sanctioned-paths.md](ADR-031-subscription-use-follows-each-vendors-sanctioned-paths.md) — subscription use follows each vendor's sanctioned paths · stands: 2.20
 
 ## Decision logs
 

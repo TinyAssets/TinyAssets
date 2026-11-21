@@ -1,7 +1,8 @@
 /**
  * The platform gates at the doors (research §7; checklist 11): the outside kill switch,
- * fail-closed, and the maintenance gate, which a record that is there but malformed or
- * unreadable also closes.
+ * fail-closed, and the maintenance gate, which a record that is there but malformed also
+ * closes. A record that can't be read is served from the doors' kept copy, which admits what
+ * it admits and refuses only the acts that need a fresh read (`FRESH_ONLY`).
  */
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -10,7 +11,10 @@ import { ORIGIN } from "../../contract/src/identity";
 import { writeControl } from "../../ci/fixtures";
 import {
   CONTROL_KEY, type Control, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen, parseControl,
+  staleRefusal,
 } from "../../contract/src/control";
+import { bundledSources } from "../../sources/src/catalog";
+import { signinsRead } from "../../sources/src/signin";
 import type { DoorsEnv } from "../src/env";
 import { mintKeyFor } from "./keys";
 import {
@@ -53,7 +57,6 @@ const record = (value: unknown): (() => Promise<DoorsEnv>) => async () => {
 };
 
 const MALFORMED: State = ["malformed", record({ ...OPEN, outside: true })];
-const UNREADABLE: State = ["unreadable", async () => unreadable()];
 const NOT_JSON: State = ["not JSON", async () => {
   await writeControl(env.CONTROL, "{outside");
   return doorsEnv;
@@ -129,7 +132,7 @@ describe("the control record", () => {
 });
 
 describe.each([
-  MISSING, MALFORMED, UNREADABLE, NOT_JSON,
+  MISSING, MALFORMED, NOT_JSON,
   ["switched off", record({ ...OPEN, outside: "off" })],
   ["in maintenance", record({ ...OPEN, ordinary: "none" })],
 ] as const)("the outside gate, with the record %s", (_what, state) => {
@@ -157,7 +160,7 @@ describe.each([
 });
 
 describe.each([
-  [MISSING, true], [MALFORMED, false], [UNREADABLE, false], [NOT_JSON, false],
+  [MISSING, true], [MALFORMED, false], [NOT_JSON, false],
   [["switched off", record({ ...OPEN, outside: "off" })] as State, true],
   [["in maintenance", record({ ...OPEN, ordinary: "none" })] as State, false],
 ] as const)("the owner gate, with the record %s", ([_what, state], open) => {
@@ -219,5 +222,84 @@ describe("the canary gate", () => {
     const refused = await appCallback({ owner: owner() });
     expect(new URL(refused.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("temporarily_unavailable");
+  });
+});
+
+/** `path` of the owner surface, posted as `app` with `body`, the doors run with `environment`. */
+function ownerPost(path: string, app: { access_token: string; session: string }, body: unknown,
+                   environment: DoorsEnv): Promise<Response> {
+  return call(new Request(url(`/app/api/${path}`), {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+                               Authorization: `Bearer ${app.access_token}`,
+                               Cookie: `__Host-ta-owner=${app.session}` },
+    body: JSON.stringify(body) }), environment);
+}
+
+/** A refusal's answer at the owner surface: a 503 to retry in a minute, its message why. */
+async function refusedFor(response: Response): Promise<unknown> {
+  return [response.status, response.headers.get("Retry-After"), await response.json()];
+}
+
+describe("the record unreadable, served from the doors' kept copy", () => {
+  it("admits the copy's outside calls: an MCP call and an /api call", async () => {
+    const alice = owner();
+    const tokens = await connect(await registerClient(), { owner: alice });
+    const { key } = await mintKeyFor(owner());
+    expect((await listTools(tokens.access_token, unreadable())).status).toBe(200);
+    expect((await api(key, unreadable())).status).toBe(200);
+  });
+
+  it("keeps a copy's closed gate closed: a kill flipped before the outage holds", async () => {
+    const { key } = await mintKeyFor(owner());
+    await setControl({ ...OPEN, outside: "off" });
+    expect((await api(key)).status).toBe(503);
+    expect((await api(key, unreadable())).status).toBe(503);
+  });
+
+  it("refuses an outside client's new authorization, for a while", async () => {
+    // The copy is the record read open: the client's earlier authorization read it.
+    const client = await registerClient();
+    await connect(client, { owner: owner() });
+    await expect(authorizeMcp(client, { owner: owner() }, unreadable()))
+      .rejects.toThrow("temporarily_unavailable");
+  });
+
+  it("signs a known owner in, and refuses a new owner's first sign-in, for a while",
+     async () => {
+    const known = owner();
+    await signInApp({ owner: known });
+    const again = await appCallback({ owner: known }, unreadable());
+    expect(new URL(again.back.headers.get("Location")!).searchParams.get("code")).toBeTruthy();
+    const first = await appCallback({ owner: owner() }, unreadable());
+    expect(new URL(first.back.headers.get("Location")!).searchParams.get("error"))
+      .toBe("temporarily_unavailable");
+  });
+
+  it("serves the owner's surface, and refuses a new API key and a vendor sign-in for a while",
+     async () => {
+    const app = await signInApp({ owner: owner() });
+    expect((await ownerPost("session/extend", app, {}, unreadable())).status).toBe(200);
+    expect(await refusedFor(await ownerPost("keys", app, {
+      name: "test", scopes: [{ universe: "cc", agent: "main", capability: "read_graph" }] },
+                                            unreadable())))
+      .toEqual([503, "60", { error: staleRefusal("key").message }]);
+    expect(await refusedFor(await ownerPost("signin/start", app, { engine: "codex" },
+                                            unreadable())))
+      .toEqual([503, "60", { error: staleRefusal("signin").message }]);
+  });
+
+  it("drops the copy at a read of a malformed record: an outage after it stays closed",
+     async () => {
+    const { key } = await mintKeyFor(owner());
+    expect((await api(key)).status).toBe(200);
+    await writeControl(env.CONTROL, "{outside");
+    expect((await api(key)).status).toBe(503);
+    expect((await api(key, unreadable())).status).toBe(503);
+  });
+
+  it("hands the owner's object no tier numbers and no sign-in switches to keep", () => {
+    const control = parseControl(OPEN)!;
+    expect(signinsRead(bundledSources(), { kind: "kept", control, read_at: 1 })).toBeUndefined();
+    expect(signinsRead(bundledSources(), { kind: "malformed" })).toEqual([]);
   });
 });

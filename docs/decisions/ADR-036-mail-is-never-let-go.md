@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (founder's rules, ruled by the coordinator 2026-11-04: one storage number, the only wall a user meets; nothing of the owner's is lost silently). Supersedes ADR-035 decision 5's retention of acked mail. Per ADR-005, ADR-035's body is not edited: only its Status line gains "decision 5 superseded for mail by ADR-036".
+Accepted (founder's rules, ruled by the coordinator 2026-11-04: one storage number, the only wall a user meets; nothing of the owner's is lost silently). Supersedes ADR-035 decision 5's retention of acked mail. Per ADR-005, ADR-035's body is not edited: only its Status line gains "decision 5 superseded for mail by ADR-036". Decision 1's "ADR-035 decision 5's collection-history retention stays until phase 2 decides it" is answered by ADR-039 decision 5 (founder, 2026-11-21): every retention is an owner setting, off meaning keep forever.
 
 ## Date
 

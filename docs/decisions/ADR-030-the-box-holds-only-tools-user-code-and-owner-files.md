@@ -11,6 +11,8 @@ Workers and the owner's Durable Object, not the router and `BoxProvider`; the
 split rule stands. Amended by ADR-034 (founder, 2026-11-02): vendor CLIs in the
 sandbox are for every owner, not the paid tier only (ADR-034 decision 8).
 
+Superseded by ADR-032 (founder, 2026-11-21), except: its split rule: owner code in the sandbox, trusted code outside (ADR-039 decision 2.13).
+
 ## Date
 
 2026-10-26

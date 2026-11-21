@@ -6,6 +6,8 @@ Proposed — **the fix is a host action**: it needs a credential only the repo
 owner can mint. Everything up to that point is measured and written down here
 so the decision takes minutes, not investigation. See "What the host must do".
 
+Superseded by ADR-032 (founder, 2026-11-21), except: enrollment on a user's token, since an auto-merge the default token arms never enqueues (ADR-039 decision 2.22).
+
 ## Date
 
 2026-08-04

@@ -1,5 +1,5 @@
 {
-  "about": "The handle set each side of the cutover serves on tinyassets.io/mcp, and the authorization server its protected-resource document names, by which the platform's canary (platform/deploy/canary.ts) tells which serves: the doors, or the old stack, while the platform is dark. The doors' set is the one it checks live, and each old-only handle it holds absent.",
+  "about": "The handle set each side of the cutover serves at its MCP door, and the old stack's authorization server, which its protected-resource document names: by it the platform's canary (platform/deploy/canary.ts) knows the platform dark, the doors' own document naming their origin instead. The doors' set is the one it checks live, and each old-only handle it holds absent.",
   "old": {
     "why": "The old stack's live surface (PR-178 and the 2026-07-24 canonical convergence), as recorded: scripts/mcp_public_canary.py --assert-handles holds tools/list to exactly its own literal CANONICAL_HANDLES, which tests/test_handles_canary.py holds this list to. It leaves at the cutover's hold's end (platform/cutover.json).",
     "authorization_server": "https://unassuming-environment-16.authkit.app",
@@ -10,7 +10,6 @@
   },
   "new": {
     "why": "The doors' tools for a custom connector: platform/doors/profiles.json's custom profile, what every MCP grant and API key is served until the owner narrows it, which is the doors' whole tool table (platform/doors/src/tools.ts). platform/doors/guards/handles.test.ts holds this list to both.",
-    "authorization_server": "https://tinyassets.io",
     "handles": [
       "inbox_digest", "board_digest", "mailbox_read", "mailbox_ack", "room_post",
       "agents_list", "agent_register", "policy_propose", "collection_get",

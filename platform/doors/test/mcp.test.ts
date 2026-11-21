@@ -1,10 +1,10 @@
 /**
  * The MCP door (research §4; checklist 9, 10, 24): both revisions from one factory, the
  * tool table with every hint, the verified origin, source and sign-in reaching the
- * object, GET 405 and a foreign Origin 403; an owner's key (ADR-028) served as a token is,
- * by the `/api` door's own check, from the `Authorization` header alone. Beside the tools, the
- * agent's definition: its two files as resources and in the `agent` prompt, its skills by the
- * Skills extension, each file's digest the bytes' served.
+ * object, GET 405 and a foreign Origin 403; an owner's key (ADR-039 decision 2.18) served
+ * as a token is, by the `/api` door's own check, from the `Authorization` header alone. Beside
+ * the tools, the agent's definition: its two files as resources and in the `agent` prompt, its
+ * skills by the Skills extension, each file's digest the bytes' served.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";

@@ -10,6 +10,8 @@ Amended by ADR-032: the box becomes a per-owner Firecracker microVM sandbox
 woken only for `bash`, and the owner-only policy lives in the owner's Durable
 Object.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: one sandbox per owner, everything in it untrusted, owner policy enforced outside it (ADR-039 decision 2.13).
+
 ## Date
 
 2026-10-11

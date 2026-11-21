@@ -35,14 +35,16 @@ variables, and both migration locks pinned. Later runs need only what follows.
 record holds.**
 - **What the kit needs.** `routes` lists the egress host's DNS records before any change.
   Cloudflare's API reference accepts either DNS Read or DNS Write (Edit) for that listing.
-  `handback` deletes the DNS record the custom domain made, if the detach leaves it, which
-  needs DNS Write. So **DNS Edit covers both**. Attaching and detaching the custom domain
+  On a doors' host under the zone (the stage's), `routes` also makes that host's DNS record,
+  and `handback` deletes it. `handback` deletes the DNS record the custom domain made, if
+  the detach leaves it. Both need DNS Write. So **DNS Edit covers all of it**. Attaching and detaching the custom domain
   need **Workers Scripts edit** on the account, which the kit's deploys need too.
 - **What the token holds.** The infra-ops reference (`.claude/skills/infra-ops/references/
   cloudflare.md`) records this secret with Zone DNS Edit and Account Workers Scripts edit,
   and `emergency-dns.yml` writes DNS records with it. A run has shown it reading DNS:
   `cloud-only-preflight.yml` (run 35704397255, 2026-09-22) read the zone's records with this
-  secret, and `internal_origin_dns` passed. No run has written DNS with it yet.
+  secret, and `internal_origin_dns` passed. No run has written DNS with it yet: the
+  stage's `routes` is the first (below).
 - **How to check without reading the token.**
   - In the Cloudflare dashboard, My Profile → API Tokens lists each token's permissions and
     never shows its value.
@@ -142,9 +144,10 @@ It never counts as "absent".
    callback (`signin.callback` in `platform/contract/identity.json`), with the checks in
    step 1, before any Cloudflare change, since the early sign-in check needs it. The kit
    never deletes one.
-7. **E2B's lifecycle webhook** (the doors' `hook` in `identity.json`, matched by
-   its URL, listed with the checks before any change): registered **disabled** if E2B's
-   listing lacks it, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
+7. **E2B's lifecycle webhook** (`tinyassets-lifecycle`, found by its name, listed with the
+   checks before any change): registered **disabled** at the doors' `hook` in
+   `identity.json` if E2B's listing lacks it, its URL moved to that one when the identity's
+   host has changed, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
    `production` too, so the two start equal. After that its secret changes only with the
    doors' (`rotate` naming `E2B_WEBHOOK_SECRET`): E2B never shows a hook's secret, so the kit
    cannot compare them. It is never disabled or deleted.
@@ -163,8 +166,8 @@ It never counts as "absent".
 ## Later steps, each its own approved run
 
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
-  the doors' routes over (`routes` in `platform/contract/identity.json`) one route at a
-  time, through Cloudflare's routes API, so no path is ever served by nothing:
+  the doors' routes over (`routes` in `platform/contract/identity.json`, on its `host`) one
+  route at a time, through Cloudflare's routes API, so no path is ever served by nothing:
   - A pattern another Worker holds is moved to the doors in place (`PUT`, one change). Today
     those are the old proxy's (`tinyassets-mcp-proxy`) `mcp*`, `api*` and `app*`, so the old
     proxy is left with no route.
@@ -181,9 +184,24 @@ It never counts as "absent".
     (`doors/guards/identity.test.ts`).
   - A refused change stops the run and says which steps are done.
 
+  On a `host` under the zone (the stage's) the zone's routes hold none of its patterns, so
+  each is added and the old proxy's are left as they are. Such a host also needs a proxied
+  DNS record, or its routes take nothing (Cloudflare's routes page). Right after the route
+  record is kept, and before anything is deployed, `routes` makes `AAAA <host> 100::`,
+  proxied, and writes it into the route record. A placeholder like it there already (an
+  earlier `routes` run's, or yours) is left. Any other address record on the host stops
+  the run before any change. A refused make (a token without DNS Edit) stops the run with
+  only the route record written: add the record yourself (Cloudflare → `tinyassets.io` →
+  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and re-run
+  that run's jobs (the run → Re-run all jobs), not a new dispatch: its route record has the
+  host bare, so it keeps your record as the run's, and its handback deletes it. A new
+  dispatch keeps it as held, and no handback deletes it. The zone itself holds the site's
+  record, so on it nothing is made.
+
   It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
   `wrangler triggers deploy`),
-  enables E2B's lifecycle webhook now that the doors serve its path, and runs the
+  enables E2B's lifecycle webhook at the doors' path on the host now that the doors serve
+  it, and runs the
   platform's canary's unkeyed checks (`--side doors --unkeyed`, below). The same
   `triggers deploy` sets the doors' Cron Trigger, the canary's clock. Every connector then
   signs in again once.
@@ -193,6 +211,7 @@ It never counts as "absent".
   the before-state of everything `routes` changes that `dark` does not:
   - every route of the zone as it read them, and the handover's changes;
   - the egress custom domain's Worker, or none;
+  - the doors' host, whether it held its DNS record, and the one `routes` made;
   - whether E2B's lifecycle webhook was held, and enabled.
 
   It also holds the zone, the run id and the time, and no secret. The job summary names its
@@ -225,6 +244,8 @@ It never counts as "absent".
      attach's DNS record, none is deleted, and the read-back holds the host to no address
      record, as it was before `routes`. A record left there is named for you to delete by
      hand.
+  5. The DNS record `routes` made on the doors' host, if it made one, is deleted the same
+     way: only it, as the record holds it. A record the host held before is left.
 
   It changes no other route. Before any change, it holds the zone to the record. If a
   route the record or the handover holds was changed by someone after `routes`, or the egress
@@ -261,17 +282,20 @@ It never counts as "absent".
   outside, through the public routes, and changes nothing but one file in the canary owner's
   workspace. Each side's record is data (`scripts/canary_handles.json`): the doors' handle
   set is held to their tool table by a guard, the old stack's to its own canary's list.
-  - **Which side serves.** The public resource document's authorization server (AuthKit, or
-    `https://tinyassets.io`). While it is the old stack's, the platform is **dark**: the
-    canary checks that the old stack still answers `/mcp` (its anonymous `401` carries a
-    body, the doors' none, so a `routes` or `handback` stopped partway is exit 10) and that
-    E2B holds the pinned template and the hook, disabled. The doors' checks wait, named.
+  - **Which side serves.** The doors serve when the resource document on their host (the
+    identity's) names their own origin as its authorization server; else the old stack,
+    when the one on the zone names AuthKit. A host under the zone that the doors do not
+    serve yet has no DNS record and answers nothing. While the old stack serves, the
+    platform is **dark**: the canary checks that the old stack still answers the zone's
+    `/mcp` (its anonymous `401` carries a body, the doors' none, so a `routes` or `handback`
+    stopped partway is exit 10) and that E2B holds the pinned template and the hook,
+    disabled. The doors' checks wait, named.
   - **The doors' checks:** the anonymous challenge and resource document; `/app` and
     `/app?upgrade=1` with their CSP; the first-party client document; the egress host's
     refusal; the sign-in's start (the doors' `/authorize` to WorkOS, WorkOS to AuthKit, the
-    issuer's JWKS); E2B's template and the hook, enabled; **the off-account copy**: read
-    with the job's own token, a night of `offsite-copy.yml` must have passed inside two and
-    a half days once the copy is configured (exit 15, enough alone to page). While the
+    issuer's JWKS); E2B's template and the hook, enabled at the doors' path; **the
+    off-account copy**: read with the job's own token, a night of `offsite-copy.yml` must
+    have passed inside two and a half days once the copy is configured (exit 15, enough alone to page). While the
     newest night found no setting stored, it waits and says "not configured". Then, with
     `TA_PROBE_KEY`, the canary owner's API key: the handle set (one read-only `GET
     /api/tools/<name>` a name: each doors tool `405`, each old-only handle `404`), a file
@@ -320,6 +344,50 @@ It never counts as "absent".
        sets the doors' copy. From then the clock runs and the alarm pages.
   - **After `handback` and the old stack's restart:** dispatch **Handles canary**. The
     platform's canary reads the platform dark again, and its alarm stands down.
+- **The live stage: `routes` at `stage.tinyassets.io`, before the cutover** (d3 §H,
+  `docs/decisions/untangle-2026-11/stage.md`). While `identity.json`'s `host` names the
+  stage's host, `routes` serves the doors there and nothing else moves: the old stack keeps
+  `tinyassets.io`. In this order:
+  1. **`routes`, plan then apply.** The plan shows the route record, the host's DNS record
+     to make (`AAAA stage.tinyassets.io 100::`, proxied), everything `dark` does, every
+     doors route added on the stage host and none of the zone's touched, the egress custom
+     domain, and the hook moved to the stage host's path and enabled. Its canary runs the
+     unkeyed checks on the stage host.
+  2. **`handback`'s plan job once**, read-only, to see what a handback would do.
+  3. **The first sign-in, with the gate closed.** It settles what only a real sign-in through
+     the doors shows: User Management's `authenticate` takes the API key as the client's
+     secret, and the access token's `iss` is `upstreamFrom`'s `token_issuer`, with a fresh
+     `auth_time`. Sign up with each stage account at `https://stage.tinyassets.io/app`, an
+     address that is not your main one (a plus-alias works).
+     - **Pass:** the browser ends at `…/app/signed-in?error=temporarily_unavailable` (the
+       page reads as a sign-in error, which is expected). The closed gate refused it after
+       every check passed (the client, the callback, the token's signature, `iss`,
+       `client_id`, `sub` and `auth_time`), and no owner was made.
+     - **Fail, at `/authorize`, a `400` page:** the doors could not read their own app's
+       client document.
+     - **Fail, at `error.workos.com` or another error page:** WorkOS refused the doors'
+       client or the callback.
+     - **Fail, at `/oauth/upstream/callback`, a `502` page** naming the check that failed
+       (the token endpoint's status and error code, `auth_time`, `client_id`...), the same
+       line in the doors' log. On the issuer it quotes the `iss` the token carries. Only a
+       WorkOS value (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer`
+       in `upstreamFrom` (`deploy.ts`, one line), a change of its own, then `routes` again.
+     - **Fail, at `…/app/signed-in?error=access_denied` ("sign in again"):** `auth_time` is
+       more than 600 s old or ahead of the clock, so `max_age=0` did not force a fresh
+       sign-in.
+
+     If sign-up is closed, make the two users in WorkOS → Production → Users instead.
+  4. **Open the gate to the stage accounts alone** with mode `control`: their two WorkOS
+     user ids (`user_…`) as `canary`, `outside` on, `ordinary` still `canary`. A sign-in by
+     any other id is refused at the gate, with no owner made.
+  5. **Each account signs in and mints one API key**; store the probe keys (`TA_PROBE_KEY`
+     and the rest, as after `routes` above) and run the platform's canary keyed.
+  6. **The end:** each stage account's own erasure in the owner app, then `handback` of the
+     stage's route record. It deletes the stage host's routes and DNS record, detaches the
+     egress domain and disables the hook; the old stack never stopped, so its last line's
+     restart does not apply. Then empty the OAuth namespace (`OAUTH_KV` in `platform.json`'s
+     titles) and close the control record. The platform's canary reads the platform dark
+     again: the stage host answers nothing.
 - **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
   caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
   dashboard (Free allows one, Pro two), with your own number. It is your setting, recorded

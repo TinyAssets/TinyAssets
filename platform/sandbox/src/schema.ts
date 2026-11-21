@@ -41,6 +41,14 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "CREATE TABLE IF NOT EXISTS owed (sandbox_id TEXT PRIMARY KEY)",
   ]),
+  // 4 (`untangle-2026-11/control-last-good.md`): the control record's last good copy
+  // (`contract/src/control.ts` `SqlKeeper`), which serves a start's numbers and scratch
+  // retention when KV can't be read; the retention kept apart for that goes.
+  Object.freeze([
+    "CREATE TABLE control_kept (only INTEGER PRIMARY KEY CHECK (only = 1), text TEXT NOT NULL, " +
+      "read_at INTEGER NOT NULL)",
+    "DROP TABLE known_retention",
+  ]),
 ]);
 
 /** `SandboxSlots`'s, the one line for the platform. */

@@ -221,6 +221,21 @@ describe("the import consumer", () => {
     await readBack(owner);
   });
 
+  it("keeps the owner's tier numbers through a control record outage mid-import", async () => {
+    // The first slice reads the record well formed; every later one meets KV down, and hands
+    // the object no numbers, so the files quota goes on with the ones it kept.
+    const owner = fresh();
+    const fine = world();
+    const first = batch(await staged(owner));
+    await importQueue(first.batch, fine.env, { ms: 0, bytes: 0 });
+    expect(first.acked).toEqual([0]);
+    const down = world({ CONTROL: { get: () => Promise.reject(new Error("KV down")) } });
+    expect(await drain(down, fine.sent.splice(0)[0], { ms: 0, bytes: 0 }))
+      .toMatchObject({ outcome: "acked" });
+    await admitOwner(owner);
+    await readBack(owner);
+  });
+
   it("converges on a run again after a delivery killed mid-file", async () => {
     const owner = fresh();
     const first: string[] = [];
