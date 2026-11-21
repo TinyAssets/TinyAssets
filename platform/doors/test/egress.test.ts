@@ -10,7 +10,7 @@
  * clamped to its reservation; every refusal is a fixed code that forwards nothing; and every
  * admitted call is settled once, however it ends, at the cost pi-ai read, or kept whole.
  */
-import { createExecutionContext, env } from "cloudflare:test";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -746,11 +746,34 @@ describe("a refused call", () => {
     vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
       egressOpen: () => Promise.reject(busy) }) as never);
     const response = await send(egressRequest(box));
-    vi.restoreAllMocks();
     expect([response.status, response.headers.get("Retry-After"), await response.json()])
       .toEqual([429, "1", { error: { code: "object_overloaded",
                                      message: "this account is busy; try again shortly" } }]);
     expect(await forwarded()).toEqual([]);
+  });
+
+  it("settles an overloaded object once, never through a fresh stub: the object settles " +
+     "it lost", async () => {
+    const box = await sandbox();
+    const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    const settle = vi.fn(() => Promise.reject(busy));
+    const getByName = doorsEnv.OWNER.getByName.bind(doorsEnv.OWNER);
+    vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation((name: string) => {
+      const real = getByName(name);
+      return { egressOpen: (binding: Binding, request: EgressRequest) =>
+                 real.egressOpen(binding, request),
+               egressReserve: (binding: Binding, request: ReserveRequest) =>
+                 real.egressReserve(binding, request),
+               egressBeat: () => Promise.resolve(true),
+               egressSettle: settle } as unknown as typeof real;
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const ctx = createExecutionContext();
+    await (await doors.fetch(egressRequest(box), doorsEnv, ctx)).text();
+    await waitOnExecutionContext(ctx);
+    vi.restoreAllMocks();
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(await reservations(box.owner)).toMatchObject([{ state: "open" }]);
   });
 });
 
