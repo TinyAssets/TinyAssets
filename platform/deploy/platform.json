@@ -31,7 +31,7 @@
                  "GATEWAY_KEYRING": { "op": "owner.reseal", "copied": false } }
   },
   "made": {
-    "why": "The secrets the founder's setup makes (scripts/platform_setup.py), each by its kind: mac is 32 random bytes in base64url, token a random URL-safe token, keyring a first keyring in keyring-new's shape (rotated only by adding a key). A config names a secret, not how its value is made; every other secret comes from its vendor or a shared app.",
+    "why": "The platform-generated secrets by the kind of initial value each needs: mac is 32 random bytes in base64url, token a random URL-safe token, keyring a first keyring in keyring-new's shape (rotated only by adding a key). A config names a secret, not how its value is made; every other secret comes from its vendor or a shared app.",
     "secrets": { "ROUTING_MAC_KEY": "mac", "E2B_WEBHOOK_SECRET": "token",
                  "GATEWAY_KEYRING": "keyring", "FILES_KEYRING": "keyring",
                  "OPERATOR_KEYRING": "keyring" }

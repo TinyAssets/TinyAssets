@@ -51,7 +51,7 @@ A circular badge: Mount Baker from Everett, a wolf howling toward an ember moon,
 and a river galaxy overhead. The mountain is traced from a photograph, not drawn
 from memory — its flat summit plateau and the Everett-facing asymmetry are the
 details most stylisations get wrong. The whole scene lives as three `draw_mark`
-renders (full, compact, micro) in `../../tinyassets/desktop/icon_gen.py` and
+renders (full, compact, micro) in `mark.py` and
 nowhere else.
 
 **Three optical versions:**
@@ -63,7 +63,7 @@ Favicons and small-icon scales (16–32 px) use the `micro` path, further reduce
 Baker, and the howling wolf. All three scale from one source and share one palette.
 
 - `python render_marks.py` (from the repo root: `python WebSite/brand/render_marks.py`)
-  exports every raster: SVGs, site icons, `assets/`, desktop, tray, Android, Play.
+  exports the mark to the surfaces listed in `WebSite/brand/README.md`.
 - `python render_og.py` renders the site's Open Graph card with the real fonts.
 
 Never hand-edit an exported PNG or ICO or SVG, and never redraw the mark by eye.

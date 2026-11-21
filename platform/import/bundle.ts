@@ -28,10 +28,9 @@ import {
 import { tierName } from "./build";
 import { admissionProblems, erased, measure, verifyCopy, withheld } from "./census";
 import { names } from "./erasure";
+import { noticeOf } from "./policy";
 import { type Copy, type Fleet, type Owner, type Problem, survey } from "./survey";
 
-/** The notice the owner is given once imported (research §3, order step 4). */
-export const NOTICE = "Your files from the old TinyAssets are in /workspace/imported";
 /** The private folder's records: the billing ids, and each bundle's digest by owner key. */
 export const PRIVATE_RECORD = "cutover.private.json";
 export const DIGESTS = "bundles.private.json";
@@ -127,7 +126,7 @@ function writeBundle(owner: Owner, copy: Copy, dir: string | null, tiers: Tiers,
     }
     return { problems: measured.problems, digest: null, counts: none };
   }
-  const { entries, rows, store } = measured.built;
+  const { entries, rows, store, policy } = measured.built;
   const counts = { entries: entries.length, files: entries.filter((e) => e.kind === "file").length,
                    inline: store.inline, chunks: store.chunks,
                    bytes: store.chunkBytes + store.inlineBytes, rows: rows.length };
@@ -144,7 +143,8 @@ function writeBundle(owner: Owner, copy: Copy, dir: string | null, tiers: Tiers,
     format: BUNDLE_FORMAT, owner: owner.principal, key: owner.key, uid: owner.uid,
     // An owner the old stack never admitted is "absent", never admitted by slice 5.
     admission: owner.admission ?? { state: "absent", reasons: [] },
-    tier: tierName(owner), notice: NOTICE, centers: owner.centers,
+    // The one notice of the move (research §3, order step 4): the founder's words.
+    tier: tierName(owner), notice: noticeOf(policy.old !== null), centers: owner.centers,
   };
   part(BUNDLE_OWNER, ownerPart);
   bundlePages(entries).forEach((page, n) => part(pageName("manifest", n), { entries: page }));

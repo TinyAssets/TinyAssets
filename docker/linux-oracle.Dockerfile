@@ -3,14 +3,16 @@
 # A local Windows run is not an oracle on its own (AGENTS.md). Six CI rounds on
 # the workspace change were spent on failures that could only exist on Linux:
 # a test that skips on Windows keeps asserting a contract the code has already
-# left, and the local suite stays green while doing so. This image is the same
-# Python CI uses (3.11), plus the two things the sandbox actually needs and a
-# Windows host cannot provide at all: bubblewrap, and POSIX descriptor
+# left, and the local suite stays green while doing so. This image is the
+# production image's Python, plus the two things the sandbox actually needs and
+# a Windows host cannot provide at all: bubblewrap, and POSIX descriptor
 # semantics.
 #
-# Built by scripts/linux_oracle.py, which tags it with a hash of this file plus
+# Built by scripts/linux_oracle.py, which passes BASE, the root Dockerfile's
+# digest-pinned base, and tags the image with a hash of BASE, this file and
 # pyproject.toml, so a dependency change rebuilds it and nothing else does.
-FROM mirror.gcr.io/library/python:3.11-slim
+ARG BASE
+FROM ${BASE}
 
 # git: the workspace sink shells to it, and several suites need a real repo.
 # bubblewrap: the node sandbox jail - the two proofs that skip everywhere else.

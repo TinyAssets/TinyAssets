@@ -18,7 +18,7 @@ import { FILE_DEFAULTS } from "../contract/src/file-defaults";
 import { carried } from "../owner/src/starter-package";
 
 import { fileSha256, layout } from "./backup";
-import { type Built, buildTree, type Fit, fitOf, tierOf } from "./build";
+import { type Built, buildTree, type Fit, fitOf, type PolicyImport, tierOf } from "./build";
 import { type Copy, type Fleet, type Owner, type Problem, type Refusal, survey } from "./survey";
 import { TAR_MEMBER_MAX } from "./tar";
 
@@ -120,8 +120,9 @@ export function precheck(owner: Owner, tiers: Tiers | null): Problem[] {
 
 /**
  * The owner's fit, measured on its tree as the bundle builder makes it (written to `dir`,
- * or counted and not kept), once nothing refuses it first. With `tiers` null (a backup,
- * which the limits do not bind) only what a tar cannot hold refuses it.
+ * or counted and not kept), once nothing refuses it first; and its old policy, refused when it
+ * does not map (`policy.ts`). With `tiers` null (a backup, which neither the limits nor the
+ * new rules bind, its old policy kept verbatim) only what a tar cannot hold refuses it.
  */
 export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: string | null):
     { built: Built | null; fit: Fit | null; problems: Problem[] } {
@@ -135,7 +136,9 @@ export function measure(owner: Owner, copy: Copy, tiers: Tiers | null, dir: stri
     return { built, fit: null, problems: [] };
   }
   const fit = fitOf(owner, built, tiers);
-  return { built, fit, problems: fit.problems };
+  const mapped = built.policy.mapped;
+  return { built, fit, problems: [...fit.problems, ...("problem" in mapped
+    ? [{ code: mapped.problem, at: `owner/${owner.key}` }] : [])] };
 }
 
 const tally = <T extends string>(items: readonly T[]): Record<string, number> => {
@@ -162,13 +165,15 @@ export function census(copy: Copy, tiers: Tiers): Census {
   const live = fleet.owners.filter((owner) => !withheld(owner));
   const fits = new Map<string, Fit>();
   const owned = new Map<string, Problem[]>();
-  let archivedPolicies = 0;
+  const policies = new Map<string, PolicyImport>();
   for (const owner of live) {
     const problems = [...owner.tree.problems, ...admissionProblems(owner)];
     if (owner.tree.problems.length === 0) {
       const measured = measure(owner, copy, tiers, null);
       problems.push(...measured.problems);
-      archivedPolicies += measured.built?.policyArchived === true ? 1 : 0;
+      if (measured.built !== null) {
+        policies.set(owner.key, measured.built.policy);
+      }
       if (measured.fit !== null) {
         fits.set(owner.key, measured.fit);
       }
@@ -191,6 +196,7 @@ export function census(copy: Copy, tiers: Tiers): Census {
   const files = (owner: Owner) => owner.tree.carried.filter((item) => item.kind === "file");
   const most = (pick: (fit: Fit) => number) =>
     [...fits.values()].reduce((a, fit) => Math.max(a, pick(fit)), 0);
+  const mapped = [...policies.values()].flatMap((p) => "document" in p.mapped ? [p.mapped] : []);
   const report = {
     backup: { pins: copy.manifest.snapshots.length, verified: copyProblems.length === 0 },
     owners: {
@@ -230,14 +236,23 @@ export function census(copy: Copy, tiers: Tiers): Census {
       sqlite_in_user_files: sum((owner) => owner.tree.sqliteInUser),
       archived_stores: sum((owner) => owner.tree.archived.length),
     },
-    // A policy the platform's validator refuses: archived as a file, the default kept.
     rows: { policies: sum((owner) => owner.tree.rows.policy),
-            policies_archived: archivedPolicies,
             collection_rows: sum((owner) => owner.tree.rows.collection),
             body_bytes: sum((owner) => owner.tree.rows.body_bytes) },
     fit: {
       most_entries: most((fit) => fit.entries),
       most_stored: most((fit) => fit.stored),
+    },
+    // The old policies mapped (d3 §N7): who had none or never set a rule (the old defaults
+    // written), who set some, and egress `ask`. A spend cap or an unreadable document is a
+    // problem (`policy_spend`, `policy_unreadable`), counted with the rest.
+    policy: {
+      none: [...policies.values()].filter((p) => p.old === null).length,
+      never_set: mapped.filter((m) => m.entries === 0).length,
+      entries: mapped.filter((m) => m.entries > 0).length,
+      egress_ask: mapped.filter((m) => m.egressAsk).length,
+      rules_written: mapped.reduce((a, m) => a + (m.document.actions?.length ?? 0), 0),
+      not_carried: tally(mapped.flatMap((m) => m.notCarried.map((item) => item.why))),
     },
     stores,
     problems: tally(problems.map((problem) => problem.code)),
@@ -264,6 +279,14 @@ export function census(copy: Copy, tiers: Tiers): Census {
     row("links", owner.tree.links.length);
     row("refused_names", owner.tree.refused.length);
     row("ignored", owner.tree.ignored);
+    const policy = policies.get(owner.key);
+    if (policy !== undefined && "document" in policy.mapped) {
+      row("policy_old", policy.old !== null);
+      row("policy_entries", policy.mapped.entries);
+      row("policy_egress_ask", policy.mapped.egressAsk);
+      row("policy_rules", policy.mapped.document.actions?.length ?? 0);
+      row("policy_not_carried", policy.mapped.notCarried.length);
+    }
     for (const store of owner.tree.stores) {
       for (const table of store.tables) {
         row(`rows ${store.at}/${table.table}`, table.rows);

@@ -26,10 +26,9 @@ on 2026-09-02; do not recreate a second tree or a parity step.
    `.eyebrow`) come from `WebSite/design-system/src/styles/`. Edit
    `tokens.css` (canonical), run `npm run build` there, and the site picks it
    up. `DESIGN.md` there is the rules layer.
-4. **The mark has one source.** `tinyassets/desktop/icon_gen.py` owns the
+4. **The mark has one source.** `WebSite/brand/mark.py` owns the
    geometry and palette; `python WebSite/brand/render_marks.py` exports it to
-   every surface (site icons, `assets/`, desktop, Android, tray, Play
-   listing) and `python WebSite/brand/render_og.py` renders the OG card.
+   the surfaces listed in `WebSite/brand/README.md`, and `python WebSite/brand/render_og.py` renders the OG card.
    Never hand-edit an exported PNG or ICO.
 
 Copy and tokens are reviewed in the browser (`npm run dev`), not in the diff.

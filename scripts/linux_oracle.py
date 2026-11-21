@@ -69,6 +69,7 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import subprocess
@@ -80,6 +81,20 @@ from pathlib import Path, PurePosixPath
 
 IMAGE_REPO = "tinyassets-linux-oracle"
 DOCKERFILE = Path("docker/linux-oracle.Dockerfile")
+#: The production image. The oracle builds on its one digest-pinned base, so
+#: the suite runs on the Python production runs and the pin has one home.
+PRODUCTION_DOCKERFILE = Path("Dockerfile")
+#: The venue's refusal starts with this when it stops before the runner does.
+#: ``scripts/queue_attempts.py`` reads it: such a run failed no test.
+NO_TEST_RAN = "[oracle] no test ran:"
+#: The base's registry answers a shared runner address 429 now and then
+#: (merge group run 44079286405) and documents no quota, so the waits outlast a
+#: per-minute window: 15, 30 and 60 s.
+BUILD_ATTEMPTS = 4
+FIRST_BUILD_WAIT_S = 15
+_REGISTRY_BUSY = re.compile(
+    r"\b(?:429|500|502|503|504) [A-Z]|toomanyrequests|i/o timeout"
+    r"|TLS handshake timeout|connection reset by peer")
 #: Copied into the container, minus what is huge, host-specific, or rebuilt
 #: there. ``.git`` is excluded deliberately: in a linked worktree it is a FILE
 #: pointing at a path that does not exist in the container, so the copy gets a
@@ -149,10 +164,10 @@ _RUN_SCRIPT = _COPY_SCRIPT + _REPO_AND_RUN_SCRIPT
 JAIL_PROBE = r"""
 if ! bwrap --die-with-parent --new-session --unshare-all \
         --ro-bind / / --proc /proc --dev /dev -- /bin/true; then
-    echo "[oracle] bubblewrap cannot create a jail as uid $(id -u); refusing to run" >&2
+    echo "%s bubblewrap cannot create a jail as uid $(id -u)" >&2
     exit 3
 fi
-"""
+""" % NO_TEST_RAN
 
 #: The one script ``--required-runner`` may run, relative to ``/work``.
 REQUIRED_RUNNER = "scripts/ci_required_tests.py"
@@ -180,10 +195,20 @@ def _repo_root() -> Path:
     return Path(out.stdout.strip())
 
 
+def _base(root: Path) -> str:
+    """The production image's base: every ``FROM`` there names it, by digest."""
+    text = (root / PRODUCTION_DOCKERFILE).read_text(encoding="utf-8")
+    bases = set(re.findall(r"^FROM\s+(\S+)", text, re.M))
+    if len(bases) != 1 or "@sha256:" not in next(iter(bases)):
+        raise SystemExit(f"[oracle] {PRODUCTION_DOCKERFILE} must name one base pinned by "
+                         f"digest, not {sorted(bases)}")
+    return bases.pop()
+
+
 def _image_tag(root: Path) -> str:
     """Tag the image with what determines its contents, so a dependency change
     rebuilds it and an unrelated edit never does."""
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(_base(root).encode())
     for relative in (DOCKERFILE, Path("pyproject.toml")):
         digest.update((root / relative).read_bytes())
     return f"{IMAGE_REPO}:{digest.hexdigest()[:12]}"
@@ -197,12 +222,31 @@ def _image_exists(tag: str) -> bool:
 
 
 def _build(root: Path, tag: str) -> None:
-    print(f"[oracle] building {tag} (first run pulls and compiles dependencies)")
-    result = subprocess.run(
-        ["docker", "build", "-f", str(root / DOCKERFILE), "-t", tag, str(root)],
-    )
-    if result.returncode != 0:
-        raise SystemExit(f"[oracle] image build failed ({result.returncode})")
+    """Build the image, retrying only while the base's registry is busy."""
+    base = _base(root)
+    registry = base.split("/", 1)[0]
+    command = ["docker", "build", "--build-arg", f"BASE={base}",
+               "-f", str(root / DOCKERFILE), "-t", tag, str(root)]
+    for attempt in range(BUILD_ATTEMPTS):
+        print(f"[oracle] building {tag} (first run pulls and compiles dependencies)",
+              flush=True)
+        busy = []
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding="utf-8", errors="replace") as build:
+            for line in build.stdout:
+                sys.stdout.write(line)
+                if registry in line and _REGISTRY_BUSY.search(line):
+                    busy.append(line.strip())
+        if build.returncode == 0:
+            return
+        if not busy:
+            raise SystemExit(f"{NO_TEST_RAN} the image build failed ({build.returncode})")
+        if attempt == BUILD_ATTEMPTS - 1:
+            raise SystemExit(f"{NO_TEST_RAN} {registry} was still busy after "
+                             f"{BUILD_ATTEMPTS} attempts: {busy[-1]}")
+        wait = FIRST_BUILD_WAIT_S * 2 ** attempt
+        print(f"[oracle] {registry} is busy ({busy[-1]}); retrying in {wait}s", flush=True)
+        time.sleep(wait)
 
 
 def _docker_path(path: Path) -> str:
