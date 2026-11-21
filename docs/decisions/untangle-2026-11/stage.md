@@ -19,7 +19,7 @@ Step 5's item "the live stage's four PRs, after B13, B14's canary and `control` 
 | PR | Branch | Files | Blocked by | Live? |
 |---|---|---|---|---|
 | 1. The identity names its zone and its host; the egress host leaves it | `untangle/stage-zone` | `contract/{identity,egress}.json`, `contract/src/{identity,egress,wake-records}.ts`, `doors/src/{authorize,pages,config}.ts` and three comments, `deploy/{facts,deploy,canary}.ts`, `deploy/guards/{deploy,canary}.test.ts` and one `checklist.md` line (the imports, `ROUTES` on the host, `EGRESS_DOMAIN` read as the contract's `EGRESS_HOST`), `plugins/build.mjs`, `contract/{apps.json,src/apps.ts}` (the MCP door as `{mcp}`), `doors/guards/identity.test.ts`, `sandbox/guards/template.test.ts` (no identity in the pair), the doors' and owner's tests that spell the doors' origin | nothing | no: every value is the same while `host` is the zone; the sandbox pair moves once |
-| 2. `routes` serves the doors at the identity's host | `untangle/stage-kit` | `deploy/{deploy,cloudflare,canary}.ts`, `deploy/guards/{deploy,canary}.test.ts`, `deploy/checklist.md` | PR 1 (it needs `zone` and `HOST`) | no: release-critical, proved by the harness |
+| 2. `routes` serves the doors at the identity's host | `untangle/stage-routes` | `deploy/{deploy,cloudflare,canary}.ts`, `deploy/guards/{deploy,canary}.test.ts`, `deploy/checklist.md` | PR 1 (it needs `zone` and `HOST`) | no: release-critical, proved by the harness |
 | 3. The doors' host is `stage.tinyassets.io` | `untangle/stage-host` | `contract/identity.json` `host`, `plugins/{chatgpt,claude}/` regenerated, `platform/cutover.json` (the stage's end in phase 1, its redirect and route record in the hold phase), `tasks.md` (§8 and Step 8 on the stage) | PRs 1 and 2; Step 7's dark redeploy is not needed first | **changes routes when run**: merged dark (the deploy is dispatch-only), routed only by a `routes` run on the founder's go |
 | 4. The doors' host is `tinyassets.io` | `untangle/stage-end` | `contract/identity.json` `host`, the plugins regenerated, the manifest's phase-1 entry done | the stage's end (each stage owner's erasure, then `handback`) | merged before the window opens |
 
@@ -46,7 +46,7 @@ PR 1 is built now. PRs 1 and 2 are sequential, not parallel: PR 2's host-under-t
 
 ## Owed
 
-- [ ] PR 2, `untangle/stage-kit`: `routes` makes and hands back the host's DNS record, finds E2B's hook by name and moves its URL, and the canary reads the old side at the zone and the doors at the host, with the handles record's issuer guard to match (item 2 above).
+- [x] PR 2, `untangle/stage-routes` (as built: `stage-routes.md`): `routes` makes and hands back the host's DNS record, finds E2B's hook by name and moves its URL, and the canary reads the old side at the zone and the doors at the host, with the handles record's issuer guard to match (item 2 above).
 - [ ] PR 3, `untangle/stage-host`: `host` is `stage.tinyassets.io`, the plugins and the binder's two known answers regenerated, the stage's end on the manifest; then live: the `routes` run that opens the stage, on the founder's go.
 - [ ] PR 4, `untangle/stage-end`: `host` is `tinyassets.io` again, the plugins and the known answers with it, once the stage ends; merged before the window opens.
 - [ ] live: Step 6's pair check and pin PR take the runner and probes bundles this PR moved (they no longer inline `identity.json`); no template build has run since, so it is the check Step 6 already owes.

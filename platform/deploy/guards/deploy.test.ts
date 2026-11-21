@@ -23,7 +23,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DARK, keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM, REPO } from "../../ci/paths";
@@ -74,6 +74,15 @@ import {
 } from "../operator";
 import platform from "../platform.json" with { type: "json" };
 import { night, nightsAnswer } from "./copy-nights";
+
+// The kit here is the cutover's: the doors' host is the zone, whatever host the identity names
+// today (the live stage's, while it runs), so a change of `host` changes no case. A host under
+// the zone is the kit's other case, run over an identity of its own (`at a host under the
+// zone`, below).
+vi.mock("../../contract/identity.json", async (actual) => {
+  const { default: real } = await actual<{ default: { zone: string } }>();
+  return { default: { ...real, host: real.zone } };
+});
 
 type Json = Record<string, unknown>;
 
@@ -158,16 +167,19 @@ const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
 const needed = (mode: Mode): string[] => Object.entries(NEEDED[mode] ?? {})
   .flatMap(([name, value]) => [`--${name.toLowerCase()}`, value]);
 
-/** The old proxy's live routes, and the site's. */
+/**
+ * The old proxy's live routes, and the site's, written on the doors' host, which is the zone
+ * here: a host under it shares none of them (`at a host under the zone`, below).
+ */
 const LIVE: readonly Route[] = [
-  { id: "r1", pattern: "tinyassets.io/mcp*", script: "tinyassets-mcp-proxy" },
-  { id: "r2", pattern: "tinyassets.io/app*", script: "tinyassets-mcp-proxy" },
-  { id: "r3", pattern: "tinyassets.io/api*", script: "tinyassets-mcp-proxy" },
-  { id: "r4", pattern: "tinyassets.io/.well-known/oauth-protected-resource*",
+  { id: "r1", pattern: `${HOST}/mcp*`, script: "tinyassets-mcp-proxy" },
+  { id: "r2", pattern: `${HOST}/app*`, script: "tinyassets-mcp-proxy" },
+  { id: "r3", pattern: `${HOST}/api*`, script: "tinyassets-mcp-proxy" },
+  { id: "r4", pattern: `${HOST}/.well-known/oauth-protected-resource*`,
     script: "tinyassets-mcp-proxy" },
-  { id: "r5", pattern: "tinyassets.io/.well-known/oauth-authorization-server*",
+  { id: "r5", pattern: `${HOST}/.well-known/oauth-authorization-server*`,
     script: "tinyassets-mcp-proxy" },
-  { id: "r6", pattern: "tinyassets.io/site*", script: "site" },
+  { id: "r6", pattern: `${HOST}/site*`, script: "site" },
 ];
 
 interface WorldOptions {
@@ -195,7 +207,7 @@ interface WorldOptions {
   readonly noisyDns?: boolean;
   /** A route change the API refuses (400): `METHOD pattern`. */
   readonly refusingRoute?: string;
-  /** DNS deletes the API refuses (403): a token without DNS Edit. */
+  /** DNS makes and deletes the API refuses (403): a token without DNS Edit. */
   readonly refusingDns?: boolean;
   /** Each bucket's lock rules, in place of none (fresh) or the kit's (held). */
   readonly locks?: Readonly<Record<string, readonly unknown[]>>;
@@ -249,8 +261,8 @@ function world(options: WorldOptions = {}) {
     secrets.set(name, []);
   }
   const routes = new Map(LIVE.map((route) => [route.id, { ...route }]));
-  const hooks: Json[] = held ? [{ id: "w1", url: E2B_HOOK.url, enabled: false,
-                                  events: [...E2B_HOOK.events] }] : [];
+  const hooks: Json[] = held ? [{ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
+                                  enabled: false, events: [...E2B_HOOK.events] }] : [];
   /** KV, by namespace id and key: the control record when held. */
   const kv = new Map<string, string>(held
     ? [[`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(DARK)],
@@ -272,7 +284,7 @@ function world(options: WorldOptions = {}) {
   /** Writes that answer as done and change nothing: the hook's, the custom domain's, KV's. */
   const inert = new Set<"hook" | "domain" | "dns" | "kv">();
   /** The zone's DNS records: the egress host's given ones, and others on other names. */
-  const dns = [
+  const dns: { id: string; type: string; name: string; content: string; proxied?: unknown }[] = [
     ...(options.dns ?? []).map((type, at) => ({ id: `x${at}`, type, name: EGRESS_HOST,
                                                  content: "192.0.2.1" })),
     { id: "o1", type: "A", name: ZONE, content: "192.0.2.2" },
@@ -381,9 +393,23 @@ function world(options: WorldOptions = {}) {
       }
       return json({ success: true, result: null });
     }
-    if (path === `/zones/z/dns_records?name.exact=${EGRESS_HOST}&per_page=100`) {
+    const listed = /^\/zones\/z\/dns_records\?name\.exact=([^&]+)&per_page=100$/.exec(path);
+    if (listed !== null) {
       return json({ success: true, result: dns.filter((record) => options.noisyDns === true
-        || record.name === EGRESS_HOST) });
+        || record.name === listed[1]) });
+    }
+    if (path === "/zones/z/dns_records" && method === "POST") {
+      if (options.refusingDns === true) {
+        return json({ success: false, errors: [{ code: 10000 }] }, 403);
+      }
+      const record = { id: `dns-made${dns.length}`, type: given["type"]!, name: given["name"]!,
+                       content: given["content"]!, proxied: given["proxied"] as unknown };
+      dns.push(record);
+      // Killed here, the record is made and its answer lost.
+      if (killed()) {
+        throw new Error("the run was killed");
+      }
+      return json({ success: true, result: record });
     }
     if (path.startsWith("/zones/z/dns_records/") && method === "DELETE") {
       if (killed()) {
@@ -599,14 +625,18 @@ function world(options: WorldOptions = {}) {
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
 
+/** The kit's two entries a run goes through: this tree's, or one loaded with another identity. */
+type Kit = Pick<typeof import("../deploy"), "perform" | "parse">;
+
 /**
- * `mode` run whole in `w`, with `flags` and `env`: its work, or its refusal. An applied run is
+ * `mode` run whole in `w`, with `flags` and `env`, by `kit`: its work, or its refusal. An applied run is
  * the workflow's two jobs: the plan job's run (`--public`) writes its plan to a file, then the
  * apply job's run is held to it, which first makes the plan job's steps again. Each job has a
  * log of its own, so `w` keeps only the apply job's, after the plan made again.
  */
 async function runMode(w: ReturnType<typeof world>, mode: Mode, flags: string[] = [],
-                       env: Record<string, string> = ENV) {
+                       env: Record<string, string> = ENV, kit: Kit = { perform, parse }) {
+  const { perform, parse } = kit;
   if (!flags.includes("--yes")) {
     return perform(parse(["--mode", mode, ...flags], env, w.io));
   }
@@ -1291,9 +1321,9 @@ describe("a routes run", () => {
     // Every wrangler command, the routes' triggers deploy too, is handed the zone's account.
     expect(w.accounts.length).toBeGreaterThan(0);
     expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
-    for (const path of ["tinyassets.io/mcp", "tinyassets.io/api/x", "tinyassets.io/oauth/token",
-                        "tinyassets.io/.well-known/oauth-protected-resource/mcp",
-                        `tinyassets.io${identity.hook}`]) {
+    for (const path of [`${HOST}/mcp`, `${HOST}/api/x`, `${HOST}/oauth/token`,
+                        `${HOST}/.well-known/oauth-protected-resource/mcp`,
+                        `${HOST}${identity.hook}`]) {
       expect([path, servedBy(w.routes.values(), path)]).toEqual([path, DOORS]);
     }
   });
@@ -1373,6 +1403,8 @@ describe("the route record", () => {
           ({ method: each.method, pattern: each.pattern })),
         // The attach's own DNS record, written in once the attach is done.
         domain: { hostname: EGRESS_HOST, service: null, created: [{ id: "dns-egress", type: "AAAA", content: "100::" }] },
+        // The zone holds the site's own record: routes makes none, and a handback deletes none.
+        host: { name: HOST, held: true, made: null },
         hook: { url: E2B_HOOK.url, present: true, enabled: false } });
       // It holds no secret, and not the account.
       const text = w.kv.get(`${CONTROL_NS}/${KEY}`)!;
@@ -1478,13 +1510,132 @@ describe("the route record", () => {
     expect(fresh.plan).toContain("record the zone's 6 routes and the handover's 9 changes, the " +
       "egress domain (none) and E2B's lifecycle webhook (disabled) as this run's route record " +
       `in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
-      `<this run's id>; ${DOORS} holds tinyassets.io/mcp* already: the record of the ` +
+      `<this run's id>; ${DOORS} holds ${HOST}/mcp* already: the record of the ` +
       "routes run that moved them is the one to hand back, and it covers this run's changes too");
     // The first run's record does: its handback, after the second run, puts the zone back.
     const before = kept(stored(w).routes);
     await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
     await runMode(w, "handback", ["--yes", "--record", "7001"]);
     expect(kept(w.routes.values())).toEqual(before);
+  });
+
+  describe("at a host under the zone", () => {
+    // The kit as it runs while the identity's host is a name under the zone (the live
+    // stage's): its modules loaded afresh over that identity. The zone keeps the old proxy's
+    // routes (`LIVE`, on this tree's host, the zone), which the host shares none of.
+    const STAGE = `stage.${ZONE}`;
+    const STAGE_HOOK = `https://${STAGE}${identity.hook}`;
+    const PLACED = `AAAA ${STAGE} (100::)`;
+    let stage: Kit;
+    beforeAll(async () => {
+      vi.resetModules();
+      vi.doMock("../../contract/identity.json", () => ({ default: { ...identity, host: STAGE } }));
+      stage = await import("../deploy");
+      vi.doUnmock("../../contract/identity.json");
+      vi.resetModules();
+    });
+    const onStage = (w: ReturnType<typeof world>) =>
+      w.dns.filter((record) => record.name === STAGE);
+
+    it("makes the host's proxied record once the route record is kept and before any deploy, " +
+       "keeps it, and its handback deletes exactly it", async () => {
+      const w = world({ held: true });
+      const apex = kept(w.routes.values());
+      const work = await runMode(w, "routes", ["--yes"], RUN, stage);
+      const [write, made, again, deployed] = order(w.events, [
+        `cf PUT ${RECORD_AT}`, "cf POST /zones/z/dns_records", `cf PUT ${RECORD_AT}`,
+        "wrangler versions upload"]);
+      expect(made).toBe(write! + 1);
+      expect(again).toBeLessThan(deployed!);
+      expect(onStage(w)).toEqual([{ id: "dns-made3", type: "AAAA", name: STAGE,
+                                    content: "100::", proxied: true }]);
+      expect(stored(w).host).toEqual({ name: STAGE, held: false,
+                                       made: [{ id: "dns-made3", type: "AAAA", content: "100::" }] });
+      expect(work.plan).toContain(`make the DNS record ${PLACED}, proxied, for the doors' ` +
+        "routes on it, before anything is deployed: the route record keeps it, for a handback " +
+        "to delete exactly it");
+      expect(work.plan).toContain(`record in ${KEY} the DNS record made on ${STAGE}: ${PLACED}`);
+      // Every route is added on the host; the zone's are left as they were.
+      expect(w.events.filter((event) => /^cf (PUT|DELETE) \/zones\/z\/workers/.test(event)))
+        .toEqual([]);
+      expect(kept(w.routes.values())).toEqual(kept([...apex, ...identity.routes.map((path) =>
+        ({ pattern: `${STAGE}${path}`, script: DOORS }))]));
+      // The one hook moves to the host, and is enabled.
+      expect(w.hooks).toEqual([expect.objectContaining({ id: "w1", url: STAGE_HOOK,
+                                                         enabled: true })]);
+      expect(work.plan).toContain(`E2B lifecycle webhook ${STAGE_HOOK}, after the routes: ` +
+        `present, its URL (${E2B_HOOK.url} before), enabled set, enabled`);
+      // The handback: the routes, then the host's record, only it.
+      const from = w.events.length;
+      const back = await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(back.plan).toContain(`delete the DNS record routes made on ${STAGE} for the doors' ` +
+                                  `routes, ${PLACED}, where it is still there`);
+      const ran = w.events.slice(from);
+      const [routed, deleted] = order(ran, ["cf DELETE /zones/z/workers/routes",
+                                            "cf DELETE /zones/z/dns_records/dns-made3"]);
+      expect(deleted).toBeGreaterThan(routed!);
+      expect(ran.filter((event) => event.startsWith("cf DELETE /zones/z/dns_records/")))
+        .toEqual(["cf DELETE /zones/z/dns_records/dns-made3"]);
+      expect([onStage(w), kept(w.routes.values())]).toEqual([[], apex]);
+      expect(w.dns.map((record) => record.id)).toEqual(["o1", "o2", "o3"]);
+      expect(w.hooks[0]).toMatchObject({ url: STAGE_HOOK, enabled: false });
+    });
+
+    it("leaves a placeholder the host held before routes, and its handback deletes none",
+       async () => {
+      const w = world({ held: true });
+      w.dns.push({ id: "p1", type: "AAAA", name: STAGE, content: "100::" });
+      const work = await runMode(w, "routes", ["--yes"], RUN, stage);
+      expect(work.plan).toContain(`${STAGE} holds its DNS record already, ${PLACED}: none is made`);
+      expect(stored(w).host).toEqual({ name: STAGE, held: true, made: null });
+      expect(w.events.some((event) => event.startsWith("cf POST /zones/z/dns_records"))).toBe(false);
+      const back = await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(back.plan.some((line) => line.includes(`routes made on ${STAGE}`))).toBe(false);
+      expect(onStage(w).map((record) => record.id)).toEqual(["p1"]);
+    });
+
+    it("stops before any change while the host holds any other address record, the plan job " +
+       "too", async () => {
+      const w = world({ held: true });
+      w.dns.push({ id: "f1", type: "A", name: STAGE, content: "192.0.2.7" },
+                 { id: "p1", type: "AAAA", name: STAGE, content: "100::" });
+      const why = `${STAGE} holds 1 DNS record(s) the doors' routes would take the requests of ` +
+        "(A 192.0.2.7), and a handback could not give them back; nothing is changed";
+      await expect(runMode(w, "routes", ["--yes"], RUN, stage)).rejects.toThrow(why);
+      expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+      await expect(runMode(w, "routes", ["--public"], PUBLIC, stage)).rejects.toThrow(why);
+    });
+
+    it("stops at a refused make with only the route record written", async () => {
+      const w = world({ held: true, refusingDns: true });
+      await expect(runMode(w, "routes", ["--yes"], RUN, stage)).rejects.toThrow(
+        `making the DNS record ${PLACED} failed (403, [10000])`);
+      expect(w.events.filter((event) => CHANGE.test(event)))
+        .toEqual([`cf PUT ${RECORD_AT}`, "cf POST /zones/z/dns_records"]);
+      expect(stored(w).host).toEqual({ name: STAGE, held: false, made: null });
+    });
+
+    it("records on a re-run the record its first attempt made before it was written in, and " +
+       "makes none again", async () => {
+      const w = world({ held: true });
+      w.kill.after = 0;
+      await expect(runMode(w, "routes", ["--yes"], RUN, stage)).rejects.toThrow(
+        "the run was killed");
+      expect([stored(w).host, onStage(w).length]).toEqual([
+        { name: STAGE, held: false, made: null }, 1]);
+      // Handed back now, the record it never wrote in is named, never deleted.
+      await expect(runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage)).rejects
+        .toThrow(`${STAGE} holds the DNS record AAAA (100::), and held none before routes: the ` +
+                 "one routes made, not recorded, for a hand to remove");
+      w.kill.after = undefined;
+      const from = w.events.length;
+      await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" }, stage);
+      expect(w.events.slice(from).filter((event) =>
+        event.startsWith("cf POST /zones/z/dns_records"))).toEqual([]);
+      expect([stored(w).host, onStage(w).length]).toEqual([
+        { name: STAGE, held: false, made: [{ id: "dns-made3", type: "AAAA", content: "100::" }] },
+        1]);
+    });
   });
 });
 
@@ -1527,14 +1678,14 @@ describe("a handback run", () => {
         NOW.toISOString()}, and the handover's 10 changes`,
       `disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was before routes`,
       `detach the custom domain ${EGRESS_HOST} from ${DOORS}, as it was before routes`,
-      "add the route tinyassets.io/.well-known/oauth-protected-resource* back for " +
+      `add the route ${HOST}/.well-known/oauth-protected-resource* back for ` +
       "tinyassets-mcp-proxy",
-      "add the route tinyassets.io/.well-known/oauth-authorization-server* back for " +
+      `add the route ${HOST}/.well-known/oauth-authorization-server* back for ` +
       "tinyassets-mcp-proxy",
       ...["mcp*", "api*", "app*"].map((path) =>
-        `move the route tinyassets.io/${path} from ${DOORS} back to tinyassets-mcp-proxy`),
+        `move the route ${HOST}/${path} from ${DOORS} back to tinyassets-mcp-proxy`),
       ...["hooks/inbound/*", "hooks/e2b/*", "authorize*", "oauth/*", ".well-known/oauth-*"].map(
-        (path) => `delete ${DOORS}'s route tinyassets.io/${path}, which the handover added`),
+        (path) => `delete ${DOORS}'s route ${HOST}/${path}, which the handover added`),
       `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_HOST} (100::), where ` +
       "the detach leaves them",
       "the zone's routes, the egress domain and the webhook read back as the record has them",
@@ -1615,6 +1766,12 @@ describe("a handback run", () => {
       [{ ...good, domain: undefined }, "holds no egress domain in shape"],
       [{ ...good, domain: { hostname: "other.tinyassets.io", service: null } },
        "holds no egress domain in shape"],
+      [{ ...good, host: undefined }, "holds no host record in shape"],
+      [{ ...good, host: { ...good.host, name: `other.${ZONE}` } }, "holds no host record in shape"],
+      [{ ...good, host: { ...good.host, made: [{ id: "d", type: "AAAA", content: "100::" }] } },
+       "holds no host record in shape"],
+      [{ ...good, host: { ...good.host, held: false, made: [{ id: "d", type: "AAAA" }] } },
+       "holds no host record in shape"],
       [{ ...good, hook: { ...good.hook, url: "https://elsewhere.test/hook" } },
        "holds no lifecycle webhook in shape"],
       [{ ...good, hook: { url: E2B_HOOK.url, present: false, enabled: true } },
@@ -1753,12 +1910,12 @@ describe("a handback run", () => {
   it("never touches a route the record and the handover do not hold, and stops before any " +
      "change on a route changed since routes, naming it", async () => {
     const { w, before } = await cutOver();
-    w.routes.set("u1", { id: "u1", pattern: "tinyassets.io/later*", script: "site" });
+    w.routes.set("u1", { id: "u1", pattern: `${HOST}/later*`, script: "site" });
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan).toContain("leave the route tinyassets.io/later* (site's): neither the " +
+    expect(work.plan).toContain(`leave the route ${HOST}/later* (site's): neither the ` +
                                 "record nor the handover holds it");
     expect(kept(w.routes.values())).toEqual(kept([...before,
-      { pattern: "tinyassets.io/later*", script: "site" }]));
+      { pattern: `${HOST}/later*`, script: "site" }]));
     const changed = (pattern: string, script: string | undefined) => async (zone: typeof w) => {
       const held = [...zone.routes.values()].find((each) => each.pattern === pattern);
       if (script === undefined) {
@@ -1769,20 +1926,20 @@ describe("a handback run", () => {
     };
     for (const [change, why] of [
       // An addition of the handover's, pointed elsewhere since: not the doors' to delete.
-      [changed("tinyassets.io/hooks/e2b/*", "someone-else"), "tinyassets.io/hooks/e2b/* is " +
+      [changed(`${HOST}/hooks/e2b/*`, "someone-else"), `${HOST}/hooks/e2b/* is ` +
        `someone-else's, neither as the handover left it (${DOORS}'s) nor as the record has it ` +
        "(absent)"],
       // A recorded route the handover never changed.
-      [changed("tinyassets.io/site*", "site-2"), "tinyassets.io/site* is site-2's, the record " +
+      [changed(`${HOST}/site*`, "site-2"), `${HOST}/site* is site-2's, the record ` +
        "has it site's and the handover never changed it"],
-      [changed("tinyassets.io/site*", undefined), "tinyassets.io/site* is absent, the record " +
+      [changed(`${HOST}/site*`, undefined), `${HOST}/site* is absent, the record ` +
        "has it site's and the handover never changed it"],
       // A route it moved, moved again; one it deleted, made again for another Worker.
-      [changed("tinyassets.io/mcp*", "someone-else"), "tinyassets.io/mcp* is someone-else's, " +
+      [changed(`${HOST}/mcp*`, "someone-else"), `${HOST}/mcp* is someone-else's, ` +
        `neither as the handover left it (${DOORS}'s) nor as the record has it ` +
        "(tinyassets-mcp-proxy's)"],
-      [changed("tinyassets.io/.well-known/oauth-protected-resource*", "someone-else"),
-       "tinyassets.io/.well-known/oauth-protected-resource* is someone-else's, neither as the " +
+      [changed(`${HOST}/.well-known/oauth-protected-resource*`, "someone-else"),
+       `${HOST}/.well-known/oauth-protected-resource* is someone-else's, neither as the ` +
        "handover left it (absent) nor as the record has it (tinyassets-mcp-proxy's)"],
     ] as const) {
       const zone = await cutOver();
@@ -1801,7 +1958,7 @@ describe("a handback run", () => {
 
   it("stops at a refused route change, the rest undone, no path the record served unserved",
      async () => {
-    const pattern = "tinyassets.io/.well-known/oauth-authorization-server*";
+    const pattern = `${HOST}/.well-known/oauth-authorization-server*`;
     const w = world({ held: true, refusingRoute: `POST ${pattern}` });
     const before = kept(w.routes.values());
     await runMode(w, "routes", ["--yes"], RUN);
@@ -2248,11 +2405,11 @@ describe("the parts of a run", () => {
     // Identical patterns move in place, and a narrower old one is deleted after the doors'
     // wider one exists: the old proxy is left with no route.
     expect(steps.filter((each) => each.method === "PUT").map((each) => each.pattern))
-      .toEqual(["tinyassets.io/mcp*", "tinyassets.io/api*", "tinyassets.io/app*"]);
+      .toEqual([`${HOST}/mcp*`, `${HOST}/api*`, `${HOST}/app*`]);
     expect(steps.filter((each) => each.method === "DELETE").map((each) => each.pattern))
-      .toEqual(["tinyassets.io/.well-known/oauth-protected-resource*",
-                "tinyassets.io/.well-known/oauth-authorization-server*"]);
-    const added = steps.findIndex((each) => each.pattern === "tinyassets.io/.well-known/oauth-*");
+      .toEqual([`${HOST}/.well-known/oauth-protected-resource*`,
+                `${HOST}/.well-known/oauth-authorization-server*`]);
+    const added = steps.findIndex((each) => each.pattern === `${HOST}/.well-known/oauth-*`);
     expect(steps.findIndex((each) => each.method === "DELETE")).toBeGreaterThan(added);
     await cloudflare.reroute(zone, steps, (each) => describeStep(each, DOORS));
     for (const path of PROBES.slice(0, -1)) {
@@ -2260,7 +2417,7 @@ describe("the parts of a run", () => {
     }
     expect([...fake.table.values()].filter((route) => route.script === "tinyassets-mcp-proxy"))
       .toEqual([]);
-    expect(servedBy(fake.table.values(), "tinyassets.io/site/x")).toBe("site");
+    expect(servedBy(fake.table.values(), `${HOST}/site/x`)).toBe("site");
     // Run again, it changes nothing.
     expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
   });
@@ -2282,7 +2439,7 @@ describe("the parts of a run", () => {
     const cloudflare = client(fake);
     const steps = handover(await cloudflare.routes("z"), DOORS, ROUTES);
     await expect(cloudflare.reroute("z", steps, (each) => describeStep(each, DOORS)))
-      .rejects.toThrow("move the route tinyassets.io/mcp* from tinyassets-mcp-proxy to " +
+      .rejects.toThrow(`move the route ${HOST}/mcp* from tinyassets-mcp-proxy to ` +
                        `${DOORS} failed (500, [10000]); the steps before it are done, the rest ` +
                        "are not: run it again for the rest");
     expect(fake.calls.filter((call) => call.startsWith("DELETE"))).toEqual([]);
@@ -2455,8 +2612,9 @@ describe("E2B's lifecycle webhook", () => {
   const EVENTS = ["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"];
 
   it("is registered disabled in dark, and enabled only with the routes", async () => {
-    // dark, none held: registered disabled, with the stored secret, for the two events.
-    const dark = e2bHooks([{ id: "x", url: "https://elsewhere.test/hook", enabled: true }]);
+    // dark, none held: registered disabled, with the stored secret, for the two events. A
+    // hook of another name, at whatever URL, is not ours.
+    const dark = e2bHooks([{ id: "x", name: "another", url: E2B_HOOK.url, enabled: true }]);
     expect(await lifecycleHook(dark.e2b,
         { secret: "s1", setSecret: false, enable: false }, true)).toBe("registered, disabled");
     expect(dark.hooks[1]).toEqual({ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
@@ -2466,7 +2624,7 @@ describe("E2B's lifecycle webhook", () => {
     expect(await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: false }, true))
       .toBe("present, unchanged, disabled");
     expect(dark.calls.slice(calls)).toEqual(["GET /events/webhooks"]);
-    expect(dark.hooks[0]).toEqual({ id: "x", url: "https://elsewhere.test/hook", enabled: true });
+    expect(dark.hooks[0]).toEqual({ id: "x", name: "another", url: E2B_HOOK.url, enabled: true });
     // routes: enabled; a routes run later changes nothing; dark after it never turns it off.
     expect(await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: true }, true))
       .toBe("present, enabled set, enabled");
@@ -2476,10 +2634,24 @@ describe("E2B's lifecycle webhook", () => {
     await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: false }, true);
     expect(dark.hooks[1]!["enabled"]).toBe(true);
     // A held hook whose events drifted is given its two events back.
-    const drifted = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: false,
+    const drifted = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url, enabled: false,
                                 events: ["sandbox.lifecycle.paused"] }]);
     await lifecycleHook(drifted.e2b, { secret: "s", setSecret: false, enable: false }, true);
     expect(drifted.hooks[0]!["events"]).toEqual(EVENTS);
+    // A held hook the identity's host has moved off is moved to the identity's URL, the one
+    // hook, never a second beside it; the plan says so before the apply.
+    const before = `https://stage.${ZONE}${identity.hook}`;
+    const moved = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: before, enabled: false,
+                              events: EVENTS }]);
+    expect(await lifecycleHook(moved.e2b, { secret: "s", setSecret: false, enable: false },
+                               false)).toBe(`present, its URL (${before} before) set, disabled`);
+    expect(moved.calls).toEqual(["GET /events/webhooks"]);
+    expect(await lifecycleHook(moved.e2b, { secret: "s", setSecret: false, enable: true }, true))
+      .toBe(`present, its URL (${before} before), enabled set, enabled`);
+    expect(moved.calls.at(-1)).toBe(
+      `PATCH /events/webhooks/a ${JSON.stringify({ url: E2B_HOOK.url, enabled: true })}`);
+    expect(moved.hooks).toEqual([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url,
+                                   enabled: true, events: EVENTS }]);
     // routes with none held: registered enabled.
     expect(await lifecycleHook(e2bHooks([]).e2b,
         { secret: "s", setSecret: false, enable: true }, true))
@@ -2489,19 +2661,20 @@ describe("E2B's lifecycle webhook", () => {
     expect(await lifecycleHook(planned.e2b, { secret: "s", setSecret: true, enable: true }, false))
       .toBe("missing: registered, enabled");
     expect(planned.calls).toEqual(["GET /events/webhooks"]);
-    // A failed listing or write stops the kit; two hooks for the URL are refused.
+    // A failed listing or write stops the kit; two hooks of the name are refused.
     await expect(lifecycleHook(e2bHooks([], "GET").e2b,
         { secret: "s", setSecret: false, enable: false }, false))
       .rejects.toThrow("E2B GET /events/webhooks answered 500");
     await expect(lifecycleHook(e2bHooks([], "POST").e2b,
         { secret: "s", setSecret: false, enable: false }, true))
       .rejects.toThrow("E2B POST /events/webhooks answered 500");
-    await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b,
+    await expect(lifecycleHook(e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url }],
+                                        "PATCH").e2b,
         { secret: "s", setSecret: true, enable: false }, true))
       .rejects.toThrow("E2B PATCH /events/webhooks/a answered 500");
-    await expect(heldHook(e2bHooks([{ id: "a", url: E2B_HOOK.url },
-                                    { id: "b", url: E2B_HOOK.url }]).e2b))
-      .rejects.toThrow(/holds 2 webhooks/);
+    await expect(heldHook(e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url },
+                                    { id: "b", name: E2B_HOOK.name, url: "https://x.test/" }])
+      .e2b)).rejects.toThrow(`E2B holds 2 webhooks named ${E2B_HOOK.name}: keep one`);
     // A route hands the hook's path to the doors.
     expect(ROUTES.some((pattern) => routeTakes(pattern, `${HOST}${identity.hook}`))).toBe(true);
   });
@@ -2514,7 +2687,8 @@ describe("E2B's lifecycle webhook", () => {
                    sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
     const kept = secretPlan(held, new Set(), null);
     expect(kept.some((each) => each.name === "E2B_WEBHOOK_SECRET")).toBe(false);
-    const neither = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+    const neither = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url, enabled: true,
+                                events: EVENTS,
                                 signatureSecret: "old" }]);
     await lifecycleHook(neither.e2b,
         { secret: "new", setSecret: hookSetsSecret(kept), enable: true }, true);
@@ -2522,7 +2696,8 @@ describe("E2B's lifecycle webhook", () => {
     // With --rotate E2B_WEBHOOK_SECRET the doors take the new value, and E2B does too.
     const rotated = secretPlan(held, new Set(["E2B_WEBHOOK_SECRET"]), null);
     expect(rotated).toContainEqual({ worker: "doors", name: "E2B_WEBHOOK_SECRET" });
-    const both = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+    const both = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url, enabled: true,
+                             events: EVENTS,
                              signatureSecret: "old" }]);
     await lifecycleHook(both.e2b,
         { secret: "new", setSecret: hookSetsSecret(rotated), enable: true }, true);
@@ -3816,13 +3991,13 @@ describe("platform-deploy.yml", () => {
 });
 
 /** URLs the doors' routes cover, and the last, which they do not. */
-const PROBES = ["tinyassets.io/mcp", "tinyassets.io/mcp?x=1", "tinyassets.io/api/tools/a",
-                "tinyassets.io/.well-known/oauth-protected-resource/mcp",
-                "tinyassets.io/.well-known/oauth-authorization-server",
-                "tinyassets.io/app/api/keys", "tinyassets.io/oauth/token",
-                "tinyassets.io/authorize", "tinyassets.io/hooks/inbound/x",
-                "tinyassets.io/hooks/e2b/lifecycle",
-                "tinyassets.io/app", "tinyassets.io/app?upgrade=1", "tinyassets.io/site/x"];
+const PROBES = [`${HOST}/mcp`, `${HOST}/mcp?x=1`, `${HOST}/api/tools/a`,
+                `${HOST}/.well-known/oauth-protected-resource/mcp`,
+                `${HOST}/.well-known/oauth-authorization-server`,
+                `${HOST}/app/api/keys`, `${HOST}/oauth/token`,
+                `${HOST}/authorize`, `${HOST}/hooks/inbound/x`,
+                `${HOST}/hooks/e2b/lifecycle`,
+                `${HOST}/app`, `${HOST}/app?upgrade=1`, `${HOST}/site/x`];
 
 /** The Worker Cloudflare sends `path` to: the most specific matching pattern's. */
 function servedBy(routes: Iterable<Route>, path: string): string | undefined {
@@ -3914,16 +4089,16 @@ const ROUTES_HELD = [
   "auth.test's sign-in",
   ...WORKERS.map((worker) => `upload and deploy a version of ${NAMES[worker]}, touching no route`),
   ...["mcp*", "api*", "app*"].map((path) =>
-    `move the route tinyassets.io/${path} from tinyassets-mcp-proxy to ${DOORS}`),
-  `add the route tinyassets.io/hooks/inbound/* for ${DOORS}`,
-  `add the route tinyassets.io/hooks/e2b/* for ${DOORS}`,
-  `add the route tinyassets.io/authorize* for ${DOORS}`,
-  `add the route tinyassets.io/oauth/* for ${DOORS}`,
-  `add the route tinyassets.io/.well-known/oauth-* for ${DOORS}`,
+    `move the route ${HOST}/${path} from tinyassets-mcp-proxy to ${DOORS}`),
+  `add the route ${HOST}/hooks/inbound/* for ${DOORS}`,
+  `add the route ${HOST}/hooks/e2b/* for ${DOORS}`,
+  `add the route ${HOST}/authorize* for ${DOORS}`,
+  `add the route ${HOST}/oauth/* for ${DOORS}`,
+  `add the route ${HOST}/.well-known/oauth-* for ${DOORS}`,
   `delete tinyassets-mcp-proxy's narrower route ` +
-  `tinyassets.io/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,
+  `${HOST}/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,
   `delete tinyassets-mcp-proxy's narrower route ` +
-  `tinyassets.io/.well-known/oauth-authorization-server*, its paths now ${DOORS}'s`,
+  `${HOST}/.well-known/oauth-authorization-server*, its paths now ${DOORS}'s`,
   `add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy)`,
   "record in deploy:routes:local-20261107T120000Z the DNS records the custom domain made: AAAA",
   `E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: present, enabled set, enabled`,
