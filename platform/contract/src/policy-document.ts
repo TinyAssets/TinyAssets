@@ -168,7 +168,7 @@ function checkActions(actions: unknown): void {
 /**
  * Owner files policy: the owner's own bounds on its files, and history retention.
  * The document's optional `files` table sets any of them; what it leaves out keeps
- * `FILE_DEFAULTS`, every one off but the two shares (Fact 15). A bound is refused loudly and
+ * `FILE_DEFAULTS`, every one off (Fact 15). A bound is refused loudly and
  * never makes room by dropping anything. `max_bytes` counts every byte of user content the
  * owner stores, wherever it lives (the one storage number, founder 2026-11-03): unique chunk
  * bytes, live and in history, the bodies placed in R2 (ADR-035), the small files kept inline,
@@ -191,8 +191,9 @@ function checkActions(actions: unknown): void {
  *
  * Each outside client holds at most `client_share` percent of the storage and of the file
  * index's ceiling (and of the open uploads and the chunks they hold), and all of them
- * together at most what `owner_reserve` percent leaves, so no client fills the owner's files
- * and the owner always keeps room of its own. A client is charged its own rows (the entries
+ * together at most what `owner_reserve` percent leaves: set, no client fills the owner's
+ * files and the owner keeps room of its own. Off (100 and 0), a client is held to the
+ * owner's whole alone. A client is charged its own rows (the entries
  * it last wrote, its history rows, its temporary directories) and once for each content and
  * chunk they or its open uploads reference, whoever else references them too
  * (`manifest.ts`). The index's ceiling itself is no setting: it is the object's room
