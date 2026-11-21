@@ -46,8 +46,19 @@ others are `untangle/p6-process-code` (merged, #5708), `untangle/p6-queue-delete
    so a runner five times slower would have timed out the one Python leg that outlives the
    cutover.
 7. **The manifest loses what the move made unnecessary:** the seven carry-out moves, the
-   `legs.test.ts` edit, the `tests.yml` edit's names of the paths that left, and the
-   `test_inventory.py` and `test_shape.py` edits, which become deletes. `pr-scope-guard.yml`'s
-   edit names its new step's script, `scripts/test_shape.py`, among its names and imports, so
-   the dry run keeps the script the step runs. The hygiene gate's edit keeps its two names,
-   the ledger import and `LEDGER`.
+   `tests.yml` edit's names of the paths that left, and the `test_inventory.py` and
+   `test_shape.py` edits, which become deletes. `pr-scope-guard.yml`'s edit names its new
+   step's script, `scripts/test_shape.py`, among its names and imports, so the dry run keeps
+   the script the step runs. The hygiene gate's edit keeps its two names, the ledger import
+   and `LEDGER`.
+8. **`legs.test.ts` keeps an edit, for a reason the old one hid.** Its edit named the process
+   targets this PR removed, so this branch first took the entry out, and the dry run's `ci`
+   suite failed (run 44899198824): "a leg runs what no workspace's tests are: npm run test -w
+   import". The guard reads `tests.yml`, whose edit takes out the import leg, and
+   `platform/package.json`. The dry run writes no edit but does take the gone workspace out
+   of `platform/package.json`, so on its tree the two disagree. The dry run sets aside a test
+   an edit names, and the old entry had been doing that without saying so. The entry is back,
+   naming what the cutover does take out of the file, its header's line on the old suite's
+   jobs, and saying why the dry run sets it aside. Reproduced and checked with `ci/dry-run.ts
+   apply` on a scratch checkout: before, 46 of `legs.test.ts`'s 77 failed; after, the `ci`
+   suite passes (175 passed, 1 skipped).
