@@ -301,8 +301,7 @@ past the VM; and the cleanups that rethrow (`bodies.ts`'s release, `files.ts`'s 
   begin it again; the sweep's delete is one R2 call between two units. **Found and left:** the
   wait is a sleep, not the event: the sweep's delete could hand the object a promise that ends
   when its unit lands, and the write would wait on that, bounded by `LANE_CALL_MS`. That changes
-  when a write answers, so it is not this pass: a sub-line of `tasks.md`'s re-check loop line
-  (`untangle/place-wait`).
+  when a write answers, so it is not this pass: owed, §6.7.
 - `bodies.ts` `READ_TRIES` and `ledger.ts`'s `archive_changed` retry: a read raced by mail
   between its units is read again a few times, then `storage_busy` with its `Retry-After`.
 - `files.ts` `APPEND_TRIES`: an append that loses its swap is tried again, at most as many
@@ -315,9 +314,9 @@ past the VM; and the cleanups that rethrow (`bodies.ts`'s release, `files.ts`'s 
 
 **Found and left:** `changelog.ts` `LOG_WIDE` has no reader in product code; its one reader is
 `changelog.test.ts`, which holds it to the frozen trigger text. A product export only a test
-reads is a code change: with `untangle/place-wait`.
+reads is a code change: owed, §6.7.
 
-### 6.5 Owed: `untangle/pass-owner-3`, once #5707 (`untangle/r5-hooks`) merges
+### 6.5 Part 3's: `untangle/pass-owner-3`, once #5707 (`untangle/r5-hooks`) merges
 
 The files R5's hooks change, so the two merge cleanly, untouched here:
 - `src/actions.ts`: `R5 slice 2`, `R5 P-resume` and `r5_research.md` (a working file never in
@@ -353,3 +352,12 @@ And the comments of the other 13 guards and of `memory/`, moved here from part 2
   `MODEL_DEFAULTS.turn_cost` set to 1; `EGRESS_PATH_MAX` as 4096; `#door` running its act
   outside the gate. A reformat of `#door` across lines with a trailing comma passes the
   write-gate guard and fails its old check.
+
+### 6.7 Owed
+
+- [ ] `platform/owner/`, part 3, once #5707 merges: the comments of the files it changes and
+  `policy.test.ts`'s pins, and the comments of `memory/` and the other 13 guards (§6.5)
+  (`untangle/pass-owner-3`).
+- [ ] `bodies.ts` `placing` waits on the sweep's delete it met, not a sleep of `100 * tries`
+  ms, bounded by `LANE_CALL_MS`; and `changelog.ts` `LOG_WIDE`, read only by its test, goes
+  (§6.4) (`untangle/place-wait`).
