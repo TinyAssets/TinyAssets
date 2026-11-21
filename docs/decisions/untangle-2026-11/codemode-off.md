@@ -30,7 +30,9 @@ with its reason).
 - **`codeRun`** refuses `code_mode_off` (terminal, 403) with the reason: "code mode is off for
   this owner. It is off by default until its isolation probe (H2) passes; the owner turns it
   on in the owner app". Each call inside a running script is held to the same check, as
-  before.
+  before. Both read it from the profile's own `withheld` (`codeServed`, review), so a caller
+  whose profile does not hold `code` is `tool_not_served`, never told to turn on what would
+  not serve it.
 - **`toolProfile`** answers `withheld` beside `tools`. That is `code` when the caller's
   profile holds it and the switch is off. The doors list only `tools`, so no MCP client or
   engine is offered a tool it cannot use.

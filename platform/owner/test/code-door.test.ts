@@ -132,6 +132,11 @@ describe("the code door", () => {
       .toEqual({ profile: "directory", tools: profileNames("directory"), withheld: [] });
     expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(CODE_NOT_SERVED);
+    // Code mode off withholds nothing it does not hold: turning it on would not serve it.
+    await setPolicy(r, false);
+    expect((await r.stub.toolProfile(r.bind(MUSE))).withheld).toEqual([]);
+    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+      .message).toBe(CODE_NOT_SERVED);
     // The owner's custom choice leaves code out.
     await profiled(r, MUSE, "custom");
     await setPolicy(r, true, ["agents_list", "collection_get"]);

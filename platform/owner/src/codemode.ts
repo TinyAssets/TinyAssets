@@ -273,6 +273,21 @@ interface Served {
   readonly withheld: readonly string[];
 }
 
+/**
+ * The tools of `account`'s profile, where it is served `code`: refused `code_mode_off` where
+ * the switch withholds it, and `tool_not_served` where its profile does not hold it.
+ */
+function codeServed(o: CodemodeDoorNeeds, account: Account): readonly string[] {
+  const { tools, withheld } = profile(o, account);
+  if (withheld.includes(codeTool())) {
+    throw new Refusal("code_mode_off", CODE_MODE_OFF);
+  }
+  if (!tools.includes(codeTool())) {
+    throw new Refusal("tool_not_served", CODE_NOT_SERVED);
+  }
+  return tools;
+}
+
 /** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
 async function scripted(o: CodemodeDoorNeeds, binding: Binding, tool: Tool, args: unknown,
                         gate: () => Promise<string | null>): Promise<unknown> {
@@ -282,11 +297,7 @@ async function scripted(o: CodemodeDoorNeeds, binding: Binding, tool: Tool, args
       throw new Refusal("refused", closed);
     }
     await o.door(() => {
-      const { tools } = profile(o, o.accountAt("toolProfile", binding));
-      if (!o.policy.codemode()) {
-        throw new Refusal("code_mode_off", CODE_MODE_OFF);
-      }
-      if (!tools.includes(codeTool()) || !tools.includes(tool.name)) {
+      if (!codeServed(o, o.accountAt("toolProfile", binding)).includes(tool.name)) {
         throw new Refusal("tool_not_served", CODE_NOT_SERVED);
       }
     });
@@ -321,13 +332,7 @@ export const codemodeDoors = Object.freeze({
       if (typeof r["script"] !== "string" || r["script"].trim() === "") {
         throw new Refusal("invalid", "a script is text");
       }
-      if (!o.policy.codemode()) {
-        throw new Refusal("code_mode_off", CODE_MODE_OFF);
-      }
-      const { tools: names } = profile(o, account);
-      if (!names.includes(codeTool())) {
-        throw new Refusal("tool_not_served", CODE_NOT_SERVED);
-      }
+      const names = codeServed(o, account);
       // The gate its door read: every `/mcp` and `/api` binding carries the client's origin,
       // the owner's own MCP clients' too, so they take the outside gate; a run (the egress
       // door) and the owner's app (no origin) the maintenance gate.
