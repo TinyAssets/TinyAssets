@@ -150,14 +150,13 @@ const RETRY_SCHEDULE_MS = [480, 960, 1_920, 3_840, 7_680, 15_360, 30_720, 60_000
 
 /**
  * The renewal's wait for its runs' answers as the design states it: two posts within the
- * 252 ms `renewing` measured and the drain's 50 ms look, 80% of it (`sandbox-probe.md`).
+ * 252 ms `renewing` measured and the drain's 50 ms look, 79% of it (`sandbox-probe.md`).
  */
 const RENEWING_MS = 700;
-/**
- * The renewal's edge as the design states it: that wait, then the longest pause measured
- * (705 ms, `e2b-resume-measurement.md`).
- */
-const RENEW_EDGE_MS = RENEWING_MS + 705;
+/** The longest pause measured (`e2b-resume-measurement.md`). */
+const PAUSE_MAX_MS = 705;
+/** The renewal's edge as the design states it: that wait, then the longest pause. */
+const RENEW_EDGE_MS = RENEWING_MS + PAUSE_MAX_MS;
 
 /**
  * What `act` armed, against the delay the code means: an alarm `delay` on from the moment
@@ -662,6 +661,12 @@ describe("the look before the runtime ceiling", () => {
     expect(calls.filter((call) => call.path.endsWith("/pause"))).toHaveLength(1);
     expect(calls.filter((call) => call.path.endsWith("/connect"))).toHaveLength(1);
     expect(commands.at(-1)).toBe("renewed");
+    // Inside the edge, the wait for its runs' answers ends where the longest pause still lands
+    // before E2B's `endAt`: the quiet look's end is that `endAt` less the edge.
+    const argvOf = async (command: string) => (await seen()).commands
+      .filter((each) => each.argv[1] === command).at(-1)!.argv;
+    const endAt = Number((await argvOf("quiet-wait"))[2]) + RENEW_EDGE_MS;
+    expect(Number((await argvOf("renew-wait"))[2])).toBe(endAt - PAUSE_MAX_MS);
   });
 
   it("is not forced before the edge, while the CLIs are busy", async () => {

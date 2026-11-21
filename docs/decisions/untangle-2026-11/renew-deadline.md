@@ -81,11 +81,18 @@ measured `renewing`. Nothing names a reason for a zero wait.
    answers 409 or 503. `#pause` reads 409 as paused and 503 as busy, and either way the
    resume follows. That is the edge doc's own fallback. Raising it would also slow
    `#pause`'s busy back-off, which starts from it.
+5. **The wait ends by `endAt` less the longest pause, when that is sooner** (#5680's review).
+   The edge holds only for a look that renews at it. A look later than the edge (its own E2B
+   calls, an alarm run late) waited the whole bound, so its pause could land past `endAt`,
+   on E2B's own timeout, with the posts not yet held. Capped, a late renewal waits what is
+   left and, past that, tells with no wait, as before this change.
 
 ## 3. Tests
 
 - `test/sandbox.test.ts`, the quiet renewal: `renew-wait`'s deadline is `RENEWING_MS` past
-  the renewal's clock read. Restoring the Worker's bare now fails it.
+  the renewal's clock read. Restoring the Worker's bare now fails it. The forced renewal,
+  200 ms inside the edge: the deadline is `endAt` less the longest pause. Dropping the cap
+  fails it.
 - `runner/runner.test.ts`, "waits for a quiet moment, and renews at its deadline regardless"
   is replaced by "tells a run that is not quiet at once, and is back at its deadline when the
   run cannot answer". Its CLI is never quiet and its doors answer every post busy.

@@ -1290,16 +1290,19 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /**
    * One renewal: each live run, one launched since the quiet look included, told at once to
-   * post `renewing` and hold its posts, its answer waited for to `RENEWING_MS` on
-   * (`renew-wait`); the row is marked renewing, so a look that fails after the pause resumes
-   * it; its slot is held in the line across the pause and the resume (`reserve`), so the
+   * post `renewing` and hold its posts, its answer waited for to `RENEWING_MS` on, or to the
+   * longest pause before `endAt` when that is sooner, so a look late at the edge never waits
+   * its pause past `endAt` (`renew-wait`); the row is marked renewing, so a look that fails
+   * after the pause resumes it; its slot is held in the line across the pause and the resume
+   * (`reserve`), so the
    * first owner waiting cannot create into the moment it frees; the sandbox is paused with
    * its memory and resumed at once.
    */
   async #renew(row: Row, handle: Box, endAt: number, ceilings: SandboxCeilings):
       Promise<void> {
     const e2b = this.#e2b();
-    await this.#run(handle, [COMMAND.renewWait, String(Date.now() + RENEWING_MS)]);
+    await this.#run(handle, [COMMAND.renewWait,
+                             String(Math.min(Date.now() + RENEWING_MS, endAt - PAUSE_MAX_MS))]);
     await this.#hold(handle.sandboxID);
     this.#sql.exec("UPDATE sandboxes SET renewing = 1 WHERE authority = ?", row.authority);
     const paused = await this.#pause(handle.sandboxID, endAt);
