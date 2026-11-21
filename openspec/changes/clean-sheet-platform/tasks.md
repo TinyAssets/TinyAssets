@@ -315,6 +315,9 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   fails a recorder that differs unless the body's `Recorders-Differ:` line names it. Builders
   and reviewers run typecheck, the touched tests, the guards the change can break and their
   mutations, and push a draft early (`process/ci-recorders`; `untangle-2026-11/ci-recorders.md`).
+- [ ] The wire recorder's `wire: inbound hooks` test answers 404 `not_found` to every event at
+  main `88e74e1cd`, `inbound ok` too, so no change to the capability door's answers shows
+  (`untangle/recorder-inbound`; found by `process/ci-recorders`).
 
 ### Step 1. Now: B25, T0b, E2
 
