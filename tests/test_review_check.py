@@ -20,7 +20,8 @@ pytestmark = pytest.mark.verifies(
     "A review verdict is a check run only the review App posts"
 )
 
-_ROOT = Path(__file__).resolve().parents[1]
+# The checkout's root, wherever the file sits (the cutover carries it to scripts/tests/).
+_ROOT = next(at for at in Path(__file__).resolve().parents if (at / "AGENTS.md").is_file())
 _ENV = {
     **os.environ,
     "GIT_AUTHOR_NAME": "t",
