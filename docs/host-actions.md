@@ -426,7 +426,7 @@ it per user only with the owner's written permission
 Founder decision 2026-10-11: the credential vault's root key is one AWS KMS key
 in the AWS account created in step 1 above. That gives one AWS account and one
 checklist. There is no offline copy. Design:
-`openspec/changes/credential-vault-reshape/design.md` D3. Nothing reads these
+[`credential-vault-reshape`'s `design.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/credential-vault-reshape/design.md) D3. Nothing reads these
 values until the cutover PR ships, so do this whenever the account exists.
 
 1. Open [KMS in Oregon](https://us-west-2.console.aws.amazon.com/kms/home?region=us-west-2).
@@ -612,6 +612,15 @@ then applied.
 |---|---|
 | Any ruleset change | Once the PR changing the file merges: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Not the Settings page: an edit there that the file lacks stops auto-enroll until a PR copies it. Between the merge and the `PUT`, a PR opened or pushed is not armed: arm it again after the read-back (a push, or `gh pr merge --auto`). |
 | Classic protection's copy of the checks | Settings → Branches → `main` → clear **Require status checks to pass before merging** and save, keeping the rule (it blocks force pushes and deletion). The ruleset requires every check it does, and the classic copy can't be read without an admin token, so nothing could check it against the file. Read back: `gh api repos/TinyAssets/TinyAssets/branches/main/protection --jq .required_status_checks` gives `null`. |
+
+## Delete the `stale-vs-main` label (2026-11-21)
+
+Queue-freshness, its one writer, is deleted (`docs/decisions/untangle-2026-11/p6-queue-deletes.md`),
+and nothing reads it. It blocks nothing.
+
+| Item | Smallest founder-only action |
+|---|---|
+| The label | `gh label delete stale-vs-main --repo TinyAssets/TinyAssets --yes`, which also takes it off any PR still carrying it. Read back: `gh label list --repo TinyAssets/TinyAssets --search stale-vs-main` lists nothing. |
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
@@ -968,15 +977,15 @@ Provider-free, no maintainer quota, test identities with cleanup, canary-coordin
 ### Authorize the reciprocal public-read / manifest Worker delta edge
 
 One merged front-door body before public-read sync.
-*Owner artifact:* `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/tasks.md`.
+*Owner artifact:* [`reconcile-external-connector-manifests`'s `tasks.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/tasks.md).
 *Depends on:* current owner handoff; public-read task 0.5.
 
 ### Review BYO-LLM connect flow slice 1
 
 Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** without this review.
 *Depends on:* exact-head dual-family review; POSIX/production Codex integration.
-*Owner artifacts:* `openspec/changes/archive/2026-10-06-byo-llm-connect-flow/`,
-`openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`.
+*Owner artifacts:* [the `byo-llm-connect-flow` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-10-06-byo-llm-connect-flow),
+[the `constrain-set-engine-provider-authority` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority).
 
 ---
 
@@ -987,7 +996,7 @@ Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** w
 Instrument landed in #1776; **no agent-buildable task remains** (triaged 2026-08-02). The host
 records the claude.ai baseline (task 3.1) and the permitted-regression decision (task 3.2).
 *Depends on:* ChatGPT connector registration, before its baseline.
-*Owner artifact:* `openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy/`.
+*Owner artifact:* [the `connector-tool-selection-accuracy` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy).
 
 ---
 
@@ -1055,7 +1064,7 @@ to be 201, and `x-access-level` to read `read-write`.
 ## Firebase project for phone notifications (2026-09-30)
 
 **Why:** a universe's "Waiting on you" requests now push to the owner's devices
-(`openspec/changes/notify-owner-of-requests`). Browser and desktop push need
+([the `notify-owner-of-requests` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/notify-owner-of-requests)). Browser and desktop push need
 nothing from you — web-push keys are self-issued. **Android push needs a Firebase
 project only the account owner can create**, and the Android app (1.0.4, the
 first build that carries push) reads two secrets that come out of it. Until they

@@ -15,7 +15,7 @@ summary: exact-code review approves JSON RPC; refusal ordering, separate-ledger 
 Full substantive review and context:
 [PR #3881 review receipt](https://github.com/Jonnyton/TinyAssets/pull/3881#issuecomment-5740090073).
 Current candidate remains JSON/source-code RPC only. Full file/retention/retry and
-two-user rendered proof remain in `openspec/changes/connect-cross-user-nodes/`.
+two-user rendered proof remain in [the `connect-cross-user-nodes` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/connect-cross-user-nodes).
 
 ## Source (verbatim)
 

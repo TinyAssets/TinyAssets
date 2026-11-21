@@ -220,7 +220,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     it, once the process's tests it holds are carried out to `scripts/tests/` (the manifest's
     moves). None is skipped, quarantined or rewritten to pass. A
     structural guard (`scripts/ci_structural_guards.py` `GUARDS`) goes only once this line names
-    its platform replacement or the decision that retires its principle. `tests.yml` loses
+    its platform replacement or the decision that retires its principle: each of the 40 is
+    named in `untangle-2026-11/b24-dry-run.md` item 6. `tests.yml` loses
     `select`, `structural-guards`, `required-tests-shard`, `affected-tests` and
     `heavy-tests`; `required-tests` keeps `platform-tests`, `platform-sizes`, `platform-app` and
     `process`.
@@ -266,7 +267,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     `untangle-2026-11/p6-process-code.md`);
   - [ ] the process tests beside their scripts, held by the tamper rule
     (`untangle/p6-tests-beside`);
-  - [ ] queue-freshness and rerun-cancelled-checks deleted (`untangle/p6-queue-deletes`);
+  - [x] queue-freshness and rerun-cancelled-checks deleted on their measured runs
+    (`untangle/p6-queue-deletes`; `untangle-2026-11/p6-queue-deletes.md`);
   - [ ] main-red and queue-attempts reading the ruleset and the jobs, not the old suite
     (`untangle/p6-queue-helpers`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
@@ -277,8 +279,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
   changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;
   what stayed and why: `untangle-2026-11/p9-now.md`).
-- [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
-  their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
+- [x] P9: the archive and the 72 old changes no test claims an id of go, their readers
+  re-pointed at main's last commit holding them, and `check_shapes.py`'s `adr-has-spec` with
+  them (`untangle/p9-cleanup`; `untangle-2026-11/p9-cleanup.md`). The 13 whose ids the old
+  suite's tests claim go in the window with `tests/` and `test-shape-prune.yml`
+  (`platform/cutover.json`; founder, 2026-11-21: nothing is built before the cutover that it
+  deletes).
 - [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
   protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
   from `land/3`; `untangle-2026-11/slow-tests.md`).
@@ -345,9 +351,10 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   ADR-032's two-region trigger has no per-region series. Research first (canary owners placed
   by location hint, or Cloudflare's per-location analytics for the owner namespace), then
   build it with the canary's keyed checks, which wait for `routes`.
-- [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
-  plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
-  they differ (d3 §C8, list3 P16).
+- [x] The vendors' wake pages re-read (d3 §C8, list3 P16; `untangle-2026-11/wake-pages.md`):
+  MCP Events states no plan tier (Work chats and dots; the live test tries a personal paid and a
+  Business account); Grok's routine webhook confirmed, its host still unpublished; Muse has no
+  wake API; `wake-kinds.json` and `apps.json` corrected.
 
 ### Step 3. This re-cut, P3, the manifest's inventory
 
@@ -404,7 +411,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] B12's end-of-hold list: `routes`' handover, `handback` and `h2` are on the manifest's
     hold phase, and mode `probe` is deleted, the stage's first sign-in doing its job (d3 §A5,
     §H; `b24-manifest.md`).
-  - B12 reshapes only the modes that stay (`untangle/b24-dry-run`).
+  - [x] B12 reshapes only the modes that stay: already built by X3 (rows, typed steps, the
+    per-Worker data, the reporter) and X6 (the plan artifact); no mode but through the row
+    table, and nothing of d2 B12's list left (`b24-dry-run.md` item 5).
   - [x] V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`). Built in
     `untangle/o-keyrings`: the goldens sealed again by their own commit's code for a connection
     id, and the gateway's binding takes the owner's connection ids, a doorbell's its own
@@ -423,9 +432,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       founder's WorkOS and installed review App recovery instructions live in `docs/host-actions.md`.
     - [x] `untangle/b24-manifest`: the rest of the repository inventory, every root, workflow,
       script, doc, spec and live object, with carry-outs (`b24-manifest.md`).
-    - `untangle/b24-dry-run`: the dry-run job that applies all three phases to a temporary tree
-      (step 5), B12's reshape of the modes that stay, and each structural guard's platform
-      replacement or retiring decision named on §9 step 15's line (`b24-manifest.md` item 6).
+    - [x] `untangle/b24-dry-run`: the dry run (`ci/dry-run.ts`, `cutover-dry-run.yml`), the
+      dependencies it found declared, and each structural guard's platform replacement or
+      retiring decision (`b24-dry-run.md`).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7). It reads a platform comment's "ported from `tinyassets/...`
     at <commit>" as history, which stays (`b24-manifest.md` item 1).
@@ -524,9 +533,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] An erasure of a lost object marks nothing (its object and no restore record name a
     namespace): mode `erase` finds its namespaces first, and refuses while R2 holds one naming
     it, until it is restored (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
-  - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
-    it, since `copyback` needs an object naming the namespace and `recover` begins every owner
-    (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
@@ -668,9 +674,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`d2:N57`) and `s2:N51` (d3 §A11).
   - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
     `pass-doors.md` §3).
-- [ ] The re-check loop (d2 §E step 6): every `owed` list empty but the passes' items "After
-  the cutover" holds, the layer guard with no exceptions, nothing worth fixing left, behaviour
-  unchanged.
+- [ ] The re-check loop (d2 §E step 6): each item below and each one
+  `python scripts/review_checks.py --owed` lists done (a PR's new owed items go in its decision
+  file, none here; `owed-in-decisions.md`), every `owed` list empty but the passes' items
+  "After the cutover" holds, the layer guard with no exceptions, nothing worth fixing left,
+  behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
   - [x] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
@@ -702,7 +710,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
   and `owner.state` (`owner-state-op.md`).
-- [ ] The manifest's dry run green (d3 §A10; `untangle/b24-dry-run`).
+- [x] The manifest's dry run green (d3 §A10): every leg, the typecheck and the process leg on
+  the manifest's tree (`cutover-dry-run.yml`; `b24-dry-run.md` item 2). It runs on every PR
+  and nightly, so a change that makes what stays need what goes shows red.
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
@@ -830,9 +840,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] 7. The wakes: each vendor end to end (a ChatGPT dot and Work chat subscribing, a Claude
   `/fire`, a Grok webhook routine, Muse's catch-up); the SSRF probe (a callback whose DNS
   answers 127.0.0.1, 10.x or 169.254.169.254 is refused by `global_fetch_strictly_public`);
-  Grok's webhook host, pinned as data once seen; whether Claude's over-limit fire answers
-  `429`. E2B's lifecycle webhook: whether a kill of a paused sandbox carries the pause's
-  execution and `sandbox_execution_id`, and E2B's retry timing against `BILLED_WINDOW_S`.
+  Grok's webhook host, pinned as data once seen. E2B's lifecycle webhook: whether a kill of a
+  paused sandbox carries the pause's execution and `sandbox_execution_id`, and E2B's retry
+  timing against `BILLED_WINDOW_S`.
 - [ ] 8. The founder's own test (§8).
 
 Measured on the stage as it runs:
@@ -881,6 +891,11 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
   exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
   then its build (`untangle/r7-unopenable`).
+- [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
+  it, since `copyback` needs an object naming the namespace and `recover` begins every owner
+  (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`). Nothing builds on it, it is rare, it
+  is loud (the operator sees the refusal) and it is recoverable (the copy keeps the current
+  objects), so it waits until after the cutover (Lane R after #5674, 2026-11-17).
 
 ### Step 17. Restore and the off-account copy
 
