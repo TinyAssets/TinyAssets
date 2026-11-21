@@ -266,7 +266,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     `untangle-2026-11/p6-process-code.md`);
   - [ ] the process tests beside their scripts, held by the tamper rule
     (`untangle/p6-tests-beside`);
-  - [ ] queue-freshness and rerun-cancelled-checks deleted (`untangle/p6-queue-deletes`);
+  - [x] queue-freshness and rerun-cancelled-checks deleted on their measured runs
+    (`untangle/p6-queue-deletes`; `untangle-2026-11/p6-queue-deletes.md`);
   - [ ] main-red and queue-attempts reading the ruleset and the jobs, not the old suite
     (`untangle/p6-queue-helpers`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
