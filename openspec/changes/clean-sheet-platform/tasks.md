@@ -580,7 +580,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
     stop matcher in its record's `events`; a held call's digest bound to its run's
     conversation; owner migration 18 (`untangle/r5-resume-hooks`; `r5-resume-hooks.md`).
-  - [x] Owner migration 18's pin, after P-resume merges: rode `untangle/r5-import`.
+  - [x] Owner migration 18's pin, after P-resume merges (`untangle/r5-resume-pin18`).
   - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
     `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
     when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
