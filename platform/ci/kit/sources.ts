@@ -133,12 +133,12 @@ export function sourcesOf(worker: string,
 export const TREE: readonly string[] = Object.freeze(["platform", ".github"]);
 
 /**
- * Every text file in `TREE`, by path from the repository root, with its text: what git
- * tracks, and any new file it does not ignore.
+ * Every text file under `roots` (`TREE`, or `["."]` for the whole repository), by path from
+ * the repository root, with its text: what git tracks, and any new file it does not ignore.
  */
-export function treeFiles(): Map<string, string> {
+export function treeFiles(roots: readonly string[] = TREE): Map<string, string> {
   const paths = execFileSync("git", ["ls-files", "-z", "--cached", "--others",
-                                     "--exclude-standard", "--", ...TREE],
+                                     "--exclude-standard", "--", ...roots],
                              { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
     .split("\0").filter((path) => path !== "");
   return new Map([...new Set(paths)].flatMap((path) => {

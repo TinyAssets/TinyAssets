@@ -166,6 +166,7 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   - [x] 8. Onboarding tells imported owners what came across (#5463). The text is in the
     importer's README, out of the starter (d2 B20).
 - [ ] **Step 10. Backup, census, off-site copy.**
+  - Before it opens: `ci/guards/rules.ts` owes the cutover guard nothing (`manifest-content.md`).
   - The old platform's billing is turned off as the window opens (off without its Stripe
     secrets); every open Checkout Session completes or expires and its webhook is applied; then
     Stripe's endpoint (`/app/billing/webhook`) is disabled. No paid subscription exists (the
