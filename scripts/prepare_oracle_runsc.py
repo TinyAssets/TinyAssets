@@ -60,4 +60,11 @@ def prepare(destination, *, fetch=urllib.request.urlopen, sleep=time.sleep):
 
 
 if __name__ == "__main__":
-    prepare(Path(sys.argv[1]))
+    from linux_oracle import NO_TEST_RAN
+
+    try:
+        prepare(Path(sys.argv[1]))
+    except Exception as failure:
+        print(f"{NO_TEST_RAN} the oracle's runtime was not prepared "
+              f"({type(failure).__name__}: {failure})", file=sys.stderr)
+        raise

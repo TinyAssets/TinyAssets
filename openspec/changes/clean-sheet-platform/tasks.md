@@ -292,6 +292,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
+- [x] The oracle image builds on the root `Dockerfile`'s digest-pinned base, read from there,
+  and retries a busy registry (a 429, 5xx or stall: merge group run 44079286405) up to four
+  times. `queue_attempts.py` no longer counts a job that stopped before any test ran
+  (GitHub's own step, or the venue's `NO_TEST_RAN` line), which had cost #5678 a counted
+  removal and #5471 its handoff (`fix/oracle-pull-retry`;
+  `untangle-2026-11/oracle-pull-retry.md`).
 
 ### Step 1. Now: B25, T0b, E2
 
