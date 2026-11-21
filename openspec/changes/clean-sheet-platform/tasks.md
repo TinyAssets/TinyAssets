@@ -661,6 +661,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     run), with the two ci checks that could never fail removed (the memory legs'
     `--expose-gc` text, which their header comments held) (`untangle/pass-ci-deploy`;
     `untangle-2026-11/pass-ci-deploy.md`).
+  - [x] `platform/contract/`, part 1: both passes on every file but the seven R5's hooks
+    change, with the gateway's tests of the contract's rules on hand-written input moved to
+    the contract's guards, and the cutover's manifest made to take out the contract's owed
+    entry for the import message (`untangle/pass-contract`; `untangle-2026-11/pass-contract.md`).
+  - [ ] `platform/contract/`, part 2: both passes on `doors.json`, `guards/wire.test.ts` and
+    `src/{acts,egress,owner-doors,owner,requests}.ts`, once `untangle/r5-hooks` (#5707) merges
+    (`untangle/pass-contract-2`; `pass-contract.md` §4).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
   - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
@@ -693,6 +700,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     the doors handle `doors/src/e2b-hooks.ts` `TYPES`, and nothing holds the two equal; one
     list in the contract beside the hook's path (`identity.json`) (`pass-ci-deploy.md` §2;
     `untangle/e2b-hook-events`).
+  - [ ] `contract/src/wake-kinds.ts` `canonicalJson`, a second canonical JSON, gone for
+    `canonical.ts`'s, the platform's one (`pass-contract.md` §4).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 

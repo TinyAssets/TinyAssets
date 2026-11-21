@@ -1,5 +1,5 @@
 /**
- * Owner file paths (plan §6): absolute POSIX paths under the owner's two roots, stored
+ * Owner file paths: absolute POSIX paths under the owner's two roots, stored
  * verbatim. The owner's object stores them, the sandbox's runner holds paths of the owner's
  * agent trees, and the cutover's importer checks every name it would write against the same
  * rule (`platform/import/`).

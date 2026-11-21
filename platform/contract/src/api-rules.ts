@@ -1,8 +1,8 @@
 /**
  * The one table of the model APIs the gateway runs, keyed by pi-ai's API id (`APIS`): each
  * row says how its adapter fetches, whether a declared endpoint may speak it, and what a
- * metered sandbox call must look like (tasks 4 G4, review round 2): no provider is named
- * here and no code branches on one. `meter.ts` holds every rule against pi-ai's own call,
+ * metered sandbox call must look like: no provider is named here and no code branches on
+ * one. `meter.ts` holds every rule against pi-ai's own call,
  * learned with no network, so the data cannot drift from what pi-ai sends:
  *
  * - `outputs`: every body field the API reads as the output-token cap. The one pi-ai sets
@@ -256,8 +256,8 @@ interface ApiRow {
  * (`takesFetch`; `anthropic-messages.js:422`, `openai-responses.js:138`,
  * `openai-completions.js:186`, `mistral-conversations.js:180`). Every other API is refused as
  * `invalid_source`: Bedrock signs with a Node HTTP handler outside `fetch`, and
- * `openai-codex-responses` is the legacy ChatGPT backend (research §2.6: Sign in with ChatGPT
- * reaches only `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
+ * `openai-codex-responses` is the legacy ChatGPT backend (Sign in with ChatGPT reaches only
+ * `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
  * and per-session caches kept in module state.
  */
 const APIS = Object.freeze({

@@ -51,6 +51,7 @@
         { "edit": "platform/contract/src/files.ts", "names": ["the importer's wipe"], "what": "the importer's wipe, in the object prefix's note" },
         { "edit": "platform/contract/services.json", "names": ["IMPORTS"], "what": "the import queue's message, by its producer's binding" },
         { "edit": "platform/contract/src/queue-names.ts", "names": ["IMPORTS"], "what": "the import queue's name, by npm run generate once doors/wrangler.jsonc loses it" },
+        { "edit": "platform/contract/guards/rules.ts", "names": ["platform/contract/src/import-message.ts"], "what": "the contract's owed entry for the import message's two SHA-256s, which the kernel guard refuses once the message is gone" },
 
         { "edit": "platform/owner/src/admission.ts", "names": ["IMPORT_PLATFORM_ONLY", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "DISCARDED", "\"import\""], "what": "the import doors' refusals and class" },
         { "edit": "platform/owner/src/owner-do.ts", "names": ["#discarded", "#discard", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "\"import\"", "\"discard\"", "ImportLine"], "imports": ["platform/owner/src/import.ts", "platform/contract/src/import-message.ts"], "what": "the import doors, the object's #discarded, and the import and discard callers: the import kind's refusals, its class's pending check and the discard's rehearsal branch" },

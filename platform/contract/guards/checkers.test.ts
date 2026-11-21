@@ -1,5 +1,5 @@
 /**
- * The services' checkers (untangle B6): each value one Worker builds and another reads is
+ * The services' checkers: each value one Worker builds and another reads is
  * held, beside its type, to one checker that takes its type's fixture and refuses each way
  * out of shape; and a builder's output is held to its reader's checker.
  */

@@ -26,8 +26,8 @@ export const IMPORTS: ImportRules = Object.freeze({
 
 /**
  * What the contract still owes the platform's guards (`ci/kit/owed.ts`): the import
- * message's two SHA-256s beside `digest.ts` (`ci/kit/kernels.ts`), until lane I's B7 adopts
- * them.
+ * message's two SHA-256s beside `digest.ts` (`ci/kit/kernels.ts`), owed until the message is
+ * deleted at the cutover, and this entry with it.
  */
 export const OWED: readonly Owed[] = Object.freeze([
   ...kernels("B7", "SHA-256", { "platform/contract/src/import-message.ts": 2 }),
