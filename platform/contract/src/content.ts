@@ -1,5 +1,5 @@
 /**
- * Content ids (plan §6): what the files plane names a file's bytes by. They are
+ * Content ids: what the files plane names a file's bytes by. They are
  * deterministic, so the owner's object, its starter and the cutover's importer
  * (`platform/import/`) all give the same bytes the same id, and the importer's expected
  * manifest is the platform's own.
@@ -34,7 +34,7 @@ export function chunkPlan(size: number): number[] {
   return sizes;
 }
 
-/** Bytes cut into 4 MiB chunks, each with its hash. */
+/** Bytes cut into `CHUNK_BYTES` chunks, each with its hash. */
 export function cut(bytes: Uint8Array): { sha256: string; size: number; bytes: Uint8Array }[] {
   return chunkPlan(bytes.byteLength).map((size, index) => {
     const piece = bytes.subarray(index * CHUNK_BYTES, index * CHUNK_BYTES + size);

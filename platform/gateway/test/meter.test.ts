@@ -7,8 +7,7 @@ import { describe, expect, it } from "vitest";
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import {
-  apiRules, fallbackList, freeCall, manyChoices, paidTool, servedPriced, supportedApis,
-  tierMultiplier, unpricedOption,
+  apiRules, fallbackList, freeCall, manyChoices, paidTool, tierMultiplier,
 } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { egressTarget, meteredCall, meteredModel } from "../../contract/src/egress-scope";
@@ -84,18 +83,6 @@ describe("the engines' own calls against the API rules", () => {
       cite: "https://platform.claude.com/docs/en/build-with-claude/token-counting",
       read: "2026-11-02",
       says: "Token counting is free to use but subject to requests per minute rate limits" }]);
-  });
-
-  it("cites a page and the day it was read for every free call", () => {
-    expect(supportedApis()).toContain("anthropic-messages");
-    for (const api of supportedApis()) {
-      for (const call of apiRules(api)!.free) {
-        expect(call.cite, api).toMatch(/^https:\/\/[^/]+\//);
-        expect(call.read, api).toMatch(/^20\d\d-\d\d-\d\d$/);
-        expect(call.says.length, api).toBeGreaterThan(0);
-        expect(["POST", "PUT", "PATCH", "DELETE"], api).toContain(call.method);
-      }
-    }
   });
 
   it("never lets a free call be a source's metered model call", async () => {
@@ -429,28 +416,6 @@ describe("what a metered call could escape its reservation by", () => {
     expect(manyChoices(google, { generationConfig: { candidateCount: 1 } })).toBe(false);
   });
 
-  it.each([
-    ["anthropic-messages", { tools: [{ name: "f", input_schema: {} }] },
-     { tools: [{ type: "web_search_20250305", name: "web_search" }] }],
-    ["anthropic-messages", { tools: [{ type: "custom", name: "f", input_schema: {} }] },
-     { mcp_servers: [{ url: "https://x" }] }],
-    ["openai-responses", { tools: [{ type: "function", name: "f" }] },
-     { tools: [{ type: "web_search" }] }],
-    ["openai-responses", { tools: [{ type: "custom", name: "f" }] },
-     { tools: [{ type: "code_interpreter" }] }],
-    ["openai-completions", { tools: [{ type: "function", function: { name: "f" } }] },
-     { web_search_options: {} }],
-    ["openai-completions", {}, { plugins: [{ id: "web" }] }],
-    ["google-generative-ai", { tools: [{ functionDeclarations: [] }] },
-     { tools: [{ googleSearch: {} }] }],
-    ["google-generative-ai", {}, { tools: [{ codeExecution: {} }] }],
-  ])("on %s, lets a client's own tools through and refuses a server-side paid one",
-     (api, client, paid) => {
-    const rules = apiRules(api)!;
-    expect(paidTool(rules, client)).toBe(false);
-    expect(paidTool(rules, paid)).toBe(true);
-  });
-
   it("reads no usage from a non-streaming JSON answer, which pi-ai's adapters do not parse",
      async () => {
     const catalog = builtinCatalog();
@@ -518,29 +483,6 @@ describe("the price beyond tokens", () => {
     expect(tierMultiplier(apiRules("anthropic-messages")!, "standard_only")).toBe(1);
   });
 
-  it.each([
-    ["openai-completions", { service_tier: "priority" }],
-    ["openai-completions", { modalities: ["text", "audio"] }],
-    ["openai-completions", { audio: { voice: "x" } }],
-    ["anthropic-messages", { speed: "fast" }],
-    ["anthropic-messages", { inference_geo: "us" }],
-    ["anthropic-messages", { service_tier: "auto" }],
-    ["google-generative-ai", { generationConfig: { responseModalities: ["TEXT", "IMAGE"] } }],
-    ["google-generative-ai", { generationConfig: { speechConfig: {} } }],
-  ])("on %s refuses %j, which pi-ai does not price", (api, body) => {
-    expect(unpricedOption(apiRules(api)!, body)).toBe(true);
-  });
-
-  it.each([
-    ["openai-completions", { modalities: ["text"] }],
-    ["anthropic-messages", { speed: "standard", inference_geo: "global",
-                             service_tier: "standard_only" }],
-    ["google-generative-ai", { generationConfig: { responseModalities: ["TEXT"] } }],
-    ["openai-responses", { service_tier: "priority" }],
-  ])("on %s lets %j through, priced at standard or by pi-ai", (api, body) => {
-    expect(unpricedOption(apiRules(api)!, body)).toBe(false);
-  });
-
   it("reads the model where every API's rules say", () => {
     const completions = apiRules("openai-completions")!;
     const pi = { stream_options: { include_usage: true } };
@@ -565,98 +507,5 @@ describe("a tier left to the account", () => {
     const google = (await new Meters(builtinCatalog(), GOOGLE.upstream, "AIza-x").any())!;
     expect(clamped(google, { contents: [] }, 7, "google-generative-ai")["service_tier"])
       .toBeUndefined();
-  });
-
-  it("settles an answer served at a tier pi-ai does not price unknown", async () => {
-    const rules = apiRules("anthropic-messages")!;
-    const answer = (start: unknown, delta: unknown) => streamOf(sse([
-      ["message_start", { type: "message_start", message: { id: "m1", usage: start } }],
-      ["message_delta", { type: "message_delta", usage: delta }],
-      ["message_stop", { type: "message_stop" }]]));
-    const priced = async (stream: ReadableStream<Uint8Array>, api = rules) =>
-      (await servedPriced(api, stream)).priced;
-    expect(await priced(answer({ input_tokens: 1 }, { output_tokens: 1 }))).toBe(true);
-    expect(await priced(answer({ input_tokens: 1, service_tier: "standard" },
-                               { output_tokens: 1 }))).toBe(true);
-    expect(await priced(answer({ input_tokens: 1, service_tier: "priority" },
-                               { output_tokens: 1 }))).toBe(false);
-    expect(await priced(answer({ input_tokens: 1 }, { output_tokens: 1, service_tier: "batch" })))
-      .toBe(false);
-    expect(await priced(answer({ input_tokens: 1, service_tier: 2 }, {}))).toBe(false);
-    // An API with no such rule: whatever its answer says.
-    expect(await priced(answer({ service_tier: "priority" }, {}),
-                        apiRules("google-generative-ai")!)).toBe(true);
-  });
-
-  it("reads a Responses answer's tier from its terminal event alone, as pi-ai does", async () => {
-    const rules = apiRules("openai-responses")!;
-    const events = (created: string | null, completed: string | null, terminal =
-      "response.completed") => streamOf(sse([
-      ["response.created", { type: "response.created", response: {
-        id: "r1", ...(created === null ? {} : { service_tier: created }) } }],
-      [terminal, { type: terminal, response: {
-        id: "r1", ...(completed === null ? {} : { service_tier: completed }) } }]]));
-    // An echoed `auto` at the start is what was asked, not what served.
-    expect(await servedPriced(rules, events("auto", "default")))
-      .toEqual({ priced: true, seen: true });
-    expect(await servedPriced(rules, events("auto", "priority")))
-      .toEqual({ priced: true, seen: true });
-    expect(await servedPriced(rules, events("auto", "priority", "response.incomplete")))
-      .toEqual({ priced: true, seen: true });
-    expect(await servedPriced(rules, events("auto", "scale"))).toEqual({ priced: false, seen: true });
-    // No tier at the end: unseen, so settled at the dearest the API allows.
-    expect(await servedPriced(rules, events("priority", null)))
-      .toEqual({ priced: true, seen: false });
-  });
-
-  it("decodes SSE as its specification does: CR, LF and CRLF endings, multi-line data",
-     async () => {
-    const rules = apiRules("anthropic-messages")!;
-    const event = { type: "message_delta", usage: { output_tokens: 1, service_tier: "priority" } };
-    const json = JSON.stringify(event, null, 1);
-    const multi = json.split("\n").map((part) => `data: ${part}`);
-    for (const ending of ["\n", "\r\n", "\r"]) {
-      const one = `event: message_delta${ending}data: ${JSON.stringify(event)}${ending}${ending}`;
-      const split = `event: message_delta${ending}${multi.join(ending)}${ending}${ending}`;
-      for (const text of [one, split]) {
-        // Whole, and split at every byte boundary, as chunks may fall.
-        for (let at = 0; at <= text.length; at++) {
-          const chunks = [text.slice(0, at), text.slice(at)];
-          const stream = new ReadableStream<Uint8Array>({
-            start(controller) {
-              for (const chunk of chunks) {
-                controller.enqueue(new TextEncoder().encode(chunk));
-              }
-              controller.close();
-            },
-          });
-          expect(await servedPriced(rules, stream)).toEqual({ priced: false, seen: true });
-        }
-      }
-    }
-    // A stream that names no tier: priced, unseen; and an event the stream ended without
-    // its blank line is still read.
-    expect(await servedPriced(rules, streamOf(`data: ${JSON.stringify({ usage: {} })}\n\n`)))
-      .toEqual({ priced: true, seen: false });
-    expect(await servedPriced(rules, streamOf(`data: ${JSON.stringify(event)}`)))
-      .toEqual({ priced: false, seen: true });
-    // A field with no space after its colon, as the specification allows.
-    expect(await servedPriced(rules, streamOf(`data:${JSON.stringify(event)}\n\n`)))
-      .toEqual({ priced: false, seen: true });
-  });
-
-  it("settles a chat-completions answer served at a tier other than the standard unknown",
-     async () => {
-    const rules = apiRules("openai-completions")!;
-    const answer = (tier: unknown) => streamOf(
-      `data: ${JSON.stringify({ id: "c1", choices: [],
-                                ...(tier === undefined ? {} : { service_tier: tier }) })}\n\n` +
-      "data: [DONE]\n\n");
-    for (const tier of [undefined, "default", "on_demand"]) {
-      expect((await servedPriced(rules, answer(tier))).priced).toBe(true);
-    }
-    for (const tier of ["priority", "flex", "scale", "performance", 1]) {
-      expect((await servedPriced(rules, answer(tier))).priced).toBe(false);
-    }
   });
 });

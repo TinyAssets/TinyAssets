@@ -23,7 +23,7 @@
  * `/`, `**` does (`**\/`, `/**\/`, `/**`); `[...]` is a class; `\` escapes; matching is by
  * byte, as git's.
  *
- * **How it matches** (`matcher_research.md`): a line whose cost does not grow with the
+ * **How it matches:** a line whose cost does not grow with the
  * number of lines goes into an index (literal sets; tries for a name's `*L` and `L*` and a
  * path's `L*`; Aho–Corasick for `**\/L`); every other line goes into one bit-parallel
  * automaton (Shift-And) whose cost per byte of text is ⌈S/32⌉ word steps whatever its lines'
@@ -1156,7 +1156,7 @@ export function ignoredBy(lines: readonly string[]): Matcher {
 
 /**
  * Nanoseconds per automaton step (a byte of text, a 32-state word) at `AUTOMATON_STATES`,
- * on the automaton's slowest branch (round 7, R7-1): lines with a `/**\/` each (so every byte
+ * on the automaton's slowest branch: lines with a `/**\/` each (so every byte
  * reads and writes its passed states too), and text of `/` bytes (the branch that re-arms
  * as well), with `*\/**\/…` and `**\/` lines keeping states alive throughout; the median of
  * five runs of `ms` each after a warm-up, so a neighbour's moment on the sandbox's CPU moves

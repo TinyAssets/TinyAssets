@@ -228,6 +228,9 @@ describe("the dispatch's gate, the workflow's first step", () => {
     // bundle no Cloudflare one; every mode the host's three.
     const census = gate({ MODE: "census" }, without("IMPORT_SPACES_SECRET_ACCESS_KEY"));
     expect(census.out).toContain("needs the secret(s) IMPORT_SPACES_SECRET_ACCESS_KEY,");
+    // admit reads the current deletion requests too, with the same read-only key.
+    expect(gate({ MODE: "admit" }, without("IMPORT_SPACES_ACCESS_KEY_ID")).out)
+      .toContain("needs the secret(s) IMPORT_SPACES_ACCESS_KEY_ID,");
     expect(gate({ MODE: "census" }, without("IMPORT_KEY", "IMPORT_EXCLUSION_LIST",
                                             "CLOUDFLARE_ACCOUNT_ID", "IMPORT_R2_ACCESS_KEY_ID"))
       .status).toBe(0);
@@ -277,7 +280,7 @@ describe("the dispatch's gate, the workflow's first step", () => {
 
   it("refuses a mode's credential pasted with a trailing CR or space, or a line break, by name", () => {
     const without = (name: string) => ({ ...SECRETS, [name]: "" });
-    const MODES = ["census", "bundle", "deletions", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite",
+    const MODES = ["census", "bundle", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite",
                    "clean"];
     const LISTS = ["DO_SSH_KEY", "IMPORT_EXCLUSION_LIST"];
     let checked = 0;
@@ -349,7 +352,9 @@ describe("the run step, its ssh faked", () => {
     expect(run({ MODE: "dlq", DELETE_DEAD_LETTERS: "true" }).args)
       .toMatch(/window\.sh dlq r1 rehearsal delete\s*$/m);
     expect(rehearsal.stdin).toContain("STDIN acct-v\nr2id-v\nr2sec-v\ntok-v\nkey-v");
-    expect(run({ MODE: "deletions" }).stdin).toContain("STDIN spid-v\nspsec-v\n");
+    // admit reads the current deletion requests with the source key before its job's five.
+    expect(run({ MODE: "admit" }).stdin)
+      .toContain("STDIN spid-v\nspsec-v\nacct-v\nr2id-v\nr2sec-v\ntok-v\nkey-v");
     expect(run({ MODE: "bundle" }).stdin).toContain("STDIN excl-v");
     expect(run({ MODE: "census" }).stdin).toContain("STDIN spid-v\nspsec-v\n");
     expect(run({ MODE: "offsite", REHEARSAL: "false" }).stdin)
@@ -786,9 +791,9 @@ describe("the host guard, on a fake import host", () => {
     const h = host();
     const SOURCE = ["SPACES_ACCESS_KEY_ID", "SPACES_SECRET_ACCESS_KEY"];
     const takes: [string, string, string[]][] = [
-      ["census", "rehearsal", SOURCE], ["deletions", "rehearsal", SOURCE],
+      ["census", "rehearsal", SOURCE], ["admit", "rehearsal", [...SOURCE, ...CREDENTIALS]],
       ["offsite", "window", [...SOURCE, "CLOUDFLARE_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"]],
-      ...["stage", "verify", "wipe", "admit", "dlq", "close"].map((mode): [string, string, string[]] =>
+      ...["stage", "verify", "wipe", "dlq", "close"].map((mode): [string, string, string[]] =>
         [mode, "rehearsal", CREDENTIALS])];
     for (const [mode, kind, names] of takes) {
       const values = names.map((name, n) => `${name.toLowerCase()}-value-${n}`);
@@ -818,78 +823,113 @@ describe("the host guard, on a fake import host", () => {
   });
 });
 
-describe("the current deletion comparison", () => {
-  it.each(["rehearsal", "window"])("checks current requests against the original owners in a %s run",
-    (kind) => {
-      const h = host();
-      const run = "deletion-check";
-      const work = h.work(run);
-      h.window(["census", run, kind], SOURCE_KEY);
-      const out = join(work, "bundle", "out");
-      const privateDir = join(work, "bundle", "private");
-      mkdirSync(out, { recursive: true });
-      mkdirSync(privateDir);
-      const rehearsal = kind === "rehearsal" ? run : null;
-      const summary = buildBundles(h.f.copy, { out, private: privateDir, tiers: TIERS,
-                                               exclude: new Set([FOUNDER]), rehearsal });
-      expect(summary.bundled).toBe(3);
-      const compare = () => h.window(["deletions", run, kind], SOURCE_KEY);
-      const incomplete = compare();
-      expect(incomplete.status).toBe(2);
-      expect(incomplete.out).toContain("the current deletion authority is missing a job");
-      const remote = join(h.remote, "deletion-jobs");
-      mkdirSync(remote);
-      const [knownId, knownJob] = deletionJob(DORA, []);
-      writeFileSync(join(remote, knownId + ".json"), knownJob);
-      expect(compare()).toEqual({ status: 0, out: "0 of 3 bundles match a deletion record\n" });
-      for (const [principal, steps] of [
-        [ALICE, []], [BOB, ["withdrawal", "volume", "snapshots", "custody", "billing",
-                             "credentials", "identity", "receipt"]], [FOUNDER, []],
-      ] as const) {
-        const [id, json] = deletionJob(principal, steps);
-        const job = JSON.parse(json);
-        if (principal === BOB) {
-          job.origin = "cutover";
-          job.owner = null;
-        }
-        job.status_token = "private-token-only";
-        writeFileSync(join(remote, id + ".json"), JSON.stringify(job));
+describe("the admit's own deletion check", () => {
+  /** admit's stdin: the source key, then the job's five (an account no account, so the job
+   * refuses before any request: the fake world reaches no Cloudflare). */
+  const ADMIT = `${SOURCE_KEY}not-hex\nb\nc\nd\ne\n`;
+
+  it.each(["rehearsal", "window"])("reads the current requests right before each admit, " +
+                                   "against the original owners in a %s run", (kind) => {
+    const h = host();
+    const run = "deletion-check";
+    const work = h.work(run);
+    h.window(["census", run, kind], SOURCE_KEY);
+    const out = join(work, "bundle", "out");
+    const privateDir = join(work, "bundle", "private");
+    mkdirSync(out, { recursive: true });
+    mkdirSync(privateDir);
+    const rehearsal = kind === "rehearsal" ? run : null;
+    const summary = buildBundles(h.f.copy, { out, private: privateDir, tiers: TIERS,
+                                             exclude: new Set([FOUNDER]), rehearsal });
+    expect(summary.bundled).toBe(3);
+    const check = join(work, "window", "deletions.private.json");
+    /** The networked admits the runs so far reached, each with its run's check. */
+    const admits = () => h.calls().filter((call) => call.startsWith("docker run")
+                                                    && call.includes(" admit "));
+    const admit = (env?: Record<string, string>) => {
+      const before = admits().length;
+      const result = h.window(["admit", run, kind], ADMIT, env === undefined ? {} : { env });
+      expect(existsSync(join(work, "deletion-scan.private"))).toBe(false);
+      expect(existsSync(check)).toBe(false);
+      return { ...result, admitted: admits().length - before };
+    };
+    const refused = "refused: the account is 32 hex\n";
+    const incomplete = admit();
+    expect(incomplete.status).toBe(2);
+    expect(incomplete.out).toContain("the current deletion authority is missing a job");
+    expect(incomplete.admitted).toBe(0);
+    const remote = join(h.remote, "deletion-jobs");
+    mkdirSync(remote);
+    const [knownId, knownJob] = deletionJob(DORA, []);
+    writeFileSync(join(remote, knownId + ".json"), knownJob);
+    const none = admit();
+    expect(none).toEqual({ status: 2, admitted: 1, out: "0 of 3 bundles match a deletion " +
+                           `record: each is discarded, never admitted\n${refused}` });
+    // The comparison runs with no network on the copy; the admit with the network on the
+    // bundles alone, handed the check its own run just wrote.
+    const compared = h.calls().filter((call) => call.startsWith("docker run")
+                                                && call.includes(" deletions "));
+    expect(compared.at(-1)).toContain(`--network none -v ${stage}:${stage}:ro -v ${work}:${work}:ro ` +
+                                      `-v ${work}/window:${work}/window `);
+    expect(compared.at(-1)).toContain(`--run ${run} --check ${check}`);
+    expect(admits().at(-1)).toContain("--network bridge");
+    expect(admits().at(-1)).toMatch(new RegExp(` --deletions ${check}$`));
+    // Requests made after that admit's read: the next admit reads them itself.
+    for (const [principal, steps] of [
+      [ALICE, []], [BOB, ["withdrawal", "volume", "snapshots", "custody", "billing",
+                           "credentials", "identity", "receipt"]], [FOUNDER, []],
+    ] as const) {
+      const [id, json] = deletionJob(principal, steps);
+      const job = JSON.parse(json);
+      if (principal === BOB) {
+        job.origin = "cutover";
+        job.owner = null;
       }
-      const order = [ALICE, BOB, NEWBIE].map(owner => ({
-        owner, key: keyOf(rehearsal === null ? owner : rehearsalName(run, owner)),
-      })).sort((a, b) => a.key.localeCompare(b.key));
-      const expected = order.flatMap(({owner}, i) => owner === NEWBIE ? []
-        : [`bundle ${i + 1} of 3: deletion requested`]);
-      expect(compare()).toEqual({
-        status: 3, out: [...expected, "2 of 3 bundles match a deletion record", ""].join("\n"),
-      });
-      expect(existsSync(join(work, "deletion-scan.private"))).toBe(false);
-      const readFailure = h.window(["deletions", run, kind], SOURCE_KEY, {
-        env: { FAKE_RCLONE_FAIL: "cat tasrc", FAKE_RCLONE_STDERR: "private-token-only" },
-      });
-      expect(readFailure.status).toBe(2);
-      expect(readFailure.out).toContain("a current deletion job could not be read");
-      expect(readFailure.out).not.toContain("private-token-only");
-      expect(existsSync(join(work, "deletion-scan.private"))).toBe(false);
-      const [id, wrong] = deletionJob(NEWBIE, []);
-      writeFileSync(join(remote, id + ".json"), wrong.replace(NEWBIE, ALICE));
-      const invalid = compare();
-      expect(invalid.status).toBe(2);
-      expect(invalid.out).toContain("an off-host deletion record does not match its identity");
-      countsOnly(invalid.out, work);
-      writeFileSync(join(remote, id + ".json"), wrong);
-      const listingFailure = h.window(["deletions", run, kind], SOURCE_KEY, {
-        env: { FAKE_RCLONE_FAIL: "lsf tasrc" },
-      });
-      expect(listingFailure.status).toBe(2);
-      expect(listingFailure.out).toContain("the current deletion jobs could not be listed");
-      const mappingPath = join(privateDir, PRIVATE_RECORD);
-      const mapping = JSON.parse(readFileSync(mappingPath, "utf8"));
-      mapping.owners = mapping.owners.filter((row: { owner: string }) => row.owner !== BOB);
-      writeFileSync(mappingPath, JSON.stringify(mapping));
-      rmSync(join(out, keyOf(rehearsal === null ? BOB : rehearsalName(run, BOB))), { recursive: true });
-      expect(compare().out).toContain("the private cutover record does not cover the saved bundle digests");
+      job.status_token = "private-token-only";
+      writeFileSync(join(remote, id + ".json"), JSON.stringify(job));
+    }
+    const order = [ALICE, BOB, NEWBIE].map(owner => ({
+      owner, key: keyOf(rehearsal === null ? owner : rehearsalName(run, owner)),
+    })).sort((a, b) => a.key.localeCompare(b.key));
+    const expected = order.flatMap(({owner}, i) => owner === NEWBIE ? []
+      : [`bundle ${i + 1} of 3: deletion requested, withheld`]);
+    expect(admit()).toEqual({
+      status: 2, admitted: 1,
+      out: [...expected, "2 of 3 bundles match a deletion record: each is discarded, never " +
+            "admitted", ""].join("\n") + refused,
     });
+    // A read that fails, an invalid record, a listing that fails, a record that no longer
+    // covers the bundles: each stops the run before its admit.
+    const readFailure = admit({ FAKE_RCLONE_FAIL: "cat tasrc",
+                                FAKE_RCLONE_STDERR: "private-token-only" });
+    expect(readFailure.status).toBe(2);
+    expect(readFailure.out).toContain("a current deletion job could not be read");
+    expect(readFailure.out).not.toContain("private-token-only");
+    expect(readFailure.admitted).toBe(0);
+    const [id, wrong] = deletionJob(NEWBIE, []);
+    writeFileSync(join(remote, id + ".json"), wrong.replace(NEWBIE, ALICE));
+    const invalid = admit();
+    expect(invalid.status).toBe(2);
+    expect(invalid.out).toContain("an off-host deletion record does not match its identity");
+    expect(invalid.admitted).toBe(0);
+    countsOnly(invalid.out, work);
+    writeFileSync(join(remote, id + ".json"), wrong);
+    const listingFailure = admit({ FAKE_RCLONE_FAIL: "lsf tasrc" });
+    expect(listingFailure.status).toBe(2);
+    expect(listingFailure.out).toContain("the current deletion jobs could not be listed");
+    expect(listingFailure.admitted).toBe(0);
+    // A check an earlier run left is never taken for this one's.
+    writeFileSync(check, "{}");
+    expect(admit().out).toContain("3 of 3 bundles match a deletion record");
+    const mappingPath = join(privateDir, PRIVATE_RECORD);
+    const mapping = JSON.parse(readFileSync(mappingPath, "utf8"));
+    mapping.owners = mapping.owners.filter((row: { owner: string }) => row.owner !== BOB);
+    writeFileSync(mappingPath, JSON.stringify(mapping));
+    rmSync(join(out, keyOf(rehearsal === null ? BOB : rehearsalName(run, BOB))), { recursive: true });
+    const uncovered = admit();
+    expect(uncovered.out).toContain("the private cutover record does not cover the saved bundle digests");
+    expect(uncovered.admitted).toBe(0);
+  });
 });
 
 describe("the off-site copy of the window's final backup, on a fake import host", () => {

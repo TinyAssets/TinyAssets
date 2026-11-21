@@ -45,7 +45,7 @@ export type SandboxToken =
       readonly runner?: string }
   /**
    * The sync agent's call: its sync token's hash, and the egress token's E2B's transform
-   * set beside it (slice S review M-5): the sync token alone, taken out of the VM, reaches
+   * set beside it: the sync token alone, taken out of the VM, reaches
    * nothing, since only a call from inside the sandbox carries its own lease's egress token.
    */
   | { readonly kind: "sync"; readonly token: string; readonly egress: string };
@@ -75,10 +75,10 @@ export interface Binding {
   /** The owner's protected-session cookie, as the browser presented it. */
   readonly session?: string;
   /**
-   * The sandbox, as the egress door read its token (`owner/src/egress.ts`): which token it is (the
-   * egress token or the sync token), the SHA-256 of its secret and, for the egress token,
-   * the egress generation its
-   * network's transform set. Only the egress doors take it; every other door refuses it.
+   * The sandbox, as the egress door read its token (`owner/src/egress.ts`): which token it
+   * is (the egress token or the sync token), the SHA-256 of its secret and, for the egress
+   * token, the egress generation its network's transform set. Only the egress doors take
+   * it; every other door refuses it.
    */
   readonly sandbox?: SandboxToken;
   /**
@@ -88,8 +88,8 @@ export interface Binding {
    */
   readonly run?: string;
   /**
-   * The tier numbers of the platform's control record (`admission.ts`), as the binder read them
-   * for a run door: never a request field, and never the owner's tier, which is the
+   * The tier numbers of the platform's control record (`admission.ts`), as the binder read
+   * them for a run door: never a request field, and never the owner's tier, which is the
    * object's own row.
    */
   readonly tiers?: unknown;
@@ -409,9 +409,8 @@ export type InboundAnswer =
   | { readonly state: "no_op"; readonly error: string };
 
 /**
- * The outside identity an API key resolves to, by its key id alone (the Python's
- * `api_keys._client` and `_family`, byte for byte): the binder binds a key's call to it, and
- * the object re-derives it wherever it matters (`registrant`).
+ * The outside identity an API key resolves to, by its key id alone: the binder binds a key's
+ * call to it, and the object re-derives it wherever it matters (`registrant`).
  */
 export function apiKeyOrigin(keyId: string): Origin {
   return {

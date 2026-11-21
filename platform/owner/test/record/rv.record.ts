@@ -1,5 +1,5 @@
 /**
- * The reviewer's RPC recorder (`npm run record`, `ci/record.ts`): every door of the table
+ * The reviewer's RPC recorder (`ci/record.ts`): every door of the table
  * (`contract/doors.json`), on the gated owner class (a recording sandbox and the real
  * gateway), against a spread of callers made real in the object (full, scoped in each way,
  * revoked, re-signed, directory profile, API keys, live runs of the owner and of clients, the
