@@ -1,4 +1,4 @@
-# owner-isolation: how a trusted service knows whose call it serves (2026-11-21)
+# owner-isolation as built (2026-11-21)
 
 `untangle/owner-isolation`. The gap is the verifier's row I.sandbox-owner-arg
 (`verify_uptime.md`, ADR-032.1 PARTLY). The sandbox Worker picks an owner's
