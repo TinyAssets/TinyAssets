@@ -1,6 +1,6 @@
 /**
  * The authorization endpoint and the upstream callback (research §1.5, §8; checklist 4,
- * 5, 17). All on `tinyassets.io`:
+ * 5, 17). All on the doors' host:
  *
  * 1. `GET /authorize` must be a top-level navigation, or it is refused `403`. The
  *    provider validates the request (client, exact redirect URI, resource, S256 PKCE).
@@ -50,8 +50,9 @@ import {
   CLOCK_MARGIN_S, FIRST_PARTY_CLIENTS, now, SCOPES,
 } from "./config";
 import type { DoorsEnv } from "./env";
-import { ZONE } from "../../contract/src/egress";
-import { APP_RESOURCE, MCP_RESOURCE, UPSTREAM_CALLBACK } from "../../contract/src/identity";
+import {
+  APP_RESOURCE, MCP_RESOURCE, UPSTREAM_CALLBACK, ZONE,
+} from "../../contract/src/identity";
 import { SIGN_IN_MAX_AGE_S } from "../../contract/src/signin";
 import { outsideRead, ownerRead } from "./control";
 import { putOwner, readOwner } from "./directory";

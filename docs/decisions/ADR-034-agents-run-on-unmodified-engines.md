@@ -7,6 +7,10 @@ Accepted (founder, 2026-11-01).
 - **It also amends** the principle ADR-023 states and ADR-032 kept, that "the core loop runs outside every box", and withdraws the paid-tier limit on hosted vendor CLIs in ADR-023 and ADR-030 (decision 8).
 - **It builds on** ADR-033 (merged in #5384).
 - **Per ADR-005**, the bodies of ADR-023, ADR-030 and ADR-032 are not edited. Only their Status lines gain "amended by ADR-034".
+- **Amended by the founder's answers** (2026-11-21, `docs/decisions/untangle-2026-11/founder-answers.md`):
+  - decisions 1.2 and 2: the user's own main agent loads the same agent definition, which the MCP door serves as prompts and resources (call 1);
+  - decisions 2 and 11: hooks are one definition in the agent's files, rendered into each engine's format from its record, under R5's root-owned hooks, not each engine's own (call 2);
+  - decision 2's MCP config: the agent's own MCP servers run beside TinyAssets' door, held to the egress allowlist (call 3).
 
 ## Date
 

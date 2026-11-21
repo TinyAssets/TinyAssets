@@ -41,9 +41,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   mailboxAck(binding: Binding, request: DoorRequest<"mailboxAck">):
     Promise<DoorAnswer<"mailboxAck">>;
   /**
-   * Post a message to a room of the owner's account: dm:<agent> with the owner, or
-   * dm:<agent>+<agent> between two agents. Mail to one of the owner's own agents starts its run,
-   * whose result is its reply.
+   * Post a message to a room of the owner's account: the room_id agents_list shows for the agent to
+   * reach. Mail to one of the owner's own agents starts its run, whose result is its reply.
    */
   roomPost(binding: Binding, request: DoorRequest<"roomPost">): Promise<DoorAnswer<"roomPost">>;
   /**

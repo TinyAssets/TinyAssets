@@ -15,22 +15,22 @@ import {
   archivedBodies, chained, MIB, overlaps, sealed, seeded, sentAndAcked, seqOf, settle,
   unballast,
 } from "./archive-support";
-import { DOT, MUSE } from "./ledger-support";
+import { DOT, MUSE, dm } from "./ledger-support";
 import { drainDue, failure } from "./support";
 
 describe("segments never overlap in key range", () => {
   it("are refused by the schema when two would", { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
-    await sealed(r, MUSE, `dm:${muse}`);
+    await sentAndAcked(r, MUSE, dm(muse), 4);
+    await sealed(r, MUSE, dm(muse));
     await settle(r);
     const [fence] = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY first_key");
     const [first0, last0] = [fence!["first_key"] as number, fence!["last_key"] as number];
     const insert = (first: number, last: number) => runInDurableObject(r.stub,
       (_i: OwnerDO, state) => state.storage.sql.exec(
         "INSERT INTO archive_segments (stream, first_key, last_key, first_at, last_at, " +
-          "records, bytes, content_id, filer, trailer_offset, trailer_bytes, members, " +
+          "records, bytes, content_id, filer, trailer_offset, trailer_bytes, rooms, " +
           "made_at) VALUES ('mail', ?, ?, 1, 1, 1, 1, ?, 'owner', 0, 1, ?, 1)", first, last,
         fence!["content_id"] as string, "0".repeat(128)));
     for (const [first, last] of [[first0, first0], [last0, last0 + 5], [0, first0],
@@ -49,9 +49,9 @@ describe("segments never overlap in key range", () => {
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
     // The first to Muse, left unread; Dot's mail after it is acked and moves.
-    const first = await r.post(null, `dm:${muse}`, { body: "late", cmid: "late" });
-    await sentAndAcked(r, DOT, `dm:${dot}`, 3, "d");
-    await sealed(r, DOT, `dm:${dot}`);
+    const first = await r.post(null, dm(muse), { body: "late", cmid: "late" });
+    await sentAndAcked(r, DOT, dm(dot), 3, "d");
+    await sealed(r, DOT, dm(dot));
     await settle(r);
     const late = await seqOf(r, first.message_id);
     const before = await sqlIn(r.stub, "SELECT first_key, last_key FROM archive_segments " +
@@ -59,7 +59,7 @@ describe("segments never overlap in key range", () => {
     expect(before.length).toBe(1);
     expect(before[0]!["first_key"]).toBeGreaterThan(late);
     // Dot's small mail past half the hot ceiling again, far short of a seal: nothing is due.
-    await sentAndAcked(r, DOT, `dm:${dot}`, 4, "e");
+    await sentAndAcked(r, DOT, dm(dot), 4, "e");
     await settle(r);
     expect(await r.inLedger((ledger: Ledger) => ledger.archiveDue())).toBe(false);
     // Muse acks it now, in the ledger (so no lane runs first): it is below the archive's
@@ -70,7 +70,7 @@ describe("segments never overlap in key range", () => {
       return [ledger.archiveDue(), ledger.archivePick()?.seqs];
     });
     expect(pick).toEqual([true, [late]]);
-    await sentAndAcked(r, DOT, `dm:${dot}`, 1, "ring");
+    await sentAndAcked(r, DOT, dm(dot), 1, "ring");
     await settle(r);
     expect(await overlaps(r)).toEqual([]);
     const held = await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id = ?",
@@ -79,7 +79,7 @@ describe("segments never overlap in key range", () => {
     expect(await chained(r, first.message_id)).toBe("late");
     // Merged, never a seal: Dot's small mail is still hot.
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM ledger_messages WHERE room_id = ?",
-                       `dm:${dot}`)).toEqual([{ n: 5 }]);
+                       dm(dot))).toEqual([{ n: 5 }]);
   });
 });
 
@@ -92,11 +92,11 @@ describe("a merge's byte budget", () => {
     // Five messages near 7 MiB each to Muse, left unread; Dot's mail after them moves.
     const large: string[] = [];
     for (let i = 0; i < 5; i++) {
-      large.push((await r.post(null, `dm:${muse}`, {
+      large.push((await r.post(null, dm(muse), {
         cmid: `big${i}`, body: `${i}`.padEnd(7 * MIB, "x") })).message_id);
     }
-    await sentAndAcked(r, DOT, `dm:${dot}`, 3, "d");
-    await sealed(r, DOT, `dm:${dot}`);
+    await sentAndAcked(r, DOT, dm(dot), 3, "d");
+    await sealed(r, DOT, dm(dot));
     await settle(r);
     const [{ n: segments }] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM " +
                                                   "archive_segments") as [{ n: number }];
@@ -112,7 +112,7 @@ describe("a merge's byte budget", () => {
     expect(pick!.into!.bytes + 4 * 7 * MIB).toBeGreaterThan(MOVE_BYTES);
     expect(pick!.seqs).toHaveLength(3);
     // Past half the ceiling until every merge has run: each pass merges one budget.
-    await sentAndAcked(r, DOT, `dm:${dot}`, 12, "e");
+    await sentAndAcked(r, DOT, dm(dot), 12, "e");
     for (let i = 0; i < 40; i++) {
       await drainDue(r.stub);
       const left = await sqlIn(r.stub, "SELECT 1 FROM ledger_messages WHERE message_id IN " +
@@ -155,19 +155,19 @@ describe("the worst merge", () => {
         await r.ack(who, last.seq);
       }
     };
-    const k1 = await r.post(null, `dm:${muse}`, { cmid: "k1", body: near });
+    const k1 = await r.post(null, dm(muse), { cmid: "k1", body: near });
     await drain(MUSE);
-    const k2 = await r.post(null, `dm:${dot}`, { cmid: "k2", body: cap });
-    const k2b = await r.post(null, `dm:${dot}`, { cmid: "k2b", body: cap });
-    const k3 = await r.post(null, `dm:${muse}`, { cmid: "k3", body: near });
+    const k2 = await r.post(null, dm(dot), { cmid: "k2", body: cap });
+    const k2b = await r.post(null, dm(dot), { cmid: "k2b", body: cap });
+    const k3 = await r.post(null, dm(muse), { cmid: "k3", body: near });
     await drain(MUSE);
     // Small mail after them, Dot's unread and Muse's acked: the hot set past half throughout.
     for (let i = 0; i < 3; i++) {
-      await r.post(null, `dm:${dot}`, { cmid: `u${i}`, body: `u ${i}` });
-      await r.post(null, `dm:${muse}`, { cmid: `a${i}`, body: `a ${i}` });
+      await r.post(null, dm(dot), { cmid: `u${i}`, body: `u ${i}` });
+      await r.post(null, dm(muse), { cmid: `a${i}`, body: `a ${i}` });
       await drain(MUSE);
     }
-    await sentAndAcked(r, MUSE, `dm:${muse}`, 4, "b");
+    await sentAndAcked(r, MUSE, dm(muse), 4, "b");
     const segments = () => sqlIn(r.stub, "SELECT first_key, last_key, bytes FROM " +
                                          "archive_segments ORDER BY first_key");
     const moved = async (n: number) => {

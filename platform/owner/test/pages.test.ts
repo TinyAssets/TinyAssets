@@ -13,7 +13,7 @@ import { bodied } from "../src/pages";
 import { escapedBytes, fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { utf8Bytes } from "../../contract/src/text";
 import type { Row, WrittenRow } from "../src/collections";
-import { MUSE, rig } from "./ledger-support";
+import { MUSE, rig, dm } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import { failure, ownerObject } from "./support";
 
@@ -58,8 +58,8 @@ describe("a read's pages", () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const body = SHAPES["control"]!.repeat(8 * MIB);
-    await r.post(null, `dm:${muse}`, { body });
-    await r.post(null, `dm:${muse}`, { body: "after", cmid: "c2" });
+    await r.post(null, dm(muse), { body });
+    await r.post(null, dm(muse), { body: "after", cmid: "c2" });
     const first = await r.read(MUSE);
     expect(first.messages).toHaveLength(1);
     expect(first.messages[0]).toMatchObject({ body_bytes: 8 * MIB, truncated: true,
@@ -185,8 +185,8 @@ describe("a read's pages", () => {
      async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    await r.post(null, `dm:${muse}`, { body: "a".repeat(80_000) });
-    await r.post(null, `dm:${muse}`, { body: "b".repeat(80_000), cmid: "c2" });
+    await r.post(null, dm(muse), { body: "a".repeat(80_000) });
+    await r.post(null, dm(muse), { body: "b".repeat(80_000), cmid: "c2" });
     const first = (await r.read(MUSE)).messages[0]!;
     const next = first.body_next_offset!;
     expect((await failure(() => r.stub.mailboxRead(r.bind(MUSE), {

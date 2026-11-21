@@ -33,7 +33,7 @@ import {
   eraseBegun, erasedWhole, erasuresSent, finished, outsideConfirmed, pastGrace, tables,
   wipedWhole,
 } from "./erasure-support";
-import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
+import { MCP, MUSE, rig as ledgerRig, signedIn, dm } from "./ledger-support";
 import { later, recorder } from "./runs-support";
 import { admittedOwner, alarmOf, failure, gateFor, spaceOf, storesOn, TIERS } from "./support";
 
@@ -199,7 +199,7 @@ describe("the owner's admission", () => {
   it("holds the wakes lane's claims while the owner is not admitted", async () => {
     const r = await ledgerRig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.post(null, `dm:${muse}`);
+    await r.post(null, dm(muse));
     const due = clock() + 3600;
     const platform = { owner: r.owner, caller: PLATFORM_CALLER, origin: null };
     // The lane's claim, at the owner's admission as its row holds it.

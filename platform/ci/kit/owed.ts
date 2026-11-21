@@ -12,7 +12,10 @@ import { join } from "node:path";
 import { PLATFORM } from "../paths.ts";
 
 export interface Owed {
-  /** The guard that finds it (`"layers"`, the import-layer table's; `"refusals"`; `"kernels"`). */
+  /**
+   * The guard that finds it (`"layers"`, the import-layer table's; `"refusals"`; `"kernels"`).
+   * `"cutover"` (the manifest's) is owed by the file it finds.
+   */
   readonly guard: string;
   /** The violation, exactly as the guard names it. */
   readonly what: string;
@@ -27,8 +30,8 @@ export interface Found {
 }
 
 /** The guards a workspace may owe: each one's test holds `ratchet` over what it finds. */
-export const GUARDS: readonly string[] = Object.freeze(["kernels", "layers", "literals",
-                                                         "refusals"]);
+export const GUARDS: readonly string[] = Object.freeze(["cutover", "kernels", "layers",
+                                                         "literals", "refusals"]);
 
 /** Each entry owed to a guard no test holds, which would never be found stale. */
 export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {

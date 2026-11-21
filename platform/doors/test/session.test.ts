@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { SESSION_TTL_S } from "../../contract/src/limits";
+import { APP_RESOURCE, HOST, ORIGIN } from "../../contract/src/identity";
 import { authorizationServer } from "../src/oauth";
 import { sessionOf, withoutCookie } from "../src/session";
 import {
@@ -30,7 +31,7 @@ interface Probe {
 }
 
 function probe({ path = "/app/api/keys", method = "POST", type = "application/json",
-                 origin = "https://tinyassets.io", site = "same-origin",
+                 origin = ORIGIN, site = "same-origin",
                  cookie = `__Host-ta-owner=${COOKIE}` }: Probe): Request {
   const headers = new Headers();
   for (const [name, value] of [["Content-Type", type], ["Origin", origin],
@@ -84,10 +85,10 @@ describe("the session is not attached", () => {
     ["with no Content-Type", { type: null }],
     ["with no Origin", { origin: null }],
     ["with another site's Origin", { origin: "https://evil.example" }],
-    ["with an http Origin", { origin: "http://tinyassets.io" }],
-    ["with a subdomain's Origin", { origin: "https://mcp.tinyassets.io" }],
-    ["with an explicit port", { origin: "https://tinyassets.io:443" }],
-    ["with a trailing slash", { origin: "https://tinyassets.io/" }],
+    ["with an http Origin", { origin: `http://${HOST}` }],
+    ["with a subdomain's Origin", { origin: `https://mcp.${HOST}` }],
+    ["with an explicit port", { origin: `${ORIGIN}:443` }],
+    ["with a trailing slash", { origin: `${ORIGIN}/` }],
     ["with an opaque Origin", { origin: "null" }],
     ["from the same site", { site: "same-site" }],
     ["from another site", { site: "cross-site" }],
@@ -107,7 +108,7 @@ describe("the Cookie header", () => {
   it("is removed from what /mcp, /api and /hooks see", () => {
     const stripped = withoutCookie(probe({ path: "/mcp" }));
     expect(stripped.headers.has("Cookie")).toBe(false);
-    expect(stripped.headers.get("Origin")).toBe("https://tinyassets.io");
+    expect(stripped.headers.get("Origin")).toBe(ORIGIN);
   });
 
   it("never rides an MCP call into the object", async () => {
@@ -151,7 +152,7 @@ describe("the owner surface", () => {
     const { verifier, challenge } = await pkce();
     const oauth = authorizationServer(doorsEnv).getOAuthApi(doorsEnv);
     const request = await oauth.parseAuthRequest(new Request(
-      authorizeUrl(client, challenge, "https://tinyassets.io/app")));
+      authorizeUrl(client, challenge, APP_RESOURCE)));
     const { redirectTo } = await oauth.completeAuthorization({
       request, userId: alice, metadata: {}, scope: [], props: { kind: "app", owner: alice } });
     const exchanged = await tokenCall({ grant_type: "authorization_code",
@@ -171,7 +172,7 @@ describe("the owner surface", () => {
 
   it("refuses no credential, or a cookie alone, 401", async () => {
     const response = await call(new Request(url("/app/api/keys"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Cookie: `__Host-ta-owner=${COOKIE}` }, body: "{}" }));
     expect(response.status).toBe(401);
   });
