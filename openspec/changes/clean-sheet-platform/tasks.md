@@ -232,7 +232,7 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 Each in its own PR, taking the next free slot, never behind product work; the product lanes
 keep running (the untangle skill's "Process first", founder 2026-11-15).
 
-- [ ] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
+- [x] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
   - [x] the verdict posted as a `COMMENT` PR review on the commit read, as the App's `review`
     check reads it, and each decision one new check run, never an edit of one (an edit
     GitHub refused had left a red "could not decide" on #5656); ADR-038 drafted
@@ -242,8 +242,10 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   - [x] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
     holding a check an App posts to the workflow named for it, and `enqueue-merge.yml`
     listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
-  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until its
-    read-back, `untangle/p2-receipt-delete` does not merge);
+  - [x] the founder's `PUT` of that file (`live:` host-actions "Pin the context"): ruleset
+    24065294 read back on 2026-11-21, requiring `Diff scope declared`, `required-tests`,
+    `invariants` and `review` from App 5634948, with classic protection's required checks
+    cleared (`untangle-2026-11/p2-receipt-delete.md`);
   - [x] a verdict counts only from an account that can push (GitHub's permission read, from
     every grant), and a permission it cannot read is no verdict, never a pass; lands before
     the receipt goes, which would let a read-only member's `APPROVE` pass alone

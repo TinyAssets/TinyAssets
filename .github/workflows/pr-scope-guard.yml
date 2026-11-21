@@ -113,6 +113,19 @@ jobs:
             --base "${BASE_OID}" --head "${HEAD_OID}" \
             --body "$RUNNER_TEMP/pr-body-hygiene.md"
 
+      # The old suite's shape: each `tests/` file the PR changes names current OpenSpec
+      # ids (`verifies`), and no test names an id the PR retires. Read from blobs, like
+      # the step above; it leaves with `tests/` and scripts/test_shape.py at the cutover.
+      - name: Test shape (the old suite's verifies ids)
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          BASE_OID: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/test_shape.py --base "${BASE_OID}" --gate "${HEAD_OID}"
+
       # A change to more than prose names, in its body's Untangle check, the PR,
       # branch or live wait of each item it leaves owed (the untangle skill, "The PR
       # body"). The body is author-controlled text: it is read through the

@@ -164,10 +164,6 @@ GUARDS = {
         'Correct each reported documentation command to reference an existing script, or '
         'remove the obsolete command from the live doc. '
     ),
-    "test_rulebook_ratchet": (
-        'Shorten the changed always-loaded rule files; move task-specific guidance to an '
-        'on-demand handbook or skill and run python scripts/check_context_budget.py. '
-    ),
     "test_tests_workflow": (
         'Restore the reported trigger, dependency, shard or fail-closed property in '
         '.github/workflows/tests.yml; run actionlint .github/workflows/tests.yml. '

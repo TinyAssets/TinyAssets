@@ -7,8 +7,8 @@
  * result is every leg's, and `required-tests` (the protected context) fails unless all three,
  * the owner app's browser job and the `process` leg succeeded. Those five are the gate's
  * lasting shape: the old stack's Python jobs beside them leave at the cutover, and this guard
- * does not read them. `process` runs the process's own tests with plain pytest on the runner,
- * with nothing of the old stack installed. Held here: every workspace `platform/package.json`
+ * does not read them. `process` runs the process's own tests, `scripts/tests` alone, with
+ * plain pytest on the runner and nothing of the old stack installed. Held here: every workspace `platform/package.json`
  * lists has its tests run by a leg, its `test` script whole or each `npm run` part of it;
  * every workspace with a large test has its `test:sizes` run; every Vitest leg names its
  * shard, `1/1` when whole, and every shard of a command has its leg; the typecheck has its
@@ -25,7 +25,7 @@
  * in `tests.yml`. No figure is pinned here: a time limit is never a design input.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -479,15 +479,9 @@ describe("process", () => {
     if (words.slice(0, flags).join(" ") !== PYTEST) {
       found.push(`process runs plain pytest with no conftest: ${words.slice(0, flags).join(" ")}`);
     }
-    const targets = words.slice(flags);
-    if (targets[0] !== "scripts/tests" || targets.length < 2) {
-      found.push("process runs scripts/tests and the process's tests still under tests/");
-    }
-    for (const target of targets) {
-      if (!/^(scripts\/tests|tests\/test_\w+\.py)$/.test(target) ||
-          !existsSync(join(REPO, target))) {
-        found.push(`process names something that is not a test file here: ${target}`);
-      }
+    const targets = words.slice(flags).join(" ");
+    if (targets !== "scripts/tests") {
+      found.push(`process runs scripts/tests alone: ${targets}`);
     }
     return found;
   }
@@ -511,7 +505,7 @@ describe("process", () => {
       job.steps[3].run = job.steps[3].run.replace("--noconftest ", "");
     },
     "a step shell that runs nothing": (job) => { job.steps[3].shell = "true {0}"; },
-    "a test file that is gone": (job) => { job.steps[3].run += " tests/test_gone_file.py"; },
+    "a test from elsewhere": (job) => { job.steps[3].run += " scripts/other_test.py"; },
     "no test of its own": (job) => { job.steps[3].run = PYTEST; },
   };
   for (const [name, mutate] of Object.entries(mutations)) {
