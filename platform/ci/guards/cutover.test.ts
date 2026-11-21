@@ -44,6 +44,8 @@ const VOCABULARY: readonly RegExp[] = Object.freeze([
   /\/workspace\/imported/, /old TinyAssets/i, /["'](?:import|discard)["']/, /\bIMPORT_[A-Z0-9_]+/]);
 /** A path a text names, with a folder in it: from the root, or as a step's local action (`./x`). */
 const PATH = /(?<![\w.@/-])(?:\.\/)?((?:[\w-]|\.[\w-])[\w.-]*(?:\/[\w.-]+)+)/g;
+/** A link to a path of this repository's main, which names that path from the root. */
+const REPO_LINK = /https:\/\/github\.com\/TinyAssets\/TinyAssets\/(?:tree|blob)\/main\//g;
 
 /**
  * Each folder or file of `goes` (what the manifest deletes) that `content`, the file at `path`,
@@ -56,7 +58,7 @@ const PATH = /(?<![\w.@/-])(?:\.\/)?((?:[\w-]|\.[\w-])[\w.-]*(?:\/[\w.-]+)+)/g;
 function goneMentions(path: string, content: string, goes: ReadonlySet<string>,
                       stays: ReadonlySet<string>): string[] {
   const found = new Set<string>();
-  for (const [, token] of content.matchAll(PATH)) {
+  for (const [, token] of content.replace(REPO_LINK, " ").matchAll(PATH)) {
     const named = token!.replace(/\.+$/, "");
     const forms = [named, `platform/${named}`];
     const hit = forms.some((each) => stays.has(each)) ? undefined
@@ -442,6 +444,7 @@ describe("the cutover's manifest", () => {
       ["docs/a.md", "# A\n\n## Old\n\nsee tests/test_x.py\n\n## New\n\nkept\n"],
       ["docs/b.md", "## Old\n\nsee scripts/old.py\n"],
       ["docs/c.md", "The kit's own: deploy/checklist.md. The old host's: deploy/x.sh."],
+      ["docs/d.md", "[x](https://github.com/TinyAssets/TinyAssets/blob/main/scripts/old.py)"],
       ["scripts/keep.py", "import old\n"],
       [".github/workflows/w.yml", "jobs:\n  old:\n    steps:\n      - run: python scripts/old.py\n" +
                                   "  new:\n    steps: [a, b]\n"],
@@ -455,6 +458,7 @@ describe("the cutover's manifest", () => {
       ".github/workflows/f.yml says .github/actions/gone, scripts/old.py",
       "docs/b.md less its edit says scripts/old.py",
       "docs/c.md says deploy/x.sh",
+      "docs/d.md says scripts/old.py",
       "scripts/keep.py says an import of scripts/old.py",
       ".github/workflows/x.yml less its edit says no YAML (Unexpected , in flow sequence at " +
         "line 1, column 6:)",
@@ -480,8 +484,10 @@ describe("the cutover's manifest", () => {
       ["scripts/q.py", "from old import NO\n\n\ndef f(line):\n    return line.startswith(NO)\n"],
       ["scripts/r.py", "from old import NO\nLINES = (NO,)\n\n\ndef f(line):\n" +
                        "    return line.startswith(LINES)\n"],
-      ["scripts/s.py", "import q as qa\nprint(qa.f, qa.gone)\n"],
+      ["scripts/s.py", "import q as qa\nprint(qa.f, qa.gone, qa.__file__)\n"],
       ["scripts/t.py", "from r import f, g\n"],
+      ["scripts/u.py", "from pkg import (\n    sub,\n)\n"], ["scripts/pkg/__init__.py", ""],
+      ["scripts/pkg/sub.py", "﻿X = 1\n"],
       ["tinyassets/base.py", "import os\n\nKEYS = (\n    'A',\n)\n\n\ndef scrub():\n" +
                              "    return {k: v for k, v in os.environ.items() if k not in KEYS}\n"],
       ["scripts/peer.py", "import os\nfrom tinyassets.base import scrub\n\nprint(scrub())\n"],

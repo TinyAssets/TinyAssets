@@ -328,7 +328,7 @@
         { "edit": "docs/ops/app-store-submission-packet.md", "names": ["tinyassets/auth/workos_provider.py", "tinyassets/conversation_store.py", "tinyassets/credential_vault.py", "tinyassets/onboarding/app.html", "tinyassets/onboarding/openai_device.py", "tinyassets/api/pending_requests.py"], "what": "the old app's evidence; the stores' launch is paused until the new apps (§10 step 19)" },
         { "edit": "docs/ops/google-play-launch.md", "names": ["tests/test_app_url_is_apex_app.py"], "what": "the old suite's version pin" },
         { "edit": "docs/ops/mobile-launch-handoff.md", "names": ["docs/concerns/2026-09-03-ios-web-wrapper-app-review-risk.md", "docs/concerns/2026-09-03-capacitor-cli-uuid-advisory.md", "tests/test_mobile_ios_release.py", "tests/test_onboarding_app.py"], "what": "the old concern files and the old suite's mobile tests" },
-        { "edit": "docs/reference/executable-gates.md", "names": ["`check_shapes.py`", "ci_structural_guards.py", "scripts/ci_required_tests.py", "scripts/deployed_sha.py", "platform/cutover.json"], "what": "the old suite's gates in the done-check and the table, and the old daemon's deployed-sha gate (the kit's run names the commit it deployed)" },
+        { "edit": "docs/reference/executable-gates.md", "names": ["`check_shapes.py`, `ci_structural_guards.py`, ", "| Affected / queue tests | `scripts/ci_required_tests.py` |", "| Deployment | `scripts/deployed_sha.py --assert-contains <sha>`; 2 = unknown |", "After merging main, a change to a file the manifest\nnames runs `guards/cutover.test.ts`."], "what": "the old suite's gates in the done-check and the table, and the old daemon's deployed-sha gate (the kit's run names the commit it deployed)" },
         { "edit": "openspec/config.yaml", "names": ["`openspec/specs/`"], "what": "the retiring stack's note" },
         { "edit": "pyproject.toml", "names": ["[build-system]", "[project]", "[project.scripts]", "[project.optional-dependencies]", "[tool.hatch.build.targets.wheel]", "# The sandboxed UI bootstrap is one fixed HTML/JS document served verbatim;\n# reflowing its JavaScript to satisfy a Python line length changes the document.\n\"tinyassets/onboarding/ui_frame.py\" = [\"E501\"]", "testpaths = [\"tests\"]", "    \"real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip\",", "    \"real_browser: needs a real Chromium; run by .github/workflows/real-browser-proof.yml, which fails on any skip\",", "    \"role_split: exercises the real broker, launcher or cells; no test double is installed\","], "what": "the old package's project, build, extras and wheel tables, its test path and its old-suite markers; ruff and pytest settings for scripts/ stay" },
         { "edit": ".github/workflows/pr-scope-guard.yml", "names": ["\\.github/known-failing-tests\\.txt$|\\.github/heavy-test-files\\.txt$|scripts/ci_required_tests\\.py$|scripts/ci_structural_guards\\.py$|scripts/check_shapes\\.py$", "tests/test_shape_registry\\.py$|deploy/|", "Dockerfile$|\\.dockerignore$"], "imports": ["scripts/ci_required_tests.py"], "what": "the old suite's and the old host's paths among the sensitive ones, and the shape step" },
@@ -380,8 +380,7 @@
         { "keep": "output", "what": "the ui-test skill's log; founder call pending (IQ2)" },
         { "keep": "openspec/changes/clean-sheet-platform/tasks.md", "what": "the plan: history once the window closes; founder call pending (IQ2)" },
         { "keep": "openspec/changes/clean-sheet-platform/main-agents.md", "what": "the plan's research: history; founder call pending (IQ2)" },
-        { "keep": "openspec/changes/clean-sheet-platform/sandbox-probe.md", "what": "the plan's research: history; founder call pending (IQ2)" },
-        { "keep": "WebSite/site-react/app/developers/page.tsx", "what": "the site's link to the old specs; the site is founder call pending (IQ5)" }
+        { "keep": "openspec/changes/clean-sheet-platform/sandbox-probe.md", "what": "the plan's research: history; founder call pending (IQ2)" }
       ]
     },
     "hold": {
@@ -416,7 +415,7 @@
         { "delete": "platform/deploy/h2-probes.ts", "what": "H2's probes, run once on the stage (§10 step 8), with mode h2 (d3 §A5)" },
         { "edit": "AGENTS.md", "names": ["`mcp.`"], "what": "Fact 11's old proxy: from the hold's end the doors alone serve the doors, and the handles canary is the platform's" },
         { "edit": "docs/host-actions.md", "names": ["## Rotate the production Cloudflare tunnel token (2026-09-24)"], "what": "the tunnel's token, deleted with the tunnel" },
-        { "edit": "docs/reference/executable-gates.md", "names": ["scripts/mcp_public_canary.py"], "what": "the old handles canary's row: the platform's canary (platform-canary.yml) is the handles check" },
+        { "edit": "docs/reference/executable-gates.md", "names": ["| Public MCP handles | `scripts/mcp_public_canary.py --assert-handles` |"], "what": "the old handles canary's row: the platform's canary (platform-canary.yml) is the handles check" },
         { "edit": "platform/ci/guards/environment.test.ts", "names": ["restart-daemon.yml"], "what": "the handback's restart among the known production workflows" },
         { "edit": ".agents/skills/infra-ops/references/godaddy.md", "names": ["scripts/mcp_public_canary.py"], "what": "the old handles canary" },
         { "edit": ".claude/skills/infra-ops/references/godaddy.md", "names": ["scripts/mcp_public_canary.py"], "what": "the mirror's old handles canary" },

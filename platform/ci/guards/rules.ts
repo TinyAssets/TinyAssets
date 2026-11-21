@@ -26,4 +26,8 @@ export const OWED: readonly Owed[] = Object.freeze([
   cutover("scripts/tests/test_rulebook_ratchet.py"),
   // Main-red's reading of the old suite's junit and quarantine (untangle/p6-queue-helpers).
   cutover("scripts/main_red.py"),
+  // The site's links to the old specs, at the site's cutover PR (tasks.md §10 step 5).
+  cutover("WebSite/site-react/app/developers/page.tsx"),
+  cutover("WebSite/site-react/lib/site.ts"),
+  cutover("WebSite/site-react/public/llms.txt"),
 ]);

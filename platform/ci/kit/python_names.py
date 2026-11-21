@@ -58,7 +58,7 @@ def problems(files: dict[str, dict]) -> list[str]:
     found: list[str] = []
     modules: dict[str, tuple[ast.Module, set[str]]] = {}
     for path, file in files.items():
-        text = file["text"]
+        text = file["text"].removeprefix("﻿")
         if path.endswith(".toml"):
             try:
                 tomllib.loads(text)
@@ -92,7 +92,7 @@ def problems(files: dict[str, dict]) -> list[str]:
         for node in ast.walk(tree):
             if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
                     and node.value.id in aliases):
-                defined = modules[aliases[node.value.id]][1]
+                defined = modules[aliases[node.value.id]][1] | MODULE
                 if node.attr not in defined and "__getattr__" not in defined:
                     found.append(f"{path}:{node.lineno}: reads {node.value.id}.{node.attr}, "
                                  f"which {aliases[node.value.id]} does not define")
@@ -104,8 +104,9 @@ def problems(files: dict[str, dict]) -> list[str]:
                 continue
             defined = modules[target][1]
             for alias in node.names:
-                package = target.endswith("/__init__.py") and find(
-                    path, f"{node.module}.{alias.name}", files) is not None
+                folder = target.removesuffix("__init__.py")
+                package = target.endswith("/__init__.py") and any(
+                    f"{folder}{alias.name}{end}" in files for end in (".py", "/__init__.py"))
                 if alias.name not in defined and "__getattr__" not in defined and not package:
                     found.append(f"{path}:{node.lineno}: imports {alias.name} from {target}, "
                                  "which does not define it")
