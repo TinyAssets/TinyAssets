@@ -13,7 +13,10 @@ import {
 } from "../../contract/src/control";
 import { Refusal } from "../../contract/src/refusal";
 
+import type { AccountBinding } from "../../contract/src/binding";
+import { type Bound, withAccount } from "./binder";
 import type { DoorsEnv } from "./env";
+import type { Sources } from "../../sources/src/schema";
 
 /** The outside gate, read once: the record it admitted the call on, or its refusal thrown. */
 export async function outsideRead(env: DoorsEnv, owner: string): Promise<ControlRead> {
@@ -22,6 +25,12 @@ export async function outsideRead(env: DoorsEnv, owner: string): Promise<Control
     throw new Refusal("unavailable", OUTSIDE_OFF);
   }
   return read;
+}
+
+/** An outside caller's binding past the outside gate, the record it was admitted on riding it. */
+export async function outsideAccount(env: DoorsEnv, bound: Bound<AccountBinding>,
+                                     sources: Sources): Promise<Bound<AccountBinding>> {
+  return withAccount(bound, await outsideRead(env, bound.binding.owner), sources);
 }
 
 /** The maintenance gate, read once: the record it admitted the call on, or its refusal thrown. */

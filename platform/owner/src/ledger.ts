@@ -1253,11 +1253,6 @@ export class Ledger {
       throw new Refusal("refused",
                         `only ${admittedMethods().join(", ")} delivery are available yet`);
     }
-    // A client subscribes its own callback over the MCP door; an API key has no such door.
-    if (verified.kind === "api_key" && kindFor(method)?.push?.callback === "subscribe") {
-      throw new Refusal("refused",
-                        `an API-key agent cannot subscribe; ${method} is for MCP clients`);
-    }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = sql.exec<Agent>(

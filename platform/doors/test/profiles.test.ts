@@ -4,8 +4,8 @@
  * the owner's own choice, until the owner names `directory`), `code` while the owner's
  * policy has code mode on, its default; one `code` call runs a script of several tool
  * calls, and its calls stop once outside access is switched off; a revoked client is
- * refused before any tool is listed; an API key is held to its profile at `/api` as a
- * client is at `/mcp`.
+ * refused before any tool is listed; an API key is held to its profile at `/api` and `/mcp`
+ * as a client is at `/mcp`.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,7 +23,7 @@ function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-async function mcpClient(tokens: Tokens): Promise<Client> {
+async function mcpClient(tokens: Pick<Tokens, "access_token">): Promise<Client> {
   const client = new Client({ name: "test-agent", version: "1.0.0" },
                             { versionNegotiation: { mode: { pin: "2026-07-28" } } });
   const transport = new StreamableHTTPClientTransport(new URL(url("/mcp")), {
@@ -34,7 +34,7 @@ async function mcpClient(tokens: Tokens): Promise<Client> {
   return client;
 }
 
-async function listed(tokens: Tokens): Promise<string[]> {
+async function listed(tokens: Pick<Tokens, "access_token">): Promise<string[]> {
   const client = await mcpClient(tokens);
   const { tools } = await client.listTools();
   await client.close();
@@ -178,7 +178,7 @@ describe("the MCP door's tool profiles", () => {
   });
 });
 
-describe("the API door's tool profiles", () => {
+describe("a key's tool profiles", () => {
   it("holds a key to its grant's profile", async () => {
     const o = await signedIn();
     const minted = await appPost("keys", o.app.access_token, o.app.session, {
@@ -191,11 +191,14 @@ describe("the API door's tool profiles", () => {
     const ran = await api("code", { script: "return (await tools.agents_list({})).agents;" });
     expect([ran.status, await ran.json()]).toEqual([200, expect.objectContaining({
       ok: true, value: [] })]);
+    expect(await listed({ access_token: key })).toEqual(profileNames("custom"));
     await o.profile(apiKeyOrigin(key_id).client, "directory");
     expect((await api("code", { script: "return 1;" })).status).toBe(404);
     expect((await api("agents_list", {})).status).toBe(200);
+    expect(await listed({ access_token: key })).toEqual(profileNames("directory"));
     await o.profile(apiKeyOrigin(key_id).client, "custom");
     await o.policy(true, ["code"]);
     expect((await api("agents_list", {})).status).toBe(404);
+    expect(await listed({ access_token: key })).toEqual(["code"]);
   });
 });

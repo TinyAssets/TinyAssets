@@ -325,8 +325,7 @@ describe("outside agents register from a verified identity", () => {
     expect(await r.table("outside_agents")).toEqual([]);
   });
 
-  it("takes an API-key agent's identity from its key, and never for a kind its client " +
-     "subscribes", async () => {
+  it("takes an API-key agent's identity from its key, for every delivery", async () => {
     const r = await rig();
     const key = "0123456789abcdef";
     const origin = apiKeyOrigin(key);
@@ -334,14 +333,10 @@ describe("outside agents register from a verified identity", () => {
     const request = { command_center_id: "alpha", display_name: "Night Agent",
                       delivery_method: "pull", recipe_id: null };
     await r.keyed(key);
-    for (const [binding, fields, reason] of [
-      [r.session(MUSE, source), {}, "the origin is not this API key's"],
-      [r.session(apiKeyOrigin("fedcba9876543210"), source), {}, "the origin is not this API key's"],
-      [r.session(origin, source), { delivery_method: "mcp_event" },
-        "an API-key agent cannot subscribe; mcp_event is for MCP clients"],
-    ] as const) {
-      const refused = await failure(() => r.stub.registerAgent(binding, { ...request, ...fields }));
-      expect([refused.code, refused.message]).toEqual(["refused", reason]);
+    for (const other of [MUSE, apiKeyOrigin("fedcba9876543210")]) {
+      const refused = await failure(() => r.stub.registerAgent(r.session(other, source), request));
+      expect([refused.code, refused.message])
+        .toEqual(["refused", "the origin is not this API key's"]);
     }
     const badKey = await failure(() => r.stub.registerAgent(
       r.session(origin, { kind: "api_key", ref: "not-a-key" }), request));
@@ -349,10 +344,13 @@ describe("outside agents register from a verified identity", () => {
     const agent = await r.stub.registerAgent(r.session(origin, source), request);
     expect([agent.source, agent.source_ref, agent.delivery_method, agent.outside_client])
       .toEqual(["api_key", key, "pull", origin.client]);
-    // A kind whose doorbell the owner hands over takes an API-key agent too (a Grok Bot).
-    const hooked = await r.stub.registerAgent(r.session(origin, source),
-                                              { ...request, delivery_method: "webhook" });
-    expect(hooked.delivery_method).toBe("webhook");
+    // A kind whose doorbell the owner hands over (a Grok Bot), and one its client subscribes
+    // over `/mcp`, where a key serves as a token does.
+    for (const delivery_method of ["webhook", "mcp_event"]) {
+      const hooked = await r.stub.registerAgent(r.session(origin, source),
+                                                { ...request, delivery_method });
+      expect(hooked.delivery_method).toBe(delivery_method);
+    }
   });
 
   it("admits the delivery a wake-kind record names, with its defaults and bounds",

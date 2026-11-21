@@ -6,6 +6,10 @@ Accepted (founder, 2026-10-26). Amends the rule in
 `tinyassets/auth/middleware.py` that an API key "is a REST credential only";
 consistent with ADR-016.
 
+Built on `platform/` (2026-11-21, `untangle/mcp-keys`): `/mcp` takes a key through the
+`/api` door's own key check, held to the key's grant
+(`docs/decisions/untangle-2026-11/mcp-keys.md`). No per-agent rate limit is built (Fact 15).
+
 ## Date
 
 2026-10-26

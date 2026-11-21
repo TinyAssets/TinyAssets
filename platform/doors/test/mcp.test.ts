@@ -1,17 +1,22 @@
 /**
  * The MCP door (research §4; checklist 9, 10, 24): both revisions from one factory, the
  * tool table with every hint, the verified origin, source and sign-in reaching the
- * object, GET 405 and a foreign Origin 403.
+ * object, GET 405 and a foreign Origin 403; an owner's key (ADR-028) served as a token is,
+ * by the `/api` door's own check, from the `Authorization` header alone.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { apiKeyOrigin } from "../../contract/src/binding";
+import { MCP_RESOURCE } from "../../contract/src/identity";
 import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
 import { profileNames, toolTable } from "../../contract/src/doors";
+import { mintKeyFor } from "./keys";
 import {
-  call, connect, crossed, grantsOf, legacyPost, legacyTool, OPEN, ownDoor, reached, unseen,
-  registerClient, rpcBody, setControl, type Tokens, url, answerOf,
+  appPost, call, connect, crossed, doorsEnv, grantsOf, legacyPost, legacyTool, OPEN, ownDoor,
+  reached, unseen, registerClient, rpcBody, serveFirstPartyDocument, setControl, type Tokens, url,
+  answerOf,
 } from "./support";
 
 function owner(): string {
@@ -19,7 +24,8 @@ function owner(): string {
 }
 
 /** The real MCP client SDK, over the doors, as an outside agent connects. */
-async function mcpClient(tokens: Tokens, mode: "legacy" | { pin: string }): Promise<Client> {
+async function mcpClient(tokens: Pick<Tokens, "access_token">,
+                         mode: "legacy" | { pin: string }): Promise<Client> {
   const client = new Client({ name: "test-agent", version: "1.0.0" },
                             { versionNegotiation: { mode } });
   const transport = new StreamableHTTPClientTransport(new URL(url("/mcp")), {
@@ -30,8 +36,15 @@ async function mcpClient(tokens: Tokens, mode: "legacy" | { pin: string }): Prom
   return client;
 }
 
+let restore: () => void;
+
 beforeEach(async () => {
   await setControl(OPEN);
+  restore = serveFirstPartyDocument();
+});
+
+afterEach(() => {
+  restore();
 });
 
 describe.each([
@@ -99,6 +112,24 @@ describe.each([
     expect(invalid.isError).toBe(true);
     await client.close();
   });
+
+  it("serves an owner's key its grant's profile, bound as the key", async () => {
+    const alice = owner();
+    const { key, key_id } = await mintKeyFor(alice);
+    await unseen(alice);
+    const client = await mcpClient({ access_token: key }, mode);
+    expect(client.getNegotiatedProtocolVersion()).toBe(revision);
+    expect((await client.listTools()).tools.map((tool) => tool.name))
+      .toEqual(profileNames("custom"));
+    const listed = await client.callTool({ name: "agents_list", arguments: {} });
+    expect(listed.isError).toBeFalsy();
+    expect(answerOf(listed)).toMatchObject({ agents: [] });
+    const [profiled] = await crossed(alice, "toolProfile");
+    expect(profiled!.binding).toMatchObject({
+      owner: alice, caller: alice, origin: apiKeyOrigin(key_id),
+      source: { kind: "api_key", ref: key_id } });
+    await client.close();
+  });
 });
 
 describe("the MCP endpoint", () => {
@@ -144,5 +175,74 @@ describe("the MCP endpoint", () => {
     for (const model of ["read", "write", "edit", "bash", "ta"]) {
       await expect(legacyTool(tokens.access_token, model, {})).rejects.toThrow("not found");
     }
+  });
+});
+
+describe("a key on the MCP endpoint", () => {
+  const LIST = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+  const CHALLENGE = `Bearer realm="OAuth", resource_metadata="${new URL(MCP_RESOURCE).origin
+  }/.well-known/oauth-protected-resource/mcp", error="invalid_token"`;
+
+  it("is refused on the call after its revoke, as a token that does not verify", async () => {
+    const minted = await mintKeyFor(owner());
+    expect((await legacyPost(minted.key, LIST)).status).toBe(200);
+    expect((await appPost("keys/revoke", minted.token, null, { key_id: minted.key_id })).status)
+      .toBe(200);
+    const refused = await legacyPost(minted.key, LIST);
+    expect([refused.status, refused.headers.get("WWW-Authenticate")]).toEqual([401, CHALLENGE]);
+  });
+
+  it("is answered the object's refusal of its revoked grant, as at /api", async () => {
+    const alice = owner();
+    const { key, key_id } = await mintKeyFor(alice);
+    await doorsEnv.OWNER.getByName(alice).grantRevoke(
+      { owner: alice, caller: alice, origin: null }, { client: apiKeyOrigin(key_id).client });
+    const mcp = await legacyPost(key, LIST);
+    const api = await call(new Request(url("/api/tools/agents_list"), {
+      method: "POST", body: "{}",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" } }));
+    const outside = { error: "outside client revoked" };
+    expect([mcp.status, await mcp.json()]).toEqual([403, outside]);
+    expect([api.status, await api.json()]).toEqual([403, outside]);
+  });
+
+  it("refuses a key that does not verify 401 naming the metadata, before any object",
+     async () => {
+    const alice = owner();
+    const { key } = await mintKeyFor(alice);
+    await unseen(alice);
+    for (const wrong of [`${key.slice(0, -1)}${key.endsWith("A") ? "B" : "A"}`,
+                         `ta_key_${"0".repeat(16)}_${"a".repeat(43)}`, "ta_key_short"]) {
+      const response = await legacyPost(wrong, LIST);
+      expect([response.status, response.headers.get("WWW-Authenticate")])
+        .toEqual([401, CHALLENGE]);
+    }
+    expect(await reached(alice)).toBe(false);
+  });
+
+  it("takes a key from the Authorization header alone, never a query or a cookie",
+     async () => {
+    const alice = owner();
+    const { key } = await mintKeyFor(alice);
+    await unseen(alice);
+    const sent = (path: string, headers: Record<string, string> = {}) => call(new Request(
+      url(path), { method: "POST", body: JSON.stringify(LIST), headers: {
+        "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-11-25", ...headers } }));
+    for (const name of ["key", "api_key", "access_token", "token", "authorization"]) {
+      expect((await sent(`/mcp?${new URLSearchParams({ [name]: key })}`)).status).toBe(401);
+    }
+    for (const cookie of [key, `key=${key}`, `__Host-ta-owner=${key}`]) {
+      expect((await sent("/mcp", { Cookie: cookie })).status).toBe(401);
+    }
+    expect(await reached(alice)).toBe(false);
+  });
+
+  it("refuses a key with a present Origin 403, before the object", async () => {
+    const alice = owner();
+    const { key } = await mintKeyFor(alice);
+    await unseen(alice);
+    expect((await legacyPost(key, LIST, { Origin: "https://evil.example" })).status).toBe(403);
+    expect(await reached(alice)).toBe(false);
   });
 });
