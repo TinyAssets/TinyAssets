@@ -4,8 +4,8 @@
  * its request carries is stopped there, as a timeout naming that budget. The Worker's own
  * budget, `CODEMODE_INTERRUPT_BUDGET`, is the most any request gets; a tight loop took 343 s
  * to reach it in workerd, past the large class's budget (`ci/budgets.json`), so its production
- * size is H2's live probe's (`deploy/h2-probes.ts` probe 1, against the Worker's `cpu_ms`), not
- * a test's here.
+ * size is H2's live probe's (its first, against the Worker's `cpu_ms`; `tasks.md` §5, "H2
+ * live"), not a test's here.
  */
 import { env } from "cloudflare:workers";
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";

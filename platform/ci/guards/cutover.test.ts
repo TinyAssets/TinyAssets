@@ -6,24 +6,29 @@
  *   import an edit names, and each live object's name in the file that names it today; no
  *   delete or edit lies inside a path the manifest deletes, and no file is edited twice in a
  *   phase; a move may (a carry-out, made before the deletes), but never into one;
- * - every file under `platform/` and `.github/` that says what is "deleted at the cutover", or
+ * - every file under `platform/` and `.github/` that says what is "deleted at the cutover",
  *   speaks the cutover's vocabulary (`/workspace/imported`, "old TinyAssets", the `import` and
- *   `discard` callers, `IMPORT_*`), is on it;
+ *   `discard` callers, `IMPORT_*`) or names a platform, workflow or script path it deletes, is
+ *   on it;
  * - the layer table's cutover layer (`ci/kit/imports.ts`): what it deletes may import itself,
  *   and nothing that stays imports it but an import an edit names (held over the tree by
- *   `isolation.test.ts`, its cases here).
+ *   `isolation.test.ts`, its cases here); a Python file that stays the same, by its imports;
+ * - its dry run (`ci/dry-run.ts`) makes the tree its cases say.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
-import { type CutoverLayer, cutoverLayer, type Entry, isGone, LIVE, type Manifest, MANIFEST,
-         PHASES } from "../kit/cutover";
+import { type CutoverLayer, cutoverLayer, dryRun, dryRunLegs, type Entry, isGone, LIVE,
+         type Manifest, MANIFEST, PHASES, pythonLoads } from "../kit/cutover";
 import { keyed, object } from "../../contract/src/checks";
 import { layerProblems, repoScripts } from "../kit/imports";
 import { treeFiles } from "../kit/sources";
 import { REPO } from "../paths";
+import { actionFiles, type Data, workflowNames } from "../workflows";
 import { workerFolders } from "../wrangler";
 
 /** A text that says what is deleted at the cutover, however its comment wraps the words. */
@@ -31,6 +36,41 @@ const MARKER = /deleted(?:[\s*#/]|<!--)+at(?:[\s*#/])+the(?:[\s*#/])+cutover/i;
 /** The cutover's vocabulary: no file that stays may speak it. */
 const VOCABULARY: readonly RegExp[] = Object.freeze([
   /\/workspace\/imported/, /old TinyAssets/i, /["'](?:import|discard)["']/, /\bIMPORT_[A-Z0-9_]+/]);
+/**
+ * The paths the manifest deletes under `platform/`, `.github/` and `scripts/`, as a file names
+ * them: from the repository root, under `platform/` from there (`import/bundle.ts`), or as a
+ * step's local action (`./.github/actions/x`). A one-word folder (`import`) is named only with
+ * a path below it. The old stack's own paths are left out: a platform comment cites the code it
+ * was ported from as history.
+ */
+function goneNames(manifest: Manifest): RegExp[] {
+  return cutoverLayer(manifest).gone.filter((path) => /^(?:platform|\.github|scripts)\//.test(path))
+    .flatMap((path) => [...new Set([path, path.replace(/^platform\//, ""),
+                                    path.replace(/^\.github\//, "./.github/")])].map((name) =>
+      new RegExp(`(?<![\\w./@-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${
+        name.includes("/") ? "(?![\\w.-])" : "/"}`)));
+}
+
+/** The shells of a workflow's or a composite action's `run` steps, one after another. */
+function runs(text: string): string {
+  const data = (parse(text) ?? {}) as Data;
+  return [...Object.values(data.jobs ?? {}) as Data[], data.runs ?? {}]
+    .flatMap((job: Data) => (job.steps ?? []) as Data[])
+    .flatMap((step: Data) => typeof step.run === "string" ? [step.run as string] : []).join("\n");
+}
+
+/**
+ * Each script of `gone` a workflow's steps run: named by its path, or as a module
+ * (`python -m scripts.x`). A step's script is the workflow's load, as an import is a module's.
+ */
+function stepLoads(text: string, gone: readonly string[]): string[] {
+  const shell = runs(text);
+  const escape = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return gone.filter((path) => /^scripts\/.+\.py$/.test(path)).filter((path) =>
+    new RegExp(`(?<![\\w./-])(?:${escape(path)}|${escape(path.slice(0, -3).replaceAll("/", "."))
+    })(?![\\w-])`).test(shell));
+}
+
 /** A tree the manifest is held to: whether a path is there, and a file's text. */
 interface Tree {
   readonly exists: (path: string) => boolean;
@@ -161,7 +201,8 @@ function scopeProblems(manifest: Manifest, files: ReadonlyMap<string, string>): 
       return [];
     }
     const said = [MARKER.test(content) ? "deleted at the cutover" : null,
-                  ...VOCABULARY.map((word) => word.exec(content)?.[0] ?? null)]
+                  ...[...VOCABULARY, ...goneNames(manifest)].map((word) =>
+                    word.exec(content)?.[0] ?? null)]
       .filter((each) => each !== null);
     return said.length === 0 ? [] : [`${path} says ${said.join(", ")}, and is not on the manifest`];
   });
@@ -240,6 +281,8 @@ describe("the cutover's manifest", () => {
     expect(scopeProblems(MANIFEST, treeFiles())).toEqual([]);
     const what = "a probe";
     expect(scopeProblems(manifestOf({ delete: "platform/import", what },
+                                    { delete: ".github/actions/gone", what },
+                                    { delete: "scripts/old.py", what },
                                     { edit: "platform/kept.ts", names: ["IMPORT_X"], what }),
                          new Map([
       ["platform/import/x.ts", "export const IMPORT_X = 1;"],
@@ -248,10 +291,15 @@ describe("the cutover's manifest", () => {
       ["platform/b.md", "Your files from the old TinyAssets are in /workspace/imported."],
       ["platform/c.ts", 'const caller = "discard";'],
       ["platform/d.ts", "export const IMPORTANT_IMPORTS = 1; // imports a module"],
+      ["platform/e.ts", "// built by `import/bundle.ts`"],
+      [".github/workflows/f.yml", "      - uses: ./.github/actions/gone\n      - run: python scripts/old.py"],
+      ["platform/g.ts", "// platform/importer/x.ts, deploy/import, scripts/old.pyc, tests/import/x"],
     ]))).toEqual([
       "platform/a.ts says deleted at the cutover, and is not on the manifest",
       "platform/b.md says /workspace/imported, old TinyAssets, and is not on the manifest",
       'platform/c.ts says "discard", and is not on the manifest',
+      "platform/e.ts says import/, and is not on the manifest",
+      ".github/workflows/f.yml says ./.github/actions/gone, scripts/old.py, and is not on the manifest",
     ]);
   });
 
@@ -259,7 +307,79 @@ describe("the cutover's manifest", () => {
     const named = [...cutoverLayer().entries].flatMap(([from, to]) =>
       to.map((each) => `${from} imports ${each}`));
     const made = new Set(cutoverImports(repoScripts(), cutoverLayer()));
-    expect(named.filter((each) => !made.has(each))).toEqual([]);
+    // Or a Python module it imports, or a path it hands a tool, as a test config its setup file.
+    const handed = (each: string) => {
+      const [from, to] = each.split(" imports ") as [string, string];
+      const source = REPO_TREE.text(from) ?? "";
+      return pythonLoads(from, source, REPO_TREE.exists).includes(to)
+        || (/\.ya?ml$/.test(from) && stepLoads(source, [to]).includes(to))
+        || [...source.matchAll(/["'](\.{1,2}\/[^"']+)["']/g)]
+          .some(([, path]) => posix.normalize(posix.join(posix.dirname(from), path!)) === to);
+    };
+    expect(named.filter((each) => !made.has(each) && !handed(each))).toEqual([]);
+  });
+
+  it("names every module of what goes that a Python file which stays imports", () => {
+    const { gone, entries } = cutoverLayer();
+    const python = execFileSync("git", ["ls-files", "-z", "--", "*.py"], { cwd: REPO,
+      encoding: "utf8" }).split("\0").filter((path) => path !== "" && !isGone(gone, path));
+    expect(python.length).toBeGreaterThan(20);
+    expect(python.flatMap((path) => pythonLoads(path, REPO_TREE.text(path)!, REPO_TREE.exists)
+      .filter((to) => isGone(gone, to) && !(entries.get(path) ?? []).includes(to))
+      .map((to) => `${path} imports ${to}: name it on the file's edit`))).toEqual([]);
+    // A module beside it, a folder above it, or from the root; a package's module; none else.
+    const tree = new Set(["scripts/a.py", "scripts/b/__init__.py", "scripts/b/c.py",
+                          "scripts/tests/t.py", "tools/d.py"]);
+    expect(pythonLoads("scripts/tests/t.py", [
+      "import a", "from b import c as see, e", "    from tools.d import x", "import os, a",
+      "from . import nothing", "# import gone"].join("\n"), (path) => tree.has(path)))
+      .toEqual(["scripts/a.py", "scripts/b/__init__.py", "scripts/b/c.py", "tools/d.py"]);
+  });
+
+  it("names every script that goes a workflow which stays runs, on its edit", () => {
+    const { gone, entries } = cutoverLayer();
+    const flows = [...workflowNames().map((name) => `.github/workflows/${name}`),
+                   ...actionFiles()].filter((path) => !isGone(gone, path));
+    expect(flows.length).toBeGreaterThan(20);
+    expect(flows.flatMap((path) => stepLoads(REPO_TREE.text(path)!, gone)
+      .filter((to) => !(entries.get(path) ?? []).includes(to))
+      .map((to) => `${path} runs ${to}: name it on the file's edit`))).toEqual([]);
+    // By path or as a module, in a job's step or a composite action's; never in a comment.
+    const gone2 = ["scripts/a.py", "scripts/b.py", "scripts/c.py", "scripts/d/e.py"];
+    expect(stepLoads(["# python scripts/c.py", "jobs:", "  x:", "    steps:",
+                      "      - run: python scripts/a.py --x",
+                      "      - run: python -m scripts.d.e"].join("\n"), gone2))
+      .toEqual(["scripts/a.py", "scripts/d/e.py"]);
+    expect(stepLoads("runs:\n  steps:\n    - run: python scripts/b.py\n", gone2))
+      .toEqual(["scripts/b.py"]);
+  });
+
+  it("makes the tree a dry run applies: carry-outs, the deletes, what an edit loads kept, and " +
+     "the tests it edits set aside", () => {
+    const what = "a probe";
+    const manifest = manifestOf(
+      { delete: "platform/old", what }, { delete: "tests", what },
+      { move: "tests/test_kept.py", to: "scripts/tests/test_kept.py", what },
+      { move: "platform/kept.ts", to: "platform/moved.ts", what },
+      { edit: "platform/stays.ts", names: ["x"], imports: ["platform/old/a.ts"], what },
+      { edit: "platform/stays.test.ts", names: ["x"], what });
+    const loads: Record<string, string[]> = { "platform/old/a.ts": ["platform/old/b.ts"],
+                                              "platform/old/b.ts": ["platform/kept.ts"] };
+    const tracked = ["platform/old/a.ts", "platform/old/b.ts", "platform/old/c.ts",
+                     "tests/test_kept.py", "tests/test_gone.py", "platform/kept.ts",
+                     "platform/stays.ts", "platform/stays.test.ts"];
+    expect(dryRun(tracked, (path) => loads[path] ?? [], manifest)).toEqual({
+      carried: [["tests/test_kept.py", "scripts/tests/test_kept.py"]],
+      kept: ["platform/old/a.ts", "platform/old/b.ts"],
+      removed: ["platform/old/c.ts", "tests/test_gone.py"],
+      setAside: ["platform/stays.test.ts"],
+    });
+    // It runs platform-tests' legs, less those of a workspace that goes.
+    expect(dryRunLegs([{ leg: "old", command: "npm run test -w old -- --shard=1/1" },
+                       { leg: "kept", command: "npm run test:workerd -w kept" }], manifest))
+      .toEqual([{ leg: "kept", command: "npm run test:workerd -w kept" }]);
+    expect(() => dryRunLegs([{ leg: "x", command: "npm test" }], manifest))
+      .toThrow("platform-tests' leg npm test names no workspace");
   });
 
   it("holds the cutover layer: what goes imports itself, and what stays only named imports", () => {
