@@ -82,14 +82,14 @@ describe("a transient refusal", () => {
       .filter(([, entry]) => (entry as { transient?: true }).transient === true)
       .map(([code]) => code).sort();
     expect(transient).toEqual(["busy", "egress_rate", "events_busy", "events_raced",
-                               "inbound_app_unconfigured", "mailbox_full", "restoring",
-                               "storage_busy", "unavailable"]);
+                               "inbound_app_unconfigured", "mailbox_full", "object_overloaded",
+                               "restoring", "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
       .map(([code]) => code).sort())
       .toEqual(["busy", "egress_rate", "events_busy", "events_raced",
-                "inbound_app_unconfigured", "mailbox_full", "restoring", "storage_busy",
-                "unavailable"]);
+                "inbound_app_unconfigured", "mailbox_full", "object_overloaded", "restoring",
+                "storage_busy", "unavailable"]);
     expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
             new Refusal("unavailable", MAINTENANCE).transient,
             new Refusal("tier_runs").transient, new Refusal("refused").transient])
@@ -119,6 +119,8 @@ describe("the code list", () => {
     ["events_busy", 503, 1], ["events_raced", 503, 1],
     // The platform gates, closed: the doors' 503 and its minute.
     ["unavailable", 503, 60],
+    // An object the runtime reports overloaded, as the doors have answered it.
+    ["object_overloaded", 429, 1],
     // The doors' own, as the egress door has answered them.
     ["runner_token_missing", 401, undefined], ["run_secret_missing", 401, undefined],
     ["sync_token_missing", 401, undefined], ["sync_token_unknown", 401, undefined],
@@ -155,6 +157,16 @@ describe("the test of a refusal against a bug", () => {
     expect(there).toBeInstanceOf(Refusal);
     expect([there.code, there.message, there.status, there.retryAfterS, there.facts])
       .toEqual(["storage_full", "storage_full: full", 507, 2, { a: 1 }]);
+  });
+
+  it("knows the runtime's overload, an error whose .overloaded is true, for the moment only",
+     () => {
+    const overloaded = Object.assign(new Error("Durable Object is overloaded"),
+                                     { overloaded: true });
+    const refusal = refusalOf(overloaded)!;
+    expect([refusal.code, refusal.status, refusal.retryAfter, refusal.transient])
+      .toEqual(["object_overloaded", 429, 1, true]);
+    expect(refusalOf(Object.assign(new Error("x"), { overloaded: "true" }))).toBeNull();
   });
 
   it("calls anything else a bug, a refusal of an unknown code or a malformed field too", () => {
