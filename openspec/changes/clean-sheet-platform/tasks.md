@@ -593,10 +593,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     notice. Until it lands, an old document is archived whole (`policy.refused.json`).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
-- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5).
+- [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
+  owner area's pass also takes its two spies that watch a class's prototype, though neither
+  makes a call refuse (`owner/test/bodies.test.ts` `Files.prototype.begin`,
+  `owner/test/proofs.test.ts` `Sessions.prototype.extend`).
   - [x] The two owner regressions in list 6 item 9 now use the FILES service gate: a
     chunked agent definition changes during a run's admission, and the erasure's namespace
-    delete fails before the wipe (`owner-front-door-tests.md`).
+    delete fails before the wipe (`codex/owner-front-door-tests`;
+    `untangle-2026-11/owner-front-door-tests.md`).
   - [x] `platform/sandbox/`, both passes in one PR, with `s2:N51` and the sandbox's own
     swallowed errors and retries decided (`untangle/pass-sandbox`;
     `untangle-2026-11/pass-sandbox.md`).
