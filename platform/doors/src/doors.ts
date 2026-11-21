@@ -9,10 +9,10 @@
  * pages and the sign-in keep it.
  *
  * No caller is counted or capped by the doors (the founder's rule: no invented limits). An
- * owner object the runtime reports overloaded (Cloudflare's soft limit of 1,000 requests a
- * second an object) is answered `429` with `Retry-After`, never retried: a technical
- * ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS protection, in front of
- * every Worker.
+ * owner object the runtime reports overloaded is the refusal `object_overloaded`
+ * (`contract/src/refusal.ts`), answered by each door's surface as any refusal is, never
+ * retried: a technical ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS
+ * protection, in front of every Worker.
  *
  * The source records are the caller's: `index.ts` passes the bundled records, and a test of a
  * record the bundle lacks its own catalog.
@@ -69,30 +69,9 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }).fetch(request, env, ctx);
 }
 
-/**
- * Whether `error` is the runtime's report that a Durable Object is overloaded (its
- * `.overloaded`, which Cloudflare's error-handling page says never to retry).
- */
-export function overloaded(error: unknown): boolean {
-  return typeof error === "object" && error !== null
-    && (error as { overloaded?: unknown }).overloaded === true;
-}
-
 /** Serve one request through the doors, over the source records `sources`. */
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                             sources: Sources): Promise<Response> {
-  try {
-    return await route(request, env, ctx, sources);
-  } catch (error) {
-    if (overloaded(error)) {
-      return plain(429, "this account is busy; try again shortly", { "Retry-After": "1" });
-    }
-    throw error;
-  }
-}
-
-async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                     sources: Sources): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin === EGRESS_ORIGIN) {
     return serveEgress(withoutCookie(request), env, ctx);

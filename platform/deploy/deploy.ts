@@ -130,7 +130,7 @@ import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.
 import { EGRESS_HOST } from "../contract/src/egress.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import {
-  APP_RESOURCE, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT, ZONE,
+  APP_RESOURCE, E2B_HOOK_EVENTS, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT, ZONE,
 } from "../contract/src/identity.ts";
 import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
@@ -180,12 +180,13 @@ type Json = Record<string, unknown>;
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
- * E2B's sandbox lifecycle webhook, the doors' one E2B hook (`doors/src/e2b-hooks.ts`), its
- * API read in e2b-dev/infra's `spec/openapi.yml` (2026-11-04).
+ * E2B's sandbox lifecycle webhook, the doors' one E2B hook (`doors/src/e2b-hooks.ts`), for
+ * the events it takes (`contract/src/identity.ts`), its API read in e2b-dev/infra's
+ * `spec/openapi.yml` (2026-11-04).
  */
 export const E2B_HOOK = Object.freeze({
   name: "tinyassets-lifecycle", url: E2B_HOOK_URL,
-  events: Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]),
+  events: E2B_HOOK_EVENTS,
   /** Its signature secret, which the Worker whose config requires it holds a copy of. */
   secret: "E2B_WEBHOOK_SECRET",
 });

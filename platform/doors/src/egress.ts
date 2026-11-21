@@ -115,7 +115,7 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
     await bound.stub.egressSettle(bound.binding, request);
   } catch (first) {
     if (refusalOf(first) !== null) {
-      throw first;  // the object answered: nothing to retry
+      throw first;  // the object answered, or the runtime refused it overloaded: no retry
     }
     const again = rebound(env, bound);
     await again.stub.egressSettle(again.binding, request);
@@ -255,8 +255,8 @@ function serveEvents(request: Request, env: DoorsEnv,
 
 /**
  * The runner's report of the engines' sign-ins (`signinReport`): each engine that signs in
- * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
- * it offers. Presence only; the runner alone calls it, so an `Origin` is refused.
+ * with the vendor's own login, whether its record's `status_argv` succeeded. Presence only;
+ * the runner alone calls it, so an `Origin` is refused.
  */
 function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
   return sandboxDoor(request, EGRESS_BODY_MAX, () => runnerBound(request, env,

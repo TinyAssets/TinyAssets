@@ -795,6 +795,23 @@ describe("an engine record that does not fit", () => {
   });
 
   it.each([
+    ["no plan model", cli((s) => { delete at(s, "login")["model"]; }),
+     /cli\.login has exactly .*; missing \["model"\]/],
+    ["a plan model with no id", cli((s) => { delete at(s, "login.model")["id"]; }),
+     /cli\.login\.model has exactly id, citation; missing \["id"\]/],
+    ["a plan model id that is no model id", cli((s) => { at(s, "login.model")["id"] = "a b"; }),
+     /cli\.login\.model\.id is invalid/],
+    ["a plan model with no citation",
+     cli((s) => { delete at(s, "login.model")["citation"]; }),
+     /cli\.login\.model has exactly id, citation; missing \["citation"\]/],
+    ["no model_argv to pass the plan's model",
+     cli((s) => { delete at(s, "engine")["model_argv"]; }),
+     /cli\.engine\.model_argv is present on a record that signs in/],
+  ])("refuses a sign-in with %s: a plan always ranks by a real model", (_what, record, said) => {
+    expect(refused(record)).toMatch(said);
+  });
+
+  it.each([
     ["an invoke backend", cli((s) => { s["invoke"] = { argv: ["{bin}", "-p"] }; })],
     ["an invoke inside the engine", cli((s) => { at(s, "engine")["invoke"] = {}; })],
   ])("fails loudly, never a backend: %s", (_what, record) => {

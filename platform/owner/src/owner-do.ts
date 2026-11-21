@@ -32,8 +32,10 @@
  * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
  * `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
  * through `FILES`, under the owner's namespace, which only this object holds
- * (`files.ts`). The module keeps no mutable state at top level (the module-state
- * guard), since objects of one class can share an isolate.
+ * (`files.ts`). It reaches the sandbox Worker, which picks an owner's sandboxes by the name a
+ * call carries, only bound to its own name (`boundSandbox`, from `ctx.id`; the sandbox-bound
+ * guard), so no call names another owner. The module keeps no mutable state at top level
+ * (the module-state guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
  * but its doors: the door table (`contract/doors.json`, and its steps, `owner/doors.json`)
@@ -115,9 +117,10 @@ import type { DoorMethods } from "./door-map";
 import {
   type Binds, CALLER_BINDINGS, type CallerKind, type OwnerRow, ownerRow, ownerRows, type TakenBy,
 } from "./door-steps";
-import type {
-  Account, Bound, Call, Door, DoorsOf, DoorUnits, ImportLine, LiveSession, Module, ObjectReads,
-  OwnerSelf, PlatformLine, Readable, Units,
+import {
+  type Account, type Bound, type Call, type Door, type DoorsOf, type DoorUnits, type ImportLine,
+  type LiveSession, type Module, namedOwner, type ObjectReads, type OwnerSelf, type PlatformLine,
+  type Readable, type Units,
 } from "./door";
 import { type Lease, mintProof } from "./proof-mint";
 import type { RunCapability } from "../../contract/src/capabilities";
@@ -172,6 +175,7 @@ import { ABILITY_TREES, AGENTS_DIR, within } from "../../contract/src/paths";
 import { Launcher } from "./launch";
 import { Egress, egressDoors } from "./egress";
 import { exportDoors } from "./export";
+import { boundSandbox } from "./sandbox";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
 import { pinned, refuseRestoring, restoreDoors, restoreNamespace, restoring } from "./restore";
@@ -345,7 +349,7 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
                             (needed) => files.fullRefusal(needed));
   const backups = new Backups({
     storage, write: units.quiet, store: env.FILES, space: () => files.space(), log,
-    owner: () => id.name ?? "",
+    owner: () => namedOwner(id),
     serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
     halted: () => wiped(storage.sql) || erasing(storage),
     pinned: () => pinned(storage),
@@ -536,14 +540,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       ready: () => this.#admission.tiers() !== null,
       notice: (type, detail) => this.#notices.add(type, detail, clock()),
     }, carried());
-    const owner = () => {
-      const named = ctx.id.name;
-      if (named === undefined) {
-        throw new Refusal("refused", "this object is not named by an owner");
-      }
-      return named;
-    };
+    const owner = () => namedOwner(ctx.id);
     this.#ownerName = owner;
+    const sandbox = boundSandbox(env.SANDBOX, ctx.id);
     this.#sender = new Doorbell({
       ledger: this.#ledger, live: (client) => this.#grants.live(client), write,
       reads: (client, center) => this.#grants.reads(client, { universe: center,
@@ -614,7 +613,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         : this.#runs.liveIn(conversation)),
     });
     this.#launcher = new Launcher({
-      env, storage, owner: () => this.#ownerName(), control: () => this.#control(),
+      env, storage, owner: () => this.#ownerName(), sandbox, control: () => this.#control(),
       door: (act) => this.#door(act), sync: () => this.#schedule.sync(),
       admission: this.#admission, bodies: this.#bodies, connections: this.#connections,
       egress: this.#egress, files: this.#files, grants: this.#grants, ledger: this.#ledger,
@@ -623,7 +622,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     });
     this.#runs = this.#launcher.runs;
     this.#sandboxTime = new SandboxTime(storage, this.#runs.meter(), {
-      read: (after) => env.SANDBOX.meter(this.#ownerName(), { after }),
+      read: (after) => sandbox.meter({ after }),
       write,
     });
     // The lanes of the one schedule, each its module's own (`Lane`): its key is its job's
@@ -656,7 +655,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
       // state of them deleted.
       sandboxes: async () => {
-        await this.env.SANDBOX.erase(this.#ownerName());
+        await sandbox.erase();
       },
       // The outside record: the doors told through the erasure queue until they confirm.
       outside: async () => {
@@ -693,7 +692,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       usage: this.#usage, egress: this.#egress, runs: this.#runs, launcher: this.#launcher,
       relay: this.#relay, signins: this.#signins, tickets: this.#tickets,
       inbound: this.#inbound, erasure: this.#erasure, posts: this.#posts,
-      env, storage, owner: () => this.#ownerName(),
+      env, storage, owner: () => this.#ownerName(), sandbox,
       door: <T>(act: () => T) => this.#door(act),
       quiet: <T>(act: () => T) => this.#quiet(act),
       synced: <T>(act: () => T) => this.#synced(act),

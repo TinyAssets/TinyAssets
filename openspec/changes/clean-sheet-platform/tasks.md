@@ -708,14 +708,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `gatewaySlots()`), `weighedBody`'s and `readHeld`'s nullable `hold`, the doorbell's `send`,
     `meter.ts` `sentHeaders` (its source-record check to `sources/`), and six exports nothing
     reads (`pass-gateway.md` §3).
-  - [ ] An overloaded owner object is answered as a contract refusal on each surface: today
+  - [x] An overloaded owner object is answered as a contract refusal on each surface: today
     `doors.ts` `serve` answers it plain text, `429` with its own `Retry-After: 1`, the egress
     door's included, whose callers read `{error: {code, message}}` (`pass-doors.md` §3;
-    `untangle/doors-overloaded`).
-  - [ ] E2B's lifecycle events in one list: the kit registers `deploy.ts` `E2B_HOOK.events`,
+    `untangle/doors-overloaded`). Done: `refusalOf` reads it as `object_overloaded`
+    (`untangle/recheck-doors-e2b`; `recheck-doors-e2b.md`).
+  - [x] E2B's lifecycle events in one list: the kit registers `deploy.ts` `E2B_HOOK.events`,
     the doors handle `doors/src/e2b-hooks.ts` `TYPES`, and nothing holds the two equal; one
     list in the contract beside the hook's path (`identity.json`) (`pass-ci-deploy.md` §2;
-    `untangle/e2b-hook-events`).
+    `untangle/e2b-hook-events`). Done: `contract/src/identity.ts` `E2B_HOOK_EVENTS`
+    (`untangle/recheck-doors-e2b`).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
