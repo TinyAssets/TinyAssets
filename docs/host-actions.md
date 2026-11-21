@@ -25,7 +25,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Smallest founder-only action |
 |---|---|
-| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Left: delete any repository-level copy of a production secret (Settings → Secrets and variables → Actions → Repository secrets), since a branch dispatch or a pull request can read those. Every workflow now reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment, so each other repository secret goes once its environment holds the same value; `MERGE_ATTRIBUTION_TOKEN`, the four `ANDROID_UPLOAD_*`, `ANDROID_DEBUG_KEYSTORE_B64` and `ANDROID_GOOGLE_SERVICES_JSON_B64` are copied into `production` first. `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN` go with `python scripts/platform_setup.py workos`. |
+| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Every workflow reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment. The repository-level copies were deleted 2026-11-21 after the one-time copy into `production` (run 44864445693); only the harmless `TINYASSETS_WIKI_CANARY_TOKEN` stays at repository level. A new secret goes into its environment, never at repository level. `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN` go with `python scripts/platform_setup.py workos`. |
 
 ---
 
