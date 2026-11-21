@@ -6,6 +6,7 @@
  */
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { ORIGIN } from "../../contract/src/identity";
 
 import { writeControl } from "../../ci/fixtures";
 import {
@@ -167,7 +168,7 @@ describe.each([
     const app = await signInApp({ owner: owner() });
     const response = await call(new Request(url("/app/api/session/extend"), {
       method: "POST", headers: { "Content-Type": "application/json",
-                                 Origin: "https://tinyassets.io",
+                                 Origin: ORIGIN,
                                  Authorization: `Bearer ${app.access_token}`,
                                  Cookie: `__Host-ta-owner=${app.session}` }, body: "{}" }),
       await state());

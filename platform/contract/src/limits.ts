@@ -250,9 +250,9 @@ export const LOG_ROW_BYTES = 64;
  * the widest real row, every exported table's at its ceiling escaped at JSON's
  * worst, a connection's models list at its 640 KiB among them, rounded up to a quarter MiB
  * (the owner-bound guard holds it equal). So no change, a token refresh's included, ever
- * writes the wide mark (`changelog.ts` `LOG_WIDE`); that mark stays the backstop should a
- * later column outgrow it before the guard catches it, failing the generation, never the
- * write.
+ * writes the wide mark (the capture triggers', `owner/src/schema.ts`); that mark stays the
+ * backstop should a later column outgrow it before the guard catches it, failing the
+ * generation, never the write.
  */
 export const IMAGE_MAX = 1536 * 1024;
 /** A schedule's cron expression's most characters (`owner/src/cron.ts`). */

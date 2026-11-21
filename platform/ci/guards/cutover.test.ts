@@ -1,54 +1,134 @@
 /**
  * The cutover's manifest (`platform/cutover.json`, read by `ci/kit/cutover.ts`) held to the
  * tree, so the cutover's change is the manifest applied and nothing else:
- * - it is in its shape: three phases, each entry a delete, an edit, a move or a live object;
+ * - it is in its shape: three phases, each entry a delete, an edit, a move, a live object or
+ *   a keep;
  * - every entry exists: each path, each name an edit or a move takes out of its file, each
  *   import an edit names, and each live object's name in the file that names it today; no
  *   delete or edit lies inside a path the manifest deletes, and no file is edited twice in a
  *   phase; a move may (a carry-out, made before the deletes), but never into one;
- * - every file under `platform/` and `.github/` that says what is "deleted at the cutover",
+ * - the tree it leaves, every tracked file with its edits applied (`kit/cutover.ts` `edited`):
+ *   no file names a path it deletes or imports a Python module it deletes, unless a keep says
+ *   why; under `platform/` and `.github/`, none says what is "deleted at the cutover" unedited or
  *   speaks the cutover's vocabulary (`/workspace/imported`, "old TinyAssets", the `import` and
- *   `discard` callers, `IMPORT_*`) or names a platform, workflow or script path it deletes, is
- *   on it;
+ *   `discard` callers, `IMPORT_*`); an edited workflow is YAML; and in each phase its Python
+ *   compiles and binds every name it reads, and its TOML parses (`kit/python_names.py`). What
+ *   is not yet so is owed by file (`ci/guards/rules.ts`), and only shrinks;
  * - the layer table's cutover layer (`ci/kit/imports.ts`): what it deletes may import itself,
  *   and nothing that stays imports it but an import an edit names (held over the tree by
  *   `isolation.test.ts`, its cases here); a Python file that stays the same, by its imports;
- * - its dry run (`ci/dry-run.ts`) makes the tree its cases say.
+ * - its dry run (`ci/dry-run.ts`) makes the tree its cases say, and `tests.yml`'s `required-tests`
+ *   needs it on every event but the merge group.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-import { type CutoverLayer, cutoverLayer, dryRun, dryRunLegs, type Entry, isGone, LIVE,
-         type Manifest, MANIFEST, PHASES, pythonLoads } from "../kit/cutover";
+import { type CutoverLayer, cutoverLayer, dryRun, dryRunLegs, edited, type Entry, isGone, LIVE,
+         type Manifest, MANIFEST, type Phase, PHASES, pythonLoads,
+         pythonModules, taken } from "../kit/cutover";
 import { keyed, object } from "../../contract/src/checks";
 import { layerProblems, repoScripts } from "../kit/imports";
+import { owedLists, ratchet } from "../kit/owed";
 import { treeFiles } from "../kit/sources";
 import { REPO } from "../paths";
-import { actionFiles, type Data, workflowNames } from "../workflows";
+import { actionFiles, type Data, workflow, workflowNames } from "../workflows";
 import { workerFolders } from "../wrangler";
+
+/** The events but the merge group's: the dry run's, whose queue runners are the bottleneck. */
+const NOT_QUEUED = "github.event_name != 'merge_group'";
+const APPLY = "node --experimental-strip-types --no-warnings ci/dry-run.ts apply";
+
+/**
+ * Each way `tests.yml`'s dry run could fail to gate a merge: a job that runs on a narrower
+ * event set, a leg that runs no applied tree or not its command, or `required-tests` passing
+ * without both its jobs' success (run as the gate step's own script).
+ */
+function dryRunGateProblems(jobs: Data): string[] {
+  const found: string[] = [];
+  const [legs, suites, checks, agg] = ["cutover-dry-run-legs", "cutover-dry-run",
+    "cutover-dry-run-checks", "required-tests"].map((name) => jobs[name] ?? {});
+  if (legs.if !== NOT_QUEUED || checks.if !== NOT_QUEUED || suites.if !== undefined
+      || suites.needs !== "cutover-dry-run-legs") {
+    found.push(`the dry run's jobs run on ${NOT_QUEUED}, its legs after their matrix`);
+  }
+  const runs = (job: Data) => (job.steps ?? []).map((step: Data) => step.run).filter(Boolean);
+  if (JSON.stringify(runs(suites).slice(-3)) !== JSON.stringify([APPLY, "npm ci",
+                                                                 "${{ matrix.command }}"])
+      || !runs(checks).some((run: string) => run === APPLY.replace("ci/", "platform/ci/"))) {
+    found.push("each dry-run job applies the manifest, then runs its leg's command alone");
+  }
+  if (![suites, legs, checks, agg].every((job) => job["continue-on-error"] === undefined
+      && (job.steps ?? []).every((step: Data) => step["continue-on-error"] === undefined))) {
+    found.push("no dry-run job or gate step may be allowed to fail");
+  }
+  const needs = [agg.needs ?? []].flat();
+  const gate = (agg.steps ?? []).filter((step: Data) => "DRY_RUN_RESULT" in (step.env ?? {}));
+  if (!needs.includes("cutover-dry-run") || !needs.includes("cutover-dry-run-checks")
+      || gate.length !== 1 || gate[0].if !== NOT_QUEUED
+      || JSON.stringify(gate[0].env) !== JSON.stringify({
+        DRY_RUN_RESULT: "${{ needs.cutover-dry-run.result }}",
+        DRY_RUN_CHECKS_RESULT: "${{ needs.cutover-dry-run-checks.result }}" })) {
+    found.push(`required-tests needs both dry-run jobs and reads their results on ${NOT_QUEUED}`);
+    return found;
+  }
+  const results = ["success", "failure", "skipped", "cancelled", ""];
+  for (const first of results) {
+    for (const second of results) {
+      const { status } = spawnSync("bash", ["-s"], { input:
+        `DRY_RUN_RESULT=${first}\nDRY_RUN_CHECKS_RESULT=${second}\n${gate[0].run}` });
+      if (status !== (first === "success" && second === "success" ? 0 : 1)) {
+        found.push(`the gate step exits ${status} on ${first} and ${second}`);
+      }
+    }
+  }
+  return found;
+}
 
 /** A text that says what is deleted at the cutover, however its comment wraps the words. */
 const MARKER = /deleted(?:[\s*#/]|<!--)+at(?:[\s*#/])+the(?:[\s*#/])+cutover/i;
 /** The cutover's vocabulary: no file that stays may speak it. */
 const VOCABULARY: readonly RegExp[] = Object.freeze([
   /\/workspace\/imported/, /old TinyAssets/i, /["'](?:import|discard)["']/, /\bIMPORT_[A-Z0-9_]+/]);
+/** A path a text names, with a folder in it: from the root, or as a step's local action (`./x`). */
+const PATH = /(?<![\w.@/-])(?:\.\/)?((?:[\w-]|\.[\w-])[\w.-]*(?:\/[\w.-]+)+)/g;
+/** A link to a path of this repository's main, which names that path from the root. */
+const REPO_LINK = /https:\/\/github\.com\/TinyAssets\/TinyAssets\/(?:tree|blob)\/main\//g;
+
 /**
- * The paths the manifest deletes under `platform/`, `.github/` and `scripts/`, as a file names
- * them: from the repository root, under `platform/` from there (`import/bundle.ts`), or as a
- * step's local action (`./.github/actions/x`). A one-word folder (`import`) is named only with
- * a path below it. The old stack's own paths are left out: a platform comment cites the code it
- * was ported from as history.
+ * Each folder or file of `goes` (what the manifest deletes) that `content`, the file at `path`,
+ * names: from the repository root, or under `platform/` from there (`import/bundle.ts`), and
+ * never one `stays` holds (the tree the manifest leaves). A one-word folder (`tests`) is named
+ * only with a path below it. Under `platform/`, the old stack's own paths are left out: a
+ * platform comment cites the code it was ported from as history (b24-manifest item 1; the
+ * founder's call, IQ2).
  */
-function goneNames(manifest: Manifest): RegExp[] {
-  return cutoverLayer(manifest).gone.filter((path) => /^(?:platform|\.github|scripts)\//.test(path))
-    .flatMap((path) => [...new Set([path, path.replace(/^platform\//, ""),
-                                    path.replace(/^\.github\//, "./.github/")])].map((name) =>
-      new RegExp(`(?<![\\w./@-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${
-        name.includes("/") ? "(?![\\w.-])" : "/"}`)));
+function goneMentions(path: string, content: string, goes: ReadonlySet<string>,
+                      stays: ReadonlySet<string>): string[] {
+  const found = new Set<string>();
+  for (const [, token] of content.replace(REPO_LINK, " ").matchAll(PATH)) {
+    const named = token!.replace(/\.+$/, "");
+    const forms = [named, `platform/${named}`];
+    const hit = forms.some((each) => stays.has(each)) ? undefined
+      : forms.find((each) => goes.has(each));
+    if (hit !== undefined
+        && (!path.startsWith("platform/") || /^(?:platform|\.github|scripts)\//.test(hit))) {
+      found.add(named);
+    }
+  }
+  return [...found];
+}
+
+/** Each folder and file of `paths`, from the repository root. */
+function withFolders(paths: Iterable<string>): Set<string> {
+  const all = new Set<string>();
+  for (const path of paths) {
+    path.split("/").forEach((_, at, parts) => all.add(parts.slice(0, at + 1).join("/")));
+  }
+  return all;
 }
 
 /** The shells of a workflow's or a composite action's `run` steps, one after another. */
@@ -98,6 +178,7 @@ const SHAPES: Readonly<Record<string, Readonly<Record<string, Key>>>> = {
   move: { move: [true, text], to: [true, text], names: [false, words], what: [true, text] },
   live: { live: [true, (v) => LIVE.includes(v as (typeof LIVE)[number])], name: [true, text],
           in: [true, text], what: [true, text] },
+  keep: { keep: [true, text], what: [true, text] },
 };
 
 /** How the manifest is out of its shape. */
@@ -121,7 +202,7 @@ function shapeProblems(value: unknown): string[] {
           || !Object.entries(shape).every(([key, [needed, valid]]) =>
             (entry as Record<string, unknown>)[key] === undefined ? !needed
               : valid((entry as Record<string, unknown>)[key]))) {
-        problems.push(`phase ${phase}'s entry ${n} is no delete, edit, move or live object`);
+        problems.push(`phase ${phase}'s entry ${n} is no delete, edit, move, live object or keep`);
       }
     });
   }
@@ -131,10 +212,10 @@ function shapeProblems(value: unknown): string[] {
 const entries = (manifest: Manifest) => PHASES.flatMap((phase) =>
   manifest.phases[phase].entries.map((entry) => ({ phase, entry })));
 
-/** The paths an entry lists: what it deletes, edits or moves. */
+/** The paths an entry lists: what it deletes, edits, moves or keeps. */
 const pathOf = (entry: Entry): string | null =>
   "delete" in entry ? entry.delete : "edit" in entry ? entry.edit
-    : "move" in entry ? entry.move : null;
+    : "move" in entry ? entry.move : "keep" in entry ? entry.keep : null;
 
 /** How an entry is not what the tree holds today. */
 function entryProblems(manifest: Manifest, tree: Tree): string[] {
@@ -186,26 +267,109 @@ function entryProblems(manifest: Manifest, tree: Tree): string[] {
   return problems;
 }
 
-/** Whether `path` is on the manifest: deleted, or inside what is, or edited or moved. */
-function listed(manifest: Manifest, path: string): boolean {
-  return entries(manifest).some(({ entry }) => {
-    const at = pathOf(entry);
-    return at !== null && ("delete" in entry ? isGone([at], path) : at === path);
-  });
+/**
+ * The tree the manifest leaves once `upTo`'s phase is done, from `files` (each tracked file
+ * today, by path, with its text): each file that stays, at its path then (a carry-out at its
+ * new one), with its edits of every phase so far applied (`edited`), and what is deleted by then.
+ */
+function leaves(manifest: Manifest, files: ReadonlyMap<string, string>,
+                upTo: Phase = "hold"): { left: Map<string, string>; gone: string[] } {
+  const done = entries(manifest).filter(({ phase }) =>
+    PHASES.indexOf(phase) <= PHASES.indexOf(upTo)).map(({ entry }) => entry);
+  const gone = done.flatMap((entry) => "delete" in entry ? [entry.delete] : []);
+  const names = new Map<string, string[]>();
+  const carried = new Map<string, string>();
+  const into = new Map<string, string>();
+  for (const entry of done) {
+    if ("edit" in entry) {
+      names.set(entry.edit, [...names.get(entry.edit) ?? [], ...entry.names]);
+    } else if ("move" in entry && entry.names !== undefined) {
+      into.set(entry.to, `${into.get(entry.to) ?? ""}\n${
+        taken(entry.move, files.get(entry.move) ?? "", entry.names)}`);
+      names.set(entry.move, [...names.get(entry.move) ?? [], ...entry.names]);
+    } else if ("move" in entry && isGone(gone, entry.move)) {
+      carried.set(entry.move, entry.to);
+    }
+  }
+  const left = new Map<string, string>();
+  for (const [path, content] of files) {
+    if (carried.has(path) || !isGone(gone, path)) {
+      left.set(carried.get(path) ?? path,
+               edited(path, content + (into.get(path) ?? ""), names.get(path) ?? []));
+    }
+  }
+  return { left, gone };
 }
 
-/** Each file of `files` that marks what the cutover deletes, or speaks its vocabulary, unlisted. */
-function scopeProblems(manifest: Manifest, files: ReadonlyMap<string, string>): string[] {
-  return [...files].flatMap(([path, content]) => {
-    if (listed(manifest, path)) {
+/**
+ * How the tree the manifest leaves still holds what goes: a file that stays, as its edits leave
+ * it, that names a path the manifest deletes (`goneMentions`) or imports a Python module it
+ * deletes; under `platform/` and `.github/`, that says what is "deleted at the cutover" or
+ * speaks the cutover's vocabulary; an edited workflow that is no YAML. A `keep` leaves its files
+ * as they are, and must still name what goes.
+ */
+function leftProblems(manifest: Manifest, files: ReadonlyMap<string, string>): string[] {
+  const { left, gone } = leaves(manifest, files);
+  const stays = withFolders(left.keys());
+  const goes = withFolders([...files.keys()].filter((path) => isGone(gone, path)));
+  const keeps = entries(manifest).flatMap(({ entry }) => "keep" in entry ? [entry.keep] : []);
+  const edits = new Set(entries(manifest).flatMap(({ entry }) =>
+    "edit" in entry ? [entry.edit] : []));
+  const kept = new Set<string>();
+  const problems = [...left].flatMap(([path, content]) => {
+    const said = goneMentions(path, content, goes, stays);
+    if (path.endsWith(".py")) {
+      said.push(...pythonLoads(path, content, (each) => files.has(each))
+        .filter((to) => isGone(gone, to)).map((to) => `an import of ${to}`));
+    }
+    const edit = edits.has(path) ? " less its edit" : "";
+    // In an edited file, the marker marks what its edit takes: an anchor of its own.
+    if (/^(?:platform|\.github)\//.test(path)) {
+      said.push(...[MARKER.test(content) && edit === "" ? "deleted at the cutover" : null,
+                    ...VOCABULARY.map((word) => word.exec(content)?.[0] ?? null)]
+        .filter((each) => each !== null));
+    }
+    const keep = keeps.find((each) => isGone([each], path));
+    if (keep !== undefined) {
+      if (said.length > 0) kept.add(keep);
       return [];
     }
-    const said = [MARKER.test(content) ? "deleted at the cutover" : null,
-                  ...[...VOCABULARY, ...goneNames(manifest)].map((word) =>
-                    word.exec(content)?.[0] ?? null)]
-      .filter((each) => each !== null);
-    return said.length === 0 ? [] : [`${path} says ${said.join(", ")}, and is not on the manifest`];
+    if (edit !== "" && /\.ya?ml$/.test(path)) {
+      try {
+        parse(content);
+      } catch (error) {
+        said.push(`no YAML (${(error as Error).message.split("\n")[0]})`);
+      }
+    }
+    return said.length === 0 ? [] : [`${path}${edit} says ${said.join(", ")}`];
   });
+  return [...problems, ...keeps.filter((each) => !kept.has(each))
+    .map((each) => `${each}: a keep that names nothing that goes: drop it`)];
+}
+
+/** The file a problem of `leftProblems` or `pythonProblems` is in: what a workspace owes. */
+const fileOf = (problem: string) => /^(?:(?:routes|cutover|hold): )?([^\s:]+)/.exec(problem)![1]!;
+
+/**
+ * How the Python and TOML files each phase leaves do not hold together (`kit/python_names.py`):
+ * a `.py` file that does not compile, reads a name nothing binds, or imports a name its module
+ * no longer defines; a `.toml` file that does not parse.
+ */
+function pythonProblems(manifest: Manifest, files: ReadonlyMap<string, string>): string[] {
+  // Each phase's tree of what stays when the hold ends: the old stack's own modules go.
+  const final = new Set(leaves(manifest, files).left.keys());
+  const trees = Object.fromEntries(PHASES.map((phase) => {
+    const tree = [...leaves(manifest, files, phase).left].filter(([path]) =>
+      /\.(?:py|toml)$/.test(path) && final.has(path));
+    const has = new Set(tree.map(([path]) => path));
+    return [phase, Object.fromEntries(tree.map(([path, text]) => [path, {
+      text, modules: Object.fromEntries(pythonModules(path, text, (each) => has.has(each))) }]))];
+  }));
+  const found = JSON.parse(execFileSync("python3",
+    ["-I", join(REPO, "platform/ci/kit/python_names.py")],
+    { input: JSON.stringify(trees), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })) as
+    Record<Phase, string[]>;
+  return PHASES.flatMap((phase) => found[phase].map((each) => `${phase}: ${each}`));
 }
 
 /** The imports into what the cutover deletes that files which stay make: `<from> imports <to>`. */
@@ -243,7 +407,7 @@ describe("the cutover's manifest", () => {
       ["no what", { delete: "a" }],
     ] as const) {
       expect([why, shapeProblems(manifestOf(entry as unknown as Entry))])
-        .toEqual([why, ["phase cutover's entry 0 is no delete, edit, move or live object"]]);
+        .toEqual([why, ["phase cutover's entry 0 is no delete, edit, move, live object or keep"]]);
     }
     expect(shapeProblems({ about: "a", phases: { cutover: { why: "a", entries: [] } } }))
       .toEqual(["the manifest is its about and its phases, routes, cutover, hold, in order"]);
@@ -276,30 +440,121 @@ describe("the cutover's manifest", () => {
     ]);
   });
 
-  it("lists every file under platform/ and .github/ that marks a deletion or speaks the cutover",
-     () => {
-    expect(scopeProblems(MANIFEST, treeFiles())).toEqual([]);
+  it("leaves no file that names what goes, its edits applied, and Python that holds together, " +
+     "but what ci owes", async () => {
+    const files = treeFiles(["."]);
+    const found = [...leftProblems(MANIFEST, files), ...pythonProblems(MANIFEST, files)];
+    const owed = await owedLists();
+    const owes = new Set((owed.get("ci") ?? []).flatMap((each) =>
+      each.guard === "cutover" ? [each.what] : []));
+    expect(found.filter((each) => !owes.has(fileOf(each)))).toEqual([]);
+    expect(ratchet("cutover", [...new Set(found.map(fileOf))].map((what) =>
+      ({ workspace: "ci", what })), owed)).toEqual([]);
+  });
+
+  it("takes each name with the block it heads, or as its text", () => {
+    expect(edited("a.md", "# A\n\n## Old\n\nold\n\n### Deeper\n\nold\n\n## New\n\nkept\n",
+                  ["## Old"])).toBe("# A\n\n## New\n\nkept\n");
+    expect(edited("a.toml", "[project]\nname = 'x'\n\n[tool.ruff]\nk = 1\n", ["[project]"]))
+      .toBe("[tool.ruff]\nk = 1\n");
+    expect(edited("a.yml", "jobs:\n  old:\n    steps:\n\n      - run: x\n  new:\n    k: 1\n",
+                  ["  old:"])).toBe("jobs:\n  new:\n    k: 1\n");
+    expect(edited("a.py", "KEYS = (\n    'A',\n)\nB = 1\n", ["KEYS = ("])).toBe("B = 1\n");
+    expect(edited("a.sh", "if x; then\n  y\nfi\nz\n", ["if x; then"])).toBe("z\n");
+    // A fragment goes as its text; a name that starts with its indent only where a line does.
+    expect(edited("a.py", "from a import b, c\n", ["b, "])).toBe("from a import c\n");
+    expect(edited("a.yml", "a:\n    x:\n      k: 1\n  x:\n    k: 2\nb: 1\n", ["  x:"]))
+      .toBe("a:\n    x:\n      k: 1\nb: 1\n");
+    expect(edited("a.py", "# one\n# two\nX = 1\nY = 2\n", ["# one\n# two\nX = 1"])).toBe("Y = 2\n");
+  });
+
+  it("finds what an edit leaves of what goes, and what a file that stays still names", () => {
     const what = "a probe";
-    expect(scopeProblems(manifestOf({ delete: "platform/import", what },
-                                    { delete: ".github/actions/gone", what },
-                                    { delete: "scripts/old.py", what },
-                                    { edit: "platform/kept.ts", names: ["IMPORT_X"], what }),
-                         new Map([
-      ["platform/import/x.ts", "export const IMPORT_X = 1;"],
+    const manifest = manifestOf(
+      { delete: "platform/import", what }, { delete: ".github/actions/gone", what },
+      { delete: "scripts/old.py", what }, { delete: "tests", what }, { delete: "deploy", what },
+      { edit: "platform/kept.ts", names: ["IMPORT_X"], what },
+      { edit: "docs/a.md", names: ["## Old"], what },
+      { edit: "docs/b.md", names: ["Old"], what },
+      { edit: ".github/workflows/w.yml", names: ["  old:"], what },
+      { edit: ".github/workflows/x.yml", names: ["a"], what },
+      { keep: "notes", what }, { keep: "ideas", what });
+    expect(leftProblems(manifest, new Map([
+      ["platform/import/bundle.ts", "export const IMPORT_X = 1;"],
+      [".github/actions/gone/action.yml", ""], ["tests/test_x.py", ""], ["deploy/x.sh", ""],
+      ["scripts/old.py", ""],
+      ["platform/deploy/checklist.md", ""],
       ["platform/kept.ts", "export const IMPORT_X = 1;"],
       ["platform/a.ts", "/**\n * Deleted at the\n * cutover with the job.\n */"],
       ["platform/b.md", "Your files from the old TinyAssets are in /workspace/imported."],
       ["platform/c.ts", 'const caller = "discard";'],
       ["platform/d.ts", "export const IMPORTANT_IMPORTS = 1; // imports a module"],
-      ["platform/e.ts", "// built by `import/bundle.ts`"],
+      ["platform/e.ts", "// built by `import/bundle.ts`, ported from `tests/test_x.py`"],
       [".github/workflows/f.yml", "      - uses: ./.github/actions/gone\n      - run: python scripts/old.py"],
       ["platform/g.ts", "// platform/importer/x.ts, deploy/import, scripts/old.pyc, tests/import/x"],
+      ["docs/a.md", "# A\n\n## Old\n\nsee tests/test_x.py\n\n## New\n\nkept\n"],
+      ["docs/b.md", "## Old\n\nsee scripts/old.py\n"],
+      ["docs/c.md", "The kit's own: deploy/checklist.md. The old host's: deploy/x.sh."],
+      ["docs/d.md", "[x](https://github.com/TinyAssets/TinyAssets/blob/main/scripts/old.py)"],
+      ["scripts/keep.py", "import old\n"],
+      [".github/workflows/w.yml", "jobs:\n  old:\n    steps:\n      - run: python scripts/old.py\n" +
+                                  "  new:\n    steps: [a, b]\n"],
+      [".github/workflows/x.yml", "on: [a, b]\n"],
+      ["notes/n.md", "see tests/test_x.py"], ["ideas/i.md", "nothing that goes"],
     ]))).toEqual([
-      "platform/a.ts says deleted at the cutover, and is not on the manifest",
-      "platform/b.md says /workspace/imported, old TinyAssets, and is not on the manifest",
-      'platform/c.ts says "discard", and is not on the manifest',
-      "platform/e.ts says import/, and is not on the manifest",
-      ".github/workflows/f.yml says ./.github/actions/gone, scripts/old.py, and is not on the manifest",
+      "platform/a.ts says deleted at the cutover",
+      "platform/b.md says /workspace/imported, old TinyAssets",
+      'platform/c.ts says "discard"',
+      "platform/e.ts says import/bundle.ts",
+      ".github/workflows/f.yml says .github/actions/gone, scripts/old.py",
+      "docs/b.md less its edit says scripts/old.py",
+      "docs/c.md says deploy/x.sh",
+      "docs/d.md says scripts/old.py",
+      "scripts/keep.py says an import of scripts/old.py",
+      ".github/workflows/x.yml less its edit says no YAML (Unexpected , in flow sequence at " +
+        "line 1, column 6:)",
+      "ideas: a keep that names nothing that goes: drop it",
+    ]);
+  });
+
+  it("finds Python a phase leaves that reads a name nothing binds, and TOML that does not parse",
+     () => {
+    const what = "a probe";
+    const manifest = manifestOf(
+      { delete: "scripts/old.py", what }, { delete: "tinyassets", what },
+      { edit: "scripts/q.py", names: ["from old import NO"], what },
+      { edit: "scripts/r.py", names: ["from old import NO", "NO,"], what },
+      { move: "tinyassets/base.py", to: "scripts/peer.py", names: ["KEYS = (", "def scrub():"],
+        what },
+      { edit: "scripts/peer.py", names: ["from tinyassets.base import scrub"], what },
+      { edit: "pyproject.toml", names: ["[project]"], what },
+      { edit: "a.toml", names: ["= 1"], what });
+    const found = pythonProblems(manifest, new Map([
+      ["scripts/old.py", "NO = 1\n"],
+      // The old oracle's line, its import taken and its one use left: a NameError at run time.
+      ["scripts/q.py", "from old import NO\n\n\ndef f(line):\n    return line.startswith(NO)\n"],
+      ["scripts/r.py", "from old import NO\nLINES = (NO,)\n\n\ndef f(line):\n" +
+                       "    return line.startswith(LINES)\n"],
+      ["scripts/s.py", "import q as qa\nprint(qa.f, qa.gone, qa.__file__)\n"],
+      ["scripts/t.py", "from r import f, g\n"],
+      ["scripts/u.py", "from pkg import (\n    sub,\n)\n"], ["scripts/pkg/__init__.py", ""],
+      ["scripts/pkg/sub.py", "﻿X = 1\n"],
+      ["tinyassets/base.py", "import os\n\nKEYS = (\n    'A',\n)\n\n\ndef scrub():\n" +
+                             "    return {k: v for k, v in os.environ.items() if k not in KEYS}\n"],
+      ["scripts/peer.py", "import os\nfrom tinyassets.base import scrub\n\nprint(scrub())\n"],
+      ["pyproject.toml", "[project]\nname = 'x'\n\n[tool.ruff]\nline-length = 100\n"],
+      ["a.toml", "[x]\nk = 1\n"],
+    ]));
+    expect(found.filter((each) => each.startsWith("cutover: ")).map((each) =>
+      each.replace(/(is no TOML).*/, "$1"))).toEqual([
+      "cutover: scripts/q.py:4: reads NO, which nothing binds",
+      "cutover: a.toml: is no TOML",
+      "cutover: scripts/s.py:2: reads qa.gone, which scripts/q.py does not define",
+      "cutover: scripts/t.py:1: imports g from scripts/r.py, which does not define it",
+    ]);
+    expect(found.filter((each) => each.startsWith("routes: "))).toEqual([
+      "routes: scripts/s.py:2: reads qa.gone, which scripts/q.py does not define",
+      "routes: scripts/t.py:1: imports g from scripts/r.py, which does not define it",
     ]);
   });
 
@@ -380,6 +635,35 @@ describe("the cutover's manifest", () => {
       .toEqual([{ leg: "kept", command: "npm run test:workerd -w kept" }]);
     expect(() => dryRunLegs([{ leg: "x", command: "npm test" }], manifest))
       .toThrow("platform-tests' leg npm test names no workspace");
+  });
+
+  it("gates every merge but the queue's through required-tests, on the applied tree", () => {
+    expect(dryRunGateProblems(workflow("tests.yml").jobs)).toEqual([]);
+    const mutations: Record<string, (jobs: Data) => void> = {
+      "the legs run on pull requests only": (jobs) => {
+        jobs["cutover-dry-run-legs"].if = "github.event_name == 'pull_request'";
+      },
+      "a leg on the unapplied tree": (jobs) => { jobs["cutover-dry-run"].steps.splice(-3, 1); },
+      "a leg swallowed": (jobs) => { jobs["cutover-dry-run"].steps.at(-1).run += " || true"; },
+      "the checks allowed to fail": (jobs) => {
+        jobs["cutover-dry-run-checks"]["continue-on-error"] = true;
+      },
+      "not needed": (jobs) => {
+        jobs["required-tests"].needs = jobs["required-tests"].needs
+          .filter((name: string) => name !== "cutover-dry-run-checks");
+      },
+      "a skip passes": (jobs) => {
+        const step = jobs["required-tests"].steps.find((each: Data) => "DRY_RUN_RESULT" in
+          (each.env ?? {}));
+        step.run = step.run.replace('"$DRY_RUN_RESULT" != success',
+                                    '"$DRY_RUN_RESULT" = failure');
+      },
+    };
+    for (const [name, mutate] of Object.entries(mutations)) {
+      const jobs = structuredClone(workflow("tests.yml").jobs);
+      mutate(jobs);
+      expect(dryRunGateProblems(jobs), name).not.toEqual([]);
+    }
   });
 
   it("holds the cutover layer: what goes imports itself, and what stays only named imports", () => {

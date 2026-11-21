@@ -35,7 +35,7 @@ outage and a bad write were one case, and both closed every gate.
    - **Doors:** the isolate's memory, then the location's Cache API under one key no route
      serves (`doors/src/control.ts` `KEEPER`, a module-state exemption in `doors/guards/rules.ts`:
      the platform's one record, no owner's). Every doors reader goes through `controlRead`.
-   - **Owner:** `SqlKeeper` over the object's own SQLite (`control_kept`, migration 19, not
+   - **Owner:** `SqlKeeper` over the object's own SQLite (`control_kept`, migration 20, not
      exported), its writes quiet units of the write gate (`control-gate.ts` `objectKeeper`).
    - **Sandbox:** the same `SqlKeeper` (migration 4), which replaces `known_retention` (dropped).
 3. **The fresh-only acts are one table** (`FRESH_ONLY`), each refused with `staleRefusal`, a
@@ -52,7 +52,7 @@ outage and a bad write were one case, and both closed every gate.
    starts. A kill flipped before the outage holds through it.
 4. **`CONTROL_TEXT_MAX`, 64 KiB:** a recorded technical ceiling, what each kept copy is costed
    for (the owner's database bound). The owner-bound guard costs `control_kept`; the limits
-   audit's worst case is restated (397.0 MB under half).
+   audit's worst case is restated (369.8 MB under half, after the rooms).
 
 ## Behaviour changed on purpose
 

@@ -20,7 +20,7 @@ name: Sandbox template (manual, founder-approved)
 #
 # Each run spends: a build and a few sandbox-minutes. Its secret comes from the
 # main-only `production` environment's store, so a branch's copy of this file
-# never reaches it (tests/test_workflow_production_environment.py).
+# never reaches it (platform/ci/guards/environment.test.ts).
 
 on:
   workflow_dispatch:

@@ -186,7 +186,25 @@
             "path": ""
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "result",
+              "status": "error",
+              "error.type": "TerminalQuotaError"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "result",
+              "status": "error",
+              "error.type": "RetryableQuotaError"
+            },
+            "path": ""
+          }
+        ]
       }
     },
     "instructions": {

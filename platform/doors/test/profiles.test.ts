@@ -14,6 +14,7 @@ import { apiKeyOrigin } from "../../contract/src/binding";
 import type { Binding } from "../../contract/src/binding";
 import { mcpOrigin } from "../src/binder";
 import { profileNames } from "../../contract/src/doors";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import {
   answerOf, appPost, call, connect, doorsEnv, grantsOf, legacyPost, OPEN, ownDoor,
   registerClient, serveFirstPartyDocument, setControl, signInApp, type Tokens, url,
@@ -123,7 +124,7 @@ describe("the MCP door's tool profiles", () => {
     const found = await client.callTool({ name: "search", arguments: { query: "boilers" } });
     expect(answerOf(found)).toMatchObject({ next_cursor: null, results: [{
       id: "/workspace/plumber.md", title: "Bo",
-      url: `https://tinyassets.io/app#data/${encodeURIComponent("/workspace")}` }] });
+      url: `${APP_RESOURCE}#data/${encodeURIComponent("/workspace")}` }] });
     const fetched = await client.callTool({ name: "fetch",
                                             arguments: { id: "/workspace/plumber.md" } });
     expect(answerOf(fetched)).toMatchObject({ id: "/workspace/plumber.md", title: "Bo",

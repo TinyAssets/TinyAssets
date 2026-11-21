@@ -9,7 +9,7 @@ import { doorbellInput, metering, ringRequest } from "../src/gateway";
 import { manifestLists, objectPrefix } from "../src/files";
 import { MANIFEST_PARTS } from "../src/limits";
 import { refusalOf } from "../src/refusal";
-import { doorbellRequest, type WakeContent } from "../src/wake-kinds";
+import { doorbellRequest, subscriptionId, type WakeContent } from "../src/wake-kinds";
 import { wakeKinds } from "../src/wake-records";
 
 const code = (call: () => unknown): string | undefined => {
@@ -81,6 +81,19 @@ describe("ringRequest", () => {
            [{ ...fixture, headers: { n: 1 } }], [{ ...fixture, headers: [] }],
            [{ ...fixture, extra: 1 }], [{ ...fixture, body: 1 }]])("refuses %j", (value) => {
     expect(code(() => ringRequest(value))).toBe("invalid_request");
+  });
+});
+
+describe("subscriptionId", () => {
+  // The object stores the id the doors derive, and an unsubscribe derives it again, so a
+  // version that spells the canonical JSON otherwise strands every stored subscription.
+  it("is the digest of the canonical JSON, keys sorted, an undefined field left out", () => {
+    const id = "sub_246535f87b40229cba4292a4d303d280";
+    expect(subscriptionId("owner", "https://x.test/fire", "claude_routine_fire",
+                          { rooms: ["room:app:r"], board: false, agent_id: "a" })).toBe(id);
+    expect(subscriptionId("owner", "https://x.test/fire", "claude_routine_fire",
+                          { rooms: ["room:app:r"], board: false, agent_id: "a",
+                            command_center_id: undefined })).toBe(id);
   });
 });
 

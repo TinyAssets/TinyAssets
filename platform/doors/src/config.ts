@@ -4,16 +4,16 @@
  * its bindings).
  *
  * The public identity is the contract's `identity.json`, its one copy, which the deploy kit
- * (`deploy/facts.ts`) and the plugins (`plugins/build.mjs`) read too: `host`, the public
- * origin's; `egress`, the sandbox's door, a custom domain of this Worker; `routes`, the
- * route patterns the doors take at the cutover, each from the origin; the MCP door
- * (`mcp`); where a sign-in starts and where the upstream returns it (`signin`); the doors'
- * own app's client document, redirect and resource (`first_party`); where a model source's
- * OAuth flow returns (`connect_callback`) and the app's page that finishes it (`connected`);
- * E2B's lifecycle webhook (`hook`). The URLs the deploy kit reads too are the contract's
- * (`contract/src/identity.ts`). The contract's `ZONE` and `EGRESS_HOST`
- * (`contract/src/egress.ts`) read `host` and `egress`, and the runner the sandbox template
- * ships is built from that module, so a change to the file takes a new template pair.
+ * (`deploy/facts.ts`) and the plugins (`plugins/build.mjs`) read too: `zone`, ours and the
+ * site's; `host`, the public origin's, the zone or one name under it; `routes`, the route
+ * patterns the doors take on the host, each from the origin; the MCP door (`mcp`); where a
+ * sign-in starts and where the upstream returns it (`signin`); the doors' own app's client
+ * document, redirect and resource (`first_party`); where a model source's OAuth flow returns
+ * (`connect_callback`) and the app's page that finishes it (`connected`); E2B's lifecycle
+ * webhook (`hook`). The URLs the deploy kit reads too are the contract's
+ * (`contract/src/identity.ts`), `ZONE` and `HOST` among them. The egress host, the sandbox's
+ * door and a custom domain of this Worker, is `contract/egress.json`'s, read as
+ * `contract/src/egress.ts` `EGRESS_HOST`, which the sandbox template's runner is built from.
  */
 import identity from "../../contract/identity.json" with { type: "json" };
 import { ORIGIN, WEB_CLIENT } from "../../contract/src/identity";

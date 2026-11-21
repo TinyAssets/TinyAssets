@@ -5,6 +5,7 @@
  * third-party URL.
  */
 import { describe, expect, it } from "vitest";
+import { HOST } from "../../contract/src/identity";
 
 import { CSP } from "../src/pages";
 import { SIGNIN_REFUSALS, SIGNIN_STATES } from "../../sources/src/signin";
@@ -64,7 +65,7 @@ describe("the owner app's pages", () => {
   it("allow this origin's own scripts, style and socket, and nothing inline or framed", () => {
     expect(CSP.split("; ")).toEqual([
       "default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'",
-      "connect-src 'self' wss://tinyassets.io", "base-uri 'none'", "form-action 'none'",
+      `connect-src 'self' wss://${HOST}`, "base-uri 'none'", "form-action 'none'",
       "frame-ancestors 'none'", "require-trusted-types-for 'script'", "trusted-types 'none'",
     ]);
   });

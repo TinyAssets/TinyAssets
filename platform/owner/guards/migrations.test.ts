@@ -91,8 +91,8 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
  * it is of. A shape is one schema's: changed with no migration, two generations of one schema
  * would read two ways. Pinned again, with its count, at each new migration.
  */
-const EXPORT_SHAPE = { schema: 19, sha256:
-  "15f28c74a9c665073bd86deed1f6f4556e0cb3df9f5937298e24bb47074d97bf" };
+const EXPORT_SHAPE = { schema: 20, sha256:
+  "bb8d62248574fb8e99bf6070ffe36a2409df9325b8b4f0e6f3fd941f76c7cef9" };
 
 describe("every migration says how a generation from before it is brought forward", () => {
   it("one entry a migration, null only where its text names no exported table, nor reaches " +
@@ -124,11 +124,11 @@ describe("every migration says how a generation from before it is brought forwar
     expect(named).toEqual([]);
   });
 
-  it("brings a generation forward from schema 9 on, and none before it or newer than the code",
-     () => {
+  it("brings a generation forward from schema 19 on (migration 19 makes the rooms from the " +
+     "mail's rows), and none before it or newer than the code", () => {
     const schemas = Array.from({ length: MIGRATIONS.length + 1 }, (_, at) => at + 1);
     expect(schemas.filter((schema) => unforwardable(schema) === null))
-      .toEqual(schemas.filter((schema) => schema >= 9 && schema <= MIGRATIONS.length));
+      .toEqual(schemas.filter((schema) => schema >= 19 && schema <= MIGRATIONS.length));
   });
 
   it("holds the export's shape to the schema it is of", () => {

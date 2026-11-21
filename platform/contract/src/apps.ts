@@ -25,6 +25,7 @@
 import raw from "../apps.json" with { type: "json" };
 
 import { keyed, object } from "./checks.ts";
+import { MCP_RESOURCE } from "./identity.ts";
 
 export interface AppConnect {
   /** A deep link where the vendor has one. */
@@ -78,6 +79,14 @@ function texts(value: unknown, what: string, pattern?: RegExp): readonly string[
     throw new Error(`apps.json: ${what} is a list of ${pattern === undefined ? "texts" : pattern}`);
   }
   return Object.freeze([...value] as string[]);
+}
+
+/**
+ * Where a connect step names the MCP door, the file writes `{mcp}`, never its URL, which is the
+ * identity's (`MCP_RESOURCE`); in a link it stands for the URL as a query value encodes it.
+ */
+function withDoor(value: string, inLink: boolean): string {
+  return value.replaceAll("{mcp}", inLink ? encodeURIComponent(MCP_RESOURCE) : MCP_RESOURCE);
 }
 
 function https(value: unknown, what: string): string {
@@ -177,7 +186,8 @@ export function checkedApps(value: unknown = raw): Apps {
     if (!/^https:\/\//.test(sources)) {
       throw new Error(`apps.json: ${id}.source names the vendor page its steps were read from`);
     }
-    const steps = texts(connect["steps"], `${id}.connect.steps`);
+    const steps = Object.freeze(texts(connect["steps"], `${id}.connect.steps`)
+      .map((step) => withDoor(step, false)));
     if (steps.length === 0) {
       throw new Error(`apps.json: ${id}.connect.steps names at least one step`);
     }
@@ -189,10 +199,13 @@ export function checkedApps(value: unknown = raw): Apps {
                              names: texts(match["names"], `${id}.match.names`, NAME),
                              redirects: redirectPatterns(match["redirects"], id) }),
       connect: Object.freeze({
-        ...(connect["link"] === undefined ? {} : { link: https(connect["link"], `${id}.link`) }),
-        ...(connect["say"] === undefined ? {} : { say: text(connect["say"], `${id}.say`) }),
+        ...(connect["link"] === undefined ? {}
+          : { link: withDoor(https(connect["link"], `${id}.link`), true) }),
+        ...(connect["say"] === undefined ? {}
+          : { say: withDoor(text(connect["say"], `${id}.say`), false) }),
         steps,
-        ...(connect["code"] === undefined ? {} : { code: text(connect["code"], `${id}.code`) }),
+        ...(connect["code"] === undefined ? {}
+          : { code: withDoor(text(connect["code"], `${id}.code`), false) }),
       }),
       source: sources, checked: app["checked"] as string,
     });

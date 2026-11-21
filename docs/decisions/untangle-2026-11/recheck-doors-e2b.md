@@ -58,10 +58,10 @@ refused by the module-state rule (`ci/kit/module-state.ts`).
 The overload is answered on MCP Events as every transient refusal is. Giving the family its
 own answer changes every one of them, so it is owed:
 
-- [ ] `doors/src/refused.ts` `asEvent` answers a transient refusal (`unavailable`,
+- [x] `doors/src/refused.ts` `asEvent` answers a transient refusal (`unavailable`,
   `restoring`, `object_overloaded`) as `Forbidden` (`-32024`, the message its reason): the
   design sketch's codes have none for the moment. One answer for the family
-  (`untangle/events-transient`).
+  (`untangle/events-transient`). Done (`small-shape.md` §3).
 
 ## 4. Proof
 
