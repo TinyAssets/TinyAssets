@@ -579,8 +579,8 @@ the repo.
 A blocking review verdict is now a check (`.github/workflows/review.yml`), the answer to
 #3989 auto-merging at a BLOCKed head. Any workflow job's check run reports as the GitHub
 Actions app, so the `review` context must be pinned to an App of its own, which only an
-organization owner can make. Nothing requires `review` until the last row; until then the
-receipt still gates.
+organization owner can make. Since the last row, `review` is the one review gate: the
+receipt is gone (ADR-038).
 
 The installed App can recover a lost key under the same identity, with only a browser and
 `gh`. First check, in the organization's settings (Developer settings → GitHub Apps), that it
@@ -599,17 +599,18 @@ App itself gives it a new ID and requires a reviewed ruleset change.
 | Its key, environment and id | Give that code only to Claude on your own computer, which runs the platform setup's review App step with your own `gh`. It makes the environment `review` (deployment branches `main` only, no required reviewer), stores the App's private key there as the environment secret `REVIEW_APP_PRIVATE_KEY`, and sets the repository variable `REVIEW_APP_ID` to the App's id. `review.yml` reads exactly these three names, and decides nothing while `REVIEW_APP_ID` is unset. |
 | Verify the key is main-only | Settings → Environments → `review`: deployment branches are **Selected branches** with `main` alone (not "No restriction", which is what GitHub gives an environment it makes on its own). Settings → Secrets and variables → Actions: no repository-level `REVIEW_APP_PRIVATE_KEY`. Either one would let a branch's workflow mint the App's token and post `review`. |
 | Install it | From the link the setup prints, install the App on `TinyAssets/TinyAssets` alone. |
-| Pin the context | `untangle/p2-review-required` adds `review`, posted by the review App (`integration_id` 5634948), to `docs/ops/merge-queue-ruleset.json`. Once it merges, from an up-to-date checkout of `main`: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Read back: `gh api repos/TinyAssets/TinyAssets/rules/branches/main` shows `{"context":"review","integration_id":5634948}`. Until then `enqueue-merge` refuses on the drift, and auto-merge still queues PRs (`untangle-2026-11/p2-review-required.md`). |
+| Pin the context | `untangle/p2-review-required` adds `review`, posted by the review App (`integration_id` 5634948), to `docs/ops/merge-queue-ruleset.json`. Once it merges, from an up-to-date checkout of `main`: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Read back: `gh api repos/TinyAssets/TinyAssets/rules/branches/main` shows `{"context":"review","integration_id":5634948}`. Done, read back 2026-11-21. |
 
 ## The merge queue's ruleset follows `docs/ops/merge-queue-ruleset.json` (2026-11-16)
 
 The file is the one source of the required checks (`docs/decisions/untangle-2026-11/required-checks.md`).
-`enqueue-merge` reads the rules GitHub applies to `main` and enqueues nothing while they differ
-from the file's, so a ruleset change is made in the file, by a PR, and then applied.
+Auto-enroll reads the rules GitHub applies to `main` and arms nothing while they differ from
+the file's (`scripts/ruleset_drift.py`), so a ruleset change is made in the file, by a PR, and
+then applied.
 
 | Item | Smallest founder-only action |
 |---|---|
-| Any ruleset change | Once the PR changing the file merges: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Not the Settings page: an edit there that the file lacks stops `enqueue-merge` until a PR copies it. |
+| Any ruleset change | Once the PR changing the file merges: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Not the Settings page: an edit there that the file lacks stops auto-enroll until a PR copies it. Between the merge and the `PUT`, a PR opened or pushed is not armed: arm it again after the read-back (a push, or `gh pr merge --auto`). |
 | Classic protection's copy of the checks | Settings → Branches → `main` → clear **Require status checks to pass before merging** and save, keeping the rule (it blocks force pushes and deletion). The ruleset requires every check it does, and the classic copy can't be read without an admin token, so nothing could check it against the file. Read back: `gh api repos/TinyAssets/TinyAssets/branches/main/protection --jq .required_status_checks` gives `null`. |
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)

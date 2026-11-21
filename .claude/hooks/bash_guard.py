@@ -8,16 +8,14 @@ Pre (refuse before running):
     file unescaped and broke a patch; file contents go through the Write tool;
   * `pkill -f PATTERN` without the `[x]yz` bracket trick -- the pattern also
     sits in the command line of the shell running it, so it killed its own
-    ssh session;
-  * posting a `Drain-Review-Head: <sha>` receipt for a sha that is not the
-    PR's current head -- the gate refuses it later, after a wasted cycle.
+    ssh session.
 Post (after running):
   * `git push` whose branch did not land on origin -- a silent push failure
     looked like a pushed fix.
 
 Network failures and a guard that cannot run pass (settings.json skips a
-missing script): the merge gate still refuses a stale receipt, so this hook
-only saves time and must never block on its own outage.
+missing script): this hook only saves time and must never block on its own
+outage.
 """
 
 from __future__ import annotations
@@ -32,9 +30,6 @@ from pathlib import Path
 
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
 _PKILL = re.compile(r"\bpkill\b([^|;&\n]*)")
-_RECEIPT_HEAD = re.compile(r"Drain-Review-Head: ([0-9a-f]{40})")
-_GH_POST = re.compile(r"\bgh\s+pr\s+(?:comment|review|edit)\b([^|;&\n]*)")
-_BODY_FILE = re.compile(r"(?:--body-file|-F)\s+(\"[^\"]+\"|'[^']+'|\S+)")
 
 
 def _git(cwd: Path, *args: str) -> str | None:
@@ -62,38 +57,6 @@ def self_matching_pkill(command: str) -> str | None:
         if re.search(r"(?:^|\s)-\w*f\b|--full\b", args) and "[" not in args:
             return ("`pkill -f PATTERN` also matches the shell running it (an ssh "
                     "session died this way); write the pattern as '[p]attern'")
-    return None
-
-
-def stale_receipt(command: str, cwd: Path) -> str | None:
-    post = _GH_POST.search(command)
-    if not post:
-        return None
-    text = command
-    body_file = _BODY_FILE.search(post.group(1))
-    if body_file:
-        path = Path(body_file.group(1).strip("\"'"))
-        try:
-            text += (path if path.is_absolute() else cwd / path).read_text(encoding="utf-8")
-        except OSError:
-            pass
-    cited = _RECEIPT_HEAD.search(text)
-    if not cited:
-        return None
-    number = re.search(r"^\s*(\d+)\b", post.group(1))
-    try:
-        out = subprocess.run(
-            ["gh", "pr", "view", *([number.group(1)] if number else []),
-             "--json", "headRefOid", "-q", ".headRefOid"],
-            cwd=cwd, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    head = out.stdout.strip()
-    if out.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head):
-        return None
-    if head != cited.group(1):
-        return (f"receipt names {cited.group(1)[:12]} but the PR head is {head[:12]}; "
-                "review the current head (or push first), then post")
     return None
 
 
@@ -165,10 +128,9 @@ def _main() -> int:
     if payload.get("hook_event_name") == "PostToolUse":
         reasons = [push_did_not_land(command, cwd)]
     elif payload.get("tool_name") == "Bash":
-        reasons = [heredoc_backslash(command), self_matching_pkill(command),
-                   stale_receipt(command, cwd)]
+        reasons = [heredoc_backslash(command), self_matching_pkill(command)]
     else:
-        reasons = [self_matching_pkill(command), stale_receipt(command, cwd)]
+        reasons = [self_matching_pkill(command)]
     reasons = [r for r in reasons if r]
     if not reasons:
         return 0
