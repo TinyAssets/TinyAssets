@@ -63,7 +63,12 @@ reviewers stop running whole workspace suites and the recorders before a PR open
    - Rejected: rv split into files by door ranges (an index in a file's name), a shard tag in
      each recorder (every recorder carrying CI's split), and main's recordings cached by tree
      (a merge group's cache is its ref's alone, and main moves every few minutes).
-   - Measured: MEASURED.
+   - Measured on the build host under the run lock, its load about 11 on four cores: shard
+     3/4 of base and head at once took 12 min 29 s of wall and 10 min of CPU, `npm ci` of the
+     base 12 s of it. It kept 153 wire lines, 3,696 rpc and 18,901 rv of each tree (about a
+     quarter of 804, 13,720 and 73,945), and all four recorders were the same on both sides.
+     On an idle four-CPU runner the shard is about its CPU over the two trees, some 5 to 6
+     minutes, the owner's 2/2 leg's time.
 5. **`record` and `record:diff` go; `npm run record:check -- <base> <k>/<n> <body>` is the one
    entry**, CI's and anyone's. It installs a tree with none (`npm ci`), so a host's linked
    dependencies are left alone.
@@ -75,6 +80,6 @@ reviewers stop running whole workspace suites and the recorders before a PR open
 7. **Guarded** by `legs.test.ts` `platform-recorders`: the job's shape (every shard of one
    count, its check whole and last, read-only permissions, nothing conditional), the
    aggregate's gate step reading its result, and the script's verdict and shard split.
-8. **Left:** the shards' time on CI is first measured by this PR's own run; the watchdog is
-   about six times the local shard (item 4) until then, and is set from CI's at the next
-   budgets refresh (`untangle/budgets-variance`'s procedure).
+8. **Left:** the shards' time on CI is first measured by this PR's own run (`live:`). The
+   watchdog, 45 minutes, is about six times the estimate in item 4 until then; if CI's shard
+   runs past 7 minutes, the count rises before the watchdog moves.
