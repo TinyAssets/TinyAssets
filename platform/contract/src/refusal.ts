@@ -386,7 +386,7 @@ export function refusalOf(error: unknown): Refusal | null {
  * Whether `error` crossed as a refusal, read by `refusalOf` or not: one it does not read
  * (another version's code) was still thrown as an answer, never lost on the way.
  */
-export function namedRefusal(error: unknown): error is Error {
+export function namedRefusal(error: unknown): error is Error & { readonly name: "Refusal" } {
   return error instanceof Error && error.name === "Refusal";
 }
 
