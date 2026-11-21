@@ -13,7 +13,7 @@ import { mcpClient } from "../src/binder";
 import { ACCESS_TOKEN_TTL_S, now, REFRESH_TOKEN_TTL_S } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import {
-  APP_RESOURCE, MCP_RESOURCE, WEB_CLIENT, WEB_REDIRECT,
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, WEB_CLIENT, WEB_REDIRECT,
 } from "../../contract/src/identity";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
@@ -181,7 +181,7 @@ describe("sign-out at the edges", () => {
   it("answers a token that expires after validation 401, not 500", async () => {
     const app = await signInApp({ owner: owner() });
     const response = await call(new Request(url("/app/api/session/close"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${app.access_token}`,
                                  Cookie: `__Host-ta-owner=${app.session}` }, body: "{}" }),
       expiringAfterValidation());
@@ -442,7 +442,7 @@ describe("the sign-in flow", () => {
   it("serves the first-party document with exactly its one redirect", async () => {
     const response = await call(new Request(WEB_CLIENT));
     expect(await response.json()).toEqual({
-      client_id: WEB_CLIENT, client_name: "TinyAssets", client_uri: "https://tinyassets.io",
+      client_id: WEB_CLIENT, client_name: "TinyAssets", client_uri: ORIGIN,
       redirect_uris: [WEB_REDIRECT], token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] });
   });
@@ -499,7 +499,7 @@ describe("the provider's pins", () => {
 });
 
 describe("the doors' routes and gates", () => {
-  it.each(["null", "https://tinyassets.io", "https://evil.example"])(
+  it.each(["null", ORIGIN, "https://evil.example"])(
     "refuses Origin %s on /mcp 403, with a valid token", async (origin) => {
       const alice = owner();
       const tokens = await connect(await registerClient(), { owner: alice });
@@ -512,7 +512,7 @@ describe("the doors' routes and gates", () => {
   /** A sign-out POST to `target`, with the owner's live app token and cookie. */
   function signOutAt(target: string, app: { access_token: string; session: string }) {
     return call(new Request(target, {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${app.access_token}`,
                                  Cookie: `__Host-ta-owner=${app.session}` }, body: "{}" }));
   }
@@ -535,7 +535,7 @@ describe("the doors' routes and gates", () => {
   it("takes only POST on the owner surface", async () => {
     const app = await signInApp({ owner: owner() });
     const response = await call(new Request(url("/app/api/keys"), {
-      method: "PUT", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "PUT", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                 Authorization: `Bearer ${app.access_token}` }, body: "{}" }));
     expect(response.status).toBe(405);
   });

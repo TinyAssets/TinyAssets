@@ -41,7 +41,7 @@
  *
  * The door bills CPU only while the bytes flow; the owner's object does no work meanwhile,
  * but stays resident while it holds the stream's end signal. A sandbox token reaches no
- * other door: the other doors serve `tinyassets.io` alone, and the object refuses the
+ * other door: the other doors serve the public host alone, and the object refuses the
  * sandbox binding at every door but the egress doors.
  */
 import {

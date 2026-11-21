@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM, REPO } from "../../ci/paths";
 import identity from "../../contract/identity.json" with { type: "json" };
+import { EGRESS_HOST } from "../../contract/src/egress";
 import { routeTakes } from "../../contract/src/identity";
 
 /** The URLs (path and query, as a request carries them) the doors serve, each by its source. */
@@ -62,6 +63,16 @@ function taken(url: string): boolean {
 }
 
 describe("the doors' public identity", () => {
+  it("serves the doors on the zone or one name under it, and the egress door one under it", () => {
+    // Universal SSL covers the zone and its first-level names alone (Cloudflare's limits page),
+    // so a deeper host would have no certificate.
+    const oneUnder = (host: string): boolean => host.endsWith(`.${identity.zone}`)
+      && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(host.slice(0, -identity.zone.length - 1));
+    expect(identity.host === identity.zone || oneUnder(identity.host)).toBe(true);
+    expect(oneUnder(EGRESS_HOST)).toBe(true);
+    expect(EGRESS_HOST).not.toBe(identity.host);
+  });
+
   it("hands the doors, at the cutover, every path the outside world reaches them by", () => {
     for (const path of [identity.mcp, identity.signin.authorize, identity.signin.callback,
                         identity.first_party.client, identity.first_party.redirect,
