@@ -96,12 +96,7 @@ export function compareDeletions(work: string, jobs: string, rehearsal: string |
     throw new Error("the private cutover record does not cover the saved bundle digests");
   }
 
-  let staged;
-  try {
-    staged = bundlesIn(join(work, "bundle", "out"));
-  } catch {
-    throw new Error("the deletion comparison could not verify the staged bundles");
-  }
+  const staged = bundlesIn(join(work, "bundle", "out"));
   if (staged.length !== candidates.size) {
     throw new Error("the bundles and the private cutover record cover different owners");
   }

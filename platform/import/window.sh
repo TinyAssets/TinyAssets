@@ -79,12 +79,13 @@ readonly KEEP_FREE_PERCENT=20
 # The job's credential inputs (cli.ts STAGE_INPUTS), in the order stdin hands them.
 readonly CREDENTIALS=(CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
                       CLOUDFLARE_API_TOKEN IMPORT_KEY)
-# The primary backup store's read-only Spaces key (census, offsite), in stdin's order.
+# The primary backup store's read-only Spaces key (census, deletions, offsite), in stdin's order.
 readonly SOURCE_CREDENTIALS=(SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY)
 # The off-site bucket's R2 key (offsite), after the source's, in stdin's order.
 readonly OFFSITE_CREDENTIALS=(CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY)
 # The primary backup store: the bucket and prefix the nightly backup writes (BACKUP_DEST,
-# install-host-services.yml), on its region's Spaces endpoint. Neither is a secret.
+# install-host-services.yml), on its region's Spaces endpoint. Neither is a secret. The old
+# broker writes its deletion jobs under the same BACKUP_DEST (`deletion_records.py`).
 readonly SOURCE="tasrc:workflow-backups-jonnyton-sfo3/workflow-backups"
 readonly SOURCE_ENDPOINT="sfo3.digitaloceanspaces.com"
 readonly MANIFEST_NAME='^tinyassets-platform-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z[.]json$'

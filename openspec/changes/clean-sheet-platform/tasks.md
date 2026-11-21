@@ -178,12 +178,12 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   - Mode `offsite` copies the final backup to `tinyassets-final-backup` and reads each object
     back against its manifest (the founder, 2026-11-09).
 - [ ] **Step 11. `bundle`, `stage`, `verify`, the deletion jobs compared, `admit`.**
-  - The deletion jobs compared (d3 §C4, list3 P28): the old stack's unfinished deletion jobs
-    (`tinyassets/broker/deletion_jobs.py` `load_unfinished_jobs`, read from the off-host
-    authority, never a backup copy) against the census. An owner whose job was made after the
-    copy is discarded (still `pending`) and withheld before any owner is admitted. The `deletions` mode compares current off-host records
-    with this run's bundles. Discard, withholding and their enforcement before admission
-    remain open (§10 step 5).
+  - The deletion jobs compared (d3 §C4, list3 P28): the old stack's deletion jobs, finished or
+    not (`tinyassets/broker/deletion_records.py`, read from the off-host authority, never a
+    backup copy), against the run's bundles: mode `deletions` (`i-deletion-compare.md`). An
+    owner whose job was made after the copy is discarded (still `pending`) and withheld before
+    any owner is admitted. The discard, the withholding and their hold on `admit` remain open
+    (§10 step 5).
   - `verify`, which holds every imported owner's check to its bundle, runs here, while
     `IMPORT_KEY` is still set (list3 P27).
   - `admit` admits each verified owner (`tierSet`, `admissionSet`, each suspension, the `o:`
