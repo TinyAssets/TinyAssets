@@ -266,7 +266,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     `untangle-2026-11/p6-process-code.md`);
   - [ ] the process tests beside their scripts, held by the tamper rule
     (`untangle/p6-tests-beside`);
-  - [ ] queue-freshness and rerun-cancelled-checks deleted (`untangle/p6-queue-deletes`);
+  - [x] queue-freshness and rerun-cancelled-checks deleted on their measured runs
+    (`untangle/p6-queue-deletes`; `untangle-2026-11/p6-queue-deletes.md`);
   - [ ] main-red and queue-attempts reading the ruleset and the jobs, not the old suite
     (`untangle/p6-queue-helpers`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
@@ -665,7 +666,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`d2:N57`) and `s2:N51` (d3 §A11).
   - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
     `pass-doors.md` §3).
-- [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
+- [ ] The re-check loop (d2 §E step 6): each item below and each one
+  `python scripts/review_checks.py --owed` lists done (a PR's new owed items go in its decision
+  file, none here; `owed-in-decisions.md`), every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).

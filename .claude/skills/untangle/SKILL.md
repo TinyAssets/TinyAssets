@@ -26,11 +26,12 @@ Untangle the code a change touches, or a whole area, and finish the job.
   listed with its branch in `tasks.md`'s "After the cutover".
 - **The PR body** is the one document. Its **Untangle check** says what was
   found, fixed and left (and why), and that the diff adds none of the four kinds.
-  Anything found and left, by builder or reviewer, names the PR, branch or
-  `live:` wait that fixes it, or is fixed in place. The PR's decisions go in a
-  file of their own, `docs/decisions/<log>/<pr>.md`, headed
-  `# <PR> as built (<date>)`; a shared log is edited only to correct an earlier
-  line. The PR ticks its own `tasks.md` line.
+  Decisions go in `docs/decisions/<log>/<pr>.md`, headed
+  `# <PR> as built (<date>)`; a shared log is only corrected. Anything found
+  and left, by builder or reviewer, is fixed in place or owed there: a `- [ ]`
+  line naming the PR, branch or `live:` wait that fixes it, ticked when done
+  (`review_checks.py --owed` lists them). The PR ticks its own `tasks.md`
+  line, adding none.
 - **Every reviewer**, whatever engine built the PR, runs step 5's search on it
   and checks that section; a missing one, `Test-Removal:` line or decision
   file is a finding. A problem the PR adds or leaves in scope unexplained
