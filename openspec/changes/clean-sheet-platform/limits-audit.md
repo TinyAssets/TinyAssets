@@ -95,9 +95,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 14
-- **technical ceiling**: 179
+- **technical ceiling**: 180
 - **default**: 1
-- **total**: 209
+- **total**: 210
 
 Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-21.
 
@@ -141,7 +141,8 @@ Not yet in one of the kinds, each owed:
 - `sources/records/claude-code.json` `cli.decide.pins`, `cleanupPeriodDays` 30: the hooked
   run's pinned user settings keep Claude Code's own transcript retention at its default, so
   the engine lets a session idle 30 days go from its home; the owner's files keep the synced
-  copy. Researched first, then off (`untangle/fact15-defaults-2`).
+  copy. Researched first, then off, with the other engine records' unpinned defaults read
+  the same way (`untangle/fact15-defaults-2`).
 - The lives of requests held for the owner, each a cap outside Fact 15's kinds
   (`untangle/fact15-caps`):
   - `owner/src/registrations.ts` `CARD_TTL_S`, 7 days: a filed registration card waits a
@@ -202,7 +203,7 @@ Not yet in one of the kinds, each owed:
 | `owner/src/collections.ts` `LIMITS.maxRowsCharge` | 256 MiB laid out | every collection row, its index entries and its collection's seq row, as SQLite lays them out | a write refused: the owner's collections are full | technical ceiling | The 10 GB: guard term `collection_rows`, 604.0 MB at `WORST_FILL`. About 262,000 rows at the narrowest names; an outside writer's share by `client_share`. |
 | `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries and the deletions (`collection_erasures`) | the oldest changes pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. The history lives in the object's SQLite, so no setting keeps it longer; nothing of it is let go at the storage figure (ADR-035 decision 5's retention there is superseded by call 11). |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows` (`limits-audit.test.ts` holds it at most `maxAgentRows`, the ledger's one other rule). A message has one recipient, so no term moves with it. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, disabled agents included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_usage`. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, disabled agents included | an outside agent's registration refused past it; a live agent's new row forgets the oldest retired one first (its row and read marks; its mail stays) | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_usage`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxRooms` | 5,000 | rooms, with a deleted agent's rooms until the lane has removed their archived mail (`archive_purges`) | a new pair's first post refused (`ledger_full`), naming deleted outside agents as what frees rooms; a deletion is never refused | technical ceiling | The 10 GB: guard terms `rooms`, `room_members`, `archive_purges`, 27.2 MB, which the room under half the change log's bound was derived from holds; the owner's rooms with each agent are at most 2,000 of it (`maxAgentRows` outside and own agents). S4's group rooms derive it again. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held hot | never a delete (ADR-036): the `archive` lane moves acked mail to segments from half of it, and a post at it is `storage_busy` (503, `Retry-After` 30 s) until a move lands; when a move cannot land for the storage figure, `storage_full` | technical ceiling | A chosen hot size whose cost the guard holds under half: `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB, each at 50,000 rows, 726.8 MB together, 14,535 B a message at the validators' widest. It cannot grow: the room left under half (348.6 MB) is STARTER's and BRAIN's quarters (332.6 MB) and 16 MB. Slice STORE item 2: the hot set, not the owner's mail; archived mail is bounded by the tier's storage alone. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxUnacked` | 25,000 | messages some recipient has not acked, owner-wide, whoever they are to | a post refused `ledger_full`: too much mail is unread, naming the readers holding the most; reading and acking makes room (never an upgrade) | technical ceiling | The hot ceiling less one segment's records: 50,000 − 25,000. The guard costs the three hot terms (a message, its body, its recipient, 14,535 B together at the validators' widest) at `maxMessages` rows, so any unread count up to it fits under half; the one binding constraint is that at the hot ceiling a segment's records (`SEGMENT_MIN_RECORDS`) stay acked, so the lane always has one to move: `LEDGER_LIMITS` makes `maxUnacked` the hot ceiling less `SEGMENT_MIN_RECORDS`, by construction rather than a check at load (the module-state guard runs nothing at load), and `limits-audit.test.ts` holds it. It replaces the owner's 10,000, each agent's 1,000 and each sender's 5,000, which no platform fact forced; being owner-wide, one noisy sender can fill it (the spec says so). |

@@ -38,7 +38,7 @@ A collection row's body, a collection history entry's and a message's body of mo
 - **THEN** the conflict answers the stored body, as get and pull read it
 
 #### Scenario: An outside client's large bodies
-- **WHEN** an outside client writes large rows past its `client_share` of the owner's files
+- **WHEN** the owner sets a `client_share` and an outside client writes large rows past it
 - **THEN** its write is refused `file_share`, and the owner's own writes still land
 
 #### Scenario: An erasure with puts in flight

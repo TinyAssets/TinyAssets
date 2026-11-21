@@ -25,6 +25,8 @@ the deploy kit's copies and the Workers' configs.
   `USAGE_LIMITS.receiptsKept`, `EGRESS_LIMITS.receiptsKept` and `refusalsKept`,
   `receiptsPerBucket` (policy and action receipts), `appliedProposals`, `maxSettledWakes`,
   `CONVERSATIONS_KEPT`, `maxFreeClients`, `maxSessions`, `maxRevokedKept`, `EXPORTS_OPEN`,
+  `maxAgentRows` (a live agent's new row forgets the oldest retired one; its row said only
+  "refused" until the review of #5738),
   `SPANS_KEPT`, `BILLED_KEPT`, `LIVE_KEPT`. Where the rows are periods, an age is the count:
   the spend counters' `daysKept` 40 and `monthsKept` 3 (`SPEND_KEPT` is a hundred sources
   times those 43 periods, and refuses past it, so keeping them for ever would refuse
@@ -78,7 +80,7 @@ the deploy kit's copies and the Workers' configs.
    - `SLOW_MATCH_MS` and `LOW_WATER_SHARE` move to "Not listed", since neither refuses
      nor truncates anything.
    - The summary is recounted by its own rule (it was 198 from 2026-11-04 against 207 rows;
-     now 209).
+     now 210, recounted in review after the merge of main).
 4. **The spec** (`owner-object` "An outside client holds a share") says the shares are off
    by default, and adds the scenario for that.
 
@@ -95,7 +97,8 @@ the deploy kit's copies and the Workers' configs.
 - [ ] Claude Code's pinned `cleanupPeriodDays: 30` (`sources/records/claude-code.json`
   `cli.decide.pins`) is the engine's own transcript retention at its default. Research comes
   first: what value keeps every session, and what the held-call card's 30 days (`cardTtlS`)
-  rests on then (`untangle/fact15-defaults-2`).
+  rests on then; the same research reads whether any other engine record's CLI (Codex,
+  Gemini, Kimi, pi) lets its sessions go at its own unpinned default (`untangle/fact15-defaults-2`).
 - [ ] The lives of requests held for the owner (`CARD_TTL_S` 7 days, `ACTION_LIMITS.cardTtlS`
   30 days and `approvalTtlS` a day, `POLICY_LIMITS.proposalTtlS` 90 days) each go into one of
   Fact 15's kinds (`untangle/fact15-caps`).
