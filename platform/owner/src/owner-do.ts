@@ -190,7 +190,7 @@ import { MIGRATIONS } from "./schema";
 import { Backups } from "./backup";
 import { OpenExports } from "./open-exports";
 import { ChangeLog } from "./changelog";
-import { ControlGate } from "./control-gate";
+import { ControlGate, objectKeeper } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";
 
@@ -1306,7 +1306,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /** The platform's gates as this object reads them (`control-gate.ts`), from `CONTROL`. */
   #control(): ControlGate {
-    return new ControlGate(this.env.CONTROL);
+    return new ControlGate(this.env.CONTROL,
+                           objectKeeper(this.#storage, (unit) => this.#quiet(unit)));
   }
 
   /**

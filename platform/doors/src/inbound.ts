@@ -45,9 +45,8 @@ import { bindInbound, type Bound, withAccount } from "./binder";
 import { INBOUND_PATH, namedSecret, now } from "./config";
 import { ORIGIN } from "../../contract/src/identity";
 import type { DoorsEnv } from "./env";
-import {
-  inboundGate, MAINTENANCE, ordinaryAdmits, readControl,
-} from "../../contract/src/control";
+import { inboundGate, MAINTENANCE, ordinaryAdmits } from "../../contract/src/control";
+import { controlRead } from "./control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { answer, boundedBytes, mediaType, randomToken } from "./kit";
 import { answered, asInbound, asShared } from "./refused";
@@ -216,7 +215,7 @@ export function serveInbound(request: Request, env: DoorsEnv, sources: Sources):
 }
 
 async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promise<Response> {
-  const read = await readControl(env.CONTROL);
+  const read = await controlRead(env);
   const gate = inboundGate(read);
   if (gate === "unavailable") {
     throw new Refusal("unavailable");

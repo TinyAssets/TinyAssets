@@ -5,7 +5,7 @@
  * - **`control`** edits the control record (`contract/src/control.ts`) in KV itself, never
  *   through the doors, so the kill switch works when they don't. Its edits (`--set`,
  *   `controlEdits`) apply to the live record, or to the whole record `--replace` gives in its
- *   place (`edited`), and the result is written only if `parseControl`, the parser every
+ *   place (`edited`), and the result is written only if `controlOf`, the parser every
  *   reader uses, takes it; the plan is each field's difference (`differences`).
  * - **`restore`** asks the doors `restore.source` for an owner, or, given a generation
  *   (`--generation`, `restoreFrom`), its restore from it (`owner/src/restore.ts`): begun,

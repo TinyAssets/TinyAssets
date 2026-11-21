@@ -25,7 +25,7 @@ describe("module-state guard", () => {
 
   it("takes each Worker's exemptions for its own files alone, each a symbol with its reason",
      () => {
-    expect([...EXEMPTIONS.keys()]).toEqual(["gateway", "owner"]);
+    expect([...EXEMPTIONS.keys()]).toEqual(["doors", "gateway", "owner"]);
     for (const [workspace, exemptions] of EXEMPTIONS) {
       for (const each of exemptions) {
         expect(each.file.startsWith(`${workspace}/src/`), each.file).toBe(true);

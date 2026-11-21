@@ -1,5 +1,5 @@
 /**
- * The owner export (ADR-018): everything the owner holds, as one generation
+ * The owner export (ADR-039 decision 2.12): everything the owner holds, as one generation
  * (`backup.ts`, `changelog.ts`), the same artifact the nightly manifest's root names: a fuzzy
  * base copy of every row and every chunk's hash, then the change log captured while the base
  * was read, consistent at its end E; and the chunks' bytes fetched by hash (`exportChunks`).
@@ -62,8 +62,8 @@
  * owner's own churn: garbage past the owner's storage figure is collected early, oldest
  * first (`files.ts` `run`), and a chunk gone that way is refused by name (`CHUNK_GONE`).
  *
- * **What it never holds** (ADR-018: credentials are never exported), each table kept out
- * with its reason in {@link NOT_EXPORTED}: sealed credentials and connect flows, session
+ * **What it never holds** (ADR-039 decision 2.12: credentials are never exported), each
+ * table kept out with its reason in {@link NOT_EXPORTED}: sealed credentials and connect flows, session
  * and ticket hashes, run and lease secrets, the bucket namespace and the wrapped data key,
  * and counters the schema's own triggers derive. A test holds every table of the schema to
  * exactly one of the two lists and every column of an exported table to its columns or its
@@ -217,7 +217,7 @@ export function exported(): Readonly<Record<string, ExportTable>> {
 
 /** The tables kept out, each with why. */
 export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
-  connection_secrets: "sealed credentials (ADR-018: credentials are never exported)",
+  connection_secrets: "sealed credentials (ADR-039 decision 2.12: credentials are never exported)",
   connection_flows: "an OAuth connect in flight: its PKCE verifier and state",
   owner_sessions: "the owner's session hashes",
   socket_tickets: "single-use socket ticket hashes",
@@ -236,9 +236,10 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   proposal_shares: "counters the schema's triggers derive",
   ledger_wakes: "doorbell deliveries, in flight and the newest settled ones: delivery " +
     "telemetry, not the owner's data",
-  wake_callbacks: "sealed doorbell tokens (ADR-018: credentials are never exported)",
+  wake_callbacks: "sealed doorbell tokens (ADR-039 decision 2.12: credentials are never exported)",
   grant_fences: "the grants' revoke fence, an internal mark",
   platform_tiers: "the platform's tier numbers as last read, not the owner's",
+  control_kept: "the platform's control record as last read, not the owner's",
   owner_erasure: "an erasure in progress",
   schema_digests: "the applied migrations' digests, the start's own check",
   owner_backups: "the generations: the nightly manifest's and the exports' own bookkeeping",

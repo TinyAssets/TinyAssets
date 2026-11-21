@@ -619,7 +619,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   for (const [index, secret] of secretSegments.entries()) {
     if (sessionSegments.some((session) => overlaps(secret, session))) {
       check.fail(`cli.secret_paths ${secrets[index]} is outside every session path: a ` +
-                 "secret never syncs (ADR-031 decision 2)");
+                 "secret never syncs (ADR-039 decision 2.20)");
     }
   }
   const login = signsIn ? loginSpec(check, fields["login"], argv) : undefined;

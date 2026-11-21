@@ -367,7 +367,7 @@
         { "edit": "platform/contract/guards/rules.ts", "names": ["\"platform/contract/src/import-message.ts\": 2", "platform/cutover.json"], "what": "the import message's two owed SHA-256s, which leave with it" },
         { "edit": "platform/deploy/guards/literals.test.ts", "names": ["platform/cutover.json", "ci/guards/cutover.test.ts"], "what": "the manifest's kept live names, which leave with it" },
         { "delete": "platform/ci/dry-run.ts", "what": "the manifest's dry run" },
-        { "keep": "docs/decisions", "what": "the ADRs and decision logs: history, never edited but their Status line; founder call pending (ADR-001 to ADR-031's status, IQ1; the logs, IQ2)" },
+        { "keep": "docs/decisions", "what": "the ADRs and decision logs: history, never edited but their Status line (ADR-039 decision 1); the untangle logs become deletes in untangle/manifest-history (founder call 18)" },
         { "keep": "ideas", "what": "the founder's idea inbox; founder call pending (IQ2)" },
         { "keep": "output", "what": "the ui-test skill's log; founder call pending (IQ2)" },
         { "keep": "openspec/changes/clean-sheet-platform/tasks.md", "what": "the plan: history once the window closes; founder call pending (IQ2)" },
