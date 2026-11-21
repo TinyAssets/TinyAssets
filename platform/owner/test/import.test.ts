@@ -1,5 +1,5 @@
 /**
- * The cutover's import doors (`src/import.ts`, slice 3), on the real object: taken only from
+ * The cutover's import doors (`src/import.ts`), on the real object: taken only from
  * the platform's reserved caller with an import binding and only while the owner is
  * `pending`, every other caller and state refused (terminal); each step through the
  * object's own write path, idempotent from the owner's state (a run again skips, another file

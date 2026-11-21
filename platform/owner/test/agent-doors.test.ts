@@ -2,7 +2,7 @@
  * The agent's definitions (the run doors themselves are `runs.test.ts`'s): its files
  * under `/workspace/agents` and its skills under `/workspace/.agents`, `/workspace/skills`
  * and `/workspace/prompts`, which every engine reads, and its goals under `/workspace/goals`,
- * the owner's alone to change by any file door (review H1).
+ * the owner's alone to change by any file door.
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -33,7 +33,7 @@ async function rig() {
   return { stub, bind, unbound, admit: (origin: Origin) => stub.outsideAgents(bind(origin)) };
 }
 
-describe("the owner's agent definitions (review H1)", () => {
+describe("the owner's agent definitions", () => {
   const AGENTS_MD = "/workspace/agents/main/AGENTS.md";
 
   it("follow the founder's rule: a default (full) grant changes them, a narrowed one never",
@@ -60,7 +60,7 @@ describe("the owner's agent definitions (review H1)", () => {
     await r.stub.fileMkdir(client, { path: "/workspace/skills/x", expected_etag: null });
     expect(await r.stub.fileWrite(client, { path: "/workspace/skills/x/SKILL.md",
       expected_etag: "", content: bytes("# x") })).toHaveProperty("entry");
-    // An outside agent changes an entry at the etag it read (review R2-L3).
+    // An outside agent changes an entry at the etag it read.
     const etagOf = async (path: string) =>
       (await r.stub.fileStat(r.bind(null), { path })).entry!.etag;
     expect(await r.stub.fileRename(client, { from: "/workspace/skills/x/SKILL.md",
@@ -193,8 +193,8 @@ describe("the owner's agent definitions (review H1)", () => {
       content: bytes("## Agreed\n") })).toHaveProperty("entry");
   });
 
-  it("hold only the tree and the roots themselves, never a name that merely starts alike " +
-     "(review round 2)", async () => {
+  it("hold only the tree and the roots themselves, never a name that merely starts alike",
+     async () => {
     expect([within("/workspaceX/a", "/workspace"), within("/workspace/agentsX/a", AGENTS_DIR),
             within("/workspace/agents", AGENTS_DIR), within("/workspace/agents/a", AGENTS_DIR)])
       .toEqual([false, false, true, true]);

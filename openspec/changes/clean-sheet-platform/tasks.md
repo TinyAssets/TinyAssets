@@ -659,10 +659,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] `platform/owner/`, part 1: the comments pass on `src/` and its config, and the tests
     pass's items decided, its two prototype spies kept with their reasons
     (`untangle/pass-owner`; `untangle-2026-11/pass-owner.md`).
-  - [ ] `platform/owner/`, part 2: the comments of `test/`, `guards/` and `memory/`, and of the
+  - [x] `platform/owner/`, part 2: the comments of `test/`, `guards/` and `memory/`, and of the
     four sources R5's hooks change once they land; the constant pins and `write-gate`'s pinned
     helper text; the spec's `CODE_ANSWER_MAX`; the swallowed errors and retries
-    (`untangle/pass-owner-2`; `pass-owner.md` §4).
+    (`untangle/pass-owner-2`; `pass-owner.md` §4). Done (`pass-owner.md` §6) but for the four
+    sources and the comments of `memory/` and of the guards but two, which part 3 owes there.
   - [x] `platform/ci/` and `platform/deploy/`, both passes in one PR for the two areas (one CI
     run), with the two ci checks that could never fail removed (the memory legs'
     `--expose-gc` text, which their header comments held) (`untangle/pass-ci-deploy`;
