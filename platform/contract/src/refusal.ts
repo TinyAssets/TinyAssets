@@ -366,7 +366,7 @@ export function refusalOf(error: unknown): Refusal | null {
   if (error instanceof Error && (error as { overloaded?: unknown }).overloaded === true) {
     return new Refusal("object_overloaded", "this account is busy; try again shortly");
   }
-  if (!(error instanceof Error) || error.name !== "Refusal") {
+  if (!namedRefusal(error)) {
     return null;
   }
   const { code, retryAfterS, facts } = error as Error & Record<string, unknown>;
@@ -380,6 +380,14 @@ export function refusalOf(error: unknown): Refusal | null {
   return new Refusal(code as RefusalCode, error.message, {
     ...(retryAfterS === undefined ? {} : { retryAfterS: retryAfterS as number }),
     ...(facts === undefined ? {} : { facts }) });
+}
+
+/**
+ * Whether `error` crossed as a refusal, read by `refusalOf` or not: one it does not read
+ * (another version's code) was still thrown as an answer, never lost on the way.
+ */
+export function namedRefusal(error: unknown): error is Error & { readonly name: "Refusal" } {
+  return error instanceof Error && error.name === "Refusal";
 }
 
 /**

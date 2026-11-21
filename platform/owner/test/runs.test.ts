@@ -409,8 +409,8 @@ describe("a run's settle", () => {
                        bad.run.conversation_id)).toEqual([{ session_id: null }]);
   });
 
-  it("is unknown when the sandbox's start never answered or answered out of shape, each " +
-     "logged as itself, and failed when it refused", async () => {
+  it("is unknown when the sandbox's start never answered, failed when it answered out of " +
+     "shape or refused, each logged as itself", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     // The object runs in this isolate: its log lines are seen here.
@@ -425,17 +425,24 @@ describe("a run's settle", () => {
     // Its cause is logged with it.
     expect(logged.mock.calls.find((call) => String(call[0]).includes("did not answer"))?.[1])
       .toMatchObject({ message: "the sandbox did not answer" });
-    // A code that is none of the contract's start codes is an answer out of shape: the sandbox
-    // Worker's bug, never read as a lost start.
+    // A code that is none of the contract's, answered or thrown as a refusal, is an answer
+    // out of shape: the sandbox Worker's bug, failed with its cause, never read as a lost start.
     await scripted(r.stub, { answer: { started: false, code: "e2b_down" } as never });
     const malformed = await submit("s-3");
-    expect(malformed).toMatchObject({ state: "unknown", code: "start_malformed" });
-    expect(lines().filter((line) => line.includes("out of the contract's shape")))
-      .toEqual(["the sandbox answered a run's start out of the contract's shape, a sandbox " +
-                "Worker bug: whether it launched is unknown"]);
-    // In case either did start, each is cancelled too.
+    expect(malformed).toMatchObject({ state: "failed", code: "start_malformed" });
+    await gateFor(env.SANDBOX_GATE, r.name).arm("start", { refuse: {
+      code: "e2b_quota", message: "another version's refusal" } });
+    const refusedOutOfShape = await submit("s-5");
+    expect(refusedOutOfShape).toMatchObject({ state: "failed", code: "start_malformed" });
+    const stopped = "a sandbox Worker bug: it failed, and is stopped in case it launched";
+    expect(lines().filter((line) => line.includes("out of the contract's shape"))).toEqual([
+      "the sandbox answered a run's start out of the contract's shape (started false, code " +
+        `e2b_down, keys started code), ${stopped}`,
+      "the sandbox answered a run's start out of the contract's shape (a refusal of code " +
+        `e2b_quota), ${stopped}`]);
+    // In case any did start, each is cancelled too.
     expect((await recorder(r.stub)).cancels.map((cancel) => cancel.run))
-      .toEqual([lost.run_id, malformed.run_id]);
+      .toEqual([lost.run_id, malformed.run_id, refusedOutOfShape.run_id]);
     await scripted(r.stub, { answer: { started: false, code: "sandbox_unconfigured" } });
     expect(await submit("s-2")).toMatchObject({ state: "failed", code: "sandbox_unconfigured" });
     // A refusal the sandbox Worker throws comes before it launches anything: failed with its
@@ -446,11 +453,15 @@ describe("a run's settle", () => {
       .toMatchObject({ state: "failed", code: "sandbox_runner_mismatch" });
     expect(lines()).toContain(
       "the sandbox refused a run's start (sandbox_runner_mismatch): nothing started");
-    expect((await recorder(r.stub)).cancels).toHaveLength(2);
+    expect((await recorder(r.stub)).cancels).toHaveLength(3);
     // None holds the lease: the last live run's settle gave it back.
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
-    // A start with no answer is never sent again: it may have launched.
+    // A start with no answer, or one out of shape, is never sent again: it may have launched.
     expect((await recorder(r.stub)).starts.filter((start) => start.run === lost.run_id))
+      .toHaveLength(1);
+    expect((await gateFor(env.SANDBOX_GATE, r.name).calls())
+      .filter((call) => call.method === "start"
+              && (call.args as [string, SandboxStart])[1].run === refusedOutOfShape.run_id))
       .toHaveLength(1);
   });
 

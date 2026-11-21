@@ -43,8 +43,8 @@ finishes a stopped builder's partial work, kept where it is right.
 1. **One read of a start** (`owner/src/sandbox.ts` `startOutcome(job, start)`), used by
    `launch` and `signinStart` in place of their two catches. It awaits the call inside its
    catch and reads the answer outside it, so an answer out of shape is never a lost start:
-   - out of shape: `unknown` `start_malformed`, logged as the sandbox Worker's bug, cancelled
-     in case it started;
+   - out of shape: `failed` `start_malformed` (it was `unknown` until `start-answer.md`), logged
+     as the sandbox Worker's bug, cancelled in case it started;
    - a thrown refusal: `failed` with its code, logged, nothing to cancel;
    - a plain throw: `unknown` `start_lost`, logged with its cause, cancelled.
    A sign-in ends by the same code (`{ started: false, code }`), its lease freed.
