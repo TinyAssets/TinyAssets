@@ -115,7 +115,7 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
     await bound.stub.egressSettle(bound.binding, request);
   } catch (first) {
     if (refusalOf(first) !== null) {
-      throw first;  // the object answered: nothing to retry
+      throw first;  // the object answered, or the runtime refused it overloaded: no retry
     }
     const again = rebound(env, bound);
     await again.stub.egressSettle(again.binding, request);

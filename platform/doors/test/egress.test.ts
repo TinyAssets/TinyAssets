@@ -738,6 +738,20 @@ describe("a refused call", () => {
       .toEqual([503, "60", { error: { code: "unavailable", message: MAINTENANCE } }]);
     expect(await reservations(box.owner)).toEqual([]);
   });
+
+  it("answers an overloaded owner object in the gateway's own shape, 429 and a second",
+     async () => {
+    const box = await sandbox();
+    const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
+      egressOpen: () => Promise.reject(busy) }) as never);
+    const response = await send(egressRequest(box));
+    vi.restoreAllMocks();
+    expect([response.status, response.headers.get("Retry-After"), await response.json()])
+      .toEqual([429, "1", { error: { code: "object_overloaded",
+                                     message: "this account is busy; try again shortly" } }]);
+    expect(await forwarded()).toEqual([]);
+  });
 });
 
 describe("a sandbox token", () => {

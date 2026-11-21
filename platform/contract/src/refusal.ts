@@ -12,6 +12,11 @@
  * shape (`contract/guards/refusal.test.ts` holds the compatibility settings;
  * `doors/test/api-keys.test.ts` crosses the owner's object's real RPC boundary).
  *
+ * The runtime refuses too: a Durable Object past its soft limit (1,000 requests a second an
+ * object, Cloudflare's limits page) throws an error whose `.overloaded` is true, which
+ * Cloudflare's error-handling page says not to retry. `refusalOf` reads it as the refusal
+ * `object_overloaded`, so every caller answers or settles it as it does any transient one.
+ *
  * A code is `transient` or terminal. A transient refusal says nothing of the request: the
  * same one succeeds later. Most say when, with their `Retry-After` (a pool, a ceiling or a
  * post gate full for the moment, a platform gate closed); a files root that changed under a
@@ -147,6 +152,10 @@ export const REFUSALS = Object.freeze({
   // The platform gates (`control.ts`), closed: the maintenance gate (`MAINTENANCE`) or the
   // outside switch (`OUTSIDE_OFF`), each the refusal's message.
   unavailable: Object.freeze({ status: 503, retryAfterS: 60, transient: true }),
+
+  // The runtime's: an object it reports overloaded (see the header), a technical ceiling,
+  // not ours. The caller waits a second.
+  object_overloaded: Object.freeze({ status: 429, retryAfterS: 1, transient: true }),
 
   // The doors' own: a request with no credential the door takes, at a path it does not
   // serve, by a method it does not take, or too large to read; an API key or a connect
@@ -346,13 +355,16 @@ function plainObject(value: unknown): value is Facts {
 }
 
 /**
- * The refusal `error` is, here or as it crossed RPC; null for anything else, which is a
- * bug. The one test of a refusal against a bug: a refusal of an unknown code (another
- * version's) is a bug too, loudly.
+ * The refusal `error` is, here, as it crossed RPC, or the runtime's overload; null for
+ * anything else, which is a bug. The one test of a refusal against a bug: a refusal of an
+ * unknown code (another version's) is a bug too, loudly.
  */
 export function refusalOf(error: unknown): Refusal | null {
   if (error instanceof Refusal) {
     return error;
+  }
+  if (error instanceof Error && (error as { overloaded?: unknown }).overloaded === true) {
+    return new Refusal("object_overloaded", "this account is busy; try again shortly");
   }
   if (!(error instanceof Error) || error.name !== "Refusal") {
     return null;
