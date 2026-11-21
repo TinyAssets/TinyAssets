@@ -198,8 +198,8 @@ export function dryRunLegs(legs: readonly Leg[], of: Manifest = MANIFEST): Leg[]
 export const TEST_FILE = /\.test\.[cm]?[jt]s$|(?:^|\/)tests\/test_[^/]+\.py$/;
 
 /**
- * The tree the dry run makes of the checkout (`ci/dry-run.ts`, `cutover-dry-run.yml`): all
- * three phases' deletes and carry-outs, which need no hand, so whatever stays and is no edit
+ * The tree the dry run makes of the checkout (`ci/dry-run.ts`, `tests.yml` `cutover-dry-run`):
+ * all three phases' deletes and carry-outs, which need no hand, so whatever stays and is no edit
  * is shown to need nothing that goes. An edit is the cutover's to write, so what it still
  * loads stays (`kept`, with all that loads in turn), and a test it edits is set aside
  * (`setAside`). A move into a file that stays (`names`, or a move of a file nothing deletes)

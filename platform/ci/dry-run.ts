@@ -1,6 +1,6 @@
 /**
  * The cutover's dry run (untangle B24; d3 §A10), on the checkout it runs in, which it changes
- * and never pushes (`.github/workflows/cutover-dry-run.yml`):
+ * and never pushes (`tests.yml`'s `cutover-dry-run` jobs, which `required-tests` needs):
  *
  *   node --experimental-strip-types platform/ci/dry-run.ts apply
  *     the manifest's tree (`ci/kit/cutover.ts` `dryRun`): carry-outs moved, deletes removed,

@@ -8,6 +8,13 @@ name: Auto-enroll merge
 # rules GitHub applies to main differ from the file's (scripts/ruleset_drift.py):
 # a `review` the file requires and GitHub does not would let an unreviewed PR
 # merge.
+#
+# A person's pause holds: a PR whose newest auto-merge event is a disable by a
+# user stays off until a person enables it again. This workflow and
+# queue-handoff.yml disarm only with the repo's GITHUB_TOKEN, as
+# `github-actions[bot]`, so a user's disable is a person's (the coordinator's on
+# #5709, which each push re-armed). A removal from the queue records no disable,
+# so a fix pushed after a queue failure is armed again.
 
 on:
   # pull_request_target so this always runs the trusted copy from the default
@@ -75,6 +82,8 @@ jobs:
           # No fallback: the step above refuses an empty secret, and after
           # enrolling the step checks that a USER armed or queued the PR.
           GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
+          # Every disarm's: the bot's, so none reads as a person's pause.
+          BOT_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         shell: bash
@@ -104,6 +113,20 @@ jobs:
             <<<"$PR_JSON")"
           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
 
+          # A person's pause: the newest auto-merge event on the timeline (oldest
+          # first) is a user's disable. Only a person re-arms it.
+          LAST="$(gh api --paginate "repos/$REPO/issues/$PR/timeline?per_page=100" \
+            --jq '.[] | select(.event == "auto_merge_enabled" or .event == "auto_merge_disabled") | "\(.event):\(.actor.type)"' \
+            | tail -n 1)"
+          if [ "$STATE" = "no" ] && [ "$LAST" = "auto_merge_disabled:User" ]; then
+            {
+              echo "### Auto-merge"
+              echo ""
+              echo "Not enrolled: a person disabled auto-merge on this PR. It stays off until a person enables it again."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           # Queue-attempt cap: a head handed off by queue-handoff.yml (record
           # for this exact head + the queue-handoff label) is not re-armed.
           # Exit 3 means capped. Any other failure of the check enrolls anyway, with a
@@ -112,7 +135,7 @@ jobs:
           python scripts/queue_attempts.py check --repo "$REPO" --pr "$PR" || CAP_RC=$?
           if [ "$CAP_RC" -eq 3 ]; then
             if [ "$STATE" = "yes" ]; then
-              gh pr merge "$PR" --repo "$REPO" --disable-auto || true
+              GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR" --repo "$REPO" --disable-auto || true
             fi
             {
               echo "### Auto-merge"
@@ -135,7 +158,7 @@ jobs:
               exit 0
             fi
             echo "PR #${PR} was enrolled by ${ENROLLER}; re-enrolling with the attribution token."
-            gh pr merge "$PR" --repo "$REPO" --disable-auto
+            GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR" --repo "$REPO" --disable-auto
           fi
 
           # `|| true`: enrolment can legitimately fail — e.g. the PR is already
