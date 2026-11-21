@@ -1,13 +1,12 @@
 /**
- * The change log of a generation (slice P; `backup_shape_research.md` (d), the base-backup-
- * plus-WAL method at row level): while a generation's base is read, every change to an
- * exported row writes the row's image, as an export line, into `change_log`, in the writing
- * unit's own transaction (one trigger an exported table and event, `schema.ts`'s
- * `<table>_logged_<event>`), so
- * no change is lost and none is torn. The generation ships the log to R2 as it goes, a
- * segment at a time (`o/<ns>/m/<gen>/l/<a>-<b>`): the pending segment is recorded first, its
- * lines read, put, and only then acknowledged and deleted, so a crash between any two steps
- * repeats the same segment with the same bytes.
+ * The change log of a generation (the base-backup-plus-WAL method at row level): while a
+ * generation's base is read, every change to an exported row writes the row's image, as an
+ * export line, into `change_log`, in the writing unit's own transaction (one trigger an
+ * exported table and event, `schema.ts`'s `<table>_logged_<event>`), so no change is lost and none
+ * is torn. The generation ships the log to R2 as it goes, a segment at a time
+ * (`o/<ns>/m/<gen>/l/<a>-<b>`): the pending segment is recorded first, its lines read, put, and
+ * only then acknowledged and deleted, so a crash between any two steps repeats the same segment
+ * with the same bytes.
  *
  * Replayed after the base, the last line per (table, key) wins, and the result is the owner
  * at E, the last seq when the base's last page was read: a key with no image since S was
@@ -99,12 +98,12 @@ export class ChangeLog {
    * In a unit: the segment to ship next, at most `through` (the log's end once known): the
    * one pending, else the unshipped seqs after `shipped`, whole lines to a part's size at
    * most as the segment writes them (`writtenLine`: JSON may write a line wider than the
-   * log stored it, and a segment past a part could never be put: rvburst W2), recorded
+   * log stored it, and a segment past a part could never be put), recorded
    * pending. Null when nothing is left to ship.
    */
   pending(through: number): { a: number; b: number } | null {
     const at = this.state();
-    // A span pinned before `pending` sized as written (rvburst X3) whose segment is past a
+    // A span pinned before `pending` sized as written whose segment is past a
     // part as written was never put (`segment` refuses it, and the files Worker would), so
     // it is sized again from `shipped`; any other pinned span stands, as a put of it may
     // have landed.
@@ -136,7 +135,7 @@ export class ChangeLog {
    * The segment's bytes: the log's lines after `a` through `b`, each with its seq, the last
    * line per (table, key) kept, in the order of those last seqs, a BLOB's hex turned base64
    * as the base writes it, each followed by its newline. Deterministic for the same rows, so
-   * a segment put again is the same bytes. Built without holding its lines (rvburst V1, W1):
+   * a segment put again is the same bytes. Built without holding its lines:
    * SQLite finds each key's last seq (`keyOf`), and each kept row's line is then read once,
    * alone by its seq, written and encoded straight into one buffer of a part, allocated once
    * and never grown (`pending` sizes the span by its lines as written, so they fit it), one
@@ -146,7 +145,7 @@ export class ChangeLog {
    */
   async segment(a: number, b: number, sample?: () => Promise<void>): Promise<Uint8Array> {
     // Each key's last seq, and its stored bytes, found by SQLite (its key columns read by
-    // `json_extract`): no line read into the isolate for it (rvburst W1).
+    // `json_extract`): no line read into the isolate for it.
     const kept = this.#kept(a, b);
     const wide = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM change_log WHERE seq > ? AND seq <= ? AND " +
@@ -182,7 +181,7 @@ export class ChangeLog {
       }
     }
     // Its own bytes, exactly: a view of the part's buffer would carry all of it over RPC
-    // (workerd serializes a view's whole backing buffer: rvburst X1). The rows' texts are let
+    // (workerd serializes a view's whole backing buffer). The rows' texts are let
     // go by now, so the copy sits beside the buffer alone, within `SHIP_BYTES`.
     return out.slice(0, at);
   }

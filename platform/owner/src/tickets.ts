@@ -1,5 +1,5 @@
 /**
- * The owner app's socket tickets (A6, salvaged; `relay.ts`): each one's SHA-256 alone, the
+ * The owner app's socket tickets (`relay.ts`): each one's SHA-256 alone, the
  * conversation it is for, the first-party grant its token was issued under and that token's
  * expiry, single-use and good for `SOCKET_TICKET_S`, at most `SOCKET_TICKETS` outstanding
  * (migration 12's trigger; the minting unit forgets the expired ones first).

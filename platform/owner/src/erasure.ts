@@ -1,12 +1,12 @@
 /**
- * Erasing an owner (design-decision §1.4 item 6; tasks 5, S4-S5; ADR-034), begun at
+ * Erasing an owner (ADR-034), begun at
  * `ownerErase`. The order is what makes it complete:
  *
  * 1. **Mark the owner erasing** (`owner_erasure`), in one unit. From then on every door
  *    refuses (`OwnerDO`'s binding check) and no lane runs (the object's alarm resumes the
  *    erasure instead of driving Lifecycle). Then its namespace's mark in R2 (`e/<ns>`,
  *    `Files.markNamespace`), the erasure's record that a copy back reads past the account.
- * 2. **The outside record** (slice L): the owner Worker's erasure queue tells the doors,
+ * 2. **The outside record**: the owner Worker's erasure queue tells the doors,
  *    which write the directory's erased record of the owner, delete its keys' and inbound
  *    routes' entries, revoke its every OAuth grant and delete its identity at the issuer,
  *    then confirm (`erasureOutsideDone`). Sent at the mark and again at each attempt until
@@ -15,11 +15,11 @@
  *    erasure: a half-done erasure always finishes.
  * 3. **End every run**: every sandbox of the owner killed, paused ones included, with the
  *    engines' sign-ins and session files inside them, and the sandbox Worker's own state of
- *    the owner deleted (`SandboxService.erase`, slice S); the sandbox's in-flight egress
+ *    the owner deleted (`SandboxService.erase`); the sandbox's in-flight egress
  *    streams end (`Egress.drop`); and the step is recorded done (`step` 2).
  * 4. **Delete every R2 copy**: every object under the owner's namespace prefix, its files'
  *    and its placed bodies' (ADR-035) chunks and its generations (the nightly manifests and
- *    exports, slice P), once `PUT_GRACE_MS` (a day) has passed since the mark, its job waking
+ *    exports), once `PUT_GRACE_MS` (a day) has passed since the mark, its job waking
  *    it then, and every put this instance began has landed (no put begins under the mark, and
  *    the manifest lane is halted); repeatable, and repeated after the wipe. Each generation's
  *    root carries the owner's wrapped data key, so once they and the object's own copy are
@@ -42,7 +42,7 @@
  * the tombstone alone: an object a later `getByName` starts finds it before anything else,
  * migrates nothing, starts no Lifecycle and refuses every door (`OWNER_ERASED`), so
  * nothing ever makes owner state there again. Two doors mark the owner and leave the rest
- * to the job: the owner's own `ownerErase` (slice L), and the platform's `erasureBegin`, the
+ * to the job: the owner's own `ownerErase`, and the platform's `erasureBegin`, the
  * operator's `owner.erase` for an owner who cannot sign in (`doors/src/operator.ts`).
  */
 import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
@@ -55,11 +55,10 @@ import type { Inbound } from "./inbound";
 import type { Keys } from "./keys";
 
 /**
- * What the account-erase door answers (slice L's door, which marks first and answers at
- * the mark): `erased` once the wipe ran (`wipedAt`, s), and, either way, `complete_at`: the
- * wipe's earliest time, the mark plus `PUT_GRACE_MS` (or the wipe itself, should a retry
- * have run it later), plus the platform's own point-in-time recovery. The contract slice L's
- * door answers with (tasks.md).
+ * What the account-erase door answers (it marks first and answers at the mark): `erased`
+ * once the wipe ran (`wipedAt`, s), and, either way, `complete_at`: the wipe's earliest time,
+ * the mark plus `PUT_GRACE_MS` (or the wipe itself, should a retry have run it later), plus
+ * the platform's own point-in-time recovery.
  */
 export function erasureAnswer(markedAt: number, wipedAt: number | null):
     { erased: boolean; complete_at: number; note: string } {
@@ -112,7 +111,7 @@ export function erasureStartedAt(storage: OwnerStorage): number {
  * into the object outlives the longest one a door holds open, an egress stream's day
  * (`EGRESS_DEADLINE_S`), whatever R2's put latency (not documented; to measure live). Under
  * the mark every door refuses and no put begins; the erasure's own Lifecycle job wakes it
- * when the day is up (review rvlim N5), so nothing rests on an in-memory wait.
+ * when the day is up, so nothing rests on an in-memory wait.
  */
 export const PUT_GRACE_MS = 24 * 60 * 60_000;
 
@@ -156,10 +155,6 @@ function confirmed(door: Door<EraseRequest>, words: (owner: string) => string): 
 }
 
 // -- THE DOORS: the `erasure` rows' handlers (`owner/doors.json`) ---------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`ErasureDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `erasure` doors reach: the erasure's job, and what the directory holds for the
@@ -171,7 +166,6 @@ export interface ErasureDoorNeeds extends Pick<DoorUnits, "door">, Pick<ObjectRe
   readonly inbound: Pick<Inbound, "routes">;
 }
 
-/** The `erasure` doors' handlers, by door. */
 export const erasureDoors = Object.freeze({
   /**
    * The owner erases its account, in its live session, confirmed by its typed words: the

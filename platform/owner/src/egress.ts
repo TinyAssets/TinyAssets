@@ -1,11 +1,11 @@
 /**
- * Sandbox egress at the owner's object (gateway research §5.4 step 4; tasks 4 G4): each
+ * Sandbox egress at the owner's object (gateway research §5.4 step 4): each
  * model call the sandbox's clients send to the egress door is admitted here at open,
  * reserved here once the gateway parsed its body (egress shape research, A′), and settled
  * here once its bytes stopped flowing. The door (the binder) streams the bytes through the
- * gateway's metered `forward` in between, and the gateway asks for the reserve through it. The object does no work
- * meanwhile, but it stays resident while it holds a stream's end signal (an open stream it
- * returned), so it is billed duration for the stream's length.
+ * gateway's metered `forward` in between, and the gateway asks for the reserve through it. The
+ * object does no work meanwhile, but it stays resident while it holds a stream's end signal (an
+ * open stream it returned), so it is billed duration for the stream's length.
  *
  * **Open** (`open`, in the door's unit, after the binding check admitted the owner for
  * `work`), each refusal one of the fixed codes (`EgressCode`):
@@ -720,10 +720,6 @@ export class Egress {
 }
 
 // -- THE DOORS: the `egress` rows' handlers (`owner/doors.json`) ----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`EgressDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `egress` doors reach: the sandbox's egress, the run grant a lease's call is held
@@ -746,7 +742,6 @@ export interface EgressDoorNeeds extends Pick<DoorUnits, "door"> {
 // internal (`launch.ts`): no door reaches it. The egress doors take the egress
 // token's binding, the sync doors the sync token's, and no other door takes either.
 
-/** The `egress` doors' handlers, by door. */
 export const egressDoors = Object.freeze({
   /**
    * One sandbox request, admitted at open (`Egress.open`): its blob, version, generation,

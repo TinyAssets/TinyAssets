@@ -1,10 +1,10 @@
 /**
- * The owner object's one schedule, on the Agents SDK Lifecycle job queue (ADR-032, tasks 3.6).
+ * The owner object's one schedule, on the Agents SDK Lifecycle job queue (ADR-032).
  *
  * Lifecycle (`agents/lifecycle`) owns the Durable Object's queue of durable
  * jobs and its single physical alarm, which the erasure's job shares. So no source here
- * sets, reads or clears the alarm (the alarm guard): every queue change re-arms it from the queue, and
- * `OwnerDO.alarm` only hands the runtime's alarm to Lifecycle, which drives the due jobs
+ * sets, reads or clears the alarm (the alarm guard): every queue change re-arms it from the
+ * queue, and `OwnerDO.alarm` only hands the runtime's alarm to Lifecycle, which drives the due jobs
  * and re-arms.
  *
  * Each kind of timed work is a lane: its own durable rows, which stay the truth, and one
@@ -32,16 +32,15 @@
  *   starve every later job on the object, the erasure's among them. A pass throws only for
  *   a bug; then, after Lifecycle's in-process retries, its lane backs off `LANE_RETRY_S`.
  * - Passes are inline in Lifecycle's drive loop, which awaits each job in turn, so a pass
- *   is short: it hands long work off and returns. Its job is single-flight, so an overlapping alarm (the deadman wake, a
- *   platform re-fire) skips it while it runs, for up to `LANE_HUNG_S`. Every pass fits
- *   that by wall clock, not by a batch size: it takes no new row once `LANE_PASS_S` has
- *   passed, and each outside call a row makes is bounded by `LANE_CALL_MS`
- *   (each doorbell send and revoke, which the lane holds itself, a
- *   a chunk delete's remaining budget, never
- *   begun with less than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm
- *   may run it again. A pass writes its rows through the object's write gate a unit at a
- *   time (`gate.ts`), and so does each job set here: Lifecycle's job row is pushed inside
- *   a unit, so no other transaction can roll it back.
+ *   is short: it hands long work off and returns. Its job is single-flight, so an overlapping alarm
+ *   (the deadman wake, a platform re-fire) skips it while it runs, for up to `LANE_HUNG_S`. Every
+ *   pass fits that by wall clock, not by a batch size: it takes no new row once `LANE_PASS_S` has
+ *   passed, and each outside call a row makes is bounded by `LANE_CALL_MS` (each doorbell send and
+ *   revoke, which the lane holds itself, or a chunk delete's remaining budget, never begun with less
+ *   than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm may run it again. A
+ *   pass writes its rows through the object's write gate a unit at a time (`gate.ts`), and so does
+ *   each job set here: Lifecycle's job row is pushed inside a unit, so no other transaction can
+ *   roll it back.
  * - Each lane fences its own work in its rows (a wake's claim lease and may-have-sent
  *   mark, a chunk's `deleting` state, a work row's claim), so a run Lifecycle repeats
  *   takes nothing the first took, and unknown work is never replayed.

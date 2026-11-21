@@ -1,11 +1,11 @@
 /**
  * The owner's own trees (`OWNER_TREES`, Direction 3: abilities are editable files):
  * `/workspace/agents` (each agent's `AGENTS.md` and `agent.json`), and the agent's abilities,
- * which reach an engine's instructions (A5; ADR-034 decision 2): `/workspace/.agents` (its
+ * which reach an engine's instructions (ADR-034 decision 2): `/workspace/.agents` (its
  * skills), `/workspace/skills` and `/workspace/prompts`; and the owner's goals,
  * `/workspace/goals`, which say what every agent may do unasked (a goal's Agreed section);
  * and the owner's profile, `/workspace/USER.md`, whose directives every agent follows as the
- * owner's standing preferences (the founder, 2026-11-04, on review Low 3).
+ * owner's standing preferences (the founder, 2026-11-04).
  * The founder's rule (2026-11-03):
  * every agent of the owner has full power by default to do what any other can, so the owner,
  * its runs and any agent under a full grant (the default) create, change, move or remove

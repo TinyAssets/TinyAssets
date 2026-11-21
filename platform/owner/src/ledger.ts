@@ -1,9 +1,6 @@
 /**
- * The trusted message ledger (ADR-025, S30), in the owner's own object (ADR-032).
- *
- * Ported from `tinyassets/broker/message_ledger.py` (S3a.1, S3a.2, S3b) and the
- * `message_bodies` half of `tinyassets/broker/conversations.py` (origin/main 8b415f569),
- * whose rules it keeps: who sent what to whom, and who read it.
+ * The trusted message ledger (ADR-025), in the owner's own object (ADR-032): who sent what
+ * to whom, and who read it.
  *
  * - The agent registry (`outside_agents`): one outside identity is at most one enabled
  *   agent. It registers only from the verified origin the binder passes, as an `api_key`
@@ -12,13 +9,12 @@
  *   agent, which purges its mail and wakes.
  * - ROOM_POST: the sender is the binder's origin (none means the owner; a run, its own
  *   agent), never a field. The room is a pair's (below). A resend with the same client
- *   message id and body hash
- *   returns the original; another hash is a `conflict`. One transaction writes the
- *   message, its body, its recipient, the parent's `replied` state and the recipient's
+ *   message id and body hash returns the original; another hash is a `conflict`. One transaction
+ *   writes the message, its body, its recipient, the parent's `replied` state and the recipient's
  *   wake. A reply holds its time to reply (`reply_s`), so no read needs its parent.
  * - The idempotency window: a resend is matched against the messages the ledger holds hot.
  *   A message leaves the hot set only once every recipient has acked it, moved to an
- *   archive segment (`segments.ts`, slice STORE item 2), so a resend is deduplicated at
+ *   archive segment (`segments.ts`), so a resend is deduplicated at
  *   least until its recipient acks; once archived, the same client message id is a new
  *   message. Nothing is ever evicted: an archived message is the owner's until the owner
  *   deletes its agent, and the chain read and a reply find it by its id, which carries its
@@ -27,20 +23,20 @@
  *   (`read_at`) only the ones it returns; an ack never moves back and never passes the
  *   reader's own newest message, and an ack at or behind the cursor is a no-op, so a
  *   retried ack succeeds. A body whose hash no longer matches is withheld.
- * - Wakes (S3b, W3) are data on the object's one schedule (`ledger_wakes`): one open
+ * - Wakes are data on the object's one schedule (`ledger_wakes`): one open
  *   wake per ringing recipient (`one_open_wake`), claimed under a lease, settled from the
  *   doorbell's answer, and never replayed once a byte may have left. Each fact lives on
  *   the row it describes: a message's read time and why it failed on its recipient row
  *   (which an archive segment holds with it), an ack on its reader's row, a wake's outcome
  *   on its wake row (`receipt_json`).
- * - What rings is data (`wake-kinds.ts`, slice W): an agent rings when its delivery
+ * - What rings is data (`wake-kinds.ts`): an agent rings when its delivery
  *   method's record has a push (MCP Events, `/fire`, a webhook routine); a `pull` agent
  *   never does, and catches up through the digests on its own schedule. A wake says what
  *   changed (`changes`: mail to the agent, a room's rows, the board's) and the owner-wide
  *   change cursor it is after, so the agent's digest returns just the change. Mail to an
  *   agent opens its wake (`post`); a board or room row another writer changes opens one for
  *   every ringing agent (`changed`), folded into any wake already open.
- * - The doorbell's subscriptions (`wake_callbacks`, slice W): an enabled ringing agent's
+ * - The doorbell's subscriptions (`wake_callbacks`): an enabled ringing agent's
  *   client subscribes over MCP Events (`events/subscribe`), or the owner pastes the token
  *   a vendor showed it; each is keyed by the id the server derives, and holds only the blob
  *   the gateway sealed (its URL and secret) and what it follows: mail to its agent always,
@@ -49,14 +45,14 @@
  *   a grant change its client's own (never the owner's pasted token), so nothing is sent
  *   past a revoke. A board or room write rings only agents with a subscription following it
  *   whose grant reads it (the object checks), and only an owner's own write rings: a write
- *   by an outside client or a run rings no agent, as slice ID's mail rings only the agent
- *   it addresses, so no two agents can wake each other without end.
+ *   by an outside client or a run rings no agent, as mail rings only the agent it
+ *   addresses, so no two agents can wake each other without end.
  *
  * - A wake is sent only while its agent's outside client still holds a grant
  *   (`GrantReader.live`), and a changed or revoked grant ends the client's agents' open
- *   wakes and revokes their callbacks (`suppressClient`, P0-3's M3).
+ *   wakes and revokes their callbacks (`suppressClient`).
  *
- * The owner's own agents are identities here too (slice ID; `native_agents`), beside the
+ * The owner's own agents are identities here too (`native_agents`), beside the
  * outside agents: each `/workspace/agents/<agent>/agent.json` is one, `ta_` and its name's
  * digest (`nativeId`, the row's key), made as the file appears and retired as it goes, in
  * the file change's own unit (`appear`, `retire`). A live one counts among the enabled
@@ -86,10 +82,9 @@
  * (`chain`).
  *
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind. The
- * object is its owner, so the Python's `owner` columns are gone. The owner's session
- * check and the refusal receipt of a refused register, disable or delete are the
- * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
- * them around the ledger.
+ * object is its owner, so no row has an owner column. The owner's session check and the
+ * refusal receipt of a refused register, disable or delete are the object's (`owner-do.ts`,
+ * `sessions.ts`, `policy.ts`), around the ledger.
  */
 import { apiKeyOrigin, nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
@@ -210,7 +205,7 @@ const SECRETISH = /(ta_key_|bearer|eyJ|sk-|sk_|https?[:/]|token[=:])/i;
 const LONE_SURROGATE = /\p{Cs}/u;
 
 /**
- * Per-agent wake settings (W3): the owner's own, stored per agent and changed only by the
+ * Per-agent wake settings: the owner's own, stored per agent and changed only by the
  * owner (`policyWakeLimits`), and off by default (the founder's rule: the only limits are
  * the tier's, the owner's own settings off by default, vendors' and recorded technical
  * ceilings). With no hourly cap an agent is woken on each change, one open wake at a time,
@@ -228,26 +223,26 @@ const WAKE_SETTINGS = Object.freeze({
 });
 
 /**
- * Owner-wide bounds on the ledger's growth (the Python's owed L5). Each is a ceiling a
+ * Owner-wide bounds on the ledger's growth. Each is a ceiling a
  * write is refused at, or a retention the ledger prunes to inside the same transaction,
  * so no sweeper is needed and no table grows without bound. Each is read from a counter
  * the schema's triggers keep (`ledger_usage`, `ledger_readers`, `outside_agents`) or an
  * index range, never a scan (`ledger-bounds.test.ts`, "the ledger at its production
  * limits": a post's rows read and written at 1 hot and at 49,999 are the same).
  *
- * Mail is bounded by two technical ceilings, never by a mailbox's count (slice STORE item
- * 2, the founder's one wall): `maxMessages` hot messages, the acked ones moved to archive
+ * Mail is bounded by two technical ceilings, never by a mailbox's count (the founder's one
+ * wall): `maxMessages` hot messages, the acked ones moved to archive
  * segments by the `archive` lane from half of it, and a post at it answered `storage_busy`
  * (retryable) while the lane catches up, never a delete; and `maxUnacked` messages unread
  * owner-wide: the hot ceiling (whose three rows a message the guard already costs, so any
  * unread count up to it fits under half) less one segment's records, so that at the hot
  * ceiling there is always a segment's worth of acked mail to move: 50,000 - 25,000. Past it
  * a post is refused `ledger_full`: too much mail is unread, the readers holding the most
- * named, and reading or acking makes room. Being owner-wide, one noisy sender can fill it. Disabling an agent releases its unacked mail,
- * and deleting one purges it, archived mail included (`archive_purges`). Both ceilings are
- * held at these figures, the busy post landing after one lane pass, by "the ledger at its
- * production limits" (`ledger-bounds.test.ts`), and a move's CPU at the seal by
- * `guards/move-cpu.test.ts`.
+ * named, and reading or acking makes room. Being owner-wide, one noisy sender can fill it.
+ * Disabling an agent releases its unacked mail, and deleting one purges it, archived mail included
+ * (`archive_purges`). Both ceilings are held at these figures, the busy post landing after one lane
+ * pass, by "the ledger at its production limits" (`ledger-bounds.test.ts`), and a move's CPU at the
+ * seal by `guards/move-cpu.test.ts`.
  *
  * How they were chosen (ADR-035; `limits-audit.md`). Bodies past `PLACE_BYTES` live in R2,
  * so the object holds at most that much of each body, and its bytes in R2 count in the
@@ -315,7 +310,7 @@ type Counted = Pick<Usage, "messages" | "unacked" | "acked_bytes">;
 /**
  * Whether a segment's worth of acked mail waits to move: its records, or their own bytes
  * (`line_bytes` less each one's trailer share, as `pack` and the segment count them, so a
- * seal is never short of the least, review N4).
+ * seal is never short of the least).
  */
 export function sealable(usage: Counted,
                          limits: Pick<LedgerLimits, "archiveRecords" | "archiveBytes">): boolean {
@@ -356,10 +351,10 @@ export function postRoom(usage: Pick<Usage, "messages" | "unacked">,
 
 /**
  * How many of a move's rows it takes, oldest first, by their records' own bytes (`lines`,
- * each less its trailer share, review N4). A tail's move (`into` null) takes them until they
+ * each less its trailer share). A tail's move (`into` null) takes them until they
  * reach the seal, so it holds the least. A merge into the segment `into` holds it and its
  * stragglers in the isolate at once, so it takes them only while the two fit `MOVE_BYTES`
- * (review N3: the measured move's bound), and always at least one (so the oldest straggler
+ * (the measured move's bound), and always at least one (so the oldest straggler
  * always moves); the rest merge on the next passes.
  */
 export function moveTake(lines: readonly number[], into: Pick<Fence, "bytes"> | null,
@@ -487,7 +482,7 @@ interface Registration {
   readonly recipe_id: unknown;
 }
 
-/** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
+/** An agent's file, whose agent is a ledger identity while it exists. */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
 export interface Posted {
@@ -534,7 +529,7 @@ export type Wake = {
 
 /**
  * What a doorbell may carry: identifiers, the mailbox cursor, what kind of change it is
- * and the owner-wide change cursor it is after; never a body (S31).
+ * and the owner-wide change cursor it is after; never a body.
  */
 export interface WakeTarget {
   readonly wake_id: string;
@@ -827,7 +822,7 @@ function exportRow(table: string, row: Readonly<Record<string, unknown>>):
 
 /**
  * A message's record, as a segment holds it: its row, its body's row with the body's bytes
- * raw beside it (never escaped, review N3), its recipients.
+ * raw beside it (never escaped), its recipients.
  */
 export function mailRecord(message: Readonly<Record<string, unknown>>,
                            body: Readonly<Record<string, unknown>>,
@@ -841,7 +836,7 @@ export function mailRecord(message: Readonly<Record<string, unknown>>,
 }
 
 /**
- * The bytes a message takes as its segment will hold it (D2), from its rows as they stand:
+ * The bytes a message takes as its segment will hold it, from its rows as they stand:
  * its lines, its body raw (`body_bytes`) and its newline, and its trailer share. Counted
  * again each time its recipient row changes (`Ledger.#restate`), so the count is exact. Its
  * own `line_bytes` and its body's `meta_bytes` are in its lines, so settled to a fixed point;
@@ -988,15 +983,15 @@ function fenceBloom(fence: Fence): Uint8Array {
   return Uint8Array.from(Buffer.from(fence.members, "hex"));
 }
 
-/** The hot messages a move reads at once, its rows and its lines (review N5). */
+/** The hot messages a move reads at once, its rows and its lines. */
 const IMAGE_GROUP = 512;
 
 /** The archive chain read's segments a page reads at most. */
 const CHAIN_SEGMENTS = 8;
 
 /**
- * A read on from `offset` into its page's first message's body names that message (review
- * L2): the `message_id` the earlier part came with; another first message is refused, so a
+ * A read on from `offset` into its page's first message's body names that message: the
+ * `message_id` the earlier part came with; another first message is refused, so a
  * body is never spliced from two messages.
  */
 function readsOn(first: string, offset: number, named: unknown): void {
@@ -1116,7 +1111,7 @@ export class Ledger {
 
   /**
    * The agents' own files' reaction (`FileReaction`, the files' table): each agent is a
-   * ledger identity while its `agent.json` exists (slice ID).
+   * ledger identity while its `agent.json` exists.
    */
   readonly agentFiles: FileReaction = (path, present, now) => {
     const agent = AGENT_FILE.exec(path)?.[1];
@@ -1214,7 +1209,7 @@ export class Ledger {
    * Every change to a recipient row's state, `update` (an `UPDATE ledger_recipients`), with
    * its messages' lines counted again from their rows as they now stand (`mailLineBytes`): a
    * message's `line_bytes` and its body's `meta_bytes` are what its segment will hold, exactly,
-   * so a seal holds the bytes it counted and a move frees what it places (review M1). The
+   * so a seal holds the bytes it counted and a move frees what it places. The
    * schema's triggers move the acked bytes and the files' counters with them.
    */
   #restate(update: string, ...bindings: SqlStorageValue[]): void {
@@ -1399,7 +1394,7 @@ export class Ledger {
     });
   }
 
-  /** Owner policy (W3): an agent's hourly wake cap and batch window. */
+  /** Owner policy: an agent's hourly wake cap and batch window. */
   setWakeLimits(agentId: unknown, maxWakesPerHour: unknown, batchWindowS: unknown): Agent {
     if (typeof agentId !== "string") {
       throw new Refusal("invalid", "agent_id is an agent id");
@@ -1670,7 +1665,7 @@ export class Ledger {
       sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, changed_at) " +
                  "VALUES (?, ?, ?, 'queued', ?)", messageId, recipient, seq, now);
       // One open wake per ringing recipient; never one for the message's own sender. A
-      // new wake waits out the agent's batch window, so a burst of mail rings once (W3).
+      // new wake waits out the agent's batch window, so a burst of mail rings once.
       // Mail to one of the owner's own agents waits `queued` for the `runs` lane instead.
       if (to.kind === "outside" && ringingMethods().includes(to.agent.delivery_method)
           && recipient !== sender) {
@@ -1895,7 +1890,7 @@ export class Ledger {
       .one().seq;
   }
 
-  // -- THE ARCHIVE: acked mail moved to segments (slice STORE item 2, `segments.ts`) ----------
+  // -- THE ARCHIVE: acked mail moved to segments (`segments.ts`) ----------------------------
 
   /** The key message ids carry their seq under, made with the first message. In a unit. */
   #idKey(): Uint8Array {
@@ -1999,7 +1994,7 @@ export class Ledger {
 
   /**
    * The batch's rows as the object holds them, in seq order, a group at a time (never the
-   * batch held at once, review N5): each message's row, its body's and its recipients', as
+   * batch held at once): each message's row, its body's and its recipients', as
    * `each` takes them; false when one is no longer hot and acked.
    */
   #images(seqs: readonly number[],
@@ -2032,8 +2027,8 @@ export class Ledger {
   }
 
   /**
-   * A batch planned into a move's table (review N5: from its rows' lengths, never their
-   * bytes held; review N6: packed, never an object a record): each message's record, its
+   * A batch planned into a move's table (from its rows' lengths, never their bytes held;
+   * packed, never an object a record): each message's record, its
    * length, room, time, and its placed body's content (`place` names it in the table, with
    * the hash it must have as the move reads it) or its inline body, checked here; the digest
    * of its rows as held; null when it changed since it was picked. A read.
@@ -2118,7 +2113,7 @@ export class Ledger {
     }
     // The purges' cursors stay where they are: what this replaced is gone, and what it
     // named comes after every cursor, its bloom naming no purged agent, so each purge still
-    // visits every segment it had not (review N7: a jump past the replaced segments' ids
+    // visits every segment it had not (a jump past the replaced segments' ids
     // would skip the segments between them).
     for (const piece of pieces) {
       if (!kept.has(piece.content_id)) {
@@ -2129,8 +2124,8 @@ export class Ledger {
   }
 
   /**
-   * The segment a bounded rewrite left under the least, for the next pass to go on with
-   * (review N7), derived from the fences alone (so an export's restore keeps it): the
+   * The segment a bounded rewrite left under the least, for the next pass to go on with,
+   * derived from the fences alone (so an export's restore keeps it): the
    * smallest under `SEGMENT_LEAST_BYTES` while it is not the only one. Null when none. A
    * read of one index range.
    */
@@ -2184,7 +2179,7 @@ export class Ledger {
   /**
    * In a unit, as an `archive` pass begins: the passes before it that never ended well and
    * the last one's error (null when it stopped before it could say), then this one counted
-   * among them until it ends (review N3: kept in storage, so a pass killed with its isolate
+   * among them until it ends (kept in storage, so a pass killed with its isolate
    * still counts).
    */
   archiveBegin(): { fails: number; error: string | null } {
@@ -2462,7 +2457,7 @@ export class Ledger {
   }
 
   /**
-   * The bytes of the owner's mail, as the one number counts them (D2): each hot message's
+   * The bytes of the owner's mail, as the one number counts them: each hot message's
    * lines past its body, its body inline or placed (once a content), and every archive
    * segment's content. A read.
    */
@@ -2663,7 +2658,7 @@ export class Ledger {
   }
 
   /**
-   * Store one doorbell subscription (slice W): from an agent's own client (`origin`, MCP
+   * Store one doorbell subscription: from an agent's own client (`origin`, MCP
    * Events, after the binder verified its callback), for its one enabled agent in the
    * command center it names, whose wake kind its client subscribes; or from the owner
    * (`origin` null), for the agent and the kind it pasted a token for, which must be the
@@ -2852,7 +2847,7 @@ export class Ledger {
 
   /**
    * Fold `bit` and `after` into each agent's open wake, or open one that waits out the
-   * agent's batch window (W3), so a burst rings once.
+   * agent's batch window, so a burst rings once.
    */
   #open(agentIds: readonly string[], bit: number, after: number, now: number): void {
     const sql = this.#sql;
@@ -2873,7 +2868,7 @@ export class Ledger {
   }
 
   /**
-   * A changed or revoked grant (P0-3's M3): every agent of that outside client has its
+   * A changed or revoked grant: every agent of that outside client has its
    * open wakes suppressed and its client's own subscriptions erased, so it subscribes again
    * under the new grant. The owner's pasted tokens stay: the client did not hand them over,
    * and each send still rechecks the client's grant. Its ids; an index range.
@@ -2891,7 +2886,7 @@ export class Ledger {
     });
   }
 
-  // -- the schedule: wakes (S3b, W3) --------------------------------------------
+  // -- the schedule: wakes ---------------------------------------------------------
 
   #suppress(agentId: string, reason: string, now: number): void {
     this.#sql.exec(
@@ -2949,7 +2944,7 @@ export class Ledger {
    * A wake whose agent is gone, disabled or no longer rings, or whose client's grant no
    * longer stands, is suppressed instead. A wake past the owner's hourly cap for its agent
    * waits until the cap allows it (GCRA with no burst: one ring each `3600 / cap` seconds,
-   * so never more than `cap` in any hour), its queued mail held at `held_cap` (W3); with no
+   * so never more than `cap` in any hour), its queued mail held at `held_cap`; with no
    * cap, none counts.
    * The claim is unmarked: the in-process sender calls `mark()` before its first byte.
    * Nothing is claimed while the owner is not admitted (`require_work`, read in the claim's
@@ -3211,7 +3206,7 @@ export interface AgentDoorbellRequest {
 
 /**
  * A read of the archive that the lane's moves and rewrites changed under each of its
- * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
+ * `READ_TRIES`: retried soon, never an internal error.
  */
 export function archiveMoving(): Refusal {
   const retry = 1;
@@ -3228,10 +3223,6 @@ function parentMoved(): Refusal {
 }
 
 // -- THE DOORS: the `ledger` rows' handlers (`owner/doors.json`) ----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`LedgerDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `ledger` doors reach: the ledger; the archive's reads of archived mail; the
@@ -3274,7 +3265,7 @@ function agentsListed(o: LedgerDoorNeeds, { account, r }: Call):
                                              { universe, agent: native.agent }));
   }
   // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
-  // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
+  // names and dates, no data, so any agent can offer an
   // app that is not connected yet.
   const after = r["after"] === undefined ? null : r["after"];
   if (after !== null && typeof after !== "string") {
@@ -3343,7 +3334,6 @@ function mailsAgent({ account, scope }: Call, authority: MailAuthority | null,
   }
 }
 
-/** The `ledger` doors' handlers, by door. */
 export const ledgerDoors = Object.freeze({
   /**
    * What changed for this agent since its cursor, in one read: its unacknowledged mail
@@ -3351,7 +3341,7 @@ export const ledgerDoors = Object.freeze({
    * (`room:<app>:<room>`) written past `after`, an owner-wide cursor, each as its head.
    * Held to its grant as the mailbox and the collections are: `read_graph`, and a private
    * row only to its writer. Its mail part is a mailbox read, so a run is refused it
-   * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
+   * (`run_no_mailbox`), as at `mailboxRead`; a run reads the board's digest.
    */
   async inboxDigest(o: LedgerDoorNeeds, door: Door<InboxDigestRequest>):
       Promise<{ mail: MailPage; rooms: Heads }> {
@@ -3412,7 +3402,7 @@ export const ledgerDoors = Object.freeze({
   async roomPost(o: LedgerDoorNeeds, door: Door<PostRequest>): Promise<Posted> {
     // A parent archived (acked, moved to a segment) is read from R2 before the units: its
     // seq, from its id, in the gate; then its record, outside. One the lane moved after the
-    // gate found it hot is read so in a post again (review N10's Low), never refused as no
+    // gate found it hot is read so in a post again, never refused as no
     // parent: archived mail never returns hot, so a second post finds it archived.
     const gated = await o.door(() => {
       door.bound();
@@ -3469,7 +3459,7 @@ export const ledgerDoors = Object.freeze({
    * them, the owner's own agents, each a ledger identity while its `agent.json` exists:
    * every one for the owner; for anyone else, the live ones its grant covers (a scoped
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
-   * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
+   * it may mail). One answer holds a page (`pages.ts`): its agents, the owner's
    * agents and the apps, in that order, each by its stable key, while they fit; when some
    * are left, `next` is where the next page starts, for `after` on the next read.
    */
@@ -3479,7 +3469,7 @@ export const ledgerDoors = Object.freeze({
     return o.door(() => agentsListed(o, door.check()));
   },
   /**
-   * Owner policy (W3): an agent's hourly wake cap and batch window, kept on its registry
+   * Owner policy: an agent's hourly wake cap and batch window, kept on its registry
    * row where the ledger reads them, and changed like any policy write: in the owner's
    * session, against the policy generation, receipted.
    */
@@ -3496,7 +3486,7 @@ export const ledgerDoors = Object.freeze({
     });
   },
   /**
-   * Registering an agent needs the owner's protected session (S30), in one of two forms.
+   * Registering an agent needs the owner's protected session, in one of two forms.
    * The owner itself applies an MCP client's held registration (`CardApply`): the card
    * the client filed on its own verified call, which captured its origin. Or the owner's
    * browser registers an agent for an API key it holds, naming the key's identity
