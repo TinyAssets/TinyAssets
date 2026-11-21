@@ -348,8 +348,7 @@ interface RunGrant {
 /**
  * A run's result posted for it: a mail's run's, its agent's reply to that mail; a scheduled
  * run's of the owner's own schedule (`mail` null), its agent's post in the owner's room with
- * it, `dm:<its id>`, since no
- * one is waiting on a scheduled run. Under the run's authority either way.
+ * it, since no one is waiting on a scheduled run. Under the run's authority either way.
  */
 export interface MailAnswer {
   readonly run: string;

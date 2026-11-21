@@ -1,8 +1,9 @@
 import { runInDurableObject } from "cloudflare:test";
 
 import {
-  type Agent, type Ledger, LEDGER_LIMITS, type Outcome, type WakeTarget,
+  type Agent, type Ledger, LEDGER_LIMITS, type Outcome, pairRoom, type WakeTarget,
 } from "../src/ledger";
+import { OWNER } from "../src/authority";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "../src/clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
@@ -12,6 +13,11 @@ import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import {
   admitted, alarmOf, atClock, EVERY_SIGNIN, laneAt, seeded, storesOn, type TestStores, TIERS,
 } from "./support";
+
+/** A pair's room, as `agents_list` names it: the owner's with `a`, or `a`'s with `b`. */
+export function dm(a: string, b: string = OWNER): string {
+  return pairRoom(a, b);
+}
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -111,7 +117,7 @@ export function ballast(s: Pick<Stores, "grants" | "ledger">, unread: number,
   const { maxMessages, maxUnacked } = LEDGER_LIMITS;
   const agent = registerOn(s, BALLAST, { command_center_id: "alpha", display_name: "Ballast",
                                          delivery_method: "pull", recipe_id: null }).agent_id;
-  const room = `dm:${agent}`;
+  const room = dm(agent);
   const acked = maxMessages - hot - (maxUnacked - unread);
   let last = 0;
   for (let n = 0; n < acked; n++) {

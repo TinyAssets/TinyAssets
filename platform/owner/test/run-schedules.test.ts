@@ -11,7 +11,7 @@ import { LEDGER_LIMITS } from "../src/ledger";
 import { nativeId } from "../../contract/src/binding";
 import { RUN_STARTS_NONE } from "../src/owner-do";
 import { gated, type Gated } from "./gateway-support";
-import { MCP, MUSE, rig, signedIn } from "./ledger-support";
+import { MCP, MUSE, rig, signedIn, dm } from "./ledger-support";
 import {
   ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS,
 } from "./runs-support";
@@ -121,7 +121,7 @@ describe("a scheduled run's result", () => {
     // result none.
     const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
     expect(messages.map((message) => [message.room_id, message.body]))
-      .toEqual([[`dm:${nativeId("main")}`, "Your brief: nothing due today."]]);
+      .toEqual([[dm(nativeId("main")), "Your brief: nothing due today."]]);
     expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
   });
 
@@ -181,7 +181,7 @@ describe("a scheduled run's result", () => {
       .toMatchObject({ settled: "succeeded" });
     const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
     expect(messages.map((message) => [message.room_id, message.body]))
-      .toEqual([[`dm:${nativeId("main")}`, "The brief."]]);
+      .toEqual([[dm(nativeId("main")), "The brief."]]);
     expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
   });
 
@@ -203,7 +203,7 @@ describe("a scheduled run's result", () => {
     await r.sql("UPDATE ledger_usage SET messages = ?, archive_blocked = 1",
                 LEDGER_LIMITS.maxMessages);
     const posted = await failure(() => r.stub.roomPost(r.bind(), {
-      room_id: `dm:${nativeId("main")}`, client_message_id: "c-1", body: "hello",
+      room_id: dm(nativeId("main")), client_message_id: "c-1", body: "hello",
       parent_id: null }));
     expect(posted.code).toBe("storage_full");
     // The run's reply: refused at the wall, so the run settles with its notice, once.
@@ -285,7 +285,7 @@ describe("a post at the hot ceiling", () => {
     const job = "SELECT id FROM cf_agents_jobs WHERE id = 'owner-schedule/archive'";
     expect(await r.sql(job)).toEqual([]);
     const posted = await failure(() => r.stub.roomPost(r.bind(), {
-      room_id: `dm:${nativeId("main")}`, client_message_id: "c-1", body: "hello",
+      room_id: dm(nativeId("main")), client_message_id: "c-1", body: "hello",
       parent_id: null }));
     expect(posted.code).toBe("storage_busy");
     expect(await r.sql(job)).toEqual([{ id: "owner-schedule/archive" }]);

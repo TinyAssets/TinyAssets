@@ -45,7 +45,7 @@
  * names the segment, and a moved row never returns to its table (its key, a message's seq and
  * id, is never given again), so a key a segment at E holds is the owner's at E as the segment
  * holds it. A segment that a rewrite replaced before E has no row at E and is not read. The
- * reader drops the lines of a room naming an agent in `archive_purges` at E (deleted, its
+ * reader drops the lines of a room in `archive_purges` at E (a deleted agent's room, its
  * segments not yet rewritten). Segments ship as they are, so a generation never reads the
  * archive back. The id key (`ledger_ids`) rides along, so whoever holds an export can read
  * the seq (and so the volume) a message id carries; it gates no access.
@@ -174,13 +174,13 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     ledger_recipients: t("message_id agent_id seq state changed_at unacked read_at " +
                          "failed_reason", "message_id agent_id"),
     ledger_readers: t("reader through_seq acked_at unacked", "reader"),
-    // The archive: each segment's fence (its content holds the archived rows), the agents
-    // deleted while segments may hold their mail, and the key a message id carries its seq
-    // under.
+    // The archive: each segment's fence (its content holds the archived rows), the rooms of
+    // deleted agents while segments may hold their mail, and the key a message id carries its
+    // seq under.
     archive_segments: t("segment stream first_key last_key first_at last_at records bytes " +
-                        "content_id filer trailer_offset trailer_bytes members made_at",
+                        "content_id filer trailer_offset trailer_bytes rooms made_at",
                         "segment"),
-    archive_purges: t("agent_id at next_segment", "agent_id"),
+    archive_purges: t("room_id at next_segment", "room_id"),
     ledger_ids: t("only id_key", "only"),
     // Spend.
     model_spend: t("period source cost", "period source"),

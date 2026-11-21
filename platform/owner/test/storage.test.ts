@@ -12,7 +12,7 @@ import { MIGRATIONS } from "../src/schema";
 import { refusalOf } from "../../contract/src/refusal";
 import { GC_GRACE_S, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { Binding } from "../../contract/src/binding";
-import { MUSE, rig } from "./ledger-support";
+import { MUSE, rig, dm } from "./ledger-support";
 import { drainDue, failure, laneAt, starterSeed, TIERS, tiersAt } from "./support";
 
 /** What every owner's seed holds, its bytes counted in the figure like any file's. */
@@ -71,7 +71,7 @@ describe("the one storage number", () => {
     const collections = rows[0]!["n"] as number;
     expect(collections).toBeGreaterThanOrEqual(2000);  // the row, and its history entry
     const muse = await r.register(MUSE, "Muse", "pull");
-    await r.post(null, `dm:${muse}`, { body: "hello, Muse" });
+    await r.post(null, dm(muse), { body: "hello, Muse" });
     await r.stub.fileWrite(r.bind(null), { path: "/workspace/n.txt", expected_etag: null,
                                            content: new Uint8Array(100) });
     const after = await r.stub.storageUsage(r.bind(null));
@@ -322,7 +322,7 @@ describe("the one storage number", () => {
     let refused: Error | null = null;
     for (let i = 0; i < 5 && refused === null; i++) {
       try {
-        await r.stub.roomPost(small, { room_id: `dm:${muse}`, client_message_id: `c${i}`,
+        await r.stub.roomPost(small, { room_id: dm(muse), client_message_id: `c${i}`,
                                        body: "z".repeat(1500), parent_id: null });
       } catch (error) {
         refused = error as Error;

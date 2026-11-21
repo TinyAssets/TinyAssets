@@ -74,7 +74,7 @@ export async function sealed(r: Rig, reader: typeof MUSE, room: string): Promise
 /** Whether the lane has work, as its schedule reads it (`Archive.next`), or a move in flight. */
 async function busy(r: Rig): Promise<boolean> {
   const due = await r.inLedger((ledger: Ledger) => ledger.archiveDue()
-    || ledger.purgedAgents().length > 0 || ledger.archiveCompactPending());
+    || ledger.purgedRooms().length > 0 || ledger.archiveCompactPending());
   return due || (await sqlIn(r.stub, "SELECT 1 FROM archive_moves")).length > 0;
 }
 

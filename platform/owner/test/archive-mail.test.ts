@@ -28,7 +28,7 @@ import {
   type SegmentRecord, type Source,
 } from "../src/segments";
 import { batchOf, hotSources, noRead } from "./archive-support";
-import { MUSE, rig } from "./ledger-support";
+import { MUSE, rig, dm } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";
 import { storesOn, TIERS, tiersAt } from "./support";
 
@@ -199,23 +199,23 @@ describe("a message's counted bytes", () => {
         .toBe(counted!["lines"]);
       return held;
     };
-    const asked = (await r.post(null, `dm:${muse}`, { body: "hello" })).message_id;
+    const asked = (await r.post(null, dm(muse), { body: "hello" })).message_id;
     const posted = await exact(asked);
     const [mail] = (await r.read(MUSE)).messages;
     const read = await exact(asked);
     expect(read).toBeGreaterThan(posted);  // its read time, in its recipient row
     await r.ack(MUSE, mail!.seq);
-    await r.post(MUSE, `dm:${muse}`, { body: "hi", cmid: "r", parent: asked });
+    await r.post(MUSE, dm(muse), { body: "hi", cmid: "r", parent: asked });
     await exact(asked);  // replied, while acked
     const failed = await r.inLedger((ledger: Ledger) => {
       ledger.appear("main");
-      const id = ledger.post(null, `dm:${nativeId("main")}`, "m", "x", null).message_id;
+      const id = ledger.post(null, dm(nativeId("main")), "m", "x", null).message_id;
       ledger.undeliverable(id, nativeId("main"), "credential_refresh_failed");
       return id;
     });
     await exact(failed);
     // A placed body's record, as the move streams it (`mailParts`), holds no content id.
-    const placed = (await r.post(null, `dm:${muse}`, { body: "p".repeat(PLACE_BYTES + 1),
+    const placed = (await r.post(null, dm(muse), { body: "p".repeat(PLACE_BYTES + 1),
                                                        cmid: "p" })).message_id;
     const of = (table: string) => sqlIn(r.stub, `SELECT * FROM ${table} WHERE message_id = ?`,
                                         placed);
@@ -236,7 +236,7 @@ describe("the tail's seal at the production limits (review N4)", () => {
     const seen = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const { ledger, gate } = storesOn(state);
       const sql = state.storage.sql;
-      const room = `dm:${muse}`;
+      const room = dm(muse);
       const post = (from: number, to: number) => {
         for (let n = from; n < to; n++) {
           ledger.post(null, room, `c${n}`, "x", null);

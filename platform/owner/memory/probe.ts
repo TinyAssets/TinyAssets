@@ -41,7 +41,8 @@ import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/b
 import type { Located } from "../src/bodies";
 import { clock } from "../src/clock";
 import { markErasing } from "../src/erasure";
-import { LEDGER_LIMITS } from "../src/ledger";
+import { OWNER } from "../src/authority";
+import { LEDGER_LIMITS, pairRoom } from "../src/ledger";
 import { EDIT_BYTES_MAX } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
@@ -623,7 +624,7 @@ export class LegOwner extends OwnerDO {
     const { ledger } = this.#stores;
     const { fails } = this.#gate.storage.sql.exec<{ fails: number }>(
       "SELECT archive_fails AS fails FROM ledger_usage").one();
-    return fails === 0 && !(ledger.archiveDue() || ledger.purgedAgents().length > 0
+    return fails === 0 && !(ledger.archiveDue() || ledger.purgedRooms().length > 0
                             || ledger.archiveCompactPending());
   }
 
@@ -779,7 +780,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // thousand more), so the lane seals a tail of them: 8 MiB of records (8,489 of these),
       // its arrays near the doubling's worst (at 16,384).
       const agents = await stub.legAgents();
-      await stub.legSmall(`dm:${agents[0]}`, 0, 25_000 + mib * 1000);
+      await stub.legSmall(pairRoom(OWNER, agents[0]!), 0, 25_000 + mib * 1000);
       LEG.ready.push({ name, who, agents, want: 1 });
     } else if (path === "merge") {
       // At the production limits: the muse's sealed mail, Dot's merged into it, and Pat's
@@ -788,11 +789,12 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       const sizing = await object(env, `${name}-sizing`);
       const [to] = await sizing.legAgents();
       const own = await sizing.legOverhead((await sizing.roomPost(owner(`${name}-sizing`), {
-        room_id: `dm:${to}`, client_message_id: "a0000", body: "x", parent_id: null }))
+        room_id: pairRoom(OWNER, to!), client_message_id: "a0000", body: "x", parent_id: null }))
         .message_id) + 1 - RECORD_TRAILER_BYTES;
       const mail = mergeMail(own);
       const agents = await stub.legAgents();
-      const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`), mail);
+      const lasts = await stub.legInterleaved(agents.map((agent) => pairRoom(OWNER, agent)),
+                                              mail);
       await ring(stub, who, agents[0]!, "r0");
       await settled(stub, (seen) => seen.segments >= 1);
       const sealed = await stub.legArchived();
@@ -822,7 +824,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       const agents = await stub.legAgents();
       const post = async (on: DurableObjectStub<LegOwner>, k: number, bytes: number,
                           as = who, to = agents) =>
-        (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
+        (await on.roomPost(as, { room_id: pairRoom(OWNER, to[k]!), client_message_id: `b${k}`,
                                   body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
                                   parent_id: null })).message_id;
       // A record's own bytes past its body's, read from a message of the same shape on an
@@ -841,7 +843,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // before it): with them, the hot mail stays past half its ceiling through the last
       // seal, and the unread within `maxUnacked`.
       const rings = path === "rewrite" ? 2 : 1;
-      await stub.legUnread(`dm:${agents[0]}`, LEDGER_LIMITS.maxMessages / 2 - rings);
+      await stub.legUnread(pairRoom(OWNER, agents[0]!), LEDGER_LIMITS.maxMessages / 2 - rings);
       if (path === "rewrite") {
         await ring(stub, who, agents[0]!, "r0");
         await settled(stub, (seen) => seen.segments >= 1);
@@ -866,8 +868,8 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
 /** An owner's post to the agent `agent`: its door syncs the lanes, so the archive's runs. */
 async function ring(stub: DurableObjectStub<LegOwner>, who: Binding, agent: string,
                     cmid: string): Promise<void> {
-  await stub.roomPost(who, { room_id: `dm:${agent}`, client_message_id: cmid, body: "ring",
-                             parent_id: null });
+  await stub.roomPost(who, { room_id: pairRoom(OWNER, agent), client_message_id: cmid,
+                             body: "ring", parent_id: null });
 }
 
 /**

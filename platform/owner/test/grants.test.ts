@@ -15,7 +15,7 @@ import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import { POLICY_LIMITS, policyDigest } from "../../contract/src/policy-document";
 import {
-  DOT, MCP, MUSE, rig, type Rig, signedIn, subscription,
+  DOT, MCP, MUSE, rig, type Rig, signedIn, subscription, dm
 } from "./ledger-support";
 import { atClock, failure, inStores } from "./support";
 
@@ -66,12 +66,12 @@ describe("an outside client's grant", () => {
   it("keeps a scoped client to exactly its triples at its own mailbox", async () => {
     const r = await rig();
     const agent = await r.register(CHATGPT);
-    await r.post(null, `dm:${agent}`);
+    await r.post(null, dm(agent));
     const denied = "outside client capability not granted";
     const calls = {
       read: () => r.read(CHATGPT),
       ack: () => r.ack(CHATGPT, 0),
-      post: () => r.post(CHATGPT, `dm:${agent}`, { cmid: "m1" }),
+      post: () => r.post(CHATGPT, dm(agent), { cmid: "m1" }),
     };
     const outcome = async () => Object.fromEntries(await Promise.all(Object.entries(calls)
       .map(async ([name, call]) => [name, await call().then(() => "ok",
@@ -364,7 +364,7 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     const rows = await r.table("ledger_wakes");
     expect(rows.map((w) => w["state"])).toEqual(["suppressed"]);
@@ -381,13 +381,13 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
     const r = await rig();
     const dot = await r.register(DOT, "Dot", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(DOT);
-    await r.post(null, `dm:${dot}`, { cmid: "c1" });
+    await r.post(null, dm(dot), { cmid: "c1" });
     await grant(r, DOT, "scoped", [READ]);
     expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
     expect(await r.tick(clock() + 1)).toBe(0);
     expect(r.sender.sent).toEqual([]);
     await r.subscribe(DOT);
-    await r.post(null, `dm:${dot}`, { cmid: "c2" });
+    await r.post(null, dm(dot), { cmid: "c2" });
     expect(await r.tick(clock() + 2)).toBe(1);
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
   });
@@ -397,7 +397,7 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     // no suppression with it
     await r.sql("UPDATE outside_clients SET mode = 'revoked', owner_set = 1");
     expect(await r.tick(clock() + 1)).toBe(0);
@@ -864,13 +864,13 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     await rename(r, MUSE, "Muse");
     expect((await r.table("ledger_wakes")).map((w) => w["state"])).toEqual(["pending"]);
     expect(await r.tick(clock() + 1)).toBe(1);
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([muse]);
     expect(await r.sql("SELECT * FROM wake_callbacks")).toHaveLength(1);
-    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    await r.post(null, dm(muse), { cmid: "c2" });
     await grant(r, MUSE, "scoped", [READ]);
     expect((await r.table("ledger_wakes")).map((w) => w["state"]).slice(1))
       .toEqual(["suppressed"]);

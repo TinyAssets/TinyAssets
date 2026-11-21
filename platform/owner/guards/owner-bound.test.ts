@@ -231,6 +231,8 @@ const RECIPE_CHARS = inline("ledger", /printable\(request\.recipe_id, ([0-9]+), 
 const AGENT_NAME_CHARS = 80;
 /** Ids the object mints: an agent's (`agent_` and 16 hex), a message's (`msg_` and 32). */
 const AGENT_ID = 22;
+/** A room's id and a pair's members' key (ASCII), at the schema's widest (migration 19). */
+const ROOM_ID = Number(/length\(room_id\) BETWEEN 1 AND ([0-9]+) /.exec(SCHEMA)![1]);
 const MESSAGE_ID = 36;
 /** A proposal's or card's id, in code points (`policy.ts`). */
 const PROPOSAL_ID_CHARS = inline("policy", /codePoints\(value\) <= ([0-9]+)/);
@@ -430,6 +432,15 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
                      by: "maxAgentRows, live or retired, each its name (ASCII), id and " +
                        "counters" },
+    // Rooms (`WITHOUT ROWID`, keyed by their id), each a pair's two member rows, made by a
+    // pair's first post and refused past maxRooms, a deleted agent's purged rooms counted too.
+    rooms: { rows: L.maxRooms, bytes: ROW + 2 * ROOM_ID + 8 + NUMBER,
+             by: "maxRooms, each its id and members' key at the schema's widest, its kind " +
+               "and time",
+             indexes: { sqlite_autoindex_rooms_2: key(ROOM_ID) } },
+    room_members: { rows: 2 * L.maxRooms, bytes: ROW + ROOM_ID + AGENT_ID,
+                    by: "a pair's two members a room",
+                    indexes: { room_members_by_member: key(AGENT_ID, ROOM_ID) } },
     ledger_messages: { rows: L.maxMessages,
                        bytes: ROW + MESSAGE_ID + 4 * UNIVERSE_CHARS + 4 * ROOM_CHARS + AGENT_ID
                          + 4 * CMID_CHARS + 64 + 4 * PARENT_CHARS + MESSAGE_ID + 7
@@ -485,10 +496,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     archive_moves: { rows: 2, bytes: ROW + 16 + 32 + 64 + 2 * NUMBER,
                      by: "one move in flight a stream, mail and a rewrite",
                      indexes: { sqlite_autoindex_archive_moves_1: key(16) } },
-    archive_purges: { rows: L.maxAgentRows, bytes: ROW + AGENT_ID + 2 * NUMBER,
-                      by: "an agent deleted while segments may hold its mail, at most " +
-                        "maxAgentRows waiting (a deletion past them is refused)",
-                      indexes: { sqlite_autoindex_archive_purges_1: key(AGENT_ID) } },
+    archive_purges: { rows: L.maxRooms, bytes: ROW + ROOM_ID + 2 * NUMBER,
+                      by: "a deleted agent's room while segments may hold its mail, counted " +
+                        "with the rooms under maxRooms (a deletion moves its rooms here)",
+                      indexes: { sqlite_autoindex_archive_purges_1: key(ROOM_ID) } },
     ledger_ids: { rows: 1, bytes: ROW + 64, by: "one row: the key ids carry their seq under" },
     // Slice W's doorbell subscriptions: `WITHOUT ROWID`, keyed by the server's id, each its
     // fields at the schema's widest (its sealed blobs visible ASCII, a byte a character; its

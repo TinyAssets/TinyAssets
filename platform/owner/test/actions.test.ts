@@ -15,7 +15,7 @@ import { clock } from "../src/clock";
 import type { OwnerDO } from "../src/owner-do";
 import { QUEUE_FULL } from "../src/runs";
 import { gated } from "./gateway-support";
-import { DOT, MCP, MUSE, registerOn, rig, signedIn } from "./ledger-support";
+import { DOT, MCP, MUSE, registerOn, rig, signedIn, dm } from "./ledger-support";
 import { ALL_SCOPES, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS }
   from "./runs-support";
 import { atClock, drainDue, failure, inStores } from "./support";
@@ -244,8 +244,8 @@ describe("a run's call", () => {
     await ruled(o, [{ act: "people.message", do: "ask", agent: "main" }]);
     const post = (room: string, cmid: string) => r.stub.roomPost(run, {
       room_id: room, client_message_id: cmid, body: "hello", parent_id: null });
-    await post(`dm:${main}`, "to-owner");
-    const card = await heldCard(() => post(`dm:${[main, muse].sort().join("+")}`, "to-muse"));
+    await post(dm(main), "to-owner");
+    const card = await heldCard(() => post(dm(main, muse), "to-muse"));
     expect((await r.stub.actionRequest(o.owner, { card_id: card })).card)
       .toMatchObject({ act: "people.message", door: "roomPost", agent: "main", client: null });
   });

@@ -21,7 +21,7 @@ import {
 } from "../src/schedule";
 import { Doorbell } from "../src/wakes";
 import { sha256Hex } from "../../contract/src/digest";
-import { MUSE, rig } from "./ledger-support";
+import { MUSE, rig, dm } from "./ledger-support";
 import {
   alarmOf, clockAt, drainDue, failure, laneJobs, ownerObject, unseededObject,
 } from "./support";
@@ -482,7 +482,7 @@ describe("the object's schedule", () => {
   it("is a fixed set of lane jobs, armed at the earliest", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.post(null, `dm:${muse}`);
+    await r.post(null, dm(muse));
     await r.stub.fileUploadBegin(r.bind(null), { size: 5000, chunks: ["e".repeat(64)] });
     const t = Date.now() / 1000;
     await r.inLedger((ledger) => {

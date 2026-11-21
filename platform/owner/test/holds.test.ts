@@ -12,7 +12,7 @@ import {
   EDIT_MAKE_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, ownerSlots,
 } from "../src/holds";
 import { owner } from "./generation-support";
-import { MUSE, rig } from "./ledger-support";
+import { MUSE, rig, dm } from "./ledger-support";
 import { failure, gateFor, spaceOf } from "./support";
 
 const MIB = 1024 * 1024;
@@ -21,7 +21,7 @@ describe("the owner's holds", () => {
   it("never keep a co-tenant's small read waiting behind edits", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    await r.post(null, `dm:${muse}`, { body: "x".repeat(3000) });  // placed: past 2,048 bytes
+    await r.post(null, dm(muse), { body: "x".repeat(3000) });  // placed: past 2,048 bytes
     const pool = ownerSlots();
     // Edits' making steps hold every unit but the reserve, and another waits for room.
     const steps = Math.floor((OWNER_POOL_UNITS - OWNER_RESERVE_UNITS) / EDIT_MAKE_UNITS);

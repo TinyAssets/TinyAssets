@@ -65,8 +65,9 @@
  * (`RUN_NO_MAILBOX`): a run's mail is its input, and its agent's mailbox holds every
  * authority's mail. Its mailbox's `queued` and `held_cap` rows are the `runs` lane's alone.
  *
- * Rooms are pairs (`dm:<a>`, the owner and `a`; `dm:<a>+<b>`, two agents, at least one the
- * owner's own, `a` before `b`): a post goes to the other member. Mail to one of the owner's
+ * Rooms are pairs (the owner and an agent, or two agents, at least one the owner's own), each
+ * a row with its two members' rows, named by an opaque id (`pairRoom`): a post goes to the
+ * other member, and nothing reads members out of an id. Mail to one of the owner's
  * agents waits `queued` in its recipient row for the `runs` lane, which starts that agent's
  * run on it (`nextMail`) and marks it taken (`taken`) in the run's admission, held until
  * the run settles (`settled`), or failed (`undeliverable`) when no run may take it; a run
@@ -114,7 +115,7 @@ import {
 } from "./pages";
 import {
   bloomHas, bloomOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
-  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_LEAST_BYTES,
+  parseRecord, RECORD_TRAILER_BYTES, rowLine, SEGMENT_LEAST_BYTES,
   SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
@@ -137,6 +138,20 @@ import type { Resealed } from "../../contract/src/gateway";
 
 const OUTSIDE_ID = /^agent_[0-9a-f]{16}$/;
 const NATIVE_ID = /^ta_[0-9a-f]{16}$/;
+
+/** A pair's two member ids, sorted and joined: its room's key (`rooms.members_key`). */
+function membersKey(a: string, b: string): string {
+  return a < b ? `${a}+${b}` : `${b}+${a}`;
+}
+
+/**
+ * A pair's room id before its first post: opaque, and the same for the same two members, so a
+ * pair's room is named (`agents_list`) before it is made, and found again by its members.
+ */
+export function pairRoom(a: string, b: string): string {
+  return "rm_" + sha256Hex(`tinyassets-room\0${membersKey(a, b)}`).slice(0, 32);
+}
+
 /**
  * The mail to the owner's own agents that no run has taken: each agent's rows by
  * `recipients_by_state`, an index seek an agent.
@@ -152,7 +167,7 @@ export const RUN_NO_MAILBOX = "run_no_mailbox: a run's mail is its input; it rea
 /**
  * A framed mail's envelope and closing fence together, past which `mailInput` fails loudly:
  * the queue's room for them. Its widest is about 820 bytes: a display name of 80 four-byte
- * letters, the widest room (`dm:` and an outside and an own agent's ids) and the message id
+ * letters, the widest room id (an old room of two agents, `dm:` and both ids) and the message id
  * three times over (`test/agent-mail.test.ts` costs it).
  */
 export const MAIL_HEADER_BYTES = 1024;
@@ -259,6 +274,12 @@ export interface LedgerLimits {
   /** Registered agents, enabled or not; the owner deletes a disabled one to make room. */
   readonly maxAgentRows: number;
   /**
+   * Rooms, and deleted agents' rooms whose archived mail the lane still removes
+   * (`archive_purges`): one ceiling, since a deletion moves its rooms from one to the other.
+   * A pair's room is made by its first post, which is refused `ledger_full` past it.
+   */
+  readonly maxRooms: number;
+  /**
    * Messages held hot: the `archive` lane moves the acked ones out from half of it, and a
    * post at it is `storage_busy` until a move lands.
    */
@@ -291,6 +312,7 @@ const HOT_MESSAGES = 50_000;
 export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxAgents: 1_000,
   maxAgentRows: 1_000,
+  maxRooms: 5_000,
   maxMessages: HOT_MESSAGES,
   maxUnacked: HOT_MESSAGES - SEGMENT_MIN_RECORDS,
   archiveBytes: SEGMENT_MIN_BYTES,
@@ -810,7 +832,7 @@ export type Fence = {
   readonly content_id: string;
   readonly trailer_offset: number;
   readonly trailer_bytes: number;
-  readonly members: string;
+  readonly rooms: string;
 };
 
 /** A row cut to the columns its table exports, in their order: its export line's row. */
@@ -978,9 +1000,9 @@ export function keptRecord(table: MoveTable, key: number, offset: number, length
   return table.push(key, head.chain, head.room, head.at, length, MoveTable.KEPT, ref, offset);
 }
 
-/** A fence row's members bloom, as bytes. */
+/** A fence row's rooms bloom, as bytes. */
 function fenceBloom(fence: Fence): Uint8Array {
-  return Uint8Array.from(Buffer.from(fence.members, "hex"));
+  return Uint8Array.from(Buffer.from(fence.rooms, "hex"));
 }
 
 /** The hot messages a move reads at once, its rows and its lines. */
@@ -1375,21 +1397,15 @@ export class Ledger {
       sql.exec("DELETE FROM ledger_readers WHERE reader = ?", agentId);
       sql.exec("DELETE FROM ledger_wakes WHERE agent_id = ?", agentId);
       sql.exec("DELETE FROM outside_agents WHERE agent_id = ?", agentId);
-      // Its archived mail: dropped from every read and the export at once, and rewritten
-      // out of each segment that may hold it by the `archive` lane (`archive_purges`).
+      // Its rooms go. Their archived mail is dropped from every read and the export at once,
+      // and rewritten out of each segment that may hold it by the `archive` lane
+      // (`archive_purges`), each room counted among the rooms until then (`maxRooms`).
       if (sql.exec("SELECT 1 FROM archive_segments LIMIT 1").toArray().length > 0) {
-        // At most `maxAgentRows` purges wait (the guard's term): past them the lane is still
-        // rewriting, and a deletion waits for it, refused in plain words, never lost.
-        if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM archive_purges").one().n
-            >= LEDGER_LIMITS.maxAgentRows) {
-          throw new Refusal("storage_busy",
-                            `${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
-                            `removed from the archive; try again in ${STORAGE_BUSY_RETRY_S} ` +
-                            "seconds.");
-        }
-        sql.exec("INSERT INTO archive_purges (agent_id, at) VALUES (?, ?) ON CONFLICT " +
-                   "(agent_id) DO NOTHING", agentId, now);
+        sql.exec("INSERT INTO archive_purges (room_id, at) SELECT room_id, ? FROM room_members " +
+                   "WHERE member_id = ? ON CONFLICT (room_id) DO NOTHING", now, agentId);
       }
+      sql.exec("DELETE FROM rooms WHERE room_id IN (SELECT room_id FROM room_members WHERE " +
+                 "member_id = ?)", agentId);
       return { agent_id: agentId, messages: ids.length };
     });
   }
@@ -1423,59 +1439,139 @@ export class Ledger {
 
   /** The reader an actor is: the owner, an origin's one enabled agent, or a live own agent. */
   #reader(origin: Actor): string {
-    if (origin === null) {
-      return OWNER;
-    }
     if (isNative(origin)) {
       throw new Refusal("run_no_mailbox", RUN_NO_MAILBOX);
     }
-    const rows = this.#sql.exec<{ agent_id: string }>(
-      "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
-        "AND disabled_reason IS NULL", origin.client, origin.family,
-    ).toArray();
-    if (rows.length !== 1) {
+    return this.#self(origin);
+  }
+
+  /** The id an actor posts and reads as, or refused: an outside identity not one agent. */
+  #self(actor: Actor): string {
+    const self = this.#identity(actor);
+    if (self === null) {
       throw new Refusal("refused", "this outside identity is not one enabled agent");
     }
-    return rows[0]!.agent_id;
+    return self;
   }
 
   /**
-   * A room's two members, resolved: `dm:<a>` is the owner and `a`; `dm:<a>+<b>` two agents,
-   * `a` before `b`, at least one of them the owner's own. An outside member is an enabled
-   * agent; an own one a live one (`AGENT_RETIRED`, `NO_AGENT`).
+   * The id an actor posts and reads as: the owner, its own agent's, or an outside identity's
+   * one enabled agent (null when it has none, or more). A read.
    */
-  #room(room: string): [Member, Member] {
-    const ids = room.startsWith("dm:") ? room.slice(3).split("+") : [];
-    const member = (id: string): Member => {
-      if (OUTSIDE_ID.test(id)) {
-        const agent = this.#sql.exec<Agent>(
-          "SELECT * FROM outside_agents WHERE agent_id = ? AND disabled_reason IS NULL", id,
-        ).toArray()[0];
-        if (agent === undefined) {
-          throw new Refusal("refused", "room is not an enabled agent's dm");
-        }
-        return { kind: "outside", id, agent };
-      }
-      if (NATIVE_ID.test(id)) {
-        const native = this.#sql.exec<StoredNative>(
-          "SELECT * FROM native_agents WHERE agent_id = ?", id).toArray()[0];
-        if (native === undefined) {
-          throw new Refusal("no_agent", NO_AGENT);
-        }
-        if (native.retired_at !== null) {
-          throw new Refusal("agent_retired", AGENT_RETIRED);
-        }
-        return { kind: "native", id, native };
-      }
-      throw new Refusal("refused", "room is not an enabled agent's dm");
-    };
-    if (ids.length === 1) {
-      return [{ kind: "owner", id: OWNER }, member(ids[0]!)];
+  #identity(actor: Actor): string | null {
+    if (actor === null) {
+      return OWNER;
     }
-    if (ids.length !== 2 || !(ids[0]! < ids[1]!) || !ids.some((id) => NATIVE_ID.test(id))) {
+    if (isNative(actor)) {
+      return nativeId(actor.native);
+    }
+    const rows = this.#sql.exec<{ agent_id: string }>(
+      "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
+        "AND disabled_reason IS NULL", actor.client, actor.family,
+    ).toArray();
+    return rows.length === 1 ? rows[0]!.agent_id : null;
+  }
+
+  /**
+   * A room's two members, the owner first: its rows, or for a pair with no row yet, the
+   * actor and the one identity whose pair room with it is `room` (`pairRoom`), whose rows its
+   * first post makes (`#made`). An outside member is an enabled agent; an own one a live one
+   * (`AGENT_RETIRED`, `NO_AGENT`). A read.
+   */
+  #room(room: string, actor: Actor): { members: [Member, Member]; stored: boolean } {
+    const stored = this.#sql.exec<{ member_id: string }>(
+      "SELECT member_id FROM room_members WHERE room_id = ?", room).toArray()
+      .map((row) => row.member_id);
+    const [a, b] = (stored.length === 2 ? stored : this.#pairOf(room, actor))
+      .map((id) => this.#member(id));
+    return { members: b!.kind === "owner" ? [b!, a!] : [a!, b!], stored: stored.length === 2 };
+  }
+
+  /** The pair `room` would be, the actor one of its two, or refused: no such pair of its. */
+  #pairOf(room: string, actor: Actor): [string, string] {
+    const self = this.#self(actor);
+    const partners = this.#sql.exec<{ agent_id: string }>(
+      "SELECT agent_id FROM native_agents UNION ALL SELECT agent_id FROM outside_agents " +
+        "WHERE ?", OUTSIDE_ID.test(self) ? 0 : 1).toArray().map((row) => row.agent_id);
+    // A pair has one room: one whose room has another id (an old room's) is not this one.
+    const partner = [OWNER, ...partners].find((id) => id !== self
+      && pairRoom(self, id) === room && this.roomOf(self, id) === room);
+    if (partner === undefined) {
       throw new Refusal("refused", "room is not an enabled agent's dm");
     }
-    return [member(ids[0]!), member(ids[1]!)];
+    return [self, partner];
+  }
+
+  /** A room's member by its id: the owner, an enabled outside agent, or a live own agent. */
+  #member(id: string): Member {
+    if (id === OWNER) {
+      return { kind: "owner", id };
+    }
+    if (OUTSIDE_ID.test(id)) {
+      const agent = this.#sql.exec<Agent>(
+        "SELECT * FROM outside_agents WHERE agent_id = ? AND disabled_reason IS NULL", id,
+      ).toArray()[0];
+      if (agent === undefined) {
+        throw new Refusal("refused", "room is not an enabled agent's dm");
+      }
+      return { kind: "outside", id, agent };
+    }
+    const native = this.#sql.exec<StoredNative>(
+      "SELECT * FROM native_agents WHERE agent_id = ?", id).toArray()[0];
+    if (native === undefined) {
+      throw new Refusal("no_agent", NO_AGENT);
+    }
+    if (native.retired_at !== null) {
+      throw new Refusal("agent_retired", AGENT_RETIRED);
+    }
+    return { kind: "native", id, native };
+  }
+
+  /**
+   * Whether a new pair's room fits: refused past `maxRooms`, a deleted agent's rooms counted
+   * until the lane has removed their archived mail. A read, in both of a post's units.
+   */
+  #roomsFit(): void {
+    const { n } = this.#sql.exec<{ n: number }>(
+      "SELECT (SELECT COUNT(*) FROM rooms) + (SELECT COUNT(*) FROM archive_purges) AS n").one();
+    if (n >= LEDGER_LIMITS.maxRooms) {
+      throw new Refusal("ledger_full", `ledger_full: the owner's ${LEDGER_LIMITS.maxRooms} ` +
+                        "rooms are all in use, a deleted agent's until its archived mail is " +
+                        "removed: delete outside agents to free theirs");
+    }
+  }
+
+  /** In a post's unit: a pair's room and its two members' rows, made by its first post. */
+  #made(room: string, members: readonly Member[], now: number): void {
+    const sql = this.#sql;
+    const [a, b] = members.map((m) => m.id);
+    sql.exec("INSERT INTO rooms (room_id, kind, members_key, created_at) VALUES (?, 'pair', " +
+               "?, ?)", room, membersKey(a!, b!), now);
+    for (const member of members) {
+      sql.exec("INSERT INTO room_members (room_id, member_id) VALUES (?, ?)", room, member.id);
+    }
+  }
+
+  /**
+   * The room `a` and `b` post in to each other: its row's id (an old room keeps the id it had)
+   * or, before its first post, `pairRoom`'s. A read.
+   */
+  roomOf(a: string, b: string): string {
+    return this.#sql.exec<{ room_id: string }>(
+      "SELECT room_id FROM rooms WHERE members_key = ?", membersKey(a, b)).toArray()[0]
+      ?.room_id ?? pairRoom(a, b);
+  }
+
+  /**
+   * Each agent with the room `actor` posts in to reach it, or, on the actor's own entry, its
+   * room with the owner; null for an outside identity that is not one enabled agent, which
+   * posts nowhere. A read.
+   */
+  withRooms<A extends { readonly agent_id: string }>(actor: Actor, agents: readonly A[]):
+      (A & { room_id: string | null })[] {
+    const self = this.#identity(actor);
+    return agents.map((agent) => ({ ...agent, room_id: self === null ? null
+      : this.roomOf(agent.agent_id === self ? OWNER : self, agent.agent_id) }));
   }
 
   /** The member an actor is in a room, or refused: it posts only in its own rooms. */
@@ -1510,7 +1606,7 @@ export class Ledger {
    */
   recipient(actor: Actor, roomId: unknown):
       { id: string; native: string | null; outside: boolean } {
-    const members = this.#room(printable(roomId, 128, "room_id"));
+    const { members } = this.#room(printable(roomId, 128, "room_id"), actor);
     const sender = this.#sender(actor, members);
     const to = members.find((m) => m !== sender)!;
     return { id: to.id, native: to.kind === "native" ? to.native.agent : null,
@@ -1549,13 +1645,14 @@ export class Ledger {
       { resend: Posted } | { room: string; cmid: string; parentKey: string | null; sha: string;
                              members: [Member, Member]; from: Member; to: Member;
                              kind: string; sender: string; recipient: string;
-                             parent: StoredMessage | undefined; parentArchived: boolean } {
+                             parent: StoredMessage | undefined; parentArchived: boolean;
+                             stored: boolean } {
     const room = printable(roomId, 128, "room_id");
     const cmid = printable(clientMessageId, 128, "client_message_id");
     const parentKey = parentId === null ? null : printable(parentId, 128, "parent_id");
     const sha = sha256Hex(body);
     const sql = this.#sql;
-    const members = this.#room(room);
+    const { members, stored } = this.#room(room, origin);
     const from = this.#sender(origin, members);
     const to = members.find((m) => m !== from)!;
     const [kind, sender, recipient] = [from.kind, from.id, to.id];
@@ -1597,8 +1694,11 @@ export class Ledger {
         throw new Refusal("refused", "parent is not a message to this sender in this room");
       }
     }
+    if (!stored) {
+      this.#roomsFit();
+    }
     return { room, cmid, parentKey, sha, members, from, to, kind, sender, recipient, parent,
-             parentArchived };
+             parentArchived, stored };
   }
 
   /**
@@ -1620,9 +1720,12 @@ export class Ledger {
         return addressed.resend;
       }
       const { room, cmid, parentKey, sha, members, to, kind, sender, recipient,
-              parent, parentArchived } = addressed;
+              parent, parentArchived, stored } = addressed;
       const size = utf8Bytes(body);
       this.#roomForOne(size);
+      if (!stored) {
+        this.#made(room, members, now);
+      }
       return adopted(body, placed, filer, this.#adopt, (contentId) => {
       // The seq is given here, and the id carries it (`orderedId`): an archived message is
       // found by its id with no row for it.
@@ -1761,16 +1864,13 @@ export class Ledger {
   /**
    * Whether a segment made after `newest` may hold `room`'s mail past `after`: a move (a
    * tail's, a merge's, a rewrite's) that may have taken that room's hot rows out after a read
-   * took its fences. By its keys and its members bloom, so another room's moves never count
-   * (a room with no agent member is not in any bloom: every new segment past `after` counts).
-   * A read.
+   * took its fences. By its keys and its rooms bloom, so another room's moves never count. A
+   * read.
    */
   movedSince(newest: number, room: string, after: number): boolean {
-    const members = roomMembers(room);
     return this.#sql.exec<Fence>(
       "SELECT * FROM archive_segments WHERE segment > ? AND last_key > ?", newest, after)
-      .toArray().some((fence) => members.length === 0
-        || members.some((member) => bloomHas(fenceBloom(fence), member)));
+      .toArray().some((fence) => bloomHas(fenceBloom(fence), room));
   }
 
   /**
@@ -1925,18 +2025,16 @@ export class Ledger {
     return idOrder(Uint8Array.from(Buffer.from(held.id_key, "hex")), messageId.slice(4));
   }
 
-  /** Whether a room's mail is a deleted agent's, its segments not yet all rewritten. A read. */
+  /** Whether a room is a deleted agent's, its segments not yet all rewritten. A read. */
   #purged(room: string): boolean {
-    const members = roomMembers(room);
-    return members.length > 0 && this.#sql.exec(
-      "SELECT 1 FROM archive_purges WHERE agent_id IN (SELECT value FROM json_each(?))",
-      JSON.stringify(members)).toArray().length > 0;
+    return this.#sql.exec("SELECT 1 FROM archive_purges WHERE room_id = ?", room).toArray()
+      .length > 0;
   }
 
-  /** The agents deleted while segments may still hold their mail. A read. */
-  purgedAgents(): string[] {
-    return this.#sql.exec<{ agent_id: string }>("SELECT agent_id FROM archive_purges")
-      .toArray().map((row) => row.agent_id);
+  /** Deleted agents' rooms, while segments may still hold their mail. A read. */
+  purgedRooms(): string[] {
+    return this.#sql.exec<{ room_id: string }>("SELECT room_id FROM archive_purges")
+      .toArray().map((row) => row.room_id);
   }
 
   /**
@@ -2148,10 +2246,10 @@ export class Ledger {
   #fence(contentId: string, fence: Omit<Fence, "segment" | "content_id">, now: number): number {
     return this.#sql.exec<{ segment: number }>(
       "INSERT INTO archive_segments (stream, first_key, last_key, first_at, last_at, records, " +
-        "bytes, content_id, filer, trailer_offset, trailer_bytes, members, made_at) VALUES " +
+        "bytes, content_id, filer, trailer_offset, trailer_bytes, rooms, made_at) VALUES " +
         "('mail', ?, ?, ?, ?, ?, ?, ?, 'owner', ?, ?, ?, ?) RETURNING segment",
       fence.first_key, fence.last_key, fence.first_at, fence.last_at, fence.records,
-      fence.bytes, contentId, fence.trailer_offset, fence.trailer_bytes, fence.members, now)
+      fence.bytes, contentId, fence.trailer_offset, fence.trailer_bytes, fence.rooms, now)
       .one().segment;
   }
 
@@ -2246,8 +2344,8 @@ export class Ledger {
       return { fence: small, compact: true };
     }
     for (let batch = 0; batch < 64; batch++) {
-      const purges = sql.exec<{ agent_id: string; next_segment: number }>(
-        "SELECT agent_id, next_segment FROM archive_purges ORDER BY next_segment").toArray();
+      const purges = sql.exec<{ room_id: string; next_segment: number }>(
+        "SELECT room_id, next_segment FROM archive_purges ORDER BY next_segment").toArray();
       if (purges.length === 0) {
         return null;
       }
@@ -2258,7 +2356,7 @@ export class Ledger {
       for (const fence of fences) {
         const bloom = fenceBloom(fence);
         if (purges.some((purge) => purge.next_segment < fence.segment
-                        && bloomHas(bloom, purge.agent_id))) {
+                        && bloomHas(bloom, purge.room_id))) {
           sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
                    fence.segment - 1, fence.segment - 1);
           return { fence, compact: false };
@@ -2274,7 +2372,7 @@ export class Ledger {
     return null;
   }
 
-  /** In a unit: past a segment whose bloom named a purged agent but held none of its mail. */
+  /** In a unit: past a segment whose bloom named a purged room but held none of its mail. */
   purgeSkip(segment: number): void {
     this.#sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
                    segment, segment);
@@ -2296,9 +2394,9 @@ export class Ledger {
                    stream, intentId, intentId);
   }
 
-  /** The members bloom of a segment's records' rooms, as its fence row keeps it (hex). */
-  static members(members: Iterable<string>): string {
-    return Buffer.from(bloomOf(members)).toString("hex");
+  /** The bloom of a segment's records' rooms, as its fence row keeps it (hex). */
+  static rooms(rooms: Iterable<string>): string {
+    return Buffer.from(bloomOf(rooms)).toString("hex");
   }
 
   // -- MAIL TO THE OWNER'S OWN AGENTS: what the `runs` lane delivers -------------
@@ -3250,7 +3348,9 @@ export interface LedgerDoorNeeds extends Pick<DoorUnits, "door" | "sync">,
 
 /** The agents a caller sees, a page of them (`outsideAgents`). */
 function agentsListed(o: LedgerDoorNeeds, { account, r }: Call):
-    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
+    { agents: (Agent & { room_id: string | null })[];
+      owner_agents: (NativeAgent & { room_id: string | null })[]; apps: ConnectedApp[];
+      next?: string } {
   const own = account.origin === null && account.run === null;
   let natives = o.ledger.natives(own);
   const grant = account.grant;
@@ -3271,7 +3371,11 @@ function agentsListed(o: LedgerDoorNeeds, { account, r }: Call):
   if (after !== null && typeof after !== "string") {
     throw new Refusal("invalid", "after is a next an agents list answered");
   }
-  return agentsPage({ agents: o.ledger.agents(account.origin), owner_agents: natives,
+  // Each agent's `room_id`: the room the caller reaches it in (`room_post`), named before its
+  // first post. An outside identity that is not one enabled agent has no room to list.
+  const actor = actorOf(account);
+  return agentsPage({ agents: o.ledger.withRooms(actor, o.ledger.agents(account.origin)),
+                      owner_agents: o.ledger.withRooms(actor, natives),
                       apps: o.grants.apps() }, after);
 }
 

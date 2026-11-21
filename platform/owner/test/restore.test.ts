@@ -34,7 +34,7 @@ import {
   BURST, digest, type Generated, generate, type Line, objectsOf, type Owner, owner, PAGE, replay,
   standing, writtenAt,
 } from "./generation-support";
-import { MUSE, registerOn, signedIn } from "./ledger-support";
+import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
 import {
   drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
 } from "./support";
@@ -104,7 +104,7 @@ async function shaped(o: Owner): Promise<void> {
                                           delivery_method: "pull", recipe_id: null }).agent_id;
       let last = 0;
       for (let n = 0; n < 6; n++) {
-        last = s.ledger.seqOf(s.ledger.post(null, `dm:${agent}`, `m${n}`, `${PLAIN} ${n}`,
+        last = s.ledger.seqOf(s.ledger.post(null, dm(agent), `m${n}`, `${PLAIN} ${n}`,
                                             null).message_id)!;
       }
       s.ledger.read(MUSE, 3);
