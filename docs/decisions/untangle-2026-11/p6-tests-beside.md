@@ -29,17 +29,25 @@ others are `untangle/p6-process-code` (merged, #5708), `untangle/p6-queue-delete
 5. **The process tests moved to `scripts/tests/` now, not at the cutover:**
    `test_review_check.py`, `test_bash_guard.py`, `test_queue_attempts.py`,
    `test_rulebook_ratchet.py` and `test_session_sync_gate.py`, with #5709's root lookup
-   (the folder holding `AGENTS.md`). `test_skip_metadata.py` became
+   (the folder holding `AGENTS.md`) as it is. `test_skip_metadata.py` became
    `scripts/tests/test_test_hygiene_gate.py`, which also holds the new pins. The process leg
-   runs `scripts/tests` alone (`legs.test.ts`), so nothing runs twice.
-   `tests/test_platform_setup.py` stays in `tests/`, run by the old suite's shards: the
-   manifest deletes it with `platform_setup.py`. `tests/test_test_shape.py` and
-   `tests/test_shape_prune_workflow.py` stay: they test what the cutover deletes.
+   runs `scripts/tests` alone (`legs.test.ts`), so nothing runs twice: it collected 233 on
+   main (36 of them `tests/test_platform_setup.py`'s) and 202 here, every one of main's other
+   197 among them, under its new path. `tests/test_platform_setup.py` stays in `tests/`, run
+   by the old suite's shards: the manifest deletes it with `platform_setup.py`.
+   `tests/test_test_shape.py` stays: it tests what the cutover deletes. On the dry run's tree
+   (`ci/dry-run.ts apply`, no `tests/`), the leg passes 200, the two cases of the one test an
+   edit names set aside.
+   - The moved files lose their `pytest.mark.verifies` marks (and `test_review_writers.py`
+     its one). Only `test_shape.py` reads them, over `tests/` alone, so outside it they claim
+     a spec row nothing checks.
 6. **The process leg's watchdog is 8 minutes,** about 6 x its slowest run, 1m14s in run
    44872746964 of 100 Tests runs from 2026-11-18 (the research's §1f). It was 5, a 4x margin,
    so a runner five times slower would have timed out the one Python leg that outlives the
    cutover.
 7. **The manifest loses what the move made unnecessary:** the seven carry-out moves, the
    `legs.test.ts` edit, the `tests.yml` edit's names of the paths that left, and the
-   `test_inventory.py` and `test_shape.py` edits, which become deletes. The hygiene gate's edit
-   keeps its two names, the ledger import and `LEDGER`.
+   `test_inventory.py` and `test_shape.py` edits, which become deletes. `pr-scope-guard.yml`'s
+   edit names its new step's script, `scripts/test_shape.py`, among its names and imports, so
+   the dry run keeps the script the step runs. The hygiene gate's edit keeps its two names,
+   the ledger import and `LEDGER`.
