@@ -541,10 +541,54 @@ describe("the engine records", () => {
     expect(Object.keys(LIMITS).sort()).toEqual(engines.map((record) => record.id).sort());
   });
 
-  it("read Claude Code's own retry as no error: a call it recovers is no failed run", () => {
-    const events = engines.find((record) => record.id === "claude-code")!.cli!.engine.events;
-    expect(readEvent(events, { type: "system", subtype: "api_retry", attempt: 1,
-                               error_status: 429, error: "rate_limit" }).error).toBeNull();
+  // Each as its pinned CLI reports it (its source, read 2026-11-21): what it goes on from (a
+  // call it retries, a warning) is no error; a call it gave up on is.
+  const GOES_ON: Record<string, { error: unknown[]; not: unknown[] }> = {
+    "claude-code": {
+      error: [{ type: "result", is_error: true, result: "API Error: 529 Overloaded" }],
+      not: [{ type: "system", subtype: "api_retry", attempt: 1, error_status: 429,
+              error: "rate_limit" }],
+    },
+    // Its `error` event is also each stream reconnect (app-server `will_retry: true`).
+    codex: {
+      error: [{ type: "turn.failed", error: { message: "stream disconnected" } }],
+      not: [{ type: "error", message: "Reconnecting... 2/5 (stream disconnected)" }],
+    },
+    gemini: {
+      error: [{ type: "error", severity: "error", message: "Maximum session turns exceeded" },
+              { type: "result", status: "error", error: { type: "Error", message: "x" } }],
+      not: [{ type: "error", severity: "warning", message: "Loop detected, stopping execution" }],
+    },
+    kimi: { error: [], not: [{ type: "ta.stderr", text: "provider.rate_limit: 429" }] },
+    pi: {
+      error: [{ type: "auto_retry_end", success: false, attempt: 3, finalError: "529" },
+              { type: "compaction_end", reason: "overflow", aborted: false, willRetry: false,
+                errorMessage: "Context overflow recovery failed: no model" }],
+      not: [{ type: "auto_retry_end", success: true, attempt: 1 },
+            { type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+              errorMessage: "Auto-compaction failed: no model" }],
+    },
+  };
+
+  it.each(Object.keys(GOES_ON))("read as %s's error only a call it gave up on", (id) => {
+    const events = engines.find((record) => record.id === id)!.cli!.engine.events;
+    for (const event of GOES_ON[id]!.error) {
+      expect(readEvent(events, event).error, JSON.stringify(event)).not.toBeNull();
+    }
+    for (const event of GOES_ON[id]!.not) {
+      expect(readEvent(events, event).error, JSON.stringify(event)).toBeNull();
+    }
+    expect(Object.keys(GOES_ON).sort()).toEqual(engines.map((record) => record.id).sort());
+  });
+
+  it("read pi's own retries, and only those, as withdrawing the error it reported", () => {
+    const events = engines.find((record) => record.id === "pi")!.cli!.engine.events;
+    const retries = [{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000,
+                       errorMessage: "529 overloaded" },
+                     { type: "compaction_start", reason: "overflow" }];
+    expect(retries.map((event) => readEvent(events, event).retry)).toEqual([true, true]);
+    expect(readEvent(events, { type: "compaction_start", reason: "threshold" }).retry)
+      .toBe(false);
   });
 });
 

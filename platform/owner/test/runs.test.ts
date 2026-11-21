@@ -342,6 +342,52 @@ describe("a run's settle", () => {
       .toMatchObject({ state: "unknown", code: "lost" });
   });
 
+  it("fails on a call the engine gave up on, never one it retried itself and recovered",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-pi");
+    await defineAgent(r.stub, r.bind(), "main", { engine: "pi", credential: "api_key",
+                                                  connection, scopes: [] });
+    // pi 1.4.0's `--mode json` stream: each attempt's message ends, then pi says it retries.
+    const attempt = (said: string) => [
+      { type: "message_end", message: { role: "assistant", content: [], stopReason: "error",
+                                        errorMessage: said } },
+      { type: "agent_end", messages: [], willRetry: true },
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000,
+        errorMessage: said }];
+    const recovered = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, recovered.start), {
+      frames: frames({ type: "session", id: "sess-pi" }, ...attempt("529 overloaded")) });
+    const rest = [
+      { type: "message_end", message: { role: "assistant", stopReason: "stop",
+                                        content: [{ type: "text", text: "done" }] } },
+      { type: "auto_retry_end", success: true, attempt: 1 },
+      { type: "agent_end", messages: [], willRetry: false }];
+    expect(await r.stub.runEvents(runnerBinding(r, recovered.start), {
+      frames: rest.map((event, i) => ({ seq: 5 + i, at: 1_800_000_005 + i, event })),
+      end: { exit_code: 0 } })).toEqual({ accepted: 3, settled: "succeeded" });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: recovered.run.run_id }))
+      .toMatchObject({ state: "succeeded", result: "done", code: null, error: null });
+    const spent = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, spent.start), {
+      frames: frames(...attempt("529 overloaded"),
+                     { type: "message_end", message: { role: "assistant", content: [],
+                       stopReason: "error", errorMessage: "529 still overloaded" } },
+                     { type: "agent_end", messages: [], willRetry: false },
+                     { type: "auto_retry_end", success: false, attempt: 3,
+                       finalError: "529 still overloaded" }),
+      end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: spent.run.run_id }))
+      .toMatchObject({ state: "failed", code: "engine_error", error: "529 still overloaded" });
+    // The object's own refusal of a session id is no error of the engine's to withdraw.
+    const refused = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, refused.start), {
+      frames: frames({ type: "session", id: "has space" }, ...attempt("529 overloaded")),
+      end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: refused.run.run_id }))
+      .toMatchObject({ state: "failed", error: SESSION_REFUSED });
+  });
+
   it("keeps the run, its result and its session id and no frame as a row; a session id " +
      "outside its shape is refused and never kept", async () => {
     const r = await gated();
