@@ -243,17 +243,21 @@ def test_no_review_is_pending_not_red():
     assert state.conclusion is None and state.title == f"waiting for review of {B}"
 
 
-def test_an_approve_that_carries_passes_and_one_that_does_not_waits():
+def test_an_approve_that_carries_passes_and_one_that_does_not_fails_naming_the_delta():
+    """In progress, a delta after a review waited with no event (#5725, #5727)."""
     reviews = [_review("APPROVE", A)]
     assert _state(reviews, lambda commit: "only prose").conclusion == "success"
-    waiting = _state(reviews)
-    assert waiting.conclusion is None and "delta review" in waiting.title
+    owed = _state(reviews)
+    assert owed.conclusion == "failure"
+    assert owed.title == f"APPROVE at {A}; the change since needs a delta review"
 
 
-def test_a_block_fails_where_it_carries_and_waits_after_a_new_change():
+def test_a_block_fails_where_it_carries_and_after_a_new_change_names_the_review():
     reviews = [_review("APPROVE", A, ident=1), _review("BLOCK", A, ident=2)]
-    assert _state(reviews, lambda commit: "this head").conclusion == "failure"
-    assert _state(reviews).conclusion is None
+    assert _state(reviews, lambda commit: "this head").title == "BLOCK: this head"
+    owed = _state(reviews)
+    assert owed.conclusion == "failure"
+    assert owed.title == f"BLOCK at {A}; the change since needs a fresh review"
 
 
 def _cli(path, reviews, timeline, base, head, *more, pr="12"):
