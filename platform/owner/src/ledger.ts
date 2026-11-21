@@ -249,9 +249,9 @@ const WAKE_SETTINGS = Object.freeze({
  * tier's storage; the counts are what the owner-bound guard costs within its half of the
  * 10 GB. The ledger's rows are one message, its body's row and its one recipient (the key
  * holds a message to one), so the messages bound them all. A settled wake's row is its
- * delivery's record (`receipt_json`), kept a week (enough to debug a doorbell) and at most
- * 1,000 of them, a chosen retention (`limits-audit.md`): delivery telemetry, never the
- * owner's mail. An owner's hourly cap reads only its agent's one `wake_tat` column.
+ * delivery's record (`receipt_json`): delivery telemetry, never the owner's mail, kept until
+ * the newest `maxSettledWakes` push it out, the guard's `ledger_wakes` term and no age (Fact
+ * 15). An owner's hourly cap reads only its agent's one `wake_tat` column.
  */
 export interface LedgerLimits {
   /** Enabled agents: what the mailboxes are reserved for. */
@@ -272,8 +272,6 @@ export interface LedgerLimits {
   /** A segment's seal: its lines' bytes, or its records (`segments.ts`). */
   readonly archiveBytes: number;
   readonly archiveRecords: number;
-  /** How long a settled wake row is kept. */
-  readonly settledWakeRetentionS: number;
   /** Settled wake rows kept, newest first. */
   readonly maxSettledWakes: number;
   readonly maxRead: number;
@@ -295,7 +293,6 @@ export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxUnacked: HOT_MESSAGES - SEGMENT_MIN_RECORDS,
   archiveBytes: SEGMENT_MIN_BYTES,
   archiveRecords: SEGMENT_MIN_RECORDS,
-  settledWakeRetentionS: 7 * 24 * HOUR_S,
   maxSettledWakes: 1_000,
   maxRead: 100,
 });
@@ -2893,7 +2890,7 @@ export class Ledger {
       "UPDATE ledger_wakes SET state = 'suppressed', receipt_json = ?, settled_at = ? " +
         `WHERE agent_id = ? AND ${OPEN}`, canonical({ reason }), now, agentId,
     );
-    this.#prune(now);
+    this.#prune();
   }
 
   /**
@@ -2905,11 +2902,9 @@ export class Ledger {
                      (owners ? "" : " AND principal != 'owner'"), agentId);
   }
 
-  /** Settled schedule rows kept for the retention, and at most `maxSettledWakes`. */
-  #prune(now: number): void {
+  /** Settled schedule rows past the newest `maxSettledWakes`. */
+  #prune(): void {
     const sql = this.#sql;
-    sql.exec("DELETE FROM ledger_wakes WHERE settled_at IS NOT NULL AND settled_at < ?",
-             now - LEDGER_LIMITS.settledWakeRetentionS);
     const over = this.#usage().settled_wakes - LEDGER_LIMITS.maxSettledWakes;
     if (over > 0) {
       sql.exec(
@@ -3090,7 +3085,7 @@ export class Ledger {
           now, wake.agent_id, wake.through_seq ?? 0,
         );
       }
-      this.#prune(now);
+      this.#prune();
       return true;
     });
   }

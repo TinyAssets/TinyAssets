@@ -7,7 +7,9 @@ four classes:
 
 - **tier**: simultaneous runs or storage, from the platform control record (free 5 runs and
   25 GB, paid 10 and 250 GB; ADR-034 decision 8), or scaled from them;
-- **owner setting**: the owner's own, off by default;
+- **owner setting**: the owner's own, off by default. A retention (what the platform lets go
+  of by its age or by a count) is one, off keeping it for ever, unless it is a technical
+  ceiling (the founder's answers of 2026-11-21, call 11);
 - **vendor limit**: a provider's documented limit, cited;
 - **technical ceiling**: kept, with the platform fact that forces it. A share of the
   owner-bound guard's half of the 10 GB is one: the fact is the object's 10 GB, and the
@@ -23,6 +25,8 @@ four classes:
 Not listed, since none refuses or truncates what a user does:
 - internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint), and the sandbox's own (slice S): a renewal's window (`sandbox_renewal_window_s`, the control record's) and its measured edge, the sandbox look's and the line's back-offs, a runner command's deadline (a lease's TTL), and the idle reap a lease's TTL on;
 - pages a read returns, which the caller pages past: a pull, a mailbox or history read, a file list, a receipts list, a chunk read, a run door's wait;
+- a sync's slow-match report, `sandbox/runner/runner.ts` `SLOW_MATCH_MS`, 5 s: past it, the sync's report says how long matching the sync-ignore list took (`ta.sync_ignore_slow`), so the owner sees why a sync was slow. The matcher's own ceilings are `AUTOMATON_STATES` and `LIST_BYTES` (below); each folder and each repeated name is matched once a sync (`contract/src/sync-ignore.ts` `REMEMBERED_NAME_BYTES`): of folders the matcher keeps only the path's own, since the walk and the sorted removal pass each ask a folder's paths in one run, so that memory grows with a path's depth and never with the tree; names it keeps to 256 KiB, each counted at the heap it takes (`NAME_ENTRY_BYTES`), starting again past it;
+- the scratch cache's let-go under disk pressure, `sandbox/runner/scratch.ts` `LOW_WATER_SHARE`, a tenth of the sandbox disk (about 1.4 GB): below that much free before a run, the least recently used agent's scratch is let go first, room for a run's working files (a large clone and its build) before it starts. Scratch is a cache, so letting it go costs a rebuild, never a record. Each agent's use is its own stamp file, so two runs stamping at once never lose one;
 - the SQLite layout constants (`manifest.ts`), hashes and key sizes, and the ids we mint;
 - the owner app's own protocol frames, and the HTTP status of each fixed code.
 
@@ -88,12 +92,12 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 13
-- **technical ceiling**: 169
+- **vendor limit**: 14
+- **technical ceiling**: 179
 - **default**: 1
-- **total**: 198
+- **total**: 209
 
-Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-04.
+Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-21.
 
 Removed by this slice, since only the tier's storage bounds what they bounded, or no
 platform fact stood behind them:
@@ -111,52 +115,43 @@ platform fact stood behind them:
 - conflict copies of one path (`MAX_CONFLICT_COPIES`), now within the entries the owner holds;
 - the setup check's models tried (`LEARN_TRIES`): each try is local.
 
-Flagged for the founder:
-- `client_share` 25% and `owner_reserve` 25% are on by default. They split the owner's
-  files, now also the placed bodies and the collections' rows, between the owner and
-  outside writers; off, one client could fill the owner's space.
+## Retentions
 
-## Chosen retentions
+Every retention is an owner setting, off keeping for ever, or a technical ceiling in the
+list below with its derivation (the founder's answers of 2026-11-21, call 11). The owner
+settings are the files' `retention_days`, `keep_versions` and `keep_recent`. Each other
+retention keeps rows in the owner's object, whose 10 GB the owner-bound guard holds, so
+keeping them for ever would pass it: each is a ceiling, its row naming its guard term, and
+an age lets a row go only where the rows are periods (the spend counters' days and months,
+the sandbox's days). The platform's recovery copies are bounded by the vendor's 30 days
+(`RECOVERY_WINDOW_S`, below). The reason for each term's share of the room is owed
+(`untangle/fact15-caps`).
 
-Each expiry has a purpose of its own. Where a count also limits the space used in the
-owner's object, the table below gives the storage budget.
-
+Not yet in one of the kinds, each owed:
 - `owner/src/files.ts` `TEMP_TTL_S`, 7 days: a temporary directory under `/.ta/tmp` unused
-  for a week has its files deleted. The area is the sandbox's for spills, charged to the
-  owner's files; a week is long past any run (a sandbox lives a day at most, E2B Pro's 24
-  hours), so a crashed run's spills do not hold the owner's storage.
-- `owner/src/registrations.ts` `CARD_TTL_S`, 7 days: a filed registration card waits a week
-  for the owner, so an owner away for a week misses none; the client files again past it.
-- the control record's `scratch_retention_days` (30 to start; `sandbox/runner/scratch.ts`): an agent's sandbox scratch unused that long is deleted at its sandbox's next run. Scratch is a cache on the sandbox's own disk, never counted in the owner's storage; 30 days matches Codespaces' default idle deletion and Claude Code's transcript default. It refuses nothing; with none in the record only the disk's own pressure lets scratch go.
-- `sandbox/runner/runner.ts` `SLOW_MATCH_MS`, 5 s: past it, a sync's report says how long matching the sync-ignore list took (`ta.sync_ignore_slow`), so the owner sees why a sync was slow. It refuses nothing. The matcher's own ceilings are `AUTOMATON_STATES` and `LIST_BYTES` (above); each folder and each repeated name is matched once a sync (`contract/src/sync-ignore.ts` `REMEMBERED_NAME_BYTES`): of folders the matcher keeps only the path's own, since the walk and the sorted removal pass each ask a folder's paths in one run, so that memory grows with a path's depth and never with the tree; names it keeps to 256 KiB, each counted at the heap it takes (`NAME_ENTRY_BYTES`), starting again past it.
-- `sandbox/runner/scratch.ts` `LOW_WATER_SHARE`, a chosen threshold, a tenth of the sandbox disk (about 1.4 GB): below that much free before a run, the least recently used agent's scratch is let go first. Room for a run's working files (a large clone and its build) before it starts. It refuses nothing; scratch is a cache, so letting it go costs a rebuild, never data. Each agent's use is its own stamp file, so two runs stamping at once never lose one.
-- `owner/src/actions.ts` `ACTION_LIMITS.cardTtlS`, 30 days, and `approvalTtlS`, a day: an
-  agent's call held for the owner waits 30 days, as long as Claude Code keeps a session
-  (`cleanupPeriodDays`), which bounds the resume an answer starts; a yes admits its call for a
-  day, as a main agent retries when its user says so. Swept at each decision and answer.
-- `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
-  waits a quarter for the owner's answer, then expires unanswered, so a stale proposal never
-  applies against a policy long since changed.
-- A settled run's status is recent history (`RUNS_KEPT`). Pruning it leaves the engine's
-  transcript and any delivered mail reply in place. One reader needs the receipt to act:
-  `Runs.resume` reads the held run's authority and conversation when the owner approves
-  its call. If the receipt has expired, the approval still admits one retry, but the
-  conversation does not resume automatically (R5, `r5-resume-hooks.md` item 3).
-- Policy receipts (`POLICY_LIMITS.receiptsPerBucket`) explain recent changes and decisions.
-  Owner changes, agent proposals, refusals and action decisions each keep their own window.
-  A burst of refusals therefore cannot displace the owner's change history. The current
-  policy and outstanding approval cards have their own records. The action decisions
-  (`action_receipts`, `owner/src/actions.ts`) are not exported, so neither an export nor a
-  generation carries them, and a restored owner starts with none: the table stays apart
-  until a migration may change an exported table (`owner/src/export.ts` `NOT_EXPORTED`).
-- Egress receipts (`EGRESS_LIMITS.receiptsKept` and `refusalsKept`) explain recent sandbox
-  requests and refusals. Once a call settles, its charge is accounted for on the run and in
-  the spending counters. Discarding its receipt does not refund the call. Refusals have
-  their own window, so they cannot displace settled calls. Pruning excludes open calls.
-- `owner/src/ledger.ts` `LEDGER_LIMITS.settledWakeRetentionS` and `maxSettledWakes`, a week
-  and the newest 1,000 (d3 §P item 6): a settled wake's row (`receipt_json`) is the only
-  record of how its doorbell answered, kept long enough to debug a doorbell. It is delivery
-  telemetry, not the owner's mail, whose facts live on its recipient row and archive with it.
+  for a week has its files deleted. No door makes one (`tempDir` has no caller), so the area
+  goes, its retention with it (`untangle/drop-temp-area`).
+- the control record's `scratch_retention_days` (`sandbox/runner/scratch.ts`): an agent's
+  sandbox scratch unused that long is deleted at its sandbox's next run. Scratch is a cache
+  on the sandbox's own disk, never counted in the owner's storage, and with none in the
+  record only the disk's own pressure lets it go. A number in the control record outside the
+  tier's runs and storage, it leaves the record (`untangle/fact15-defaults-2`).
+- `sources/records/claude-code.json` `cli.decide.pins`, `cleanupPeriodDays` 30: the hooked
+  run's pinned user settings keep Claude Code's own transcript retention at its default, so
+  the engine lets a session idle 30 days go from its home; the owner's files keep the synced
+  copy. Researched first, then off (`untangle/fact15-defaults-2`).
+- The lives of requests held for the owner, each a cap outside Fact 15's kinds
+  (`untangle/fact15-caps`):
+  - `owner/src/registrations.ts` `CARD_TTL_S`, 7 days: a filed registration card waits a
+    week for the owner; the client files again past it.
+  - `owner/src/actions.ts` `ACTION_LIMITS.cardTtlS`, 30 days, and `approvalTtlS`, a day: an
+    agent's call held for the owner waits 30 days, as long as Claude Code keeps a session
+    (the pinned `cleanupPeriodDays`), which bounds the resume an answer starts; a yes admits
+    its call for a day, as a main agent retries when its user says so. Swept at each
+    decision and answer.
+  - `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
+    waits a quarter for the owner's answer, then expires unanswered, so a stale proposal
+    never applies against a policy long since changed.
 
 ## The list
 
@@ -170,8 +165,8 @@ owner's object, the table below gives the storage budget.
 | `contract/src/file-defaults.ts` `FILE_DEFAULTS.retention_days` | off (high 3,650 days) | how long a version past `keep_versions` is kept after it was written | nothing until the owner sets it; then such versions pruned at that age | owner setting | Off by default (Fact 15; untangle F1): every version is kept until the owner deletes it or sets a retention. |
 | `contract/src/file-defaults.ts` `FILE_DEFAULTS.keep_versions` | off: the current version alone (high 1,000) | a live path's newest versions always kept, whatever their age; with `keep_recent` and `retention_days` off, the most any path keeps | nothing until the owner sets it; then, set alone, older versions pruned | owner setting | Off by default (Fact 15): set alone, it prunes as the owner chose (decided 2026-11-14). |
 | `contract/src/file-defaults.ts` `FILE_DEFAULTS.keep_recent` | off: no count (high 1,000) | the most versions a path keeps in all | nothing until the owner sets it; then older versions pruned | owner setting | Off by default (Fact 15). No rule ties it to another setting. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.client_share` | 25% | one outside writer's share of the storage and of the file index's ceiling and of the collections' rows | a client's or visitor's write refused past it | owner setting | Flagged above. A visiting owner writes in a scope of its own. |
-| `contract/src/file-defaults.ts` `FILE_DEFAULTS.owner_reserve` | 25% | the room all outside writers leave the owner | their writes refused within it | owner setting | Flagged above. |
+| `contract/src/file-defaults.ts` `FILE_DEFAULTS.client_share` | off: 100% | one outside writer's share of the storage and of the file index's ceiling and of the collections' rows | nothing until the owner sets it; then a client's or visitor's write refused past it | owner setting | Off by default (Fact 15; the founder's answers of 2026-11-21, call 11): off, one client may fill the owner's space. Off is the range's end, which binds nothing the owner's whole does not. A visiting owner writes in a scope of its own. |
+| `contract/src/file-defaults.ts` `FILE_DEFAULTS.owner_reserve` | off: 0% | the room all outside writers leave the owner | nothing until the owner sets it; then their writes refused within it | owner setting | As above. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_requests` | none (owner may set 1 to 1,000,000) | model calls in one sandbox run | only the owner's own cap refuses `run_requests` | owner setting | ADR-034 decision 7: the owner's own limits are off by default. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_tokens` | none (owner may set 1 to 1e9) | tokens in one sandbox run | only the owner's own cap | owner setting | As above. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_cost` | none (owner may set to $1,000,000) | cost of one sandbox run | only the owner's own cap | owner setting | As above. |
@@ -203,7 +198,7 @@ owner's object, the table below gives the storage budget.
 | `contract/src/limits.ts` `PLACE_BYTES` | 2,048 bytes | the most of a body kept in its row | nothing: a larger body is placed in R2 | technical ceiling | ADR-035: a rowid table keeps a record of 4,061 bytes in place; half is the body's, half the row's own names and ids, so a row keeps in its page. |
 | `contract/src/limits.ts` `BODY_BYTES_MAX` (`LIMITS.maxRowBytes`) | 8 MiB | one row's, history entry's or message's body | a larger body refused | technical ceiling | Half the request body's ceiling (`EGRESS_BODY_MAX`), so the body with its JSON escapes fits the tool call that carries it; placed in two 4 MiB chunks. |
 | `owner/src/collections.ts` `LIMITS.maxRowsCharge` | 256 MiB laid out | every collection row, its index entries and its collection's seq row, as SQLite lays them out | a write refused: the owner's collections are full | technical ceiling | The 10 GB: guard term `collection_rows`, 604.0 MB at `WORST_FILL`. About 262,000 rows at the narrowest names; an outside writer's share by `client_share`. |
-| `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries and the deletions (`collection_erasures`) | the oldest changes pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
+| `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries and the deletions (`collection_erasures`) | the oldest changes pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. The history lives in the object's SQLite, so no setting keeps it longer; nothing of it is let go at the storage figure (ADR-035 decision 5's retention there is superseded by call 11). |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows` (`limits-audit.test.ts` holds it at most `maxAgentRows`, the ledger's one other rule). A message has one recipient, so no term moves with it. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, disabled agents included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_usage`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held hot | never a delete (ADR-036): the `archive` lane moves acked mail to segments from half of it, and a post at it is `storage_busy` (503, `Retry-After` 30 s) until a move lands; when a move cannot land for the storage figure, `storage_full` | technical ceiling | A chosen hot size whose cost the guard holds under half: `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB, each at 50,000 rows, 726.8 MB together, 14,535 B a message at the validators' widest. It cannot grow: the room left under half (348.6 MB) is STARTER's and BRAIN's quarters (332.6 MB) and 16 MB. Slice STORE item 2: the hot set, not the owner's mail; archived mail is bounded by the tier's storage alone. |
@@ -217,7 +212,7 @@ owner's object, the table below gives the storage budget.
 | `owner/src/holds.ts` `SHIP_UNITS` | 4 units (16 MiB): `SHIP_BYTES` (13 MiB) in whole units | what one log segment shipped outside a burst holds on the isolate's pool (before a burst, after its parts' record, and the log's last at the generation's end), at its build's most: its one buffer (`SEGMENT_BUFFER_BYTES`, `CHUNK_BYTES`: its stored bytes, which `pending` holds to a part) and one row's text while it is encoded (`SEGMENT_ROW_BYTES`, 3 x 2 x `IMAGE_MAX`: the widest row image's stored text, parsed value and JSON written again, each at two bytes a character once one is past U+00FF), built without holding its lines: SQLite finds each key's last seq (`json_extract` of its key columns), and each kept row's line is read once, alone by its seq, written and encoded straight into one buffer of a part, allocated once (`pending` sizes the span by its lines as written, so it always fits: rvburst W2); taken now or not at all around each segment's build, put and acknowledgement | nothing: refused `busy`, the pass puts nothing and the generation goes on after `MANIFEST_BUSY_RETRY_S`, as a burst refused | technical ceiling | Derived from the constants (`holds.ts`), never picked; one per object at a time, so every object's ship is inside the counted pool. The memory leg measured 9.21 MiB (2026-11-05; 9.83 before each line was read once): a full segment (4,194,289 bytes) holding a connection row at `IMAGE_MAX` with one character past U+00FF and 1,000-character lines of the same mix, its put over RPC, sampled at the wide row's encode and at the build, every checkpoint within the units held; at 2 units the leg fails (10.3 MB past 8 MiB). The build that held every kept line as a string read 11.82 MiB for a segment of the mix alone (review rvburst V1). A ship inside a burst is within the burst's units. |
 | `owner/src/segments.ts` `MOVE_RECORDS`; `owner/src/owner-do.ts` `#archiveRewrite` | 74,933 records; a rewrite pass's neighbours within `MOVE_RECORDS` kept and `MOVE_BYTES` scanned | the records one move holds; what one purge rewrite pass takes in | `MoveTable` refuses past it, loudly (a counted, told failure, never a silent cut); a pass stops taking in neighbours at its bound | technical ceiling | Review N7: a purge's rewrite scans each segment with the purge's filter, so only kept records enter the move's table, and a pass takes in a neighbour only while what it keeps and the neighbour's records fit `MOVE_RECORDS` and the neighbours it scans fit `MOVE_BYTES` (a merge's work). The compaction rule across passes: a pass stopped by its bound while still under the least places what it kept as one small segment; the next pass, finding a segment under the least that is not the only one (derived from the fences alone through the partial index `archive_segments_small`, one entry at most, so a restore keeps it), takes it back as its target and goes on taking in its neighbours, until it holds the least or stands alone. Every pass leaves the archive whole and disjoint (`archive_segments_disjoint`), with at most one segment under the least, only less compacted until the last; the first neighbour always fits, so every pass makes progress. The purges' cursors are no longer moved past the replaced segments' ids (that skipped the segments between them). A pass runs a move whenever mail is due (the hot set past half), a rewrite or not (review N8), so a long purge never holds new mail at `storage_busy`; a rewrite that fails is counted and told at three. Tested at the production segment sizes: nine in ten of a run's mail deleted (each rewrite at most its target and three neighbours, several compacting passes, Dot's mail byte-exact), and 19 in 20 (completes, what is left standing alone). Measured in workerd: the purge of most of the small-record merge's records (16,175 kept) grew the live heap by at most 14.9 MiB in round 5; each pass is now held within its records' units and its own (`MoveHold`). |
 | `owner/src/ledger.ts` `CHAIN_SEGMENTS`; `owner/src/owner-do.ts` `ARCHIVED_WHOLE_BYTES`, `ARCHIVED_HEAD_BYTES` | 8 segments; 64 KiB; 16 KiB | segments one chain page reads; an archived record read in one range; the first read of a larger one's head | the page answers `more`, the next goes on after its last message | technical ceiling | A page's R2 reads bounded within one call. A chain page fits one answer (`RESULT_CHARS`, PR 1) like every read: its archived records are read by the verified ranges they span (a small one whole, a larger one its two head lines, its recipients' lines and its body's window of at most `PAGE_BYTES` from `body_offset`), the windows stopping at `WINDOWS_BYTES` past the first, so no archived body is ever read whole and a cut one reads on by its message id and offset. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept, whatever their age | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. A settled wake's row (`receipt_json`) is the only record of how its doorbell answered: delivery telemetry, not the owner's mail, whose facts live on its recipient row and archive with it. |
 | `owner/src/ledger.ts` `WAKE_SETTINGS` | 9,007,199,254,740,991 | the owner's cap and batch window | a larger number refused | technical ceiling | JavaScript's largest exact whole number (`Number.MAX_SAFE_INTEGER`): the cap's state is one column whatever its value. |
 | `contract/src/limits.ts` `SUBSCRIPTIONS_PER_AGENT` | 16 an agent | doorbell subscriptions one enabled agent holds | the 17th refused `subscription_limit`; a refresh of one held is no new place | technical ceiling | The 10 GB: guard term `wake_callbacks`, 423.6 MB (8.47% of the budget), its rows at the schema's widest: `maxAgents` (1,000) times 16. Per agent, so no client fills another agent's room, nor the owner's. |
 | `contract/src/limits.ts` `DOORBELL_BLOB_CHARS` | 8,192 characters | a sealed doorbell (URL, auth scheme, secret, record), base64url | a larger blob refused | technical ceiling | Inside `wake_callbacks`; the schema holds it visible ASCII, a byte a character. |
@@ -232,7 +227,7 @@ owner's object, the table below gives the storage budget.
 | `owner/src/policy.ts` `POLICY_LIMITS.maxChange` | 16,000 characters | one agent's proposal | a larger proposal refused | technical ceiling | The 10 GB: guard term `policy_proposals`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.pendingProposals` | 200 (50 a client) | proposals waiting for the owner | a proposal refused past it | technical ceiling | The 10 GB, inside `policy_proposals`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.appliedProposals` | 200 | applied proposals kept | the oldest let go | technical ceiling | As above. |
-| `contract/src/policy-document.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept, and the action rules' decisions, a bucket of their own (`actions.ts`) | the oldest let go | technical ceiling | The 10 GB: guard terms `policy_receipts`, 65.0 MB, and `action_receipts`. |
+| `contract/src/policy-document.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept, and the action rules' decisions, a bucket of their own (`actions.ts`) | the oldest let go | technical ceiling | The 10 GB: guard terms `policy_receipts`, 65.0 MB, and `action_receipts`. Owner changes, agent proposals, refusals and action decisions each keep their own bucket, so a burst of refusals cannot displace the owner's change history; the current policy and outstanding approval cards have their own records. The action decisions are not exported (`owner/src/export.ts` `NOT_EXPORTED`), so neither an export nor a generation carries them, and a restored owner starts with none, until a migration may change an exported table. |
 | `owner/src/policy.ts` `MODEL_SOURCES_MAX` | 64 | sources a `models.sources` table names | a larger table refused | technical ceiling | Inside `maxDocument`, the one row every door reads. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxFreeClients` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | The 10 GB: guard terms `outside_clients`, `proposal_shares`. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxOwnerClients` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | As above. |
@@ -243,6 +238,7 @@ owner's object, the table below gives the storage budget.
 | `owner/src/sessions.ts` `SESSION_LIMITS` life | 8 hours | the owner's protected session | the owner signs in again for a widening | technical ceiling | A credential's life: NIST SP 800-63B's reauthentication at AAL2, at most 12 hours. The cookie's `Max-Age`. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` freshness | 600 s | how fresh a sign-in must be to open a session | the owner signs in again | technical ceiling | S30: a widening needs a sign-in the owner just made. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 67.8 MB (its models and egress scope in bytes, review L5-1), `connection_secrets`. A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.maxRevokedKept` | 50 | revoked connections kept, once they hold no secret | the oldest let go | technical ceiling | The 10 GB: inside guard term `connections`. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxOpenFlows` | 10 | OAuth connect flows open at once | an 11th refused | technical ceiling | The 10 GB: guard term `connection_flows`; each holds a PKCE verifier for `flowTtlS`. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.flowTtlS` | 600 s | an OAuth flow's life | the owner starts the connect again | technical ceiling | An authorization code's most recommended life, 10 minutes (RFC 6749 §4.1.2). |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxModels` | 1,024 | models one connection lists | models past it refused at commit | technical ceiling | Inside `connections`; the largest built-in catalog has 386. |
@@ -254,8 +250,8 @@ owner's object, the table below gives the storage budget.
 | `owner/src/usage.ts` `USAGE_LIMITS.minOutput` | 1,024 tokens (2,048 reasoning) | the least output a reservation is worth | refused when an owner's ceiling leaves less | technical ceiling | Only when an owner's own ceiling binds; provider thinking budgets start at 1,024. |
 | `owner/src/usage.ts` `USAGE_LIMITS.receiptsKept` | 5,000 | model-call receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `model_reservations`. |
 | `contract/src/limits.ts` `CALLS_OPEN` | 1,000 | model reservations open at once | refused `model_calls_full` | technical ceiling | Inside `model_reservations`; far above any tier's runs. |
-| `contract/src/limits.ts` `SPEND_KEPT` | 4,300 | day and month spend counters | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. |
-| `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 settled, 500 refused | egress receipts kept | the oldest let go | technical ceiling | Inside `egress_reservations`. |
+| `contract/src/limits.ts` `SPEND_KEPT`; `owner/src/usage.ts` `USAGE_LIMITS.daysKept`, `monthsKept` | 4,300; 40 days and 3 months | day and month spend counters, each at a hundred sources for the days and months kept; past them a period's counters let go | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. The budgets read the current day's and month's alone. |
+| `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 settled, 500 refused | egress receipts kept | the oldest let go, never an open call's | technical ceiling | Inside `egress_reservations`. A settled call's charge is on the run and in the spending counters, so letting its receipt go refunds nothing; refusals keep their own count, so they cannot displace settled calls. |
 | `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
 | `contract/src/limits.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
 | `owner/src/network.ts` host | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound (RFC 1035). |
@@ -279,7 +275,7 @@ owner's object, the table below gives the storage budget.
 | `owner/src/owner-do.ts` `file_read` and `fetch` window | 4 MiB | text one call answers | `next_offset` reads on | technical ceiling | One chunk, the files plane's own unit (`CHUNK_BYTES`), so one call holds at most one chunk in the object. |
 | `owner/src/notices.ts` `NOTICES_KEPT` | 1,000 | owner notices kept | the oldest let go | technical ceiling | The 10 GB: guard term `owner_notices`. |
 | `contract/src/limits.ts` `NOTICE_DETAIL` | 1,024 characters | a notice's detail | a longer detail cut | technical ceiling | Inside `owner_notices`; the full error stays in its source. |
-| `owner/src/runs.ts` `RUNS_KEPT` | 2,000 | settled runs kept as receipts | an older run's status is gone (its transcript stays) | technical ceiling | The 10 GB: guard term `runs`, 90.4 MB with the live and waiting runs. |
+| `owner/src/runs.ts` `RUNS_KEPT` | 2,000 | settled runs kept as receipts | an older run's status is gone (its transcript and any delivered mail reply stay) | technical ceiling | The 10 GB: guard term `runs`, 90.4 MB with the live and waiting runs. One reader acts on a receipt: `Runs.resume` reads a held run's authority and conversation when the owner approves its call; with the receipt gone the approval still admits one retry, but the conversation does not resume (R5, `r5-resume-hooks.md` item 3). |
 | `contract/src/limits.ts` `RESULT_BYTES` | 16 KiB | a run's result on its receipt | a longer result kept cut, `result_cut` | technical ceiling | Inside `runs`. The whole result is in the engine's transcript, in the owner's files. |
 | `contract/src/limits.ts` `ERROR_BYTES` | 1 KiB | a run's first error on its receipt | a longer error kept cut | technical ceiling | As above. |
 | `contract/src/limits.ts` `CONVERSATIONS_KEPT` | 10,000 | conversations kept | the least recently run idle one forgets its resume id | technical ceiling | The 10 GB: guard term `conversations`. Nothing is refused. |
@@ -457,6 +453,7 @@ a user does:
 | `owner/src/export.ts` `EXPORT_LIFE_S` | 7 days | an export's life from its first page, pinning its generation that long; it holds no chunk | past it, its id names nothing: the owner begins the export again | technical ceiling | Under `GC_GRACE_S` (a test holds it), so every chunk its generation names is still in the bucket: a week to fetch every chunk of a 250 GB owner. |
 | `owner/src/export.ts` `EXPORT_PAGE_BYTES` | 1 MiB of rows a page | one export or manifest page's rows | nothing: the next page goes on from the cursor | technical ceiling | One page read in one unit, well inside one RPC's 32 MiB and the isolate's memory. |
 | `owner/src/export.ts` `EXPORTS_OPEN` | 16 | exports open at once | a 17th ends the oldest | technical ceiling | The 10 GB: guard term `owner_exports`; far past one owner's devices. |
+| `contract/src/limits.ts` `RECOVERY_WINDOW_S`; `deploy/offsite.ts` `HIDE_NIGHTS`, `KEEP_DAYS` | 30 days; 7 nights and 22 days | how long an erased owner's data stays in the platform's recovery copies: Cloudflare's, and the off-site copy, which hides a deletion within 7 nights and deletes it 22 days on | nothing the owner does: past it nothing of it remains, the erasure's `complete_at` | vendor limit | Durable Objects' point-in-time recovery, "any point in the past 30 days" (Cloudflare's SQLite storage API), whose copy holds the wrapped data key, so no erasure completes sooner; the off-site copy's two numbers stay inside it with a day for its lifecycle's pass. A recovery copy kept longer would outlive the erasure. |
 | `contract/src/limits.ts` `GC_GRACE_S` | 30 days | how long a garbage chunk waits before it is deleted | nothing: deleted bytes leave the owner's number at once; the app says "Deleted files are kept up to 30 days, within your storage; past that the oldest go first." | technical ceiling | Durable Objects' point-in-time recovery, 30 days: a restored object, or a manifest, never names a swept chunk. |
 | `owner/src/files.ts` garbage past the owner's storage figure (`garbage_bytes` over `max_bytes`) | the owner's storage figure: the lower of its own setting (off by default) and its tier's (free 25 GB, paid 250 GB) | the garbage in its grace the platform keeps uncounted for one owner (a chunk being deleted counts no more) | nothing: past it, the oldest garbage is collected early, never a chunk a generation kept names (`backup.ts` `protectsSince`: the newest finished, the one being written, the fallback, each an open export pins, a restore's) while one finished or began within `MANIFEST_PROTECT_S`; a lower setting shortens recovery, which the storage view shows (`deleted_content`, "deleted content") | technical ceiling | Recovery against cost: uncounted bytes are the platform's cost, so they are bounded by what the owner's figure counts; the owner's own number, not a new one. Garbage a generation kept names waits until that generation is let go: the newest's for the next (a night), an export's for its end (a week), the fallback's for a newest a restore can load, so a recovery point never loses a chunk early. |
 | `owner/src/backup.ts` `MANIFEST_PROTECT_S` | 2 days | how long after a generation last finished or began the generations kept protect the garbage they name from early collection | nothing: past it the owner's figure holds again | technical ceiling | Derived: a changing owner has a new generation each night, one `DAY_S` after the last began; one more night covers a generation that failed once and ran the next night. The longest generation, the worst base (22.2 GB) at the lowest read rate measured (10 MB/s) and the lane's duty cycle (45 s a pass, 5 s between), is under 42 minutes, inside it. Past it no generation has finished or begun, so none kept is a recovery point to keep garbage for. |

@@ -678,10 +678,14 @@ Every manifest row (entry, history row, content with its inline bytes and chunk 
 - **THEN** the database grows by more than the charge as pages stay half used, and never by more than the charge times `WORST_FILL`
 
 ### Requirement: An outside client holds a share of the storage and of the index
-Each outside client SHALL hold at most `client_share` percent of the owner's storage and of the file index's ceiling, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own.
+Each outside client SHALL hold at most `client_share` percent of the owner's storage and of the file index's ceiling, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy and off by default (100 and 0, Fact 15), so an owner who sets them always has room of its own.
+
+#### Scenario: The shares are off
+- **WHEN** the owner sets neither and an outside client opens uploads
+- **THEN** the client opens as many as the owner's whole holds, and the next is refused by the whole (`file_quota`), never `file_share`
 
 #### Scenario: A client fills its share
-- **WHEN** an outside client holding `write_files` writes until it is refused `file_share`
+- **WHEN** the owner sets a `client_share` and an outside client holding `write_files` writes until it is refused `file_share`
 - **THEN** the owner's writes, grant changes, revokes and policy writes all still land
 
 #### Scenario: Two clients together

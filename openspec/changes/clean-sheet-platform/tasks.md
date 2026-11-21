@@ -768,7 +768,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     index's R2 level) later, and whether it comes before the cutover is an open founder
     question;
   - [x] Run, policy, egress and settled wake receipt retentions and their readers
-    documented in `limits-audit.md`, “Chosen retentions” (§P item 6).
+    documented in `limits-audit.md`'s list (§P item 6).
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 

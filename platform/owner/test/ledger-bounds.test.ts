@@ -217,7 +217,7 @@ describe("the ledger's bounds", () => {
     expect(await r.sql("SELECT COUNT(*) AS n FROM ledger_messages")).toEqual([{ n: 1 }]);
   });
 
-  it("keeps settled wakes for their retention and at most the ceiling", async () => {
+  it("keeps settled wakes up to the ceiling, whatever their age", async () => {
     const r = await rig();
     const now = clock();
     await r.inLedger((ledger: Ledger, stores) => {
@@ -236,15 +236,17 @@ describe("the ledger's bounds", () => {
     expect(await r.sql("SELECT COUNT(*) AS n, MIN(settled_at) AS first FROM ledger_wakes"))
       .toEqual([{ n: maxSettledWakes, first: now + 2 }]);
     await r.inLedger((ledger: Ledger) => {
-      // A week on, the next settle prunes them all but its own.
-      const later = now + maxSettledWakes + 1 + LEDGER_LIMITS.settledWakeRetentionS + 10;
+      // Ten years on, the next settle lets the oldest go alone: no age lets one go.
+      const later = now + 10 * 365 * 86_400;
       const [agent] = ledger.agents(null);
       ledger.post(null, `dm:${agent!.agent_id}`, "c-later", "body later", null, later);
       ledger.disable(agent!.agent_id, "revoked", null, later);
     });
-    expect((await r.table("ledger_wakes")).map((w) => w["state"])).toEqual(["suppressed"]);
+    expect(await r.sql("SELECT COUNT(*) AS n, MIN(settled_at) AS first, " +
+                       "SUM(state = 'suppressed') AS suppressed FROM ledger_wakes"))
+      .toEqual([{ n: maxSettledWakes, first: now + 3, suppressed: 1 }]);
     const [usage, actual] = await counters(r);
-    expect([usage, usage["settled_wakes"]]).toEqual([actual, 1]);
+    expect([usage, usage["settled_wakes"]]).toEqual([actual, maxSettledWakes]);
   });
 
   it("keeps every counter equal to its rows through a busy exchange", async () => {
