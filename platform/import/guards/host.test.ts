@@ -252,7 +252,7 @@ describe("every other mode finds the run's host", () => {
 });
 
 describe("the dispatch's kind", () => {
-  const MODES = ["census", "bundle", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite",
+  const MODES = ["census", "bundle", "deletions", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite",
                  "clean"];
   const OTHER: Record<string, string> = { rehearsal: "window", window: "rehearsal" };
 
@@ -417,7 +417,7 @@ describe("the egress check", () => {
                           "--identity", "/dev/null"], env);
       return { ...run, session: w.tools().find((line) => line.startsWith("ssh "))! };
     };
-    for (const mode of ["census", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite"]) {
+    for (const mode of ["census", "deletions", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite"]) {
       const { session } = command(mode);
       expect(session).toContain(`image="$(cat /var/tmp/ta-import-r1/image 2>/dev/null || true)"`);
       expect(session).toContain("grep -Eqx 'node@sha256:[0-9a-f]{64}'");
@@ -538,7 +538,7 @@ describe("the workflow's host steps", () => {
     expect(step("Pin its host key").run).toContain("host.py pin");
     // The egress check before census and every mode that hands the host a credential.
     expect(step("Check its egress is the reserved IP").if).toContain(
-      '["census","stage","verify","wipe","admit","dlq","close","offsite"]');
+      '["census","deletions","stage","verify","wipe","admit","dlq","close","offsite"]');
     expect(step("Check its egress is the reserved IP").run).toContain(
       'host.py egress --run "${RUN_ID}" --mode "${MODE}"');
     // Reached only with an address; destroyed after the host's own clean, or with none.

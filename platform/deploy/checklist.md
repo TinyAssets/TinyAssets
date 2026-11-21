@@ -416,7 +416,7 @@ metadata service (it serves the host's `user_data`, which holds its private SSH 
 host's boot script drops it for Docker's containers).
 
 It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
-`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
+`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` and `deletions` need the Spaces pair too, `bundle` the
 exclusion list, `stage`, `verify`, `wipe`, `admit`, `dlq` and `close` the R2 pair, the API
 token and `IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one
 stops before any step and names it. The account id is no secret: the seven Cloudflare modes
@@ -429,6 +429,11 @@ Use the checkout for the window. From its root, install the platform dependencie
 `node platform/deploy/facts.ts --import` prints the names from the Workers' `wrangler.jsonc`
 files and `platform/deploy/platform.json`.
 Use the values of the fields below when selecting resources in Cloudflare.
+
+After bundling, mode `deletions` compares current off-host erasure records with the original
+owners of this run's bundles. It reports bundle ordinals and exits 3 on a match. A clean
+comparison applies only at the time of the scan. Step 11 still requires the matching pending
+owners to be discarded and withheld before admission.
 
 | `production` secret | What it is | Scope |
 |---|---|---|
