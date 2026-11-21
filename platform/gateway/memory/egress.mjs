@@ -1,4 +1,4 @@
-// The egress memory leg (egress shape research §5, "The memory leg"; b23 research question 5):
+// The egress memory leg (egress shape research §5, "The memory leg"):
 // the real doors and the real gateway, each bundled as a deploy bundles it (`ci/workers.ts`
 // `bundle`) and run in its own isolate of this leg's own workerd, with `--expose-gc`, beside
 // the leg's own Worker (`leg-workers.ts`): the doors' owner object and control record, and the
@@ -15,7 +15,7 @@
 // - the gateway at S against 4S, while the provider holds its answer: at most a quarter chunk;
 // - the gateway while it uploads: at most 1.05·S + 0.25 MiB (the bytes, once);
 // - N against 2N calls held at once: at most 0.25 MiB more in the gateway per call;
-// - the parse's weight (review H1): for eleven body shapes (non-ASCII, `\u`-escaped and
+// - the parse's weight: for eleven body shapes (non-ASCII, `\u`-escaped and
 //   ASCII text, and those whose trees cost most a token: empty objects and arrays, unique
 //   keys, nesting a million deep), the gateway's live set paused right after the metered
 //   path's parse, its stringify and its encode (`forward.ts` `serialized` and `prepared`,
@@ -60,7 +60,7 @@ const PAUSES = [["parse", "serialized", /(?<![.\w])read\d*\.text = null;/g],
 const READ = /(?<![.\w])const (read\d*) = await weighedBody\d*\(/g;
 
 /**
- * The parse's body shapes (review H1 and its fit, `held.ts`), each a model call for `model`
+ * The parse's body shapes (the weight's fit, `held.ts`), each a model call for `model`
  * about `bytes` long: text with a non-ASCII character and ASCII text, and the shapes whose
  * trees cost most a token.
  */
@@ -80,7 +80,7 @@ function shapes(model, bytes) {
     ["mixed", JSON.stringify({ model, messages: [{ role: "user",
       content: `${"a".repeat(4093)}—`.repeat(Math.floor(bytes / 4100)) }] })],
     // The same text as Python's `json.dumps` writes it: every byte ASCII, each em dash a
-    // `—` escape the parse makes two-byte (review V-H1).
+    // `—` escape the parse makes two-byte.
     ["escaped", JSON.stringify({ model, messages: [{ role: "user",
       content: `${"a".repeat(4088)}—`.repeat(Math.floor(bytes / 4100)) }] })
       .replaceAll("—", "\\u2014")],
@@ -415,7 +415,7 @@ try {
         MIB / 4, "0.25 MiB a call");
   rows.push({ check: "doors, held: (peak(8 calls) - peak(4 calls)) / 4, reported",
               mib: +((many.doors - few.doors) / 4 / MIB).toFixed(2) });
-  // The parse's weight (review H1): for each shape, the gateway's live set paused right after
+  // The parse's weight: for each shape, the gateway's live set paused right after
   // its parse, its stringify and its encode is at most the weight it took slots for.
   const gw = isolates.gateway;
   await gw.call("Debugger.enable");

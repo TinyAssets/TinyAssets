@@ -631,6 +631,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     both passes in one PR for the four small areas, with the source records' three attack
     files made one and fifteen words of their credential and endpoint patterns that no test
     held made to fail (`untangle/pass-small`; `untangle-2026-11/pass-small.md`).
+  - [x] `platform/gateway/`, both passes in one PR, with the area's list2 items and its own
+    swallowed errors decided, the fake's twelve dead commands gone, and three checks that
+    could never fail made to (the doorbell's echo bound, two OAuth redirect checks, a misfit
+    plaintext at open) (`untangle/pass-gateway`; `untangle-2026-11/pass-gateway.md`).
   - [x] `platform/doors/`, both passes in one PR, with `d2:N56` and `d2:N57` decided and the
     app-files guard held to what the doors serve (`untangle/pass-doors`;
     `untangle-2026-11/pass-doors.md`).
@@ -654,6 +658,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] With the next change to the probes bundle: `sources/src/catalog.ts` `bundledRecords`,
     a pass-through of `RECORDS`, deleted, and `check.ts`'s `HOSTED_USE` made the one list
     `schema.ts`'s `HostedUse` is typed from (`pass-small.md` §2).
+  - [ ] `gateway/src`'s surface only its tests use goes: `Hold`'s pool (every caller passes
+    `gatewaySlots()`), `weighedBody`'s and `readHeld`'s nullable `hold`, the doorbell's `send`,
+    `meter.ts` `sentHeaders` (its source-record check to `sources/`), and six exports nothing
+    reads (`pass-gateway.md` §3).
   - [ ] An overloaded owner object is answered as a contract refusal on each surface: today
     `doors.ts` `serve` answers it plain text, `429` with its own `Retry-After: 1`, the egress
     door's included, whose callers read `{error: {code, message}}` (`pass-doors.md` §3;

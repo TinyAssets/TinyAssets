@@ -40,8 +40,6 @@ export function builtinCatalog(): Catalog {
   };
 }
 
-
-/** No environment variables and no files: the opened credential is the only auth. */
 export const NO_AMBIENT: AuthContext = Object.freeze({
   env: async (): Promise<string | undefined> => undefined,
   fileExists: async (): Promise<boolean> => false,
@@ -58,7 +56,6 @@ const DECLARED = Object.freeze({
   "openai-responses": openAIResponsesApi,
 } satisfies Record<DeclaredApi, () => ProviderStreams>);
 
-/** A declared endpoint's sealed `models`, on pi-ai's adapter for its API; or none. */
 function declaredProvider(upstream: Upstream, declared: readonly ModelRecord[]):
     Provider | undefined {
   const { api, provider: id, base_url: baseUrl } = upstream;
