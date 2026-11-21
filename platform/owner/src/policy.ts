@@ -150,12 +150,16 @@ interface PolicyState {
   readonly document: PolicyDocument;
 }
 
-/** What `read` shows the owner: the Python's `OwnerPolicy.projection()`. */
+/**
+ * What `read` shows the owner: the Python's `OwnerPolicy.projection()`, and where each of its
+ * action rules holds and can't (`ruleNotes`, d3 §N5).
+ */
 export interface Projection {
   readonly owner: string;
   readonly generation: number;
   readonly digest: string;
   readonly policy: PolicyDocument;
+  readonly notes: readonly RuleNote[];
 }
 
 type ReceiptKind = "write" | "wake_limits" | "outside_grant" | "proposal" | "refusal";
@@ -283,7 +287,7 @@ export class Policy {
 
   projection(owner: string): Projection {
     const { generation, digest, document } = this.read();
-    return { owner, generation, digest, policy: document };
+    return { owner, generation, digest, policy: document, notes: ruleNotes(document) };
   }
 
   /** One receipt; each bucket keeps its newest `receiptsPerBucket`. */
@@ -566,11 +570,8 @@ export const policyDoors = Object.freeze({
     return o.policy.propose(r["change"], r["request_id"] ?? null,
                               account.origin?.client ?? OWNER, clock());
   },
-  /** The policy, and where each of its action rules holds and can't (`ruleNotes`). */
-  policyRead(o: PolicyDoorNeeds, { account: { owner } }: Call<undefined>):
-      Projection & { notes: RuleNote[] } {
-    const projection = o.policy.projection(owner);
-    return { ...projection, notes: ruleNotes(projection.policy) };
+  policyRead(o: PolicyDoorNeeds, { account: { owner } }: Call<undefined>): Projection {
+    return o.policy.projection(owner);
   },
   /** The policy's receipts, each bucket's last `receiptsListed`, and the action rules'. */
   policyReceipts(o: PolicyDoorNeeds, _call: Call<undefined>):
@@ -590,7 +591,7 @@ export const policyDoors = Object.freeze({
       const written = o.policy.write(session, r["expected_generation"], r["policy"],
                                          r["proposal"] ?? null, clock());
       return { owner, generation: written.generation, digest: written.digest,
-               policy: written.document };
+               policy: written.document, notes: ruleNotes(written.document) };
     }));
     await o.door(() => o.egress.end("policy"));
     return done;

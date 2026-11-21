@@ -27,6 +27,7 @@ import { sandboxEnv } from "../../contract/src/egress";
 import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
 
+import { DECIDE_ENV } from "./decide";
 import { invocation } from "./engine";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
@@ -224,10 +225,12 @@ describe.each(Object.keys(SHAPES))("a run of %s", (engine) => {
     expect(seen.gid).toBe(POOL_GIDS[POOL_UIDS.indexOf(seen.uid)]);
     expect(seen.groups).toContain(TA_GID);
     expect(seen.env["HOME"]).toBe(`/var/lib/ta-homes/${start.run}`);
-    // The runner's own environment is the command's (a PATH alone): LANG is not in it.
+    // The runner's own environment is the command's (a PATH alone): LANG is not in it. An
+    // engine with a pre-tool hook carries its run's decide door besides.
+    const hooked = !("unsupported" in sources.get(engine)!.cli!.decide);
     expect(Object.keys(seen.env).sort()).toEqual(
       [...new Set([...Object.keys(start.config.env), "PATH", "TMPDIR",
-                   ...Object.keys(SCRATCH_ENV)])].sort());
+                   ...Object.keys(SCRATCH_ENV), ...(hooked ? [DECIDE_ENV] : [])])].sort());
     // Its working files and its tools' caches go to its agent's scratch, kept between runs.
     expect(seen.env["TA_SCRATCH"]).toBe(`/scratch/${start.agent}`);
     const record = sources.get(engine)!.cli!;

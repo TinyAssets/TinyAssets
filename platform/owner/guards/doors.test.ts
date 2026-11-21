@@ -117,6 +117,8 @@ const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
   wakeEvents: "the MCP door's events/list (MCP Events, slice W), never a tool",
   wakeSubscribe: "the MCP door's events/subscribe, after its signed callback challenge",
   wakeUnsubscribe: "the MCP door's events/unsubscribe",
+  runDecide: "a run's hook helper's question, on the egress host by the run's own secret " +
+    "(R5 P-hooks): its handler refuses every account but a run's",
 });
 
 /** The callers an outside client's call reaches a door as. */
