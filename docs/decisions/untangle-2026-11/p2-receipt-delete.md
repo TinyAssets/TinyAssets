@@ -8,7 +8,9 @@ ADR-038 is accepted, superseding ADR-015's review line.
    `gh api repos/TinyAssets/TinyAssets/rules/branches/main` shows
    `{"context":"review","integration_id":5634948}`, the receipt in `Diff scope declared` is
    the only review gate GitHub enforces, and this PR deletes it. Read back at 2026-11-17
-   00:33 UTC, as this was built: three checks, no `review` yet.
+   00:33 UTC, as this was built: three checks, no `review` yet. Read back again at
+   2026-11-21, after the `PUT` (ruleset 24065294 updated 03:57 UTC): `Diff scope declared`,
+   `required-tests` and `invariants` from Actions, and `review` from 5634948.
 2. **Research: who queues a PR once nothing edits the body.**
    - GitHub's docs (github/docs, `merging-a-pull-request-with-a-merge-queue.md`): "If the
      pull request can't be added to the queue immediately, GitHub enables auto-merge and adds
@@ -68,6 +70,9 @@ ADR-038 is accepted, superseding ADR-015's review line.
      last reader, so no merge decision reads `author_association`. #5666's `live:` proof
      passed first: `review` run 44020160475 decided #5667's merge group `dcfd9df870ae` as
      `APPROVE`, with the permission read working.
+   - Merged with #5694: its `_gh_read`, which asks a read again after GitHub's 5xx, is kept,
+     and `--gh-read` (review.yml's `get`) joins `_COMMANDS` with the other commands.
+     #5681's shorter workflow headers are kept, without their receipt sentences.
    - Not applicable: `66d29f032`'s `Lane:` parts (P3 removed `Lane:`), its release-critical
      cap (already gone), and `a6ad432c8`.
 5. **Kept:** `tests/test_review_check.py`'s `Drain-Review-Verdict: APPROVE` case, which is not
