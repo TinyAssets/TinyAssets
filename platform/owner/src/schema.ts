@@ -2420,6 +2420,116 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "client, generation, filed_at, run, family ON action_requests " +
       "BEGIN SELECT RAISE(ABORT, 'a held call changes only by its answer'); END",
   ]),
+  // 19 (`ledger.ts`; `untangle-2026-11/shapes.md`): a room is a row and its members rows, its
+  // id opaque, so nothing reads members out of an id. The hot mail's rooms are kept under their
+  // old ids, each `dm:<a>` (the owner and `a`) or `dm:<a>+<b>` read here once into its sorted
+  // members. An agent's mail to the owner counts in its share by its `owner` recipient row. A
+  // fence's bloom holds its records' room ids, every older one all ones (it may hold any room);
+  // a purge names a deleted agent's room, a pending one its room with the owner. It reads other
+  // tables' rows, so no generation from before it is brought forward (`FORWARD`).
+  Object.freeze([
+    // An id is `rm_` and 32 hex, or an old room's `dm:` and at most two ids and a `+`; a
+    // members' key is two ids and a `+`; a member's id is the owner's or an agent's.
+    "CREATE TABLE rooms (room_id TEXT PRIMARY KEY CHECK (length(room_id) BETWEEN 1 AND 45 " +
+      "AND room_id NOT GLOB '*[^a-z0-9_:+]*'), kind TEXT NOT NULL CHECK (kind IN ('pair')), " +
+      "members_key TEXT NOT NULL UNIQUE CHECK (length(members_key) <= 45 AND members_key " +
+      "NOT GLOB '*[^a-z0-9_+]*'), created_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TABLE room_members (room_id TEXT NOT NULL, member_id TEXT NOT NULL " +
+      "CHECK (length(member_id) <= 22), PRIMARY KEY (room_id, member_id)) WITHOUT ROWID",
+    "CREATE INDEX room_members_by_member ON room_members (member_id, room_id)",
+    "CREATE TRIGGER rooms_kept BEFORE UPDATE ON rooms " +
+      "BEGIN SELECT RAISE(ABORT, 'a room never changes its members'); END",
+    "CREATE TRIGGER rooms_removed AFTER DELETE ON rooms " +
+      "BEGIN DELETE FROM room_members WHERE room_id = OLD.room_id; END",
+    "INSERT INTO rooms (room_id, kind, members_key, created_at) SELECT room_id, 'pair', " +
+      "CASE WHEN instr(room_id, '+') > 0 THEN substr(room_id, 4) " +
+      "WHEN substr(room_id, 4) < 'owner' THEN substr(room_id, 4) || '+owner' " +
+      "ELSE 'owner+' || substr(room_id, 4) END, min(created_at) " +
+      "FROM ledger_messages GROUP BY room_id",
+    "INSERT INTO room_members (room_id, member_id) SELECT room_id, " +
+      "substr(members_key, 1, instr(members_key, '+') - 1) FROM rooms",
+    "INSERT INTO room_members (room_id, member_id) SELECT room_id, " +
+      "substr(members_key, instr(members_key, '+') + 1) FROM rooms",
+    "DROP TRIGGER ledger_outside_held",
+    "DROP TRIGGER ledger_outside_removed",
+    "DROP TRIGGER ledger_native_held",
+    "DROP TRIGGER ledger_native_removed",
+    // An agent's message to the owner, while the owner holds it, counts in that agent's share
+    // of the owner's mailbox (an outside or an own agent's).
+    "CREATE TRIGGER owner_mail_held AFTER INSERT ON ledger_recipients " +
+      "WHEN NEW.agent_id = 'owner' AND NEW.unacked = 1 BEGIN " +
+      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner + 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner + 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); END",
+    "CREATE TRIGGER owner_mail_released AFTER UPDATE OF unacked ON ledger_recipients " +
+      "WHEN NEW.agent_id = 'owner' AND OLD.unacked = 1 AND NEW.unacked = 0 BEGIN " +
+      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); END",
+    "CREATE TRIGGER owner_mail_removed AFTER DELETE ON ledger_recipients " +
+      "WHEN OLD.agent_id = 'owner' AND OLD.unacked = 1 BEGIN " +
+      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = OLD.message_id); " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = OLD.message_id); END",
+    "DROP TRIGGER archive_segments_kept",
+    "DROP TRIGGER archive_segments_logged_insert",
+    "DROP TRIGGER archive_segments_logged_update",
+    "DROP TRIGGER archive_segments_logged_delete",
+    "ALTER TABLE archive_segments RENAME COLUMN members TO rooms",
+    "UPDATE archive_segments SET rooms = '" + "f".repeat(128) + "'",
+    "CREATE TRIGGER archive_segments_kept BEFORE UPDATE ON archive_segments " +
+      "BEGIN SELECT RAISE(ABORT, 'a segment never changes; a rewrite makes a new one'); END",
+    "ALTER TABLE archive_purges RENAME TO archive_agent_purges",
+    "CREATE TABLE archive_purges (room_id TEXT PRIMARY KEY CHECK (length(room_id) " +
+      "BETWEEN 1 AND 45 AND room_id NOT GLOB '*[^a-z0-9_:+]*'), at REAL NOT NULL, " +
+      "next_segment INTEGER NOT NULL DEFAULT 0 CHECK (next_segment >= 0))",
+    "INSERT INTO archive_purges (room_id, at, next_segment) " +
+      "SELECT 'dm:' || agent_id, at, next_segment FROM archive_agent_purges",
+    "DROP TABLE archive_agent_purges",
+    "CREATE TRIGGER rooms_logged_insert AFTER INSERT ON rooms WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'rooms', 'row', json_object('room_id', NEW.room_id, 'kind', NEW.kind, 'members_key', NEW.members_key, 'created_at', NEW.created_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER rooms_logged_update AFTER UPDATE ON rooms WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'rooms', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.room_id IS NEW.room_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'rooms', 'row', json_object('room_id', NEW.room_id, 'kind', NEW.kind, 'members_key', NEW.members_key, 'created_at', NEW.created_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER rooms_logged_delete AFTER DELETE ON rooms WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'rooms', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER room_members_logged_insert AFTER INSERT ON room_members WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'room_members', 'row', json_object('room_id', NEW.room_id, 'member_id', NEW.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER room_members_logged_update AFTER UPDATE ON room_members WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'room_members', 'key', json_array(OLD.room_id, OLD.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.room_id IS NEW.room_id AND OLD.member_id IS NEW.member_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'room_members', 'row', json_object('room_id', NEW.room_id, 'member_id', NEW.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER room_members_logged_delete AFTER DELETE ON room_members WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'room_members', 'key', json_array(OLD.room_id, OLD.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_segments_logged_insert AFTER INSERT ON archive_segments WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_segments', 'row', json_object('segment', NEW.segment, 'stream', NEW.stream, 'first_key', NEW.first_key, 'last_key', NEW.last_key, 'first_at', NEW.first_at, 'last_at', NEW.last_at, 'records', NEW.records, 'bytes', NEW.bytes, 'content_id', NEW.content_id, 'filer', NEW.filer, 'trailer_offset', NEW.trailer_offset, 'trailer_bytes', NEW.trailer_bytes, 'rooms', NEW.rooms, 'made_at', NEW.made_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_segments_logged_update AFTER UPDATE ON archive_segments WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_segments', 'key', json_array(OLD.segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.segment IS NEW.segment); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_segments', 'row', json_object('segment', NEW.segment, 'stream', NEW.stream, 'first_key', NEW.first_key, 'last_key', NEW.last_key, 'first_at', NEW.first_at, 'last_at', NEW.last_at, 'records', NEW.records, 'bytes', NEW.bytes, 'content_id', NEW.content_id, 'filer', NEW.filer, 'trailer_offset', NEW.trailer_offset, 'trailer_bytes', NEW.trailer_bytes, 'rooms', NEW.rooms, 'made_at', NEW.made_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_segments_logged_delete AFTER DELETE ON archive_segments WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_segments', 'key', json_array(OLD.segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_purges_logged_insert AFTER INSERT ON archive_purges WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_purges', 'row', json_object('room_id', NEW.room_id, 'at', NEW.at, 'next_segment', NEW.next_segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_purges_logged_update AFTER UPDATE ON archive_purges WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_purges', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.room_id IS NEW.room_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_purges', 'row', json_object('room_id', NEW.room_id, 'at', NEW.at, 'next_segment', NEW.next_segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_purges_logged_delete AFTER DELETE ON archive_purges WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_purges', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
 ]);
 
 /**
@@ -2429,6 +2539,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
 const UNREPLAYABLE = "before a restore could bring a generation forward: migration 7 re-keys " +
   "collection history by insertion order and migration 9 reads other tables' rows, neither of " +
   "which a generation holds";
+
+/** Why no generation from before migration 19 can be brought forward. */
+const ROOMS_BACKFILLED = "before a restore could bring a generation forward: migration 19 " +
+  "makes each room's rows from the mail's rows, which a generation's lines do not follow";
 
 /**
  * How a generation of an older schema is brought forward across each migration, one entry a
@@ -2460,6 +2574,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 16
   null,  // 17
   null,  // 18
+  ROOMS_BACKFILLED,  // 19
 ]);
 
 /**

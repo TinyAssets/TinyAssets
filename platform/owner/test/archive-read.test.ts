@@ -25,7 +25,7 @@ import {
   seqOf, settle, unballast,
 } from "./archive-support";
 import { digest, generate, replay } from "./generation-support";
-import { MUSE, rig } from "./ledger-support";
+import { MUSE, rig, dm } from "./ledger-support";
 import { drainDue, failure, gateFor, spaceOf, storesOn } from "./support";
 
 /** The recipient a dm with an outside agent goes to from the owner: that agent. */
@@ -37,7 +37,7 @@ describe("the archive lane", () => {
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    const room = `dm:${muse}`;
+    const room = dm(muse);
     const [first] = await sentAndAcked(r, MUSE, room, 4);
     await sealed(r, MUSE, room);
     await settle(r);
@@ -78,7 +78,7 @@ describe("the archive lane", () => {
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    const room = `dm:${muse}`;
+    const room = dm(muse);
     const [first] = await sentAndAcked(r, MUSE, room, 4);
     // The reply's body is placed, so its put to the files plane comes between the unit that
     // took its parent as hot and the unit that posts it: held there, the parent moves.
@@ -106,7 +106,7 @@ describe("the archive lane", () => {
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    const room = `dm:${muse}`;
+    const room = dm(muse);
     const [first] = await sentAndAcked(r, MUSE, room, 4);
     await sealed(r, MUSE, room);
     await settle(r);
@@ -140,7 +140,7 @@ describe("the archive lane", () => {
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    const room = `dm:${muse}`;
+    const room = dm(muse);
     const big = (c: string) => c.repeat(5 * 1024 * 1024);
     const root = await r.post(null, room, { cmid: "b0", body: big("a") });
     await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
@@ -182,7 +182,7 @@ describe("the archive lane", () => {
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    const room = `dm:${muse}`;
+    const room = dm(muse);
     // A chain of eight, each a reply to the last, the owner and the muse in turn: its first
     // four read, acked and moved with a body at the cap, so the read has an archived part;
     // its last four unread, so none can move yet (the unread ceiling's last room).
@@ -246,26 +246,26 @@ describe("the archive lane", () => {
     // Eve's mail first, unread: each acked later is a straggler, below the muse's segment.
     const STRAGGLERS = 26;
     for (let i = 0; i < STRAGGLERS; i++) {
-      await r.post(null, `dm:${eve}`, { cmid: `e${i}`, body: `eve ${i}` });
+      await r.post(null, dm(eve), { cmid: `e${i}`, body: `eve ${i}` });
     }
     // The muse's chain: twelve, the owner and the muse in turn, each acked, all moved with a
     // body at the cap; then small acked mail keeps the hot set past half, short of a seal.
     const chain: string[] = [];
     for (let i = 0; i < 12; i++) {
       const from = i % 2 === 0 ? null : MUSE;
-      chain.push((await r.post(from, `dm:${muse}`, {
+      chain.push((await r.post(from, dm(muse), {
         cmid: `m${i}`, body: `muse ${i}`, parent: chain.at(-1) ?? null })).message_id);
       const reader = from === null ? MUSE : null;
       await r.ack(reader, (await r.read(reader)).messages.at(-1)!.seq);
     }
-    await sealed(r, MUSE, `dm:${muse}`);
+    await sealed(r, MUSE, dm(muse));
     await settle(r);
-    await sentAndAcked(r, MUSE, `dm:${muse}`, STRAGGLERS + 5, "past");
+    await sentAndAcked(r, MUSE, dm(muse), STRAGGLERS + 5, "past");
     const last = await seqOf(r, chain.at(-1)!);
     // The chain's last reply, from the owner, unread and hot: the read is named by it, so its
     // root is not read from a segment first, and its first read from the files plane is the
     // first of its archived part, just past the unit that took its fences.
-    chain.push((await r.post(null, `dm:${muse}`, { cmid: "m12", body: "muse 12",
+    chain.push((await r.post(null, dm(muse), { cmid: "m12", body: "muse 12",
                                                    parent: chain.at(-1)! })).message_id);
     // Eve acks her oldest, and the lane runs at once: the straggler merges into the muse's
     // segment, which the merge replaces.
@@ -326,8 +326,8 @@ describe("the export, version 3", () => {
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    const ids = await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
-    const seal = await sealed(r, MUSE, `dm:${muse}`);
+    const ids = await sentAndAcked(r, MUSE, dm(muse), 4);
+    const seal = await sealed(r, MUSE, dm(muse));
     await settle(r);
     await unballast(r);
     const fences = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY segment");
@@ -365,7 +365,7 @@ describe("an export across a move", () => {
     const ids = await r.inLedger((ledger: Ledger) => {
       const sent: string[] = [];
       for (let i = 0; i < 4_000; i++) {
-        sent.push(ledger.post(null, `dm:${muse}`, `c${i}`, body(i), null).message_id);
+        sent.push(ledger.post(null, dm(muse), `c${i}`, body(i), null).message_id);
       }
       ledger.read(MUSE, 1);
       ledger.ack(MUSE, ledger.seqOf(sent.at(-1)!)!);
@@ -399,7 +399,7 @@ describe("an export across a move", () => {
           first_key: plan.first, last_key: plan.last, first_at: 1, last_at: 1,
           records: plan.records.count, bytes: plan.size,
           trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
-          members: "0".repeat(128) } }], 1)));
+          rooms: "0".repeat(128) } }], 1)));
     } });
     expect(moved).toBe(true);
     const lines = generated.lines as unknown as Record<string, unknown>[];

@@ -332,9 +332,8 @@ export interface DoorMethods<H> {
   mailboxAck(binding: Binding, request: RequestIn<H, "mailboxAck">):
     Promise<AnswerIn<H, "mailboxAck">>;
   /**
-   * Post a message to a room of the owner's account: dm:<agent> with the owner, or
-   * dm:<agent>+<agent> between two agents. Mail to one of the owner's own agents starts its run,
-   * whose result is its reply.
+   * Post a message to a room of the owner's account: the room_id agents_list shows for the agent to
+   * reach. Mail to one of the owner's own agents starts its run, whose result is its reply.
    */
   roomPost(binding: Binding, request: RequestIn<H, "roomPost">): Promise<AnswerIn<H, "roomPost">>;
   /**

@@ -128,7 +128,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
         StandingGrant;
   };
   readonly ledger: Pick<Ledger, "answer" | "hold" | "mailDue" | "mailFor" | "nextMail" | "post"
-    | "release" | "settled" | "taken" | "undeliverable">;
+    | "release" | "roomOf" | "settled" | "taken" | "undeliverable">;
   readonly notices: Pick<Notices, "add">;
   readonly policy: {
     egressGeneration(): number;
@@ -469,8 +469,7 @@ export class Launcher implements RunHost {
 
   /**
    * A mail's reply posted in this unit, or a scheduled run's result in the owner's room with
-   * its agent (`dm:<agent's id>`, `dm:main`'s for main; the run's id its post's own, so it is
-   * posted once), its body
+   * its agent (the run's id its post's own, so it is posted once), its body
    * placed or not; a refusal a notice.
    */
   #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
@@ -478,8 +477,9 @@ export class Launcher implements RunHost {
       // The reply is the owner's agents' content: held to the tier's storage too.
       this.#o.files.held(OWNER, () => {
         if (answer.mail === null) {
-          this.#o.ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`,
-                              answer.run, answer.result, null, clock(), authority, placed,
+          this.#o.ledger.post({ native: answer.agent },
+                              this.#o.ledger.roomOf(OWNER, nativeId(answer.agent)), answer.run,
+                              answer.result, null, clock(), authority, placed,
                               scopeOf(authority?.client ?? null));
         } else {
           this.#o.ledger.answer({ native: answer.agent }, answer.mail, answer.run,

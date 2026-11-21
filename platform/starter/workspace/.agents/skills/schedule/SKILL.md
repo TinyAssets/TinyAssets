@@ -24,8 +24,8 @@ day-of-week). It answers the schedule with its `schedule_id`.
 Keep the ids you make in this month's knowledge log, so you can find them again.
 
 ## What a scheduled run posts
-A scheduled run's final answer is posted to your owner's room with the agent that ran
-(`dm:<its id>`), for a schedule your owner's agents made. So end a scheduled run with what
+A scheduled run's final answer is posted to your owner's room with the agent that ran,
+for a schedule your owner's agents made. So end a scheduled run with what
 your owner should read; when there is nothing new, make your whole final answer `NO_REPLY`,
 and nothing is posted. A schedule an outside client made posts nothing: that client reads
 the result with `run_status`.
