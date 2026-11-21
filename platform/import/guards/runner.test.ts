@@ -32,9 +32,11 @@ import { TIERS } from "../../ci/fixtures";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { MOUNT_OPTIONS } from "../backup";
 import { STAGE_INPUTS } from "../cli";
+import { buildBundles, PRIVATE_RECORD } from "../bundle";
+import { rehearsalName } from "../../contract/src/import-message";
 import { checkStores, copyMain, forbidden, released } from "../copy";
 import {
-  ALICE, ARCHIVE, BOB, DORA, ERASED, ERASING, fixture, FOUNDER, keyOf, NEWBIE, UIDS,
+  ALICE, ARCHIVE, BOB, deletionJob, DORA, ERASED, ERASING, fixture, FOUNDER, keyOf, NEWBIE, UIDS,
 } from "./fixture";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -275,7 +277,7 @@ describe("the dispatch's gate, the workflow's first step", () => {
 
   it("refuses a mode's credential pasted with a trailing CR or space, or a line break, by name", () => {
     const without = (name: string) => ({ ...SECRETS, [name]: "" });
-    const MODES = ["census", "bundle", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite",
+    const MODES = ["census", "bundle", "deletions", "stage", "verify", "wipe", "admit", "dlq", "close", "offsite",
                    "clean"];
     const LISTS = ["DO_SSH_KEY", "IMPORT_EXCLUSION_LIST"];
     let checked = 0;
@@ -309,7 +311,7 @@ describe("the dispatch's gate, the workflow's first step", () => {
     }
     // Every one-line credential of every mode: the DO token and the reserved IP in each, and
     // the modes' own.
-    expect(checked).toBe(3 * (2 * 10 + 2 + 5 * 6 + 5));
+    expect(checked).toBe(3 * (2 * MODES.length + 2 * 2 + 5 * 6 + 5));
   });
 });
 
@@ -347,6 +349,7 @@ describe("the run step, its ssh faked", () => {
     expect(run({ MODE: "dlq", DELETE_DEAD_LETTERS: "true" }).args)
       .toMatch(/window\.sh dlq r1 rehearsal delete\s*$/m);
     expect(rehearsal.stdin).toContain("STDIN acct-v\nr2id-v\nr2sec-v\ntok-v\nkey-v");
+    expect(run({ MODE: "deletions" }).stdin).toContain("STDIN spid-v\nspsec-v\n");
     expect(run({ MODE: "bundle" }).stdin).toContain("STDIN excl-v");
     expect(run({ MODE: "census" }).stdin).toContain("STDIN spid-v\nspsec-v\n");
     expect(run({ MODE: "offsite", REHEARSAL: "false" }).stdin)
@@ -783,7 +786,7 @@ describe("the host guard, on a fake import host", () => {
     const h = host();
     const SOURCE = ["SPACES_ACCESS_KEY_ID", "SPACES_SECRET_ACCESS_KEY"];
     const takes: [string, string, string[]][] = [
-      ["census", "rehearsal", SOURCE],
+      ["census", "rehearsal", SOURCE], ["deletions", "rehearsal", SOURCE],
       ["offsite", "window", [...SOURCE, "CLOUDFLARE_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"]],
       ...["stage", "verify", "wipe", "admit", "dlq", "close"].map((mode): [string, string, string[]] =>
         [mode, "rehearsal", CREDENTIALS])];
@@ -813,6 +816,80 @@ describe("the host guard, on a fake import host", () => {
       expect(h.calls()).toEqual([]);
     }
   });
+});
+
+describe("the current deletion comparison", () => {
+  it.each(["rehearsal", "window"])("checks current requests against the original owners in a %s run",
+    (kind) => {
+      const h = host();
+      const run = "deletion-check";
+      const work = h.work(run);
+      h.window(["census", run, kind], SOURCE_KEY);
+      const out = join(work, "bundle", "out");
+      const privateDir = join(work, "bundle", "private");
+      mkdirSync(out, { recursive: true });
+      mkdirSync(privateDir);
+      const rehearsal = kind === "rehearsal" ? run : null;
+      const summary = buildBundles(h.f.copy, { out, private: privateDir, tiers: TIERS,
+                                               exclude: new Set([FOUNDER]), rehearsal });
+      expect(summary.bundled).toBe(3);
+      const compare = () => h.window(["deletions", run, kind], SOURCE_KEY);
+      const incomplete = compare();
+      expect(incomplete.status).toBe(2);
+      expect(incomplete.out).toContain("the current deletion authority is missing a job");
+      const remote = join(h.remote, "deletion-jobs");
+      mkdirSync(remote);
+      const [knownId, knownJob] = deletionJob(DORA, []);
+      writeFileSync(join(remote, knownId + ".json"), knownJob);
+      expect(compare()).toEqual({ status: 0, out: "0 of 3 bundles match a deletion record\n" });
+      for (const [principal, steps] of [
+        [ALICE, []], [BOB, ["withdrawal", "volume", "snapshots", "custody", "billing",
+                             "credentials", "identity", "receipt"]], [FOUNDER, []],
+      ] as const) {
+        const [id, json] = deletionJob(principal, steps);
+        const job = JSON.parse(json);
+        if (principal === BOB) {
+          job.origin = "cutover";
+          job.owner = null;
+        }
+        job.status_token = "private-token-only";
+        writeFileSync(join(remote, id + ".json"), JSON.stringify(job));
+      }
+      const order = [ALICE, BOB, NEWBIE].map(owner => ({
+        owner, key: keyOf(rehearsal === null ? owner : rehearsalName(run, owner)),
+      })).sort((a, b) => a.key.localeCompare(b.key));
+      const expected = order.flatMap(({owner}, i) => owner === NEWBIE ? []
+        : [`bundle ${i + 1} of 3: deletion requested`]);
+      expect(compare()).toEqual({
+        status: 3, out: [...expected, "2 of 3 bundles match a deletion record", ""].join("\n"),
+      });
+      expect(existsSync(join(work, "deletion-scan.private"))).toBe(false);
+      const readFailure = h.window(["deletions", run, kind], SOURCE_KEY, {
+        env: { FAKE_RCLONE_FAIL: "cat tasrc", FAKE_RCLONE_STDERR: "private-token-only" },
+      });
+      expect(readFailure.status).toBe(2);
+      expect(readFailure.out).toContain("a current deletion job could not be read");
+      expect(readFailure.out).not.toContain("private-token-only");
+      expect(existsSync(join(work, "deletion-scan.private"))).toBe(false);
+      const [id, wrong] = deletionJob(NEWBIE, []);
+      writeFileSync(join(remote, id + ".json"), wrong.replace(NEWBIE, ALICE));
+      const invalid = compare();
+      expect(invalid.status).toBe(2);
+      expect(invalid.out).toContain("an off-host deletion record does not match its identity");
+      countsOnly(invalid.out, work);
+      writeFileSync(join(remote, id + ".json"), wrong);
+      const listingFailure = h.window(["deletions", run, kind], SOURCE_KEY, {
+        env: { FAKE_RCLONE_FAIL: "lsf tasrc" },
+      });
+      expect(listingFailure.status).toBe(2);
+      expect(listingFailure.out).toContain("the current deletion jobs could not be listed");
+      const mappingPath = join(privateDir, PRIVATE_RECORD);
+      const mapping = JSON.parse(readFileSync(mappingPath, "utf8"));
+      mapping.owners = mapping.owners.filter((row: { owner: string }) => row.owner !== BOB);
+      writeFileSync(mappingPath, JSON.stringify(mapping));
+      rmSync(join(out, keyOf(rehearsal === null ? BOB : rehearsalName(run, BOB))), { recursive: true });
+      expect(compare().out).toContain("the private cutover record does not cover the saved bundle digests");
+    });
 });
 
 describe("the off-site copy of the window's final backup, on a fake import host", () => {

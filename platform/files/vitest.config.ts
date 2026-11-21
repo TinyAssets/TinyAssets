@@ -11,8 +11,8 @@ import { main, once, pool } from "../ci/workers";
 export default defineConfig({
   test: {
     projects: [
-      // Runs in workerd, from the config's own entry, bucket and cipher (`main`), with a
-      // keyring made fresh for each run as its one secret: none is read from the host.
+      // Runs in workerd, from the config's own entry and bucket (`main`), with a keyring made
+      // fresh for each run as its one secret: none is read from the host.
       project("files", "workerd", {
         plugins: [cloudflareTest(once(async () => pool(main(join(PLATFORM, "files"), {
           bindings: { FILES_KEYRING: keyring() } }))))],

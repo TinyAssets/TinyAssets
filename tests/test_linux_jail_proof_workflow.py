@@ -247,8 +247,7 @@ def test_the_marker_is_registered_and_guards_every_jail_module():
     pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert '"real_jail:' in pyproject, "register the marker so a typo is not silent"
     files = {n.split("::")[0] for n in _marked()}
-    # The four slices this job exists for (see the workflow header). Losing a
-    # whole file's marker would drop its cases without any red.
+    # Losing a whole file's marker would drop its cases without any red.
     assert files >= {
         "tests/test_owner_box_process_boundary.py",
     }, files

@@ -1,24 +1,8 @@
 name: Tests
 
-# Why this exists
-# ---------------
-# Until this workflow landed, NEITHER required status check on `main` tested code
-# behaviour:
-#
-#   * `policy` (daemon-request-policy.yml) only reads writer:/checker: labels. A
-#     PR carrying none of them passes it trivially.
-#   * `Diff scope declared` (pr-scope-guard.yml) is a scope-DECLARATION gate and
-#     says so in its own honesty note.
-#
-# Since the repo auto-merges any non-draft PR once required checks pass, and
-# merges flow on to production, code could reach live users without a single
-# behavioural gate. This workflow is that gate.
-#
-# MUST run unconditionally — no `paths:` filter, no job-level `if:`.
-# A REQUIRED status check that is path-filtered never reports at all on PRs
-# outside those paths, and the PR then hangs forever on "Expected — waiting for
-# status". That is why `lint`/actionlint is path-filtered and must NEVER be made
-# required. Every `exit` path below produces a conclusion for the same check name.
+# The required-tests aggregate reports a verdict for every pull request and
+# merge group. A path filter would leave unrelated changes waiting indefinitely
+# for that required check. Test selection belongs inside the workflow.
 
 on:
   pull_request:

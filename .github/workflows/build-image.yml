@@ -1,8 +1,7 @@
 name: Build and publish image
 
-# Self-host migration Row I:
-# publish the daemon image Row D deploys, while docker-build.yml remains
-# the PR/push smoke test that proves the Dockerfile still boots.
+# Publish the daemon image for deploy-prod.yml. docker-build.yml separately
+# smoke-tests the Dockerfile on pushes and pull requests.
 #
 # Every image this publishes is deployed, and every deploy RECREATES the
 # production daemon, killing in-flight user turns and runs. So a push builds

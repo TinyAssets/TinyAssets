@@ -15,16 +15,14 @@ import {
   runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { Lifecycle } from "agents/lifecycle";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_ONLY, PLATFORM_RESERVED, tombstoned, writeTombstone,
 } from "../src/admission";
 import { sqlIn, until } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { RECOVERY_WINDOW_S } from "../../contract/src/limits";
-import { Erasure } from "../src/erase";
+import { INLINE_BYTES, RECOVERY_WINDOW_S } from "../../contract/src/limits";
 import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
@@ -38,7 +36,7 @@ import {
 } from "./erasure-support";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { later, recorder } from "./runs-support";
-import { admittedOwner, alarmOf, failure, gateFor, storesOn, TIERS } from "./support";
+import { admittedOwner, alarmOf, failure, gateFor, spaceOf, storesOn, TIERS } from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -86,33 +84,14 @@ const call = (r: Rig, door: string, binding: Binding) =>
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** What a failing `disableAlarms` rejects with: the erasure's last step before the wipe. */
-const ALARMS_FAILED = "the alarm could not be disabled (the test's)";
-
-/**
- * Lifecycle's `disableAlarms` failing its next `times` calls, as a storage fault would, so
- * the erasure stops after its second step; `undo` puts it back, and `failed` is how many
- * calls it failed. Called inside the object.
- */
-function failing(times: number): { undo: () => void; failed: () => number } {
-  const prototype = Lifecycle.prototype as unknown as Record<string, unknown>;
-  const original = prototype["disableAlarms"] as (...args: unknown[]) => Promise<void>;
-  let left = times;
-  let failed = 0;
-  prototype["disableAlarms"] = function (this: unknown, ...args: unknown[]) {
-    if (left > 0) {
-      left--;
-      failed++;
-      return Promise.reject(new Error(ALARMS_FAILED));
-    }
-    return original.apply(this, args);
-  };
-  return {
-    undo: () => {
-      prototype["disableAlarms"] = original;
-    },
-    failed: () => failed,
-  };
+/** Give this owner a real files namespace and refuse its first deletes at the FILES gate. */
+async function refuseDeletes(r: Rig, times = 1) {
+  await r.stub().fileWrite(r.session(), { path: "/workspace/erasure-file", expected_etag: "",
+                                          content: new Uint8Array(INLINE_BYTES + 1) });
+  const files = gateFor(env.FILES_GATE, await spaceOf(r.stub()));
+  await files.arm("deleteNamespace", { refuse: { code: "busy", message: "FILES is busy" } },
+                  times);
+  return async () => (await files.calls()).filter((c) => c.method === "deleteNamespace").length;
 }
 
 /** Reset the object as a crash would, and wait until a new instance answers. */
@@ -316,63 +295,55 @@ describe("the owner's erasure", () => {
 
   it("resumes by its own job alone: no restart, no door", async () => {
     const r = await rig();
-    const fault = await r.in(() => failing(1));
+    const deletes = await refuseDeletes(r);
     await eraseBegun(r.stub(), r.session());
     await outsideConfirmed(r.stub(), r.owner);
     pastGrace();
-    // A door's resume past the grace: its attempt stops at its last step, the alarm kept.
+    // A door's resume past the grace: its namespace delete is refused, the alarm kept.
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
-    await until(() => fault.failed() === 1, "the attempt's failed alarm step");
+    await until(async () => await deletes() === 1, "the refused namespace delete");
     expect(await stepOf(r)).toBe(2);
     expect(await alarmOf(r.stub())).not.toBeNull();
     expect(await tables(r.stub())).toContainEqual({ name: "collection_rows" });
     // Its job, due on the object's clock, finishes it.
     await runDurableObjectAlarm(r.stub());
     await until(() => wipedWhole(r.stub()), "the job's wipe");
-    fault.undo();
   });
 
   it("is tried again later when its job fails through Lifecycle's attempts", async () => {
     const r = await rig();
-    const fault = await r.in(() => failing(Infinity));
-    try {
-      await eraseBegun(r.stub(), r.session());
-      await outsideConfirmed(r.stub(), r.owner);
-      pastGrace();
-      const before = Date.now();
-      await runDurableObjectAlarm(r.stub()).catch(() => false);
-      // The job's failure moves it a retry interval on, never dropped, never due at once.
-      await until(async () => (await jobAt(r) ?? 0) >= before + ERASE_RETRY_MS,
-                  "the job rescheduled");
-      expect(await tables(r.stub())).toContainEqual({ name: "collection_rows" });
-    } finally {
-      fault.undo();
-    }
+    const deletes = await refuseDeletes(r, Number.MAX_SAFE_INTEGER);
+    await eraseBegun(r.stub(), r.session());
+    await outsideConfirmed(r.stub(), r.owner);
+    pastGrace();
+    const before = Date.now();
+    await runDurableObjectAlarm(r.stub()).catch(() => false);
+    // The job's failure moves it a retry interval on, never dropped, never due at once.
+    await until(async () => (await jobAt(r) ?? 0) >= before + ERASE_RETRY_MS,
+                "the job rescheduled");
+    expect(await deletes()).toBeGreaterThan(1);
+    expect(await tables(r.stub())).toContainEqual({ name: "collection_rows" });
   });
 
   it("resumes from a refused door, at most once a retry interval", async () => {
     const r = await rig();
-    const fault = await r.in(() => failing(1));
+    const deletes = await refuseDeletes(r);
     await eraseBegun(r.stub(), r.session());
     await outsideConfirmed(r.stub(), r.owner);
     pastGrace();
     // The first refused door past the grace resumes it, and that attempt fails.
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
-    await until(() => fault.failed() === 1, "the first attempt's failure");
-    fault.undo();
-    // Within its interval, a refused door begins no attempt. The object runs in this isolate,
-    // so its attempts are seen here, and a door's resume begins one before the door answers
-    // (`Erasure.resume`'s microtask): the count is whole once the refusal is back.
-    const attempts = vi.spyOn(Erasure.prototype, "erase");
-    onTestFinished(() => attempts.mockRestore());
+    await until(async () => await deletes() === 1, "the first refused namespace delete");
+    // The next refused door inside the interval must leave the namespace and owner intact.
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
-    expect(attempts).not.toHaveBeenCalled();
+    expect(await deletes()).toBe(1);
     expect(await tables(r.stub())).toContainEqual({ name: "collection_rows" });
     // An interval on, on the object's clock, the next refused door resumes it.
     later(ERASE_RETRY_MS / 1000 + 1);
     expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
     await until(() => wipedWhole(r.stub()), "the door's resume");
-    expect(attempts).toHaveBeenCalledTimes(1);
+    // The successful attempt deletes the namespace both before the wipe and after it.
+    await until(async () => await deletes() === 3, "the final namespace delete");
   });
 
   it("disables Lifecycle's alarm before it wipes the owner", async () => {

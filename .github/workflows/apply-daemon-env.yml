@@ -4,15 +4,11 @@ name: Apply daemon env flag
 # TINYASSETS_* feature flag in /etc/tinyassets/env on the prod droplet and
 # restarts the daemon so it takes effect — no by-hand SSH from a laptop.
 #
-# Why this exists: a compose/env config change does NOT reach the droplet on its
-# own (DEPLOY.md § "a config commit does NOT trigger a deploy"; the fail-safe
-# deploy only pins TINYASSETS_IMAGE). The documented fix was a manual
-# `ssh … git pull` — a laptop dependency. This delivers a flag through the SAME
-# atomic helper the fail-safe uses (install-tinyassets-env.sh: perm-restore +
-# ENV-UNREADABLE marker), to the persistent host env file, so the value SURVIVES
-# container recreate with zero hosts online.
+# The deploy pins the image. To survive a container recreate, the flag must
+# reach the persistent host env file through the fail-safe's atomic helper
+# (install-tinyassets-env.sh with permission restoration and ENV-UNREADABLE).
 #
-# Safety (Codex review 2026-08-20):
+# Safety checks
 # - EXPLICIT key→value allowlist, not a regex. TINYASSETS_IMAGE and every
 #   secret/deploy-critical key are NOT settable here — this is a feature-flag
 #   surface, never an arbitrary-config or image-swap surface.

@@ -141,7 +141,7 @@ export function forbidden(work: string): string[] {
   } catch {
     // No copy yet: its path alone.
   }
-  const identities = join(layout(work).shared, ".broker", "state", "owner-identities.db");
+  const identities = layout(work).identities;
   let principals: string[] = [];
   if (existsSync(layout(work).shared)) {
     const db = openStore(identities);
