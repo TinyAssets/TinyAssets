@@ -1,6 +1,6 @@
 /**
- * The vendor's own sign-in through the doors, in workerd through the real owner
- * object (its `SANDBOX` a recording fake, `ci/fake-sandbox.ts`): the owner app's `signin/*` routes, and
+ * The vendor's own sign-in through the doors, in workerd through the real owner object (its
+ * `SANDBOX` a recording fake, `ci/fake-sandbox.ts`): the owner app's `signin/*` routes, and
  * the sign-in's event door on the egress host, by the egress token E2B's transform sets and
  * the runner's secret, the prompt it posts reaching the owner's sign-in list; and the past
  * runs' route.

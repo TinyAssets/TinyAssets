@@ -314,9 +314,10 @@ async function socketTicket({ env, token, presented, body: request }: Served):
 
 /**
  * The owner app's live socket: a `GET` upgrade with exactly `?conversation_id=` and
- * `?ticket=`, its one credential the ticket, forwarded by the binder to the object's `fetch`
- * (`socketRequest`), whose answer is returned as it is. A failure past the doors answers a
- * fixed code, never its text.
+ * `?ticket=`, its one credential the ticket (a browser's `WebSocket` sends no
+ * `Authorization`, so no bearer is read here), forwarded by the binder to the object's
+ * `fetch` (`socketRequest`), whose answer is returned as it is. A failure past the doors
+ * answers a fixed code, never its text.
  */
 async function socketUpgrade(request: Request, env: DoorsEnv): Promise<Response> {
   if (request.method !== "GET") {
