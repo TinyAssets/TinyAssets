@@ -1,10 +1,9 @@
 /**
- * `/api` keys (research §5; checklist 13, 14, 15), ported from `tinyassets/api_keys.py`.
+ * `/api` keys (research §5; checklist 13, 14, 15).
  *
- * The key is the Python's, exactly, so keys imported at cutover keep working:
- * `ta_key_<16 hex id>_<43 urlsafe secret>`, the id `secrets.token_hex(8)` and the secret
- * `secrets.token_urlsafe(32)`, and only the SHA-256 hex of the secret's UTF-8 is stored,
- * compared in constant time (a 256-bit random secret needs no KDF). The directory's
+ * A key is `ta_key_<16 hex id>_<43 urlsafe secret>`: 8 random bytes as hex, and 32 as
+ * unpadded base64url. Only the SHA-256 hex of the secret's UTF-8 is stored, compared in
+ * constant time (a 256-bit random secret needs no KDF). The directory's
  * `k:<id>` holds the owner, that hash and the mint time; the owner's object holds the key's
  * grant row (scopes, revoke) and its key-store row (`owner/src/keys.ts`: id, name, mint
  * time, last use), so the owner's key list and its erasure enumerate the keys.
@@ -54,10 +53,6 @@ export function parseKey(token: string): { keyId: string; secret: string } | nul
   return match === null ? null : { keyId: match[1]!, secret: match[2]! };
 }
 
-/**
- * `secrets.token_hex(8)` and `secrets.token_urlsafe(32)`; the directory stores the secret's
- * SHA-256 hex (`api_keys._digest`).
- */
 export function newKey(): { keyId: string; secret: string; key: string } {
   const keyId = randomHex(8);
   const secret = randomToken(32);

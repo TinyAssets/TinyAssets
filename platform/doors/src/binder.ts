@@ -80,11 +80,10 @@ type Built = Exclude<BindingKind, "none">;
 
 /**
  * The outside identity an MCP client resolves to: `client` from the issuer and its
- * `client_id` (the Python's `issuer \0 client`), `family` from those and the redirect
- * URI, the installation boundary, so a re-authorization of one installation keeps its
- * agents' mailbox (research §1.4). A loopback redirect's port is dropped first: a native
- * client listens on whatever port is free (RFC 8252 §7.3), so its port names no
- * installation.
+ * `client_id`, `family` from those and the redirect URI, the installation boundary, so a
+ * re-authorization of one installation keeps its agents' mailbox (research §1.4). A
+ * loopback redirect's port is dropped first: a native client listens on whatever port is
+ * free (RFC 8252 §7.3), so its port names no installation.
  */
 export function mcpOrigin(clientId: string, redirectUri: string):
     { client: string; family: string } {
@@ -122,8 +121,8 @@ export function installationOf(redirectUri: string): string {
  * The owner a verified upstream sign-in names, from its issuer and subject, against an
  * explicit allow-list. The owner issuer's (AuthKit's) subject is the owner id as it
  * stands, so today's owners keep theirs. A listed foreign issuer's subject (Sign in with
- * ChatGPT, say, once its slice lists it) is namespaced by that issuer, so two providers'
- * subjects never name one owner; linking it to an existing owner is that slice's act.
+ * ChatGPT, say, once listed) is namespaced by that issuer, so two providers' subjects never
+ * name one owner; no sign-in links it to an existing owner.
  * Any other issuer is refused loudly, so an `iss` that differs from the configured one
  * by so much as a trailing slash can never move an owner into a new, empty account.
  */
@@ -227,7 +226,7 @@ function egressToken(tokenHash: string, generation: number, presented: Presented
 }
 
 /**
- * The in-VM sync agent's call (slice S's runner) by its sync token, verified at the door
+ * The in-VM sync agent's call by its sync token, verified at the door
  * (`routing-mac.ts`, the `sync` kind), with the egress token E2B's transform set beside it
  * (verified as the egress doors verify it): the owner both name, and the SHA-256 of each
  * one's secret, which the object checks are its one live lease's (`#syncer`), so a sync
@@ -290,7 +289,7 @@ export function withAccount<B extends AccountBinding | InboundBinding>(
 /**
  * The owner's first-party token, bound with the grant it was issued under (`grantId`, from
  * the provider's own unwrap of that token) and its expiry: a socket ticket's binding, so
- * the object ties the socket to the device's grant (A6, salvaged).
+ * the object ties the socket to the device's grant.
  */
 export function bindOwnerGrant(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
                                grantId: string): Bound {

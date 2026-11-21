@@ -1,7 +1,7 @@
 /**
- * E2B's signed sandbox lifecycle webhook (slice P; docs.e2b.dev/sandbox/lifecycle-events-
- * webhooks, read 2026-11-03): the source of truth for each owner's sandbox time, which E2B
- * bills by the second while a sandbox runs. The sandbox Worker's own log stays the estimate
+ * E2B's signed sandbox lifecycle webhook (docs.e2b.dev/sandbox/lifecycle-events-webhooks,
+ * read 2026-11-03): the source of truth for each owner's sandbox time, which E2B bills by
+ * the second while a sandbox runs. The sandbox Worker's own log stays the estimate
  * on each run's receipt, and the fallback (`owner/src/sandbox-time.ts`).
  *
  * `POST /hooks/e2b/lifecycle`, the one hook this door serves (`/hooks/inbound/*` is

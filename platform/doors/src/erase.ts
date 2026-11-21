@@ -1,6 +1,6 @@
 /**
- * The owner's erasure at the doors (tasks 2 and 5, "Erasure's order"; slice L, after its
- * review). Two parts, neither resting on the other's request finishing:
+ * The owner's erasure at the doors, in two parts, neither resting on the other's request
+ * finishing:
  *
  * - **The door**, `POST /app/api/account/erase`: the owner's own token, its live session
  *   (the object checks it) and its typed words. It calls the object's `ownerErase`, which
@@ -15,8 +15,8 @@
  *      platform never admits the name again;
  *   2. delete the owner's `k:`, `h:` and `i:` entries;
  *   3. revoke every OAuth grant the owner holds, its outside clients' and its devices';
- *   4. delete the person's identity at the issuer (none while no issuer is configured; a
- *      foreign issuer's identity is that provider's slice's);
+ *   4. delete the person's identity at the issuer (none while no issuer is configured, and
+ *      none wired for a foreign issuer);
  *   5. confirm to the object (`erasureOutsideDone`), whose wipe waits for it.
  *   A failure retries the message; the object's job sends it again anyway, so a half-done
  *   erasure always finishes.

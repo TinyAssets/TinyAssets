@@ -61,7 +61,7 @@ export function exportedMethods(source: string): Map<string, string[]> {
 /**
  * What the exported class `name` of `source` extends, its type arguments left out, or null:
  * an entrypoint must extend `WorkerEntrypoint` itself, since RPC serves inherited methods
- * too (review L6-1).
+ * too.
  */
 export function extendsOf(source: string, name: string): string | null {
   const file = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true);
@@ -219,7 +219,7 @@ configTests(CONFIG, {
     ["FILES to another Worker", { services: [GATEWAY, EGRESS, { ...FILES,
                                                                 service: scriptOf("owner") },
                                              FILES_LOCATE] }],
-    ["the files Worker's whole surface (review M5-1)", { services: [GATEWAY, EGRESS,
+    ["the files Worker's whole surface", { services: [GATEWAY, EGRESS,
       { binding: "FILES", service: FILES["service"] }, FILES_LOCATE] }],
     ["the files Worker's default entrypoint", { services: [GATEWAY, EGRESS,
       { ...FILES, entrypoint: "FilesService" }, FILES_LOCATE] }],
@@ -277,7 +277,7 @@ configTests(CONFIG, {
     ["ctx.exports", { compatibility_flags: [...FLAGS, "enable_ctx_exports"] }],
     ["DCR on", { vars: { ...VARS, DCR_ENABLED: "true" } }],
     ["an owner issuer before AuthKit", { vars: { ...VARS, OWNER_ISSUER: "https://evil.example" } }],
-    ["a foreign issuer before its slice", { vars: { ...VARS,
+    ["a foreign issuer before it is listed", { vars: { ...VARS,
       FOREIGN_ISSUERS: "[\"https://auth.openai.com\"]" } }],
     ["no foreign issuer list", { vars: { DCR_ENABLED: "false", OWNER_ISSUER: "not-configured" } }],
     ["another var", { vars: { ...VARS, OWNER: "alice" } }],
@@ -344,7 +344,7 @@ describe("doors Worker config", () => {
     ["a chunk read", "getChunks() { return 1; }"],
     ["a generation's read", "async getManifestPart() { return 1; }"],
     ["a key call", "rewrapKey = () => 1;"],
-  ])("sees the upload entrypoint grow %s (review M5-1)", (_what, member) => {
+  ])("sees the upload entrypoint grow %s", (_what, member) => {
     const grown = FILES_SOURCE.replace(UPLOAD_HEAD, `${UPLOAD_HEAD}\n  ${member}`);
     expect(grown).not.toBe(FILES_SOURCE);
     expect(doorsConfigProblems(config, platform, new Map(SOURCES).set("files", grown)))
@@ -362,8 +362,8 @@ describe("doors Worker config", () => {
       .not.toEqual([]);
   });
 
-  it("sees the upload entrypoint inherit the whole service, its own members unchanged " +
-     "(review L6-1)", () => {
+  it("sees the upload entrypoint inherit the whole service, its own members unchanged",
+     () => {
     const inherits = FILES_SOURCE.replace(UPLOAD_HEAD,
                                           "export class FilesUpload extends FilesService {");
     // Its own members are still putChunks alone; RPC would serve every inherited method.

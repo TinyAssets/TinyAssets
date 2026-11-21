@@ -614,8 +614,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     swallowed errors decided, and four checks that could never fail made to (the r2-keys
     guard's builder, prefix and exemption rules; the root rewrap's etag) (#5679;
     `untangle-2026-11/pass-files.md`).
+  - [x] `platform/doors/`, both passes in one PR, with `d2:N56` and `d2:N57` decided and the
+    app-files guard held to what the doors serve (`untangle/pass-doors`;
+    `untangle-2026-11/pass-doors.md`).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
+  - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
+    `pass-doors.md` §3).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
@@ -626,6 +631,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     deadline (`control.ts` `#renew`), and `tell` waits for an answer only to it, so no run's
     posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
     bound first (`pass-sandbox.md` §2).
+  - [ ] An overloaded owner object is answered as a contract refusal on each surface: today
+    `doors.ts` `serve` answers it plain text, `429` with its own `Retry-After: 1`, the egress
+    door's included, whose callers read `{error: {code, message}}` (`pass-doors.md` §3;
+    `untangle/doors-overloaded`).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 

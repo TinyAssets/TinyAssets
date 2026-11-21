@@ -66,7 +66,7 @@ async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallTool
 
 /**
  * The server one request is served by: the tools of its caller's profile, bound to it, and
- * MCP Events (`events.ts`, slice W2), whose callbacks reach the gateway through `env`.
+ * MCP Events (`events.ts`), whose callbacks reach the gateway through `env`.
  */
 function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv,
                 instructions: string): McpServer {

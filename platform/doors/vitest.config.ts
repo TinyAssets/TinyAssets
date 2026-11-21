@@ -54,7 +54,7 @@ export default defineConfig({
       // it). ROUTING_MAC_KEY is both the doors' and the owner's, as their configs share it.
       // The doors' and each auxiliary Worker have every binding their configs give them
       // (`main`, `auxiliary`), and the tests state each secret: none is read from the host.
-      // The import consumer's tests take a bundle the slice-2 builder made in Node
+      // The import consumer's tests take a bundle the importer's builder made in Node
       // (`test/import-setup.ts`), deleted at the cutover with the importer.
       project("doors", "workerd", {
         test: { globalSetup: ["./test/import-setup.ts"], setupFiles: ["./test/gates.ts"] },

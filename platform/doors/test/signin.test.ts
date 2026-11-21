@@ -1,6 +1,6 @@
 /**
- * The vendor's own sign-in through the doors (slice SIGNIN), in workerd through the real owner
- * object (its `SANDBOX` a recording fake, `entry.ts`): the owner app's `signin/*` routes, and
+ * The vendor's own sign-in through the doors, in workerd through the real owner
+ * object (its `SANDBOX` a recording fake, `ci/fake-sandbox.ts`): the owner app's `signin/*` routes, and
  * the sign-in's event door on the egress host, by the egress token E2B's transform sets and
  * the runner's secret, the prompt it posts reaching the owner's sign-in list; and the past
  * runs' route.
@@ -142,7 +142,7 @@ describe("the sign-in routes and door", () => {
     expect((await listedOn()).get("test_login")).toBe(true);
   });
 
-  it("always let a source switched off be signed out, so its login can be removed (review H1)",
+  it("always let a source switched off be signed out, so its login can be removed",
      async () => {
     const { app } = await signedIn();
     // The founder turns Codex off (its vendor's terms turn out to forbid hosting it).

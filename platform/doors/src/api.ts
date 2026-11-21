@@ -7,7 +7,7 @@
  * does not exist.
  *
  * A key that does not verify is `401` and no object is reached; then the kill switch,
- * fail-closed. The request's `Cookie` header is gone before this sees it (`index.ts`).
+ * fail-closed. The request's `Cookie` header is gone before this sees it (`doors.ts`).
  */
 import { answerJson } from "./answers";
 import { verifyKey } from "./api-keys";

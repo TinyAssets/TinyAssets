@@ -1,8 +1,8 @@
 /**
- * The in-VM sync agent's doors on the egress host (slice S), in workerd through the real
- * owner Worker (its `SANDBOX` a recording fake, `vitest.config.ts`): by the lease's sync token with
- * the egress token E2B's transform sets beside it (review M-5: the sync token alone, taken
- * out of the VM, reaches nothing), never the egress token alone or none; the feed, a file's
+ * The in-VM sync agent's doors on the egress host, in workerd through the real owner Worker
+ * (its `SANDBOX` a recording fake, `vitest.config.ts`): by the lease's sync token with the
+ * egress token E2B's transform sets beside it (the sync token alone, taken out of the VM,
+ * reaches nothing), never the egress token alone or none; the feed, a file's
  * bytes, a listing, the upload of a file past an inline write and the fenced commit; and a
  * stale or forged token reaching no object.
  */
