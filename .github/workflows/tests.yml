@@ -505,8 +505,8 @@ jobs:
   # at the cutover with dry-run.ts.
   #
   # timeout-minutes is a watchdog, as the platform legs' are: the slowest legs took 23 s, the
-  # slowest leg 344 s (owner 2/2, run 44888783406) and the checks 107 s, in ten
-  # `cutover-dry-run.yml` runs of 2026-11-21 (44888783406 to 44904009707).
+  # slowest leg 344 s (owner 2/2, run 44888783406) and the checks 107 s, in ten runs of
+  # the old `Cutover dry run` workflow on 2026-11-21 (44888783406 to 44904009707).
   cutover-dry-run-legs:
     name: cutover-dry-run-legs
     if: github.event_name != 'merge_group'

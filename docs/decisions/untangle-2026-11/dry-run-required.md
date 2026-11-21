@@ -13,6 +13,7 @@
    - In the queue, runners are the bottleneck. Six merge-group runs of 42 jobs each (44901260453 to 44902114587) had jobs waiting up to 410 s for a runner. Adding 15 more jobs to every queue entry would slow every merge.
    - A PR can break the tree only through its own diff, and its PR run checks that diff. The queue already gets its whole-surface Python run (`required-tests-shard`); `affected-tests` is the same shape the other way round, on the PR only.
    - Two PRs that are each green alone could still break the tree together. That is rare, and the hourly run on `main` catches it, raising `main-red`. That run replaces the old nightly one.
+   - The residual risk, plainly: a PR's run reads its diff merged onto `main` as of its last push, and the queue reruns none of the dry run, so a PR whose run passed before `main` moved merges unchecked against what moved. The hourly run is the only net, and its slots are best-effort (`tests.yml`'s `schedule` comment), so such a break is seen after the merge, not before (review of #5731).
 3. **No diff scope.**
    - The legs it reruns (`platform-tests`, the typecheck, `process`) run on every event, and the dry run follows the same rule.
    - A path rule would skip very little. Of the last 199 merges on `main`, 9 touched only `.md` files and 3 only paths the manifest deletes (13 counting both).
