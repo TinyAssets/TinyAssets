@@ -140,5 +140,6 @@ what anchors the `--migrate` refusals the same test drives from it.
 ## 4. A process fix found on the way
 
 The gates page's done-check named `ci_structural_guards.py --head HEAD`, an option the script
-lost when it took `--selection` (#5496), so the check as written fails on its arguments before it
-runs. It now names the script alone, which runs every structural guard.
+lost when it took `--selection` (#5496): the script now reads `--head HEAD` as an unknown
+argument, says it ignored it, and runs. The page named an option that does nothing; it now
+names the script alone, which runs every structural guard.
