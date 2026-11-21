@@ -456,8 +456,6 @@ describe("a generation", () => {
 describe("a generation at production sizes (rs_cap §2.1)", () => {
   /** A row's most bytes (Durable Objects' SQLite limits), as `owner-bound.test.ts` costs it. */
   const ROW_MAX = 2_000_000;
-  /** A fixture line's most bytes: a notice row's at 1,000 three-byte characters, and newline. */
-  const WIDEST = 3_300;
   /** Notices of 1,000 characters, every other one of three-byte characters (`€`). */
   const notices3 = (o: Owner, count: number) => sqlIn(o.stub,
     "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) " +
@@ -469,7 +467,7 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
     const o = await owner();
     await notices3(o, 2_000);
     const pages = await runInDurableObject(o.stub, (_instance: OwnerDO, state) => {
-      const seen: { bytes: number; rows: number }[] = [];
+      const seen: { bytes: number; before: number; rows: number }[] = [];
       for (let cursor = decodeCursor(null); ;) {
         const page = readPage(state.storage.sql, cursor, { schema: MIGRATIONS.length,
                                                            owner: "owner", at: 0, gen: "g", s: 1 },
@@ -480,7 +478,9 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
           bytes.subarray(n === 0 ? 0 : ends[n - 1]!, end)));
         expect(ends.at(-1)).toBe(bytes.byteLength);
         expect(text.every((line) => line.endsWith("\n") && JSON.parse(line) !== null)).toBe(true);
-        seen.push({ bytes: bytes.byteLength,
+        // The rows' bytes before the line that reached the page's bytes, the header not counted.
+        const start = text[0]!.startsWith('{"t":"header"') ? ends[0]! : 0;
+        seen.push({ bytes: bytes.byteLength, before: (ends.at(-2) ?? start) - start,
                     rows: text.filter((line) => line.includes('"table":"owner_notices"')).length });
         if (page.next === null) {
           return seen;
@@ -489,9 +489,11 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
       }
     });
     console.log(`pages of ${pages.map((page) => page.bytes).join(", ")} bytes`);
-    // Counted in UTF-16, each page of these would hold about twice its bytes.
+    // A page ends at the line that reaches its bytes, however wide (a seeded file's inline text
+    // is wider than any notice). Counted in UTF-16, each page of these would hold about twice
+    // its bytes before that line.
     for (const page of pages) {
-      expect(page.bytes).toBeLessThan(EXPORT_PAGE_BYTES + WIDEST);
+      expect(page.before).toBeLessThan(EXPORT_PAGE_BYTES);
     }
     expect(pages.length).toBeGreaterThan(3);
     expect(pages.reduce((sum, page) => sum + page.rows, 0)).toBe(2_000);
@@ -547,8 +549,11 @@ describe("a generation at production sizes (rs_cap §2.1)", () => {
                 `MiB; the row at most ${rowMost} bytes, its widest entries ` +
                 `${JSON.stringify(widest)}`);
     expect(bursts.length).toBeGreaterThanOrEqual(3);
+    const encoder = new TextEncoder();
+    const widestLine = made.lines.reduce((most, line) =>
+      Math.max(most, encoder.encode(JSON.stringify(line)).byteLength + 1), 0);
     for (const bytes of bursts) {
-      expect(bytes).toBeLessThan(GENERATION_SIZES.gather + GENERATION_SIZES.page + WIDEST);
+      expect(bytes).toBeLessThan(GENERATION_SIZES.gather + GENERATION_SIZES.page + widestLine);
     }
     // The row: under a row's 2 MB as it ran, and its lists' entries, at production's sizes
     // (a part's seven digits), within what the schema and the guard cost them at.

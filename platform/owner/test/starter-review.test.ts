@@ -14,7 +14,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AGENT_UNDEFINED } from "../src/agent-file";
+import { AGENT_UNDEFINED } from "../../contract/src/agent-definition";
 import type { OwnerDO } from "../src/owner-do";
 import { Starter, STARTER_RETRY_S } from "../src/starter";
 import {
@@ -289,6 +289,18 @@ describe("a personal file's move (the shared brain's profile, starter version 2)
     expect(() => starterPackage({ version: SEED + 1, files: [
       file(NEW, "x", { class: "personal", moved_from: OLD }),
       file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/retired/);
+  });
+
+  it("refuses an agent definition file its own reader refuses, and reads no other JSON", () => {
+    expect(() => starterPackage({ version: SEED + 1, files: [
+      file(`${AGENTS}/mcp.json`, JSON.stringify({ mcpServers: { tinyassets: { command: "x" } } })),
+      file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/^mcp\.json: /);
+    expect(() => starterPackage({ version: SEED + 1, files: [
+      file(`${AGENTS}/hooks.json`, JSON.stringify({ hooks: { pre_tool: [{ run: "x.sh" }] } })),
+      file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/^hooks\.json: /);
+    expect(starterPackage({ version: SEED + 1, files: [
+      file(`${SKILLS}/x/mcp.json`, "not a definition file"),
+      file(`${AGENTS}/agent.json`, agentJson([]))] }).files).toHaveLength(2);
   });
 });
 

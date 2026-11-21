@@ -13,8 +13,8 @@
  *   unmodified command-line agent, run whole in the owner's sandbox, never a backend of
  *   ours, so it has no single-inference `invoke`. It never enters the gateway, so it names
  *   no upstream. Its record is everything the sandbox runner needs, as data (`CliSpec`):
- *   install, sign-in, the new-run and resume invocations and their event matchers, the
- *   instruction and skills paths, the MCP template, tool filters and unattended flags, its
+ *   install, sign-in, the new-run and resume invocations and their event matchers, how the
+ *   agent's definition reaches it, the MCP template, tool filters and unattended flags, its
  *   home, the credentials it runs on, whether each may run unattended (with the vendor
  *   page that says so), its `session_paths`, which sync to the owner's files, and its
  *   `secret_paths`, which never leave the sandbox (ADR-031 decision 2). Every path is
@@ -44,6 +44,7 @@
  * from an owner's package) is marked `curated: false`; none exists yet.
  */
 import type { HookKind } from "../../contract/src/acts";
+import type { HookEvent } from "../../contract/src/agent-definition";
 import type { Endpoint, Upstream } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -75,10 +76,6 @@ export interface UserKey {
 }
 
 export type OAuthSpec = Rfc6749 | UserKey;
-
-/** Every credential an engine runs on (`CredentialKind`). */
-export const CREDENTIAL_KINDS: readonly CredentialKind[] = Object.freeze([
-  "vendor_login_in_sandbox", "api_key"]);
 
 /**
  * How the engine binary is installed into the sandbox template, pinned: an npm package by
@@ -117,6 +114,43 @@ export interface Instructions {
   readonly max_bytes?: number;
   /** The record's file whose template makes the engine read `file`. */
   readonly setting?: string;
+}
+
+/**
+ * Where the agent's own MCP servers (`mcp.json`) go beside the run's door (`cli.mcp`): under
+ * the dotted key `servers`, in the record's MCP file or, with `flag`, as one `<flag>
+ * <servers>.<name>.<key>=<value>` pair a value (a map one pair an entry, `.<key>.<entry>`),
+ * each value JSON. `http` and `stdio` are a server's entry in the engine's own keys, each value
+ * a fixed text or the server's own (`{url}`; `{command}`, `{args}`, `{env}`), and `names`, a
+ * dotted key of the file whose list each server's name joins (an allow-list). Or why none can.
+ */
+export type DefinitionMcp =
+  | { readonly servers: string; readonly flag?: string;
+      readonly http: Readonly<Record<string, string>>;
+      readonly stdio: Readonly<Record<string, string>>;
+      readonly names?: string }
+  | { readonly unsupported: string };
+
+/**
+ * The engine's own name of each engine-neutral hook event (`HOOK_EVENTS`), every one, from its
+ * hooks page (`cite`, read on `read`). Its hooks go in the root-owned layer the record's
+ * `decide` hook does, so an engine with no such layer has none (`unsupported`).
+ */
+export type DefinitionHooks =
+  | { readonly events: Readonly<Record<HookEvent, string>>; readonly cite: string;
+      readonly read: string }
+  | { readonly unsupported: string };
+
+/**
+ * How the agent's definition (`contract/src/agent-definition.ts`) reaches the engine, part by
+ * part: its instructions, the folders its skills are linked into in the agent's directory, its
+ * own MCP servers and its own hooks.
+ */
+export interface Definition {
+  readonly instructions: Instructions;
+  readonly skills: { readonly paths: readonly string[] };
+  readonly mcp: DefinitionMcp;
+  readonly hooks: DefinitionHooks;
 }
 
 /** How TinyAssets' run-scoped MCP door reaches the engine, and how its trust is handled. */
@@ -282,8 +316,7 @@ export interface CliSpec {
   readonly unattended: Readonly<Partial<Record<CredentialKind, Unattended>>>;
   readonly per_credential?: Readonly<Partial<Record<CredentialKind, PerCredential>>>;
   readonly engine: Engine;
-  readonly instructions: Instructions;
-  readonly skills_paths: readonly string[];
+  readonly definition: Definition;
   readonly mcp: Mcp;
   readonly decide: Decide;
   /**

@@ -73,7 +73,7 @@ import {
  type EngineEvents, EVENTS_RACED, type Frame, FRAME_VERSION, readEvent,
 } from "../../contract/src/run-events";
 
-import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
+import { AGENT_DISABLED, type AgentFile, AUTO } from "../../contract/src/agent-definition";
 import type { RunCapability } from "../../contract/src/capabilities";
 import { AUTHORITY_CHANGED, may, OWNER, type StandingGrant, type Stamped } from "./authority";
 import {

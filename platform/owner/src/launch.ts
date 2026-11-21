@@ -36,7 +36,9 @@ import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
-import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
+import {
+  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, agentPath,
+} from "../../contract/src/agent-definition";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
 import type { DoorUnits, ObjectReads } from "./door";
@@ -286,7 +288,7 @@ export class Launcher implements RunHost {
 
   /** An agent's `agent.json`, read whole, and the etag it was read at. */
   async readAgent(agent: string): Promise<{ file: AgentFile; etag: string }> {
-    const path = agentFilePath(agent);
+    const path = agentPath(agent, AGENT_FILES.agent);
     const content = await this.#o.door(() => {
       const entry = this.#o.files.stat(path);
       if (entry === null || entry.kind !== "file") {
@@ -327,7 +329,7 @@ export class Launcher implements RunHost {
       Promise<string> {
     const { admitted, agent, unattended } = await this.#o.door(() => {
       const made = ask();
-      if (this.#o.files.stat(agentFilePath(made.agent))?.etag !== read.etag) {
+      if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
         throw new Refusal("agent_changed", AGENT_CHANGED);
       }
       const done = { agent: made.agent, unattended: made.unattended,

@@ -14,7 +14,7 @@ import { egressTokenOf } from "../../contract/src/egress";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { AGENT_DISABLED, AGENT_UNDEFINED } from "../src/agent-file";
+import { AGENT_DISABLED, AGENT_UNDEFINED } from "../../contract/src/agent-definition";
 import { AUTHORITY_CHANGED } from "../src/authority";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
