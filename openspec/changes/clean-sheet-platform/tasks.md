@@ -666,7 +666,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`d2:N57`) and `s2:N51` (d3 §A11).
   - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
     `pass-doors.md` §3).
-- [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
+- [ ] The re-check loop (d2 §E step 6): each item below and each one
+  `python scripts/review_checks.py --owed` lists done (a PR's new owed items go in its decision
+  file, none here; `owed-in-decisions.md`), every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
