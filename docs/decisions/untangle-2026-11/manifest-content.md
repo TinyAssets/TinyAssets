@@ -185,9 +185,11 @@ The site's links to the deleted `openspec/specs` (the developers page, `lib/site
   (untangle/manifest-apply).
 - [ ] The manifest as one file per area under `platform/cutover/`, read as one
   (untangle/manifest-split-files, after #5714 and #5722).
-- [ ] IQ1 and IQ2 on the founder's page, and each keep then confirmed or made a delete
-  (the coordinator). A keep of history names what goes for good, so only the answer ends it.
+- Founder question (not an owed item): IQ1 and IQ2 on the founder's page (`founder_batch.md`
+  item 13). Each history keep is then confirmed or made a delete; a keep of history names what
+  goes for good, so only the founder's answer ends it.
 - [ ] The window opens only once `ci/guards/rules.ts` owes the cutover guard nothing
   (tasks.md §9 step 10). Until then only the deletion PR's own checks fail on a row left
   (`rules.ts`' edit takes the helper; `owed.ts`' takes `"cutover"` from `GUARDS`), inside
-  the window.
+  the window. The window's runner refuses to open while a row is owed
+  (`untangle/window-owed-check`).
