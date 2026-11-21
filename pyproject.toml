@@ -122,9 +122,6 @@ scientific = [
 [tool.hatch.build.targets.wheel]
 packages = ["fantasy_author", "tinyassets"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"WebSite/brand/mark.py" = "WebSite/brand/mark.py"
-
 [tool.ruff]
 target-version = "py311"
 line-length = 100

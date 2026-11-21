@@ -635,8 +635,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
   account-deletion pages corrected, in the founder's copy.
-- [x] The mark's source is `WebSite/brand/mark.py`; the cutover manifest lists the retired
-  tray and onboarding exports and checks (d3 §C6 F4, `site-mark.md`).
+- [x] The mark's source is `WebSite/brand/mark.py`; the cutover manifest lists the old copy
+  and the retired tray and onboarding exports and checks (d3 §C6 F4, `site-mark.md`).
 - [ ] The live stage's four PRs, after B13, B14's canary and `control` (d3 §H).
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in

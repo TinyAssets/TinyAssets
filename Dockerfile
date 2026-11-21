@@ -276,7 +276,6 @@ RUN /opt/venv/bin/playwright install --with-deps --only-shell chromium &&\
 
 COPY --from=builder /build/tinyassets /app/tinyassets
 COPY --from=builder /build/pyproject.toml /app/pyproject.toml
-COPY WebSite/brand/mark.py /app/WebSite/brand/mark.py
 # Install the actual package metadata and entry points against /app. Dependencies
 # above use the same pyproject extras and are not resolved a second time.
 RUN /opt/venv/bin/pip install --no-cache-dir --no-deps -e ".[mcp,browser]"

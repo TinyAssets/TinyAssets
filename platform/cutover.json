@@ -25,6 +25,7 @@
         { "delete": "platform/ci/guards/cutover.test.ts", "what": "the manifest's guard" },
         { "delete": "scripts/platform_setup.py", "what": "the founder's one-time setup, done (deploy/checklist.md): its keyring maker is a copy of keyring-new's, which the kit keeps (o-keyrings.md)" },
         { "delete": "tests/test_platform_setup.py", "what": "the setup's tests" },
+        { "delete": "tinyassets/desktop/icon_gen.py", "what": "the old desktop tray's frozen copy of the mark, kept unedited for tinyassets/desktop until the old stack goes; WebSite/brand/mark.py is the source" },
 
         { "edit": "WebSite/brand/render_marks.py", "names": ["TRAY_ICO", "APP_HTML", "_write_app_html", "app_badge_data_uri"], "what": "remove the retired tray export and onboarding badge writer, including its invariant import; regenerate the receipt for the surviving outputs" },
         { "edit": "WebSite/brand/generated-assets.json", "names": ["tinyassets/desktop/app.ico"], "what": "regenerate after the tray export and onboarding badge writer go" },

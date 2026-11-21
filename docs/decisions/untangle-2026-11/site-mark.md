@@ -1,12 +1,10 @@
 # site-mark as built (2026-11-18)
 
-F4 moves the drawing to `WebSite/brand/mark.py`. Both site renderers import it there. Hatch
-ships that file at the same import path in the Python wheel. The desktop helpers use the
-shared drawing and ICO encoder. The desktop module still chooses the tray destination, so
-`generate_icon()` writes beside the installed desktop module, as it does from a checkout.
-
-The daemon image copies this package input before its editable install. A change to
-the source is included in the image publish and smoke workflows.
+F4 copies the drawing to `WebSite/brand/mark.py`, the mark's one source from now on. Both
+site renderers, the site's tests and the brand parity check read it there. The old stack is
+fixes only, so `tinyassets/desktop/icon_gen.py` stays unedited for the old desktop tray, and
+the cutover manifest deletes it with the old stack. Nothing outside `tinyassets/` reads it,
+and the Python wheel and daemon image are unchanged.
 
 The cutover manifest names the tray and onboarding outputs in the generator, receipt and
 checks. They are still shipped and checked today. Retiring them includes regenerating the
