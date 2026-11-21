@@ -292,6 +292,11 @@ describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", 
       .toBe("action_never");
     expect(await call("Read", { file_path: "/workspace/a" })).toEqual({ allow: true });
     expect(await call("mcp__gmail__read", {})).toEqual({ allow: true });
+    // A tool two rules name is both acts: the never refuses it, and no card is filed.
+    await ruled(o, [{ act: "share", do: "ask", tools: ["mcp:board:post"] },
+                    { act: "people.message", do: "never", tools: ["mcp:board:post"] }]);
+    expect((await failure(() => call("mcp__board__post", {}))).code).toBe("action_never");
+    expect(await outcomes(o)).toEqual(["denied", "denied", "held"]);
     // A run on an engine with no hook is let be: its rules hold at the doors alone.
     const kimi = await hooked("kimi");
     await ruled(kimi.o, [{ act: "workspace.shell", do: "never" }]);
@@ -302,8 +307,11 @@ describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", 
 
   it("is a run's alone, and a call with a tool's name", async () => {
     const { r, run } = await hooked();
-    expect((await failure(() => r.stub.runDecide(r.bind(), { check: true }))).message)
-      .toBe("only a run's own hook asks its decide door");
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    for (const binding of [r.bind(), client]) {
+      expect((await failure(() => r.stub.runDecide(binding, { check: true }))).message)
+        .toBe("only a run's own hook asks its decide door");
+    }
     for (const asked of [{}, { tool_name: "" }, { tool_name: 7 }, { tool_name: "a b" }]) {
       expect((await failure(() => r.stub.runDecide(run, asked as never))).code)
         .toBe("invalid");

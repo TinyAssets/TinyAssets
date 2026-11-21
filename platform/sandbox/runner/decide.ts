@@ -11,6 +11,8 @@
  * matches instead and prints them: the runner's start check, and its ask before it writes
  * the hook (`hookTools`).
  */
+import type { DoorAnswer } from "../../contract/src/owner";
+
 import { RUNNERS } from "./protocol";
 
 /** The variable a run's CLI's environment carries its decide door's URL in. */
@@ -20,13 +22,16 @@ export const DECIDE_ENV = "TA_DECIDE";
  * so the helper refuses before the CLI times its hook out (which some CLIs let through).
  */
 export const DECIDE_MS = 20_000;
-/** The node the loader runs the runner with (`template/ta-runner`). */
-const NODE = "/usr/local/bin/node";
 const ALLOW = 0;
 const REFUSE = 2;
 
+/** Each field the door answers (`runDecide`), as read: anything, until it is held. */
+type Fields<A> = A extends object ? keyof A : never;
+type Answer = Partial<Record<Fields<DoorAnswer<"runDecide">>, unknown>>;
+
 /** The door's answer, or why there is none: its refusal's message, or what failed. */
-async function ask(url: string, body: unknown): Promise<{ answer: unknown } | { reason: string }> {
+async function ask(url: string, body: unknown):
+    Promise<{ answer: Answer | null } | { reason: string }> {
   let response: Response;
   try {
     response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" },
@@ -42,7 +47,7 @@ async function ask(url: string, body: unknown): Promise<{ answer: unknown } | { 
     read = null;
   }
   if (response.status === 200) {
-    return { answer: read };
+    return { answer: typeof read === "object" ? read as Answer | null : null };
   }
   const message = (read as { error?: { message?: unknown } } | null)?.error?.message;
   return { reason: typeof message === "string" ? message
@@ -52,7 +57,7 @@ async function ask(url: string, body: unknown): Promise<{ answer: unknown } | { 
 /** The patterns of the CLI's tool names its hook matches for the owner's rules. */
 export async function hookTools(url: string): Promise<string[]> {
   const asked = await ask(url, { check: true });
-  const tools = "answer" in asked ? (asked.answer as { tools?: unknown } | null)?.tools : null;
+  const tools = "answer" in asked ? asked.answer?.tools : null;
   if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string")) {
     throw new Error("reason" in asked ? asked.reason : "the decide door's check is unreadable");
   }
@@ -65,11 +70,12 @@ export function matcherOf(tools: readonly string[]): string {
 }
 
 /**
- * The helper's argv: the runner of `digest`, as the loader installed it, Node's own warnings
- * off, so the reason a refusal writes on stderr is the door's alone.
+ * The helper's argv: the runner of `digest`, as the loader installed it, by the Node the
+ * loader runs it with (this process's), Node's own warnings off, so the reason a refusal
+ * writes on stderr is the door's alone.
  */
 export function helperArgv(digest: string): string[] {
-  return [NODE, "--no-warnings", `${RUNNERS}/${digest}/runner.mjs`, "decide"];
+  return [process.execPath, "--no-warnings", `${RUNNERS}/${digest}/runner.mjs`, "decide"];
 }
 
 /** The helper's command line, as a CLI's hook runs it. */
@@ -113,7 +119,7 @@ export async function decideCommand(args: readonly string[],
   if ("reason" in asked) {
     return refuse(asked.reason);
   }
-  if ((asked.answer as { allow?: unknown } | null)?.allow !== true) {
+  if (asked.answer?.allow !== true) {
     return refuse("the owner's rules could not be checked: the decide door's answer is unreadable");
   }
   out.write("{}\n");

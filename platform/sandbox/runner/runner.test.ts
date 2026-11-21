@@ -318,7 +318,7 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     const hook = JSON.parse(seen.dumps[MANAGED]!).hooks.PreToolUse;
     expect(hook).toEqual([{ matcher: "^(?:Bash|mcp__gmail__send_.*)$", hooks: [{
       type: "command", timeout: 60, onFailure: "block",
-      command: `/usr/local/bin/node --no-warnings ${RUNNERS}/${box.digest}/runner.mjs decide` }]
+      command: `${NODE} --no-warnings ${RUNNERS}/${box.digest}/runner.mjs decide` }]
     }]);
     expect(checks()).toHaveLength(2);
   });

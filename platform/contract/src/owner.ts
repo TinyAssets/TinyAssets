@@ -600,7 +600,10 @@ export interface DoorTypes {
   readonly egressBeat: { readonly loose: [request: BeatRequest] };
   readonly egressSettle: { readonly loose: [request: SettleSent] };
   readonly runEvents: { readonly handed: true };
-  readonly runDecide: { readonly handed: true };
+  readonly runDecide: {
+    readonly handed: true;
+    readonly answer: { readonly tools: readonly string[] } | { readonly allow: true };
+  };
   readonly signinEvents: { readonly loose: [request: SigninEventsRequest] };
   readonly signinReport: { readonly handed: true };
   readonly fileChanges: { readonly handed: true };
