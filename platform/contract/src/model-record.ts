@@ -1,5 +1,5 @@
 /**
- * A model's capability record (pi audit F6): pi-ai's own `Model`, carried whole to the
+ * A model's capability record: pi-ai's own `Model`, carried whole to the
  * owner object, which holds no catalog of its own and lists, prices, compacts and offers
  * thinking levels by it, without what is the gateway's.
  *

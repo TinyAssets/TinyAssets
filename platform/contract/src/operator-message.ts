@@ -1,5 +1,5 @@
 /**
- * The operator channel (d3 §G; `operator_research.md` §1.4): how the deploy kit asks the doors
+ * The operator channel (d3 §G): how the deploy kit asks the doors
  * for a platform act, and how the doors answer. One module, so the kit's sending side
  * (`deploy/operator.ts`) and the doors' consumer (`doors/src/operator.ts`) cannot disagree. It
  * shares nothing with the cutover's import messages, which go with the import whole.
@@ -27,9 +27,9 @@
  * the acceptance record before it, under a lock (`deploy/platform.json` `bucket_locks`): the
  * channel's audit log.
  *
- * Pure: WebCrypto's HMAC, the contract's digest (`digest.ts`, the platform's one SHA-256) and its
- * shape checks (`checks.ts`), so the kit runs it under Node's type stripping as the doors
- * bundle it.
+ * Pure: WebCrypto's HMAC, the contract's digest (`digest.ts`, the platform's one SHA-256)
+ * and its shape checks (`checks.ts`), so the kit runs it under Node's type stripping as the
+ * doors bundle it.
  */
 import { PLATFORM_CALLER } from "./binding.ts";
 import { keyed, object, whole } from "./checks.ts";

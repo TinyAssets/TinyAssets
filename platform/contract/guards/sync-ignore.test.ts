@@ -1,8 +1,8 @@
 /**
  * The sync-ignore matcher (`contract/src/sync-ignore.ts`) as git reads a `.gitignore`, `git
  * check-ignore` the oracle: GitHub's 310 templates (github/gitignore at `df4087095eb4`, CC0,
- * in `test-data/gitignore/`) and random lists, every path's answer git's; the hostile lists
- * of the review's rounds 1 to 6, answered as git does with the lines that fit, at a cost a
+ * in `test-data/gitignore/`) and random lists, every path's answer git's; hostile lists,
+ * answered as git does with the lines that fit, at a cost a
  * path within the automaton's own (in this host's own units, `overBound`); what it remembers
  * of a tree the same at any size, its answers the same in any order, and a walk's path its
  * own segment's cost. Its memory a list byte, against the sandbox's heap, is the runner's
@@ -259,45 +259,45 @@ describe("its ceilings, each line past one said in file order", () => {
   });
 });
 
-// The hostile lists of the review's rounds 1 to 6 (`rvst2_report.md`), each on the defaults,
-// and the path each is matched against (unique each time).
+// The hostile lists, each on the defaults, and the path each is matched against (unique each
+// time).
 const letters = "abcdefghijklmnopqrst";
 const R = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i));
 const HOSTILE: [string, string[], (i: number) => string][] = [
-  ["R1 *a*a*...*b, a 4,000-byte name", ["*a*a*a*a*a*a*a*a*a*a*b"],
+  ["*a*a*...*b, a 4,000-byte name", ["*a*a*a*a*a*a*a*a*a*a*b"],
    (i) => `${"a".repeat(3990)}${String(i).padStart(10, "0")}`],
-  ["R2 2,000 literal lines", R(2000, (i) => `n${i}`), (i) => `p/q/r/s/t/file${i}.ts`],
-  ["R3 2,000 star lines", R(2000, (i) => `*${i}*x*y*z`), (i) => `p/q/r/s/t/file${i}.ts`],
-  ["R3 2,000 ? lines", R(2000, (i) => `?*${i}*q`), (i) => `p/q/r/s/t/file${i}.ts`],
-  ["R3 2,000 ? path lines", R(2000, (i) => `?*/*${i}*q`), (i) => `p/q/r/s/t/file${i}.ts`],
-  ["R4 passcheck", R(2000, (i) => `*s*t*.*${i}*r*e*b*m*u*n*-*e*l*i*f*-*t*n*e*n*o*p*m*o*c*?`),
+  ["2,000 literal lines", R(2000, (i) => `n${i}`), (i) => `p/q/r/s/t/file${i}.ts`],
+  ["2,000 star lines", R(2000, (i) => `*${i}*x*y*z`), (i) => `p/q/r/s/t/file${i}.ts`],
+  ["2,000 ? lines", R(2000, (i) => `?*${i}*q`), (i) => `p/q/r/s/t/file${i}.ts`],
+  ["2,000 ? path lines", R(2000, (i) => `?*/*${i}*q`), (i) => `p/q/r/s/t/file${i}.ts`],
+  ["passcheck", R(2000, (i) => `*s*t*.*${i}*r*e*b*m*u*n*-*e*l*i*f*-*t*n*e*n*o*p*m*o*c*?`),
    (i) => `p/component-file-number-${i}-${(i * 7919) % 100003}.ts`],
-  ["R4 passcheck path", R(2000, (i) => `*e*l*u*d*o*m*/*c*r*s*/*${i}*t*c*e*j*o*r*p*?`),
+  ["passcheck path", R(2000, (i) => `*e*l*u*d*o*m*/*c*r*s*/*${i}*t*c*e*j*o*r*p*?`),
    (i) => `project/src/module${i}/x.ts`],
-  ["R4 ? runs of 100 to 199", R(2000, (i) => `*${"?".repeat(100 + (i % 100))}${
+  ["? runs of 100 to 199", R(2000, (i) => `*${"?".repeat(100 + (i % 100))}${
     letters[Math.floor(i / 100)]}*`), (i) => `p/${letters}${String(i).padStart(8, "0")}${
     "x".repeat(222)}`],
-  ["R5 long literal middles, emoji names", R(2000, (i) => `*${"a".repeat(150)}b${i}*`),
+  ["long literal middles, emoji names", R(2000, (i) => `*${"a".repeat(150)}b${i}*`),
    (i) => `p/😀b0123456789${"a".repeat(225)}${String(i).padStart(10, "0")}`],
-  ["R6 2,000 long literal middles", R(2000, (i) => `*${"a".repeat(150)}b${i}*`),
+  ["2,000 long literal middles", R(2000, (i) => `*${"a".repeat(150)}b${i}*`),
    (i) => `p/b0123456789${"a".repeat(230)}${String(i).padStart(10, "0")}`],
-  ["R6 20,000 long literal middles", R(20000, (i) => `*${"a".repeat(150)}b${i}*`),
+  ["20,000 long literal middles", R(20000, (i) => `*${"a".repeat(150)}b${i}*`),
    (i) => `p/b0123456789${"a".repeat(230)}${String(i).padStart(10, "0")}`],
-  ["R6 2,000 x 100 one-letter pieces", R(2000, (i) => `*${"a*".repeat(100)}b${i}*`),
+  ["2,000 x 100 one-letter pieces", R(2000, (i) => `*${"a*".repeat(100)}b${i}*`),
    (i) => `p/b0123456789${"a".repeat(230)}${String(i).padStart(10, "0")}`],
-  ["R6 2,000 short *.a<i>b", R(2000, (i) => `*.a${i}b`),
+  ["2,000 short *.a<i>b", R(2000, (i) => `*.a${i}b`),
    (i) => `p/b0123456789${"a".repeat(230)}${String(i).padStart(10, "0")}.x`],
 ];
 
 /**
- * Round 7 (R7-2): Aho–Corasick lines of differing depth, files under a folder 2,000 deep, each
+ * The deep list: Aho–Corasick lines of differing depth, files under a folder 2,000 deep, each
  * file's segment fed from the folder's remembered node, its fallback the folder's depth. git
  * itself takes minutes over this list (its `wildmatch` tries each `**` at every folder), so
  * its answers are by construction: a path is ignored when it ends `/` + `a/` (1 to 1,000
  * times) + `b`.
  */
 const DEEP: [string, string[], (i: number) => string] = [
-  "R7 **/a/…/a/b, files 2,000 folders deep", R(1000, (i) => `**/${"a/".repeat(1 + i)}b`),
+  "**/a/…/a/b, files 2,000 folders deep", R(1000, (i) => `**/${"a/".repeat(1 + i)}b`),
   (i) => i % 3 === 0 ? `${"a/".repeat(2000)}file${i}` : i % 3 === 1
     ? `${"a/".repeat(1500)}b/x${i}` : `${"a/".repeat(1500 + i % 7)}b`];
 const deepIgnored = (path: string) => /(^|\/)(a\/){1,1000}b$/.test(path)
@@ -306,7 +306,7 @@ const deepIgnored = (path: string) => /(^|\/)(a\/){1,1000}b$/.test(path)
 /** UTF-8 bytes of a string. */
 const bytesOf = (text: string) => Buffer.byteLength(text, "utf8");
 
-describe("the review's hostile lists (rounds 1 to 6)", () => {
+describe("the hostile lists", () => {
   it.each([...HOSTILE, DEEP])("%s: git's answers with the lines that fit, at the automaton's cost",
                    { tags: ["large"] }, (label, list, path) => {
     const lines = [...defaultSyncIgnore(), ...list];
@@ -352,10 +352,11 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     }), "CPU time over the automaton's bound").toBeLessThanOrEqual(1);
   });
 
-  it("R7 in the sync's own orders: each folder stepped once, a path its own segment", () => {
+  it("the deep list in the sync's own orders: each folder stepped once, a path its own segment",
+     () => {
     const [, list, path] = DEEP;
     const lines = [...defaultSyncIgnore(), ...list];
-    const words = 1;  // R7's lines are Aho–Corasick's, the defaults indexes': no automaton
+    const words = 1;  // the deep list's lines are Aho–Corasick's: no automaton
     expect(lines.reduce((sum, line) => sum + automatonStates(line), 0)).toBe(0);
     const files = Array.from({ length: 300 }, (_, i) => path(10_000 + i)).sort();
     // The walk's order (`walkFiles`): each folder asked once, before what is under it.
@@ -370,7 +371,7 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
       }
       walk.push([file, false]);
     }
-    // The walk's bound an entry (R7's, above), summed: a pass asks each entry once, the
+    // The walk's bound an entry (`pathWork`), summed: a pass asks each entry once, the
     // folders among them, and the removal pass, asking only the files, steps each of their
     // folders once (the paths under a folder adjacent), so it is held to the same sum.
     const bound = walk.map(([each]) => pathWork(each, words));
@@ -392,9 +393,9 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
 interface Work { readonly steps: number; readonly bytes: number }
 
 /**
- * A path's work in the automaton's bound (R7's, the review's): its name, then its `/` and
+ * A path's work in the automaton's bound: its name, then its `/` and
  * segment, each byte `words` word steps and an index byte; and Aho–Corasick's fallback from
- * its folder's remembered node (R7-2), at most its folder's bytes, an index byte each.
+ * its folder's remembered node, at most its folder's bytes, an index byte each.
  * `folder` false: a path whose folder the walk has already stepped, its own segment alone.
  */
 function pathWork(path: string, words: number, folder = true): Work {
@@ -781,7 +782,7 @@ describe("what it remembers of a tree, and what that buys", () => {
         }
       }
     }
-    // The review's bound a path (`pathWork`): its name and `/` and segment, at ⌈S/32⌉ words a
+    // The bound a path (`pathWork`): its name and `/` and segment, at ⌈S/32⌉ words a
     // step, none of its folder; a folder twice (the walk's entry, and once more as the folder
     // of the paths under it).
     const bound = entries.flatMap(([path, isDir]) =>

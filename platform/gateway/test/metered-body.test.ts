@@ -1,11 +1,11 @@
 /**
- * A metered call's body as the gateway holds it once (egress shape research): the one
- * parse's keys spelled only one way (`aliased`), the clamp made in place, and the call's
- * weight.
+ * A metered call's body as the gateway holds it once: the clamp made in place, and the call's
+ * weight. That the one parse's keys are spelled only one way (`aliased`) is the contract's
+ * guard (`contract/guards/api-rules.test.ts`).
  */
 import { describe, expect, it } from "vitest";
 
-import { aliased, apiRules, supportedApis } from "../../contract/src/api-rules";
+import { apiRules, supportedApis } from "../../contract/src/api-rules";
 import { valueAtPath } from "../../contract/src/checks";
 import type { Meter } from "../../contract/src/egress-scope";
 import {
@@ -14,59 +14,6 @@ import {
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { clamped } from "../src/meter";
 import { UNIT_BYTES } from "../../contract/src/slots";
-
-describe("a key the rules read, spelled another way (egress shape research §4)", () => {
-  it("is refused at every level the rules read: Google's snake_case, any case-folded alias",
-     () => {
-    const google = apiRules("google-generative-ai")!;
-    for (const body of [{ generation_config: { max_output_tokens: 99_999 } },
-                        { generationConfig: { max_output_tokens: 99_999 } },
-                        { generationConfig: { candidate_count: 4 } },
-                        { generationConfig: { response_modalities: ["AUDIO"] } },
-                        { GenerationConfig: {} }]) {
-      expect(aliased(google, body)).toBe(true);
-    }
-    // A path-named model (Google's) is never also named in the body, in any spelling.
-    for (const body of [{ model: "models/dearer", contents: [] }, { Model: "x" },
-                        { "mod\u0435l": "x" }]) {
-      expect(aliased(google, body)).toBe(true);
-    }
-    const completions = apiRules("openai-completions")!;
-    // A key past ASCII at a read level: Go folds U+017F to s and the Kelvin sign to k, and no
-    // provider's schema has one.
-    for (const body of [{ model: "m", max_tokens: 10, "max_token\u017f": 999_999 },
-                        { model: "m", "max_completion_token\u017f": 999_999 },
-                        { model: "m", "\u017fervice_tier": "priority" },
-                        { model: "m", stream: true, "\u017ftream_options": {} },
-                        { model: "m", "tool\u017f": [{ type: "browser_search" }] },
-                        { model: "m", "\u212aey": 1 },
-                        { model: "m", tools: [{ "typ\u0435": "browser_search" }] }]) {
-      expect(aliased(completions, body)).toBe(true);
-    }
-    for (const body of [{ model: "m", MAX_TOKENS: 999_999 }, { model: "m", Model: "other" },
-                        { model: "m", maxCompletionTokens: 9 }, { model: "m", N: 3 },
-                        { model: "m", streamOptions: { include_usage: false } },
-                        { model: "m", stream_options: { includeUsage: false } },
-                        { model: "m", tools: [{ type: "function", Type: "browser_search" }] },
-                        { model: "m", Service_Tier: "flex" }]) {
-      expect(aliased(completions, body)).toBe(true);
-    }
-  });
-
-  it("lets every body pi-ai and the engines send through, and keys the rules never read", () => {
-    expect(aliased(apiRules("google-generative-ai")!, {
-      contents: [{ role: "user", parts: [{ text: "hi" }] }],
-      generationConfig: { maxOutputTokens: 10, temperature: 0.2, thinking_config: {} },
-      tools: [{ functionDeclarations: [] }], system_instruction: {} })).toBe(false);
-    expect(aliased(apiRules("anthropic-messages")!, {
-      model: "m", max_tokens: 10, stream: true, system: "s", messages: [],
-      tools: [{ name: "f", input_schema: {} }], metadata: { user_id: "u" } })).toBe(false);
-    expect(aliased(apiRules("openai-responses")!, {
-      model: "m", input: "hi", max_output_tokens: 10, service_tier: "auto",
-      tools: [{ type: "function", name: "f" }] })).toBe(false);
-    expect(aliased(apiRules("openai-completions")!, "not an object")).toBe(false);
-  });
-});
 
 describe("the clamp in place", () => {
   it("clamps the parse itself, never a copy, on every API", () => {

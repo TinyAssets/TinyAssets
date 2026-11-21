@@ -1,9 +1,8 @@
 /**
- * Archived mail read back (slice STORE item 2, phase 1): a reply naming an archived parent;
- * the chain read reaching archived mail by the seq its id carries, paged to one answer each,
- * whole while the lane moves or merges under it; and export version 3 shipping the segments
- * as they are, replayed exactly across a move. Each owner runs production's ceilings
- * (`archive-support.ts`).
+ * Archived mail read back: a reply naming an archived parent; the chain read reaching archived mail
+ * by the seq its id carries, paged to one answer each, whole while the lane moves or merges under
+ * it; and export version 3 shipping the segments as they are, replayed exactly across a move. Each
+ * owner runs production's ceilings (`archive-support.ts`).
  */
 import { createHash } from "node:crypto";
 
@@ -179,7 +178,7 @@ describe("the archive lane", () => {
       body_message_id: second.message_id } as never))).message).toMatch(/^message_changed/);
   });
 
-  it("finds a chain's mail that the lane moves between its fences and its hot unit (N9)",
+  it("finds a chain's mail that the lane moves between its fences and its hot unit",
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
@@ -240,7 +239,7 @@ describe("the archive lane", () => {
   });
 
   it("reads a still chain while stragglers merge into its segment, replacing it, never " +
-     "failing inside (N10)", { tags: ["large"] }, async () => {
+     "failing inside", { tags: ["large"] }, async () => {
     const r = await seeded(30);
     const muse = await r.register(MUSE);
     const eve = await r.register(EVE, "Eve");
@@ -355,7 +354,7 @@ describe("the export, version 3", () => {
   });
 });
 
-describe("an export across a move (review H2)", () => {
+describe("an export across a move", () => {
   it("replays exactly the owner at E by v3's reading: segments' rows after the log",
      async () => {
     const r = await rig();

@@ -3,7 +3,8 @@
  * `docs/decisions/untangle-2026-11-wave-1.md` A1): the `SANDBOX` interface the owner's object
  * binds (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3), and the values that cross it.
  * The sandbox Worker implements it (`sandbox/src/index.ts`) and the owner's object calls it
- * (`owner/src/sandbox.ts`, which says what each call does), so neither imports the other's source.
+ * (`owner/src/sandbox.ts`, which says what each call does), so neither imports the other's
+ * source.
  *
  * - a run's start (`SandboxStart`) and a vendor sign-in's (`SandboxSignin`), each answered
  *   `Started`; the network the start that opens a lease configures (`NetworkPlan`, made by
@@ -38,9 +39,10 @@ export interface Unexpressed {
 }
 
 /**
- * What the sandbox slice sends. The egress generation it was made under is in the
- * document's door transform alone (`generationOf`), the header E2B stamps and the door
- * admits by.
+ * The network the owner's object makes (`owner/src/network.ts`) for a start that opens a
+ * lease, a sign-in's or a run's, and for a re-apply. The egress generation it was made under
+ * is in the document's door transform alone (`generationOf`), the header E2B stamps and the
+ * door admits by.
  */
 export interface NetworkPlan {
   readonly network: NetworkDocument;
@@ -77,7 +79,7 @@ export interface SandboxStart {
   readonly unattended: boolean;
   /**
    * Whose sandbox the run runs in: the owner's own work's (`owner`), or one outside
-   * client's id. One sandbox an authority (slice R's review H-1): runs of different
+   * client's id. One sandbox an authority: runs of different
    * authority never share a VM, and a client's sandbox syncs only what that client may.
    */
   readonly authority: string;
@@ -100,16 +102,16 @@ export interface SandboxStart {
   readonly hosts: readonly string[];
   readonly config: RunConfig;
   /**
+   * Whose sandbox this is, sealed for E2B's metadata (`sealRoute`): E2B echoes it on its
+   * signed lifecycle events, which the doors open to reach this owner's object.
+   */
+  readonly route: string;
+  /**
    * The run's MCP door (the record's `{mcp_url}`, carrying the run's own secret), its event
    * door and the sign-in door (both the runner's, by its secret). A record whose MCP
    * template carries `{run_secret}` (a header, `x-ta-run`) takes `mcp_bare` as its
    * `{mcp_url}`, the secret in the header and out of the URL.
    */
-  /**
-   * Whose sandbox this is, sealed for E2B's metadata (`sealRoute`, slice P): E2B echoes it on
-   * its signed lifecycle events, which the doors open to reach this owner's object.
-   */
-  readonly route: string;
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
 }
@@ -139,12 +141,12 @@ export type Started = { readonly started: true }
   | { readonly started: false; readonly code: StartCode };
 
 /**
- * The vendor's own sign-in started in a sandbox (slice SIGNIN; `owner/src/signins.ts`), or
- * its sign-out: the record's `cli.login` run there by the runner as a user of its own
- * (`ta-runner login-launch`), under the sandbox's lease, which a start that opened it
- * configures (`tokens`, `network`) as a run's would. `region` is the owner's choice among
- * the record's `cli.regions` (its hosts in `hosts`), `urls.events` the sign-in's own event door
- * and `urls.signin` the presence report's.
+ * The vendor's own sign-in started in a sandbox (`owner/src/signins.ts`), or its sign-out:
+ * the record's `cli.login` run there by the runner as a user of its own (`ta-runner
+ * login-launch`), under the sandbox's lease, which a start that opened it configures
+ * (`tokens`, `network`) as a run's would. `region` is the owner's choice among the record's
+ * `cli.regions` (its hosts in `hosts`), `urls.events` the sign-in's own event door and
+ * `urls.signin` the presence report's.
  */
 export interface SandboxSignin {
   readonly id: string;

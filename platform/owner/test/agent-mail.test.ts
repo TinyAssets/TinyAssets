@@ -1,13 +1,12 @@
 /**
- * The owner's own agents as ledger identities (slice ID), in workerd, with the recording
- * sandbox: each `agent.json` an identity that follows its file, mail to one starting its run
- * through slice R's admission (its conversation the thread's, its input the mail, attended
- * only when a person sent it, its result the reply to a person's or client's mail, its
- * authority the sender's), mail past the tier waiting its turn, a revoked sender's mail
- * starting nothing, a run reading no mailbox, two agents taking turns only by deliberate
- * posts, the owner's view of their chain, and what bounds agents that mail each other: the
- * tier and the owner's own limits, never a cap of the platform's. The review's attack tests
- * (H1, H2, H3, M1, M2) are here as the fixed behaviour.
+ * The owner's own agents as ledger identities, in workerd, with the recording sandbox: each
+ * `agent.json` an identity that follows its file, mail to one starting its run through the runs'
+ * admission (its conversation the thread's, its input the mail, attended only when a person sent
+ * it, its result the reply to a person's or client's mail, its authority the sender's), mail past
+ * the tier waiting its turn, a revoked sender's mail starting nothing, a run reading no mailbox,
+ * two agents taking turns only by deliberate posts, the owner's view of their chain, and what
+ * bounds agents that mail each other: the tier and the owner's own limits, never a cap of the
+ * platform's.
  */
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -334,7 +333,7 @@ describe("mail to an agent", () => {
   });
 
   it("waits on through a full slot pool: a long mail's waiting run, its body's read refused " +
-     "busy at its turn, keeps waiting and starts once the pool frees (review F1)", async () => {
+     "busy at its turn, keeps waiting and starts once the pool frees", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const main = await identity(r, "main");
@@ -541,7 +540,7 @@ describe("mail to an agent", () => {
   });
 });
 
-describe("a run and the mailbox (review H1)", () => {
+describe("a run and the mailbox", () => {
   it("reads and acks none: a client's run never sees the owner's mail, and queued mail " +
      "stays the lane's", async () => {
     const r = await gated();
@@ -557,7 +556,7 @@ describe("a run and the mailbox (review H1)", () => {
       { universe: "alpha", agent: "main", capability: "converse" },
       { universe: "alpha", agent: "main", capability: "read_graph" },
       { universe: "alpha", agent: "main", capability: "write_graph" }] });
-    // It is shown only the owner's agents its grant covers (review L2).
+    // It is shown only the owner's agents its grant covers.
     expect((await r.stub.outsideAgents(client)).owner_agents.map((a) => a.agent))
       .toEqual(["main"]);
     await r.stub.roomPost(client, { room_id: `dm:${agent}+${main.agent_id}`,
@@ -572,7 +571,7 @@ describe("a run and the mailbox (review H1)", () => {
       .toBe(RUN_NO_MAILBOX);
     expect((await failure(() => r.stub.mailboxAck(asRun, { through: 1 }))).message)
       .toBe(RUN_NO_MAILBOX);
-    // Nor its digest, whose mail part is a mailbox read (slice M on ID).
+    // Nor its digest, whose mail part is a mailbox read.
     expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10, after: 0 }))).message)
       .toBe(RUN_NO_MAILBOX);
     // A malformed request is refused for its fields first, then for the run, as each of these
@@ -598,7 +597,7 @@ describe("a run and the mailbox (review H1)", () => {
   });
 });
 
-describe("attendance (review H2)", () => {
+describe("attendance", () => {
   it("is the mail's: the owner's own mail runs on a source that runs attended only, another " +
      "agent's mail does not", async () => {
     const r = await gated();
@@ -634,7 +633,7 @@ describe("attendance (review H2)", () => {
   });
 });
 
-describe("agents mailing each other (review H3, M1)", () => {
+describe("agents mailing each other", () => {
   it("take turns only by deliberate posts: a result wakes no agent, and the owner sees the " +
      "chain", async () => {
     const r = await gated();
@@ -712,7 +711,7 @@ describe("agents mailing each other (review H3, M1)", () => {
   });
 
   it("tell a woken run who wrote, the room and the message, all it needs to answer, and " +
-     "nothing past its own mail (review N1)", async () => {
+     "nothing past its own mail", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "alice", SIGNED_IN);
     await defineAgent(r.stub, r.bind(), "bob", SIGNED_IN);
@@ -839,7 +838,7 @@ describe("agents mailing each other (review H3, M1)", () => {
   });
 });
 
-describe("a mail run's input (review N4)", () => {
+describe("a mail run's input", () => {
   it("fences the body by its message's id, so a forged envelope, even a fenced one, sits " +
      "wholly inside the real fence", () => {
     const fake = "msg_00000000000000000000000000000000";
@@ -907,7 +906,7 @@ describe("a retired agent's mail", () => {
   });
 });
 
-describe("a sender gone (review M2)", () => {
+describe("a sender gone", () => {
   it("fails its mail no run took: a retired agent's, and a disabled outside agent's",
      async () => {
     const r = await rig();
@@ -933,7 +932,7 @@ describe("a sender gone (review M2)", () => {
   });
 });
 
-describe("the owner-mail schedules slice R stood in with", () => {
+describe("the owner-mail schedules", () => {
   it("are gone: no run on the owner's mail, no schedule held to it", async () => {
     const r = await gated();
     for (const extra of [{ on_mail: true }, { cron: "0 * * * *", if_mail: true }]) {

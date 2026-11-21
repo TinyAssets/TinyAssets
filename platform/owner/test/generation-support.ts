@@ -1,5 +1,5 @@
 /**
- * Generations under test (slice P; `backup.ts`, `changelog.ts`): an owner with a session,
+ * Generations under test (`backup.ts`, `changelog.ts`): an owner with a session,
  * the stream replayed last line per key, the owner's rows as they stand, a digest of either
  * to compare, and a harness that runs a generation in the owner's own storage with a writer
  * at every outside call (and, if asked, after every unit), failing one outside call if asked,

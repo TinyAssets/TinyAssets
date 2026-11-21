@@ -1,10 +1,9 @@
 /**
- * Outside-client authority (tasks 5, A2; kept by ADR-034 as a run's authority): the
- * owner's authority holding everything and none nothing; a client's
- * stamp holding only while its grant stands at the stamped generation; a scoped grant
- * holding each capability where the work acts; the owner's own capabilities never a
- * client's; the admission refusing every check; and the grants' own reads, over the
- * owner's real grant rows, a revoke ending what the stamp could do.
+ * Outside-client authority (kept by ADR-034 as a run's authority): the owner's authority holding
+ * everything and none nothing; a client's stamp holding only while its grant stands at the stamped
+ * generation; a scoped grant holding each capability where the work acts; the owner's own
+ * capabilities never a client's; the admission refusing every check; and the grants' own reads,
+ * over the owner's real grant rows, a revoke ending what the stamp could do.
  */
 import { describe, expect, it } from "vitest";
 

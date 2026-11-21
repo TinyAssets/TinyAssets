@@ -75,8 +75,8 @@ describe("the one storage number", () => {
     await r.stub.fileWrite(r.bind(null), { path: "/workspace/n.txt", expected_etag: null,
                                            content: new Uint8Array(100) });
     const after = await r.stub.storageUsage(r.bind(null));
-    // Mail counts at its real bytes (slice STORE item 2, D2): its rows' lines, its body in
-    // them, as its archive segment will hold it.
+    // Mail counts at its real bytes: its rows' lines, its body in them, as its archive segment will
+    // hold it.
     const [mail] = await sqlIn(r.stub, "SELECT line_bytes, body_bytes FROM ledger_messages");
     expect(mail!["body_bytes"]).toBe(11);
     const messages = mail!["line_bytes"] as number;
@@ -89,8 +89,8 @@ describe("the one storage number", () => {
       .toBe("only the owner may read its storage");
   });
 
-  it("refuses at the tier's figure, writing nothing and letting no history go (ADR-036, " +
-     "untangle F1)", async () => {
+  it("refuses at the tier's figure, writing nothing and letting no history go (ADR-036)",
+     async () => {
     const r = await rig();
     const figure = SEED.bytes + 8000;
     const small = r.bind(null, { tiers: tiers(figure) });
@@ -117,7 +117,7 @@ describe("the one storage number", () => {
   });
 
   it("lets deleted bytes go at once, and keeps no more garbage than the tier's figure, " +
-     "oldest collected first (review H1)", async () => {
+     "oldest collected first", async () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 3);
@@ -165,8 +165,8 @@ describe("the one storage number", () => {
       .toEqual({ kept_bytes: figure, kept_up_to_days: 30 });
   });
 
-  it("keeps the files lane off its own alarm while an early delete waits for its retry " +
-     "(review N2)", async () => {
+  it("keeps the files lane off its own alarm while an early delete waits for its retry",
+     async () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const roomy = r.bind(null, { tiers: tiers(SEED.bytes + 4 * unit) });
@@ -194,7 +194,7 @@ describe("the one storage number", () => {
     expect(await laneAt(r.stub, "files")).toBeGreaterThanOrEqual(retry);
   });
 
-  it("never collects early a chunk the newest manifest names (review N3)", async () => {
+  it("never collects early a chunk the newest manifest names", async () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 1);
@@ -291,8 +291,8 @@ describe("the one storage number", () => {
     expect((await ownChunks(r)).map((row) => row["state"])).toEqual(garbage(figure / unit));
   });
 
-  it("stops protecting garbage by a manifest past MANIFEST_PROTECT_S, no recovery point " +
-     "(review N3)", async () => {
+  it("stops protecting garbage by a manifest past MANIFEST_PROTECT_S, no recovery point",
+     async () => {
     const r = await rig();
     const unit = INLINE_BYTES + 1000;
     const figure = wholeFiles(unit, 1);
