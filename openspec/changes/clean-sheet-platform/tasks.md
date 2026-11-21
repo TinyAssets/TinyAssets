@@ -130,8 +130,8 @@ end.
   - Gemini loading its `{system}` settings on a run past the sign-in; Kimi's skills, read once
     signed in;
   - onboarding writes `SOUL.md` and `USER.md`; "remember X" lands in knowledge and is recalled
-    on another engine; a brief the agent made posts to the owner's room with main; a main agent finds the
-    knowledge with `search` and `fetch` (ChatGPT deep research, `ui-test`);
+    on another engine; a brief the agent made posts to the owner's room with main; a main
+    agent finds the knowledge with `search` and `fetch` (ChatGPT deep research, `ui-test`);
   - a wake-up pasted for a really registered main agent;
   - a sandbox-down drill.
 
@@ -996,8 +996,9 @@ Each needs its research first (Fact 14; list3 P49). The data shapes among them a
 real data, in step 5 (d3 §P).
 
 - [ ] S4, rooms and status: group rooms of three or more (the owner, main agents and TinyAssets
-  agents, one post waking each member it addresses), on step 5's rooms table; `inbox_digest`
-  over the owner's and outside agents' mailboxes.
+  agents, one post waking each member it addresses), on step 5's rooms table, re-deriving
+  `maxRooms` and the one-recipient-a-message bound (`shapes.md`); `inbox_digest` over the
+  owner's and outside agents' mailboxes.
 - [ ] S6, the app manifest and agent players, with the app's view of mail-started runs and
   agents' chains.
 - [ ] S7, the device runner; S8, real-time tiers.

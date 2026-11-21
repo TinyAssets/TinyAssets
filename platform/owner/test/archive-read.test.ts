@@ -28,10 +28,6 @@ import { digest, generate, replay } from "./generation-support";
 import { MUSE, rig, dm } from "./ledger-support";
 import { drainDue, failure, gateFor, spaceOf, storesOn } from "./support";
 
-/** The recipient a dm with an outside agent goes to from the owner: that agent. */
-const MUSE_ID = (rows: Record<string, Record<string, unknown>>) =>
-  (rows["ledger_messages"]!["room_id"] as string).slice(3);
-
 describe("the archive lane", () => {
   it("lets a reply name an archived parent, and the chain reads it with the reply",
      { tags: ["large"] }, async () => {
@@ -349,7 +345,7 @@ describe("the export, version 3", () => {
       const id = rows["ledger_messages"]!["message_id"] as string;
       expect(rows["message_bodies"]!["body"] === bodies.get(id)).toBe(true);
       expect(rows["message_bodies"]).toMatchObject({ content_id: null });
-      expect(rows["ledger_recipients"]).toMatchObject({ agent_id: MUSE_ID(rows), unacked: 0 });
+      expect(rows["ledger_recipients"]).toMatchObject({ agent_id: muse, unacked: 0 });
     }
   });
 });

@@ -1450,11 +1450,11 @@ export class Ledger {
 
   /** The id an actor posts and reads as, or refused: an outside identity not one agent. */
   #self(actor: Actor): string {
-    const self = this.#identity(actor);
-    if (self === null) {
+    const me = this.#identity(actor);
+    if (me === null) {
       throw new Refusal("refused", "this outside identity is not one enabled agent");
     }
-    return self;
+    return me;
   }
 
   /**
@@ -1492,17 +1492,17 @@ export class Ledger {
 
   /** The pair `room` would be, the actor one of its two, or refused: no such pair of its. */
   #pairOf(room: string, actor: Actor): [string, string] {
-    const self = this.#self(actor);
+    const me = this.#self(actor);
     const partners = this.#sql.exec<{ agent_id: string }>(
       "SELECT agent_id FROM native_agents UNION ALL SELECT agent_id FROM outside_agents " +
-        "WHERE ?", OUTSIDE_ID.test(self) ? 0 : 1).toArray().map((row) => row.agent_id);
+        "WHERE ?", OUTSIDE_ID.test(me) ? 0 : 1).toArray().map((row) => row.agent_id);
     // A pair has one room: one whose room has another id (an old room's) is not this one.
-    const partner = [OWNER, ...partners].find((id) => id !== self
-      && pairRoom(self, id) === room && this.roomOf(self, id) === room);
+    const partner = [OWNER, ...partners].find((id) => id !== me
+      && pairRoom(me, id) === room && this.roomOf(me, id) === room);
     if (partner === undefined) {
       throw new Refusal("refused", "room is not an enabled agent's dm");
     }
-    return [self, partner];
+    return [me, partner];
   }
 
   /** A room's member by its id: the owner, an enabled outside agent, or a live own agent. */
@@ -1572,9 +1572,9 @@ export class Ledger {
    */
   withRooms<A extends { readonly agent_id: string }>(actor: Actor, agents: readonly A[]):
       Roomed<A>[] {
-    const self = this.#identity(actor);
-    return agents.map((agent) => ({ ...agent, room_id: self === null ? null
-      : this.roomOf(agent.agent_id === self ? OWNER : self, agent.agent_id) }));
+    const me = this.#identity(actor);
+    return agents.map((agent) => ({ ...agent, room_id: me === null ? null
+      : this.roomOf(agent.agent_id === me ? OWNER : me, agent.agent_id) }));
   }
 
   /** The member an actor is in a room, or refused: it posts only in its own rooms. */

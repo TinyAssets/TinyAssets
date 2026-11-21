@@ -590,8 +590,8 @@ describe("the ledger's binding", () => {
     expect(moved.receipts).toEqual([]);
   });
 
-  it("makes each hot room's rows under its old id, and a pending purge its room with the " +
-     "owner (migration 19)", async () => {
+  it("makes each hot room's rows under its old id, and a pending purge its rooms with the " +
+     "owner and the owner's own agents (migration 19)", async () => {
     const rooms = MIGRATIONS.findIndex((each) => each.includes("CREATE TABLE rooms"));
     const made = await runInDurableObject((await ownerObject()).stub,
                                           (_instance: OwnerDO, state) => {
@@ -611,6 +611,8 @@ describe("the ledger's binding", () => {
                    "'', ?, 'owner', 'owner', ?, ?, null, ?, 0, ?, 1, 1)", seq, `m${seq}`, room,
                  `c${seq}`, "0".repeat(64), `m${seq}`, seq);
       }
+      sql.exec("INSERT INTO native_agents (agent_id, agent, created_at) VALUES (?, 'main', 1)",
+               own);
       sql.exec("INSERT INTO archive_purges (agent_id, at) VALUES ('agent_ffffffffffffffff', 1)");
       migrate(state.storage, MIGRATIONS);
       return {
@@ -618,7 +620,7 @@ describe("the ledger's binding", () => {
           .toArray(),
         members: sql.exec("SELECT room_id, member_id FROM room_members " +
                           "ORDER BY room_id, member_id").toArray(),
-        purges: sql.exec("SELECT room_id FROM archive_purges").toArray(),
+        purges: sql.exec("SELECT room_id FROM archive_purges ORDER BY room_id").toArray(),
       };
     });
     const [outside, own] = ["agent_0123456789abcdef", "ta_0123456789abcdef"];
@@ -633,7 +635,8 @@ describe("the ledger's binding", () => {
       { room_id: `dm:${outside}+${own}`, member_id: own },
       { room_id: `dm:${own}`, member_id: "owner" },
       { room_id: `dm:${own}`, member_id: own }]);
-    expect(made.purges).toEqual([{ room_id: "dm:agent_ffffffffffffffff" }]);
+    expect(made.purges).toEqual([{ room_id: "dm:agent_ffffffffffffffff" },
+                                 { room_id: `dm:agent_ffffffffffffffff+${own}` }]);
   });
 });
 

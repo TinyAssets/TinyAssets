@@ -2425,7 +2425,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // old ids, each `dm:<a>` (the owner and `a`) or `dm:<a>+<b>` read here once into its sorted
   // members. An agent's mail to the owner counts in its share by its `owner` recipient row. A
   // fence's bloom holds its records' room ids, every older one all ones (it may hold any room);
-  // a purge names a deleted agent's room, a pending one its room with the owner. It reads other
+  // a purge names a deleted agent's room, a pending one each room it may have had (with the
+  // owner, and with each of the owner's own agents). It reads other
   // tables' rows, so no generation from before it is brought forward (`FORWARD`).
   Object.freeze([
     // An id is `rm_` and 32 hex, or an old room's `dm:` and at most two ids and a `+`; a
@@ -2479,7 +2480,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "DROP TRIGGER archive_segments_logged_update",
     "DROP TRIGGER archive_segments_logged_delete",
     "ALTER TABLE archive_segments RENAME COLUMN members TO rooms",
-    "UPDATE archive_segments SET rooms = '" + "f".repeat(128) + "'",
+    "UPDATE archive_segments SET rooms = " +
+      "'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" +
+      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
     "CREATE TRIGGER archive_segments_kept BEFORE UPDATE ON archive_segments " +
       "BEGIN SELECT RAISE(ABORT, 'a segment never changes; a rewrite makes a new one'); END",
     "ALTER TABLE archive_purges RENAME TO archive_agent_purges",
@@ -2488,6 +2491,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "next_segment INTEGER NOT NULL DEFAULT 0 CHECK (next_segment >= 0))",
     "INSERT INTO archive_purges (room_id, at, next_segment) " +
       "SELECT 'dm:' || agent_id, at, next_segment FROM archive_agent_purges",
+    // A deleted (outside) agent's rooms with the owner's own agents: `agent_` sorts first.
+    "INSERT INTO archive_purges (room_id, at, next_segment) SELECT 'dm:' || p.agent_id || " +
+      "'+' || n.agent_id, p.at, p.next_segment FROM archive_agent_purges p, native_agents n",
     "DROP TABLE archive_agent_purges",
     "CREATE TRIGGER rooms_logged_insert AFTER INSERT ON rooms WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'rooms', 'row', json_object('room_id', NEW.room_id, 'kind', NEW.kind, 'members_key', NEW.members_key, 'created_at', NEW.created_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +

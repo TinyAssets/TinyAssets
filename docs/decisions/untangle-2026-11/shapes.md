@@ -104,13 +104,19 @@ The research's design (`datashapes_research.md` §1.4), with one gap it left clo
    the caller's own entry (an outside agent's or a run's own); null for an outside identity
    that is not one enabled agent, which posts nowhere. The skills and `app.js` use it; nothing
    tells an agent how an id is made.
+8. **A pending purge carries every room its agent may have had** (review): an outside agent
+   deleted before migration 19 had rooms with the owner and with each of the owner's own
+   agents, so the migration names each (`dm:<it>`, `dm:<it>+<own>`); carrying only the first
+   left the others' archived mail in the export and the segments.
+
+S4's group rooms re-derive `maxRooms` and the one-recipient-a-message bound: carried on S4's
+own `tasks.md` line, which builds them.
 
 ## Owed
 
 - [ ] `ROOM_PREFIX` (`room:`, the app rooms' collection prefix, not a mail room) has one home,
   read by `collections.ts` and `contract/src/wake-kinds.ts`: the contract pass's next part,
   after #5714, which edits that file.
-- [ ] S4's group rooms re-derive `maxRooms` and the one-recipient-a-message bound (S4, step 20).
 - [ ] `live:` owner migration 19's pin (`node ci/kit/locks.ts pin owner <commit>`), at the
   deploy that ships it.
 - [ ] S1, the stream extraction, on this module once this merges (`untangle/shapes-s1`).
