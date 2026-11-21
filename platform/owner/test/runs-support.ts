@@ -64,12 +64,23 @@ export async function defineAgent(stub: DurableObjectStub<OwnerDO>, owner: Bindi
       await stub.fileMkdir(binding, { path, expected_etag: null });
     }
   }
-  const path = `/workspace/agents/${agent}/agent.json`;
+  await ownerFile(stub, binding, `/workspace/agents/${agent}/agent.json`, JSON.stringify(file));
+}
+
+/** The owner's file at `path` written as `text`, or removed (null), by the owner. */
+export async function ownerFile(stub: DurableObjectStub<OwnerDO>, owner: Binding, path: string,
+                                text: string | null): Promise<void> {
+  const binding = await inSession(stub, owner);
   const { entry } = await stub.fileStat(binding, { path });
-  const written = await stub.fileWrite(binding, { path, expected_etag: entry?.etag ?? null,
-                                                  content: bytes(JSON.stringify(file)) });
+  const etag = entry?.etag ?? null;
+  if (text === null) {
+    await stub.fileRemove(binding, { path, expected_etag: etag, recursive: false });
+    return;
+  }
+  const written = await stub.fileWrite(binding, { path, expected_etag: etag,
+                                                  content: bytes(text) });
   if (!("entry" in written)) {
-    throw new Error("agent.json was not written");
+    throw new Error(`${path} was not written`);
   }
 }
 

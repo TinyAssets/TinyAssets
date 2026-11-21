@@ -86,6 +86,7 @@ import type { Call, Door, DoorUnits } from "./door";
 import type { Egress } from "./egress";
 import type { Doorbell } from "./wakes";
 import { clock, clockMs, inTime } from "./clock";
+import type { Usable } from "./auto";
 
 interface ConnectionLimits {
   readonly maxConnections: number;
@@ -153,17 +154,6 @@ export interface Prepared {
   readonly expires_at: number;
   readonly flow?: { readonly state: string; readonly code_challenge: string;
                     readonly code_challenge_method: "S256"; readonly expires_at: number };
-}
-
-/** A connection a model call may use: its models, as `getModels` lists them. */
-export interface Usable {
-  readonly connection: string;
-  /** Its source record, which its spend is counted and capped under. */
-  readonly source: string;
-  readonly provider: string;
-  readonly display_name: string;
-  readonly created_at: number;
-  readonly models: readonly ModelRecord[];
 }
 
 /** The credential a call carries in its envelope. */

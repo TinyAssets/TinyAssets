@@ -1,79 +1,94 @@
 /**
- * `auto`, the owner's strongest connected model (Direction 4; agent research §2.2), as
- * the object ranks its connections: the runs slice (R) picks a run's source from it,
- * ranking the sources that have an engine (ADR-034 decision 4).
+ * `auto`, the owner's strongest connected source (Direction 4; agent research §2.2): the
+ * runs slice (R) picks a run's source from this order (ADR-034 decision 4), by the ranking it
+ * is handed (`sources/src/ranking.ts`: the platform's, or the owner's own file).
  *
- * - **Ranking** is data (`model-ranking.json`): the earliest entry a model matches ranks it,
- *   newer ids first within an entry; a model no entry matches comes after, by its catalog
- *   output price, highest first; then the older connection, then the id.
- * - With no connected model, nothing ranks: there is no platform-paid default (a founder
+ * - A candidate is a key's model on one of the owner's connections, or a plan: an engine
+ *   signed in, ranked by the model its record says a run on it is given (`cli.login.model`).
+ * - The order: by tier; within a tier, a plan before a key (the owner pays for the plan
+ *   already, so a plan in the top tier wins over every metered key); then by entry, newer ids
+ *   first within an entry. A model no entry matches is unknown and comes after every tier,
+ *   ordered the same way, its keys by their catalog output price, highest first: the one
+ *   order an unranked model has, and `auto` tells the owner when it runs one (`runs.ts`).
+ *   Then the older connection (or sign-in), then the connection, then the model id.
+ * - With no connected source, nothing ranks: there is no platform-paid default (a founder
  *   call).
  */
 import type { ModelRecord } from "../../contract/src/model-record";
-import type { Usable } from "./connections";
-import ranking from "./model-ranking.json" with { type: "json" };
+import type { Place, Ranking } from "../../sources/src/ranking";
 
-/** One connected model `auto` may route to. */
-export interface Candidate {
+/**
+ * A connection a model call may use, as `Connections.usable` lists it: its models, as
+ * `getModels` lists them. Declared here, by what ranks it, so the runs read it without
+ * reaching the connections' module (the policy-boundary guard).
+ */
+export interface Usable {
   readonly connection: string;
+  /** Its source record, which its spend is counted and capped under. */
   readonly source: string;
   readonly provider: string;
   readonly display_name: string;
   readonly created_at: number;
-  readonly model: ModelRecord;
+  readonly models: readonly ModelRecord[];
 }
 
-interface Rank {
+/** An engine signed in, as `auto` ranks it. */
+export interface Plan {
+  readonly engine: string;
+  /** The provider its plan covers (`planProvider`). */
+  readonly provider: string;
+  /** The model its record says a run on it is given (`cli.login.model`). */
+  readonly model: string;
+  /** When its sign-in last changed: its age among the candidates. */
+  readonly since: number;
+}
+
+/** One source `auto` may route to. */
+export interface Candidate {
+  /** A key's connection, or null for a plan. */
+  readonly connection: string | null;
+  /** A key's source record, or a plan's engine. */
+  readonly source: string;
   readonly provider: string;
   readonly model: string;
+  /** Where the ranking places its model, or null when no entry does (unknown). */
+  readonly place: Place | null;
 }
 
-/** The ranking's entries, checked: a malformed file ranks nothing, loudly. */
-function ranks(): readonly Rank[] {
-  const file = ranking as { version?: unknown; ranks?: unknown };
-  const entries = file.ranks;
-  if (file.version !== 1 || !Array.isArray(entries)
-      || !entries.every((entry: unknown) => typeof entry === "object" && entry !== null
-        && typeof (entry as Rank).provider === "string"
-        && typeof (entry as Rank).model === "string")) {
-    throw new Error("the model ranking file is malformed");
-  }
-  return entries as readonly Rank[];
+interface Sorted {
+  readonly candidate: Candidate;
+  /** A key's catalog output price; a plan has none. */
+  readonly price: number;
+  readonly since: number;
 }
 
-/** A pattern whose `*` matches any run of characters, and nothing else is special. */
-function glob(pattern: string, value: string): boolean {
-  const source = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-  return new RegExp(`^${source}$`).test(value);
+function text(a: string | null, b: string | null): number {
+  return (a ?? "") < (b ?? "") ? -1 : (a ?? "") > (b ?? "") ? 1 : 0;
 }
 
-/** The index of the first entry `candidate` matches, or the entries' count for none. */
-export function rankOf(candidate: Pick<Candidate, "provider" | "model">,
-                       entries: readonly Rank[] = ranks()): number {
-  const id = candidate.model.id;
-  const tail = id.slice(id.lastIndexOf("/") + 1);
-  const index = entries.findIndex((entry) =>
-    (entry.provider === "*" || entry.provider === candidate.provider)
-    && (glob(entry.model, id) || glob(entry.model, tail)));
-  return index === -1 ? entries.length : index;
-}
-
-/** Every connected model, strongest first. */
-export function ranked(usable: readonly Usable[]): Candidate[] {
-  const entries = ranks();
-  const all = usable.flatMap((connection) => connection.models.map((model) => ({
-    connection: connection.connection, source: connection.source,
-    provider: connection.provider, display_name: connection.display_name,
-    created_at: connection.created_at, model,
-  })));
-  const keyed = all.map((candidate) => ({ candidate, rank: rankOf(candidate, entries) }));
-  keyed.sort((a, b) => a.rank - b.rank
-    || (a.rank === entries.length ? b.candidate.model.cost.output - a.candidate.model.cost.output
-      : b.candidate.model.id.localeCompare(a.candidate.model.id, "en", { numeric: true }))
-    || a.candidate.created_at - b.candidate.created_at
-    || (a.candidate.connection < b.candidate.connection ? -1
-      : a.candidate.connection > b.candidate.connection ? 1 : 0)
-    || (a.candidate.model.id < b.candidate.model.id ? -1 : 1));
-  return keyed.map(({ candidate }) => candidate);
+/** Every connected key's model and every plan, strongest first. */
+export function ranked(keys: readonly Usable[], plans: readonly Plan[], ranking: Ranking):
+    Candidate[] {
+  const all: Sorted[] = [
+    ...keys.flatMap((connection) => connection.models.map((model) => ({
+      candidate: { connection: connection.connection, source: connection.source,
+                   provider: connection.provider, model: model.id,
+                   place: ranking.place(connection.provider, model.id) },
+      price: model.cost.output, since: connection.created_at }))),
+    ...plans.map((plan) => ({
+      candidate: { connection: null, source: plan.engine, provider: plan.provider,
+                   model: plan.model, place: ranking.place(plan.provider, plan.model) },
+      price: 0, since: plan.since })),
+  ];
+  const tier = (one: Sorted) => one.candidate.place?.tier ?? Number.MAX_SAFE_INTEGER;
+  const entry = (one: Sorted) => one.candidate.place?.entry ?? Number.MAX_SAFE_INTEGER;
+  const keyed = (one: Sorted) => one.candidate.connection === null ? 0 : 1;
+  all.sort((a, b) => tier(a) - tier(b) || keyed(a) - keyed(b) || entry(a) - entry(b)
+    || (a.candidate.place === null ? b.price - a.price
+      : b.candidate.model.localeCompare(a.candidate.model, "en", { numeric: true }))
+    || a.since - b.since
+    || text(a.candidate.connection, b.candidate.connection)
+    || text(a.candidate.source, b.candidate.source)
+    || text(a.candidate.model, b.candidate.model));
+  return all.map(({ candidate }) => candidate);
 }

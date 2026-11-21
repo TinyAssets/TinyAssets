@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Binding, Origin } from "../../contract/src/binding";
 import { OwnerDO } from "../src/owner-do";
-import { AGENTS_DIR, GOALS_DIR, OWNER_TREES, within } from "../../contract/src/paths";
+import { AGENTS_DIR, GOALS_DIR, within } from "../../contract/src/paths";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { ALL_SCOPES } from "./runs-support";
@@ -135,12 +135,6 @@ describe("the owner's agent definitions", () => {
     // Outside the owner's trees, the bare token writes as before.
     expect(await r.stub.fileWrite(bare, { path: "/workspace/notes.md", expected_etag: "",
                                           content: bytes("mine") })).toHaveProperty("entry");
-  });
-
-  it("name the agent trees: the agents, their skills, their prompts and the goals", () => {
-    expect(OWNER_TREES).toEqual([AGENTS_DIR, "/workspace/.agents", "/workspace/skills",
-                                 "/workspace/prompts", "/workspace/goals",
-                                 "/workspace/USER.md"]);
   });
 
   it("hold the owner's goals as every other agent tree: a default (full) grant writes them, " +

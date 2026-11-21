@@ -4,8 +4,10 @@
  * `runs.ts`'s rows and decisions. One `Launcher` an object, which serves Runs its one narrow
  * interface (`RunHost`) and holds:
  *
- * - **a launch** (`launch`): the agent's `agent.json` read whole (`readAgent`), its run admitted
- *   in one unit against the file still at the etag it was read at, then started through the
+ * - **a launch** (`launch`): the agent's `agent.json` read whole (`readAgent`), with the
+ *   ranking its `auto` ranks by (the owner's `/workspace/model-ranking.json`, else the
+ *   platform's), its run admitted in one unit against the file still at the etag it was
+ *   read at, then started through the
  *   sandbox Worker (`SANDBOX`), and what came of it recorded (`running`, `failed` with the
  *   sandbox's code, `unknown` when its answer never came, or `waiting` for a sandbox to free);
  *   a door's bounded wait for its run to settle (`settledWithin`), woken on this instance;
@@ -33,6 +35,7 @@ import type { PolicyDocument } from "../../contract/src/policy-document";
 import { PLACE_BYTES } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
+import { type Ranking, rankingOf, shippedRanking } from "../../sources/src/ranking";
 import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
@@ -47,6 +50,7 @@ import type { OwnerEnv } from "./env";
 import { type Files, type Lease, type SandboxLease } from "./files";
 import { type Delivery, type Ledger, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
+import { RANKING } from "../../contract/src/paths";
 import { clock, inTime } from "./clock";
 import { networkDocument } from "./network";
 import type { Notices } from "./notices";
@@ -54,8 +58,9 @@ import type { Relay } from "./relay";
 import {
   type Ask, type LiveLease, type MailAnswer, mailConversation, NO_SCHEDULE,
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority,
-  type SpendCaps, type UsableSource,
+  type SpendCaps,
 } from "./runs";
+import type { Usable } from "./auto";
 import { startOutcome, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";
@@ -75,6 +80,13 @@ import {
  * taking it again.
  */
 export const NETWORK_RETRY_S = 30;
+
+/** What a run is admitted on (`readAgent`). */
+export interface AgentRead {
+  readonly file: AgentFile;
+  readonly etag: string;
+  readonly ranking: Ranking;
+}
 
 /** The agent's file changed between its read and the admission: the caller tries again. */
 export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";
@@ -119,7 +131,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
   };
   readonly bodies: Pick<Bodies, "begin" | "fetch" | "rereading">;
   readonly connections: {
-    usable(): readonly UsableSource[];
+    usable(): readonly Usable[];
     egressible(): readonly Egressible[];
   };
   readonly egress: Pick<Egress, "end">;
@@ -132,7 +144,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
   };
   readonly ledger: Pick<Ledger, "answer" | "hold" | "mailDue" | "mailFor" | "nextMail" | "post"
     | "release" | "roomOf" | "settled" | "taken" | "undeliverable">;
-  readonly notices: Pick<Notices, "add">;
+  readonly notices: Pick<Notices, "add" | "once">;
   readonly policy: {
     egressGeneration(): number;
     models(): SpendCaps;
@@ -175,7 +187,7 @@ export class Launcher implements RunHost {
     return this.#o.admission.tiers();
   }
 
-  reachable(): readonly UsableSource[] {
+  reachable(): readonly Usable[] {
     const reachable = new Set(this.#o.connections.egressible().map((entry) => entry.connection));
     return this.#o.connections.usable().filter((entry) => reachable.has(entry.connection));
   }
@@ -254,6 +266,10 @@ export class Launcher implements RunHost {
     this.#o.notices.add(type, detail, clock());
   }
 
+  noticeOnce(type: string, detail: string): void {
+    this.#o.notices.once(type, detail, clock());
+  }
+
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
   stop(runs: readonly string[]): void {
     for (const run of runs) {
@@ -287,16 +303,50 @@ export class Launcher implements RunHost {
     }
   }
 
-  /** An agent's `agent.json`, read whole, and the etag it was read at. */
-  async readAgent(agent: string): Promise<{ file: AgentFile; etag: string }> {
+  /**
+   * What a run of `agent` is admitted on: its `agent.json`, read whole, the etag it was read
+   * at, and the ranking its `auto` ranks by: the owner's own file, `RANKING`, whole, else the
+   * platform's. An owner's file that is no ranking refuses the run (`invalid`), never a
+   * silent fall back to the platform's.
+   */
+  async readAgent(agent: string): Promise<AgentRead> {
     const path = agentPath(agent, AGENT_FILES.agent);
+    const read = await this.#whole(path);
+    if (read === null) {
+      throw new Refusal("agent_undefined", AGENT_UNDEFINED);
+    }
+    let text: string;
+    try {
+      text = utf8Decoder("strip").decode(read.bytes);
+    } catch {
+      throw new Refusal("agent_file_invalid", `${path} is not UTF-8 text`);
+    }
+    return { file: agentFile(text), etag: read.etag, ranking: await this.#ranking() };
+  }
+
+  async #ranking(): Promise<Ranking> {
+    const read = await this.#whole(RANKING);
+    if (read === null) {
+      return shippedRanking();
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(utf8Decoder("strip").decode(read.bytes));
+    } catch {
+      throw new Refusal("invalid", `${RANKING} is not JSON text`);
+    }
+    return rankingOf(value, RANKING);
+  }
+
+  /** The owner's file at `path`, read whole, and its etag; null where no file is. */
+  async #whole(path: string): Promise<{ bytes: Uint8Array; etag: string } | null> {
     const content = await this.#o.door(() => {
       const entry = this.#o.files.stat(path);
-      if (entry === null || entry.kind !== "file") {
-        throw new Refusal("agent_undefined", AGENT_UNDEFINED);
-      }
-      return this.#o.files.open(path);
+      return entry === null || entry.kind !== "file" ? null : this.#o.files.open(path);
     });
+    if (content === null) {
+      return null;
+    }
     let bytes = content.inline;
     if (bytes === undefined) {
       const parts = await this.#o.files.fetch((content.chunks ?? []).map(({ sha256 }) =>
@@ -308,13 +358,7 @@ export class Launcher implements RunHost {
         at += part.byteLength;
       }
     }
-    let text: string;
-    try {
-      text = utf8Decoder("strip").decode(bytes);
-    } catch {
-      throw new Refusal("agent_file_invalid", `${path} is not UTF-8 text`);
-    }
-    return { file: agentFile(text), etag: content.entry.etag };
+    return { bytes, etag: content.entry.etag };
   }
 
   /**
@@ -327,7 +371,7 @@ export class Launcher implements RunHost {
    * start). Its id: a run that waits for its conversation's live run is written `waiting`
    * and starts from the lane, its turn come (`waiting`, the run the lane starts).
    */
-  async launch(read: { file: AgentFile; etag: string }, ask: () => Omit<Ask, "file">,
+  async launch(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking">,
                waiting: string | null = null, taken: (run: string) => void = () => {}):
       Promise<string> {
     const { admitted, agent, unattended } = await this.#o.door(() => {
@@ -335,8 +379,9 @@ export class Launcher implements RunHost {
       if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
         throw new Refusal("agent_changed", AGENT_CHANGED);
       }
+      const { file, ranking } = read;
       const done = { agent: made.agent, unattended: made.unattended,
-                     admitted: this.runs.admit({ ...made, file: read.file }, clock(), (chosen) =>
+                     admitted: this.runs.admit({ ...made, file, ranking }, clock(), (chosen) =>
                        this.#runConfig({ run: chosen.run, secret: chosen.secret,
                                          engine: chosen.engine, credential: chosen.credential,
                                          ...(chosen.connection === null ? {}

@@ -46,17 +46,22 @@ export const GOALS_DIR = "/workspace/goals";
 /** The owner's profile: its directives are every agent's standing preferences. */
 export const PROFILE = "/workspace/USER.md";
 /**
+ * The owner's own model ranking: present, it replaces the platform's whole
+ * (`sources/src/ranking.ts`) for the owner's every `auto` choice.
+ */
+export const RANKING = "/workspace/model-ranking.json";
+/**
  * Where the cutover's importer puts an owner's tree from the old stack (`platform/import/`,
  * the owner's import doors, `owner/src/import.ts`): the only tree those doors write.
  */
 export const IMPORTED = "/workspace/imported";
 /**
  * Every tree only the owner's own authority changes: the agent definitions, the abilities'
- * trees, the goals and the profile. A grant the owner narrowed changes nothing in them
- * (`owner/src/paths.ts`'s `ownersOnly`).
+ * trees, the goals, the profile and the model ranking. A grant the owner narrowed changes
+ * nothing in them (`owner/src/paths.ts`'s `ownersOnly`).
  */
 export const OWNER_TREES: readonly string[] = Object.freeze([
-  AGENTS_DIR, ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR, GOALS_DIR, PROFILE]);
+  AGENTS_DIR, ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR, GOALS_DIR, PROFILE, RANKING]);
 /**
  * What an outside client's sandbox holds read-only and never sends back: the agent
  * definitions and the abilities' trees, its always-read set (owner-object spec, a client's

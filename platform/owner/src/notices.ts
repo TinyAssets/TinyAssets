@@ -44,6 +44,18 @@ export class Notices {
     });
   }
 
+  /**
+   * Keep one notice of a state that holds (`auto` running a model the ranking does not
+   * rank), unless the same one is kept already: told once, not once a run.
+   */
+  once(type: string, detail: string, at: number): void {
+    const [cutType, cutDetail] = kept(type, detail);
+    if (this.#storage.sql.exec("SELECT 1 FROM owner_notices WHERE type = ? AND detail = ?",
+                               cutType, cutDetail).toArray().length === 0) {
+      this.add(type, detail, at);
+    }
+  }
+
   /** Every kept notice, newest first. */
   list(): Notice[] {
     return this.#storage.sql.exec<{ seq: number; at: number; type: string; detail: string }>(
