@@ -16,11 +16,13 @@ the cutover" (Lane R after #5674, 2026-11-17).
    the `verifies` ids of 1,763 of `tests/`' 2,226 tests. Deleting them fails the scope guard
    (`test_hygiene_gate.py`, "spec retires an id still named", 1,907 findings on a full
    delete), which runs from the base, so no PR can lift it for itself. It would also arm the weekly
-   `test-shape-prune.yml` to propose deleting those tests. list3 P5 already put the id rule
-   (`test_shape.py`, `test-shape-prune.yml`) on the cutover's delete list, and
-   `untangle/p6-tests-beside` gives the id check its own step. So the rule goes first, brought
-   forward (`untangle/p9-ids`, after p6-tests-beside), and then the 13 changes go
-   (`untangle/p9-openspec-rest`). Their manifest entries name both branches.
+   `test-shape-prune.yml` to propose deleting those tests. The founder decided (2026-11-21)
+   that nothing is built before the cutover that the cutover deletes, so no PR takes the id
+   rule out first: the 13 go in the window with `tests/` and `test-shape-prune.yml`, each
+   already a delete in `platform/cutover.json`. Nothing of P9 is left before the cutover.
+   `scripts/test_shape.py` is no delete there: `test_hygiene_gate.py` imports it, and its
+   test is carried out to `scripts/tests/` (`b24-manifest.md`). With `tests/` gone it
+   finds no claim.
    `box-subscription-sources` is the exception: its claimed ids also resolve through
    `openspec/specs/box-subscription-sources`, so deleting it fails no gate (review's mutation,
    0 findings). It goes with the other 12 all the same.

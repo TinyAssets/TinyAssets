@@ -277,16 +277,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
   changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;
   what stayed and why: `untangle-2026-11/p9-now.md`).
-- [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
-  their readers re-pointed, so the window's deletion is smaller:
-  - [x] the archive and the 72 old changes no test claims an id of, their readers re-pointed
-    at main's last commit holding them, and `check_shapes.py`'s `adr-has-spec` with them
-    (`untangle/p9-cleanup`; `untangle-2026-11/p9-cleanup.md`);
-  - [ ] the verifies-id step leaves, brought forward from the cutover: `test_shape.py`, its
-    scope-guard step, `test-shape-prune.yml` and their tests (`untangle/p9-ids`, after
-    `untangle/p6-tests-beside`);
-  - [ ] then the 13 old changes whose ids the old suite's tests claim, and their manifest
-    entries (`untangle/p9-openspec-rest`).
+- [x] P9: the archive and the 72 old changes no test claims an id of go, their readers
+  re-pointed at main's last commit holding them, and `check_shapes.py`'s `adr-has-spec` with
+  them (`untangle/p9-cleanup`; `untangle-2026-11/p9-cleanup.md`). The 13 whose ids the old
+  suite's tests claim go in the window with `tests/` and `test-shape-prune.yml`
+  (`platform/cutover.json`; founder, 2026-11-21: nothing is built before the cutover that it
+  deletes).
 - [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
   protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
   from `land/3`; `untangle-2026-11/slow-tests.md`).
