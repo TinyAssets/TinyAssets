@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mcpOrigin } from "../src/binder";
 import { ACCESS_TOKEN_TTL_S, now, REFRESH_TOKEN_TTL_S } from "../src/config";
-import { MCP_RESOURCE, WEB_REDIRECT } from "../../contract/src/identity";
+import {
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_REDIRECT,
+} from "../../contract/src/identity";
 import { authorizationServer } from "../src/oauth";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, crossed, DARK, decide, doorsEnv,
@@ -36,23 +38,23 @@ describe("authorization server metadata", () => {
     const response = await call(new Request(url("/.well-known/oauth-authorization-server")));
     expect(response.status).toBe(200);
     const metadata = await response.json<Record<string, unknown>>();
-    expect(metadata["issuer"]).toBe("https://tinyassets.io");
+    expect(metadata["issuer"]).toBe(ORIGIN);
     expect(metadata["client_id_metadata_document_supported"]).toBe(true);
     expect(metadata["token_endpoint_auth_methods_supported"]).toContain("none");
     expect(metadata["code_challenge_methods_supported"]).toEqual(["S256"]);
     expect(metadata["authorization_response_iss_parameter_supported"]).toBe(true);
-    expect(metadata["authorization_endpoint"]).toBe("https://tinyassets.io/authorize");
+    expect(metadata["authorization_endpoint"]).toBe(`${ORIGIN}/authorize`);
     expect(metadata["registration_endpoint"]).toBeUndefined();
   });
 
   it("serves the /mcp resource's metadata, and a 401 naming it", async () => {
     const meta = await call(new Request(url("/.well-known/oauth-protected-resource/mcp")));
     expect(await meta.json()).toMatchObject({ resource: MCP_RESOURCE,
-                                              authorization_servers: ["https://tinyassets.io"] });
+                                              authorization_servers: [ORIGIN] });
     const challenge = await call(new Request(url("/mcp"), { method: "POST" }));
     expect(challenge.status).toBe(401);
     expect(challenge.headers.get("WWW-Authenticate")).toContain(
-      "resource_metadata=\"https://tinyassets.io/.well-known/oauth-protected-resource/mcp\"");
+      `resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`);
     // A Bearer challenge, as the handles canary's new side holds it.
     expect(challenge.headers.get("WWW-Authenticate")).toMatch(/^Bearer /);
   });
@@ -69,10 +71,10 @@ describe("authorization server metadata", () => {
     expect(challenge.status).toBe(401);
     expect(await challenge.text()).toBe("");
     expect(challenge.headers.get("WWW-Authenticate")).toContain(
-      "resource_metadata=\"https://tinyassets.io/.well-known/oauth-protected-resource/mcp\"");
+      `resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`);
     const meta = await call(new Request(url("/.well-known/oauth-protected-resource/mcp")));
     expect(await meta.json()).toMatchObject({ resource: MCP_RESOURCE,
-                                              authorization_servers: ["https://tinyassets.io"] });
+                                              authorization_servers: [ORIGIN] });
   });
 });
 
@@ -95,7 +97,7 @@ describe("dynamic client registration", () => {
     expect((await registration(on)).status).toBe(400);
     const metadata = await (await call(new Request(
       url("/.well-known/oauth-authorization-server")), on)).json<Record<string, unknown>>();
-    expect(metadata["registration_endpoint"]).toBe("https://tinyassets.io/oauth/register");
+    expect(metadata["registration_endpoint"]).toBe(`${ORIGIN}/oauth/register`);
     const { clientId: client_id } = await registerClient("Grok", WEB_REDIRECT);
     const { challenge } = await pkce();
     const page = await call(new Request(authorizeUrl(
@@ -136,12 +138,12 @@ describe("the authorization flow", () => {
     expect(upstream.searchParams.has("prompt")).toBe(false);
     expect(upstream.searchParams.get("code_challenge_method")).toBe("S256");
     expect(upstream.searchParams.get("redirect_uri")).toBe(
-      "https://tinyassets.io/oauth/upstream/callback");
+      UPSTREAM_CALLBACK);
     const back = await upstreamReturns(jar, upstream.href, { owner: owner() });
     const redirect = new URL(back.headers.get("Location")!);
     expect(`${redirect.origin}${redirect.pathname}`).toBe(client.redirectUri);
     expect(redirect.searchParams.get("state")).toBe("client-state");
-    expect(redirect.searchParams.get("iss")).toBe("https://tinyassets.io");
+    expect(redirect.searchParams.get("iss")).toBe(ORIGIN);
     expect(redirect.searchParams.get("code")).toBeTruthy();
   });
 
@@ -210,7 +212,7 @@ describe("the authorization flow", () => {
     const client = await registerClient();
     const { challenge } = await pkce();
     const response = await call(new Request(
-      authorizeUrl(client, challenge, "https://tinyassets.io/app"), { headers: { ...NAVIGATE } }));
+      authorizeUrl(client, challenge, APP_RESOURCE), { headers: { ...NAVIGATE } }));
     expect(new URL(response.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
   });

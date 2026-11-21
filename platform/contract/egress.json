@@ -1,0 +1,4 @@
+{
+  "about": "The egress door's host: the sandbox's one door out, a custom domain of the doors Worker (the deploy kit's mode routes), read through contract/src/egress.ts. It is kept apart from identity.json because the sandbox's runner and probes are bundled from that module, so their pair carries this host and none of the doors' identity, whose host the live stage changes (d3 §H).",
+  "host": "egress.tinyassets.io"
+}

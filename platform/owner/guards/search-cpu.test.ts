@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 
 import { RESULT_CHARS } from "../../contract/src/encoded";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import {
   SEARCH_ANSWER_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, type Scanned, searchPage, words,
 } from "../src/file-search";
@@ -97,7 +98,7 @@ describe("the search's worst case", () => {
     const entries: Scanned[] = Array.from({ length: SEARCH_SCAN }, (_, i) => ({
       path: `${dir}/${String(i).padStart(5, "0")}.md`, kind: "file",
       inline: encoder.encode(`---\ntitle: ${title}\n---\nneedle`) }));
-    const url = (path: string) => `https://tinyassets.io/app#data/${
+    const url = (path: string) => `${APP_RESOURCE}#data/${
       encodeURIComponent(path.slice(0, path.lastIndexOf("/")))}`;
     const page = searchPage(entries, true, new Set(["needle"]), url);
     expect(page.resume).not.toBeNull();  // it stopped at its bytes, not its scan

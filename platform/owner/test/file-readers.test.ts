@@ -11,6 +11,7 @@ import { type Entry, fileUrl } from "../src/files";
 import { SEARCH_ANSWER_BYTES, searchPage, type Scanned } from "../src/file-search";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { TIERS } from "./runs-support";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { nameOf } from "../../contract/src/paths";
 import { failure, inFiles, starterSeed, text } from "./support";
 
@@ -51,7 +52,7 @@ describe("the MCP door's file readers", () => {
     expect(next_cursor).toBeNull();
     expect(results[0]).toEqual({ id: "/workspace/knowledge/people/bo.md", title: "Bo",
                                  url: fileUrl("/workspace/knowledge/people/bo.md") });
-    expect(results[0]!.url).toBe("https://tinyassets.io/app#data/" +
+    expect(results[0]!.url).toBe(`${APP_RESOURCE}#data/` +
                                  encodeURIComponent("/workspace/knowledge/people"));
     const fetched = await r.stub.fileFetch(r.bind(null),
                                            { id: "/workspace/knowledge/people/bo.md" });
