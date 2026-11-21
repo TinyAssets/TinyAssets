@@ -155,8 +155,10 @@ Each of these stays as it is, recorded as a `keep` in the manifest:
 - `docs/decisions`: ADR-001 to ADR-031's status (IQ1) and the decision logs (IQ2);
 - `ideas`, `output` (IQ2);
 - `openspec/changes/clean-sheet-platform/{tasks,main-agents,sandbox-probe}.md`: the plan and
-  its research (IQ2);
-- `WebSite/site-react/app/developers/page.tsx`: the site (IQ5).
+  its research (IQ2).
+
+The site's links to the deleted `openspec/specs` (the developers page, `lib/site.ts`,
+`llms.txt`) are no founder call: they are owed rows, for the site's cutover PR (review).
 
 `templates/` names nothing that goes, so it needs no keep. Not touched either:
 - the verbatim old-store archives (IQ8);
@@ -183,3 +185,9 @@ Each of these stays as it is, recorded as a `keep` in the manifest:
   (untangle/manifest-apply).
 - [ ] The manifest as one file per area under `platform/cutover/`, read as one
   (untangle/manifest-split-files, after #5714 and #5722).
+- [ ] IQ1 and IQ2 on the founder's page, and each keep then confirmed or made a delete
+  (the coordinator). A keep of history names what goes for good, so only the answer ends it.
+- [ ] The window opens only once `ci/guards/rules.ts` owes the cutover guard nothing
+  (tasks.md §9 step 10). Until then only the deletion PR's own checks fail on a row left
+  (`rules.ts`' edit takes the helper; `owed.ts`' takes `"cutover"` from `GUARDS`), inside
+  the window.
