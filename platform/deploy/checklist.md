@@ -239,9 +239,11 @@ It never counts as "absent".
   It doesn't run the handles canary. Until the old stack is up, the routes it gave back
   serve nothing, so the canary would fail a correct handback. The order is:
   1. the handback;
-  2. restart the old stack on its untouched volumes: on the droplet,
-     `sudo docker start tinyassets-tunnel`, then `sudo systemctl start daemon-watchdog.timer`
-     (the window stopped both before its backup). That reopens its
+  2. restart the old stack on its untouched volumes: dispatch **Restart daemon**
+     (`restart-daemon.yml`; the daemon unit's `up -d` starts the tunnel), then on the droplet
+     `sudo systemctl start daemon-watchdog.timer tinyassets-watchdog.timer`, and, while
+     `deploy-prod.yml` is still in the tree, `gh workflow enable deploy-prod.yml` (the window
+     stopped all three before its backup). That reopens its
      deletion requests while the platform still holds every admitted owner, so an owner who
      asks the old stack to delete them is also erased on the platform (mode `erase`) before
      any later `routes`;
@@ -418,9 +420,13 @@ none of them, then admits the rest. A failed read admits no one. No `admit` runs
 read, so there is nothing to rescan by hand.
 
 **The old stack stops taking requests before the window's backup.** At the real window's
-opening, once Stripe's endpoint is disabled and before the full backup, on the droplet run
-`sudo systemctl stop daemon-watchdog.timer`, then `sudo docker stop tinyassets-tunnel`. The
-watchdog's restart would start the tunnel again. Then check that
+opening, once Stripe's endpoint is disabled and before the full backup, run
+`gh workflow disable deploy-prod.yml`, then on the droplet
+`sudo systemctl stop daemon-watchdog.timer tinyassets-watchdog.timer`, then
+`sudo docker stop tinyassets-tunnel`. Each of the three would start the tunnel again: a
+deploy's `up -d`, and each watchdog's restart of `tinyassets-daemon.service`, whose `up -d`
+names the tunnel. So does a reboot (that unit at boot): after one, run the two stops on the
+droplet and the check again. Then check that
 `curl -s -o /dev/null -w '%{http_code}' https://tinyassets.io/mcp` no longer answers `401`
 (the old stack's anonymous answer). From then until `routes`, no request reaches the old
 stack, so no deletion request can arrive after an `admit` has read the jobs. At `routes`, the

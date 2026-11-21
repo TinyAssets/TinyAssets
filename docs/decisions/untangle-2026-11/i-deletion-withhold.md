@@ -58,22 +58,36 @@ the first half is `i-deletion-compare.md`).
    staging is deleted, so `close` reads it as discarded. Only then is anyone admitted. A
    withheld owner is never sent an `admit`. A discard the doors refuse stops the step before
    any admit. That includes an owner an earlier `admit` already took, which is erased with the
-   kit's `erase` instead.
+   kit's `erase` instead. That owner exists only when a request came after an earlier admit's
+   read, so only when the stop (item 5) was skipped. Its staged index stands after the erase,
+   so each later `admit` is refused at it too: going on is the founder's call (review).
 4. **`wipe` and `admit` share one discard** (`discardOwner`). Both skip an owner no longer
    staged, so either converges when killed.
-5. **When the old service stops.** `live:` the founder, on the droplet, at the real
-   window's opening, once Stripe's endpoint is disabled and before the full backup:
-   `sudo systemctl stop daemon-watchdog.timer`, then `sudo docker stop tinyassets-tunnel`.
-   The watchdog's restart re-converges the daemon unit, and the unit's `up -d` would start the
-   tunnel again. Its check is that `curl -s -o /dev/null -w '%{http_code}' https://tinyassets.io/mcp`
-   no longer answers the old stack's `401`. From then until `routes`, the old stack takes
-   no request, deletions included. At `routes` the doors' erase door takes them instead. That
+5. **When the old service stops.** `live:` the founder, at the real window's opening, once
+   Stripe's endpoint is disabled and before the full backup: `gh workflow disable
+   deploy-prod.yml`, then on the droplet `sudo systemctl stop daemon-watchdog.timer
+   tinyassets-watchdog.timer`, then `sudo docker stop tinyassets-tunnel`. Each watchdog's
+   restart re-converges the daemon unit, and the unit's `up -d` would start the tunnel again;
+   so would a deploy's `up -d` (deploy-prod runs on every old-stack merge to `main`), and the
+   unit at a reboot (then the stops and the check are run again). The review found the
+   second watchdog (`tinyassets-watchdog`, `scripts/watchdog.py`) and the deploy. Its check
+   is that `curl -s -o /dev/null -w '%{http_code}' https://tinyassets.io/mcp` no longer
+   answers the old stack's `401`. From then until `routes`, the old stack takes no request,
+   deletions included. At `routes` the doors' erase door takes them instead. That
    is the hand-onward, and it needs no old-stack code. Stopping before the backup also makes
    the backup the old stack's last state, so no owner's later write is silently lost. It also
    keeps the handback's "untouched volumes" true. The latest correct point is before the
    first real `admit`. A rehearsal stops nothing, and its `admit` withholds the same way.
    The canaries' old side reads red from the stop (expected in the window). A handback's
-   restart is `sudo docker start tinyassets-tunnel`, then `sudo systemctl start
-   daemon-watchdog.timer`. That reopens the old intake while the platform still holds every
-   admitted owner, so the handback's steps now say a request made after it is erased on the
-   platform too (the kit's `erase`).
+   restart is **Restart daemon** (`restart-daemon.yml`, which `cutover.json` keeps for it;
+   the unit's `up -d` starts the tunnel), then both timers started by hand (the cutover's
+   change takes its converge), and `deploy-prod.yml` enabled while it is in the tree. That
+   reopens the old intake while the platform still holds every admitted owner, so the
+   handback's steps now say a request made after it is erased on the platform too (the kit's
+   `erase`).
+
+## Left
+
+- [ ] The old stack's intake stopped at the real window's opening, before the full backup,
+  by live: the founder (item 5; `tasks.md` §9 step 10). Until it is, a request made while an
+  `admit` runs, or after it, reaches no withhold, and is the kit's `erase` once found.

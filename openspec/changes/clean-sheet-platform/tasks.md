@@ -171,8 +171,9 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     Stripe's endpoint (`/app/billing/webhook`) is disabled. No paid subscription exists (the
     founder; d2 B13), and a billing door is later work (§10 step 19).
   - The old stack stops taking requests, deletions included, until `routes` (`live:` the
-    founder, on the droplet, once Stripe's endpoint is disabled: `sudo systemctl stop
-    daemon-watchdog.timer`, then `sudo docker stop tinyassets-tunnel`; `checklist.md`, "The
+    founder, once Stripe's endpoint is disabled: `gh workflow disable deploy-prod.yml`, then
+    on the droplet `sudo systemctl stop daemon-watchdog.timer tinyassets-watchdog.timer`, then
+    `sudo docker stop tinyassets-tunnel`; `checklist.md`, "The
     old stack stops taking requests before the window's backup"; `i-deletion-withhold.md`).
   - The full backup, then the census on that copy. Any paid owner or Stripe id it counts is
     raised before the window, and any edge case (digest-only tombstones, live capability URLs,
