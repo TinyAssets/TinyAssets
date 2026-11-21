@@ -193,8 +193,11 @@ jobs:
           }
           trap on_exit EXIT
 
+          # A read, asked again after GitHub's 5xx by drain_review_gate.py's `_gh_read`.
+          get() { python scripts/drain_review_gate.py --gh-read "$@"; }
+
           # The PR's head and base as they are now, from the API, never from the event.
-          read -r HEAD BASE < <(gh api "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
+          read -r HEAD BASE < <(get "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
           if ! [[ "$HEAD" =~ ^[0-9a-f]{40}$ && "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::PR #${PR} has no head or base"
             exit 1
@@ -216,9 +219,9 @@ jobs:
             GROUP=()
           fi
 
-          gh api --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
+          get --paginate "repos/${REPO}/pulls/${PR}/reviews?per_page=100" --jq '.[]' \
             | jq -s . > "$RUNNER_TEMP/reviews.json"
-          gh api --paginate "repos/${REPO}/issues/${PR}/timeline?per_page=100" --jq '.[]' \
+          get --paginate "repos/${REPO}/issues/${PR}/timeline?per_page=100" --jq '.[]' \
             | jq -s . > "$RUNNER_TEMP/timeline.json"
 
           # The base, the head and every commit a review names, as git objects only.
