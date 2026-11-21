@@ -82,8 +82,7 @@ import {
   CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, LEASE_TTL_S, MAX_LIST, PLACE_BYTES, QUEUE_BYTES,
   QUEUE_ROWS, RESULT_BYTES,
 } from "../../contract/src/limits";
-import { type Candidate, type Plan, ranked } from "./auto";
-import type { Usable } from "./connections";
+import { type Candidate, type Plan, ranked, type Usable } from "./auto";
 import type { Ranking } from "../../sources/src/ranking";
 import { nextOccurrence, parseCron } from "./cron";
 import { Refusal } from "../../contract/src/refusal";

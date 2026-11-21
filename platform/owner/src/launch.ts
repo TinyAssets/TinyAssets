@@ -60,7 +60,7 @@ import {
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority,
   type SpendCaps,
 } from "./runs";
-import type { Usable } from "./connections";
+import type { Usable } from "./auto";
 import { startOutcome, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";

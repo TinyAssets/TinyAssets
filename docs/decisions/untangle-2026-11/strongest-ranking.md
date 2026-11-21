@@ -86,6 +86,10 @@ engine record declares (`cli.login.model`).
   `contract/guards/paths.test.ts`'s list, goes.
 - **The `about` is corrected**: it no longer says a package keeps the ranking current. The
   platform changes it by a reviewed change; nothing updates it on its own; an owner replaces it.
+- **`Usable` is declared by `auto.ts`, which ranks it** (review): the merged head had `launch.ts`
+  and `runs.ts` import `connections.ts` for it once `UsableSource` went, which the owner's
+  policy-boundary guard refuses; now only the object imports the connections' module, and the
+  guard's list shrinks (`auto.ts` leaves it).
 - Left, with reasons:
   - The owner's ranking is read before the admission unit and not held to its etag there, as
     `agent.json` is: `agent.json` names the run's scopes, so a change between read and unit
@@ -93,10 +97,6 @@ engine record declares (`cli.login.model`).
     a moment before, as if the edit landed just after, and widens nothing.
   - The same-provider rule (a key of a plan's provider takes the plan, at the key's rank) is
     #5723's, unchanged.
-  - Where the tier boundaries fall is a judgment of model strength, the founder's to move (data,
-    one file): question 1.
-  - The bundled Mistral, Groq and Cerebras sources' models match no entry and rank unknown:
-    question 2.
   - The starter's files do not name `/workspace/model-ranking.json` to the agent: the path is
     the contract's, the spec's and the ranking's `about`, and the `model_unranked` notice names
     it. A line in `main`'s `AGENTS.md` is a starter version of its own.
@@ -105,12 +105,29 @@ engine record declares (`cli.login.model`).
 
 Nothing.
 
-## Founder questions
+## The ranking's data, decided in review (2026-11-21)
 
-1. **The tiers.** The shipped tiers group the old order by model generation; the top tier is
-   `claude-fable-*`, `gpt-6.1-*`, `gpt-6-*`, `gemini-4-*`, `claude-opus-5*`. So Claude Max (Opus
-   5.5) and Codex (`gpt-6.1-sol`) plans are top tier, Gemini's (`gemini-3.1-pro-preview`) second,
-   Kimi's fourth. Move a boundary by editing `sources/src/model-ranking.json`.
-2. **The bundled sources the ranking does not rank.** Mistral, Groq and Cerebras keys' models
-   rank unknown (after every ranked model, by price, with a notice). Should the platform rank
-   them?
+Data an owner's file overrides, so an engineering call, not the founder's. Evidence (search
+results only: benchlm.ai and artificialanalysis.ai could not be fetched from the review host,
+so every figure is unverified and the index versions differ):
+
+- Top tier: BenchLM's November 2026 board puts Claude Fable 5.2 first and Gemini 4 Carbon
+  second; Artificial Analysis's Intelligence Index v5 (2026-10-27) has Gemini 4 Carbon at 59
+  and Claude Opus 5.5 at 58 (late September, earlier version), Opus 5.5 first on its Coding
+  Agent Index; OpenAI's GPT-6 launch (2026-09-22) calls GPT-6 Astra its best model, Sol and
+  Luna lighter (Luna $0.50 per million output tokens). So the boundaries stand: the Claude and
+  Codex plans top tier, Gemini's second.
+- Fixed: `gpt-6-*` put GPT-6 Luna, OpenAI's smallest, in the top tier, and "newer id first"
+  ranked it above Astra; `gpt-5.6-*` did the same for GPT-5.6 Luna. The entries now name the
+  variants (`gpt-6.1-sol*`, `gpt-6-astra*`, `gpt-6-sol*`, `gpt-5.6-sol*`, `gpt-5.6-terra*`); a
+  Luna is unknown.
+- The bundled Mistral, Groq and Cerebras sources are ranked in the fourth tier, beside Grok:
+  `mistral-large-4*` (Artificial Analysis's Mistral page: 38; its 2026-10-06 article calls it
+  the strongest model outside the US and China), `*glm-5*` (GLM-5.3: 32 on the re-benchmarked
+  index, per Cybernews), `qwen*3.8*` (Qwen 3.8 Max: 34 there; Qwen 3.8 27B 52 on the August
+  index, Simon Willison, 2026-08-17), then after the older small models `mistral-medium-*`
+  (14 to 30 across its pages) and `gpt-oss-120b` (24). Grok 4.7 scored 34 on the same
+  re-benchmark. Devstral, Codestral, Ministral and Llama stay unknown; the GPT-5.4 minis stay
+  in the third tier (`gpt-5.4*`), reached only where a key lists no newer OpenAI model.
+  `sources/guards/ranking.test.ts` holds every bundled key source's catalog to at least one
+  ranked model.

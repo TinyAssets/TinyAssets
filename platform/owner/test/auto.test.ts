@@ -6,9 +6,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { type Candidate, type Plan, ranked } from "../src/auto";
 import type { ModelRecord } from "../../contract/src/model-record";
-import type { Usable } from "../src/connections";
+import { type Candidate, type Plan, ranked, type Usable } from "../src/auto";
 import { rankingOf, shippedRanking } from "../../sources/src/ranking";
 
 /** A candidate as `connection/model`, a plan's as `plan:engine/model`. */

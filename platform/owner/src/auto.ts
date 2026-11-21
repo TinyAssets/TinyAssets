@@ -14,8 +14,23 @@
  * - With no connected source, nothing ranks: there is no platform-paid default (a founder
  *   call).
  */
-import type { Usable } from "./connections";
+import type { ModelRecord } from "../../contract/src/model-record";
 import type { Place, Ranking } from "../../sources/src/ranking";
+
+/**
+ * A connection a model call may use, as `Connections.usable` lists it: its models, as
+ * `getModels` lists them. Declared here, by what ranks it, so the runs read it without
+ * reaching the connections' module (the policy-boundary guard).
+ */
+export interface Usable {
+  readonly connection: string;
+  /** Its source record, which its spend is counted and capped under. */
+  readonly source: string;
+  readonly provider: string;
+  readonly display_name: string;
+  readonly created_at: number;
+  readonly models: readonly ModelRecord[];
+}
 
 /** An engine signed in, as `auto` ranks it. */
 export interface Plan {

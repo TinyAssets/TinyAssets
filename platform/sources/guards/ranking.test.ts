@@ -1,10 +1,13 @@
 /**
  * The model ranking (`src/ranking.ts`): the platform's file read whole, every engine that
  * signs in ranked by its plan's model (so no plan is ever unknown on the platform's
- * ranking), where a model is placed, and a file that is no ranking refused whole.
+ * ranking), a model of every bundled key source's catalog ranked, where a model is placed, and a file that is no ranking refused whole.
  */
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
+import { bundledRecords } from "../src/catalog";
+import { sourceRecord } from "../src/check";
 import { rankingOf, shippedRanking } from "../src/ranking";
 import { planProvider, served, signsIn } from "../src/served";
 import shipped from "../src/model-ranking.json" with { type: "json" };
@@ -24,6 +27,17 @@ describe("the platform's ranking", () => {
     const tiers = Object.fromEntries(plans.map((record) => [record.id, shippedRanking()
       .place(planProvider(record), record.cli.login.model.id)?.tier]));
     expect(tiers).toEqual({ "claude-code": 0, codex: 0, gemini: 1, kimi: 3 });
+  });
+
+  it("ranks a model of every bundled key source's catalog, so none runs only unknown", () => {
+    const providers = builtinProviders();
+    const keyed = bundledRecords().map(sourceRecord).flatMap((record) =>
+      record.upstream === undefined ? [] : [record.upstream.provider]);
+    expect(keyed).toEqual(expect.arrayContaining(["mistral", "groq", "cerebras"]));
+    for (const provider of keyed) {
+      expect(providers.find((entry) => entry.id === provider)!.getModels()
+        .some((model) => shippedRanking().place(provider, model.id) !== null), provider).toBe(true);
+    }
   });
 });
 

@@ -11,7 +11,8 @@
  * admission are held to the same: only the object imports them, and the admission row is
  * its module's and the schema's alone; so are the action rules' held calls and receipts,
  * whose module the object and the policy's receipts door (a type) alone import. So are the model connections and their spend: only the
- * object builds them, `auto` reads their types, and their tables (the connections, their
+ * object builds them and alone imports their module (the shape the runs rank, `Usable`, is
+ * `auto`'s), and their tables (the connections, their
  * blobs and flows, the reservations and the spend counters) are their modules' alone, and
  * so are the sandbox's egress rows and the owner's erasure mark, and the runs' rows (slice R:
  * runs, their grants, conversations and schedules, the tier numbers kept, the socket
@@ -53,7 +54,7 @@ const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   sessions: Object.freeze([OWNER_DO]),
   registrations: Object.freeze([OWNER_DO]),
   admission: Object.freeze([OWNER_DO]),
-  connections: Object.freeze([OWNER_DO, "owner/src/auto.ts"]),
+  connections: Object.freeze([OWNER_DO]),
   usage: Object.freeze([OWNER_DO]),
 });
 const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
