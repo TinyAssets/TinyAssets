@@ -1,0 +1,41 @@
+{
+  "about": "Which connected model is strongest, as the virtual engine auto ranks the owner's sources (sources/src/ranking.ts): tiers, strongest first, each a list of entries in order. An entry names a pi-ai provider id, or * for any, and a model id, exact or with * matching any run of characters, matched against the id and against its part after the last / (an aggregator's vendor/model). A model ranks at the first entry it matches; within one entry the newer id ranks first. Within a tier, a subscription's plan (ranked by the model its engine record says it runs) comes before any metered key, so a plan in the top tier wins over every key. A model no entry matches is unknown: it ranks after every tier, keys among the unknown by their catalog output price, highest first, and auto tells the owner when it runs one. The platform changes this file by a reviewed change; nothing updates it on its own. An owner replaces it whole with /workspace/model-ranking.json, in this same shape.",
+  "version": 2,
+  "tiers": [
+    [
+      { "provider": "*", "model": "claude-fable-*" },
+      { "provider": "*", "model": "gpt-6.1-sol*" },
+      { "provider": "*", "model": "gpt-6-astra*" },
+      { "provider": "*", "model": "gpt-6-sol*" },
+      { "provider": "*", "model": "gemini-4-*" },
+      { "provider": "*", "model": "claude-opus-5*" }
+    ],
+    [
+      { "provider": "*", "model": "gpt-5.6-sol*" },
+      { "provider": "*", "model": "gpt-5.6-terra*" },
+      { "provider": "*", "model": "gpt-5.5*" },
+      { "provider": "*", "model": "claude-opus-4*" },
+      { "provider": "*", "model": "gemini-3.1-pro*" },
+      { "provider": "*", "model": "claude-sonnet-5*" }
+    ],
+    [
+      { "provider": "*", "model": "gpt-5.4*" },
+      { "provider": "*", "model": "gemini-3.*-flash" },
+      { "provider": "*", "model": "claude-sonnet-4*" },
+      { "provider": "*", "model": "gpt-5.2*" },
+      { "provider": "*", "model": "gpt-5.1*" },
+      { "provider": "*", "model": "gemini-2.5-pro*" }
+    ],
+    [
+      { "provider": "*", "model": "grok-*" },
+      { "provider": "*", "model": "mistral-large-4*" },
+      { "provider": "*", "model": "*glm-5*" },
+      { "provider": "*", "model": "qwen*3.8*" },
+      { "provider": "*", "model": "gpt-5" },
+      { "provider": "*", "model": "claude-haiku-*" },
+      { "provider": "*", "model": "gemini-2.5-flash*" },
+      { "provider": "*", "model": "mistral-medium-*" },
+      { "provider": "*", "model": "gpt-oss-120b" }
+    ]
+  ]
+}

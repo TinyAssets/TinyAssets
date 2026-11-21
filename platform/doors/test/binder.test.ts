@@ -96,8 +96,8 @@ describe("an MCP binding", () => {
   // that changes them fails here.
   it("derives the client and family with their domain, our issuer and the client id", async () => {
     expect(await mcpOrigin("c", "https://a.test/cb")).toEqual({
-      client: "2b9b91265a35498afa8bf62d3c18a77e81535b9c427ab556324ea51933ae9ee5",
-      family: "c6cf8165215729cc68d98a711153e36b8a2b99798809aaeb8e11cf05d76803e5",
+      client: "c7cb6bbdf0dff33ec1f926003adf5a464f324e441b9897f37e66969bdfa6becb",
+      family: "8c97bf5574457398c2cf6ae09cc7950316cb3658abb12e416919bc4903d0923b",
     });
   });
 

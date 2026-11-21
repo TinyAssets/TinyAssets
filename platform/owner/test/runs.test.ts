@@ -26,9 +26,10 @@ import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
 import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
+import { ALL_SCOPES, defineAgent, hashed, later, ownerFile, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
-import { secretOf } from "../../ci/workerd";
+import { RANKING } from "../../contract/src/paths";
+import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, spaceOf } from "./support";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
 
@@ -448,6 +449,54 @@ describe("a run's settle", () => {
     expect((await recorder(r.stub)).cancels).toHaveLength(2);
     // None holds the lease: the last live run's settle gave it back.
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    // A start with no answer is never sent again: it may have launched.
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === lost.run_id))
+      .toHaveLength(1);
+  });
+
+  it("sends a start refused for the moment again, the same start, while the run holds its " +
+     "grant; one whose wait ends past the bound, or whose run was cancelled, is failed by " +
+     "the refusal's own code", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    const submit = (id: string) => r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                                      { message: "x", client_send_id: id });
+    const overloaded = (retryAfterS: number) => ({ refuse: {
+      code: "object_overloaded", message: "this account is busy", retryAfterS } });
+    const sent = async (run: string) => (await gate.calls())
+      .filter((call) => call.method === "start"
+              && (call.args as [string, SandboxStart])[1].run === run)
+      .map((call) => (call.args as [string, SandboxStart])[1]);
+    await gate.arm("start", overloaded(0), 2);
+    const again = await submit("t-1");
+    expect(again).toMatchObject({ state: "running", code: null });
+    // Sent three times, each the same start (its tokens and secret with it), and launched once.
+    const starts = await sent(again.run_id);
+    expect(starts).toHaveLength(3);
+    expect(starts[1]).toEqual(starts[0]);
+    expect(starts[2]).toEqual(starts[0]);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === again.run_id))
+      .toHaveLength(1);
+    // A wait past `LANE_CALL_MS`: the refusal stands at once, and nothing is cancelled.
+    await gate.arm("start", overloaded(60));
+    const past = await submit("t-2");
+    expect(past).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await sent(past.run_id)).toHaveLength(1);
+    expect((await recorder(r.stub)).cancels).toEqual([]);
+    // Cancelled while its start waits: never sent again.
+    await gate.arm("start", overloaded(1));
+    const waiting = submit("t-3");
+    let run = "";
+    await until(async () => {
+      run = (await gate.calls()).filter((call) => call.method === "start")
+        .map((call) => (call.args as [string, SandboxStart])[1].run).at(-1) ?? "";
+      return run !== past.run_id && run !== again.run_id && run !== "";
+    }, "the refused start");
+    await r.stub.agentCancel(r.bind(), { run_id: run });
+    expect(await waiting).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await sent(run)).toHaveLength(1);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === run)).toEqual([]);
   });
 });
 
@@ -686,27 +735,58 @@ describe("auto and the owner's sign-ins", () => {
       .toMatchObject({ credential: "vendor_login_in_sandbox", model: "claude-sonnet-5-5" });
   });
 
-  it("ranks a subscription against another provider's key by the plan's model, both ways",
-     async () => {
+  it("ranks a subscription against another provider's key by tier, on the owner's ranking " +
+     "file where it has one", async () => {
     const r = await gated();
     const [base] = await catalog(OPENAI);
-    const weaker = await r.connect("sk-good", OPENAI, "Weaker", [{ ...base!, id: "gpt-5.1-codex" }]);
+    await r.connect("sk-good", OPENAI, "Weaker", [{ ...base!, id: "gpt-5.1-codex" }]);
     await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    // A run of `helper`, settled at once, so the tier's simultaneous runs never refuse one.
+    const helper = async () => {
+      const { run, start } = await ownerRun(r.stub, r.bind(), undefined, "helper");
+      await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+      return run;
+    };
     const keyed = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(keyed.run).toMatchObject({ credential: "api_key", model: "gpt-5.1-codex" });
-    // Signed in: Claude's plan (`claude-opus-5*`) ranks above the other provider's key.
+    // Signed in: Claude's plan (`claude-opus-5*`, the top tier) ranks above the key.
     await claudeSignin(r, keyed.start, true);
-    expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
-      .toMatchObject({ engine: "claude-code", credential: "vendor_login_in_sandbox",
-                       model: PLAN_MODEL });
-    // That provider's key on a model ranked above the plan's: the key.
+    const plan = { engine: "claude-code", credential: "vendor_login_in_sandbox",
+                   model: PLAN_MODEL };
+    expect(await helper()).toMatchObject(plan);
+    // That provider's key on a model ranked above the plan's in the top tier: still the plan,
+    // which the owner pays for already.
     const stronger = await r.connect("sk-good", OPENAI, "Stronger",
                                      [{ ...base!, id: "gpt-6.1-sol" }]);
+    expect(await helper()).toMatchObject(plan);
+    // The owner's own ranking, whole in place of the platform's: OpenAI's a tier above.
+    const own = (tiers: unknown) => ownerFile(r.stub, r.bind(), RANKING,
+                                              JSON.stringify({ version: 2, tiers }));
+    await own([[{ provider: "*", model: "gpt-6*" }], [{ provider: "*", model: "claude-*" }]]);
     const strongest = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(strongest.run).toMatchObject({ credential: "api_key", model: "gpt-6.1-sol" });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?",
                        strongest.run.run_id)).toEqual([{ connection: stronger }]);
-    expect(stronger).not.toBe(weaker);
+    // One that ranks none of them: the plan first among the unknown, and the owner told
+    // once, not once a run.
+    await own([[{ provider: "*", model: "none-*" }]]);
+    expect(await helper()).toMatchObject(plan);
+    expect(await helper()).toMatchObject(plan);
+    expect((await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "model_unranked").map((notice) => notice.detail))
+      .toEqual([`${PLAN_MODEL} (claude-code's sign-in): no entry of the model ranking ranks ` +
+                `it, so auto ranked it below every ranked model; rank it in ${RANKING}`]);
+    // A file that is no ranking refuses the run, never a silent fall back to the platform's.
+    for (const [text, message] of [
+      ["{\"version\": 1}", `${RANKING}: a model ranking holds only version 2`],
+      ["not json", `${RANKING} is not JSON text`]] as const) {
+      await ownerFile(r.stub, r.bind(), RANKING, text);
+      expect(await failure(() => helper()))
+        .toMatchObject({ code: "invalid", message: expect.stringContaining(message) });
+    }
+    // Removed: the platform's ranking again.
+    await ownerFile(r.stub, r.bind(), RANKING, null);
+    expect(await helper()).toMatchObject(plan);
     // An `auto` agent that names a model runs on a source that offers it, whatever ranks
     // above, and one no source offers is refused, never passed to another vendor's CLI.
     await defineAgent(r.stub, r.bind(), "unoffered",

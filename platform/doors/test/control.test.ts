@@ -229,7 +229,7 @@ describe("the canary gate", () => {
 function ownerPost(path: string, app: { access_token: string; session: string }, body: unknown,
                    environment: DoorsEnv): Promise<Response> {
   return call(new Request(url(`/app/api/${path}`), {
-    method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+    method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                Authorization: `Bearer ${app.access_token}`,
                                Cookie: `__Host-ta-owner=${app.session}` },
     body: JSON.stringify(body) }), environment);

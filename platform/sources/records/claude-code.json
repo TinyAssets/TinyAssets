@@ -235,6 +235,7 @@
         "file": "AGENTS.md",
         "shadowed_by": [
           "CLAUDE.md",
+          ".claude/CLAUDE.md",
           "CLAUDE.local.md"
         ]
       },
@@ -242,6 +243,16 @@
         "paths": [
           ".claude/skills"
         ]
+      },
+      "native": {
+        "refuses": [
+          ".claude/settings.json",
+          ".claude/settings.local.json",
+          ".mcp.json",
+          ".claude/agents"
+        ],
+        "cite": "https://code.claude.com/docs/en/settings",
+        "read": "2026-11-21"
       },
       "mcp": {
         "servers": "mcpServers",

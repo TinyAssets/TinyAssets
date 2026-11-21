@@ -235,6 +235,15 @@
           ".agents/skills"
         ]
       },
+      "native": {
+        "refuses": [
+          ".codex/config.toml",
+          ".codex/hooks.json",
+          ".codex/skills"
+        ],
+        "cite": "https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/loader/mod.rs",
+        "read": "2026-11-21"
+      },
       "mcp": {
         "servers": "mcp_servers",
         "flag": "-c",

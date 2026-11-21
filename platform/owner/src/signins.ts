@@ -57,6 +57,7 @@ import { sealRoute } from "../../contract/src/routing-mac";
 import type { Runs } from "./runs";
 import { eventsRequest, signinRequest } from "./reports";
 import type { SigninEventsRequest } from "../../contract/src/owner";
+import type { SandboxSignin } from "../../contract/src/sandbox";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
 
@@ -419,7 +420,8 @@ export const signinsDoors = Object.freeze({
    * starts the record's `cli.login` there (`SandboxService.signin`). The answer is the
    * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
    * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
-   * a pasted code), or why it did not start (`StartOutcome`'s code: `sandbox_waiting`, ...).
+   * a pasted code), or why it did not start (`StartOutcome`'s code: `sandbox_waiting`, ...),
+   * a start with no answer the object can read stopped in the sandbox too.
    */
   async signinStart(o: SigninsDoorNeeds, door: Door<SigninStartRequest>):
       Promise<SigninView | { started: false; code: string }> {
@@ -458,14 +460,16 @@ export const signinsDoors = Object.freeze({
                                   { lease_id: lease.lease_id, epoch: lease.epoch }, now);
       return { row, opened, lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
     });
-    const answer = await startOutcome("a sign-in", () => o.sandbox.signin({
+    const signin: SandboxSignin = {
       id: begun.row.id, engine: begun.row.engine, mode: begun.row.mode,
       authority: begun.row.authority, lease: begun.lease,
       tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
       hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox"),
       route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
                                                    authority: begun.row.authority }),
-      urls: signinUrls(begun.row.id) }));
+      urls: signinUrls(begun.row.id) };
+    const answer = await startOutcome("a sign-in", () => o.sandbox.signin(signin),
+                                      () => o.door(() => o.signins.owned(begun.row.id)));
     if (answer.started === true) {
       return signinView(begun.row);
     }
@@ -473,6 +477,12 @@ export const signinsDoors = Object.freeze({
       o.signins.end(begun.row.id);
       o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
     });
+    if (answer.started === null) {
+      // In case its CLI did launch: stopped, as a run's is cancelled.
+      await o.sandbox.signinCancel({ authority: begun.row.authority, id: begun.row.id })
+        .catch((error) => console.error("a lost sign-in start's stop did not reach the sandbox",
+                                        error));
+    }
     return { started: false, code: answer.code };
   },
   /**

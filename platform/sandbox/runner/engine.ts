@@ -10,8 +10,10 @@
  *   variable the run's credential forbids (`forbid_env`) fails the run loudly.
  * - The argv: the binary, then the credential's own arguments, the model (each option
  *   joined to its value, `--model=<id>`, so a reported id that starts with `-` is never a
- *   flag), the unattended flags on an unattended run, the MCP arguments, the update switch,
- *   then the record's `argv` or `resume_argv` past its binary. The prompt goes on stdin
+ *   flag), the unattended flags on an unattended run, what keeps the engine's own settings
+ *   layers out (`definition.native.argv`, every run), the agent's skills where the engine
+ *   takes each by its argv (`definition.skills.argv_each`), the MCP arguments, the update
+ *   switch, then the record's `argv` or `resume_argv` past its binary. The prompt goes on stdin
  *   where the record says so, or joined to its option (`--prompt={prompt}`), never bare.
  * - The run's MCP door is `urls.mcp`, or `urls.mcp_bare` where the record's template sends
  *   the run's secret as a header (`{run_secret}`), so the secret is out of the URL.
@@ -162,6 +164,8 @@ export function invocation(record: Served, start: StartDoc,
                            options: { readonly prompt?: string;
                                       /** The run's own home and system directory. */
                                       readonly home: string; readonly system: string;
+                                      /** The agent's skills' directories (`skillsOf`). */
+                                      readonly skills: readonly string[];
                                       /**
                                        * A run's hook, where its record has one: the patterns
                                        * of the tools it matches (none: no hook) and the
@@ -236,6 +240,9 @@ export function invocation(record: Served, start: StartDoc,
     ...(credential?.argv ?? []).map((arg) => fill(arg, values)),
     ...(start.model === null ? [] : modelArgs(cli.engine.model_argv ?? [], values)),
     ...(start.unattended ? cli.unattended_argv.map((arg) => fill(arg, values)) : []),
+    ...(cli.definition.native.argv ?? []).map((arg) => fill(arg, values)),
+    ...options.skills.flatMap((skill) => (cli.definition.skills.argv_each ?? [])
+      .map((arg) => fill(arg, { ...values, skill }))),
     ...(mcp === null ? [] : [...mcp.argv, ...mcp.trust.argv].map((arg) => fill(arg, values))),
     ...(hooked ? decide!.argv ?? [] : []).map((arg) => fill(arg, values)),
     ...("argv" in cli.no_update ? cli.no_update.argv ?? [] : []).map((arg) => fill(arg, values)),

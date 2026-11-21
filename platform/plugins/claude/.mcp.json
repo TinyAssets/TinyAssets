@@ -2,7 +2,7 @@
   "mcpServers": {
     "tinyassets": {
       "type": "http",
-      "url": "https://tinyassets.io/mcp"
+      "url": "https://stage.tinyassets.io/mcp"
     }
   }
 }

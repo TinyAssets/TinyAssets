@@ -31,7 +31,7 @@ import type { EgressScope } from "../../contract/src/egress-scope";
 import { ALL_TRAFFIC, closedNetwork, DNS_SERVERS, EGRESS_ORIGIN, egressBaseUrl,
          sandboxEnv } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
-import { AGENTS_DIR } from "../../contract/src/paths";
+import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import type { NetworkDocument } from "../../contract/src/sandbox";
 import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
@@ -44,6 +44,7 @@ import { binPath, invocation, isKept, keptPaths } from "./engine";
 import { lineEvent } from "./frames";
 import { remove, safeDirs, safeWrite } from "./fsafe";
 import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
+import { skillsOf } from "./project";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared, sortedWalk,
@@ -328,7 +329,8 @@ async function probeRoute(rec: Served, provider: string,
     const home = homeOf(name);
     const system = systemOf(name);
     const trace = `${STATE}/route-${name}.trace`;
-    const call = invocation(rec, start, process.env, { home, system });
+    const call = invocation(rec, start, process.env, {
+      home, system, skills: [...skillsOf(WORKSPACE, start.agent).values()] });
     if (call.resumed !== resumed) {
       throw new Error(resumed ? "the second turn does not resume the first"
         : "the first turn resumes nothing");

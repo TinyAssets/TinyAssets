@@ -380,8 +380,10 @@ describe("the engine records", () => {
     expect(spec.mcp).toEqual(expect.objectContaining({ file: "{home}/.pi/agent/mcp.json",
       template: "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", " +
                 "\"exposure\": \"direct\"}}}" }));
-    // JSON mode cannot show the trust prompt: the run approves the agent's own folder.
-    expect(spec.unattended_argv).toContain("--approve");
+    // JSON mode cannot show the trust prompt, and the agent's folder is never trusted: its
+    // .pi/mcp.json and extensions never load, and its skills are given by argv.
+    expect(spec.definition.native.argv).toEqual(["--no-approve"]);
+    expect(spec.definition.skills).toEqual({ paths: [], argv_each: ["--skill", "{skill}"] });
     expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
   });
 
@@ -940,10 +942,8 @@ describe("an engine's own pre-tool hook", () => {
     ["a pinned settings file with the hook's placeholder", cli((s) => {
       at(s, "decide")["pins"] = { "{home}/.claude/settings.json": "{\"a\": \"{matcher}\"}" };
     })],
-    ["a refused file that climbs out of the agent's directory", cli((s) => {
-      at(s, "decide")["refuses"] = ["../.gemini/settings.json"]; })],
-    ["a refused file by an absolute path", cli((s) => {
-      at(s, "decide")["refuses"] = ["/workspace/.gemini/settings.json"]; })],
+    ["a refused file, which the definition's native layers hold now", cli((s) => {
+      at(s, "decide")["refuses"] = [".gemini/settings.json"]; })],
     ["a hook that neither fails open nor closed", cli((s) => {
       at(s, "decide")["fails"] = "maybe"; })],
     ["no page it was read from", cli((s) => { delete at(s, "decide")["cite"]; })],
@@ -990,8 +990,27 @@ describe("how the agent's definition reaches an engine", () => {
       at(s, "definition.skills")["paths"] = ["/etc/skills"]; })],
     ["skills that climb out", cli((s) => { at(s, "definition.skills")["paths"] = ["../skills"]; })],
     ["no skills folder", cli((s) => { at(s, "definition.skills")["paths"] = []; })],
+    ["skills by an argv without the skill", cli((s) => {
+      at(s, "definition.skills")["argv_each"] = ["--skill"]; }, pi)],
+    ["skills by an argv carrying the skill twice", cli((s) => {
+      at(s, "definition.skills")["argv_each"] = ["--skill={skill}", "{skill}"]; }, pi)],
+    ["the skill's placeholder outside its argv", cli((s) => {
+      s["unattended_argv"] = ["--skill", "{skill}"]; }, pi)],
     ["instructions shadowed by themselves", cli((s) => {
       at(s, "definition.instructions")["shadowed_by"] = ["AGENTS.md"]; })],
+    // The engine's own layers, kept out of every run: never one the definition renders.
+    ["no native layers", cli((s) => { at(s, "definition.native")["refuses"] = []; })],
+    ["a native layer outside the cwd", cli((s) => {
+      at(s, "definition.native")["refuses"] = ["../.claude/settings.json"]; })],
+    ["a native layer that is the skills folder", cli((s) => {
+      at(s, "definition.native")["refuses"] = [".claude"]; })],
+    ["a native layer that is what shadows the instructions", cli((s) => {
+      at(s, "definition.native")["refuses"] = ["CLAUDE.md"]; })],
+    ["a native layer twice", cli((s) => {
+      at(s, "definition.native")["refuses"] = [".mcp.json", ".mcp.json"]; })],
+    ["native layers with no page", cli((s) => { delete at(s, "definition.native")["cite"]; })],
+    ["a native argv set to nothing", cli((s) => {
+      at(s, "definition.native")["argv"] = ["--approve="]; }, pi)],
     // The agent's own MCP servers go where the run's door does, each entry carrying the server's.
     ["agent servers under a key the MCP file has not", cli((s) => {
       at(s, "definition.mcp")["servers"] = "servers"; })],

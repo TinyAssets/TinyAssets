@@ -3,7 +3,7 @@
   "mcpServers": {
     "tinyassets": {
       "type": "streamable-http",
-      "url": "https://tinyassets.io/mcp",
+      "url": "https://stage.tinyassets.io/mcp",
       "extensions": {
         "com.openai": {
           "auth": {

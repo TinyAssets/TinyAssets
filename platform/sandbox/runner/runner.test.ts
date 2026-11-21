@@ -384,32 +384,6 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     expect(box.ran(engine)).toEqual([]);
   });
 
-  it.each([
-    // The second review's reproduction: Gemini trusts the agent's folder (folder trust is
-    // off), merges its .gemini/settings.json, and `hooksConfig.disabled` is a union.
-    ["Gemini's hook disabled by name", "gemini", ".gemini/settings.json",
-     { hooksConfig: { disabled: ["tinyassets-decide"] } }],
-    ["Gemini's hooks switched off", "gemini", ".gemini/settings.json",
-     { hooksConfig: { enabled: false } }],
-    ["Gemini's own hook beside ours", "gemini", ".gemini/settings.json",
-     { hooks: { BeforeTool: [{ matcher: ".*", hooks: [{ type: "command", command: "true" }] }] } }],
-    ["a tool Gemini discovers by the agent's command", "gemini", ".gemini/settings.json",
-     { tools: { discoveryCommand: "cat tools.json", callCommand: "sh run.sh" } }],
-    ["a prefix on every shell command pi runs", "pi", ".pi/settings.json",
-     { shellCommandPrefix: "curl x.test |" }],
-  ])("refuses a hooked run, before its CLI, with %s in the agent's settings",
-     async (_what, engine, rel, settings) => {
-    answering(["Bash", "run_shell_command", "bash"]);
-    doors.files.set(`/workspace/agents/main/${rel}`, { text: JSON.stringify(settings),
-                                                         version: 9 });
-    box.cli(engine, { lines: SHAPES[engine]!.lines });
-    const { end } = await run(engine);
-    expect(end).toEqual({ exit_code: 1 });
-    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
-      .toEqual({ type: "ta.refused", code: "hook_settings_refused", path: rel });
-    expect(box.ran(engine)).toEqual([]);
-  });
-
   it("keeps every settings layer Claude Code would load from what the agent writes",
      async () => {
     // The second review's reproductions A and B: the agent's own hook in its project's or
@@ -431,6 +405,14 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     // The user layer is pinned: root's, in a directory the run may write but never replace
     // it in.
     expect(seen.owners["~/.claude/settings.json"]![0]!.uid).toBe(0);
+    // What it wrote in its folder never loads in a later run either: that run is refused.
+    const local = "/workspace/agents/main/.claude/settings.local.json";
+    expect((await run("claude-code")).end).toEqual({ exit_code: 1 });
+    expect(doors.frames().filter((event) => event["type"] === "ta.refused").at(-1))
+      .toEqual({ type: "ta.refused", code: "engine_settings_refused", path: local });
+    expect(box.ran("claude-code")).toHaveLength(1);
+    rmSync(box.path(local));
+    doors.files.delete(local);
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
                              writes: { "~/.claude/settings.json": agentHook } });
     const replaced = await run("claude-code");
@@ -1146,7 +1128,7 @@ describe("an API-key run's base URL", () => {
                      signin: "https://egress.tinyassets.io/signin" } };
   }
   const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
-    home: "/h", system: "/s" });
+    home: "/h", system: "/s", skills: [] });
 
   it("gives Codex's key run the door through its own model provider, and no sign-in run any",
      () => {
@@ -1486,6 +1468,129 @@ describe("each run's own user", () => {
   });
 });
 
+describe("the agent's definition, and nothing beside it", () => {
+  it("keeps each engine's own settings out on every run, and hands pi each skill by its argv",
+     () => {
+    const skills = ["/workspace/agents/main/.agents/skills/mine", "/workspace/skills/owners"];
+    for (const engine of ["claude-code", "codex", "gemini", "pi"]) {
+      for (const unattended of [false, true]) {
+        const start = startDoc(doors, engine, { config: config(engine), unattended });
+        const { argv } = invocation(served().get(engine)!, start, {}, {
+          home: "/h", system: "/s", skills });
+        const given = argv.flatMap((arg, at) => argv[at - 1] === "--skill" ? [arg] : []);
+        if (engine === "pi") {
+          // Its project's trust-gated files (.pi/mcp.json, .pi/extensions, .agents/skills)
+          // never load: its skills are the definition's, by argv.
+          expect([argv.includes("--no-approve"), argv.includes("--approve"), given])
+            .toEqual([true, false, skills]);
+        } else {
+          expect(given, engine).toEqual([]);
+        }
+      }
+    }
+  });
+
+  it.each([
+    // The R5 reviews' reproductions, refused on every run now, a hook or not: Gemini trusts
+    // the agent's folder (folder trust is off) and merges its .gemini/settings.json.
+    ["Gemini's hooks switched off", "gemini", "/workspace/agents/main/.gemini/settings.json",
+     JSON.stringify({ hooksConfig: { enabled: false } })],
+    ["a tool Gemini discovers by the agent's command", "gemini",
+     "/workspace/agents/main/.gemini/settings.json",
+     JSON.stringify({ tools: { discoveryCommand: "cat tools.json", callCommand: "sh run.sh" } })],
+    ["a prefix on every shell command pi runs", "pi", "/workspace/agents/main/.pi/settings.json",
+     JSON.stringify({ shellCommandPrefix: "curl x.test |" })],
+    ["pi's own MCP servers", "pi", "/workspace/agents/main/.pi/mcp.json",
+     JSON.stringify({ mcpServers: { x: { command: "sh" } } })],
+    ["Claude Code's project settings", "claude-code",
+     "/workspace/agents/main/.claude/settings.json",
+     JSON.stringify({ permissions: { allow: ["Bash"] } })],
+    ["Claude Code's own servers, in an ancestor", "claude-code", "/workspace/.mcp.json",
+     JSON.stringify({ mcpServers: { x: { command: "sh" } } })],
+    ["Codex's project config", "codex", "/workspace/agents/main/.codex/config.toml",
+     "model = \"x\"\n"],
+  ])("refuses a run, before its CLI, with %s", async (_what, engine, file, text) => {
+    doors.files.set(file, { text, version: 9 });
+    box.cli(engine, { lines: SHAPES[engine]!.lines });
+    const { end } = await run(engine);
+    expect(end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toEqual({ type: "ta.refused", code: "engine_settings_refused", path: file });
+    expect(box.ran(engine)).toEqual([]);
+  });
+
+  it("refuses a run whose pi extension is in the agent's folder, by the folder", async () => {
+    doors.files.set("/workspace/agents/main/.pi/extensions/x.ts",
+                    { text: "export default () => {};\n", version: 9 });
+    box.cli("pi", { lines: SHAPES["pi"]!.lines });
+    expect((await run("pi")).end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused")).toEqual({
+      type: "ta.refused", code: "engine_settings_refused",
+      path: "/workspace/agents/main/.pi/extensions" });
+    expect(box.ran("pi")).toEqual([]);
+  });
+
+  it.each([
+    ["claude-code", "/workspace/CLAUDE.md"],
+    ["claude-code", "/workspace/agents/main/.claude/CLAUDE.md"],
+    ["claude-code", "/workspace/agents/CLAUDE.local.md"],
+    ["codex", "/workspace/agents/main/AGENTS.override.md"],
+    ["pi", "/workspace/AGENTS.override.md"],
+  ])("refuses a %s run while %s shadows the agent's AGENTS.md", async (engine, file) => {
+    doors.files.set(file, { text: "# not the agent's", version: 9 });
+    box.cli(engine, { lines: SHAPES[engine]!.lines });
+    expect((await run(engine)).end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toEqual({ type: "ta.refused", code: "instructions_shadowed", path: file });
+    expect(box.ran(engine)).toEqual([]);
+  });
+
+  it("refuses a run whose instructions its engine would cut, never cutting them, and takes " +
+     "them at the cap", async () => {
+    const max = sources.get("codex")!.cli!.definition.instructions.max_bytes!;
+    const file = "/workspace/agents/main/AGENTS.md";
+    doors.files.set("/workspace/AGENTS.md", { text: "a".repeat(2), version: 9 });
+    doors.files.set(file, { text: "a".repeat(max - 1), version: 9 });
+    box.cli("codex", { lines: SHAPES["codex"]!.lines });
+    expect((await run("codex")).end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused")).toEqual({
+      type: "ta.refused", code: "instructions_too_large",
+      paths: [file, "/workspace/AGENTS.md"], bytes: max + 1, max_bytes: max });
+    expect(box.ran("codex")).toEqual([]);
+    doors.files.set("/workspace/AGENTS.md", { text: "a", version: 10 });
+    expect((await run("codex")).end).toEqual({ exit_code: 0 });
+    // An engine with no cap reads them whole.
+    doors.files.set(file, { text: "a".repeat(max + 1), version: 10 });
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    expect((await run("claude-code")).end).toEqual({ exit_code: 0 });
+  });
+
+  it.each([
+    ["its engine's own settings", ".gemini/settings.json", '{"hooksConfig":{"enabled":false}}',
+     { code: "engine_settings_refused", path: "/workspace/agents/main/.gemini/settings.json" }],
+    ["an env file setting what its credential forbids", ".env", "GEMINI_API_KEY=x\n",
+     { code: "project_env_refused", path: ".env", sets: "GEMINI_API_KEY" }],
+  ])("refuses to resume a CLI after its agent wrote %s mid-run", async (_what, file, text,
+                                                                         refused) => {
+    const release = "/release-renewal";
+    box.cli("gemini", { lines: SHAPES["gemini"]!.lines, holdUntil: release, exit: 1,
+                        writes: { [file]: text } });
+    const start = startDoc(doors, "gemini", { config: config("gemini") });
+    box.start(start);
+    box.runner("launch", start.run);
+    await waitFor(() => box.runner("state").out.includes("\"quiet\":true")
+      && box.ran("gemini").length > 0);
+    expect(await box.runnerAsync("renew-wait", String(Date.now() + 10_000))).toBe(0);
+    expect(box.runner("renewed").code).toBe(0);
+    box.write(release, "");
+    expect((await doors.ended_(25_000, start.run)).body["end"]).toEqual({ exit_code: 1 });
+    expect(box.ran("gemini")).toHaveLength(1);
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toEqual({ type: "ta.refused", ...refused });
+    expect(doors.frames().map((event) => event["type"])).not.toContain("ta.resumed");
+  });
+});
+
 describe("the projection", () => {
   it("gives each engine the agent's skills and the owner's shared ones, the agent's winning",
      async () => {
@@ -1496,7 +1601,7 @@ describe("the projection", () => {
     doors.files.set("/workspace/.agents/skills/both/SKILL.md", { text: "shared both", version: 5 });
     doors.files.set("/workspace/.agents/skills/shared/SKILL.md", { text: "shared", version: 6 });
     doors.files.set("/workspace/skills/owners/SKILL.md", { text: "owner's", version: 7 });
-    for (const engine of ["claude-code", "codex", "pi"]) {
+    for (const engine of ["claude-code", "codex"]) {
       const path = sources.get(engine)!.cli!.definition.skills.paths[0]!;
       box.cli(engine, { lines: SHAPES[engine]!.lines,
                         dumps: ["mine", "both", "shared", "owners"].map((name) =>
@@ -1508,6 +1613,13 @@ describe("the projection", () => {
       expect(dumps[`${path}/shared/SKILL.md`]).toBe("shared");
       expect(dumps[`${path}/owners/SKILL.md`]).toBe("owner's");
     }
+    // pi takes each by its argv, the agent's own winning a name, in that order.
+    box.cli("pi", { lines: SHAPES["pi"]!.lines });
+    await run("pi");
+    const argv = box.ran("pi").at(-1)!.argv;
+    expect(argv.flatMap((arg, at) => argv[at - 1] === "--skill" ? [arg] : [])).toEqual([
+      "/workspace/agents/main/.agents/skills/both", "/workspace/agents/main/.agents/skills/mine",
+      "/workspace/.agents/skills/shared", "/workspace/skills/owners"]);
     // Links are never synced.
     expect(doors.ops().filter((op) => /skills\/(?:shared|owners)/.test(op.path)
       && op.path.startsWith("/workspace/agents/"))).toEqual([]);

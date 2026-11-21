@@ -78,6 +78,7 @@ describe("unknown keys at every level", () => {
     ["definition", cli((s) => { at(s, "definition")["stray"] = 1; })],
     ["definition.instructions", cli((s) => { at(s, "definition.instructions")["stray"] = 1; })],
     ["definition.skills", cli((s) => { at(s, "definition.skills")["stray"] = 1; })],
+    ["definition.native", cli((s) => { at(s, "definition.native")["stray"] = 1; })],
     ["definition.mcp", cli((s) => { at(s, "definition.mcp")["stray"] = 1; })],
     ["definition.mcp (unsupported)", cli((s) => {
       at(s, "definition")["mcp"] = { unsupported: "none", stray: 1 }; })],

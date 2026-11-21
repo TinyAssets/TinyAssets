@@ -103,11 +103,16 @@ export interface Engine {
   readonly events: EngineEvents;
 }
 
-/** Where the agent's canonical `AGENTS.md` is read, and what would shadow it. */
+/**
+ * Where the agent's canonical `AGENTS.md` is read, and what would shadow it: a run is refused
+ * while one of `shadowed_by` is in its cwd or an ancestor under `/workspace`, or while the
+ * `file`s there hold more than `max_bytes` together, which the engine would cut.
+ */
 export interface Instructions {
   readonly file: string;
-  /** Files that, when present, the engine reads instead: the runner never projects them. */
+  /** Files that, when present, the engine reads instead. */
   readonly shadowed_by: readonly string[];
+  /** The engine's cap on the instructions it reads, whole bytes; absent, none. */
   readonly max_bytes?: number;
   /** The record's file whose template makes the engine read `file`. */
   readonly setting?: string;
@@ -139,13 +144,38 @@ export type DefinitionHooks =
   | { readonly unsupported: string };
 
 /**
+ * How the agent's skills reach the engine: `paths`, the folders in the agent's directory each
+ * skill is linked into (the projection); `argv_each`, the arguments the run adds for each
+ * skill, `{skill}` its directory.
+ */
+export interface DefinitionSkills {
+  readonly paths: readonly string[];
+  readonly argv_each?: readonly string[];
+}
+
+/**
+ * The engine's own settings layers an agent's folder could hold beside its definition, which
+ * the definition never renders: `refuses`, the paths the engine loads them from, relative to
+ * its cwd and each ancestor under `/workspace`, a run refused while one is there (Fact 8: never
+ * a file loaded beside the definition, nor one silently ignored); `argv`, what keeps the engine
+ * from loading the rest on every run; from the vendor's page (`cite`, read on `read`).
+ */
+export interface DefinitionNative {
+  readonly refuses: readonly string[];
+  readonly argv?: readonly string[];
+  readonly cite: string;
+  readonly read: string;
+}
+
+/**
  * How the agent's definition (`contract/src/agent-definition.ts`) reaches the engine, part by
- * part: its instructions, the folders its skills are linked into in the agent's directory, its
- * own MCP servers and its own hooks.
+ * part: its instructions, its skills, the engine's own layers kept out, its own MCP servers and
+ * its own hooks.
  */
 export interface Definition {
   readonly instructions: Instructions;
-  readonly skills: { readonly paths: readonly string[] };
+  readonly skills: DefinitionSkills;
+  readonly native: DefinitionNative;
   readonly mcp: DefinitionMcp;
   readonly hooks: DefinitionHooks;
 }
@@ -269,8 +299,6 @@ export interface LoginSpec {
  *   own, and what keeps the CLI from loading a settings layer the agent can write.
  * - `pins`: the CLI's own settings files in the run's home a hooked run writes, root-owned and
  *   not replaceable by the run's user, so the layer they are is never the agent's.
- * - `refuses`: the files, from the agent's directory, that the CLI loads beside the hook and
- *   the agent can write: a hooked run is refused while one is there.
  * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
  *   it lacks, no rule holds at its hook.
  * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
@@ -289,7 +317,6 @@ export type Decide =
   | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
       readonly runs: HookRuns;
       readonly pins?: Readonly<Record<string, string>>;
-      readonly refuses?: readonly string[];
       readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
       readonly mcp: { readonly prefix: string; readonly join: string };
       readonly fails: "open" | "closed"; readonly alterable?: string;

@@ -24,8 +24,8 @@ agent run on it.
      asks every record for a `{sid}` in `resume_argv` and a session-id matcher. The runner's
      conversation directories (`/var/lib/ta-conv`), their lockdown exception and the probes'
      handling of them went with it.
-   - **The ranking's `kimi-for-coding`** (`model-ranking.json`), a model only Kimi's plan
-     served.
+   - **The ranking's `kimi-for-coding`** (`sources/src/model-ranking.json`, where #5744 moved
+     the ranking), a model only Kimi's plan served, with Kimi's plan in the ranking guard.
    - **The agent form's note** for an engine whose only credential is a switched-off sign-in.
 3. **Its tests' fixtures**: each case that used Kimi as a record of a shape (no vendor logout, a
    lock, a sign-in that fails at once, a record with no key, a forbidden-variable pattern,
@@ -71,10 +71,10 @@ agent run on it.
 - [ ] `untangle/drop-signin-models`: its owner migration also drops `sandbox_signins.region`
   (the baseline's, written by nothing now), with its bound in `owner-bound.test.ts` and the
   comment in `signins.ts`'s `begin`: one migration and one pin for both sign-in columns.
-- [ ] #5744: whichever of #5744 and this PR lands second drops `kimi-for-coding` from #5744's
+- [x] #5744: whichever of #5744 and this PR lands second drops `kimi-for-coding` from #5744's
   `sources/src/model-ranking.json` (it moves the ranking there from the owner's) and rebases
   #5744's Kimi test cases (`app.e2e.mjs`, `doors/test/signin.test.ts`, `actions.test.ts`) on
-  the engines there are.
+  the engines there are. Done here, at the merge of main after #5744.
 
 ## What brings Kimi back
 

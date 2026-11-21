@@ -219,6 +219,14 @@
           ".agents/skills"
         ]
       },
+      "native": {
+        "refuses": [
+          ".gemini/settings.json",
+          ".gemini/skills"
+        ],
+        "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/cli/skills.md",
+        "read": "2026-11-21"
+      },
       "mcp": {
         "servers": "mcpServers",
         "names": "mcp.allowed",
@@ -266,9 +274,6 @@
           "-c"
         ]
       },
-      "refuses": [
-        ".gemini/settings.json"
-      ],
       "kinds": {
         "shell": [
           "run_shell_command"

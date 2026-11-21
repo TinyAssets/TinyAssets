@@ -200,7 +200,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 - [ ] **Step 12. Manifest phase 1:** `IMPORT_KEY` removed, since a replayed admit is accepted by
   design, by the window's `close` alone, once every owner it staged is admitted or discarded
   (`i-window-close.md`); and R1, `deploy-worker.yml` deleted, so no routine deploy of the old
-  proxy takes routes back (d3 §J1: the proxy ends with no routes).
+  proxy takes routes back (d3 §J1: the proxy ends with no routes). The live stage's entries are
+  done and taken out before the window opens (step 8's end).
 - [ ] **Step 13. `routes`, the handles canary, the platform's canary.** `identity.json`'s `host`
   is already `tinyassets.io` (d3 §H). Mode `routes` keeps its route record, then hands the
   routes over; the manifest disables `uptime-canary.yml` (d3 §J2), whose old canary scripts the
@@ -894,6 +895,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 ### Step 8. The live stage (d3 §F1, §H), in order
 
+`identity.json`'s `host` is `stage.tinyassets.io` (`untangle/stage-host`). The stage opens in
+`deploy/checklist.md`'s order: `routes` (plan, then apply), `handback`'s plan job, the first
+sign-in with the gate closed, the gate opened to the two stage accounts alone through mode
+`control`, then their API keys and the probe secrets. Every step below signs in with a stage
+account, the founder's own test (§8) too.
+
 - [ ] 1. H2 (§5).
 - [ ] 2. The rehearsal's platform half (§9 item 7), which also proves the `aes-gcm` files under
   each owner's key: every chunk put by `stage` and read back by `verify`.
@@ -965,7 +972,9 @@ Measured on the stage as it runs:
   edit's wall time a chunk with R2, and the step at `SLOT_WAIT_MS`; a sandbox's real upload
   rate against `MIN_RATE`.
 - [ ] The stage ends with the product's own erase door, then `handback`: both first live
-  proofs. The stage is deleted, not kept (d3 §H).
+  proofs. Then the OAuth namespace is emptied, the control record closed, and `host` is the
+  zone again (`untangle/stage-end`), before the window opens: the manifest's phase 1. The stage
+  is deleted, not kept (d3 §H).
 
 ### Step 9. Fix what the stage found
 
@@ -981,7 +990,8 @@ Measured on the stage as it runs:
 ### Step 16. The 14-day hold, then manifest phase 3
 
 - [ ] On the founder's word: the droplet, the final backup and `tinyassets-final-backup` with
-  its `deploy/platform.json` entry; mode `handback` and the route record; the handles canary's
+  its `deploy/platform.json` entry; mode `handback` and the route records; the live stage's
+  WorkOS redirect URI `https://stage.tinyassets.io/oauth/upstream/callback`; the handles canary's
   old side; the old proxy Worker `tinyassets-mcp-proxy`, its tunnel, the `mcp.` record and its
   Access token (list3 P23, P24): the manifest's hold phase.
 
