@@ -1230,8 +1230,15 @@ const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "
     if (got.placed === null) {
       return { kept: got.kept };
     }
+    // A route record that has the host holding none before routes makes a placeholder on it
+    // now this run's: an earlier attempt's, made before it was written in, or the one added by
+    // hand after that attempt's refused make (the checklist's fallback); its handback deletes it.
+    const bare = got.kept !== null && !got.kept.record.host.held
+      && got.kept.record.host.made === null;
     say(got.placed.length > 0
-      ? `${HOST} holds its DNS record already, ${named(got.placed, HOST)}: none is made`
+      ? bare ? `${HOST} holds ${named(got.placed, HOST)}, and held none when this run's route ` +
+               "record was kept: the record keeps it as this run's, for a handback to delete"
+        : `${HOST} holds its DNS record already, ${named(got.placed, HOST)}: none is made`
       : `make the DNS record ${named([PLACEHOLDER], HOST)}, proxied, for the ` +
         "doors' routes on it, before anything is deployed: the route record keeps it, for a " +
         "handback to delete exactly it");
@@ -1242,11 +1249,9 @@ const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "
       throw new Error("an applied routes run keeps its route record before any change");
     }
     const { record, namespace, key } = got.kept;
-    if (record.host.held || record.host.made !== null) {
+    if (!bare) {
       return { kept: got.kept };
     }
-    // The record has the host holding none before routes, so a placeholder on it now is this
-    // run's: an earlier attempt's, made before it was written in.
     const made = got.placed.length > 0 ? got.placed
       : [await got.cloudflare.makeDns(got.zone, HOST, PLACEHOLDER)];
     const written = { ...record, host: { ...record.host, made } };

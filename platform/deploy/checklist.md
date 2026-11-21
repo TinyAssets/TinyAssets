@@ -192,8 +192,11 @@ It never counts as "absent".
   earlier `routes` run's, or yours) is left. Any other address record on the host stops
   the run before any change. A refused make (a token without DNS Edit) stops the run with
   only the route record written: add the record yourself (Cloudflare → `tinyassets.io` →
-  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and run
-  `routes` again. The zone itself holds the site's record, so on it nothing is made.
+  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and re-run
+  that run's jobs (the run → Re-run all jobs), not a new dispatch: its route record has the
+  host bare, so it keeps your record as the run's, and its handback deletes it. A new
+  dispatch keeps it as held, and no handback deletes it. The zone itself holds the site's
+  record, so on it nothing is made.
 
   It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
   `wrangler triggers deploy`),

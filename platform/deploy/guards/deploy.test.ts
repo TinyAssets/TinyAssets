@@ -1607,13 +1607,26 @@ describe("the route record", () => {
       await expect(runMode(w, "routes", ["--public"], PUBLIC, stage)).rejects.toThrow(why);
     });
 
-    it("stops at a refused make with only the route record written", async () => {
-      const w = world({ held: true, refusingDns: true });
+    it("stops at a refused make with only the route record written; the record added by hand, " +
+       "its re-run keeps that one as the run's, for its handback to delete", async () => {
+      const options = { held: true, refusingDns: true };
+      const w = world(options);
       await expect(runMode(w, "routes", ["--yes"], RUN, stage)).rejects.toThrow(
         `making the DNS record ${PLACED} failed (403, [10000])`);
       expect(w.events.filter((event) => CHANGE.test(event)))
         .toEqual([`cf PUT ${RECORD_AT}`, "cf POST /zones/z/dns_records"]);
       expect(stored(w).host).toEqual({ name: STAGE, held: false, made: null });
+      // The checklist's fallback: the founder adds it, and re-runs the run.
+      options.refusingDns = false;
+      w.dns.push({ id: "p1", type: "AAAA", name: STAGE, content: "100::" });
+      const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" },
+                                  stage);
+      expect(again.plan).toContain(`${STAGE} holds ${PLACED}, and held none when this run's ` +
+        "route record was kept: the record keeps it as this run's, for a handback to delete");
+      expect(stored(w).host).toEqual({ name: STAGE, held: false,
+                                       made: [{ id: "p1", type: "AAAA", content: "100::" }] });
+      await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(onStage(w)).toEqual([]);
     });
 
     it("records on a re-run the record its first attempt made before it was written in, and " +

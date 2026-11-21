@@ -22,6 +22,10 @@ cutover but with mode `routes` itself at the hold's end (`cutover.json`).
      run's record, whose handback deletes it). It is the egress domain's rule: the doors'
      already is kept as it is. A re-run attempt that made the record before writing it in
      records the placeholder it finds, which the route record proves was not there before.
+     So does a re-run after a refused make and the founder's fallback: that placeholder is
+     the run's, and its handback deletes it (the checklist says to re-run, not dispatch anew,
+     for that). Only a placeholder there before a run's first attempt is held and left
+     (review, 2026-11-21).
 2. **E2B's hook by its name.** `heldHook` finds `tinyassets-lifecycle` by name, and
    `lifecycleHook` sets its URL to the identity's when it differs ("its URL (… before)
    set"), so a host change moves the one hook instead of registering a second. The canary
