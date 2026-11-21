@@ -48,7 +48,9 @@ import {
   type CredentialKind, type SandboxService, START_CODES, type Started,
 } from "../../contract/src/sandbox";
 import { engineHosts } from "../../sources/src/served";
+import { clockMs } from "./clock";
 import { namedOwner } from "./door";
+import { LANE_CALL_MS } from "./schedule";
 
 /** The sandbox Worker as one owner's object reaches it: each method less its owner. */
 export type OwnerSandbox = {
@@ -98,7 +100,8 @@ const START_MALFORMED = "start_malformed";
  * What came of a start, a run's or a sign-in's, as the object acts on it:
  * - the sandbox's answer (`Started`): started, or one of the contract's start codes;
  * - a refusal it threw, by its code: the sandbox Worker refuses only before it launches
- *   anything (its runner's two alerts, `sandbox/src/control.ts`), so nothing started;
+ *   anything (its runner's two alerts, `sandbox/src/control.ts`), and the runtime's overload
+ *   of an object (`object_overloaded`) is thrown before the call runs, so nothing started;
  * - `started: null`: no answer the object can read, so the job may have launched. Either the
  *   call threw (`START_LOST`: its answer lost on the way, or the sandbox Worker's own fault,
  *   which crosses as a plain error the object cannot tell from a loss), or it answered out
@@ -112,30 +115,49 @@ export type StartOutcome = Started
  * What came of `start`, a call to the sandbox Worker's `start` or `signin` for `job` (as its
  * log lines name it), each cause but a start logged as itself. Its answer is read outside
  * the call's catch, so one out of shape is never taken for a lost start.
+ *
+ * A transient refusal says the same start succeeds later (`refusal.ts`), and nothing started
+ * (above), so the same start (its job's id, its admission's tokens and network) is sent again
+ * after the refusal's own `Retry-After`, while its job still `stands` (not cancelled or ended
+ * meanwhile) and that wait ends within `LANE_CALL_MS` of the first send: the bound on one
+ * outside call a lane's row makes, so a pass that starts a run ends inside its hung timeout.
+ * Past it the refusal stands, by its own code.
  */
-export async function startOutcome(job: "a run" | "a sign-in", start: () => Promise<unknown>):
-    Promise<StartOutcome> {
-  let value: unknown;
-  try {
-    value = await start();
-  } catch (error) {
-    const refusal = refusalOf(error);
-    if (refusal !== null) {
+export async function startOutcome(job: "a run" | "a sign-in", start: () => Promise<unknown>,
+                                   stands: () => Promise<boolean>): Promise<StartOutcome> {
+  const bound = clockMs() + LANE_CALL_MS;
+  for (;;) {
+    let value: unknown;
+    try {
+      value = await start();
+    } catch (error) {
+      const refusal = refusalOf(error);
+      if (refusal === null) {
+        console.error(`${job}'s start did not answer: whether it launched is unknown`, error);
+        return { started: null, code: START_LOST };
+      }
+      const waitMs = (refusal.retryAfter ?? 0) * 1000;
+      if (refusal.transient && clockMs() + waitMs <= bound) {
+        console.warn(`the sandbox refused ${job}'s start for the moment (${refusal.code}): ` +
+                     "nothing started, so it is sent again");
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        if (await stands()) {
+          continue;
+        }
+      }
       console.error(`the sandbox refused ${job}'s start (${refusal.code}): nothing started`);
       return { started: false, code: refusal.code };
     }
-    console.error(`${job}'s start did not answer: whether it launched is unknown`, error);
-    return { started: null, code: START_LOST };
+    if (keyed(value, ["started"]) && value["started"] === true) {
+      return { started: true };
+    }
+    const code = keyed(value, ["code", "started"]) && value["started"] === false
+      ? START_CODES.find((each) => each === value["code"]) : undefined;
+    if (code !== undefined) {
+      return { started: false, code };
+    }
+    console.error(`the sandbox answered ${job}'s start out of the contract's shape, a sandbox ` +
+                  "Worker bug: whether it launched is unknown");
+    return { started: null, code: START_MALFORMED };
   }
-  if (keyed(value, ["started"]) && value["started"] === true) {
-    return { started: true };
-  }
-  const code = keyed(value, ["code", "started"]) && value["started"] === false
-    ? START_CODES.find((each) => each === value["code"]) : undefined;
-  if (code !== undefined) {
-    return { started: false, code };
-  }
-  console.error(`the sandbox answered ${job}'s start out of the contract's shape, a sandbox ` +
-                "Worker bug: whether it launched is unknown");
-  return { started: null, code: START_MALFORMED };
 }
