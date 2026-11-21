@@ -23,9 +23,9 @@ Founder call 6 (`founder-answers.md`): Muse connects both ways. It uses a key on
    - `registration` stays `dcr` until the live test records Muse Code's `client_name` and redirects.
    - `wake-kinds.json`'s `muse_recurring_task` no longer restates how Muse connects ("the owner's ADR-028 key in Muse's Secrets tab"). It points to `apps.json`'s two ways in.
 7. ADR-028's Status records that this is built, and that the per-agent rate limit it names is not (Fact 15).
+8. **The `Bearer` scheme is read in any case** (review): `kit.ts` `bearer`, the one read of every door's bearer, takes `bearer` and `BEARER` with one or more spaces (RFC 7235 §2.1, RFC 6750 §2.1), as the OAuth provider does. A client that sends `bearer <key>` is served on `/api` and `/mcp`; the owner surface reads its token the same way.
 
 **Left:**
-- `kit.ts` `bearer` matches the scheme `Bearer` exactly, with one space. The OAuth provider's parse ignores case. A key sent as `bearer <key>` is refused `401` on both doors, the same refusal as before this change. Widening `bearer` would also change the owner surface, so it is not part of this change.
 - The owner's connected-apps list (`grants.ts` `apps`, `agents_list`'s `apps`) counts only `mcp` clients by vendor. A key names no vendor, so a Muse connected by a key shows under its agent, not as "Meta Muse connected". A vendor for a key would have to come from the owner at mint. No research covers that yet.
 
 **Owed:**

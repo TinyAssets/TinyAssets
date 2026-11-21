@@ -238,6 +238,18 @@ describe("a key on the MCP endpoint", () => {
     expect(await reached(alice)).toBe(false);
   });
 
+  it("takes the Bearer scheme in any case, at /mcp and /api alike", async () => {
+    const { key } = await mintKeyFor(owner());
+    for (const scheme of ["bearer", "BEARER"]) {
+      const authorization = { Authorization: `${scheme} ${key}` };
+      expect((await legacyPost(key, LIST, authorization)).status).toBe(200);
+      const api = await call(new Request(url("/api/tools/agents_list"), {
+        method: "POST", body: "{}",
+        headers: { ...authorization, "Content-Type": "application/json" } }));
+      expect(api.status).toBe(200);
+    }
+  });
+
   it("refuses a key with a present Origin 403, before the object", async () => {
     const alice = owner();
     const { key } = await mintKeyFor(alice);
