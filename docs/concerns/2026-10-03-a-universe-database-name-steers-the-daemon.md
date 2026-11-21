@@ -93,7 +93,7 @@ retries it.
    plantable name, so the class disappears rather than being detected. This is
    a storage-shape change with a migration, so it needs a proposal -- and it is
    what `2026-10-01-platform-state-inside-the-universe-dir` already argues.
-2. **The per-role uid split (`openspec/changes/per-role-uid-split`) plus a
+2. **The per-role uid split ([the `per-role-uid-split` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-10-10-per-role-uid-split)) plus a
    sticky parent.** Today a command center's processes share the daemon's uid,
    so `+t` buys nothing: a same-uid process may rename the daemon's entry. Once
    engine and provider children run as their own uid and the folder is owned by

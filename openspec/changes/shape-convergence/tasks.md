@@ -65,7 +65,7 @@ excluded. The PR measures the real figure, and a positive net does not merge.
       Gate-file change: one cross-family round.
       Guard: superseded-open, public-routes. Net about −6k. Depends on C1.
 - **C3 One model call.** Execute
-      `openspec/changes/one-model-call-path/` tasks 2.1–2.8 (#4616 step 1).
+      [the `one-model-call-path` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/one-model-call-path) tasks 2.1–2.8 (#4616 step 1).
       **Deletes:** `call_provider`, `call_with_policy(_sync)` and its 5
       definitions, `UniverseBoundProviderCall`, `_build_fallback_router`,
       `FALLBACK_CHAINS`, the default/manifest scope split, 4 of the 5
@@ -195,7 +195,7 @@ excluded. The PR measures the real figure, and a positive net does not merge.
 ## 3. Pull requests and notes folded by this change
 
 - [ ] 3.1 Fold or close, each with a pointer to this change:
-      - #4616: keep `openspec/changes/one-model-call-path/` (it is C3) and
+      - #4616: keep [the `one-model-call-path` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/one-model-call-path) (it is C3) and
         drop its design note; its findings are design §1 and §2.
       - #4609: close. The inventory and prune order are C5 and C10, and
         the model-marketplace hard requirement goes to an ADR if the founder
