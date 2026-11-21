@@ -628,10 +628,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`pass-sandbox.md` §4).
   - [x] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
     (`pass-sandbox.md` §2).
-  - [ ] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
+  - [x] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
     deadline (`control.ts` `#renew`), and `tell` waits for an answer only to it, so no run's
     posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
-    bound first (`pass-sandbox.md` §2).
+    bound first (`pass-sandbox.md` §2). Done: `RENEWING_MS` past the Worker's now, 700 ms,
+    and never past `endAt` less the longest pause (#5680; `untangle-2026-11/renew-deadline.md`).
+  - [ ] `runner.ts` `RunState.renewing`, written for the tests alone, dropped with the next
+    state format (`renew-deadline.md` §4).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
