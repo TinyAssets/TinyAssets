@@ -430,8 +430,9 @@ describe("platform-recorders", () => {
     const compare = steps[2] ?? {};
     if (steps.length !== 3 ||
         JSON.stringify(steps.slice(0, 2)) !== JSON.stringify(SETUP.slice(0, 2)) ||
-        !keyed(compare, ["name", "env", "run"]) || compare.env?.SHARD !== "${{ matrix.shard }}" ||
-        String(compare.run).trimEnd().split("\n").at(-1) !== CHECK) {
+        compare.env?.SHARD !== "${{ matrix.shard }}" ||
+        String(compare.run).trimEnd().split("\n").at(-1) !== CHECK ||
+        !keyed(compare, ["name", "env", "run"])) {
       found.push("platform-recorders' steps are checkout, setup-node and the comparison, " +
                  `which ends in the check, whole: ${CHECK}`);
     }
