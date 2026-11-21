@@ -168,6 +168,26 @@ function projectEnvWords({ code, path, helper, sets }) {
       : null;
 }
 
+/** Why a run read nothing beside its agent's definition, nor a cut of it. */
+function definitionWords({ code, path, paths, bytes, max_bytes }) {
+  if (code === "instructions_shadowed" && typeof path === "string") {
+    return `instructions_shadowed: the engine would read ${path} instead of the agent's ` +
+      "AGENTS.md; move what it says into AGENTS.md and remove it";
+  }
+  if (code === "engine_settings_refused" && typeof path === "string") {
+    return `engine_settings_refused: ${path} is the engine's own settings, which no run ` +
+      "loads beside the agent's definition (agent.json, AGENTS.md, skills, mcp.json, " +
+      "hooks.json); move what it sets there and remove it";
+  }
+  if (code === "instructions_too_large" && Array.isArray(paths)
+      && paths.every((each) => typeof each === "string") && whole(bytes) && whole(max_bytes)) {
+    return `instructions_too_large: ${paths.join(", ")} hold ${bytes.toLocaleString("en-US")} ` +
+      `bytes of instructions, and the engine reads ${max_bytes.toLocaleString("en-US")}; ` +
+      "shorten them, or move detail into skills";
+  }
+  return null;
+}
+
 /** A runner's event as a person is shown it: its words in their place. */
 export function eventShown(event) {
   if (typeof event !== "object" || event === null || Array.isArray(event)) {
@@ -192,7 +212,7 @@ export function eventShown(event) {
     return text === null ? event : { type, text };
   }
   if (type === "ta.refused") {
-    const reason = projectEnvWords(event);
+    const reason = projectEnvWords(event) ?? definitionWords(event);
     return reason === null ? event : { type, reason };
   }
   if (type === "ta.sync_refused" && Object.hasOwn(REFUSED, event.code)) {
