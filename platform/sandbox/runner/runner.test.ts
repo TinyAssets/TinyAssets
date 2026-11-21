@@ -515,7 +515,7 @@ describe("the env files a CLI would load", () => {
     ["the workspace's .env", "/workspace/.env", "GOOGLE_GEMINI_BASE_URL=https://x\n"],
     ["an ancestor's .gemini/.env", "/workspace/agents/.gemini/.env", "GEMINI_API_KEY=x\n"],
     // A proxy would take the run's calls past the egress door; the runner refuses it by
-    // the source checker's own `CREDENTIAL_NAME`, which refuses one in a record.
+    // the contract's `CREDENTIAL_NAME`, which the source checker refuses in a record too.
     ["the agent's .env proxy", "/workspace/agents/main/.env", "HTTPS_PROXY=http://x.test:3128\n"],
   ])("refuse the run when %s sets a variable", async (_what, file, text) => {
     doors.files.set(file, { text, version: 9 });
@@ -1496,7 +1496,7 @@ describe("the projection", () => {
     doors.files.set("/workspace/.agents/skills/shared/SKILL.md", { text: "shared", version: 6 });
     doors.files.set("/workspace/skills/owners/SKILL.md", { text: "owner's", version: 7 });
     for (const engine of ["claude-code", "codex", "pi"]) {
-      const path = sources.get(engine)!.cli!.skills_paths[0]!;
+      const path = sources.get(engine)!.cli!.definition.skills.paths[0]!;
       box.cli(engine, { lines: SHAPES[engine]!.lines,
                         dumps: ["mine", "both", "shared", "owners"].map((name) =>
                           `${path}/${name}/SKILL.md`) });

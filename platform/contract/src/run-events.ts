@@ -16,7 +16,9 @@
  * the engine stopped at a tool call it deferred (`deferred`: Claude Code's `defer`, the turn
  * ended `tool_deferred`), which a resume of its session answers, and whether the vendor
  * refused it for its own rate limit, quota or billing (`vendor_limit`, ADR-034 decision 7),
- * with the reset the vendor stated, if any.
+ * with the reset the vendor stated, if any. An engine that reports a failed call and then
+ * retries it itself says so (`retry`), which withdraws that error: only a call it gave up on
+ * fails the run.
  */
 import { Refusal } from "./refusal.ts";
 
@@ -54,6 +56,12 @@ export interface EngineEvents {
    * number states none.
    */
   readonly vendor_limit: readonly EventMatcher[];
+  /**
+   * The engine's own retry of the call whose error it reported last (pi's `auto_retry_start`),
+   * which withdraws that error: the call has not failed yet (none for an engine that reports
+   * only the error it gave up on).
+   */
+  readonly retry: readonly EventMatcher[];
 }
 
 export const FRAME_VERSION = 1;
@@ -195,6 +203,8 @@ export interface Read {
   readonly deferred: boolean;
   /** The vendor's limit it reports, and the reset the vendor stated (seconds), or null. */
   readonly vendor_limit: { readonly reset: number | null } | null;
+  /** Whether it is the engine's own retry of the call it last reported failed. */
+  readonly retry: boolean;
 }
 
 /** The reset a vendor's limit event states at `path`: a finite count of seconds, else null. */
@@ -223,5 +233,6 @@ export function readEvent(events: EngineEvents, event: unknown): Read {
       : textOf(valueAt(event, error.path)) ?? "the engine reported an error",
     deferred: first(events.deferred, event) !== undefined,
     vendor_limit: limit === undefined ? null : { reset: resetAt(event, limit.path) },
+    retry: first(events.retry, event) !== undefined,
   };
 }

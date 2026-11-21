@@ -157,7 +157,8 @@
         "error": [
           {
             "match": {
-              "type": "error"
+              "type": "error",
+              "severity": "error"
             },
             "path": "message"
           },
@@ -203,17 +204,47 @@
             },
             "path": ""
           }
-        ]
+        ],
+        "retry": []
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": [],
-      "setting": "{system}/gemini-settings.json"
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": [],
+        "setting": "{system}/gemini-settings.json"
+      },
+      "skills": {
+        "paths": [
+          ".agents/skills"
+        ]
+      },
+      "mcp": {
+        "servers": "mcpServers",
+        "names": "mcp.allowed",
+        "http": {
+          "httpUrl": "{url}"
+        },
+        "stdio": {
+          "command": "{command}",
+          "args": "{args}",
+          "env": "{env}"
+        }
+      },
+      "hooks": {
+        "events": {
+          "pre_tool": "BeforeTool",
+          "post_tool": "AfterTool",
+          "prompt": "BeforeAgent",
+          "session_start": "SessionStart",
+          "stop": "AfterAgent",
+          "session_end": "SessionEnd",
+          "pre_compact": "PreCompress"
+        },
+        "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/hooks/reference.md",
+        "read": "2026-11-21"
+      }
     },
-    "skills_paths": [
-      ".agents/skills"
-    ],
     "mcp": {
       "file": "{system}/gemini-settings.json",
       "template": "{\"mcpServers\": {\"tinyassets\": {\"httpUrl\": \"{mcp_url}\"}}, \"mcp\": {\"allowed\": [\"tinyassets\"]}, \"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",

@@ -17,6 +17,9 @@ import type { EgressMode } from "./policy-document.ts";
 
 /** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
 export type CredentialKind = "vendor_login_in_sandbox" | "api_key";
+/** Every credential an engine runs on. */
+export const CREDENTIAL_KINDS: readonly CredentialKind[] = Object.freeze([
+  "vendor_login_in_sandbox", "api_key"]);
 
 /** E2B's `SandboxNetworkRule`, its static transform. */
 export interface NetworkRule {

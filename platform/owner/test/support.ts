@@ -18,7 +18,7 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { contentIdOf } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
-import { agentFilePath } from "../src/agent-file";
+import { AGENT_FILES, agentPath } from "../../contract/src/agent-definition";
 import { carried, NEWER } from "../src/starter-package";
 import { LANE_PASS_S, SCHEDULE } from "../src/schedule";
 import { clock } from "../src/clock";
@@ -527,7 +527,7 @@ export function starterSeed() {
     chunks: new Set(placed.map((each) => each.chunk!)),
     /** The owner's agents it defines (an `agent.json` each), each a ledger identity. */
     agents: files.map((each) => each.path.split("/")[3] ?? "")
-      .filter((agent, n) => agentFilePath(agent) === files[n]!.path),
+      .filter((agent, n) => agentPath(agent, AGENT_FILES.agent) === files[n]!.path),
     /**
      * Of `items`, those not the seed's: what the test itself wrote. Each is named (by
      * `nameOf`, itself by default) by its path, a newer version's path beside its file, its

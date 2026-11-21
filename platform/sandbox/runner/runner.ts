@@ -774,7 +774,7 @@ async function syncLocked(job: SyncJob): Promise<number> {
         await syncIn(client, place, mirror);
         const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
         const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
-        const made = project(WORKSPACE, job.agent, record(job.engine).cli.skills_paths,
+        const made = project(WORKSPACE, job.agent, record(job.engine).cli.definition.skills.paths,
                              previous);
         safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
         process.stdout.write(JSON.stringify({ ok: true }));

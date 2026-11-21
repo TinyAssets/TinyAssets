@@ -75,7 +75,16 @@ describe("unknown keys at every level", () => {
     ["engine.events", cli((s) => { at(s, "engine.events")["stray"] = []; })],
     ["event matcher", cli((s) => {
       (at(s, "engine.events")["final_text"] as Json[])[0]!["stray"] = 1; })],
-    ["instructions", cli((s) => { at(s, "instructions")["stray"] = 1; })],
+    ["definition", cli((s) => { at(s, "definition")["stray"] = 1; })],
+    ["definition.instructions", cli((s) => { at(s, "definition.instructions")["stray"] = 1; })],
+    ["definition.skills", cli((s) => { at(s, "definition.skills")["stray"] = 1; })],
+    ["definition.mcp", cli((s) => { at(s, "definition.mcp")["stray"] = 1; })],
+    ["definition.mcp (unsupported)", cli((s) => {
+      at(s, "definition")["mcp"] = { unsupported: "none", stray: 1 }; })],
+    ["definition.hooks", cli((s) => { at(s, "definition.hooks")["stray"] = 1; })],
+    ["definition.hooks (unsupported)", cli((s) => {
+      s["decide"] = { unsupported: "none" };
+      at(s, "definition")["hooks"] = { unsupported: "none", stray: 1 }; })],
     ["mcp (file)", cli((s) => { at(s, "mcp")["stray"] = 1; })],
     ["mcp.trust", cli((s) => { at(s, "mcp.trust")["stray"] = 1; })],
     ["mcp (unsupported)", cli((s) => { s["mcp"] = { unsupported: "none", stray: 1 }; }, pi)],
