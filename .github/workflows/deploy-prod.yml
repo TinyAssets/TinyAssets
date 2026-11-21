@@ -1,21 +1,15 @@
 name: Deploy prod
 
-# Fail-safe single-daemon deploy (host directive 2026-08-18). Replaces the
-# "retire-cheat-loop" stop-writer fence, which quiesced prod BEFORE proving the
-# new image and could not reliably restore it — so every failed deploy since
-# 2026-08-10 left prod with ZERO containers. That fence guarded a retired
-# multi-container writer fleet; only the daemon + sidecars remain.
+# The single-daemon deploy proves the new image can load before stopping the
+# running daemon and records the healthy image for rollback.
 #
-# Flow: resolve image + verify ancestry -> SSH -> run deploy/deploy_fail_safe.sh
-# (record current -> pull -> prove-load -> swap+restart -> health+tunnel check ->
-# roll back to the recorded image if unhealthy) -> public --assert-handles canary
-# (roll back if the public surface is red) -> publish release-state -> prove the
-# protected receipt contains the target revision.
+# deploy/deploy_fail_safe.sh checks the candidate's health and tunnel after
+# the swap. The public handles canary must pass before release-state is
+# published and the protected receipt checked against the target revision.
 #
-# The deploy step NEVER leaves prod at zero: the script's worst case restores the
-# previous healthy image, backed by compose `restart: unless-stopped` + systemd
-# `Restart=always`. Rationale + prior-fence postmortem: the deploy_fail_safe.sh
-# header and docs/architecture.md.
+# Recovery before owner-box commitment can restore the previous healthy image.
+# After commitment, failure defaults to HOLD for a fix forward. Restoring
+# data and image together through cutover_control requires pre_traffic eligibility.
 #
 # Required repo secrets: DO_DROPLET_HOST, DO_SSH_USER, DO_SSH_KEY.
 

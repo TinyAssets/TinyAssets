@@ -7,8 +7,7 @@ name: Quarantine oracle
 # direction:
 #
 #   - A test can SKIP locally (symlink creation needs a privilege Windows does
-#     not grant) and FAIL on Linux. Reading the skip as "fine" put two real
-#     bugs into an earlier wave of this drain.
+#     not grant) and FAIL on Linux.
 #   - A test can PASS locally and still be a genuine Linux failure, because the
 #     ledger is a Linux artifact. Unquarantining on a local green hands `main`
 #     a red required gate — which blocks every open PR, not just yours.

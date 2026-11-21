@@ -9,10 +9,6 @@ name: Enqueue merge
 # enabling auto-merge is not a pull_request event, so the enroll workflow
 # does not run again to replace it.
 #
-# Measured 2026-10-12: #4658, armed by the user PAT, entered the queue two
-# seconds after required-tests passed. #4649 was re-armed by cursor[bot] and
-# never entered the queue.
-#
 # This calls enqueuePullRequest once a Jonnyton comment opens with
 # Drain-Review-Verdict: APPROVE and Drain-Review-Head for this change, the
 # body cites that comment and required checks have passed. The actor is

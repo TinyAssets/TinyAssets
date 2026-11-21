@@ -1,41 +1,13 @@
 name: Release reconcile
 
-# Why this exists
-# ---------------
-# Three times in one day the release chain broke silently, and each break was
-# only found by checking production by hand:
+# A merge made with GITHUB_TOKEN can suppress the workflow events that would
+# normally build and deploy main. The scheduled check can recover even if
+# those events never arrive. A successful Docker smoke run on main starts the
+# same check sooner.
 #
-#   1. Merges performed by the Actions app via GITHUB_TOKEN do not trigger
-#      workflow runs, so the push to main built nothing. Five PRs shipped
-#      nowhere, including a storage fix for universes that lost their database.
-#   2. `strict` required checks left every other enrolled PR `behind` after each
-#      merge, so nothing could land while main kept moving.
-#   3. post-merge-release.yml tried to fix (1) by dispatching on
-#      `pull_request_target: closed`. It never fired once — `closed` is also
-#      suppressed when the token performed the merge. It has been deleted
-#      rather than left in place looking like a safety net.
-#
-# Every link in an event chain fails silently and independently. So the timer
-# remains the independent backstop that asks one question — IS PRODUCTION
-# RUNNING CURRENT MAIN? — and converges. A successful main-branch Docker smoke
-# completion also wakes the same idempotent loop sooner; it never replaces the
-# schedule. A broken event chain still heals on the next timer tick.
-#
-# What "production" means here
-# ----------------------------
-# The first version of this file asked whether a successful IMAGE BUILD existed
-# for the current commit. A cross-family review pointed out that this is not the
-# same question at all, and it can report "in sync" while production is stale:
-#
-#   - the build succeeded but the deploy or canary failed
-#   - the deploy succeeded and then AUTO-ROLLED BACK on canary red
-#   - a successful build on a FEATURE BRANCH happened to contain the commit —
-#     the build-runs query was never filtered to main, and there is in fact one
-#     such run in this repo's history, so this was live and not theoretical
-#
-# So the question is now asked of `Deploy prod` runs on main, which only reach
-# success after the post-deploy canary passes. That is the closest signal to
-# "production is actually serving this commit" available from the API.
+# Compare the latest runtime-relevant commit with successful Deploy prod runs
+# on main. A build alone says nothing about a later failed deploy or rollback.
+# The deploy completes only after the public canary passes.
 
 on:
   schedule:

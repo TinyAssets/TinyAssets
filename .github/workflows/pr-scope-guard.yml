@@ -1,26 +1,12 @@
 name: PR scope guard
 
-# Why this exists
-# ---------------
-# Green checks are not sufficient to auto-merge safely. PR #1491 presented as a
-# two-file auth fix and CI was happy — but its diff against main carried seven
-# workflow files plus deploy-prod.yml and Dockerfile, because the branch sat on
-# an unmerged 217-commit lineage. Nothing in CI objected; only inspecting the
-# DIFF SCOPE caught it. With auto-merge enabled, that PR would have shipped
-# changes to the production deploy workflow under the banner of an auth fix.
+# Required tests can pass on a branch carrying unrelated changes from an
+# unmerged ancestor. Review the actual diff against main. The step summary
+# counts the release-critical files so the reviewer can spot a carried lineage.
 #
-# So: every PR's diff against main is reviewed before it merges, and the
-# receipt below is the control. The release-critical files a PR touches are
-# counted in the step summary for the reviewer — see the honesty note at the
-# bottom of this file.
-#
-# Since 2026-09-26 the exact-head receipt this guard already demanded on
-# gate-defining and authority paths has to be a PUBLISHED APPROVAL, not a
-# bookmark. PR #3989 auto-merged at the exact head its Tier 2 reviewer had
-# BLOCKED, because a verdict lives in a PR comment and auto-merge reads only
-# required checks. So the receipt must now cite a comment on this PR that a
-# trusted author wrote and that itself says APPROVE for the current head. WHO
-# needs a receipt did not change.
+# The receipt must cite a published approval from a trusted author for the
+# change under review. GitHub auto-merge reads the resulting required check.
+# A review verdict in a comment alone cannot stop a merge.
 #
 # MUST run unconditionally (no `paths:` filter). A required status check that is
 # path-filtered never reports on PRs outside those paths, and the PR then hangs
