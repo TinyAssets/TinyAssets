@@ -31,7 +31,8 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# The checkout's root, wherever the file sits (the cutover carries it to scripts/tests/).
+REPO_ROOT = next(at for at in Path(__file__).resolve().parents if (at / "AGENTS.md").is_file())
 BUDGET_SCRIPT = REPO_ROOT / "scripts" / "check_context_budget.py"
 
 # The five files AGENTS.md names as the rulebook. Pinned here as well as in the
