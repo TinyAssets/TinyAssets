@@ -256,7 +256,10 @@ describe("the record unreadable, served from the doors' kept copy", () => {
   });
 
   it("refuses an outside client's new authorization, for a while", async () => {
-    await expect(authorizeMcp(await registerClient(), { owner: owner() }, unreadable()))
+    // The copy is the record read open: the client's earlier authorization read it.
+    const client = await registerClient();
+    await connect(client, { owner: owner() });
+    await expect(authorizeMcp(client, { owner: owner() }, unreadable()))
       .rejects.toThrow("temporarily_unavailable");
   });
 
