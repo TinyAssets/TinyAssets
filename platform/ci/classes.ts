@@ -16,11 +16,11 @@
  * Every project's tests are held to this at run time by a setup file (`class-check.ts`), so
  * no CLI flag can drop the check; a measuring run with `--reporter=json` keeps it.
  *
- * The budgets are derived, never chosen: `node ci/budgets.mjs` recomputes `budgets.json`
- * from a leg's Vitest JSON report. They are measured on CI's usual runners, and a runner
- * slower than those has every budget scaled by how much slower it is (`RUNNER`): about one
- * leg in two thousand lands on a runner four to five times slower than usual, from its first
- * step (`docs/decisions/untangle-2026-11/budgets-variance.md`).
+ * The budgets are derived, never chosen: `node ci/budgets.mjs` recomputes `budgets.json` from
+ * one run's whole set of Vitest JSON reports. They are measured on CI's usual runners, and a
+ * runner slower than those has every budget scaled by how much slower it is (`RUNNER`): about
+ * one leg in two thousand lands on a runner four to five times slower than usual, from its
+ * first step (`docs/decisions/untangle-2026-11/budgets-variance.md`).
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

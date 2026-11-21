@@ -2,8 +2,9 @@
  * The platform's canary (`canary.ts`) and its alarm (`alarm.ts`), against a fake platform,
  * GitHub, E2B, WorkOS and Pushover: the canary reads which side serves and checks that side
  * alone, a keyed check unchecked is a failure, the full run runs once a day and its ending is
- * carried, and the off-account copy must have passed a night inside two once configured; the alarm acts only when armed and the doors serve, pages at the second red in a
- * row or a stopped clock, climbs its ladder, stops at the founder's answer and closes on green.
+ * carried, and the off-account copy must have passed a night inside two once configured; the
+ * alarm acts only when armed and the doors serve, pages at the second red in a row or a
+ * stopped clock, climbs its ladder, stops at the founder's answer and closes on green.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

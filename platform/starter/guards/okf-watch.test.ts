@@ -106,19 +106,18 @@ describe("the OKF watcher", () => {
     expect(body).toContain("U+200B at 4:");
     expect(body).toContain("needs-founder");
     expect(body).toContain("never merged on a version number");
-    // A pull request's body carries no ritual line for a gate to read (P3).
+    // A pull request's body carries no ritual line for a gate to read.
     expect(body).not.toMatch(/^(Registry row|Net core lines|Lane)/m);
   });
 
-  it("flags the blank letters and separators too (review L5)", () => {
+  it("flags the blank letters and separators too", () => {
     const blanks = [0x2028, 0x2029, 0x115f, 0x1160, 0x3164, 0xffa0, 0x2800]
       .map((code) => `a${String.fromCodePoint(code)}b`).join("\n");
     expect(hiddenUnicode(blanks).map((at) => at.code)).toEqual(
       ["U+2028", "U+2029", "U+115F", "U+1160", "U+3164", "U+FFA0", "U+2800"]);
   });
 
-  it("checks what it quotes from upstream, and quotes it where nothing in it acts (M5)",
-     () => {
+  it("checks what it quotes from upstream, and quotes it where nothing in it acts", () => {
     const moved = `${readme}\nOKF now lives in <!-- hide the rest --> \`x\` ~~~ here\n`;
     const tag = `v1${String.fromCodePoint(0x200b)}`;
     const found = report(pin, { commit: "e".repeat(40), spec, readme: moved, tags: [tag] }, spec);
@@ -133,7 +132,7 @@ describe("the OKF watcher", () => {
     expect(quoted([])).toBe("none");
   });
 
-  it("raises the starter's version only for new spec bytes (review L7)", () => {
+  it("raises the starter's version only for new spec bytes", () => {
     const manifest = { version: 4, okf: pin, files: [] };
     const vendored = `<!-- provenance ${pin.commit} ${pin.spec_blob} -->\n${spec}`;
     const readmeOnly = { commit: "1".repeat(40), spec, readme: `${readme}more\n`, tags: ["v9"] };

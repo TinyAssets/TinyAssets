@@ -2,15 +2,15 @@
  * The platform's import checks: one layer table over every file, and each workspace's banned
  * names over its import closure.
  *
- * **The layers** (untangle B1, `layers.ts`). Every script under `platform/` and `scripts/` is
- * in exactly one layer by its path, and each of its imports must land where its layer may
- * import (`layerProblems`); a workflow's inline module is held the same way
- * (`inlineImports`). Imports are read from the syntax tree, every way one module names
- * another, and a relative one is held by the path it resolves to, however it is spelled
- * (`./../../owner/...` included). Over the table lies the cutover layer (untangle B24,
- * `cutover.ts`): the files the cutover's manifest deletes may import one another, and a file
- * that stays imports them only where the manifest names the import. `ci/guards/isolation.test.ts`
- * holds it over every file, with what each workspace owes (`owed.ts`) the only exceptions.
+ * **The layers** (`layers.ts`). Every script under `platform/` and `scripts/` is in exactly
+ * one layer by its path, and each of its imports must land where its layer may import
+ * (`layerProblems`); a workflow's inline module is held the same way (`inlineImports`).
+ * Imports are read from the syntax tree, every way one module names another, and a relative
+ * one is held by the path it resolves to, however it is spelled (`./../../owner/...`
+ * included). Over the table lies the cutover layer (`cutover.ts`): the files the cutover's
+ * manifest deletes may import one another, and a file that stays imports them only where the
+ * manifest names the import. `ci/guards/isolation.test.ts` holds it over every file, with
+ * what each workspace owes (`owed.ts`) the only exceptions.
  *
  * **Banned names** (`<workspace>/guards/rules.ts`, `ImportRules`). A workspace names what no
  * source of its own may use (an identifier, a private name or any string, template parts

@@ -1,7 +1,7 @@
 /**
- * The codemode Worker's source reaches no owner and no storage (agent research §6.4): its banned
- * names (`rules.ts`), held over its whole import closure by the platform's isolation checker
- * (`ci/kit/imports.ts`). What it may import is the layer table's (`ci/kit/layers.ts`).
+ * The codemode Worker's source reaches no owner and no storage: its banned names (`rules.ts`),
+ * held over its whole import closure by the platform's isolation checker (`ci/kit/imports.ts`).
+ * What it may import is the layer table's (`ci/kit/layers.ts`).
  */
 import { describe, expect, it } from "vitest";
 

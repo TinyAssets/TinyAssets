@@ -1,6 +1,6 @@
 /**
  * The migration locks' kit (`ci/kit/locks.ts`), and each lock only growing, held against the
- * base branch (slice P review M3): every lock a Worker states (`<worker>/guards/locks.ts`).
+ * base branch: every lock a Worker states (`<worker>/guards/locks.ts`).
  *
  * A lock pins every migration a deploy shipped (`deployed`, each one's digest) and when the
  * first deploy was (`first_deploy`). Each Worker's `migrations.test.ts` holds the
@@ -197,7 +197,7 @@ describe("the migration lock against the base branch", () => {
     const base: Lock = { first_deploy: first, deployed: ["a".repeat(64), "b".repeat(64)] };
     expect(lockGrowthProblems(base, { first_deploy: first,
       deployed: ["a".repeat(64), "b".repeat(64), "c".repeat(64)] })).toEqual([]);
-    // The review's attack: a deployed migration and its pin edited together.
+    // A deployed migration and its pin edited together, which the head's own guard passes.
     const edited = "a deployed migration's pin was edited or taken away: add a migration";
     expect(lockGrowthProblems(base, { first_deploy: first,
       deployed: ["e".repeat(64), "b".repeat(64)] })).toEqual([edited]);

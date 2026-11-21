@@ -1,10 +1,11 @@
 /**
- * The cutover's manifest (untangle B24, `platform/cutover.json`, read by `ci/kit/cutover.ts`)
- * held to the tree, so the cutover's change is the manifest applied and nothing else:
+ * The cutover's manifest (`platform/cutover.json`, read by `ci/kit/cutover.ts`) held to the
+ * tree, so the cutover's change is the manifest applied and nothing else:
  * - it is in its shape: three phases, each entry a delete, an edit, a move or a live object;
  * - every entry exists: each path, each name an edit or a move takes out of its file, each
- *   import an edit names, and each live object's name in the file that names it today; and no
- *   path is listed inside one the manifest deletes;
+ *   import an edit names, and each live object's name in the file that names it today; no
+ *   delete or edit lies inside a path the manifest deletes, and no file is edited twice in a
+ *   phase; a move may (a carry-out, made before the deletes), but never into one;
  * - every file under `platform/` and `.github/` that says what is "deleted at the cutover", or
  *   speaks the cutover's vocabulary (`/workspace/imported`, "old TinyAssets", the `import` and
  *   `discard` callers, `IMPORT_*`), is on it;
@@ -114,14 +115,15 @@ function entryProblems(manifest: Manifest, tree: Tree): string[] {
       problems.push(`${phase}: ${path} is not there`);
       continue;
     }
-    if (path !== null && gone.some((each) => each !== path && isGone([each], path))) {
+    if (path !== null && !("move" in entry)
+        && gone.some((each) => each !== path && isGone([each], path))) {
       problems.push(`${phase}: ${path} lies inside a path the manifest deletes`);
     }
     if ("edit" in entry) {
-      if (edited.has(entry.edit)) {
+      if (edited.has(`${phase} ${entry.edit}`)) {
         problems.push(`${phase}: ${entry.edit} is edited twice`);
       }
-      edited.add(entry.edit);
+      edited.add(`${phase} ${entry.edit}`);
       holds(entry.edit, entry.names, `the edit of ${entry.edit}`);
       for (const to of entry.imports ?? []) {
         if (!isGone(gone, to)) {
@@ -130,6 +132,9 @@ function entryProblems(manifest: Manifest, tree: Tree): string[] {
       }
     } else if ("move" in entry) {
       holds(entry.move, entry.names ?? [], `the move of ${entry.move}`);
+      if (isGone(gone, entry.to)) {
+        problems.push(`${phase}: ${entry.move} moves into ${entry.to}, which the manifest deletes`);
+      }
       if (tree.exists(entry.to) !== (entry.names !== undefined)) {
         problems.push(`${phase}: ${entry.move} moves ${entry.names === undefined
           ? `to ${entry.to}, which is there already` : `its names into ${entry.to}, not there`}`);
@@ -215,6 +220,8 @@ describe("the cutover's manifest", () => {
       { edit: "platform/a/x.ts", names: ["ALPHA"], what },
       { move: "platform/b.ts", to: "platform/c.ts", what },
       { move: "platform/b.ts", to: "platform/d.ts", names: ["BETA"], what },
+      { move: "platform/a/x.ts", to: "platform/a/y.ts", what },
+      { move: "platform/a/x.ts", to: "platform/e.ts", what },
       { live: "queue", name: "tinyassets-probe", in: "platform/b.ts", what }), tree)).toEqual([
       "cutover: platform/gone.ts is not there",
       "the edit of platform/b.ts names GAMMA, which platform/b.ts does not hold",
@@ -223,6 +230,7 @@ describe("the cutover's manifest", () => {
       "cutover: platform/a/x.ts lies inside a path the manifest deletes",
       "cutover: platform/b.ts moves to platform/c.ts, which is there already",
       "cutover: platform/b.ts moves its names into platform/d.ts, not there",
+      "cutover: platform/a/x.ts moves into platform/a/y.ts, which the manifest deletes",
       "the queue tinyassets-probe names tinyassets-probe, which platform/b.ts does not hold",
     ]);
   });
