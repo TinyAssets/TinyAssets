@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "pre_tool": [],
+    "post_tool": [],
+    "prompt": [],
+    "session_start": [],
+    "stop": [],
+    "session_end": [],
+    "pre_compact": []
+  }
+}

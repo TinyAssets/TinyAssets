@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { agentFile } from "../src/agent-file";
+import { agentFile, agentHooks, agentMcp, HOOK_EVENTS } from "../../contract/src/agent-definition";
 import { MAIN_AGENT } from "../src/authority";
 import { PLATFORM } from "../../ci/paths";
 
@@ -87,7 +87,8 @@ describe("the starter package", () => {
       ".agents/skills/onboarding/SKILL.md", ".agents/skills/scratch/SKILL.md",
       ".agents/skills/shared-brain/SKILL.md", ".agents/skills/goals/SKILL.md",
       "agents/main/SOUL.md", "USER.md", "index.md", "goals/index.md",
-      "agents/main/AGENTS.md", "agents/main/agent.json"]);
+      "agents/main/AGENTS.md", "agents/main/mcp.json", "agents/main/hooks.json",
+      "agents/main/agent.json"]);
     expect(bundled.files.filter((file) => file.class === "personal").map((file) => file.path))
       .toEqual(["/workspace/agents/main/SOUL.md", "/workspace/USER.md", "/workspace/index.md",
                 "/workspace/goals/index.md"]);
@@ -126,6 +127,12 @@ describe("the starter package", () => {
     expect(agent).toMatchObject({ engine: "auto", model: null, credential: null,
                                   connection: null, enabled: true });
     expect(agent.scopes).toContain("run_graph");
+    // Its own servers and hooks: none, with every hook event named for the owner to fill.
+    expect(agentMcp(fileAt("/agents/main/mcp.json").text).servers).toEqual({});
+    const hooks = JSON.parse(fileAt("/agents/main/hooks.json").text) as { hooks: object };
+    expect(Object.keys(hooks.hooks)).toEqual(Object.keys(HOOK_EVENTS));
+    expect(Object.values(agentHooks(fileAt("/agents/main/hooks.json").text).hooks).flat())
+      .toEqual([]);
   });
 
   it("is portable: AGENTS.md plain and small, each skill an Agent Skills folder", () => {

@@ -7,7 +7,9 @@
  */
 import starterJson from "../../starter/starter.json" with { type: "json" };
 
-import { agentFile } from "./agent-file";
+import {
+  AGENT_FILES, checkDefinitionFile, definitionFileOf,
+} from "../../contract/src/agent-definition";
 import { Refusal } from "../../contract/src/refusal";
 import { ownersOnly } from "./paths";
 import { storedPath, within, WORKSPACE } from "../../contract/src/paths";
@@ -48,7 +50,8 @@ export interface StarterPackage {
 
 /**
  * A package checked whole: a positive version, its files and retired paths at most
- * `STARTER_FILES_MAX` together and none twice, `agent.json` last.
+ * `STARTER_FILES_MAX` together and none twice, each agent definition file it carries read
+ * whole, `agent.json` last.
  */
 export function starterPackage(value: unknown): StarterPackage {
   const pkg = value as { version?: unknown; files?: unknown; retired?: unknown };
@@ -93,12 +96,12 @@ export function starterPackage(value: unknown): StarterPackage {
                            ...(file.moved_from === undefined ? {}
                              : { moved_from: storedPath(file.moved_from) }) });
   });
-  const agents = files.filter((file) => file.path.endsWith("/agent.json"));
+  const agents = files.filter((file) => definitionFileOf(file.path) === AGENT_FILES.agent);
   if (agents.length > 0 && files.at(-1) !== agents.at(-1)) {
     throw new Refusal("invalid", "a starter package writes agent.json last");
   }
-  for (const agent of agents) {
-    agentFile(agent.text);
+  for (const file of files) {
+    checkDefinitionFile(file.path, file.text);
   }
   const gone = retired.map((path: unknown) => {
     const at = storedPath(path);

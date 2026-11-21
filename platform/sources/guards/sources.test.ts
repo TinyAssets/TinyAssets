@@ -22,11 +22,11 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { bundledRecords, catalogOf } from "../src/catalog";
-import { CREDENTIAL_NAME, sealedSource, sourceRecord } from "../src/check";
+import { sealedSource, sourceRecord } from "../src/check";
 import { RUN_BASICS, runEnv } from "../src/run-env";
 import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
 import { supportedApis } from "../../contract/src/api-rules";
-import { forbids } from "../../contract/src/text";
+import { CREDENTIAL_NAME, forbids } from "../../contract/src/text";
 import { RECORDS_DIR, recordFiles } from "../write-records";
 
 const SOURCES = join(PLATFORM, "sources");
@@ -583,10 +583,6 @@ describe("an engine record that does not fit", () => {
     ["a no-update with nothing in it", cli((s) => { s["no_update"] = {}; })],
     ["a no-update file the record does not write", cli((s) => {
       s["no_update"] = { file: "{home}/settings.json" }; })],
-    ["skills outside the agent's directory", cli((s) => { s["skills_paths"] = ["/etc/skills"]; })],
-    ["skills that climb out", cli((s) => { s["skills_paths"] = ["../skills"]; })],
-    ["instructions shadowed by themselves", cli((s) => {
-      at(s, "instructions")["shadowed_by"] = ["AGENTS.md"]; })],
     ["a login state check outside the secret paths", cli((s) => {
       at(s, "login")["state_checks"] = [{ path: "{home}/state.json", present: ["token"] }]; })],
     ["a login pattern that is not a regular expression", cli((s) => {
@@ -828,7 +824,8 @@ describe("an engine record that does not fit", () => {
       expect(sourceRecord(cli((s) => { s["install"] = install; })).cli!.install).toEqual(install);
     }
     const unsupported = { unsupported: "No MCP client: TinyAssets is reached another way." };
-    expect(sourceRecord(cli((s) => { s["mcp"] = unsupported; }, pi)).cli!.mcp)
+    expect(sourceRecord(cli((s) => {
+      s["mcp"] = unsupported; at(s, "definition")["mcp"] = unsupported; }, pi)).cli!.mcp)
       .toEqual(unsupported);
     expect(claudeCli["mcp"]).toHaveProperty("file");
   });
@@ -890,7 +887,61 @@ describe("an engine's own pre-tool hook", () => {
 
   it("takes one that holds none, with why", () => {
     const why = { unsupported: "No hook loads from a root-owned path." };
-    expect(sourceRecord(cli((s) => { s["decide"] = why; }, codex)).cli!.decide).toEqual(why);
+    expect(sourceRecord(cli((s) => {
+      s["decide"] = why; at(s, "definition")["hooks"] = why; }, codex)).cli!.decide).toEqual(why);
+  });
+});
+
+describe("how the agent's definition reaches an engine", () => {
+  it("keeps every engine's whole, as its file holds it", () => {
+    for (const id of ["claude-code", "codex", "gemini", "pi", "kimi"]) {
+      const file = records.get(id) as Json;
+      expect(sourceRecord(file).cli!.definition).toEqual(at(file, "cli.definition"));
+    }
+  });
+
+  it.each([
+    ["skills outside the agent's directory", cli((s) => {
+      at(s, "definition.skills")["paths"] = ["/etc/skills"]; })],
+    ["skills that climb out", cli((s) => { at(s, "definition.skills")["paths"] = ["../skills"]; })],
+    ["no skills folder", cli((s) => { at(s, "definition.skills")["paths"] = []; })],
+    ["instructions shadowed by themselves", cli((s) => {
+      at(s, "definition.instructions")["shadowed_by"] = ["AGENTS.md"]; })],
+    // The agent's own MCP servers go where the run's door does, each entry carrying the server's.
+    ["agent servers under a key the MCP file has not", cli((s) => {
+      at(s, "definition.mcp")["servers"] = "servers"; })],
+    ["agent servers in a file when the door is a flag", cli((s) => {
+      delete at(s, "definition.mcp")["flag"]; }, records.get("codex") as Json)],
+    ["agent servers by a flag the door is not given by", cli((s) => {
+      at(s, "definition.mcp")["flag"] = "--config"; }, records.get("codex") as Json)],
+    ["agent servers by a flag with a names list", cli((s) => {
+      at(s, "definition.mcp")["names"] = "mcp.allowed"; }, records.get("codex") as Json)],
+    ["agent servers on a names list that does not name the door", cli((s) => {
+      at(s, "definition.mcp")["names"] = "context.fileName"; }, records.get("gemini") as Json)],
+    ["agent servers where the door has no place", cli((s) => {
+      s["mcp"] = { unsupported: "none" }; })],
+    ["an http entry without the server's URL", cli((s) => {
+      at(s, "definition.mcp.http")["url"] = "https://example.com/mcp"; })],
+    ["an http entry carrying the URL twice", cli((s) => {
+      at(s, "definition.mcp.http")["also"] = "{url}"; })],
+    ["a stdio entry without the server's env", cli((s) => {
+      delete at(s, "definition.mcp.stdio")["env"]; })],
+    ["a stdio entry carrying an unknown value", cli((s) => {
+      at(s, "definition.mcp.stdio")["cwd"] = "{cwd}"; })],
+    // The agent's own hooks: every event by the engine's name, in the decide hook's layer.
+    ["hooks missing an event", cli((s) => { delete at(s, "definition.hooks.events")["stop"]; })],
+    ["hooks with an event the format has not", cli((s) => {
+      at(s, "definition.hooks.events")["notification"] = "Notification"; })],
+    ["two events by one name", cli((s) => {
+      at(s, "definition.hooks.events")["stop"] = "SessionEnd"; })],
+    ["hooks with no page", cli((s) => { delete at(s, "definition.hooks")["cite"]; })],
+    ["hooks on an engine whose decide hook is unsupported", cli((s) => {
+      at(s, "definition")["hooks"] = structuredClone(at(claudeCli, "definition.hooks")); },
+    records.get("kimi") as Json)],
+    ["no hooks on an engine whose decide hook has a layer", cli((s) => {
+      at(s, "definition")["hooks"] = { unsupported: "none" }; })],
+  ])("refuses %s", (_what, record) => {
+    expect(refused(record)).toMatch(/cli\.definition/);
   });
 });
 

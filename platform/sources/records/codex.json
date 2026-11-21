@@ -217,16 +217,45 @@
         "deferred": []
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": [
-        "AGENTS.override.md"
-      ],
-      "max_bytes": 32768
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": [
+          "AGENTS.override.md"
+        ],
+        "max_bytes": 32768
+      },
+      "skills": {
+        "paths": [
+          ".agents/skills"
+        ]
+      },
+      "mcp": {
+        "servers": "mcp_servers",
+        "flag": "-c",
+        "http": {
+          "url": "{url}"
+        },
+        "stdio": {
+          "command": "{command}",
+          "args": "{args}",
+          "env": "{env}"
+        }
+      },
+      "hooks": {
+        "events": {
+          "pre_tool": "PreToolUse",
+          "post_tool": "PostToolUse",
+          "prompt": "UserPromptSubmit",
+          "session_start": "SessionStart",
+          "stop": "Stop",
+          "session_end": "SessionEnd",
+          "pre_compact": "PreCompact"
+        },
+        "cite": "https://github.com/openai/codex/tree/rust-v0.166.0/codex-rs/hooks/src/events",
+        "read": "2026-11-21"
+      }
     },
-    "skills_paths": [
-      ".agents/skills"
-    ],
     "mcp": {
       "argv": [
         "-c",

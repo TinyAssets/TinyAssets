@@ -11,7 +11,7 @@
  * holds where its act is seen (`acts.ts`), so one nothing could see is refused here. The old
  * rule tables and the spend caps are gone: nothing read them (d3 §N6).
  */
-import { actNamed } from "./acts.ts";
+import { actNamed, TOOL_MATCHER } from "./acts.ts";
 import { canonical } from "./canonical.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
@@ -120,9 +120,6 @@ export interface ActionRule {
   readonly agent?: string;
   readonly tools?: readonly string[];
 }
-
-/** A tool a rule names: an MCP server's and its tool's names, `*` matching any run of them. */
-const TOOL_MATCHER = /^mcp:[A-Za-z0-9_*-]{1,64}:[A-Za-z0-9_.*-]{1,128}$/;
 
 /**
  * Whether a rule on the act `name` (`acts.json`) holds somewhere though it names no tools:
