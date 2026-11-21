@@ -1,12 +1,11 @@
 /**
  * The gate: a test's way to reach the point between two awaits of a real call, or to make a
- * real binding refuse, with no hook in product code (untangle B23, `b23_research.md`
- * questions 2 and 4). A gate is a Worker (`gate-worker.ts`) that a test's config binds in
- * place of one binding, in front of the real Worker or object that binding names. It
- * forwards every call unchanged unless the test arms it, through its `Control` entrypoint, to
- * hold a call before it is sent or after its answer, change its bytes in flight, refuse it
- * with a refusal that crosses as a real one does, or answer it in the real one's place. It
- * records what crossed.
+ * real binding refuse, with no hook in product code. A gate is a Worker (`gate-worker.ts`) that
+ * a test's config binds in place of one binding, in front of the real Worker or object that
+ * binding names. It forwards every call unchanged unless the test arms it, through its
+ * `Control` entrypoint, to hold a call before it is sent or after its answer, change its bytes
+ * in flight, refuse it with a refusal that crosses as a real one does, or answer it in the real
+ * one's place. It records what crossed.
  *
  * - `gate(name, methods, to)`: the gate Worker, for a pool's `workers`. `to` is the real
  *   Worker's folder, and the entrypoint it is bound at or the class whose object it fronts;

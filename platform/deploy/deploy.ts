@@ -1,15 +1,13 @@
 /**
- * The platform's deploy kit (tasks 5, "0c (live, slice L)"; tasks 2, "DNS, routes and
- * deploy"): the six platform Workers deployed to the production Cloudflare account, the
- * doors' routes handed over at the cutover, the handles canary after each change (AGENTS.md
- * Fact 11), and H2's probes (`h2-probes.ts`).
+ * The platform's deploy kit: the six platform Workers deployed to the production Cloudflare
+ * account, the doors' routes handed over at the cutover, the handles canary after each
+ * change (AGENTS.md Fact 11), and H2's probes (`h2-probes.ts`).
  *
  * It runs from the manual workflow `.github/workflows/platform-deploy.yml`, from `main`, one
  * mode a run (`MODES`, each a row of steps):
  *
  *   node --experimental-strip-types platform/deploy/deploy.ts --mode <mode> [--public | --yes]
- *        [--rotate <secrets>] [--migrate <Workers>] [--record <id>] [--set <edits>]
- *        [--replace <record>] [--owner <owner> --act <act>] [--keyring <keyring>]
+ *        [--plan <file>] [--rotate <secrets>] [--migrate <Workers>] [<the mode's own (`OWN`)>]
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-retire <file>
@@ -42,7 +40,7 @@
  *   wiped only with `--confirm` the words that names; then begun, stepped until done and the
  *   owner admitted. With no `--generation`, the owner's namespace and finished generations,
  *   as its object holds them, or with `--confirm release-<owner>` its pin given up.
- * - `copyback` (R8, `offsite.ts` `copyBack`): the objects of `--owner`'s namespace that the
+ * - `copyback` (`offsite.ts` `copyBack`): the objects of `--owner`'s namespace that the
  *   files bucket lacks, written back from the off-account copy as it stood at `--at`.
  * - `recover` (`offsite.ts` `recover`): after an account's loss, every namespace of the copy as
  *   it stood at `--at` that no erasure mark names written back, the marks first, and each
@@ -82,10 +80,10 @@
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that the
  *   account's Workers listing lacks (whether a Worker exists is that listing's word alone);
  *   the kit never makes a secret's value (`keyring-new` makes a first keyring,
- *   `scripts/platform_setup.py` stores one). A held one is never replaced
- *   unless `--rotate` names it, a keyring only by adding a key (mode `retire` alone takes its
- *   old kids out); Cloudflare never shows a held
- *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
+ *   `scripts/platform_setup.py` stores one). A held one is never replaced unless `--rotate`
+ *   names it, a keyring only by adding a key (mode `retire` alone takes its old kids out);
+ *   Cloudflare never shows a held secret, so the kit cannot check that a rotated keyring
+ *   keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
  *   POST; never a delete), after the other live checks and before any Cloudflare change, and
@@ -447,7 +445,7 @@ export async function upstreamFrom(issuer: string | undefined, clientId: string 
   }
   const discovery = await response.json() as Json;
   if (discovery["issuer"] !== issuer) {
-    // Any other spelling refuses every sign-in (tasks 2): stop before deploying it.
+    // Any other spelling refuses every sign-in: stop before deploying it.
     throw new Error(`the issuer's discovery names ${JSON.stringify(discovery["issuer"])}, ` +
                     `not OWNER_ISSUER ${JSON.stringify(issuer)}`);
   }
@@ -985,7 +983,6 @@ const upstream = step<never, "upstream">(async ({ run, say }) => {
   return { upstream: values };
 });
 
-/** The run's one E2B client, from its key. */
 const e2b = step<never, "e2b">(({ run }) => ({
   e2b: new E2bAdmin(input(run, "E2B_API_KEY")!, run.io.fetch) }));
 
@@ -1181,7 +1178,6 @@ function storage(noun: string, names: readonly string[],
   });
 }
 
-/** The R2 buckets the configs bind. */
 const buckets = storage("R2 bucket", BUCKETS,
                         async (cloudflare, account) => new Set(await cloudflare.buckets(account)),
                         (cloudflare, account, bucket) => cloudflare.makeBucket(account, bucket));
@@ -1220,7 +1216,6 @@ const bucketLocks = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   }
 });
 
-/** The queues the configs send to. */
 const queues = storage("queue", QUEUES,
                        async (cloudflare, account) => new Set((await cloudflare.queues(account))
                          .keys()),

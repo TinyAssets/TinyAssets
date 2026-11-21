@@ -11,9 +11,10 @@
  * holds its workspace's package; an optional package may be absent only when its locked `os`
  * or `cpu` excludes this machine (npm installs it everywhere else), never another version.
  * Every package in a `node_modules` is locked: a stale one left there is loaded, or shadows
- * the hoisted one its parent would load in CI. npm's hidden lockfile (`node_modules/.package-lock.json`)
- * says what npm last wrote, not what is there now, and `npm ls` checks the ranges a package
- * declares, not the versions locked (`docs/decisions/untangle-2026-11/deps.md`).
+ * the hoisted one its parent would load in CI. npm's hidden lockfile
+ * (`node_modules/.package-lock.json`) says what npm last wrote, not what is there now, and
+ * `npm ls` checks the ranges a package declares, not the versions locked
+ * (`docs/decisions/untangle-2026-11/deps.md`).
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

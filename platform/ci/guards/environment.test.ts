@@ -1,7 +1,5 @@
 /**
- * Production workflows run only inside the main-only `production` environment (moved from
- * the Python suite's `tests/test_workflow_production_environment.py`, audit D6; the old
- * host's box-preflight contract stays there and leaves with that host).
+ * Production workflows run only inside the main-only `production` environment.
  *
  * Incident: a `workflow_dispatch` on a branch runs that branch's YAML, so a job-level
  * `if: github.ref == 'refs/heads/main'` guards nothing: the branch can delete the line.
