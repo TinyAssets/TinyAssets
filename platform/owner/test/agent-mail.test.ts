@@ -15,7 +15,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { toolsNamed } from "../../contract/src/doors";
 import {
-  AGENT_RETIRED, type Ledger, LEDGER_LIMITS, MAIL_HEADER_BYTES, mailInput, NO_AGENT,
+  AGENT_RETIRED, type Ledger, LEDGER_LIMITS, MAIL_HEADER_BYTES, mailInput,
   RUN_NO_MAILBOX,
 } from "../src/ledger";
 import { nativeId } from "../../contract/src/binding";
@@ -30,6 +30,7 @@ import { LANE_PASS_S } from "../src/schedule";
 import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
 import { OWNER_WAITERS, ownerSlots } from "../src/holds";
 import { writeControl } from "../../ci/fixtures";
+import { sqlIn } from "../../ci/workerd";
 import { clockAt, drainDue, failure, starterSeed } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
@@ -190,8 +191,9 @@ describe("an agent's identity", () => {
                                            expected_etag: moving.etag, replace: false });
     expect((await identity(r, "main")).retired_at).not.toBeNull();
     expect((await identity(r, "helper")).retired_at).toBeNull();
-    expect((await failure(() => ownerMail(r, "dm:ta_0123456789abcdef", "who?"))).message)
-      .toBe(NO_AGENT);
+    // No agent of that id: no room names it.
+    expect((await failure(() => ownerMail(r, dm("ta_0123456789abcdef"), "who?"))).message)
+      .toBe("room is not an enabled agent's dm");
   });
 });
 
@@ -239,6 +241,30 @@ describe("the ledger's bounds on identities", () => {
     expect(seen.first).toEqual([["b", false], ["c", true]]);
     expect(seen.then).toEqual([["c", true], ["d", true]]);
     expect(seen.rows).toBe(maxAgentRows);
+  });
+});
+
+describe("agents_list's rooms", () => {
+  it("names each agent's room with the caller, and on the caller's own entry its room with " +
+     "the owner: the rooms its posts land in, made by the first", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const { client, agent } = await muse(r, { mode: "full", scopes: [] });
+    const main = await identity(r, "main");
+    const owner = await r.stub.outsideAgents(r.bind());
+    expect([owner.owner_agents.find((a) => a.agent === "main")!.room_id,
+            owner.agents.find((a) => a.agent_id === agent)!.room_id])
+      .toEqual([dm(main.agent_id), dm(agent)]);
+    const muses = await r.stub.outsideAgents(client);
+    expect([muses.owner_agents.find((a) => a.agent === "main")!.room_id,
+            muses.agents.find((a) => a.agent_id === agent)!.room_id])
+      .toEqual([dm(agent, main.agent_id), dm(agent)]);
+    expect(await sqlIn(r.stub, "SELECT room_id FROM rooms")).toEqual([]);
+    // Muse reaches the owner on its own entry's room; the post makes the room.
+    const posted = await r.stub.roomPost(client, { room_id: dm(agent), client_message_id: "a1",
+                                                   body: "hello", parent_id: null });
+    expect(posted.recipients).toEqual(["owner"]);
+    expect(await sqlIn(r.stub, "SELECT room_id FROM rooms")).toEqual([{ room_id: dm(agent) }]);
   });
 });
 
@@ -422,7 +448,7 @@ describe("mail to an agent", () => {
     // Nor post in a room that is not its own.
     expect((await failure(() => r.stub.roomPost(client, {
       room_id: dm(main.agent_id), client_message_id: "c-3", body: "x",
-      parent_id: null }))).message).toBe("an outside agent posts only in its own dm room");
+      parent_id: null }))).message).toBe("room is not an enabled agent's dm");
   });
 
   it("from a client holds its run's run doors to that client's grant, where the run acts",

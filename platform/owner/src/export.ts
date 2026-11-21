@@ -165,6 +165,9 @@ export function exported(): Readonly<Record<string, ExportTable>> {
                       "unacked_to_owner", "agent_id",
                       { wake_tat: "the doorbell's rate pacing, an internal mark" }),
     native_agents: t("agent_id agent created_at retired_at unacked_to_owner", "agent_id"),
+    // A room and its members (a pair's two), by its opaque id.
+    rooms: t("room_id kind members_key created_at", "room_id"),
+    room_members: t("room_id member_id", "room_id member_id"),
     ledger_messages: t("seq message_id command_center_id room_id sender_kind sender_id " +
                        "client_message_id body_sha256 parent_id chain_root chain_depth " +
                        "created_at body_bytes unacked authority attended line_bytes reply_s",

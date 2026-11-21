@@ -1,4 +1,6 @@
-# The data shapes before real data: the remaining PRs, in order (2026-11-21)
+# Shapes (rooms) as built (2026-11-21)
+
+The data shapes before real data: the remaining PRs, in order, and the first one's decisions.
 
 `tasks.md` step 5's data-shapes line (d3 §P, list3 P48) and step 4's lane O remainder, read at
 `origin/main` `88e74e1cd`. The designs are `untangle-2026-11-remaining-build.md` §P and the two
@@ -90,12 +92,24 @@ The research's design (`datashapes_research.md` §1.4), with one gap it left clo
    go. A new pair's first post past it is refused `ledger_full`.
 6. **The dark rows keep their strings.** Migration 19 backfills `rooms` and `room_members`
    from the hot messages' distinct `room_id`, each old string kept as that room's id; the `dm:`
-   parse exists only in that frozen SQL. `FORWARD` 19 refuses a generation from before it,
-   since the backfill reads other tables' rows (as migration 9's did).
+   parse exists only in that frozen SQL. `FORWARD` 19 refuses a generation from before it:
+   the backfill reads other tables' rows and the purges' key changes, which
+   `r-restore-schema.md` item 2's per-row form may not do. So the restore floor moves from 9 to
+   19, as migration 9 set it (no real data yet, so it costs nothing; after the cutover it would
+   be the founder's call, item 11 there). The restore tests derive the floor from `FORWARD`.
 7. **`agents_list`'s `room_id`** is each agent's room with the caller, or with the owner on
    the caller's own entry (an outside agent's or a run's own); null for an outside identity
    that is not one enabled agent, which posts nowhere. The skills and `app.js` use it; nothing
    tells an agent how an id is made.
-8. **Left:** `ROOM_PREFIX`'s copy in `contract/src/wake-kinds.ts` (the app rooms' collection
-   prefix, not a mail room) waits for #5714, which edits that file; S4's group rooms re-derive
-   the one-recipient-a-message bound.
+
+## Owed
+
+- [ ] `ROOM_PREFIX` (`room:`, the app rooms' collection prefix, not a mail room) has one home,
+  read by `collections.ts` and `contract/src/wake-kinds.ts`: the contract pass's next part,
+  after #5714, which edits that file.
+- [ ] S4's group rooms re-derive `maxRooms` and the one-recipient-a-message bound (S4, step 20).
+- [ ] `live:` owner migration 19's pin (`node ci/kit/locks.ts pin owner <commit>`), at the
+  deploy that ships it.
+- [ ] S1, the stream extraction, on this module once this merges (`untangle/shapes-s1`).
+- [ ] The census refusal's design chosen, then built (`untangle/shapes-census`).
+- [ ] The chain-depth stop after #5707 and #5714 (`untangle/shapes-chain-depth`).

@@ -681,6 +681,9 @@ type StoredMessage = {
 
 type StoredNative = NativeAgent & { unacked_to_owner: number };
 
+/** An agent as `agents_list` lists it: with the room the caller reaches it in, if any. */
+export type Roomed<A> = A & { readonly room_id: string | null };
+
 /** A room's member, resolved: the owner, an enabled outside agent, or a live own agent. */
 type Member =
   | { readonly kind: "owner"; readonly id: string }
@@ -1568,7 +1571,7 @@ export class Ledger {
    * posts nowhere. A read.
    */
   withRooms<A extends { readonly agent_id: string }>(actor: Actor, agents: readonly A[]):
-      (A & { room_id: string | null })[] {
+      Roomed<A>[] {
     const self = this.#identity(actor);
     return agents.map((agent) => ({ ...agent, room_id: self === null ? null
       : this.roomOf(agent.agent_id === self ? OWNER : self, agent.agent_id) }));
@@ -3348,8 +3351,7 @@ export interface LedgerDoorNeeds extends Pick<DoorUnits, "door" | "sync">,
 
 /** The agents a caller sees, a page of them (`outsideAgents`). */
 function agentsListed(o: LedgerDoorNeeds, { account, r }: Call):
-    { agents: (Agent & { room_id: string | null })[];
-      owner_agents: (NativeAgent & { room_id: string | null })[]; apps: ConnectedApp[];
+    { agents: Roomed<Agent>[]; owner_agents: Roomed<NativeAgent>[]; apps: ConnectedApp[];
       next?: string } {
   const own = account.origin === null && account.run === null;
   let natives = o.ledger.natives(own);
@@ -3565,11 +3567,12 @@ export const ledgerDoors = Object.freeze({
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
    * it may mail). One answer holds a page (`pages.ts`): its agents, the owner's
    * agents and the apps, in that order, each by its stable key, while they fit; when some
-   * are left, `next` is where the next page starts, for `after` on the next read.
+   * are left, `next` is where the next page starts, for `after` on the next read. Each agent
+   * carries the room the caller reaches it in (`withRooms`).
    */
   async outsideAgents(o: LedgerDoorNeeds, door: Door<AgentsRequest>):
-      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
-                next?: string }> {
+      Promise<{ agents: Roomed<Agent>[]; owner_agents: Roomed<NativeAgent>[];
+                apps: ConnectedApp[]; next?: string }> {
     return o.door(() => agentsListed(o, door.check()));
   },
   /**

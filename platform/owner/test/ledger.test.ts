@@ -593,6 +593,52 @@ describe("the ledger's binding", () => {
     expect(moved.replies).toEqual([null, 1, 2.5]);
     expect(moved.receipts).toEqual([]);
   });
+
+  it("makes each hot room's rows under its old id, and a pending purge its room with the " +
+     "owner (migration 19)", async () => {
+    const rooms = MIGRATIONS.findIndex((each) => each.includes("CREATE TABLE rooms"));
+    const made = await runInDurableObject((await ownerObject()).stub,
+                                          (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+          "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+          "AND name NOT GLOB 'cf_*'").toArray()) {
+        sql.exec(`DROP TABLE "${name}"`);
+      }
+      migrate(state.storage, MIGRATIONS.slice(0, rooms));
+      const [outside, own] = ["agent_0123456789abcdef", "ta_0123456789abcdef"];
+      for (const [seq, room] of [[1, `dm:${own}`], [2, `dm:${outside}`],
+                                 [3, `dm:${outside}+${own}`], [4, `dm:${own}`]] as const) {
+        sql.exec("INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
+                   "sender_kind, sender_id, client_message_id, body_sha256, parent_id, " +
+                   "chain_root, chain_depth, created_at, body_bytes, line_bytes) VALUES (?, ?, " +
+                   "'', ?, 'owner', 'owner', ?, ?, null, ?, 0, ?, 1, 1)", seq, `m${seq}`, room,
+                 `c${seq}`, "0".repeat(64), `m${seq}`, seq);
+      }
+      sql.exec("INSERT INTO archive_purges (agent_id, at) VALUES ('agent_ffffffffffffffff', 1)");
+      migrate(state.storage, MIGRATIONS);
+      return {
+        rooms: sql.exec("SELECT room_id, members_key, created_at FROM rooms ORDER BY room_id")
+          .toArray(),
+        members: sql.exec("SELECT room_id, member_id FROM room_members " +
+                          "ORDER BY room_id, member_id").toArray(),
+        purges: sql.exec("SELECT room_id FROM archive_purges").toArray(),
+      };
+    });
+    const [outside, own] = ["agent_0123456789abcdef", "ta_0123456789abcdef"];
+    expect(made.rooms).toEqual([
+      { room_id: `dm:${outside}`, members_key: `${outside}+owner`, created_at: 2 },
+      { room_id: `dm:${outside}+${own}`, members_key: `${outside}+${own}`, created_at: 3 },
+      { room_id: `dm:${own}`, members_key: `owner+${own}`, created_at: 1 }]);
+    expect(made.members).toEqual([
+      { room_id: `dm:${outside}`, member_id: outside },
+      { room_id: `dm:${outside}`, member_id: "owner" },
+      { room_id: `dm:${outside}+${own}`, member_id: outside },
+      { room_id: `dm:${outside}+${own}`, member_id: own },
+      { room_id: `dm:${own}`, member_id: "owner" },
+      { room_id: `dm:${own}`, member_id: own }]);
+    expect(made.purges).toEqual([{ room_id: "dm:agent_ffffffffffffffff" }]);
+  });
 });
 
 describe("a refused widening's receipt", () => {
