@@ -641,7 +641,7 @@ jobs:
           sudo apparmor_parser -r "$PROFILE"
 
       # The whole-surface path, unchanged from before the selection existed:
-      # same command, same `shard` profile, same 1000-test floor. A push,
+      # same command, same `shard` profile (no floor of its own). A push,
       # schedule or dispatch run always lands here.
       - name: Run this shard of the required test surface
         if: steps.plan.outputs.count == 'ALL'
@@ -919,11 +919,12 @@ jobs:
           # No `|| true`, no `continue-on-error` — the exit code IS the gate.
           python scripts/ci_required_tests.py --aggregate shards/ \
             --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
-            --junit junit.xml --min-ran 2200
+            --junit junit.xml --min-ran 2200 \
+            --exclude-from .github/heavy-test-files.txt
 
       # The selective verdict. Everything above still applies -- shard set,
       # truncation, overlap, the quarantine comparison -- plus two checks that
-      # exist because the 6,200 floor cannot: every shard must report the
+      # exist because the union floor cannot: every shard must report the
       # digest `select` published, and every selected file must appear in the
       # union with at least one case (any outcome, skip included). A file that
       # reported nothing is a collapse and is named. `!= 'ALL'` rather than
