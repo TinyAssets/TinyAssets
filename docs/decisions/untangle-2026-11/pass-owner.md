@@ -358,10 +358,10 @@ And the comments of the other 13 guards and of `memory/`, moved here from part 2
 - [ ] `platform/owner/`, part 3, after the cutover (the founder, 2026-11-21; #5715): the
   comments of the files #5707 changes and `policy.test.ts`'s pins, and the comments of
   `memory/` and the other 13 guards (§6.5) (`untangle/pass-owner-3`).
-- [ ] `launch.ts` `launch`'s start catch takes the sandbox's answer out of shape (`started`
+- [x] `launch.ts` `launch`'s start catch takes the sandbox's answer out of shape (`started`
   throws) as no answer: the run settles `unknown` `start_lost`, logged "had no answer" with no
   cause, so a sandbox Worker bug reads as lost starts. Research first (`untangle/start-answer`;
-  found by the review of #5719).
-- [ ] `bodies.ts` `placing` waits on the sweep's delete it met, not a sleep of `100 * tries`
+  found by the review of #5719). Done (`untangle/owner-shape`, `owner-shape.md`).
+- [x] `bodies.ts` `placing` waits on the sweep's delete it met, not a sleep of `100 * tries`
   ms, bounded by `LANE_CALL_MS`; and `changelog.ts` `LOG_WIDE`, read only by its test, goes
-  (§6.4) (`untangle/place-wait`).
+  (§6.4) (`untangle/place-wait`). Done (`untangle/owner-shape`, `owner-shape.md`).
