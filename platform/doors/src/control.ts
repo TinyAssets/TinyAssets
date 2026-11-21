@@ -21,9 +21,10 @@ import type { DoorsEnv } from "./env";
 
 /**
  * The isolate's copy of the record last read well formed: the platform's one record, no
- * owner's, so every request the isolate serves shares it.
+ * owner's, so every request the isolate serves shares it. `"none"`: the last read found no
+ * record or a malformed one, so the location's copy is dropped too; null: not yet looked for.
  */
-let held: Kept | null = null;
+let held: Kept | "none" | null = null;
 
 /**
  * The location's copy's cache key, on a host no request can name (`.invalid`): the cache is the
@@ -41,7 +42,7 @@ const READ_AT = "x-control-read-at";
 const KEEPER: ControlKeeper = Object.freeze({
   async kept(): Promise<Kept | null> {
     if (held !== null) {
-      return held;
+      return held === "none" ? null : held;
     }
     const hit = await caches.default.match(KEPT_AT);
     if (hit === undefined) {
@@ -50,8 +51,13 @@ const KEEPER: ControlKeeper = Object.freeze({
     held = { text: await hit.text(), read_at: Number(hit.headers.get(READ_AT)) };
     return held;
   },
-  async keep(text: string, at: number): Promise<void> {
-    if (held?.text === text) {
+  async keep(text: string | null, at: number): Promise<void> {
+    if (held === "none" ? text === null : held?.text === text) {
+      return;
+    }
+    if (text === null) {
+      held = "none";
+      await caches.default.delete(KEPT_AT);
       return;
     }
     held = { text, read_at: at };

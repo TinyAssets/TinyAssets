@@ -28,8 +28,10 @@ outage and a bad write were one case, and both closed every gate.
    from KV is an outage. The kit's `control` mode checks its live and edited record with
    `controlOf` too, so it never writes a record a reader would read as malformed.
 2. **One keeper, handed in by each reader** (C2). `ControlKeeper` (`kept`, `keep`) is the
-   contract's. `readControl` keeps each well-formed read's text, written only when it changes,
-   and reads the copy only on an outage, as `{ kind: "kept", control, read_at }`; with no copy it
+   contract's. `readControl` keeps each well-formed read's text, written only when it changes;
+   a missing or malformed read drops it (review, 2026-11-21: else an outage after a typo'd kill
+   flip served the copy from before it, reopening what the typo closed). It reads the copy only
+   on an outage, as `{ kind: "kept", control, read_at }`; with no copy it
    is `unreadable`, as before. A keeper that fails is logged and is no copy. The gates read
    `gating(read)`, the record as read or kept.
    - **Doors:** the isolate's memory, then the location's Cache API under one key no route

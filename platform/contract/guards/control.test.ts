@@ -56,8 +56,8 @@ function memory(copy: Kept | null = null): ControlKeeper & { copy: Kept | null; 
       return this.copy;
     },
     keep(text, at) {
-      if (this.copy?.text !== text) {
-        this.copy = { text, read_at: at };
+      if (this.copy?.text !== (text ?? undefined)) {
+        this.copy = text === null ? null : { text, read_at: at };
         this.writes += 1;
       }
     },
@@ -97,23 +97,24 @@ describe("a read of the control record", () => {
     expect(await readControl(store("down"), memory())).toEqual({ kind: "unreadable" });
   });
 
-  it("reads a value that is not JSON, too long or out of shape as a bad write, never the copy",
+  it("reads a value that is not JSON, too long or out of shape as a bad write, the copy dropped",
      async () => {
     const long = JSON.stringify(GATES).padEnd(CONTROL_TEXT_MAX + 1);
     for (const bad of ["{outside", "not json", long, JSON.stringify({ ...GATES, outside: true })]) {
       const keeper = memory(COPY);
       expect(await readControl(store(bad), keeper), bad.slice(0, 20))
         .toEqual({ kind: "malformed" });
-      expect(keeper.copy).toBe(COPY);
+      // The gates it closed stay closed through an outage after it (a kill flip's typo).
+      expect(await readControl(store("down"), keeper)).toEqual({ kind: "unreadable" });
     }
     expect(await readControl(store(JSON.stringify(GATES).padEnd(CONTROL_TEXT_MAX)), memory()))
       .toMatchObject({ kind: "read" });
   });
 
-  it("reads no record as missing, the copy neither used nor touched", async () => {
+  it("reads no record as missing, the copy dropped", async () => {
     const keeper = memory(COPY);
     expect(await readControl(store(null), keeper)).toEqual({ kind: "missing" });
-    expect(keeper.copy).toBe(COPY);
+    expect(await readControl(store("down"), keeper)).toEqual({ kind: "unreadable" });
   });
 
   it("keeps a good read good when its keeper fails, and an outage then unreadable", async () => {

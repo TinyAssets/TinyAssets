@@ -395,13 +395,17 @@ describe("a start", () => {
       .toEqual({ started: false, code: "sandbox_unconfigured" });
   });
 
-  it("starts nothing new on a record that reads but is not well formed, a copy kept or not",
+  it("starts nothing new on a record that reads but is not well formed, nor in an outage after",
      async () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     await stub(who).start(start());
     await writeControl(env.CONTROL, "not json");
     expect(await stub(who).start(start({ run: `run_${hex(32, "5")}`, tokens: null,
+                                        network: null })))
+      .toEqual({ started: false, code: "sandbox_unconfigured" });
+    await outage(who);
+    expect(await stub(who).start(start({ run: `run_${hex(32, "6")}`, tokens: null,
                                         network: null })))
       .toEqual({ started: false, code: "sandbox_unconfigured" });
   });

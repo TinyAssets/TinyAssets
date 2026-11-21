@@ -159,8 +159,12 @@ export interface Kept {
 export interface ControlKeeper {
   /** The copy kept, or null when none is. */
   kept(): Kept | null | Promise<Kept | null>;
-  /** `text`, read well formed at `at`, kept: written only when it is not the copy kept. */
-  keep(text: string, at: number): void | Promise<void>;
+  /**
+   * `text`, read well formed at `at`, kept: written only when it is not the copy kept. Null, a
+   * read that found no record or a malformed one, drops the copy, so the gates that read closed
+   * stay closed through an outage after it (a kill flip with a typo).
+   */
+  keep(text: string | null, at: number): void | Promise<void>;
 }
 
 /**
@@ -180,7 +184,11 @@ export class SqlKeeper implements ControlKeeper {
     return row === undefined ? null : { text: row.text, read_at: row.read_at };
   }
 
-  keep(text: string, at: number): void {
+  keep(text: string | null, at: number): void {
+    if (text === null) {
+      this.#sql.exec("DELETE FROM control_kept");
+      return;
+    }
     this.#sql.exec("INSERT INTO control_kept (only, text, read_at) VALUES (1, ?, ?) " +
                      "ON CONFLICT (only) DO UPDATE SET text = excluded.text, read_at = " +
                      "excluded.read_at WHERE control_kept.text IS NOT excluded.text", text, at);
@@ -310,8 +318,8 @@ export function controlOf(text: string): Control | null {
 }
 
 /**
- * The record from its namespace, as read, each well-formed read's text kept in `keeper`;
- * when the namespace throws, the copy `keeper` holds. Never throws: an outage with no copy
+ * The record from its namespace, as read, each well-formed read's text kept in `keeper` and a
+ * missing or malformed one dropping it; when the namespace throws, the copy `keeper` holds. Never throws: an outage with no copy
  * is `unreadable`. A keeper that fails is reported and is no copy: a good read stays good.
  */
 export async function readControl(store: ControlStore,
@@ -322,20 +330,17 @@ export async function readControl(store: ControlStore,
   } catch (error) {
     return kept(keeper, error);
   }
-  if (text === null) {
-    return { kind: "missing" };
-  }
-  const control = controlOf(text);
-  if (control === null) {
+  const control = text === null ? null : controlOf(text);
+  if (text !== null && control === null) {
     console.error("the control record is malformed: every gate is closed until it is fixed");
-    return { kind: "malformed" };
   }
   try {
-    await keeper.keep(text, Date.now());
+    await keeper.keep(control === null ? null : text, Date.now());
   } catch (error) {
     console.error("the control record's last good copy could not be kept", error);
   }
-  return { kind: "read", control };
+  return control !== null ? { kind: "read", control }
+    : text === null ? { kind: "missing" } : { kind: "malformed" };
 }
 
 /** The read an outage gives: the copy `keeper` holds, or `unreadable`. */

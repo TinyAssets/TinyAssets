@@ -592,7 +592,9 @@ describe("the ledger's binding", () => {
 
   it("makes each hot room's rows under its old id, and a pending purge its rooms with the " +
      "owner and the owner's own agents (migration 19)", async () => {
-    const rooms = MIGRATIONS.findIndex((each) => each.includes("CREATE TABLE rooms"));
+    const rooms = MIGRATIONS.findIndex((each) =>
+      each.some((line) => line.startsWith("CREATE TABLE rooms ")));
+    expect(rooms).toBe(18);
     const made = await runInDurableObject((await ownerObject()).stub,
                                           (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;

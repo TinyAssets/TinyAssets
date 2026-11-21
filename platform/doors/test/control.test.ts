@@ -288,6 +288,15 @@ describe("the record unreadable, served from the doors' kept copy", () => {
       .toEqual([503, "60", { error: staleRefusal("signin").message }]);
   });
 
+  it("drops the copy at a read of a malformed record: an outage after it stays closed",
+     async () => {
+    const { key } = await mintKeyFor(owner());
+    expect((await api(key)).status).toBe(200);
+    await writeControl(env.CONTROL, "{outside");
+    expect((await api(key)).status).toBe(503);
+    expect((await api(key, unreadable())).status).toBe(503);
+  });
+
   it("hands the owner's object no tier numbers and no sign-in switches to keep", () => {
     const control = parseControl(OPEN)!;
     expect(signinsRead(bundledSources(), { kind: "kept", control, read_at: 1 })).toBeUndefined();
