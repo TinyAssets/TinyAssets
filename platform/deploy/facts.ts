@@ -265,14 +265,6 @@ export const ROTATED: Readonly<Record<string, Rotated>> = Object.freeze(Object.f
 /** Where a sign-in starts. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
 
-/**
- * The sign-in probe's routes (mode `probe`): the routes that take the sign-in's own two paths,
- * which no Worker serves before the cutover, so handing them to the doors early serves no
- * user.
- */
-export const PROBE_ROUTES: readonly string[] = Object.freeze(ROUTES.filter((pattern) =>
-  [AUTHORIZE, UPSTREAM_CALLBACK].some((url) =>
-    routeTakes(pattern, url.slice("https://".length)))));
 /** The URL E2B's lifecycle webhook is sent to: the doors' hook. */
 export const E2B_HOOK_URL = `${ORIGIN}${identity.hook}`;
 

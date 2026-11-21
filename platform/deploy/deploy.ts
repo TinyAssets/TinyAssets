@@ -18,9 +18,6 @@
  * - `dark`: storage, secrets and every Worker with no public route, the control record when
  *   absent, the WorkOS redirect URI and E2B's lifecycle webhook (disabled), then the handles
  *   canary.
- * - `probe`: after `dark`, the sign-in's two paths alone handed to the doors (`PROBE_ROUTES`),
- *   nothing deployed and no gate changed, then the canary and the one sign-in link to open,
- *   with its pass and fail signs (`PROBE_SIGNS`).
  * - `routes`: `dark`, then the doors' routes handed over one at a time, the egress custom
  *   domain, and the webhook enabled. Before any change it keeps a record of each of those
  *   three as they stood (`RouteRecord`), and the job summary names its id.
@@ -116,8 +113,8 @@
  * redirects to AuthKit's sign-in (`authorizeCheck`); the sandbox's `E2B_TEMPLATE` is this
  * tree's image (`sandbox/template/image.ts`) and has a ready build, and E2B holds the tag of
  * the pair this deploy makes (`pairTag`), which `pair` makes.
- * The access token's exact `iss` and `auth_time` only a real sign-in shows: `probe` settles
- * them.
+ * The access token's exact `iss` and `auth_time` only a real sign-in shows: the stage's first
+ * sign-in settles them (d3 §H).
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -162,7 +159,7 @@ import {
 } from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN, FILES_BUCKET,
-  IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, PROBE_ROUTES, QUEUES,
+  IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
   RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
@@ -225,7 +222,7 @@ export const IO: Io = Object.freeze({
   sleep: (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }),
 });
 
-export type Mode = "plan" | "dark" | "probe" | "routes" | "h2" | "pair" | "handback" | "control"
+export type Mode = "plan" | "dark" | "routes" | "h2" | "pair" | "handback" | "control"
   | "owner" | "restore" | "copyback" | "recover" | "erase" | "rotation" | "retire";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
@@ -429,7 +426,7 @@ export interface UpstreamValues {
  * and authenticate endpoints fixed WorkOS URLs, and the JWKS the owner issuer's discovery
  * names, that discovery held to `issuer` exactly (an absent or non-https `jwks_uri` is
  * unknown, and unknown stops the kit). The access token's expected `iss` is derived here
- * alone (`token_issuer`); a wrong one is the sign-in probe's 502, which names the issuer the
+ * alone (`token_issuer`); a wrong one is the sign-in's 502, which names the issuer the
  * token carries.
  */
 export async function upstreamFrom(issuer: string | undefined, clientId: string | undefined,
@@ -462,7 +459,7 @@ export async function upstreamFrom(issuer: string | undefined, clientId: string 
                    authorization_endpoint: `${SECRET_ORIGIN}/user_management/authorize`,
                    token_endpoint: `${SECRET_ORIGIN}/user_management/authenticate`,
                    jwks_uri: jwks,
-                   // WorkOS's docs and SDK fixtures (research, 2026-11-06); the probe proves it.
+                   // WorkOS's docs and SDK fixtures (research, 2026-11-06); the stage's first sign-in proves it.
                    token_issuer: `${SECRET_ORIGIN}/user_management/${clientId}`,
                    user_delete: `${SECRET_ORIGIN}/user_management/users/{sub}`,
                    authorize_params: { provider: "authkit" } };
@@ -781,30 +778,12 @@ function stageOf(scratch: () => string, ids: Readonly<Record<string, string>>,
   });
 }
 
-// --- The probe --------------------------------------------------------------------------
-
 /**
- * The probe's handover (mode `probe`): `PROBE_ROUTES` alone, each added for the doors, or
- * left when the doors hold it already. A path another Worker (or no Worker) serves, by the
- * same, a narrower or a wider pattern, stops it: the probe takes only paths nothing serves.
+ * The doors' own first-party sign-in link, which the platform's canary starts: the doors'
+ * app's authorization (`doors/app/api.js`), with a fresh S256 challenge whose verifier is
+ * dropped, so no code it could end in is ever redeemable.
  */
-export function probeSteps(routes: readonly Route[]): RouteChange[] {
-  const served = routes.filter((route) => route.script !== DOORS && PROBE_ROUTES.some(
-    (pattern) => route.pattern === pattern || narrower(route.pattern, pattern)
-      || narrower(pattern, route.pattern)));
-  if (served.length > 0) {
-    throw new Error(`the probe takes only paths nothing serves, and ${served.map((route) =>
-      `${route.pattern} is ${route.script ?? "no Worker"}'s`).join(", ")}: nothing is changed`);
-  }
-  return handover(routes, DOORS, PROBE_ROUTES);
-}
-
-/**
- * The one first-party sign-in link the probe prints: the doors' own app's authorization
- * (`doors/app/api.js`), with a fresh S256 challenge whose verifier is dropped, so no code it
- * could end in is ever redeemable.
- */
-export function probeLink(): string {
+export function firstPartyLink(): string {
   const { state, challenge } = throwaway();
   const query = new URLSearchParams({
     response_type: "code", client_id: WEB_CLIENT, redirect_uri: WEB_REDIRECT,
@@ -815,34 +794,13 @@ export function probeLink(): string {
 
 /**
  * A fresh state and S256 challenge, the challenge's verifier dropped here, so no code a flow
- * started with them could end in is ever redeemable (the probe's link, `authorizeCheck`).
+ * started with them could end in is ever redeemable (`firstPartyLink`, `authorizeCheck`).
  */
 export function throwaway(): { state: string; challenge: string } {
   return { state: randomBytes(16).toString("base64url"),
            challenge: createHash("sha256").update(randomBytes(32).toString("base64url"))
              .digest("base64url") };
 }
-
-/** What the probe's sign-in shows, read from where the browser ends. */
-export const PROBE_SIGNS = [
-  `Pass: the browser's address begins ${WEB_REDIRECT}?error=temporarily_unavailable ` +
-  "(more follows it; the page itself is the old app's and reads as a sign-in error, " +
-  "which is expected): the closed gate refused the sign-in after every " +
-  "check passed, and no owner was made. The doors' client and API key were taken at User " +
-  "Management's authenticate, the callback was its registered redirect, and the access " +
-  "token's signature, iss, client_id, sub (the answer's user.id) and auth_time held.",
-  `Fail, at ${AUTHORIZE}: a 400 page, so the doors could not read their own ` +
-  "app's client document.",
-  "Fail, at error.workos.com or another error page before or after the sign-in: WorkOS " +
-  "refused the doors' client or the callback.",
-  `Fail, at ${UPSTREAM_CALLBACK}: a 502 page naming the check that failed (the token endpoint's ` +
-  "status and error code, auth_time, client_id...), the same line in the doors' log. On " +
-  "issuer, it names the iss the token carries: that value becomes upstreamFrom's " +
-  "token_issuer.",
-  `Fail, at ${WEB_REDIRECT}?error=access_denied ("sign in again"): auth_time is more than ` +
-  `${SIGN_IN_MAX_AGE_S} s old or ahead of the clock, so max_age=0 did not force a fresh ` +
-  "sign-in.",
-].join("\n");
 
 // --- The route record -------------------------------------------------------------------
 
@@ -867,8 +825,7 @@ export const PROBE_SIGNS = [
  * namespace): it serves no one without the routes, the domain and the hook, so a handback
  * leaves it, as `dark` has no undo. The record holds no secret and not the account id. It is
  * kept in the control namespace, the
- * kit's own record store (the control record is written there, and read back by a later
- * `probe`): the kit writes it itself, before its first change, over the client and token it
+ * kit's own record store (the control record is written there): the kit writes it itself, before its first change, over the client and token it
  * already holds, so a refused write stops the run before anything is changed, and `handback`
  * reads it with that same token, with no host and no GitHub API in between. Its key is the
  * run's id (`actions.ts` `runOf`), which a re-run attempt keeps, and the job summary names it.
@@ -1159,9 +1116,9 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
         "<this run's id>");
     return { kept: { record, namespace, key } };
   }
-  // Doors on more of their routes than the probe's: an earlier routes run moved them.
+  // Doors on their routes already: an earlier routes run moved them.
   const earlier = got.table.filter((route) => route.script === DOORS
-    && ROUTES.includes(route.pattern) && !PROBE_ROUTES.includes(route.pattern))
+    && ROUTES.includes(route.pattern))
     .map((route) => route.pattern);
   const word = hook === undefined ? LATER : hook === null ? "absent"
     : hook["enabled"] === true ? "enabled" : "disabled";
@@ -2115,67 +2072,6 @@ function canary(...args: [] | ["--side", "doors", "--unkeyed"]): Step<never, nev
   });
 }
 
-/** The doors are deployed: a dark run came first. */
-const doorsDeployed = step<"cloudflare" | "account">(async ({ say }, got) => {
-  if (!(await got.cloudflare.workers(got.account)).includes(DOORS)) {
-    throw new Error(`${DOORS} is not deployed: the probe runs after a dark run`);
-  }
-  say(`${DOORS} is deployed`);
-});
-
-/** The control record admits nobody, as a dark run writes it. */
-const gatesClosed = step<"cloudflare" | "account">(async ({ say }, got) => {
-  const namespace = await controlNamespace(got.cloudflare, got.account);
-  const control = namespace === undefined ? null
-    : parseControl(await got.cloudflare.value(got.account, namespace, CONTROL_KEY));
-  if (control === null || !closedToAll(control)) {
-    throw new Error("the control record is missing or admits someone: the probe runs only " +
-                    "with every gate closed, as a dark run writes it");
-  }
-  say("the control record admits no owner and no outside client; no gate is changed");
-});
-
-/** WorkOS lists the callback, as a dark run registers it. */
-const callbackListed = step(async ({ run, say }) => {
-  if (await registerRedirect(input(run, "WORKOS_API_KEY")!, false, run.io.fetch) !== "present") {
-    throw new Error(`WorkOS lists no ${UPSTREAM_CALLBACK}: run dark first, which registers it`);
-  }
-  say(`WorkOS lists ${UPSTREAM_CALLBACK}, as a dark run registers it`);
-});
-
-const callbackLater = step(({ say }) => {
-  say(`WorkOS lists ${UPSTREAM_CALLBACK}, as a dark run registers it: ${LATER}`);
-});
-
-/** The probe's handover, from the zone's routes as they stand. */
-const probePlan = step<"cloudflare" | "zone", "changes">(async (_ctx, got) => ({
-  changes: probeSteps(await got.cloudflare.routes(got.zone)) }));
-
-/**
- * The early sign-in check, before a route moves, on the run that moves them: WorkOS takes the
- * client and UPSTREAM_CALLBACK, which it lists, so a redirect-uri-invalid answer stops the probe.
- */
-const probeAuthorize = step(async ({ run, say }) => {
-  if (run.apply) {
-    say(await authorizeCheck(await upstreamFrom(input(run, "OWNER_ISSUER"),
-                                                input(run, "WORKOS_CLIENT_ID"), run.io.fetch),
-                             false, run.io.fetch));
-  }
-});
-
-/** The sign-in's two paths handed to the doors, or found theirs already. */
-const probeHandOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, got) => {
-  say(...(got.changes.length === 0 ? [`${DOORS} holds ${PROBE_ROUTES.join(" and ")} already`]
-    : got.changes.map((each) => describeStep(each, DOORS))));
-  if (run.apply) {
-    await got.cloudflare.reroute(got.zone, got.changes, (each) => describeStep(each, DOORS));
-  }
-});
-
-const signInLink = step(({ run }) => {
-  run.io.log(`\nSign in once, in a browser, at:\n${probeLink()}\n\n${PROBE_SIGNS}`);
-});
-
 /** H2's probes alone: they change nothing, and need a routed door and a probe owner. */
 const h2 = step(({ run }) => {
   run.io.exec(process.execPath, ["--experimental-strip-types",
@@ -2440,12 +2336,6 @@ const ROUTED = READS.then(routePlan).then(recorded).then(redirect).then(authoriz
   .then(workers).then(retired).then(control).then(handOver).then(customDomain)
   .then(hook(true, ", after the routes"));
 
-/** A probe run: a dark run came first, every gate is closed, then the sign-in's two paths. */
-const PROBE_LATER = Steps.none.then(zone).then(doorsDeployed).then(gatesClosed)
-  .then(callbackLater).then(probePlan).then(probeHandOver);
-const PROBE = Steps.none.then(zone).then(doorsDeployed).then(gatesClosed).then(callbackListed)
-  .then(probePlan).then(probeAuthorize).then(probeHandOver);
-
 /** A handback: a routes run's record read, held to the zone, handed back and read back. */
 const HANDBACK_LATER = Steps.none.then(zone).then(recordRead).then(backPlan).then(hookBackLater)
   .then(handBack);
@@ -2480,13 +2370,6 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: DARK_LATER.list, secrets: DARK.list },
     report: { unchanged: NOTHING, after: [canary()] },
-  },
-  probe: {
-    inputs: { public: PUBLIC_INPUTS, secret: ["WORKOS_API_KEY"], optional: [] },
-    deploys: false, applies: true, own: [],
-    steps: { public: PROBE_LATER.list, secrets: PROBE.list },
-    report: { unchanged: "\nNothing was changed. The apply job prints the sign-in link.",
-              after: [canary(), signInLink] },
   },
   routes: {
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
