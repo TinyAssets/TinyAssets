@@ -608,7 +608,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `untangle-2026-11/pass-sandbox.md`).
   - [x] `platform/files/`, both passes in one PR, with the area's list2 items and its own
     swallowed errors decided, and four checks that could never fail made to (the r2-keys
-    guard's builder, prefix and exemption rules; the root rewrap's etag) (`untangle/pass-files`;
+    guard's builder, prefix and exemption rules; the root rewrap's etag) (#5679;
     `untangle-2026-11/pass-files.md`).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).

@@ -5,10 +5,13 @@
  * This Worker alone binds the owner-files bucket, `BLOBS`. It holds immutable chunks of at
  * most `CHUNK_BYTES`, each under its owner's random namespace and named by an HMAC of its
  * SHA-256 under the owner's data key (`o/<ns>/c/<name>`, `keys.ts`, `datakey.ts`
- * `chunkName`). A listing of the bucket therefore confirms no known file. The owner object's
- * manifest maps paths to chunks (`owner/src/files.ts`). Uploads use the namespace and
- * wrapped key the object supplies. For recovery, the operator can ask `FilesLocate` which
- * owner a namespace's newest finished generation names.
+ * `chunkName`), so a listing of the bucket confirms no known file. It takes only hex values
+ * and bytes: it never sees a path and keeps nothing between calls. Which owner's namespace a
+ * call names, and whether a chunk is wanted at all, is the owner object's manifest's to know
+ * (`owner/src/files.ts`): a call's namespace and wrapped key are that object's (a manifest
+ * root carries the key too, below), and the doors' `FilesUpload` puts with the pair the
+ * object hands one upload. Only `FilesLocate`'s `locate` learns an owner, from the bucket,
+ * for the operator channel.
  *
  * Each method takes a batch, so a large read or write is few calls: each call is a
  * subrequest of its caller's invocation, of which Workers Paid allows 10,000 by default

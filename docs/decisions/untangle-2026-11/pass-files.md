@@ -31,6 +31,11 @@ why a root is swept before its objects.
     the files Worker through two entrypoints. Its upload uses the namespace and wrapped
     key the owner supplies. Its operator recovery channel can locate the owner from the
     namespace's newest finished generation.
+  - At review, the header got back its reason, cut with the stale lines: the Worker takes
+    only hex and bytes, never a path, and keeps nothing; a call's namespace and wrapped key
+    are the owner object's, and `FilesUpload` puts with the pair the object hands one
+    upload. "Never learns an owner" went: `FilesLocate`'s `locate` does, for the operator
+    channel. Every source's digest is still base's (`f934871ad`).
   - `index.ts` "The nightly manifest is the only other kind of object". The marks and the
     holds are objects too. It is the only other kind of sealed object.
   - `index.ts` "`deleteNamespace` … the owner's erasure and the cutover's discard alone".
