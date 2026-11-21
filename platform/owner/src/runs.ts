@@ -218,7 +218,8 @@ export interface RunHost {
   mailSettled(mail: string, agent: string): void;
   /**
    * In the unit: what a run's sandbox said the owner must hear (its sync's files whose names
-   * are not UTF-8, `ta.sync_unnamed`), as the owner's notice.
+   * are not UTF-8, `ta.sync_unnamed`; the vendor's limit that holds its agent's schedules,
+   * `vendor_limit`), as the owner's notice.
    */
   notice(type: string, detail: string): void;
   /** In the unit: a run settled lost or revoked, whose CLI the sandbox stops, once over. */
@@ -347,8 +348,7 @@ interface RunGrant {
 /**
  * A run's result posted for it: a mail's run's, its agent's reply to that mail; a scheduled
  * run's of the owner's own schedule (`mail` null), its agent's post in the owner's room with
- * it, `dm:<its id>`, since no
- * one is waiting on a scheduled run. Under the run's authority either way.
+ * it, since no one is waiting on a scheduled run. Under the run's authority either way.
  */
 export interface MailAnswer {
   readonly run: string;
@@ -440,6 +440,18 @@ export const SESSION_REFUSED = "session_id_refused: the engine named a session i
  * card, so its result is no reply. Kept on the row from the batch that brought the stop.
  */
 export const TOOL_DEFERRED = "tool_deferred";
+/**
+ * The code a run settles with when it failed and its engine reported the vendor's refusal for
+ * its own rate limit, quota or billing (its record's `vendor_limit` matcher, ADR-034 decision
+ * 7). Kept on the row from the batch that brought the refusal.
+ */
+export const VENDOR_LIMIT = "vendor_limit";
+/**
+ * A schedule's `last_error` while the vendor's limit holds it (`Runs.#hold`), a fixed text, so
+ * the hold's lift finds the schedules it held, and the owner reads why one waits.
+ */
+export const VENDOR_HELD = "vendor_limit: the vendor refused one of this agent's runs for " +
+  "its own rate limit, quota or billing; its schedules wait for the vendor";
 
 /**
  * A runner's batch read against its run's record: the frames past the last one kept (a
@@ -449,7 +461,8 @@ export const TOOL_DEFERRED = "tool_deferred";
  */
 function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]): {
   last: number; result: string | null; resultCut: boolean; error: string | null;
-  session: string | null; deferred: boolean; relayed: Frame[];
+  session: string | null; deferred: boolean; limit: { reset: number | null } | null;
+  relayed: Frame[];
 } {
   let last = row.last_seq;
   let result = row.result;
@@ -457,6 +470,8 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
   let error = row.error;
   let session: string | null = null;
   let deferred = row.code === TOOL_DEFERRED;
+  // The vendor's refusals in this batch, and the latest reset they state.
+  let limit: { reset: number | null } | null = null;
   const relayed: Frame[] = [];
   for (const frame of frames) {
     if (frame.seq <= last) {
@@ -480,10 +495,15 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
       error = cut(read.error, ERROR_BYTES).text;
     }
     deferred ||= read.deferred;
+    if (read.vendor_limit !== null) {
+      const resets: number[] = [limit?.reset, read.vendor_limit.reset]
+        .filter((reset): reset is number => typeof reset === "number");
+      limit = { reset: resets.length === 0 ? null : Math.max(...resets) };
+    }
     relayed.push(Object.freeze({ v: FRAME_VERSION, run: row.id, seq: frame.seq, at: frame.at,
                                  kind: read.kind, event: frame.event }));
   }
-  return { last, result, resultCut, error, session, deferred, relayed };
+  return { last, result, resultCut, error, session, deferred, limit, relayed };
 }
 
 /** A path as the sync agent escapes one it cannot name: `/workspace/`, then printable ASCII. */
@@ -1328,11 +1348,12 @@ export class Runs {
       throw new Refusal("run_ended", RUN_ENDED);
     }
     this.#host.renewLease(lease.lease_id, lease.epoch);
-    const events = servedRecord(row.source)?.cli.engine.events;
-    if (events === undefined) {
+    const record = servedRecord(row.source);
+    if (record === undefined) {
       throw new Error(`run ${runId}'s engine ${row.source} has no record`);
     }
-    const { last, result, resultCut, error, session, deferred, relayed } =
+    const events = record.cli.engine.events;
+    const { last, result, resultCut, error, session, deferred, limit, relayed } =
       batch(row, events, frames);
     for (const frame of frames) {
       const notice = frame.seq > row.last_seq ? unnamedNotice(frame.event) : null;
@@ -1340,13 +1361,23 @@ export class Runs {
         this.#host.notice("sync_unnamed", `${row.agent}: ${notice}`);
       }
     }
+    const limited = limit !== null || row.code === VENDOR_LIMIT;
     // The batch is this run's own heartbeat, as it renews the lease.
     this.#sql.exec("UPDATE runs SET last_seq = ?, result = ?, result_cut = ?, error = ?, " +
                      "code = ?, " +
                      "state = CASE WHEN state = 'queued' THEN 'running' ELSE state END, " +
                      "started_at = coalesce(started_at, ?), beat_at = ? WHERE id = ?",
-                   last, result, resultCut ? 1 : 0, error, deferred ? TOOL_DEFERRED : row.code,
+                   last, result, resultCut ? 1 : 0, error,
+                   deferred ? TOOL_DEFERRED : limited ? VENDOR_LIMIT : row.code,
                    now, now, runId);
+    // The vendor's limit holds the schedules from the batch that brings it: once a run, with
+    // a notice, and again where a later batch states the vendor's reset.
+    if (limit !== null && (row.code !== VENDOR_LIMIT || limit.reset !== null)) {
+      this.#hold(row, limit.reset, now);
+      if (row.code !== VENDOR_LIMIT) {
+        this.#host.notice(VENDOR_LIMIT, vendorNotice(row, record.display_name, limit.reset));
+      }
+    }
     if (session !== null) {
       this.#sql.exec("UPDATE conversations SET session_id = ? WHERE id = ?", session,
                      row.conversation);
@@ -1359,9 +1390,13 @@ export class Runs {
       if (answer !== null) {
         this.#host.answer(answer);
       }
+      if (!failed) {
+        this.#lift(row, now);  // the vendor served it: its limit has passed
+      }
       this.settle(runId, settled, row.cancel_requested === 1 ? "cancelled"
-        : end.exit_code !== 0 ? "exit" : error !== null ? "engine_error"
-          : deferred ? TOOL_DEFERRED : null, end.exit_code, now);
+        : failed && limited ? VENDOR_LIMIT : end.exit_code !== 0 ? "exit"
+          : error !== null ? "engine_error" : deferred ? TOOL_DEFERRED : null,
+                  end.exit_code, now);
     }
     return { conversation: row.conversation, frames: relayed, settled };
   }
@@ -1634,6 +1669,56 @@ export class Runs {
     this.#sql.exec("UPDATE run_schedules SET last_run = coalesce(?, last_run), last_error = ? " +
                      "WHERE id = ?", run, error === null ? null : error.slice(0, 256), scheduleId);
   }
+
+  /**
+   * In a unit: the schedules the vendor's limit on `run` holds (ADR-034 decision 7): its
+   * agent's under its own authority, whose sandbox holds the sign-in or key the vendor
+   * refused, each moved to the first time it may fire at or after the vendor's stated `reset`
+   * (seconds), so it resumes as the vendor's window passes. With no reset stated, a cron
+   * stops (no next time) until `#lift`, and a one-shot keeps its time: it cannot repeat.
+   */
+  #hold(run: RunRow, reset: number | null, now: number): void {
+    const after = reset === null ? null : Math.max(now, reset);
+    for (const row of this.#sql.exec<ScheduleRow>(
+      "SELECT * FROM run_schedules WHERE agent = ? AND client IS ?", run.agent, run.client)
+      .toArray()) {
+      const next = row.trigger === "at"
+        ? after === null ? row.next_at : Math.max(row.next_at!, after)
+        : after === null ? null : row.next_at !== null && row.next_at >= after ? row.next_at
+          : nextOccurrence(parseCron(row.cron), after);
+      this.#sql.exec("UPDATE run_schedules SET next_at = ?, last_error = ? WHERE id = ?", next,
+                     VENDOR_HELD, row.id);
+    }
+  }
+
+  /**
+   * In a unit: the schedules `#hold` held for `run`'s agent and authority, let go, since the
+   * vendor served one of its runs: each cron at its next occurrence from `now`, a one-shot at
+   * its time.
+   */
+  #lift(run: RunRow, now: number): void {
+    for (const row of this.#sql.exec<ScheduleRow>(
+      "SELECT * FROM run_schedules WHERE agent = ? AND client IS ? AND last_error = ?",
+      run.agent, run.client, VENDOR_HELD).toArray()) {
+      this.#sql.exec("UPDATE run_schedules SET next_at = ?, last_error = NULL WHERE id = ?",
+                     row.trigger === "at" ? row.next_at
+                       : nextOccurrence(parseCron(row.cron), now), row.id);
+    }
+  }
+}
+
+/**
+ * The owner's notice that the vendor's limit holds `row`'s schedules, in the object's own
+ * words (the vendor's own are the run's error, from the untrusted sandbox): which agent,
+ * which engine on which credential, and until when.
+ */
+function vendorNotice(row: RunRow, engine: string, reset: number | null): string {
+  const on = row.credential === "api_key" ? "its API key" : "its plan's sign-in";
+  return `${row.agent}: ${engine} refused a run on ${on} for the vendor's own rate limit, ` +
+    `usage limit, quota or billing, so its scheduled runs wait ${reset === null
+      ? "until one of its runs is served again: once the limit or billing is cleared, run " +
+        "it yourself and they resume"
+      : `until the vendor's reset, ${new Date(reset * 1000).toISOString()}`}.`;
 }
 
 /** A schedule row's stamp and origin, as the lane admits its run. */

@@ -214,7 +214,18 @@
             "path": "item"
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "turn.failed"
+            },
+            "pattern": {
+              "error.message": "^(?:You\u2019ve hit your usage limit|Quota exceeded\\. Check your plan and billing details\\.|To use Codex with your ChatGPT plan, upgrade to Plus|Your workspace is out of credits|You hit your spend cap|exceeded retry limit, last status: 429)"
+            },
+            "path": ""
+          }
+        ]
       }
     },
     "definition": {

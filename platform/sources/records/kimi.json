@@ -154,7 +154,18 @@
             "path": "tool_calls"
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "ta.stderr"
+            },
+            "pattern": {
+              "text": "(?:^|\\n)provider\\.(?:rate_limit:|[a-z_]+: [^\\n]*(?:exceeded your current (?:token )?quota|check your account balance|insufficient balance|recharge your account|please recharge|account (?:is )?in arrears))"
+            },
+            "path": ""
+          }
+        ]
       }
     },
     "definition": {

@@ -136,7 +136,29 @@
             "path": ""
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "message_end",
+              "message.stopReason": "error"
+            },
+            "pattern": {
+              "message.errorMessage": "GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing|subscription_sharing_(?:workplace_individual_)?usage_limit_exceeded|credit balance|insufficient credits"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "auto_retry_end",
+              "success": false
+            },
+            "pattern": {
+              "finalError": "rate.?limit|too many requests|resource_exhausted|\\b429\\b"
+            },
+            "path": ""
+          }
+        ]
       }
     },
     "definition": {

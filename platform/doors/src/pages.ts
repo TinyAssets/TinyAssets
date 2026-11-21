@@ -16,7 +16,7 @@
  * script, style, font or image (`CSP`), and no inline script, so the return pages' own first
  * script is the first to run (it clears the code from the address bar before anything else).
  */
-import { ZONE } from "../../contract/src/egress";
+import { HOST } from "../../contract/src/identity";
 import { APP_PATH, CONNECTED_PATH, SIGNED_IN_PATH } from "./config";
 import type { DoorsEnv } from "./env";
 
@@ -44,7 +44,7 @@ const STATIC_PREFIX = `${APP_PATH}/static/`;
  * framed, no form posts, and the DOM's script sinks closed (Trusted Types with no policy).
  */
 export const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
-  `connect-src 'self' wss://${ZONE}; base-uri 'none'; form-action 'none'; ` +
+  `connect-src 'self' wss://${HOST}; base-uri 'none'; form-action 'none'; ` +
   "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
 
 const HEADERS: Readonly<Record<string, string>> = Object.freeze({

@@ -198,6 +198,8 @@ export function loadOrder(): readonly Load[] {
     { table: "collection_clock" },
     { table: "outside_agents", refs: ["unacked_to_owner"] },
     { table: "native_agents", refs: ["unacked_to_owner"] },
+    { table: "rooms" },
+    { table: "room_members" },
     { table: "ledger_messages", refs: ["unacked"] },
     { table: "message_bodies" },
     { table: "ledger_readers", refs: ["unacked"] },

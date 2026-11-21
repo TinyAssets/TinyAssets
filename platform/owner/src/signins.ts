@@ -50,12 +50,11 @@ import type { Notices } from "./notices";
 import type { Relay } from "./relay";
 import { signinUrls } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
-import { started, vendorHosts } from "./sandbox";
+import { startOutcome, vendorHosts } from "./sandbox";
 import { clock } from "./clock";
 import { sealRoute } from "../../contract/src/routing-mac";
 import type { Runs } from "./runs";
 import { eventsRequest, signinRequest } from "./reports";
-import type { Started } from "../../contract/src/sandbox";
 import type { SigninEventsRequest } from "../../contract/src/owner";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
@@ -422,7 +421,7 @@ export const signinsDoors = Object.freeze({
    * starts the record's `cli.login` there (`SandboxService.signin`). The answer is the
    * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
    * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
-   * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
+   * a pasted code), or why it did not start (`StartOutcome`'s code: `sandbox_waiting`, ...).
    */
   async signinStart(o: SigninsDoorNeeds, door: Door<SigninStartRequest>):
       Promise<SigninView | { started: false; code: string }> {
@@ -466,28 +465,22 @@ export const signinsDoors = Object.freeze({
       return { row, opened, region: region as string | null,
                lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
     });
-    let answer: Started | null = null;
-    try {
-      answer = started(await o.sandbox.signin({
-        id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
-        authority: begun.row.authority, lease: begun.lease,
-        tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
-        hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox", begun.region),
-        route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
-                                                     authority: begun.row.authority }),
-        urls: signinUrls(begun.row.id) }));
-    } catch {
-      console.error("a sign-in's start had no answer");
-      answer = null;
-    }
-    if (answer?.started === true) {
+    const answer = await startOutcome("a sign-in", () => o.sandbox.signin({
+      id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
+      authority: begun.row.authority, lease: begun.lease,
+      tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
+      hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox", begun.region),
+      route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
+                                                   authority: begun.row.authority }),
+      urls: signinUrls(begun.row.id) }));
+    if (answer.started === true) {
       return signinView(begun.row);
     }
     await o.door(() => {
       o.signins.end(begun.row.id);
       o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
     });
-    return { started: false, code: answer === null ? "start_lost" : answer.code };
+    return { started: false, code: answer.code };
   },
   /**
    * The runner's frames of a sign-in (`ta.signin`: its state, the vendor's URL and code),

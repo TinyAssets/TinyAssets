@@ -55,7 +55,7 @@ defines.
    - Kimi: both `unsupported`, its server entries not researched while its record waits to be
      dropped (call 17), and no root-owned hook layer (R5 item 8).
 3. **The starter carries `agents/main/mcp.json` (no servers) and `hooks.json` (every event,
-   none filled)**, managed, before `agent.json`; version 8 (and the plugins' 1.0.8, which follow
+   none filled)**, managed, before `agent.json`; version 9 (and the plugins' 1.0.9, which follow
    it). The starter guard holds that `hooks.json` names exactly `HOOK_EVENTS`.
 4. **A starter update widens by the definition's own rule (`definitionWidening`).** Scopes
    `agent.json` adds, as before; servers `mcp.json` adds or changes; hooks `hooks.json` adds or

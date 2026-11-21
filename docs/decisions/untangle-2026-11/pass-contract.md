@@ -157,8 +157,8 @@ gateway's tests to the contract's guards for three lines.
 - [ ] `platform/contract/`, part 2: both passes on `doors.json`, `guards/wire.test.ts` and
   `src/{acts,egress,owner-doors,owner,requests}.ts`, once #5707 merges
   (`untangle/pass-contract-2`).
-- [ ] `contract/src/wake-kinds.ts` `canonicalJson`, a second canonical JSON, gone for
-  `canonical.ts`'s, the platform's one (`untangle/wake-canonical`).
+- [x] `contract/src/wake-kinds.ts` `canonicalJson`, a second canonical JSON, gone for
+  `canonical.ts`'s, the platform's one (`untangle/wake-canonical`). Done (`small-shape.md` §1).
 
 Part 2's seven files `untangle/r5-hooks` changes, not touched here so the two merge cleanly:
 - `doors.json`: its `about` and the tool descriptions (agent text, generated into

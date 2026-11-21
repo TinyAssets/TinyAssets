@@ -14,25 +14,25 @@ import { MIGRATIONS } from "../src/schema";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { migrate } from "../../contract/src/migrate";
 import { policyDigest } from "../../contract/src/policy-document";
-import { DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
+import { DOT, MCP, MUSE, origin, rig, subscription, dm } from "./ledger-support";
 import { failure, ownerObject, starterSeed } from "./support";
 
 describe("the sender is the verified identity", () => {
   it("attributes, chains, times the reply and moves recipient states", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    const first = await r.post(null, `dm:${muse}`, { body: '{"sender": "owner"}' });
+    const first = await r.post(null, dm(muse), { body: '{"sender": "owner"}' });
     expect(first).toEqual({ message_id: first.message_id, recipients: [muse], held: false,
                             paused_reason: "" });
     const forged = await failure(() => r.stub.roomPost(r.bind(MUSE), {
-      room_id: `dm:${muse}`, client_message_id: "x", body: "x", parent_id: null,
+      room_id: dm(muse), client_message_id: "x", body: "x", parent_id: null,
       sender: "owner",
     } as never));
     expect([forged.code, forged.message]).toEqual(["invalid", "invalid ledger request"]);
     const [mail] = (await r.read(MUSE)).messages;
     expect([mail!.sender_kind, mail!.sender_id, mail!.chain_depth]).toEqual(["owner", "owner", 0]);
     expect([mail!.body, mail!.integrity]).toEqual(['{"sender": "owner"}', "ok"]);
-    const reply = await r.post(MUSE, `dm:${muse}`, { body: "hi", cmid: "r1",
+    const reply = await r.post(MUSE, dm(muse), { body: "hi", cmid: "r1",
                                                      parent: first.message_id });
     expect(reply.recipients).toEqual([OWNER]);
     const [back] = (await r.read()).messages;
@@ -43,7 +43,7 @@ describe("the sender is the verified identity", () => {
       .map((m) => [m["message_id"], m["created_at"] as number]));
     expect(back!.reply_s).toBe(Math.round((at[reply.message_id]! - at[first.message_id]!)
                                           * 1000) / 1000);
-    const again = await r.post(null, `dm:${muse}`, { cmid: "c2", parent: reply.message_id });
+    const again = await r.post(null, dm(muse), { cmid: "c2", parent: reply.message_id });
     const states = Object.fromEntries((await r.table("ledger_recipients"))
       .map((row) => [row["message_id"], row["state"]]));
     expect(states).toEqual({ [first.message_id]: "replied", [reply.message_id]: "replied",
@@ -65,37 +65,37 @@ describe("the sender is the verified identity", () => {
   it("returns the original on a resend and refuses another hash as a conflict", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    const sent = await r.post(null, `dm:${muse}`, { body: "one" });
-    expect(await r.post(null, `dm:${muse}`, { body: "one" })).toEqual(sent);
+    const sent = await r.post(null, dm(muse), { body: "one" });
+    expect(await r.post(null, dm(muse), { body: "one" })).toEqual(sent);
     const dot = await r.register(DOT, "Dot");
-    for (const [room, body, parent] of [[`dm:${muse}`, "two", null], [`dm:${dot}`, "one", null],
-                                        [`dm:${muse}`, "one", sent.message_id]] as const) {
+    for (const [room, body, parent] of [[dm(muse), "two", null], [dm(dot), "one", null],
+                                        [dm(muse), "one", sent.message_id]] as const) {
       const refused = await failure(() => r.post(null, room, { body, parent }));
       expect([refused.code, refused.message]).toEqual(["post_conflict", "conflict"]);
     }
     expect(await r.table("ledger_messages")).toHaveLength(1);
     expect((await r.read(MUSE)).messages.map((m) => m.body)).toEqual(["one"]);
     // The same client id from another sender is that sender's own message.
-    expect((await r.post(MUSE, `dm:${muse}`, { body: "two" })).message_id)
+    expect((await r.post(MUSE, dm(muse), { body: "two" })).message_id)
       .not.toBe(sent.message_id);
   });
 
   it("keeps dm room and parent rules", async () => {
     const r = await rig();
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
-    const own = await r.post(MUSE, `dm:${muse}`, { cmid: "m1" });
-    const toDot = await r.post(null, `dm:${dot}`, { cmid: "d1" });
+    const own = await r.post(MUSE, dm(muse), { cmid: "m1" });
+    const toDot = await r.post(null, dm(dot), { cmid: "d1" });
     for (const [origin, room, parent, reason] of [
-      [MUSE, `dm:${dot}`, null, "an outside agent posts only in its own dm room"],
+      [MUSE, dm(dot), null, "an outside agent posts only in its own dm room"],
       [null, "general", null, "room is not an enabled agent's dm"],
       [null, "dm:agent_0000000000000000", null, "room is not an enabled agent's dm"],
-      [null, `dm:${muse}`, toDot.message_id, "parent is not a message to this sender in this room"],
-      [MUSE, `dm:${muse}`, own.message_id, "parent is not a message to this sender in this room"],
-      [MUSE, `dm:${muse}`, "msg_missing", "parent is not a message to this sender in this room"],
+      [null, dm(muse), toDot.message_id, "parent is not a message to this sender in this room"],
+      [MUSE, dm(muse), own.message_id, "parent is not a message to this sender in this room"],
+      [MUSE, dm(muse), "msg_missing", "parent is not a message to this sender in this room"],
       // Each half of Muse's identity alone is not Muse.
-      [{ client: MUSE.client, family: DOT.family }, `dm:${muse}`, null,
+      [{ client: MUSE.client, family: DOT.family }, dm(muse), null,
         "an outside agent posts only in its own dm room"],
-      [{ client: DOT.client, family: MUSE.family }, `dm:${muse}`, null,
+      [{ client: DOT.client, family: MUSE.family }, dm(muse), null,
         "an outside agent posts only in its own dm room"],
     ] as const) {
       const refused = await failure(() => r.post(origin, room, { cmid: "z", parent }));
@@ -106,12 +106,12 @@ describe("the sender is the verified identity", () => {
   it("refuses a disabled agent's room, post and read, and re-enables it as itself", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    await r.post(null, `dm:${muse}`);
+    await r.post(null, dm(muse));
     const disabled = await r.stub.disableAgent(r.session(null),
                                                { agent_id: muse, reason: "owner removed it" });
     expect([disabled.disabled_reason, disabled.revision]).toEqual(["owner removed it", 2]);
-    for (const attempt of [() => r.post(null, `dm:${muse}`, { cmid: "c2" }),
-                           () => r.post(MUSE, `dm:${muse}`, { cmid: "m1" }),
+    for (const attempt of [() => r.post(null, dm(muse), { cmid: "c2" }),
+                           () => r.post(MUSE, dm(muse), { cmid: "m1" }),
                            () => r.read(MUSE)]) {
       expect((await failure(attempt)).code).toBe("refused");
     }
@@ -130,11 +130,11 @@ describe("the sender is the verified identity", () => {
       [{ cmid: "" }, "invalid", "client_message_id is 1 to 128 printable characters"],
       [{ cmid: "a\nb" }, "invalid", "client_message_id is 1 to 128 printable characters"],
     ] as const) {
-      const refused = await failure(() => r.post(null, `dm:${muse}`, fields));
+      const refused = await failure(() => r.post(null, dm(muse), fields));
       expect([refused.code, refused.message]).toEqual([code, reason]);
     }
     const body = '  { "b": 1,  "a": "café 🎲" }\n';
-    await r.post(null, `dm:${muse}`, { body });
+    await r.post(null, dm(muse), { body });
     expect((await r.read(MUSE)).messages[0]!.body).toBe(body);
   });
 });
@@ -143,8 +143,8 @@ describe("a reader sees only its own mail", () => {
   it("withholds and flags a tampered or missing body", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    await r.post(null, `dm:${muse}`, { body: "pay the invoice" });
-    await r.post(null, `dm:${muse}`, { body: "second", cmid: "c2" });
+    await r.post(null, dm(muse), { body: "pay the invoice" });
+    await r.post(null, dm(muse), { body: "second", cmid: "c2" });
     // Storage changed under the object: its own trigger refuses any update of a body.
     await r.sql("DROP TRIGGER message_bodies_kept");
     await r.sql("UPDATE message_bodies SET body = 'pay the hacker!' WHERE body = 'pay the invoice'");
@@ -157,8 +157,8 @@ describe("a reader sees only its own mail", () => {
      async () => {
     const r = await rig();
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
-    await r.post(null, `dm:${muse}`, { body: "for muse" });
-    await r.post(null, `dm:${dot}`, { body: "for dot", cmid: "c2" });
+    await r.post(null, dm(muse), { body: "for muse" });
+    await r.post(null, dm(dot), { body: "for dot", cmid: "c2" });
     const first = await r.read(MUSE);
     expect(first.messages.map((m) => m.body)).toEqual(["for muse"]);
     expect((await r.read(DOT)).messages.map((m) => m.body)).toEqual(["for dot"]);
@@ -186,7 +186,7 @@ describe("a reader sees only its own mail", () => {
      async () => {
     const r = await rig();
     await r.register(MUSE);
-    const room = `dm:${(await r.stub.outsideAgents(r.bind(null))).agents[0]!.agent_id}`;
+    const room = dm((await r.stub.outsideAgents(r.bind(null))).agents[0]!.agent_id);
     const sent: string[] = [];
     for (const n of [0, 1, 2]) {
       sent.push((await r.post(null, room, { body: String(n).repeat(16000), cmid: `c${n}` }))
@@ -228,9 +228,9 @@ describe("a reader sees only its own mail", () => {
   it("bounds an ack by the reader's own mail and reveals no count", async () => {
     const r = await rig();
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
-    await r.post(null, `dm:${muse}`, { cmid: "m1" });
+    await r.post(null, dm(muse), { cmid: "m1" });
     for (const n of [0, 1, 2]) {  // later mail to another reader raises the ledger's seq
-      await r.post(null, `dm:${dot}`, { cmid: `d${n}` });
+      await r.post(null, dm(dot), { cmid: `d${n}` });
     }
     const [seq] = (await r.read(MUSE)).messages.map((m) => m.seq);
     expect(seq).toBe(1);
@@ -248,7 +248,7 @@ describe("a reader sees only its own mail", () => {
     // read_graph ceilings, less its headroom, as the ledger's max_bytes.
     for (const [budget, pages] of [[24576 - 1024, 5], [40000 - 1024, 3], [4096 - 1024, 5]]) {
       const r = await rig();
-      const room = `dm:${await r.register(MUSE)}`;
+      const room = dm(await r.register(MUSE));
       const sent: string[] = [];
       for (const n of [0, 1, 2, 3, 4]) {
         sent.push((await r.post(null, room, { body: String(n).repeat(16000), cmid: `c${n}` }))
@@ -287,7 +287,7 @@ describe("outside agents register from a verified identity", () => {
       .toEqual(["refused", "this outside identity is already an enabled agent"]);
     expect((await r.stub.outsideAgents(r.bind(null))).agents.map((a) => a.agent_id))
       .toEqual([muse]);
-    await r.post(null, `dm:${muse}`);
+    await r.post(null, dm(muse));
     expect((await r.read(MUSE)).messages).toHaveLength(1);  // not locked out
     expect(await r.register(MUSE)).toBe(muse);  // its own command center again
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "moved" });
@@ -430,7 +430,7 @@ describe("outside agents register from a verified identity", () => {
       () => r.stub.registerPropose(outside, request),
       () => r.stub.registerProposal(outside, { card_id: "card_" + "0".repeat(32) }),
       () => r.stub.grantForget(outside, { client: DOT.client }),
-      () => r.stub.roomPost(outside, { room_id: `dm:${muse}`, client_message_id: "c",
+      () => r.stub.roomPost(outside, { room_id: dm(muse), client_message_id: "c",
                                        body: "x", parent_id: null }),
       () => r.stub.mailboxRead(outside, { limit: 1 }),
       () => r.stub.mailboxAck(outside, { through: 0 }),
@@ -588,6 +588,55 @@ describe("the ledger's binding", () => {
       { message_id: "m3", read_at: null, failed_reason: null }]);
     expect(moved.replies).toEqual([null, 1, 2.5]);
     expect(moved.receipts).toEqual([]);
+  });
+
+  it("makes each hot room's rows under its old id, and a pending purge its rooms with the " +
+     "owner and the owner's own agents (migration 19)", async () => {
+    const rooms = MIGRATIONS.findIndex((each) => each.includes("CREATE TABLE rooms"));
+    const made = await runInDurableObject((await ownerObject()).stub,
+                                          (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+          "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+          "AND name NOT GLOB 'cf_*'").toArray()) {
+        sql.exec(`DROP TABLE "${name}"`);
+      }
+      migrate(state.storage, MIGRATIONS.slice(0, rooms));
+      const [outside, own] = ["agent_0123456789abcdef", "ta_0123456789abcdef"];
+      for (const [seq, room] of [[1, `dm:${own}`], [2, `dm:${outside}`],
+                                 [3, `dm:${outside}+${own}`], [4, `dm:${own}`]] as const) {
+        sql.exec("INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
+                   "sender_kind, sender_id, client_message_id, body_sha256, parent_id, " +
+                   "chain_root, chain_depth, created_at, body_bytes, line_bytes) VALUES (?, ?, " +
+                   "'', ?, 'owner', 'owner', ?, ?, null, ?, 0, ?, 1, 1)", seq, `m${seq}`, room,
+                 `c${seq}`, "0".repeat(64), `m${seq}`, seq);
+      }
+      sql.exec("INSERT INTO native_agents (agent_id, agent, created_at) VALUES (?, 'main', 1)",
+               own);
+      sql.exec("INSERT INTO archive_purges (agent_id, at) VALUES ('agent_ffffffffffffffff', 1)");
+      migrate(state.storage, MIGRATIONS);
+      return {
+        rooms: sql.exec("SELECT room_id, members_key, created_at FROM rooms ORDER BY room_id")
+          .toArray(),
+        members: sql.exec("SELECT room_id, member_id FROM room_members " +
+                          "ORDER BY room_id, member_id").toArray(),
+        purges: sql.exec("SELECT room_id FROM archive_purges ORDER BY room_id").toArray(),
+      };
+    });
+    const [outside, own] = ["agent_0123456789abcdef", "ta_0123456789abcdef"];
+    expect(made.rooms).toEqual([
+      { room_id: `dm:${outside}`, members_key: `${outside}+owner`, created_at: 2 },
+      { room_id: `dm:${outside}+${own}`, members_key: `${outside}+${own}`, created_at: 3 },
+      { room_id: `dm:${own}`, members_key: `owner+${own}`, created_at: 1 }]);
+    expect(made.members).toEqual([
+      { room_id: `dm:${outside}`, member_id: outside },
+      { room_id: `dm:${outside}`, member_id: "owner" },
+      { room_id: `dm:${outside}+${own}`, member_id: outside },
+      { room_id: `dm:${outside}+${own}`, member_id: own },
+      { room_id: `dm:${own}`, member_id: "owner" },
+      { room_id: `dm:${own}`, member_id: own }]);
+    expect(made.purges).toEqual([{ room_id: "dm:agent_ffffffffffffffff" },
+                                 { room_id: `dm:agent_ffffffffffffffff+${own}` }]);
   });
 });
 

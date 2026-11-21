@@ -56,14 +56,13 @@ import {
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority,
   type SpendCaps, type UsableSource,
 } from "./runs";
-import { started, vendorHosts } from "./sandbox";
+import { startOutcome, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";
 import { type Signins, switchedOn } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
 import {
   type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
-  type Started,
 } from "../../contract/src/sandbox";
 
 /**
@@ -131,7 +130,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
         StandingGrant;
   };
   readonly ledger: Pick<Ledger, "answer" | "hold" | "mailDue" | "mailFor" | "nextMail" | "post"
-    | "release" | "settled" | "taken" | "undeliverable">;
+    | "release" | "roomOf" | "settled" | "taken" | "undeliverable">;
   readonly notices: Pick<Notices, "add">;
   readonly policy: {
     egressGeneration(): number;
@@ -320,13 +319,14 @@ export class Launcher implements RunHost {
   /**
    * Admit a run in one unit (`ask`, which binds the call again, and the agent's file still
    * at the etag it was read at), then start it through the sandbox and record what came of
-   * it: `running`, `failed` with the sandbox's code, or `unknown` when its answer never came
-   * (the run is then cancelled too, in case it did start). Its id: a run that waits for
-   * its conversation's live run is written `waiting` and starts from the lane, its turn
-   * come (`waiting`, the run the lane starts).
+   * it (`StartOutcome`): `running`, `failed` with the sandbox's code or its refusal's, or
+   * `unknown` when no answer it can read came (the run is then cancelled too, in case it did
+   * start). Its id: a run that waits for its conversation's live run is written `waiting`
+   * and starts from the lane, its turn come (`waiting`, the run the lane starts).
    */
   async launch(read: { file: AgentFile; etag: string }, ask: () => Omit<Ask, "file">,
-               waiting: string | null = null, taken: () => void = () => {}): Promise<string> {
+               waiting: string | null = null, taken: (run: string) => void = () => {}):
+      Promise<string> {
     const { admitted, agent, unattended } = await this.#o.door(() => {
       const made = ask();
       if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
@@ -338,31 +338,25 @@ export class Launcher implements RunHost {
                                          engine: chosen.engine, credential: chosen.credential,
                                          ...(chosen.connection === null ? {}
                                            : { connection: chosen.connection }) }), waiting) };
-      taken();  // the input it was asked on is its own now (a mail's, taken)
+      taken(done.admitted.run);  // the input it was asked on is its own now (a mail's, taken)
       return done;
     });
     if (admitted.existing) {
       return admitted.run;
     }
-    let answer: Started | null = null;
-    try {
-      answer = started(await this.#o.sandbox.start({
-        run: admitted.run, agent, conversation: admitted.conversation,
-        engine: admitted.engine, credential: admitted.credential, model: admitted.model,
-        session_id: admitted.session_id, prompt: admitted.prompt, unattended,
-        authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
-        network: admitted.network, config: admitted.config,
-        hosts: vendorHosts(admitted.engine, admitted.credential, null),
-        route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
-                                                        authority: admitted.authority }),
-        urls: runUrls(admitted.run, admitted.secret) }));
-    } catch {
-      console.error("a run's start had no answer; it is settled unknown");
-      answer = null;
-    }
+    const answer = await startOutcome("a run", () => this.#o.sandbox.start({
+      run: admitted.run, agent, conversation: admitted.conversation,
+      engine: admitted.engine, credential: admitted.credential, model: admitted.model,
+      session_id: admitted.session_id, prompt: admitted.prompt, unattended,
+      authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
+      network: admitted.network, config: admitted.config,
+      hosts: vendorHosts(admitted.engine, admitted.credential, null),
+      route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
+                                                      authority: admitted.authority }),
+      urls: runUrls(admitted.run, admitted.secret) }));
     await this.#o.door(() => {
-      if (answer === null) {
-        this.runs.settle(admitted.run, "unknown", "start_lost", null, clock());
+      if (answer.started === null) {
+        this.runs.settle(admitted.run, "unknown", answer.code, null, clock());
       } else if (answer.started) {
         this.runs.started(admitted.run, clock());
       } else if (answer.code === SANDBOX_WAITING) {
@@ -383,7 +377,7 @@ export class Launcher implements RunHost {
         }
       }
     });
-    if (answer === null) {
+    if (answer.started === null) {
       await this.cancel(admitted.run);
     }
     await this.#o.sync();
@@ -472,8 +466,7 @@ export class Launcher implements RunHost {
 
   /**
    * A mail's reply posted in this unit, or a scheduled run's result in the owner's room with
-   * its agent (`dm:<agent's id>`, `dm:main`'s for main; the run's id its post's own, so it is
-   * posted once), its body
+   * its agent (the run's id its post's own, so it is posted once), its body
    * placed or not; a refusal a notice.
    */
   #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
@@ -481,8 +474,9 @@ export class Launcher implements RunHost {
       // The reply is the owner's agents' content: held to the tier's storage too.
       this.#o.files.held(OWNER, () => {
         if (answer.mail === null) {
-          this.#o.ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`,
-                              answer.run, answer.result, null, clock(), authority, placed,
+          this.#o.ledger.post({ native: answer.agent },
+                              this.#o.ledger.roomOf(OWNER, nativeId(answer.agent)), answer.run,
+                              answer.result, null, clock(), authority, placed,
                               scopeOf(authority?.client ?? null));
         } else {
           this.#o.ledger.answer({ native: answer.agent }, answer.mail, answer.run,
@@ -598,7 +592,8 @@ export class Launcher implements RunHost {
     // it fires once: a run admitted claims it; a terminal refusal claims it with the refusal
     // kept; a transient refusal claims nothing, and it stays due for the lane's next pass.
     // (A unit keeps what it wrote before a throw, `gate.ts`: so the claim is the admission's
-    // last write, never its first.)
+    // last write, never its first; its record beside it, before the run's sandbox can
+    // report a hold, `Runs.#hold`, that a later record would clear.)
     while (clock() < until) {
       const row = await this.#o.door(() => this.#o.admission.unadmitted() !== null
         ? null : this.runs.due(clock()));
@@ -608,7 +603,7 @@ export class Launcher implements RunHost {
       let gone = false;
       try {
         const read = await this.readAgent(row.agent);
-        const run = await this.launch(read, () => {
+        await this.launch(read, () => {
           if (!this.runs.stands(row)) {
             gone = true;
             throw new Refusal("no_schedule", NO_SCHEDULE);
@@ -618,8 +613,10 @@ export class Launcher implements RunHost {
             conversation: null, request: null,
             tiers: this.#o.admission.numbers(), unattended: true,
             prompt: row.input, mail: null };
-        }, null, () => this.runs.claim(row, clock()));
-        await this.#o.door(() => this.runs.ran(row.id, run, null));
+        }, null, (run) => {
+          this.runs.claim(row, clock());
+          this.runs.ran(row.id, run, null);
+        });
       } catch (error) {
         if (!(error instanceof Refusal) || error.transient) {
           throw error;  // a transient refusal fails the pass: unclaimed, the schedule stays due

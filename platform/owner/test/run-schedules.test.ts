@@ -8,12 +8,14 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { LEDGER_LIMITS } from "../src/ledger";
+import { VENDOR_HELD } from "../src/runs";
 import { nativeId } from "../../contract/src/binding";
 import { RUN_STARTS_NONE } from "../src/owner-do";
 import { gated, type Gated } from "./gateway-support";
-import { MCP, MUSE, rig, signedIn } from "./ledger-support";
+import { MCP, MUSE, rig, signedIn, dm } from "./ledger-support";
 import {
   ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS,
+  whileOut,
 } from "./runs-support";
 import { drainDue, failure } from "./support";
 
@@ -121,12 +123,12 @@ describe("a scheduled run's result", () => {
     // result none.
     const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
     expect(messages.map((message) => [message.room_id, message.body]))
-      .toEqual([[`dm:${nativeId("main")}`, "Your brief: nothing due today."]]);
+      .toEqual([[dm(nativeId("main")), "Your brief: nothing due today."]]);
     expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
   });
 
   it("posts nothing when its engine stopped at a deferred call, the run settled tool_deferred " +
-     "though the end came in a later batch", async () => {
+     "though the end came in a later batch, after a vendor's limit it got past", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
@@ -138,8 +140,12 @@ describe("a scheduled run's result", () => {
     const start = await startOf(r.stub, (await recorder(r.stub)).starts.at(-1)!.run);
     // Claude Code's stop at a call its hook deferred: a result, though no reply.
     await r.stub.runEvents(runnerBinding(r, start), { frames: [
-      { seq: 1, at: 1, event: { type: "system", subtype: "init", session_id: "s-deferred" } },
-      { seq: 2, at: 2, event: { type: "result", subtype: "success", result: "Asking first.",
+      { seq: 1, at: 1, event: { type: "system", subtype: "init", session_id: "s-deferred" } }] });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 2, at: 2, event: { type: "rate_limit_event", rate_limit_info: {
+        status: "rejected", isUsingOverage: false, rateLimitType: "seven_day_opus" } } }] });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 3, at: 3, event: { type: "result", subtype: "success", result: "Asking first.",
                                 stop_reason: "tool_deferred" } }] });
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: start.run }))
@@ -181,7 +187,7 @@ describe("a scheduled run's result", () => {
       .toMatchObject({ settled: "succeeded" });
     const { messages } = await r.stub.mailboxRead(r.bind(), { limit: 50 });
     expect(messages.map((message) => [message.room_id, message.body]))
-      .toEqual([[`dm:${nativeId("main")}`, "The brief."]]);
+      .toEqual([[dm(nativeId("main")), "The brief."]]);
     expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
   });
 
@@ -203,7 +209,7 @@ describe("a scheduled run's result", () => {
     await r.sql("UPDATE ledger_usage SET messages = ?, archive_blocked = 1",
                 LEDGER_LIMITS.maxMessages);
     const posted = await failure(() => r.stub.roomPost(r.bind(), {
-      room_id: `dm:${nativeId("main")}`, client_message_id: "c-1", body: "hello",
+      room_id: dm(nativeId("main")), client_message_id: "c-1", body: "hello",
       parent_id: null }));
     expect(posted.code).toBe("storage_full");
     // The run's reply: refused at the wall, so the run settles with its notice, once.
@@ -285,9 +291,100 @@ describe("a post at the hot ceiling", () => {
     const job = "SELECT id FROM cf_agents_jobs WHERE id = 'owner-schedule/archive'";
     expect(await r.sql(job)).toEqual([]);
     const posted = await failure(() => r.stub.roomPost(r.bind(), {
-      room_id: `dm:${nativeId("main")}`, client_message_id: "c-1", body: "hello",
+      room_id: dm(nativeId("main")), client_message_id: "c-1", body: "hello",
       parent_id: null }));
     expect(posted.code).toBe("storage_busy");
     expect(await r.sql(job)).toEqual([{ id: "owner-schedule/archive" }]);
+  });
+});
+
+describe("the vendor's limit (ADR-034 decision 7)", () => {
+  const CRON = "0 7 * * *";
+  const held = (r: Gated, agent: string) => r.sql(
+    "SELECT next_at, last_error FROM run_schedules WHERE agent = ?", agent) as
+    Promise<{ next_at: number | null; last_error: string | null }[]>;
+
+  it("holds the agent's schedules to the vendor's stated reset, settles the run vendor_limit, " +
+     "tells the owner once, and leaves another agent's schedules be, and a client's", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief", cron: CRON });
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "other", input: "x", cron: CRON });
+    // A client's schedule of main runs in that client's own sandbox, on its own sign-in.
+    await r.sql("INSERT INTO run_schedules (id, agent, input, trigger, cron, next_at, client, " +
+                "stamp, origin, created_at) VALUES (?, 'main', 'x', 'cron', ?, ?, ?, '{}', " +
+                "'{}', 0)", `sch_${"0".repeat(32)}`, CRON, Date.now() / 1000 + 60, MUSE.client);
+    const before = [await held(r, "other"),
+                    await r.sql("SELECT next_at, last_error FROM run_schedules WHERE client IS " +
+                                "NOT NULL")];
+    await r.sql("UPDATE run_schedules SET next_at = ? WHERE agent = 'main' AND client IS NULL",
+                Date.now() / 1000 - 1);
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/limited", expected_etag: null });
+    await drainDue(r.stub);
+    const start = await startOf(r.stub, (await recorder(r.stub)).starts.at(-1)!.run);
+    const reset = Math.floor(Date.now() / 1000) + 3 * 86_400;
+    // Claude Code's own report: the window rejected, then the turn's error and its result.
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 1, at: 1, event: { type: "rate_limit_event", session_id: "s", rate_limit_info: {
+        status: "rejected", resetsAt: reset, rateLimitType: "seven_day",
+        isUsingOverage: false } } }] });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 2, at: 2, event: { type: "assistant", message: { content: [] },
+                                error: "rate_limit" } },
+      { seq: 3, at: 3, event: { type: "result", is_error: true, result: "limit reached" } }],
+      end: { exit_code: 1 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: start.run }))
+      .toMatchObject({ state: "failed", code: "vendor_limit" });
+    const [main] = await r.sql("SELECT next_at, last_error FROM run_schedules WHERE " +
+                               "agent = 'main' AND client IS NULL") as
+      { next_at: number; last_error: string }[];
+    expect(main!.next_at).toBeGreaterThanOrEqual(reset);
+    expect(main!.last_error).toBe(VENDOR_HELD);
+    expect([await held(r, "other"),
+            await r.sql("SELECT next_at, last_error FROM run_schedules WHERE client IS " +
+                        "NOT NULL")]).toEqual(before);
+    const notices = (await r.stub.noticeList(r.bind())).notices;
+    expect(notices.map((notice) => notice.type)).toEqual(["vendor_limit"]);
+    expect(notices[0]!.detail).toContain("main: Claude refused a run on its plan's sign-in");
+    expect(notices[0]!.detail).toContain(new Date(reset * 1000).toISOString());
+  });
+
+  it("stops a cron where the vendor states no reset, until a run of the agent is served",
+     async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief", cron: CRON });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 1, at: 1, event: { type: "assistant", message: { content: [] },
+                                error: "billing_error" } },
+      { seq: 2, at: 2, event: { type: "result", is_error: true, result: "usage limit" } }],
+      end: { exit_code: 1 } });
+    expect(await held(r, "main")).toEqual([{ next_at: null, last_error: VENDOR_HELD }]);
+    expect((await r.stub.noticeList(r.bind())).notices[0]!.detail)
+      .toContain("until one of its runs is served again");
+    const served = (await ownerRun(r.stub, r.bind())).start;
+    await r.stub.runEvents(runnerBinding(r, served), { frames: [
+      { seq: 1, at: 1, event: { type: "result", is_error: false, result: "done" } }],
+      end: { exit_code: 0 } });
+    const [lifted] = await held(r, "main");
+    expect(lifted!.last_error).toBeNull();
+    expect(lifted!.next_at).toBeGreaterThan(Date.now() / 1000);
+  });
+
+  it("keeps the hold of a scheduled run the vendor refused before its start was answered",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief", cron: CRON });
+    await r.sql("UPDATE run_schedules SET next_at = ?", Date.now() / 1000 - 1);
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/limited", expected_etag: null });
+    await whileOut(r.name, "start", () => drainDue(r.stub), async () => {
+      const start = await startOf(r.stub, (await recorder(r.stub)).starts.at(-1)!.run);
+      await r.stub.runEvents(runnerBinding(r, start), { frames: [
+        { seq: 1, at: 1, event: { type: "assistant", message: { content: [] },
+                                  error: "billing_error" } }], end: { exit_code: 1 } });
+    });
+    expect(await held(r, "main")).toEqual([{ next_at: null, last_error: VENDOR_HELD }]);
   });
 });

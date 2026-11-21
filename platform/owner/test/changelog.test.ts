@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
 import { MANIFEST_LOG_OVERFLOW } from "../src/backup";
-import { ChangeLog, LOG_WIDE } from "../src/changelog";
+import { ChangeLog } from "../src/changelog";
 import { exported } from "../src/export";
 import { CHUNK_BYTES, IMAGE_MAX, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import { WriteGate } from "../src/gate";
@@ -342,7 +342,8 @@ describe("the change log", () => {
       await gate.write(() => sql.exec("INSERT INTO wide_probe (k, v) VALUES ('w', ?)",
                                       "a".repeat(IMAGE_MAX)));
       expect(sql.exec("SELECT COUNT(*) AS n FROM wide_probe").one()).toEqual({ n: 1 });
-      expect(sql.exec("SELECT line FROM change_log").toArray()).toEqual([{ line: LOG_WIDE }]);
+      expect(sql.exec("SELECT line FROM change_log").toArray())
+        .toEqual([{ line: '{"t":"wide"}' }]);
       expect(sql.exec("SELECT capturing, overflow FROM log_capture").one())
         .toEqual({ capturing: 0, overflow: 1 });
     });

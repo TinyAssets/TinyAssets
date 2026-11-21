@@ -15,7 +15,9 @@ import {
   ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
 } from "../../contract/src/egress-scope";
 import { HEX64 } from "../../contract/src/ids";
-import type { EngineEvents, EventMatcher } from "../../contract/src/run-events";
+import {
+  type EngineEvents, type EventMatcher, PATTERN_FLAGS,
+} from "../../contract/src/run-events";
 import { CREDENTIAL_NAME, forbids, SOURCE_ID } from "../../contract/src/text";
 
 import { CODE_LOADING_ENV, RUN_BASICS } from "./run-env";
@@ -853,18 +855,39 @@ function verdict(check: ReturnType<typeof checker>, value: unknown, what: string
                     "day it was read (ADR-033 decision 3), or false, with the reason");
 }
 
+/** Whether `pattern` is a regular expression of at most 512 units, under its reader's `flags`. */
+function compiles(pattern: unknown, flags: string): boolean {
+  if (typeof pattern !== "string" || pattern.length < 1 || pattern.length > 512) {
+    return false;
+  }
+  try {
+    new RegExp(pattern, flags);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function matchers(check: ReturnType<typeof checker>, value: unknown, what: string):
     readonly EventMatcher[] {
   if (!Array.isArray(value) || value.length > 8) {
     return check.fail(`${what} is a list of at most 8 matchers`);
   }
   return Object.freeze(value.map((entry, index) => {
-    const fields = check.keys(entry, `${what}[${index}]`, ["match", "path"], ["accumulate"]);
+    const fields = check.keys(entry, `${what}[${index}]`, ["match", "path"],
+                              ["accumulate", "pattern"]);
     const match = fields["match"];
     if (!object(match) || Object.keys(match).length === 0 || Object.keys(match).length > 8
         || !Object.entries(match).every(([key, item]) => DOTTED.test(key)
           && ["string", "number", "boolean"].includes(typeof item))) {
       check.fail(`${what}[${index}].match maps 1 to 8 dotted paths to scalars`);
+    }
+    const pattern = fields["pattern"];
+    if (pattern !== undefined && (!object(pattern) || Object.keys(pattern).length === 0
+        || Object.keys(pattern).length > 8
+        || !Object.entries(pattern).every(([key, item]) => DOTTED.test(key)
+          && compiles(item, PATTERN_FLAGS)))) {
+      check.fail(`${what}[${index}].pattern maps 1 to 8 dotted paths to regular expressions`);
     }
     if (fields["path"] !== "" && !DOTTED.test(String(fields["path"]))) {
       check.fail(`${what}[${index}].path is a dotted path, or empty for the event itself`);
@@ -872,7 +895,9 @@ function matchers(check: ReturnType<typeof checker>, value: unknown, what: strin
     if (fields["accumulate"] !== undefined && fields["accumulate"] !== true) {
       check.fail(`${what}[${index}].accumulate is true or absent`);
     }
-    return Object.freeze({ ...fields, match: Object.freeze({ ...match as object }) }) as
+    return Object.freeze({ ...fields, match: Object.freeze({ ...match as object }),
+                           ...(pattern === undefined ? {}
+                             : { pattern: Object.freeze({ ...pattern as object }) }) }) as
       unknown as EventMatcher;
   }));
 }
@@ -909,12 +934,13 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   const model = fields["model_argv"] === undefined ? undefined
     : argv(fields["model_argv"], "cli.engine.model_argv", 8);
   const events = check.keys(fields["events"], "cli.engine.events", [
-    "format", "session_id", "final_text", "error", "usage", "tool_call", "deferred"]);
+    "format", "session_id", "final_text", "error", "usage", "tool_call", "deferred",
+    "vendor_limit"]);
   if (events["format"] !== "jsonl" && events["format"] !== "json") {
     check.fail("cli.engine.events.format is jsonl or json");
   }
   for (const kind of ["session_id", "final_text", "error", "usage", "tool_call",
-                      "deferred"] as const) {
+                      "deferred", "vendor_limit"] as const) {
     events[kind] = matchers(check, events[kind], `cli.engine.events.${kind}`);
   }
   if ((events["final_text"] as unknown[]).length === 0) {
@@ -1326,16 +1352,7 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
   check.text(model["citation"], CITATION, "cli.login.model.citation");
   for (const key of ["url_pattern", "code_pattern"] as const) {
     const pattern = fields[key];
-    if (pattern === undefined) {
-      continue;
-    }
-    let compiles = typeof pattern === "string" && pattern.length <= 512;
-    try {
-      new RegExp(String(pattern));
-    } catch {
-      compiles = false;
-    }
-    if (!compiles) {
+    if (pattern !== undefined && !compiles(pattern, "")) {
       check.fail(`cli.login.${key} is a regular expression`);
     }
   }
