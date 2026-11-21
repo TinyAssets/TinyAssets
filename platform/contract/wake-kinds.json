@@ -1,5 +1,5 @@
 {
-  "about": "One record per vendor wake mechanism (slice W, tasks 7). The doorbell (owner/src/wakes.ts, through the gateway's ringDoorbell) is one sender for all of them: what differs is here. A record with no push says so and names no delivery method; its agent registers as pull and catches up through inbox_digest and board_digest on its own schedule, and TinyAssets never polls. Evidence labels are main-agents.md's: V read in full, VS through a search extract (the host was unreachable), 3P third party. Placeholders, each a whole JSON string: {wake} the wake object, {text} its one line, {event_id}, {timestamp} (the change's own time), {subscription_id}. Every number here is the vendor's or the protocol's, and cited.",
+  "about": "One record per vendor wake mechanism. The doorbell (owner/src/wakes.ts, through the gateway's ringDoorbell) is one sender for all of them: what differs is here. A record with no push says so and names no delivery method; its agent registers as pull and catches up through inbox_digest and board_digest on its own schedule, and TinyAssets never polls. Evidence labels are main-agents.md's: V read in full, VS through a search extract (the host was unreachable), 3P third party. Placeholders, each a whole JSON string: {wake} the wake object, {text} its one line, {event_id}, {timestamp} (the change's own time), {subscription_id}. Every number here is the vendor's or the protocol's, and cited.",
   "kinds": [
     {
       "id": "chatgpt_mcp_events",
@@ -30,12 +30,12 @@
         "Webhook only, HTTPS, no redirects, one event per request, at most 256 KiB, Standard Webhooks signing; do not retry deliveries that return 410 or 413 (the subscription stays).",
         "Verification failure is JSON-RPC -32015 CallbackEndpointError with a data.reason category, and its example send times out at 10 s (OpenAI's page; the design sketch's provisional -32027 is not what ChatGPT reads).",
         "ttlMs omitted is the server's default lifetime; the design sketch recommends grants up to about a day. A refresh's new secret is dual-signed for a short window; receivers reject a webhook-timestamp more than 5 minutes old, so 300 s covers every in-flight delivery.",
-        "Event-triggered tasks: 30 runs an hour and 720 a day; not on Free, Go or FedRAMP."
+        "Event-triggered tasks: 30 runs an hour and 720 a day across all of them, events may be grouped into one run; need Work and Plus, Pro, Business, Enterprise or Edu (not Free, Go or FedRAMP). OpenAI states no plan tier for MCP Events itself: Work chats (every plan) and dots, under workspace controls for plugins and event-triggered tasks."
       ],
       "citations": [
-        { "url": "https://developers.openai.com/plugins/build/mcp-events", "read": "2026-11-03", "evidence": "V" },
+        { "url": "https://developers.openai.com/plugins/build/mcp-events", "read": "2026-11-21", "evidence": "V" },
         { "url": "https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md", "read": "2026-11-03", "evidence": "V" },
-        { "url": "https://help.openai.com/en/articles/10291617", "read": "2026-11-01", "evidence": "VS" }
+        { "url": "https://help.openai.com/en/articles/10291617", "read": "2026-11-21", "evidence": "V" }
       ]
     },
     {
@@ -51,18 +51,19 @@
         "auth": "bearer",
         "headers": { "Content-Type": "application/json", "anthropic-beta": "experimental-cc-routine-2026-04-01", "anthropic-version": "2023-06-01" },
         "body": { "text": "{text}" },
-        "max_body_bytes": null,
-        "token_dead": [401],
+        "max_body_bytes": 65536,
+        "token_dead": [401, 404],
         "events": null
       },
       "catch_up": "The scheduled task's own schedule (hourly or slower) reads inbox_digest and board_digest.",
       "vendor_limits": [
-        "30 fires an hour per task, shared with Run now; 100 API fires an hour per account; no overage. The page does not say an over-limit fire answers 429: owed to the live test.",
-        "A regenerated or deleted token fails with a 401 authentication error: the owner is told, and pastes the new one.",
+        "30 fires an hour per task, shared with Run now; 100 API fires an hour per account; no overage. Over a limit the fire answers 429 rate_limit_error with Retry-After; a text over 65,536 characters, a missing anthropic-version or a paused routine answers 400.",
+        "A regenerated token fails with 401, and a deleted routine with 404: the owner is told, and pastes the token of the task it makes now.",
         "Custom connector tools are missing from scheduled runs while issue #106037 (and #102388 for cloud routines) is open: re-test before relying on it."
       ],
       "citations": [
-        { "url": "https://code.claude.com/docs/en/routines", "read": "2026-11-03", "evidence": "V" },
+        { "url": "https://code.claude.com/docs/en/routines", "read": "2026-11-21", "evidence": "V" },
+        { "url": "https://platform.claude.com/docs/en/api/claude-code/routines-fire", "read": "2026-11-21", "evidence": "V" },
         { "url": "https://github.com/anthropics/claude-code/issues/106037", "read": "2026-11-01", "evidence": "V" }
       ]
     },
@@ -85,12 +86,11 @@
       },
       "catch_up": "A routine on a schedule (at least 5 minutes apart) that reads inbox_digest and board_digest.",
       "vendor_limits": [
-        "200 runs an hour per routine and 300 an hour per user; over it a run fails with \"Automation run rate limit exceeded\" and is not retried. Each run uses plan usage.",
-        "The webhook URL's host is not readable from here (docs.x.ai unreachable): no host is pinned until it is, and the live test records it."
+        "200 runs an hour per routine and 300 an hour per user; over it a run fails with \"Automation run rate limit exceeded\" and is not retried. Each run uses plan usage. A limit all Grok Bot routines share can also fail a run under these (xAI's known issue).",
+        "Neither the webhook URL's host nor the status a stale key gets is documented: no host is pinned and token_dead is empty until the live test records them."
       ],
       "citations": [
-        { "url": "https://docs.x.ai/grok-bot/skills-routines-and-automations", "read": "2026-11-01", "evidence": "VS" },
-        { "url": "https://x.ai/changelog/bot", "read": "2026-11-01", "evidence": "VS" }
+        { "url": "https://docs.x.ai/grok-bot/skills-routines-and-automations", "read": "2026-11-21", "evidence": "V" }
       ]
     },
     {
@@ -104,8 +104,8 @@
         "The minimum recurring interval is not documented."
       ],
       "citations": [
-        { "url": "https://www.meta.com/help/artificial-intelligence/1484325780075655/", "read": "2026-11-01", "evidence": "VS" },
-        { "url": "https://platform.muse.ai/docs", "read": "2026-11-01", "evidence": "VS" }
+        { "url": "https://www.meta.com/help/superintelligence/1484325780075655/", "read": "2026-11-21", "evidence": "VS" },
+        { "url": "https://platform.muse.ai/docs", "read": "2026-11-21", "evidence": "V" }
       ]
     }
   ]

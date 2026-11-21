@@ -1,5 +1,5 @@
 /**
- * Where a sealed credential may go (research §1.3, §2.4; G4): the source values the binder
+ * Where a sealed credential may go: the source values the binder
  * hands the gateway to seal (the pi-ai provider and API, the base URL, how the secret is
  * sent, the endpoints it may reach, an OAuth client), the egress scope a committed
  * connection keeps, and the rules that judge a request against them. The gateway seals and
@@ -30,7 +30,7 @@ export interface AuthTemplate {
   readonly scheme: string;
 }
 
-/** The source data sealed with the secret (§2.4). */
+/** The source data sealed with the secret. */
 export interface Upstream {
   /** A pi-ai provider id, or `custom` for a declared endpoint. */
   readonly provider: string;
@@ -60,8 +60,8 @@ export interface OAuthClient {
 }
 
 /**
- * A source whose authorization code buys an API key, not a token pair (the Python's
- * `pkce_user_key_v1`, OpenRouter's PKCE flow): its code and verifier are posted as JSON to
+ * A source whose authorization code buys an API key, not a token pair (its records'
+ * protocol `pkce_user_key_v1`, OpenRouter's PKCE flow): its code and verifier are posted as JSON to
  * `endpoint`, which answers `{key}`, and the key is sealed as an API key.
  */
 export interface KeyExchange {
@@ -283,7 +283,7 @@ export function allows(endpoints: readonly Endpoint[], method: string, url: URL)
 }
 
 /**
- * Where a sealed credential may be forwarded (G4): its base URL and its endpoints, none of
+ * Where a sealed credential may be forwarded: its base URL and its endpoints, none of
  * them secret. The setup check hands them to the binder, which commits them with the
  * connection, so the owner's object can refuse a sandbox request to an endpoint that is not
  * sealed before anything reaches the gateway; the gateway still checks the sealed ones.

@@ -1,5 +1,5 @@
 /**
- * The `tools/list` recorder (`npm run record`, `ci/record.ts`): MCP `tools/list` byte for byte,
+ * The `tools/list` recorder (`ci/record.ts`): MCP `tools/list` byte for byte,
  * each profile's raw answer body (a custom client, a listed one, the directory's, a run's,
  * with code mode on and off), and the app's tool list, each one `TOOLS` line.
  */

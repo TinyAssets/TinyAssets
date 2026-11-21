@@ -1,5 +1,5 @@
 /**
- * Building a wake from its record (slice W, tasks 7): what a subscription follows, its
+ * Building a wake from its record: what a subscription follows, its
  * server-derived id, and each wake's headers and body (`doorbellRequest`). The records and
  * the callback checks are `wake-records.ts`.
  */

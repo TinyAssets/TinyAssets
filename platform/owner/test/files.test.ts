@@ -512,7 +512,7 @@ describe("every file door", () => {
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await write(r, `${W}/b`, "1");
     // Due now; or workerd already fired the alarm the due job armed, and the lane ran:
-    // the expired upload is gone (the race the slice D review's round 2 found).
+    // the expired upload is gone.
     const due = ((await laneAt(r.stub, "files")) ?? Infinity) <= Date.now() / 1000;
     const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_intents")).length === 0;
     expect(due || ran).toBe(true);

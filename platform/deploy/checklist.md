@@ -239,7 +239,14 @@ It never counts as "absent".
   It doesn't run the handles canary. Until the old stack is up, the routes it gave back
   serve nothing, so the canary would fail a correct handback. The order is:
   1. the handback;
-  2. restart the old stack on its untouched volumes;
+  2. restart the old stack on its untouched volumes: dispatch **Restart daemon**
+     (`restart-daemon.yml`; the daemon unit's `up -d` starts the tunnel), then on the droplet
+     `sudo systemctl start daemon-watchdog.timer tinyassets-watchdog.timer`, and, while
+     `deploy-prod.yml` is still in the tree, `gh workflow enable deploy-prod.yml` (the window
+     stopped all three before its backup). That reopens its
+     deletion requests while the platform still holds every admitted owner, so an owner who
+     asks the old stack to delete them is also erased on the platform (mode `erase`) before
+     any later `routes`;
   3. the handles canary (Fact 11) for the old side: dispatch **Handles canary**
      (`handles-canary.yml`). Its token is a `production` secret no machine
      holds, so it runs there. It is the old stack's own `--assert-handles` check, and changes
@@ -391,9 +398,10 @@ metadata service (it serves the host's `user_data`, which holds its private SSH 
 host's boot script drops it for Docker's containers).
 
 It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
-`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` and `deletions` need the Spaces pair too, `bundle` the
-exclusion list, `stage`, `verify`, `wipe`, `admit`, `dlq` and `close` the R2 pair, the API
-token and `IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one
+`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
+exclusion list, `stage`, `verify`, `wipe`, `dlq` and `close` the R2 pair, the API
+token and `IMPORT_KEY`, `admit` the Spaces pair and those four, and `offsite` the Spaces pair
+and the R2 pair. A mode that lacks one
 stops before any step and names it. The account id is no secret: the seven Cloudflare modes
 read it from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex
 digits. The real window's `close` alone also reads `IMPORT_DOORS_API_TOKEN`, on the runner,
@@ -405,10 +413,25 @@ Use the checkout for the window. From its root, install the platform dependencie
 files and `platform/deploy/platform.json`.
 Use the values of the fields below when selecting resources in Cloudflare.
 
-After bundling, mode `deletions` compares current off-host erasure records with the original
-owners of this run's bundles. It reports bundle ordinals and exits 3 on a match. A clean
-comparison applies only at the time of the scan. Step 11 still requires the matching pending
-owners to be discarded and withheld before admission.
+Each `admit` first reads the old broker's current off-host deletion jobs itself, finished or
+not, and compares them with the original owners of this run's bundles
+(`i-deletion-withhold.md`). It names each match by bundle ordinal, discards it and admits
+none of them, then admits the rest. A failed read admits no one. No `admit` runs on an older
+read, so there is nothing to rescan by hand.
+
+**The old stack stops taking requests before the window's backup.** At the real window's
+opening, once Stripe's endpoint is disabled and before the full backup, run
+`gh workflow disable deploy-prod.yml`, then on the droplet
+`sudo systemctl stop daemon-watchdog.timer tinyassets-watchdog.timer`, then
+`sudo docker stop tinyassets-tunnel`. Each of the three would start the tunnel again: a
+deploy's `up -d`, and each watchdog's restart of `tinyassets-daemon.service`, whose `up -d`
+names the tunnel. So does a reboot (that unit at boot): after one, run the two stops on the
+droplet and the check again. Then check that
+`curl -s -o /dev/null -w '%{http_code}' https://tinyassets.io/mcp` no longer answers `401`
+(the old stack's anonymous answer). From then until `routes`, no request reaches the old
+stack, so no deletion request can arrive after an `admit` has read the jobs. At `routes`, the
+doors' erase door takes them. The canaries' old side reads red from the stop, as expected. A
+rehearsal stops nothing. A handback's restart is its step 2 above.
 
 | `production` secret | What it is | Scope |
 |---|---|---|

@@ -1,12 +1,12 @@
 /**
- * The sandbox's network document and its model clients' environment (tasks 4 G4): pure
- * functions of the owner's state, tested exhaustively.
+ * The sandbox's network document and its model clients' environment: pure functions of the owner's
+ * state, tested exhaustively.
  */
 import { describe, expect, it } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import {
-  KEY_MIN_BYTES, LEASE_LIVED, mintToken, tokenHash, verifyToken,
+  LEASE_LIVED, mintToken, tokenHash, verifyToken,
 } from "../../contract/src/routing-mac";
 
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
@@ -15,7 +15,7 @@ import { runEnv } from "../../sources/src/run-env";
 import { EGRESS_IP_LITERAL, EGRESS_MODES } from "../../contract/src/policy-document";
 import { BOUNDARY_NOTE, networkDocument } from "../src/network";
 import {
-  ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
+  ALL_TRAFFIC, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
   generationOf, SANDBOX_HEADER, sandboxEnv, withEgressToken,
 } from "../../contract/src/egress";
 
@@ -45,11 +45,9 @@ describe("the network document", () => {
   it("in open mode allows every name by SNI and the door, and denies all else", () => {
     const plan = networkDocument({ mode: "open", destinations: DESTINATIONS }, 3);
     expect(plan).toEqual({
-      network: { allowOut: ["*", EGRESS_HOST], denyOut: [ALL_TRAFFIC], dnsServers: ["1.1.1.1"],
+      network: { allowOut: ["*", EGRESS_HOST], denyOut: ["0.0.0.0/0"], dnsServers: ["1.1.1.1"],
                  rules: transform(3) },
       mode: "open", unexpressed: [], boundary: false, note: BOUNDARY_NOTE });
-    expect(DNS_SERVERS).toEqual(["1.1.1.1"]);
-    expect(ALL_TRAFFIC).toBe("0.0.0.0/0");
   });
 
   it("in allowlist mode allows the policy's names and the door, once each, in order", () => {
@@ -195,7 +193,6 @@ describe("a sandbox token", () => {
   });
 
   it("takes a routing key of 32 bytes, and none shorter", () => {
-    expect(KEY_MIN_BYTES).toBe(32);
     const thirtyTwo = Buffer.alloc(32, 3).toString("base64url");
     const minted = mintToken(thirtyTwo, "egress", "user_01HZ", EXPIRES);
     expect(verifyToken(thirtyTwo, "egress", minted.token)).not.toBeNull();
@@ -341,7 +338,7 @@ describe("the sandbox's model clients' environment", () => {
   });
 
   it("never meets a record's own variable: the checker refuses a record setting any name " +
-     "a key's environment sets (slice E's owed case)", () => {
+     "a key's environment sets", () => {
     // Every name `sandboxEnv` could set for an engine's run: the rule's for each provider
     // its record runs a key of, the connection's, and the record's own key variables.
     let refused = 0;

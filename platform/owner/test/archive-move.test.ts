@@ -1,10 +1,10 @@
 /**
- * The `archive` lane's moves (slice STORE item 2, phase 1): acked mail moved out from half
- * the hot ceiling, its bytes counted the same; the two-unit move, aborted when its batch
- * changed between them; its units held on the isolate's pool; a body of control characters
- * moved as its own bytes; the lane's failures counted and told; and a full owner's archive,
- * whose move may place past the figure, and whose post at the hot ceiling is `storage_full`
- * when no move can land. Each owner runs production's ceilings (`archive-support.ts`).
+ * The `archive` lane's moves: acked mail moved out from half the hot ceiling, its bytes counted the
+ * same; the two-unit move, aborted when its batch changed between them; its units held on the
+ * isolate's pool; a body of control characters moved as its own bytes; the lane's failures counted
+ * and told; and a full owner's archive, whose move may place past the figure, and whose post at the
+ * hot ceiling is `storage_full` when no move can land. Each owner runs production's ceilings
+ * (`archive-support.ts`).
  */
 import { createHash } from "node:crypto";
 
@@ -46,7 +46,7 @@ describe("the archive lane", () => {
       .toEqual([]);
     const fences = await sqlIn(r.stub, "SELECT * FROM archive_segments ORDER BY segment");
     expect(fences.map((fence) => fence["records"])).toEqual([5]);
-    // The one number counts archived mail at its real bytes, as it counted it hot (D2).
+    // The one number counts archived mail at its real bytes, as it counted it hot.
     const after = (await r.stub.storageUsage(r.bind(null))).breakdown.messages;
     expect(Math.abs(after - before)).toBeLessThan(before * 0.2);
     // Every message is still the owner's: the archived ones read back from their segment.
@@ -63,7 +63,7 @@ describe("the archive lane", () => {
 
   it("holds its move's units on the isolate's pool; refused busy at once, the lane holds " +
      "with no failure counted, tells the owner once at the hot ceiling, and moves once there " +
-     "is room (round 11, Lows A and B)", { tags: ["large"] }, async () => {
+     "is room", { tags: ["large"] }, async () => {
     const r = await rig();
     onTestFinished(() => r.letGo());
     const muse = await r.register(MUSE);
@@ -146,13 +146,13 @@ describe("the archive lane", () => {
   });
 });
 
-describe("a body of control characters (review N3)", () => {
+describe("a body of control characters", () => {
   it("moves as its own bytes, reads back byte-exact by its chain, and exports whole",
      { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    // The reviewer's message: a body at the cap, every byte a control character (which JSON
-    // escapes six times over), placed in R2 as any large body is.
+    // A body at the cap, every byte a control character (which JSON escapes six times over), placed
+    // in R2 as any large body is.
     const body = "\u0001".repeat(BODY_BYTES_MAX);
     const posted = await r.post(null, `dm:${muse}`, { cmid: "ctl", body });
     await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
@@ -179,7 +179,7 @@ describe("a body of control characters (review N3)", () => {
   });
 });
 
-describe("the archive lane's failures (review N3)", () => {
+describe("the archive lane's failures", () => {
   /** The lane's job made due now (a failed pass holds it a minute), then run. */
   const passAgain = async (r: Rig) => {
     await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
@@ -294,7 +294,7 @@ describe("the archive lane's failures (review N3)", () => {
   });
 });
 
-describe("a full owner's archive (review M1)", () => {
+describe("a full owner's archive", () => {
   it("still drains: a move may place past the figure, since it frees what it places",
      { tags: ["large"] }, async () => {
     const r = await seeded();
