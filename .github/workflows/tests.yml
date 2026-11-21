@@ -491,6 +491,97 @@ jobs:
           python3 scripts/review_checks.py --gh-read "repos/$REPO/pulls/$PR" --jq '.body // ""' > "$RUNNER_TEMP/body.md"
           npm --prefix platform run record:check -- "$BASE" "$SHARD" "$RUNNER_TEMP/body.md"
 
+  # The cutover's dry run (untangle B24, d3 §A10; tasks.md §10 step 5): the manifest
+  # (platform/cutover.json) applied to this run's own checkout by platform/ci/dry-run.ts, its
+  # carry-outs and deletes made, what an edit still loads kept and the tests it edits set aside,
+  # then every platform-tests leg (`cutover-dry-run-legs` derives them from this file, less the
+  # workspaces it deletes), the typecheck and the process leg run on that tree. Green when
+  # nothing that stays, and is no edit, needs what goes. The tree is never pushed, no job holds
+  # a secret, and nothing live is reached. Required through `required-tests`' needs, as the
+  # platform legs are, on every event but the merge group: the queue's runners are its
+  # bottleneck (jobs waited up to 410 s for one in merge-group runs 44901731945 and
+  # 44901733800), and a PR can only break the tree on its own diff, which its PR run reads;
+  # the hourly run holds main (docs/decisions/untangle-2026-11/dry-run-required.md). Deleted
+  # at the cutover with dry-run.ts.
+  #
+  # timeout-minutes is a watchdog, as the platform legs' are: the slowest legs took 23 s, the
+  # slowest leg 344 s (owner 2/2, run 44888783406) and the checks 107 s, in ten
+  # `cutover-dry-run.yml` runs of 2026-11-21 (44888783406 to 44904009707).
+  cutover-dry-run-legs:
+    name: cutover-dry-run-legs
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.legs.outputs.matrix }}
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - id: legs
+        run: echo "matrix=$(node --experimental-strip-types --no-warnings ci/dry-run.ts legs)" >> "$GITHUB_OUTPUT"
+
+  cutover-dry-run:
+    name: cutover-dry-run
+    needs: cutover-dry-run-legs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.cutover-dry-run-legs.outputs.matrix) }}
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - run: node --experimental-strip-types --no-warnings ci/dry-run.ts apply
+      - run: npm ci
+      - run: ${{ matrix.command }}
+
+  cutover-dry-run-checks:
+    name: cutover-dry-run-checks
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci
+        working-directory: platform
+      - run: node --experimental-strip-types --no-warnings platform/ci/dry-run.ts apply
+      - run: npm ci
+        working-directory: platform
+      - run: npm run typecheck
+        working-directory: platform
+      - run: pip install -r scripts/process-requirements.txt
+      - run: python -m pytest --noconftest -q -p no:cacheprovider scripts/tests
+
   # The required surface runs as SHARDS in parallel, then ONE aggregate job
   # (`required-tests`, below) decides the gate over the union. Measured before
   # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs
@@ -876,9 +967,11 @@ jobs:
     # open), so the ruleset takes it at the merge (docs/host-actions.md).
     name: required-tests
     # The gate's lasting shape is the platform's jobs and the process leg. The first four
-    # are the old stack's Python jobs, which leave at the cutover.
-    needs: [select, required-tests-shard, affected-tests, structural-guards, platform-tests,
-            platform-checks, platform-app, platform-sizes, platform-recorders, process, openspec]
+    # are the old stack's Python jobs and the next two the dry run's, which leave at the
+    # cutover.
+    needs: [select, required-tests-shard, affected-tests, structural-guards, cutover-dry-run,
+            cutover-dry-run-checks, platform-tests, platform-checks, platform-app,
+            platform-sizes, platform-recorders, process, openspec]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -931,6 +1024,20 @@ jobs:
         run: |
           if [ "$PLATFORM_RESULT" != success ] || [ "$CHECKS_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ] || [ "$RECORDERS_RESULT" != success ] || [ "$PROCESS_RESULT" != success ]; then
             echo "::error::Required legs did not pass (platform-tests=$PLATFORM_RESULT, platform-checks=$CHECKS_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT, platform-recorders=$RECORDERS_RESULT, process=$PROCESS_RESULT). Fix the named job and rerun Tests."
+            exit 1
+          fi
+
+      # The cutover's dry run, on every event but the merge group, which runs none of it: its
+      # legs and its checks must have run and succeeded. A failed `cutover-dry-run-legs`
+      # skips `cutover-dry-run`, which fails here.
+      - name: Require the cutover dry run
+        if: github.event_name != 'merge_group'
+        env:
+          DRY_RUN_RESULT: ${{ needs.cutover-dry-run.result }}
+          DRY_RUN_CHECKS_RESULT: ${{ needs.cutover-dry-run-checks.result }}
+        run: |
+          if [ "$DRY_RUN_RESULT" != success ] || [ "$DRY_RUN_CHECKS_RESULT" != success ]; then
+            echo "::error::The cutover dry run did not pass (cutover-dry-run=$DRY_RUN_RESULT, cutover-dry-run-checks=$DRY_RUN_CHECKS_RESULT): something that stays needs what the manifest (platform/cutover.json) deletes. Fix it or declare it there, then rerun Tests."
             exit 1
           fi
 

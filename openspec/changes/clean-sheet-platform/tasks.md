@@ -730,8 +730,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
   and `owner.state` (`owner-state-op.md`).
 - [x] The manifest's dry run green (d3 §A10): every leg, the typecheck and the process leg on
-  the manifest's tree (`cutover-dry-run.yml`; `b24-dry-run.md` item 2). It runs on every PR
-  and nightly, so a change that makes what stays need what goes shows red.
+  the manifest's tree (`tests.yml`'s `cutover-dry-run` jobs; `b24-dry-run.md` item 2). It
+  runs on every PR and hourly, and `required-tests` needs it, so a change that makes what
+  stays need what goes cannot merge (`dry-run-required.md`).
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,

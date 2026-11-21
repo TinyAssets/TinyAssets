@@ -13,9 +13,10 @@
  * - the layer table's cutover layer (`ci/kit/imports.ts`): what it deletes may import itself,
  *   and nothing that stays imports it but an import an edit names (held over the tree by
  *   `isolation.test.ts`, its cases here); a Python file that stays the same, by its imports;
- * - its dry run (`ci/dry-run.ts`) makes the tree its cases say.
+ * - its dry run (`ci/dry-run.ts`) makes the tree its cases say, and `tests.yml`'s `required-tests`
+ *   needs it on every event but the merge group.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 
@@ -28,8 +29,58 @@ import { keyed, object } from "../../contract/src/checks";
 import { layerProblems, repoScripts } from "../kit/imports";
 import { treeFiles } from "../kit/sources";
 import { REPO } from "../paths";
-import { actionFiles, type Data, workflowNames } from "../workflows";
+import { actionFiles, type Data, workflow, workflowNames } from "../workflows";
 import { workerFolders } from "../wrangler";
+
+/** The events but the merge group's: the dry run's, whose queue runners are the bottleneck. */
+const NOT_QUEUED = "github.event_name != 'merge_group'";
+const APPLY = "node --experimental-strip-types --no-warnings ci/dry-run.ts apply";
+
+/**
+ * Each way `tests.yml`'s dry run could fail to gate a merge: a job that runs on a narrower
+ * event set, a leg that runs no applied tree or not its command, or `required-tests` passing
+ * without both its jobs' success (run as the gate step's own script).
+ */
+function dryRunGateProblems(jobs: Data): string[] {
+  const found: string[] = [];
+  const [legs, suites, checks, agg] = ["cutover-dry-run-legs", "cutover-dry-run",
+    "cutover-dry-run-checks", "required-tests"].map((name) => jobs[name] ?? {});
+  if (legs.if !== NOT_QUEUED || checks.if !== NOT_QUEUED || suites.if !== undefined
+      || suites.needs !== "cutover-dry-run-legs") {
+    found.push(`the dry run's jobs run on ${NOT_QUEUED}, its legs after their matrix`);
+  }
+  const runs = (job: Data) => (job.steps ?? []).map((step: Data) => step.run).filter(Boolean);
+  if (JSON.stringify(runs(suites).slice(-3)) !== JSON.stringify([APPLY, "npm ci",
+                                                                 "${{ matrix.command }}"])
+      || !runs(checks).some((run: string) => run === APPLY.replace("ci/", "platform/ci/"))) {
+    found.push("each dry-run job applies the manifest, then runs its leg's command alone");
+  }
+  if (![suites, legs, checks, agg].every((job) => job["continue-on-error"] === undefined
+      && (job.steps ?? []).every((step: Data) => step["continue-on-error"] === undefined))) {
+    found.push("no dry-run job or gate step may be allowed to fail");
+  }
+  const needs = [agg.needs ?? []].flat();
+  const gate = (agg.steps ?? []).filter((step: Data) => "DRY_RUN_RESULT" in (step.env ?? {}));
+  if (!needs.includes("cutover-dry-run") || !needs.includes("cutover-dry-run-checks")
+      || gate.length !== 1 || gate[0].if !== NOT_QUEUED
+      || JSON.stringify(gate[0].env) !== JSON.stringify({
+        DRY_RUN_RESULT: "${{ needs.cutover-dry-run.result }}",
+        DRY_RUN_CHECKS_RESULT: "${{ needs.cutover-dry-run-checks.result }}" })) {
+    found.push(`required-tests needs both dry-run jobs and reads their results on ${NOT_QUEUED}`);
+    return found;
+  }
+  const results = ["success", "failure", "skipped", "cancelled", ""];
+  for (const first of results) {
+    for (const second of results) {
+      const { status } = spawnSync("bash", ["-s"], { input:
+        `DRY_RUN_RESULT=${first}\nDRY_RUN_CHECKS_RESULT=${second}\n${gate[0].run}` });
+      if (status !== (first === "success" && second === "success" ? 0 : 1)) {
+        found.push(`the gate step exits ${status} on ${first} and ${second}`);
+      }
+    }
+  }
+  return found;
+}
 
 /** A text that says what is deleted at the cutover, however its comment wraps the words. */
 const MARKER = /deleted(?:[\s*#/]|<!--)+at(?:[\s*#/])+the(?:[\s*#/])+cutover/i;
@@ -380,6 +431,35 @@ describe("the cutover's manifest", () => {
       .toEqual([{ leg: "kept", command: "npm run test:workerd -w kept" }]);
     expect(() => dryRunLegs([{ leg: "x", command: "npm test" }], manifest))
       .toThrow("platform-tests' leg npm test names no workspace");
+  });
+
+  it("gates every merge but the queue's through required-tests, on the applied tree", () => {
+    expect(dryRunGateProblems(workflow("tests.yml").jobs)).toEqual([]);
+    const mutations: Record<string, (jobs: Data) => void> = {
+      "the legs run on pull requests only": (jobs) => {
+        jobs["cutover-dry-run-legs"].if = "github.event_name == 'pull_request'";
+      },
+      "a leg on the unapplied tree": (jobs) => { jobs["cutover-dry-run"].steps.splice(-3, 1); },
+      "a leg swallowed": (jobs) => { jobs["cutover-dry-run"].steps.at(-1).run += " || true"; },
+      "the checks allowed to fail": (jobs) => {
+        jobs["cutover-dry-run-checks"]["continue-on-error"] = true;
+      },
+      "not needed": (jobs) => {
+        jobs["required-tests"].needs = jobs["required-tests"].needs
+          .filter((name: string) => name !== "cutover-dry-run-checks");
+      },
+      "a skip passes": (jobs) => {
+        const step = jobs["required-tests"].steps.find((each: Data) => "DRY_RUN_RESULT" in
+          (each.env ?? {}));
+        step.run = step.run.replace('"$DRY_RUN_RESULT" != success',
+                                    '"$DRY_RUN_RESULT" = failure');
+      },
+    };
+    for (const [name, mutate] of Object.entries(mutations)) {
+      const jobs = structuredClone(workflow("tests.yml").jobs);
+      mutate(jobs);
+      expect(dryRunGateProblems(jobs), name).not.toEqual([]);
+    }
   });
 
   it("holds the cutover layer: what goes imports itself, and what stays only named imports", () => {
