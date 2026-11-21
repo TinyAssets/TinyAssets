@@ -54,9 +54,12 @@ run after rooms.
   `runs.ts`): no shared hunk, and the generated files are regenerated at the merge.
 - #5714 (the contract pass): `contract/src/policy-document.ts`, `wake-kinds.ts`. Rooms touches
   neither: `ROOM_PREFIX`'s copy in `wake-kinds.ts` is left to after #5714 (below).
-- `untangle/pass-owner-2` (local, not pushed): comments in nearly every owner test, and
+- #5719 (`untangle/pass-owner-2`): comments in nearly every owner test, and
   `owner-bound.test.ts`. Rooms changes the room ids in some of the same tests. Whichever lands
-  second takes the other's side and re-applies its own lines.
+  second takes the other's side and re-applies its own lines (the room ids by
+  `dm(...)`, the guard's three terms).
+- #5718 (`untangle/i-deletion-withhold`): `import/{cli,deletions,window}.ts`; the census
+  refusal touches `census.ts` and `survey.ts`, so the two share the package but no file.
 - #5692 (the OKF watcher): `starter.json`, `manifest.json`, the plugins, for `okf-spec.md`
   only. Both raise `manifest.json`'s `version`: whichever merges second takes the next one and
   regenerates.

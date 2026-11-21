@@ -280,7 +280,8 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
       "AS mailboxes, " +
       "(SELECT json_group_object(sender_id, n) FROM (SELECT sender_id, " +
       "COUNT(*) AS n FROM ledger_messages WHERE sender_kind = 'outside' " +
-      "AND message_id IN (SELECT message_id FROM ledger_recipients WHERE unacked = 1) " +
+      "AND message_id IN (SELECT message_id FROM ledger_recipients WHERE unacked = 1 " +
+      "AND agent_id = 'owner') " +
       "GROUP BY sender_id ORDER BY sender_id)) AS shares, " +
       "(SELECT json_group_object(message_id, n) FROM (SELECT message_id, COUNT(*) AS n " +
       "FROM ledger_recipients WHERE unacked = 1 GROUP BY message_id ORDER BY message_id)) " +

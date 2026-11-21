@@ -265,6 +265,9 @@ describe("agents_list's rooms", () => {
                                                    body: "hello", parent_id: null });
     expect(posted.recipients).toEqual(["owner"]);
     expect(await sqlIn(r.stub, "SELECT room_id FROM rooms")).toEqual([{ room_id: dm(agent) }]);
+    // Held by the owner, it counts in Muse's share of the owner's mailbox.
+    expect((await r.stub.outsideAgents(r.bind())).agents
+      .find((a) => a.agent_id === agent)!.unacked_to_owner).toBe(1);
   });
 });
 
