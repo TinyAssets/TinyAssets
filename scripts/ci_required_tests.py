@@ -1702,13 +1702,12 @@ def main() -> int:
         # shards did, and refuses if the digest it was told does not match what
         # it can actually read -- otherwise "every shard reported the expected
         # digest" would be a statement about a file nobody here verified.
-        covered = [] if args.affected else whole_surface_cover(args.exclude_from)
         if args.affected:
             entries = selection_entries(Path(args.affected))
             if entries is None:
                 # `--affected` forces `--profile affected`, whose floor is 0.
                 # That is right for a selection and WRONG for the whole
-                # surface, which must keep its 10,700-test floor -- so the
+                # surface, which must keep its `full` floor -- so the
                 # whole-surface aggregate takes the same command it always did,
                 # with no --affected at all. Refuse rather than quietly judge
                 # the full suite with the vacuity check switched off.
@@ -1722,6 +1721,8 @@ def main() -> int:
                     f"--selection {args.selection} does not match {args.affected}; "
                     "refusing to judge a selection this job cannot read."
                 )
+        else:
+            covered = whole_surface_cover(args.exclude_from)
         return aggregate(
             Path(args.aggregate),
             args.expect_shards,

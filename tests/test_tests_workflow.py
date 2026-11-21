@@ -1367,7 +1367,8 @@ def test_every_shard_runs_its_user_venue_and_plans_within_half_its_watchdog() ->
     assert max(planned) <= job["timeout-minutes"] * 60 / 2, planned
 
 
-def _aggregate_whole_surface(tmp_path, owner, cases, *, skipped=False, drop=()):
+def _aggregate_whole_surface(tmp_path, owner, cases, *, skipped=False, drop=(),
+                             heavy=_REPO / ".github" / "heavy-test-files.txt"):
     """The workflow's whole-surface aggregate over shard results built from `owner`."""
     shards = tmp_path / "shards"
     shards.mkdir(parents=True)
@@ -1387,7 +1388,7 @@ def _aggregate_whole_surface(tmp_path, owner, cases, *, skipped=False, drop=()):
     return subprocess.run(
         [sys.executable, str(_SCRIPT), "--aggregate", str(shards), "--expect-shards", "6",
          "--shard-job-result", "success", "--junit", str(tmp_path / "junit.xml"),
-         "--min-ran", str(_ci.MIN_RAN_FLOOR)],
+         "--min-ran", str(_ci.MIN_RAN_FLOOR), "--exclude-from", str(heavy)],
         cwd=_REPO, env=env, capture_output=True, text=True)
 
 
@@ -1405,6 +1406,11 @@ def test_a_whole_surface_run_passes_however_its_files_pack(tmp_path, monkeypatch
     for index, owner in enumerate((packed, reshuffled)):
         result = _aggregate_whole_surface(tmp_path / str(index), owner, 20)
         assert result.returncode == 0, result.stdout + result.stderr
+    # A measured file moved to the heavy list leaves the shards, and the gate with it.
+    (tmp_path / "heavy.txt").write_text(measured[0] + "\n")
+    result = _aggregate_whole_surface(tmp_path / "heavy", packed, 20, drop={measured[0]},
+                                      heavy=tmp_path / "heavy.txt")
+    assert result.returncode == 0, result.stdout + result.stderr
     # A shard left with a root proof's two cases passes its own verdict.
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
