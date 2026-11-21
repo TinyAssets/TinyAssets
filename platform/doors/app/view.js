@@ -86,7 +86,7 @@ export function action(text, act, report, props = {}) {
 
 // -- the runner's events, in words ----------------------------------------------------
 // The sandbox's runner sends its own events as codes and facts, never the words a person
-// reads (the untangle's S69): these are those words, so a wording change ships with the
+// reads: these are those words, so a wording change ships with the
 // app, not a runner. Each event is shown as it always was, its words in their place; any
 // other event, or one whose facts are not of their shape (the VM is untrusted), as it came.
 

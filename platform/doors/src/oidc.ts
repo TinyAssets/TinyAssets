@@ -1,5 +1,5 @@
 /**
- * The owner's upstream sign-in, live (tasks 2, "Live AuthKit wiring"): AuthKit's User
+ * The owner's upstream sign-in, live: AuthKit's User
  * Management authorization-code flow with PKCE, for the environment's own client, as data
  * (ADR-032, "the owner's sign-in"). Its endpoints, client, token issuer and identity-deletion
  * URL are the `UPSTREAM` record (`contract/src/signin.ts`: its type, its parser and its

@@ -50,8 +50,8 @@ describe("the owner app's pages", () => {
     expect(await head.text()).toBe("");
   });
 
-  it("tell each sign-in refusal's own reason in the records' words, and know every end " +
-     "(review L6, M4)", async () => {
+  it("tell each sign-in refusal's own reason in the records' words, and know every end",
+     async () => {
     const app = await (await get("/app/static/app.js")).text();
     for (const [reason, words] of Object.entries(SIGNIN_REFUSALS)) {
       expect(app, reason).toContain(`${reason}: ${JSON.stringify(words)}`);

@@ -1,4 +1,4 @@
-// The owner app's live socket (`app/api.js` `follow()`; slice BRAIN, task #68 and its review):
+// The owner app's live socket (`app/api.js` `follow()`):
 // a dropped socket is followed by a new one after a wait that doubles while sockets keep
 // dropping, and the run's kept frames the doors send again on each new socket (the relay's
 // tail, `owner/src/relay.ts`) are shown once. A fake browser: `location`, `sessionStorage`,

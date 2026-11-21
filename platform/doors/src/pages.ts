@@ -1,8 +1,7 @@
 /**
- * The owner app's pages (tasks 2, the owner app): `/app` and its two return pages, served by
- * the doors Worker from its own files (`app/`, the `ASSETS` binding), on the same origin as
- * the owner surface `/app/api/*` they call. Decided in the app slice: the doors, not the
- * website's static export, serve `/app`, because
+ * The owner app's pages: `/app` and its two return pages, served by the doors Worker from
+ * its own files (`app/`, the `ASSETS` binding), on the same origin as the owner surface
+ * `/app/api/*` they call. The doors, not the website's static export, serve `/app`, because
  * - the session cookie is `__Host-`, Strict, and rides only same-origin JSON posts to
  *   `/app/api` (`session.ts`), and the sign-in and connect return pages are the doors' own
  *   public paths (`identity.json`'s `first_party.redirect` and `connected`);

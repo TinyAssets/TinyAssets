@@ -1,5 +1,5 @@
 /**
- * The connect doors (gateway research §7.2, §7.3; tasks 4 G3): an owner connects a model
+ * The connect doors (gateway research §7.2, §7.3): an owner connects a model
  * source by pasting a key or by OAuth, revokes one, and lists them. The only source that
  * reaches `GATEWAY`, and only its `ConnectGateway` entrypoint (`seal`, `exchange`,
  * `verify`, and a doorbell's `sealDoorbell` and `verifyDoorbell`).
@@ -14,9 +14,9 @@
  * (an outside credential is refused before any object call), a POST of exactly
  * `application/json` within `EGRESS_BODY_MAX`, the maintenance gate, and the session
  * cookie, which the object checks at every session door (its row's caller). Each body is a
- * closed set of fields, checked with everything else that can be checked here before the object is
- * reached: the owner comes from the token alone, and the connection and its version from
- * the object alone.
+ * closed set of fields, checked with everything else that can be checked here before the
+ * object is reached: the owner comes from the token alone, and the connection and its
+ * version from the object alone.
  *
  * - `connections/key` `{source, key, display_name?}`: the key held to the gateway's own
  *   secret grammar, then `connectionPrepare`, `GATEWAY.seal`, `GATEWAY.verify` (the setup
@@ -84,7 +84,10 @@ const CODE = /^[\x21-\x7e]{1,2048}$/;
 const RESPONSE_PARAMS: readonly string[] = Object.freeze(["state", "code", "iss", "error"]);
 const MIXED_UP = "the authorization came back on another source's callback";
 
-/** Exactly `required`, and any of `optional`: the owner, connection and version are never fields. */
+/**
+ * Exactly `required`, and any of `optional`: the owner, connection and version are never
+ * fields.
+ */
 function fields(body: Record<string, unknown>, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
   if (!keyed(body, required, optional)) {
@@ -317,7 +320,10 @@ export async function connectCallback(request: Request, sources: Sources): Promi
                   { "Referrer-Policy": "no-referrer" });
 }
 
-/** `connections/oauth/finish`: the flow used up in its session, its code exchanged and committed. */
+/**
+ * `connections/oauth/finish`: the flow used up in its session, its code exchanged and
+ * committed.
+ */
 async function finishOAuth(context: ConnectContext): Promise<Response> {
   const { env, bound: { binding, stub }, sources, request } = context;
   const body = fields(context.body, ["state", "code", "redirect_uri"]);
@@ -384,13 +390,12 @@ async function list({ bound: { binding, stub }, body }: ConnectContext): Promise
   return answer(200, await stub.connectionList(binding));
 }
 
-/** The connect routes, by their path under the owner surface. */
 /**
- * A wake's secret, handed straight to the gateway (slice W, ruling H1), as a pasted model
- * key is: the owner's pasted `/fire` or routine token sealed (`sealDoorbell`), or an MCP
- * Events callback verified by its signed challenge and sealed (`verifyDoorbell`). The
- * doors keep neither; the owner's object stores only the blob, under `DOORBELL_VERSION`,
- * which the gateway opens it by.
+ * A wake's secret, handed straight to the gateway, as a pasted model key is: the owner's
+ * pasted `/fire` or routine token sealed (`sealDoorbell`), or an MCP Events callback
+ * verified by its signed challenge and sealed (`verifyDoorbell`). The doors keep neither; the
+ * owner's object stores only the blob, under `DOORBELL_VERSION`, which the gateway opens it
+ * by.
  */
 export const DOORBELL_VERSION = 1;
 
@@ -412,6 +417,7 @@ export async function verifyDoorbell(env: DoorsEnv, owner: string, subscription:
   }
 }
 
+/** The connect routes, by their path under the owner surface. */
 export const CONNECT_ROUTES: Readonly<Record<string, (context: ConnectContext) =>
     Promise<Response>>> = Object.freeze({
   "connections/key": connectKey,

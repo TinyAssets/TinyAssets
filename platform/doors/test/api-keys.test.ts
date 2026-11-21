@@ -1,5 +1,5 @@
 /**
- * `/api` keys (research §5; checklist 13, 14, 15): the Python's format and hash, mint
+ * `/api` keys (research §5; checklist 13, 14, 15): the key's format and hash, mint
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
@@ -122,7 +122,7 @@ describe("a refusal across the object's RPC", () => {
       .toEqual([status, retry, { error: message }]);
   });
 
-  // The doors' one answer on every surface that answers as JSON (review N1): a busy
+  // The doors' one answer on every surface that answers as JSON: a busy
   // refusal's 503 and its Retry-After on the app's tools, MCP's profile and an upload's
   // bytes, as on the API above.
   it("answers busy 503 with Retry-After on the app's tools", async () => {
@@ -180,7 +180,7 @@ describe("the key format", () => {
     expect((await api(key, "agents_list", {})).status).toBe(200);
   });
 
-  it("is the Python's: ta_key_<16 hex>_<43 urlsafe>", () => {
+  it("is ta_key_<16 hex>_<43 urlsafe>", () => {
     for (let i = 0; i < 20; i++) {
       const { key, keyId, secret } = newKey();
       expect(key).toMatch(/^ta_key_[0-9a-f]{16}_[A-Za-z0-9_-]{43}$/);
@@ -195,11 +195,11 @@ describe("the key format", () => {
     }
   });
 
-  it("keeps a cutover-imported key working", async () => {
+  it("takes a key whose entry holds its secret's SHA-256 hex, whoever wrote the entry",
+     async () => {
     const o = await signedIn();
     const { key_id } = await mint(o);
-    // The Python minted this key: its entry is the same shape, its digest
-    // `hashlib.sha256(secret.encode()).hexdigest()`.
+    // An entry the doors did not mint: its digest is the SHA-256 hex of the secret's UTF-8.
     const imported = `ta_key_${key_id}_${"Z".repeat(43)}`;
     await env.DIRECTORY.put(`k:${key_id}`, JSON.stringify({
       o: o.owner, h: "4587a2535bc507ba17c302e7fd1e46a8028d13c6528ed84d89b9e2794072d632",

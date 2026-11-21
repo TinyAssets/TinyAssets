@@ -1,5 +1,5 @@
 /**
- * The owner export at the owner surface (`app.ts`, `owner/src/export.ts`; slice P):
+ * The owner export at the owner surface (`app.ts`, `owner/src/export.ts`):
  * newline-delimited JSON for the owner's own app in its session, and no outside credential
  * reaches it.
  */

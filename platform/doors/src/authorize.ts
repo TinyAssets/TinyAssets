@@ -26,7 +26,7 @@
  *    app: `sessionOpen` at the sign-in's time, the session cookie set on the redirect,
  *    and the grant.
  *
- * No number of ours bounds a sign-in (slice L's review). A metadata document the provider
+ * No number of ours bounds a sign-in. A metadata document the provider
  * fetches for a `client_id` is bounded by the provider itself: public https URLs only,
  * 5 KiB, 10 s, one fetch out for one request in.
  *
@@ -234,7 +234,7 @@ export async function admit(env: DoorsEnv, owner: string): Promise<{ readonly st
 async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn):
     Promise<void> {
   if (signedIn.issuer !== env.OWNER_ISSUER) {
-    return;  // a foreign issuer's identity is that provider's slice's to delete
+    return;  // no deletion is wired for a foreign issuer (none is listed)
   }
   try {
     await upstream.forget(signedIn.subject);
@@ -246,8 +246,9 @@ async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn)
 /**
  * Which vendor a signing-in client is (`apps.ts`): a CIMD client by its document's host,
  * which the provider fetched, verified only when every redirect it registered is that app's;
- * any other by the name it registered, which only it vouches for. Recorded in the grant's props, and by the owner's object at the client's
- * first call, so every agent can tell which of the owner's apps are connected.
+ * any other by the name it registered, which only it vouches for. Recorded in the grant's
+ * props, and by the owner's object at the client's first call, so every agent can tell
+ * which of the owner's apps are connected.
  */
 async function signedInVendor(oauth: OAuthHelpers, clientId: string, redirectUri: string):
     Promise<Vendor | null> {
