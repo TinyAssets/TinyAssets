@@ -103,6 +103,6 @@ defines.
 ## Owed
 
 - [ ] D2: every run keeps the agent's engine-native settings out, refusing a Gemini run whose folder holds `.gemini/settings.json` (coordinator's call), and checks `definition.instructions` (a shadowing file in the cwd or an ancestor refused, Claude Code's `.claude/CLAUDE.md` added to its `shadowed_by` per research §4.2, past `max_bytes` refused on Codex), pi on `--no-approve` with `--skill` per skill; owed live checks B1 to B4 of the research (`untangle/agent-definition-runner`).
-- [ ] D3: the doors serve the definition (`AGENT_FILES`) as resources, prompts and the Skills extension on SDK 2.4.0, the skill union moved here from `project.ts` (`untangle/agent-definition-door`).
+- [x] D3: the doors serve the definition (`AGENT_FILES`) as resources, prompts and the Skills extension on SDK 2.4.0, the skill union moved here from `project.ts` (`untangle/agent-definition-door`). Done (`agent-definition-door.md`).
 - [ ] D4: the agent's own MCP servers run, `agentMcp` read at admission and filtered by the egress allowlist, rendered by `definition.mcp`, the run door one entry of the same template; Gemini's `--allowed-mcp-server-names` taking each name is checked there (`untangle/agent-mcp`).
 - [ ] D5: one hook definition, `agentHooks` rendered for a runner-owned dispatcher in the decide hook's root-owned layer, which drops any allow or rewrite from a hook's answer; ADR-034 decisions 2 and 11 Status lines (`untangle/agent-hooks`).

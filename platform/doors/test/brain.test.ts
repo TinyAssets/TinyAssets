@@ -9,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ORIGIN } from "../../contract/src/identity";
 
-import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "../src/instructions";
+import { INSTRUCTIONS } from "../src/instructions";
 import { mcpOrigin } from "../src/binder";
 import type { DoorsEnv } from "../src/env";
 import {
@@ -64,8 +64,7 @@ beforeEach(async () => {
 describe("an outside client's agent", () => {
   it("is told the brain's rules when it connects, and a run its working files", async () => {
     const client = await mcpClient(await connect(await registerClient(), { owner: owner() }));
-    expect(client.getInstructions()).toBe(CLIENT_INSTRUCTIONS);
-    expect(CLIENT_INSTRUCTIONS).not.toBe(RUN_INSTRUCTIONS);
+    expect(client.getInstructions()).toBe(INSTRUCTIONS.custom);
     await client.close();
   });
 });

@@ -23,6 +23,7 @@
  * `EgressReserved`, `EgressRefusal`) and the billed event the E2B hook routes
  * (`BilledEvent`).
  */
+import type { ServedDefinition } from "./agent-definition.ts";
 import type { Binding, InboundAnswer } from "./binding.ts";
 import type { TierName } from "./control.ts";
 import type { ProfileName } from "./doors.ts";
@@ -456,6 +457,7 @@ export interface DoorTypes {
   readonly toolProfile: {
     readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[] };
   };
+  readonly definitionRead: { readonly answer: ServedDefinition };
   readonly wakeEvents: {
     readonly loose: [commandCenter?: string];
     readonly answer: { readonly events: readonly Events[] };

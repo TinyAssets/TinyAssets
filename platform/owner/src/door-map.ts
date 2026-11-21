@@ -183,6 +183,8 @@ export interface DoorRows {
     { readonly module: "admission"; readonly caller: "reserved"; readonly gate: "units" };
   readonly toolProfile:
     { readonly module: "codemode"; readonly caller: "account"; readonly gate: "door" };
+  readonly definitionRead:
+    { readonly module: "definition"; readonly caller: "account"; readonly gate: "units" };
   readonly mailChain:
     { readonly module: "ledger"; readonly caller: "owner"; readonly gate: "units" };
   readonly wakeEvents:
@@ -599,6 +601,7 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "admissionSet">>;
   ownerState(binding: Binding): Promise<AnswerIn<H, "ownerState">>;
   toolProfile(binding: Binding): Promise<AnswerIn<H, "toolProfile">>;
+  definitionRead(binding: Binding): Promise<AnswerIn<H, "definitionRead">>;
   mailChain(binding: Binding, request: RequestIn<H, "mailChain">):
     Promise<AnswerIn<H, "mailChain">>;
   wakeEvents(binding: Binding, request: RequestIn<H, "wakeEvents">):

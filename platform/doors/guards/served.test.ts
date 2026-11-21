@@ -12,9 +12,9 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { appList } from "../../contract/src/apps";
-import { toolTable } from "../../contract/src/doors";
+import { CLIENT_PROFILES, toolTable } from "../../contract/src/doors";
 import { MCP_RESOURCE } from "../../contract/src/identity";
-import { CLIENT_INSTRUCTIONS } from "../src/instructions";
+import { AGENT_PROMPT, INSTRUCTIONS } from "../src/instructions";
 
 const PLUGINS = join(PLATFORM, "plugins");
 /**
@@ -54,13 +54,20 @@ function skillDescription(text: string): string | null {
 
 /**
  * Every text TinyAssets serves to an outside agent, by where it is served, and whether it
- * decides when something fires (`trigger`): the instructions, each tool's title, description
- * and every description in its arguments, each plugin's manifests, and each skill's
- * frontmatter description. A skill's body is served too, but its own rules ("always ask
- * before spending") are the owner's safety, not a trigger, so only the asks are held there.
+ * decides when something fires (`trigger`): the instructions, the agent prompt's title and
+ * description, each tool's title, description and every description in its arguments, each
+ * plugin's manifests, and each skill's frontmatter description. A skill's body is served too,
+ * but its own rules ("always ask before spending") are the owner's safety, not a trigger, so
+ * only the asks are held there. The owner's own definition, which the agent prompt and the
+ * resources serve when the user pulls it in, is the owner's text, not the platform's.
  */
 function served(): { where: string; text: string; trigger: boolean }[] {
-  const out = [{ where: "CLIENT_INSTRUCTIONS", text: CLIENT_INSTRUCTIONS, trigger: true }];
+  const out = [
+    ...CLIENT_PROFILES.map((profile) =>
+      ({ where: `INSTRUCTIONS.${profile}`, text: INSTRUCTIONS[profile], trigger: true })),
+    { where: "the agent prompt's title", text: AGENT_PROMPT.title, trigger: true },
+    { where: "the agent prompt's description", text: AGENT_PROMPT.description, trigger: true },
+  ];
   for (const tool of toolTable()) {
     out.push({ where: `${tool.name}.title`, text: tool.title, trigger: true },
              { where: `${tool.name}.description`, text: tool.description, trigger: true },
