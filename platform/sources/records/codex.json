@@ -175,12 +175,6 @@
               "type": "turn.failed"
             },
             "path": "error.message"
-          },
-          {
-            "match": {
-              "type": "error"
-            },
-            "path": "message"
           }
         ],
         "usage": [
@@ -225,7 +219,8 @@
             },
             "path": ""
           }
-        ]
+        ],
+        "retry": []
       }
     },
     "instructions": {

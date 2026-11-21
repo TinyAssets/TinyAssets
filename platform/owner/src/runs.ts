@@ -456,7 +456,8 @@ export const VENDOR_HELD = "vendor_limit: the vendor refused one of this agent's
 
 /**
  * A runner's batch read against its run's record: the frames past the last one kept (a
- * retried batch's are relayed already), the result and the error they leave, the engine's
+ * retried batch's are relayed already), the result and the error they leave (an engine's error
+ * withdrawn by its own retry of that call), the engine's
  * session id, and the frames to relay. Pure; `events` writes what it reads, and `answering`
  * reads it ahead of the batch's unit.
  */
@@ -494,6 +495,11 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
     }
     if (read.error !== null && error === null) {
       error = cut(read.error, ERROR_BYTES).text;
+    }
+    // The engine retries the call it reported failed, so that call has not failed yet; the
+    // object's own refusal of a session id is not the engine's to withdraw.
+    if (read.retry && error !== SESSION_REFUSED) {
+      error = null;
     }
     deferred ||= read.deferred;
     if (read.vendor_limit !== null) {

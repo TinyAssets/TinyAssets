@@ -1,0 +1,26 @@
+# pi-retried-error as built (2026-11-21)
+
+Found in #5732's review: pi's record read every `message_end` with `stopReason: "error"` as the run's error, so a run whose model call pi retried itself and recovered settled `engine_error`. In `--mode json`, pi exits 0 whatever the last message was, so the event stream is the only word on whether a call failed. Fact 8 asks that a real failure stay loud; a recovered call is no failure.
+
+## Research (2026-11-21, each pinned CLI's own source, the versions the records install)
+
+- **pi 1.4.0** (`@earendil-works/pi-coding-agent` `dist/core/agent-session.js`, `@earendil-works/pi-ai` `dist/utils/retry.js`, `overflow.js`; `--mode json` writes every session event as it is, `modes/print-mode.js`).
+  - Every attempt ends `message_end`, its message `stopReason: "error"` when the call failed. pi then decides, after the attempt's `agent_end`:
+    - **It retries** a rate limit, overload, 5xx or transport error (`isRetryableAssistantError`, retries on by default, `maxRetries` attempts): `auto_retry_start {attempt, maxAttempts, delayMs, errorMessage}`, then the next attempt. A later attempt that succeeds emits `auto_retry_end {success: true}`.
+    - **It gives up**: `auto_retry_end {success: false, finalError}` when its retries are spent, a later error is one it does not retry, or the wait is cancelled (`"Retry cancelled"`).
+    - **It compacts and retries** a context overflow (`isContextOverflow`, never `isRetryableAssistantError`): `compaction_start {reason: "overflow"}`, then `compaction_end {willRetry: true}` and the next attempt. A failed recovery is `compaction_end {reason: "overflow", errorMessage: "Context overflow recovery failed…"}`; a second overflow after one recovery emits that `compaction_end` with no `compaction_start`.
+    - **It never retries** any other error (and none when retries are off): the `message_end` is the last word, with no event after it.
+  - So no single event says "failed for good" for every path: the never-retried error is known only by no retry following it.
+- **Codex 0.166.0** (`codex-rs/exec/src/event_processor_with_jsonl_output.rs`, `app-server/src/bespoke_event_handling.rs`). The jsonl `{type: "error"}` is the app-server's `ErrorNotification` with its `will_retry` dropped. A stream error is sent `will_retry: true` ("Reconnecting... n/m", "intermediate error states for retries"), and an error that fails the turn is followed by `turn.failed`, which carries it (`turn.error`, else the last error). So the `error` matcher on `{type: "error"}` failed a run whose stream reconnected: the same bug.
+- **Gemini CLI 0.66.0** (`bundle/gemini-*.js`, the non-interactive stream). `{type: "error"}` has `severity`. `"warning"` is a non-fatal error the CLI goes on from (loop detected, a hook's block, a subagent's error), its final `result` `success`. `"error"` is an invalid stream (then `result` `error`, which states no message) or the session's turns exhausted. Every fatal error ends `result {status: "error", error}`. So the `{type: "error"}` matcher failed a run on a warning: the same mistake.
+- **Claude Code 2.1.309**: `result {is_error: true}` is its last word; its `api_retry` was fixed in #5732. **Kimi Code 2.4.1** reads no error event.
+
+## Decided
+
+1. **An engine that reports a failed call and then retries it says so: `engine.events.retry`** (`contract/src/run-events.ts`), a matcher list like the others. An event meeting it withdraws the run's error (`owner/src/runs.ts` `batch`), so the next error, or none, is the run's. pi's is `auto_retry_start` and `compaction_start` with `reason: "overflow"` (a threshold compaction retries nothing). Every other engine's is empty: each reports only the error it gave up on.
+   - **The object's own refusal stays**: a session id outside its shape (`SESSION_REFUSED`) is the object's verdict, not the engine's, so a retry does not withdraw it.
+   - **Considered: matchers alone, each meaning "failed for good".** pi's never-retried error has no event of its own, so its matcher would need pi-ai's retryable and overflow patterns (about 70) copied into the record as a negative pattern, a copy to redo at every pi bump. It would still read wrongly an overflow pi did not compact. pi's own `auto_retry_start` and overflow `compaction_start` say what it retries, at any version that keeps those events.
+2. **pi's `error`**: the attempt's `message_end` error (withdrawn by a retry), `auto_retry_end` `success: false` (`finalError`), and an overflow `compaction_end` with an `errorMessage`.
+3. **Codex's `error`** is `turn.failed` alone; **Gemini's** is `{type: "error", severity: "error"}` and `result` `error`.
+4. **Left as is:** a pi overflow compaction that is aborted (`compaction_end {aborted: true}`, no message) leaves no error. Only a cancel aborts it here (its run settles `cancelled`), or an extension's `session_before_compact`, and the run's own extension (`decide.mjs`) has none.
+5. **Tests:** `sources.test.ts` reads each engine's give-up as its error and what it goes on from as none, and pi's two retries; `owner/test/runs.test.ts` replays pi's stream, retried then recovered (succeeded, its result kept, across two batches), retried until spent (failed `engine_error` with pi's last words), and a refused session id that a retry does not withdraw.
