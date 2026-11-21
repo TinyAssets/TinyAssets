@@ -50,9 +50,8 @@ from a docs-shaped pull request that also edits a workflow.
 
 The user-facing name is **command center**. Code, stored data, and many older
 docs still say **universe**. The map is
-[docs/architecture.md](docs/architecture.md). A drive-by rename is a large
-change of its own; the open note is
-`openspec/changes/rename-universe-to-command-center/`.
+[docs/architecture.md](docs/architecture.md). The old stack keeps the old name
+until the cutover deletes it, so don't rename it in passing.
 
 ## Issues
 

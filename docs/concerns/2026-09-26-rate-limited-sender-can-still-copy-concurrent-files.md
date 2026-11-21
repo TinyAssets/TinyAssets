@@ -47,7 +47,7 @@ and the refused copies' custody objects are not cleaned up.
 ## Why it was accepted for now
 
 Lead decision 2026-09-26: acceptable for an MVP, residual stated in the PR body and
-in `openspec/changes/archive/2026-09-26-open-receivers-to-any-user/design.md` §4.
+in [`open-receivers-to-any-user`'s `design.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-09-26-open-receivers-to-any-user/design.md) §4.
 Mitigating factors:
 
 - It needs genuine concurrency against one receiver; the obvious abuse shape
