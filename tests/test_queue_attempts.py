@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+# The checkout's root, wherever the file sits (the cutover carries it to scripts/tests/).
+_ROOT = next(at for at in Path(__file__).resolve().parents if (at / "AGENTS.md").is_file())
+sys.path.insert(0, str(_ROOT / "scripts"))
 
 import queue_attempts as qa  # noqa: E402
 

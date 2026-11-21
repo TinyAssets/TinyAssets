@@ -2,7 +2,7 @@
 severity: P1
 title: Review follow-ups batch 2026-09-24
 filed: '2026-09-24'
-summary: 'docs-only merges restart prod and kill turns; plus non-floor follow-ups from #3954/3956/3958/3960/3963/3964/3967/3968 and cancelled required-tests never re-triggering'
+summary: 'docs-only merges restart prod and kill turns; plus non-floor follow-ups from #3954/3956/3958/3960/3963/3964/3967/3968'
 ---
 
 # Review follow-ups batch (2026-09-24)
@@ -37,8 +37,5 @@ fixed in-PR under the tiered review policy.
 - **#3968 OAuth:** the RFC 9207 `iss` check is an exact-string compare (a
   trailing-slash issuer is falsely refused); the agent-supplied public
   `client_id` isn't named in consent.
-- **CI:** with many PRs in flight, `required-tests` runs cancel each other
-  and nothing re-triggers them, so PRs sit blocked. The platform should
-  re-run a cancelled required check on the PR's current head automatically.
 
 Delete a line when fixed; delete the file when empty.

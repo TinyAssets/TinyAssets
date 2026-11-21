@@ -17,7 +17,7 @@ queued cancellation starts no child. Fresh app finding: its stopped code node
 still displayed running then. That state-reporting fix subsequently passed the
 saved September9 app acknowledgment; September21's consolidated five-control
 reply also confirms accurate cancelled-run/unstarted-node status. The delivery
-change is archived at openspec/changes/archive/2026-09-21-close-workflow-control-gaps.
+change is [the archived `close-workflow-control-gaps` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-09-21-close-workflow-control-gaps).
 This is not a reason to assume cancellation is still only advisory. Evidence:
 2026-09-09-workflow-control-gaps-proof.md (archived in git) and
 2026-09-21-served-node-policy-deployment.md (archived in git). The broader jail-descendant
@@ -65,7 +65,7 @@ The single mechanism that actually terminates a runaway node today is
 `MAX_WORKSPACE_TIMEOUT_SECONDS = 1800` (`node_sandbox.py:153`) — the timeout
 path is the only one that kills the child.
 
-`openspec/changes/archive/2026-10-06-script-authoring-surface` proposed deleting that ceiling once
+[the `script-authoring-surface` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-10-06-script-authoring-surface) proposed deleting that ceiling once
 per-tenant quota replaced the host-wide slot, on the grounds that run length is
 the user's business. **That ordering was wrong.** Quota bounds a tenant's
 *share*; it does not stop one stuck run. Removing the timeout before
@@ -102,5 +102,5 @@ where the jail is real.
 
 Related: `2026-08-31-hard-coded-policy-that-should-be-user-composable.md`
 (the ceiling as policy), and
-`openspec/changes/archive/2026-10-06-script-authoring-surface/design.md` (why cancellation became
+[`script-authoring-surface`'s `design.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-10-06-script-authoring-surface/design.md) (why cancellation became
 load-bearing once the vault settled secrecy).

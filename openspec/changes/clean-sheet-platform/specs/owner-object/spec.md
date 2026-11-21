@@ -277,7 +277,7 @@ A doorbell's callback URL, auth and secret (a `/fire` token, a Grok key, a `whse
 - **THEN** the gateway seals the token, the subscription row holds the blob alone, and the answer is its id
 
 #### Scenario: A token the vendor no longer takes
-- **WHEN** a ring with an owner-set token is answered with a status its record lists as a dead token (Claude's `401`)
+- **WHEN** a ring with an owner-set token is answered with a status its record lists as a dead token
 - **THEN** the wake settles failed and the owner is sent one notice to paste a new one, not one a wake, until a new token is pasted
 
 ### Requirement: An agent holds several subscriptions, each by its derived id
