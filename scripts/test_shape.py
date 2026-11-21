@@ -237,6 +237,29 @@ def audit(items: list[Test], rows: dict[str, str], previous=None) -> dict:
     }
 
 
+def gate(root: Path, base: str, head: str) -> list[str]:
+    """What a PR's tests claim, read from blobs: each test file it changes names current ids,
+    and no test anywhere names an id the PR retires. The scope guard's step."""
+    base = git(root, "merge-base", base, head).strip()
+    changed = set(
+        git(root, "diff", "--name-only", "-z", "-M", "--diff-filter=d", base, head).split("\0")
+    )
+    files, old_files = sources(root, head), sources(root, base)
+    rows, old_rows = registry(files), registry(old_files)
+    retired = {r for r, s in old_rows.items() if s == "current" and rows.get(r) != "current"}
+    findings = []
+    for test in inventory(files):
+        if test.node.split("::")[0] in changed:
+            if not test.ids:
+                findings.append(f"{test.node} test has no verifies id")
+            for claim in sorted(test.ids):
+                if rows.get(claim) != "current":
+                    findings.append(f"{test.node} unresolvable verifies id: {claim}")
+        for claim in sorted(test.ids & retired):
+            findings.append(f"{test.node} spec retires an id still named: {claim}")
+    return findings
+
+
 def coverage_lines(document: dict) -> dict[str, set[tuple[str, int]]]:
     if not document.get("meta", {}).get("show_contexts"):
         raise ValueError("coverage JSON needs --show-contexts and --cov-context=test")
@@ -343,6 +366,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--base", help="classify deleted IDs against this revision")
+    parser.add_argument("--gate", metavar="HEAD", help="with --base: hold what HEAD changes")
     parser.add_argument("--exclude-file", type=Path, help="temporary tag-at-merge paths, JSON list")
     parser.add_argument("--json", type=Path)
     parser.add_argument("--coverage", type=Path)
@@ -351,6 +375,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.prune and not args.body:
         parser.error("--prune requires --body")
+    if args.gate:
+        if not args.base:
+            parser.error("--gate requires --base")
+        findings = gate(args.root, args.base, args.gate)
+        for finding in findings:
+            print(f"FAIL {finding}")
+        return int(bool(findings))
     files = sources(args.root)
     rows = registry(files)
     excluded = set(json.loads(args.exclude_file.read_text()) if args.exclude_file else ())

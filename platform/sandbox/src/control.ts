@@ -385,6 +385,19 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
+   * The owner this object is named by (`ctx.id.name`, which the runtime sets and keeps for its
+   * alarms): the one source of the owner its calls act for, so no method takes one. One reached
+   * with no name (`idFromString`, `newUniqueId`) fails before it acts for anyone.
+   */
+  get #owner(): string {
+    const named = this.ctx.id.name;
+    if (named === undefined) {
+      throw new Error("a sandbox control is not named by an owner");
+    }
+    return named;
+  }
+
+  /**
    * The control record's sandbox part (`contract/src/control.ts`), read once for a start, a
    * sign-in or a look: as read, its numbers kept; or, when the record is missing, malformed
    * or unreadable, the part last kept, and said so loudly, never a silent none (none ever
@@ -672,7 +685,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * sandbox has no room or it is not the owner's turn; or `lost` when a joining run finds
    * none.
    */
-  async #ensure(owner: string, authority: string, network: NetworkDocument | null,
+  async #ensure(authority: string, network: NetworkDocument | null,
                 ceilings: SandboxCeilings, route: string):
       Promise<{ handle: Box } | "waiting" | "lost"> {
     const e2b = this.#e2b();
@@ -697,7 +710,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
     const slots = this.#slots();
     const wait = async () => {
-      await slots.wait(owner, ceilings.runtime_ceiling_s);
+      await slots.wait(this.#owner, ceilings.runtime_ceiling_s);
       return "waiting" as const;
     };
     if (row !== null && row.renewing === 1 && found !== null) {
@@ -705,7 +718,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const handle = await this.#resume(row, found, network, ceilings);
       return handle === null ? "lost" : { handle };
     }
-    const { turn, reserved } = await slots.turn(owner);
+    const { turn, reserved } = await slots.turn(this.#owner);
     if (!turn) {
       return wait();
     }
@@ -720,7 +733,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (found !== null) {
         const handle = await this.#resume(row!, found, network, ceilings, true);
         if (handle !== null) {
-          await slots.took(owner);
+          await slots.took(this.#owner);
           return { handle };
         }
         if (network === null) {
@@ -731,7 +744,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         template: this.env.E2B_TEMPLATE, timeoutS: ceilings.runtime_ceiling_s,
         network: network!,
         // An opaque name, so E2B's own list shows whose it is to us and to no one else.
-        metadata: { ta_owner: ownerTag(owner),
+        metadata: { ta_owner: ownerTag(this.#owner),
                     // Sealed, so only the doors open it: the route of E2B's lifecycle events.
                     ta_route: route },
       });
@@ -744,7 +757,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                        "excluded.runner", authority, created.sandboxID,
                      info === null ? Date.now() : Date.parse(info.endAt), digest);
       this.#log(authority, "start");
-      await slots.took(owner);
+      await slots.took(this.#owner);
       // The template holds no runner: this Worker's, installed before its first command.
       const box = { ...created, runner: digest };
       await this.#install(box);
@@ -758,7 +771,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
   }
 
-  async start(owner: string, start: SandboxStart): Promise<Started> {
+  async start(start: SandboxStart): Promise<Started> {
     if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
         || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
         || typeof start.route !== "string" || !SEALED_ROUTE.test(start.route)
@@ -770,7 +783,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (ceilings === null) {
       return { started: false, code: "sandbox_unconfigured" };
     }
-    return this.#launch(owner, ceilings, {
+    return this.#launch(ceilings, {
       kind: "run", id: start.run, request: start, document: startDocument(start, retention),
       ready: async (handle) => {
         if (start.credential === "vendor_login_in_sandbox") {
@@ -796,7 +809,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * with the sign-in's document (no secret); the sign-in holds the lease as a launched run
    * does.
    */
-  async signin(owner: string, signin: SandboxSignin): Promise<Started> {
+  async signin(signin: SandboxSignin): Promise<Started> {
     if (!SIGNIN_ID.test(signin.id) || !AUTHORITY.test(signin.authority)
         || !LEASE.test(signin.lease.lease_id) || (signin.tokens === null) !== (signin.network === null)
         || typeof signin.route !== "string" || !SEALED_ROUTE.test(signin.route)
@@ -809,8 +822,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (ceilings === null) {
       return { started: false, code: "sandbox_unconfigured" };
     }
-    return this.#launch(owner, ceilings, { kind: "signin", id: signin.id, request: signin,
-                                           document: signinDocument(signin) });
+    return this.#launch(ceilings, { kind: "signin", id: signin.id, request: signin,
+                                    document: signinDocument(signin) });
   }
 
   /**
@@ -820,7 +833,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * what the job does first (`ready`), its document into the inbox, and the runner's launch
    * of it, detached, which holds the lease until it is released.
    */
-  async #launch(owner: string, ceilings: SandboxCeilings, job: Launch): Promise<Started> {
+  async #launch(ceilings: SandboxCeilings, job: Launch): Promise<Started> {
     const { request } = job;
     return this.#serial(async () => {
       const e2b = this.#e2b();
@@ -831,7 +844,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       const kept = network === null ? []
         : [...hosts, ...this.#launchedHosts(request.authority, request.lease.lease_id)];
       const first = network === null ? null : widened(network, kept) ?? network;
-      const got = await this.#ensure(owner, request.authority, first, ceilings, request.route);
+      const got = await this.#ensure(request.authority, first, ceilings, request.route);
       if (got === "waiting") {
         return { started: false, code: "sandbox_waiting" };
       }
@@ -1330,6 +1343,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
   }
 
+  /** The owner waits for a sandbox no more: out of the platform's line, whose next is rung. */
+  async unwait(): Promise<void> {
+    await this.#slots().leave(this.#owner);
+  }
+
   /**
    * The meter's log after `after` (the owner's object reads it): at most
    * `METER_BATCH` entries and the cursor past them. What the cursor passed is dropped: the
@@ -1353,11 +1371,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * still lists under their tag (one a lost row forgot); then this object's storage
    * deleted whole, and the owner out of the platform's line.
    */
-  async erase(owner: string): Promise<{ killed: number }> {
+  async erase(): Promise<{ killed: number }> {
     return this.#serial(async () => {
       const e2b = this.#e2b();
       const ids = new Set(this.#rows().map((row) => row.sandbox_id));
-      for (const id of await e2b.list("ta_owner", ownerTag(owner))) {
+      for (const id of await e2b.list("ta_owner", ownerTag(this.#owner))) {
         ids.add(id);
       }
       for (const id of ids) {
@@ -1365,7 +1383,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         await this.#slots().unreserve(id);
       }
       await this.#giveBack();
-      await this.#slots().leave(owner);
+      await this.#slots().leave(this.#owner);
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
       migrate(this.ctx.storage, CONTROL_MIGRATIONS);

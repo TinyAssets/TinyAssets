@@ -12,7 +12,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import {
-  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+  DECIDE_HEADER, decideDoor, EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, RUN_HEADER,
+  RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { SOCKET_VERSION, TICKET_REFUSED } from "../../contract/src/socket-shape";
 import { RUN_INSTRUCTIONS } from "../src/instructions";
@@ -269,6 +270,33 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}",
       headers: { "Content-Type": "application/json", ...sandbox, [RUN_HEADER]: "0".repeat(64) } }));
     expect(wrong.status).not.toBe(200);
+  });
+
+  it("serve the decide door to a run's hook alone, by the run's own credential", async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "d-1" });
+    const [start] = await starts(who);
+    const decide = (at: string, body: unknown, headers: Record<string, string> = {}) =>
+      call(new Request(at, { method: "POST", body: JSON.stringify(body), headers: {
+        "Content-Type": "application/json", [SANDBOX_HEADER]: tokenOf(start!),
+        [GENERATION_HEADER]: "1", ...headers } }));
+    const { url: at, credential } = decideDoor(start!.urls.mcp);
+    const own = { [DECIDE_HEADER]: credential };
+    expect(await (await decide(at, { check: true }, own)).json())
+      .toEqual({ tools: [], generation: 1 });
+    // Claude Code posts the call itself (an http hook), answered in its own words: {} lets be.
+    expect(await (await decide(at, { tool_name: "Bash", tool_input: { command: "ls" } }, own))
+      .json()).toEqual({});
+    expect((await decide(at, { check: true }, { ...own, Origin: url("") })).status).toBe(404);
+    for (const forged of [{}, { [DECIDE_HEADER]: start!.run },
+                          { [DECIDE_HEADER]: `${start!.run}:${"0".repeat(64)}` }]) {
+      expect((await decide(at, { check: true }, forged)).status).not.toBe(200);
+    }
+    expect((await decide(`${EGRESS_ORIGIN}/r/${start!.run}/decide`, { check: true }, own))
+      .status).toBe(404);
+    const refused = await decide(at, { tool_name: "a b" }, own);
+    expect([refused.status, (await refused.json<{ error: { message: string } }>()).error.message])
+      .toEqual([400, "invalid decide request"]);
   });
 
   it("answer a post refused for the moment 503, with the object's whole message, for the " +

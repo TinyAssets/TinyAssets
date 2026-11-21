@@ -19,6 +19,7 @@
  */
 import type { RunCapability } from "../../contract/src/capabilities";
 import type { Binding, BindingOf, Origin } from "../../contract/src/binding";
+import { Refusal } from "../../contract/src/refusal";
 import { isMinted } from "./proof-mint";
 import type { Grant, Stamped } from "./authority";
 import type { ControlGate } from "./control-gate";
@@ -28,6 +29,7 @@ import type { OwnerEnv } from "./env";
 import type { SandboxLease } from "./files";
 import type { OwnerStorage, WriteGate } from "./gate";
 import type { InboundRow } from "./inbound";
+import type { OwnerSandbox } from "./sandbox";
 
 /** What a call is bound to: its owner and caller, its outside client and that client's grant. */
 export interface Account {
@@ -185,12 +187,27 @@ export interface DoorUnits {
   sync(): Promise<void>;
 }
 
+/**
+ * The owner the object `id` names (its `ctx.id.name`, set by the runtime and kept for its
+ * alarms), refused when it has none: the object serves no other.
+ */
+export function namedOwner(id: DurableObjectId): string {
+  const named = id.name;
+  if (named === undefined) {
+    throw new Refusal("refused", "this object is not named by an owner");
+  }
+  return named;
+}
+
 /** What only the object reads or decides, as a handler calls it. */
 export interface ObjectReads {
-  readonly env: OwnerEnv;
+  /** The bindings, but the sandbox Worker's, which the object reaches only as `sandbox`. */
+  readonly env: Omit<OwnerEnv, "SANDBOX">;
   readonly storage: OwnerStorage;
-  /** The owner this object is named by; refused when it has none. */
+  /** The owner this object is named by (`namedOwner`). */
   owner(): string;
+  /** The sandbox Worker, bound to this object's owner (`boundSandbox`). */
+  readonly sandbox: OwnerSandbox;
   /** The platform's gates as this object reads them (`control-gate.ts`). */
   control(): ControlGate;
   /** Whether the owner is erased or being erased: its doors with no binding do nothing. */

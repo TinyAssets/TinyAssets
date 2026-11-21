@@ -8,6 +8,7 @@ import { type Candidate, rankOf, ranked } from "../src/auto";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Usable } from "../src/connections";
 import ranking from "../src/model-ranking.json" with { type: "json" };
+import { planProvider, served, signsIn } from "../../sources/src/served";
 
 /** A candidate as `connection/model`. */
 const named = (candidate: Candidate) => `${candidate.connection}/${candidate.model.id}`;
@@ -72,5 +73,16 @@ describe("the strongest connected model", () => {
     expect(named(ranked(CONNECTED)[0]!)).toBe("c-a/claude-fable-5-1");
     expect(ranked([])).toEqual([]);
     expect(ranked([usable("c-e", "anthropic", 1)])).toEqual([]);
+  });
+});
+
+describe("a subscription's plan", () => {
+  it("ranks by its record's model, for every engine that signs in: never an unknown", () => {
+    const plans = [...served().values()].filter(signsIn);
+    expect(plans.map((record) => record.id)).toEqual(["claude-code", "codex", "gemini", "kimi"]);
+    for (const record of plans) {
+      expect(rankOf({ provider: planProvider(record), model: model(record.cli.login.model.id) }),
+             record.id).toBeLessThan(ranking.ranks.length);
+    }
   });
 });

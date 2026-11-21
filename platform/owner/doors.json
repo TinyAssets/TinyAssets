@@ -178,6 +178,7 @@
       "handler": "files", "gate": "filing" },
     { "door": "fileChanges", "caller": "changes", "handler": "files", "gate": "door" },
     { "door": "runEvents", "caller": "run", "handler": "runs", "gate": "units" },
+    { "door": "runDecide", "caller": "account", "handler": "actions", "gate": "door" },
     { "door": "signinStart", "caller": "owner", "action": "sign in inside a sandbox",
       "handler": "signins", "gate": "units" },
     { "door": "signinEvents", "caller": "runner", "handler": "signins", "gate": "units" },

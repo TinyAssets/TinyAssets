@@ -16,14 +16,26 @@
  * - The run's MCP door is `urls.mcp`, or `urls.mcp_bare` where the record's template sends
  *   the run's secret as a header (`{run_secret}`), so the secret is out of the URL.
  * - Files: the record's own templates, the credential's, and the MCP template, each filled
- *   (a `.json` file's values JSON-escaped), several templates of one JSON file merged.
+ *   (a `.json`, `.toml` or `.mjs` file's values escaped as a quoted string's), several
+ *   templates of one JSON file merged.
+ * - The CLI's own pre-tool hook (R5 P-hooks), where its record has one: the run's decide
+ *   credential in its environment (`DECIDE_ENV`), and, when the owner's rules name tools it
+ *   matches (`hook.tools`), its file filled from the record's template (`{matcher}` those
+ *   tools; the door's address, its header and the credential's variable; the helper's command
+ *   line and its argv, the door their argument), what the record adds to its argv, and its
+ *   pinned settings files in the home (`pins`, root's like every run config file). A file
+ *   every run of the engine
+ *   shares (under `/etc`) is the runner's to write, as `shared`: null text when no tool is
+ *   matched, so the latest run's start leaves the owner's latest rules there; null for a call
+ *   given no hook.
  */
 import type { CliSpec } from "../../sources/src/schema";
 import type { Served } from "../../sources/src/served";
-import { egressDoor, envStem } from "../../contract/src/egress";
+import { DECIDE_HEADER, decideDoor, egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
 
+import { DECIDE_ENV, helperArgv, helperCommand, matcherOf } from "./decide";
 import type { StartDoc } from "./protocol";
 
 export const ENGINE_ROOT = "/opt/ta/engines";
@@ -45,15 +57,18 @@ export function binPath(record: Served): string {
     : `${ENGINE_ROOT}/${record.id}/bin/${install.bin}`;
 }
 
-/** `{name}` filled from `values`; a placeholder with no value fails loudly. */
+/**
+ * `{name}` filled from `values`, each escaped as a JSON string's inside when `quoted` (which a
+ * TOML or a JavaScript string takes too); a placeholder with no value fails loudly.
+ */
 export function fill(text: string, values: Readonly<Record<string, string>>,
-                     json = false): string {
+                     quoted = false): string {
   return text.replace(/\{([a-z_]+)\}/g, (whole, name: string) => {
     if (!Object.hasOwn(values, name)) {
       throw new Error(`the record's ${whole} has no value in this run`);
     }
     const value = values[name]!;
-    return json ? JSON.stringify(value).slice(1, -1) : value;
+    return quoted ? JSON.stringify(value).slice(1, -1) : value;
   });
 }
 
@@ -134,6 +149,8 @@ export interface Invocation {
   readonly files: ReadonlyMap<string, string>;
   /** Whether it resumes the conversation (its `resume_argv`). */
   readonly resumed: boolean;
+  /** The hook file every run of the engine shares, by path, and its text (null: none). */
+  readonly shared: { readonly path: string; readonly text: string | null } | null;
 }
 
 /**
@@ -147,8 +164,19 @@ export function invocation(record: Served, start: StartDoc,
                                       /** The run's own home and system directory. */
                                       readonly home: string; readonly system: string;
                                       /** A `continue_in_cwd` conversation's own cwd. */
-                                      readonly conversationDir?: string }): Invocation {
+                                      readonly conversationDir?: string;
+                                      /**
+                                       * A run's hook, where its record has one: the patterns
+                                       * of the tools it matches (none: no hook) and the
+                                       * helper's runner, by its digest. Absent, none is
+                                       * written.
+                                       */
+                                      readonly hook?: { readonly tools: readonly string[];
+                                                        readonly digest: string } }):
+    Invocation {
   const cli = record.cli;
+  const decide = "unsupported" in cli.decide ? null : cli.decide;
+  const hooked = decide !== null && options.hook !== undefined && options.hook.tools.length > 0;
   if (!cli.credential.includes(start.credential)) {
     throw new Error(`engine ${record.id} does not run on ${start.credential}`);
   }
@@ -188,6 +216,10 @@ export function invocation(record: Served, start: StartDoc,
   for (const [name, value] of Object.entries(start.config.env)) {
     env[name] = fill(value, values);
   }
+  const door = decide === null ? null : decideDoor(start.urls.mcp);
+  if (door !== null) {
+    env[DECIDE_ENV] = door.credential;
+  }
   const banned = Object.keys(env).find((name) => forbids(forbidden, name));
   if (banned !== undefined) {
     throw new Error(`the run's credential forbids ${banned}`);
@@ -210,6 +242,7 @@ export function invocation(record: Served, start: StartDoc,
     ...(start.model === null ? [] : modelArgs(cli.engine.model_argv ?? [], values)),
     ...(start.unattended ? cli.unattended_argv.map((arg) => fill(arg, values)) : []),
     ...(mcp === null ? [] : [...mcp.argv, ...mcp.trust.argv].map((arg) => fill(arg, values))),
+    ...(hooked ? decide!.argv ?? [] : []).map((arg) => fill(arg, values)),
     ...("argv" in cli.no_update ? cli.no_update.argv ?? [] : []).map((arg) => fill(arg, values)),
     ...tail,
   ];
@@ -218,13 +251,18 @@ export function invocation(record: Served, start: StartDoc,
   if (bad !== undefined) {
     throw new Error(`the run's credential forbids ${bad}`);
   }
-  // The files: the record's, the credential's, then the MCP template; one JSON file's
-  // templates merged in that order.
+  const hookValues = options.hook === undefined || door === null ? values : {
+    ...values, matcher: matcherOf(options.hook.tools), decide_url: door.url,
+    decide_header: DECIDE_HEADER, decide_env: DECIDE_ENV,
+    decide: helperCommand(options.hook.digest, door.url),
+    decide_argv: JSON.stringify(helperArgv(options.hook.digest, door.url)) };
+  // The files: the record's, the credential's, the MCP template, then the run's own hook;
+  // one JSON file's templates merged in that order.
   const files = new Map<string, string>();
   const write = (pathTemplate: string, template: string) => {
     const path = fill(pathTemplate, values);
     const json = path.endsWith(".json");
-    const text = fill(template, values, json);
+    const text = fill(template, hookValues, /\.(?:json|toml|mjs)$/.test(path));
     if (json && files.has(path)) {
       files.set(path, JSON.stringify(merged(JSON.parse(files.get(path)!), JSON.parse(text))));
     } else {
@@ -240,6 +278,15 @@ export function invocation(record: Served, start: StartDoc,
   if (mcp?.file !== undefined && mcp.template !== undefined) {
     write(mcp.file, mcp.template);
   }
+  const own = decide?.file.startsWith("{system}/") === true;
+  if (hooked && own) {
+    write(decide!.file, decide!.template);
+  }
+  for (const [path, template] of Object.entries(hooked ? decide!.pins ?? {} : {})) {
+    write(path, template);
+  }
+  const shared = decide === null || own || options.hook === undefined ? null : {
+    path: decide.file, text: hooked ? fill(decide.template, hookValues, true) : null };
   for (const path of files.keys()) {
     if (!path.startsWith(`${home}/`) && !path.startsWith(`${system}/`)) {
       throw new Error("a record's files are under the run's home or its system directory");
@@ -250,7 +297,7 @@ export function invocation(record: Served, start: StartDoc,
   }
   const cwd = cli.engine.resume === "continue_in_cwd" ? options.conversationDir! : agentDir;
   return { argv, stdin: cli.engine.stdin === undefined ? null : prompt, env, cwd, files,
-           resumed };
+           resumed, shared };
 }
 
 /** A record's `secret_paths` and `session_paths`, each from its home (`a/b`, `a/` a tree). */

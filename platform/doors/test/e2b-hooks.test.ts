@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { E2B_HOOK_PATH } from "../src/config";
 import type { DoorsEnv } from "../src/env";
@@ -176,6 +176,17 @@ describe("E2B's lifecycle webhook", () => {
     expect(await (await deliver(body)).json()).toEqual({ unrouted: true });
     expect((await deliver("not json", signature("not json"))).status).toBe(400);
     expect(lifecycleEvent(JSON.stringify({ ...event(owner()), event_data: {} }))).toBeNull();
+  });
+
+  it("answers the owner's object's refusal as JSON, its status and wait, so E2B sends the " +
+     "event again", async () => {
+    const who = await admitted();
+    const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    const stub = vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
+      sandboxBilled: () => Promise.reject(busy) }) as never);
+    const answer = await deliver(JSON.stringify(event(who))).finally(() => stub.mockRestore());
+    expect([answer.status, answer.headers.get("Retry-After"), await answer.json()])
+      .toEqual([429, "1", { error: "this account is busy; try again shortly" }]);
   });
 
   it("seals a route only the routing key opens, and checks E2B's signature exactly", () => {
