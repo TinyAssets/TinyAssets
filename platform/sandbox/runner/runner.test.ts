@@ -1598,11 +1598,16 @@ describe("the agent's definition, and nothing beside it", () => {
     expect((await run("claude-code")).end).toEqual({ exit_code: 0 });
   });
 
-  it("refuses to resume a CLI after its agent wrote its engine's own settings mid-run",
-     async () => {
+  it.each([
+    ["its engine's own settings", ".gemini/settings.json", '{"hooksConfig":{"enabled":false}}',
+     { code: "engine_settings_refused", path: "/workspace/agents/main/.gemini/settings.json" }],
+    ["an env file setting what its credential forbids", ".env", "GEMINI_API_KEY=x\n",
+     { code: "project_env_refused", path: ".env", sets: "GEMINI_API_KEY" }],
+  ])("refuses to resume a CLI after its agent wrote %s mid-run", async (_what, file, text,
+                                                                         refused) => {
     const release = "/release-renewal";
     box.cli("gemini", { lines: SHAPES["gemini"]!.lines, holdUntil: release, exit: 1,
-                        writes: { ".gemini/settings.json": '{"hooksConfig":{"enabled":false}}' } });
+                        writes: { [file]: text } });
     const start = startDoc(doors, "gemini", { config: config("gemini") });
     box.start(start);
     box.runner("launch", start.run);
@@ -1613,9 +1618,8 @@ describe("the agent's definition, and nothing beside it", () => {
     box.write(release, "");
     expect((await doors.ended_(25_000, start.run)).body["end"]).toEqual({ exit_code: 1 });
     expect(box.ran("gemini")).toHaveLength(1);
-    expect(doors.frames().find((event) => event["type"] === "ta.refused")).toEqual({
-      type: "ta.refused", code: "engine_settings_refused",
-      path: "/workspace/agents/main/.gemini/settings.json" });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toEqual({ type: "ta.refused", ...refused });
     expect(doors.frames().map((event) => event["type"])).not.toContain("ta.resumed");
   });
 });

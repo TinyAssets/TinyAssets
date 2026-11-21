@@ -1227,20 +1227,24 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         if (conversationDir !== undefined) {
           lchownSync(conversationDir, as.uid, as.gid);
         }
-        // The env files the CLI would load: never one that sets what the run's own
-        // environment does not take, nor, for a hooked run, the decide credential or a
-        // variable that loads code, which would reach the hook.
+        // Before each start of the CLI, a resume's too: the env files it would load, never
+        // one that sets what the run's own environment does not take, nor, for a hooked run,
+        // the decide credential or a variable that loads code, which would reach the hook;
+        // and nothing beside the agent's definition.
         const forbid = [...cli.per_credential?.[start.credential]?.forbid_env ?? [],
                         ...(hooked ? [DECIDE_ENV, ...CODE_LOADING_ENV] : [])];
-        const found = envFiles(home, call.cwd, call.files);
-        const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
-          ?? projectEnvRefusal(found.project, forbid)
-          ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
-        if (refusal !== null) {
-          outbox.push({ type: "ta.refused", ...refusal });
-          throw new RunRefused(refusal.code);
-        }
-        definitionHeld(cli.definition, call.cwd, outbox);
+        const held = () => {
+          const found = envFiles(home, call.cwd, call.files);
+          const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
+            ?? projectEnvRefusal(found.project, forbid)
+            ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
+          if (refusal !== null) {
+            outbox.push({ type: "ta.refused", ...refusal });
+            throw new RunRefused(refusal.code);
+          }
+          definitionHeld(cli.definition, call.cwd, outbox);
+        };
+        held();
         if (hooked) {
           await startCheck(as, call, decide!, door!.url);
         }
@@ -1304,7 +1308,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           if (!call.resumed) {
             break;
           }
-          definitionHeld(cli.definition, call.cwd, outbox);
+          held();
           outbox.push({ type: "ta.resumed", after: "renewal" });
         }
       } finally {

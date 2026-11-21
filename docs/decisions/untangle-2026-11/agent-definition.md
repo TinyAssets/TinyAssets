@@ -120,7 +120,9 @@ every engine's native settings are refused on every run, not only Gemini's or a 
    `AGENTS.override.md`, per `docs/configuration.md`); a `native.refuses` path is
    `engine_settings_refused` (it replaces `hook_settings_refused`); instructions past
    `max_bytes` (Codex's 32 KiB) are `instructions_too_large`, never cut. Each goes out as
-   `ta.refused` with its path, and the app says it in words (`doors/app/view.js`).
+   `ta.refused` with its path, and the app says it in words (`doors/app/view.js`). The
+   env-file refusals run beside it at both starts (review: a resume skipped them, so an
+   `.env` the agent wrote mid-run reached a resumed CLI).
 3. **Skills by argv where the engine takes them so** (`definition.skills.argv_each`, `{skill}`
    the skill's directory, only there): pi's `paths` is empty and its argv carries `--skill`
    per skill of the union (`project.ts` `skillsOf`, in name order within each source, the
@@ -135,6 +137,10 @@ Departures:
   folder stays, emptied of its links at the next sync-in; `--no-approve` leaves it unread.
 - **Claude Code's `--setting-sources user` stays on hooked runs only** until B1 says it keeps
   `AGENTS.md` and `.claude/skills`; its project settings are refused at start on every run.
+  Claude Code reloads them live (R5 item 14), so on an unhooked run a file the agent writes
+  mid-session is read by that session until its CLI ends; the next start is refused. That
+  session's agent holds no rule a layer could lift, and its shell already does what one could.
+  Gemini and Codex read theirs at start, and `--no-approve` holds for pi's whole process.
 - **`skillsOf` is exported from `project.ts`** for the run's argv; D3 moves it into the contract.
 
 ## Owed
