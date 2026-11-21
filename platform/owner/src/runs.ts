@@ -1072,7 +1072,9 @@ export class Runs {
       // The owner's subscriptions (each engine signed in, or lapsed) ranked with its
       // connections, by the same ranking, each by the model its record's plan runs
       // (`cli.login.model`), which its run is given; a subscription covering a key's provider
-      // is preferred to the key (the plan is used).
+      // is preferred to the key (the plan is used). A model the agent names picks among the
+      // sources that offer it (a key's connection lists it, a plan's record names it), so it
+      // never reaches another vendor's CLI.
       const plans = new Map<string, string>();  // provider -> engine
       const planModels = new Map<string, string>();  // engine -> its plan's model
       const planned: UsableSource[] = [];
@@ -1090,7 +1092,8 @@ export class Runs {
                        models: [planModel(record.cli.login.model.id)] });
       }
       for (const candidate of ranked([...keys, ...planned])) {
-        if (file.connection !== null && candidate.connection !== file.connection) {
+        if ((file.connection !== null && candidate.connection !== file.connection)
+            || (file.model !== null && candidate.model.id !== file.model)) {
           continue;
         }
         const plan = candidate.connection.startsWith(PLAN) ? candidate.source

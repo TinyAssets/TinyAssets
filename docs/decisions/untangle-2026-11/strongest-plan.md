@@ -63,8 +63,16 @@ How it is held:
   such a record to carry `engine.model_argv`.
 - The run passes it (`--model <id>`), unless the agent's file names a model. So the run is
   the model it was ranked as, and the receipt says which (`model`), where it said `null`.
-  Where an account cannot run the declared model, the vendor's CLI fails the run loudly
-  (Fact 8), never a silent other model under a borrowed rank.
+  Where an account cannot run the declared model, Claude Code, Codex and Kimi fail the run
+  (Fact 8). Gemini does not: the pinned bundle's `resolveModel` turns an explicit
+  `gemini-3.1-pro-preview` into `gemini-2.5-pro` for an account without preview access, so
+  that run's receipt names the model asked for, not the one that ran. One model per record
+  stays: no runner report names the account's plan, so per-plan models would need a new
+  research step and a plan signal from each CLI (founder question 2).
+- An `auto` agent that names a model picks among the sources that offer it: a key whose
+  connection lists it, or a plan whose record names it (a key of a plan's provider that
+  lists it still takes the plan). One no source offers is `no_source`, never passed to
+  another vendor's CLI (review). To run another model on a plan, the agent names the engine.
 - An owner test holds every sign-in record's model to a ranking entry, so a plan can never
   rank unknown by construction: both files are bundled data, so no admission-time check is
   needed, and none is added.

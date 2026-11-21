@@ -614,9 +614,9 @@ describe("auto and the owner's sign-ins", () => {
                                        credential: "vendor_login_in_sandbox", model: PLAN_MODEL });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?", auto.run.run_id))
       .toEqual([{ connection: null }]);
-    // An agent that names its model runs that one.
-    await defineAgent(r.stub, r.bind(), "named", { ...AUTO_AGENT, model: "claude-sonnet-5-5" });
-    expect((await ownerRun(r.stub, r.bind(), undefined, "named")).start)
+    // An agent that names the engine and a model runs that model on the sign-in.
+    expect((await ownerRun(r.stub, r.bind(), { ...SIGNED_IN, model: "claude-sonnet-5-5" },
+                           "named")).start)
       .toMatchObject({ credential: "vendor_login_in_sandbox", model: "claude-sonnet-5-5" });
   });
 
@@ -641,6 +641,18 @@ describe("auto and the owner's sign-ins", () => {
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?",
                        strongest.run.run_id)).toEqual([{ connection: stronger }]);
     expect(stronger).not.toBe(weaker);
+    // An `auto` agent that names a model runs on a source that offers it, whatever ranks
+    // above, and one no source offers is refused, never passed to another vendor's CLI.
+    await defineAgent(r.stub, r.bind(), "unoffered",
+                      { ...AUTO_AGENT, model: "claude-sonnet-5-5" });
+    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "unoffered"))).message)
+      .toMatch(/^no_source/);
+    for (const [model, run] of [
+      [PLAN_MODEL, { engine: "claude-code", model: PLAN_MODEL }],
+      ["gpt-5.1-codex", { credential: "api_key", model: "gpt-5.1-codex" }]] as const) {
+      expect((await ownerRun(r.stub, r.bind(), { ...AUTO_AGENT, model }, "pinned")).run)
+        .toMatchObject(run);
+    }
   });
 
   it("prefers the subscription to a key of its provider; a lapse is refused and noticed, " +
