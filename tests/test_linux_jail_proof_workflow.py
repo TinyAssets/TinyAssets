@@ -368,7 +368,7 @@ def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():
     assert (_step_index(wf, "Allow user namespaces for the jail container only")
             < _step_index(wf, _RUN_STEP))
     paths = _triggers(wf)["pull_request"]["paths"]
-    for path in ("docker/linux-oracle.Dockerfile", "scripts/linux_oracle.py"):
+    for path in ("docker/linux-oracle.Dockerfile", "scripts/linux_oracle.py", "Dockerfile"):
         assert path in paths, f"{path} must retrigger the proof"
 
 

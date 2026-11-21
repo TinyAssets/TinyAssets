@@ -49,9 +49,10 @@ on:
       - ".github/workflows/real-browser-proof.yml"
       - "scripts/ci_assert_junit_case.py"
       - "scripts/generate_guard_inventories.py"
-      # The venue.
+      # The venue. The root Dockerfile holds the image's base.
       - "scripts/linux_oracle.py"
       - "docker/linux-oracle.Dockerfile"
+      - "Dockerfile"
       # The custom-UI frame: the sandbox attribute, the frame document and its
       # headers, and the page that hosts it.
       - "tinyassets/onboarding/app_ui.js"
@@ -84,6 +85,7 @@ on:
       - 'scripts/generate_guard_inventories.py'
       - 'scripts/linux_oracle.py'
       - 'docker/linux-oracle.Dockerfile'
+      - 'Dockerfile'
       - 'tinyassets/onboarding/app_ui.js'
       - 'tinyassets/onboarding/ui_frame.py'
       - 'tinyassets/ui_preview.py'
