@@ -627,6 +627,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     swallowed errors decided, and four checks that could never fail made to (the r2-keys
     guard's builder, prefix and exemption rules; the root rewrap's etag) (#5679;
     `untangle-2026-11/pass-files.md`).
+  - [x] `platform/codemode/`, `platform/sources/`, `platform/starter/` and `platform/plugins/`,
+    both passes in one PR for the four small areas, with the source records' three attack
+    files made one and fifteen words of their credential and endpoint patterns that no test
+    held made to fail (`untangle/pass-small`; `untangle-2026-11/pass-small.md`).
   - [x] `platform/gateway/`, both passes in one PR, with the area's list2 items and its own
     swallowed errors decided, the fake's twelve dead commands gone, and three checks that
     could never fail made to (the doorbell's echo bound, two OAuth redirect checks, a misfit
@@ -651,6 +655,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     and never past `endAt` less the longest pause (#5680; `untangle-2026-11/renew-deadline.md`).
   - [ ] `runner.ts` `RunState.renewing`, written for the tests alone, dropped with the next
     state format (`renew-deadline.md` §4).
+  - [ ] With the next change to the probes bundle: `sources/src/catalog.ts` `bundledRecords`,
+    a pass-through of `RECORDS`, deleted, and `check.ts`'s `HOSTED_USE` made the one list
+    `schema.ts`'s `HostedUse` is typed from (`pass-small.md` §2).
   - [ ] `gateway/src`'s surface only its tests use goes: `Hold`'s pool (every caller passes
     `gatewaySlots()`), `weighedBody`'s and `readHeld`'s nullable `hold`, the doorbell's `send`,
     `meter.ts` `sentHeaders` (its source-record check to `sources/`), and six exports nothing

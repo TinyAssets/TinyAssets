@@ -1,6 +1,5 @@
-// What an outside client gets of the starter (slice BRAIN, shared_brain_research.md §6.2
-// item 5, autoconnect_research.md §5.1), so the repo holds one text of each (Direction 2: one
-// agent definition):
+// What an outside client gets of the starter, so the repo holds one text of each
+// (Direction 2: one agent definition):
 // - the TinyAssets plugins: one for ChatGPT and Codex (the portable Agent Plugins format,
 //   with OpenAI's extension) and one for Claude (`.claude-plugin/`), each the MCP server plus
 //   the starter's own skills, copied byte for byte from the starter's files under
@@ -22,7 +21,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** Where the starter's shared skills land in an owner's files. */
 const SKILLS = "/workspace/.agents/skills/";
 const STARTER = JSON.parse(readFileSync(join(HERE, "..", "starter", "manifest.json"), "utf8"));
-// The site's legal page, from the doors' public identity.
 const IDENTITY = JSON.parse(readFileSync(join(HERE, "..", "contract", "identity.json"),
                                          "utf8"));
 const LEGAL = `${ORIGIN}${IDENTITY.legal}`;
