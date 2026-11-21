@@ -266,8 +266,9 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     check, every script a workflow names is held to exist, a lost duration stops
     `budgets.mjs`, and §B8 is decided (`untangle/p6-process-code`;
     `untangle-2026-11/p6-process-code.md`);
-  - [ ] the process tests beside their scripts, held by the tamper rule
-    (`untangle/p6-tests-beside`);
+  - [x] the process tests beside their scripts, held by the tamper rule, and the process
+    leg's watchdog 6x its slowest run (`untangle/p6-tests-beside`;
+    `untangle-2026-11/p6-tests-beside.md`);
   - [ ] queue-freshness and rerun-cancelled-checks deleted (`untangle/p6-queue-deletes`);
   - [ ] main-red and queue-attempts reading the ruleset and the jobs, not the old suite
     (`untangle/p6-queue-helpers`).
@@ -296,10 +297,13 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   Each venue is packed on its own by a table refreshed from whole-surface runs only, so the
   slowest shard's tests take 569 to 621 s, about 15 minutes of job (`untangle/shard-2-time`;
   found by `untangle/required-checks`; `untangle-2026-11/shard-2-time.md`).
-- [ ] Whether the Python legs need cover for a runner five times slower before the cutover
+- [x] Whether the Python legs need cover for a runner five times slower before the cutover
   deletes them: no packing fits one (a 477 s case and the image build, 62 minutes at five
   times), and #5646's calibration is Vitest's only; research first
-  (`untangle/python-slow-runner`; found by `untangle/shard-2-time`).
+  (`untangle/python-slow-runner`; found by `untangle/shard-2-time`). Decided by the P6
+  research: none for the retiring shards (a time-out there is loud and rerun, at 57% and 65%
+  of their limits); the `process` leg, which stays, has 8 minutes, 6x its slowest run
+  (`untangle/p6-tests-beside`; `untangle-2026-11/p6-tests-beside.md` item 6).
 - [ ] `main_red.py` `REQUIRED_JOB` and `queue_attempts.py` `AGGREGATE_JOB` name the Tests
   aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
