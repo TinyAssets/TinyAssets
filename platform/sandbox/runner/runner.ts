@@ -1280,8 +1280,11 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           state.cli_pid = null;
           save();
           // A CLI that failed across a renewal (its model call cut by the pause) is resumed
-          // from its session, once; a cancel never is.
-          if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed) {
+          // from its session, once; a cancel never is, nor a hooked run's: its CLI would load
+          // again what the agent wrote since the start's refusals (its project's settings, its
+          // home's), so it ends, and its conversation goes on in a run checked afresh.
+          if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed
+              || hooked) {
             break;
           }
           await killAll(as);

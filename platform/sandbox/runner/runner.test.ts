@@ -453,6 +453,26 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     expect((await run("claude-code")).end).toEqual({ exit_code: 0 });
   });
 
+  it("never starts a hooked run's CLI again after a renewal", async () => {
+    // The third review's reproduction: the agent writes the settings Gemini reads only at a
+    // start, mid-run, and its CLI fails across a renewal; a restart would load them.
+    answering(["run_shell_command"]);
+    const release = "/release-renewal";
+    box.cli("gemini", { lines: SHAPES["gemini"]!.lines, holdUntil: release, exit: 1,
+                        writes: { ".gemini/settings.json": '{"hooksConfig":{"enabled":false}}' } });
+    const start = startDoc(doors, "gemini", { config: config("gemini") });
+    box.start(start);
+    box.runner("launch", start.run);
+    await waitFor(() => box.runner("state").out.includes("\"quiet\":true")
+      && box.ran("gemini").length > 0);
+    expect(await box.runnerAsync("renew-wait", String(Date.now() + 10_000))).toBe(0);
+    expect(box.runner("renewed").code).toBe(0);
+    box.write(release, "");
+    expect((await doors.ended_(25_000, start.run)).body["end"]).toEqual({ exit_code: 1 });
+    expect(box.ran("gemini")).toHaveLength(1);
+    expect(doors.frames().map((event) => event["type"])).not.toContain("ta.resumed");
+  });
+
   it("lets an unhooked run keep its agent's own Node options", async () => {
     doors.files.set("/workspace/agents/main/.env",
                     { text: "NODE_OPTIONS=--max-old-space-size=512\n", version: 9 });
