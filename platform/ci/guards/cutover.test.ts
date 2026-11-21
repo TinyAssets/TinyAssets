@@ -20,6 +20,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 import { type CutoverLayer, cutoverLayer, dryRun, dryRunLegs, type Entry, isGone, LIVE,
          type Manifest, MANIFEST, PHASES, pythonLoads } from "../kit/cutover";
@@ -27,6 +28,7 @@ import { keyed, object } from "../../contract/src/checks";
 import { layerProblems, repoScripts } from "../kit/imports";
 import { treeFiles } from "../kit/sources";
 import { REPO } from "../paths";
+import { actionFiles, type Data, workflowNames } from "../workflows";
 import { workerFolders } from "../wrangler";
 
 /** A text that says what is deleted at the cutover, however its comment wraps the words. */
@@ -47,6 +49,26 @@ function goneNames(manifest: Manifest): RegExp[] {
                                     path.replace(/^\.github\//, "./.github/")])].map((name) =>
       new RegExp(`(?<![\\w./@-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${
         name.includes("/") ? "(?![\\w.-])" : "/"}`)));
+}
+
+/** The shells of a workflow's or a composite action's `run` steps, one after another. */
+function runs(text: string): string {
+  const data = (parse(text) ?? {}) as Data;
+  return [...Object.values(data.jobs ?? {}) as Data[], data.runs ?? {}]
+    .flatMap((job: Data) => (job.steps ?? []) as Data[])
+    .flatMap((step: Data) => typeof step.run === "string" ? [step.run as string] : []).join("\n");
+}
+
+/**
+ * Each script of `gone` a workflow's steps run: named by its path, or as a module
+ * (`python -m scripts.x`). A step's script is the workflow's load, as an import is a module's.
+ */
+function stepLoads(text: string, gone: readonly string[]): string[] {
+  const shell = runs(text);
+  const escape = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return gone.filter((path) => /^scripts\/.+\.py$/.test(path)).filter((path) =>
+    new RegExp(`(?<![\\w./-])(?:${escape(path)}|${escape(path.slice(0, -3).replaceAll("/", "."))
+    })(?![\\w-])`).test(shell));
 }
 
 /** A tree the manifest is held to: whether a path is there, and a file's text. */
@@ -290,6 +312,7 @@ describe("the cutover's manifest", () => {
       const [from, to] = each.split(" imports ") as [string, string];
       const source = REPO_TREE.text(from) ?? "";
       return pythonLoads(from, source, REPO_TREE.exists).includes(to)
+        || (/\.ya?ml$/.test(from) && stepLoads(source, [to]).includes(to))
         || [...source.matchAll(/["'](\.{1,2}\/[^"']+)["']/g)]
           .some(([, path]) => posix.normalize(posix.join(posix.dirname(from), path!)) === to);
     };
@@ -311,6 +334,24 @@ describe("the cutover's manifest", () => {
       "import a", "from b import c as see, e", "    from tools.d import x", "import os, a",
       "from . import nothing", "# import gone"].join("\n"), (path) => tree.has(path)))
       .toEqual(["scripts/a.py", "scripts/b/__init__.py", "scripts/b/c.py", "tools/d.py"]);
+  });
+
+  it("names every script that goes a workflow which stays runs, on its edit", () => {
+    const { gone, entries } = cutoverLayer();
+    const flows = [...workflowNames().map((name) => `.github/workflows/${name}`),
+                   ...actionFiles()].filter((path) => !isGone(gone, path));
+    expect(flows.length).toBeGreaterThan(20);
+    expect(flows.flatMap((path) => stepLoads(REPO_TREE.text(path)!, gone)
+      .filter((to) => !(entries.get(path) ?? []).includes(to))
+      .map((to) => `${path} runs ${to}: name it on the file's edit`))).toEqual([]);
+    // By path or as a module, in a job's step or a composite action's; never in a comment.
+    const gone2 = ["scripts/a.py", "scripts/b.py", "scripts/c.py", "scripts/d/e.py"];
+    expect(stepLoads(["# python scripts/c.py", "jobs:", "  x:", "    steps:",
+                      "      - run: python scripts/a.py --x",
+                      "      - run: python -m scripts.d.e"].join("\n"), gone2))
+      .toEqual(["scripts/a.py", "scripts/d/e.py"]);
+    expect(stepLoads("runs:\n  steps:\n    - run: python scripts/b.py\n", gone2))
+      .toEqual(["scripts/b.py"]);
   });
 
   it("makes the tree a dry run applies: carry-outs, the deletes, what an edit loads kept, and " +

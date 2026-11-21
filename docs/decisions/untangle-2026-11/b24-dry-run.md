@@ -48,6 +48,15 @@
    - 33 prose names are re-anchored to the path or identifier their text cites, such as `scripts/deployed_sha.py` for executable-gates' row, or dropped where another name already anchors the same text. Where the text cites nothing else, the shortest phrase stays: the founder's setup's comment mentions and host-actions' setup rows, `**retiring stack**`, `on-disk catalog` and `cutover's import`.
    - Code fragments stay: step names, imports, test titles, YAML keys. They change only with the code, and then the manifest should change too.
    - No mechanical rule is added. "Prose" cannot be told from a code string by a pattern, and a rule that refused whitespace would refuse every step name and import. The rule is in the manifest's `about` and `cutover.ts`'s `Entry` note, for a reviewer to hold.
-8. **Left, each with where it goes.**
+8. **A script a workflow's step runs is that workflow's load** (after #5708, `Cutover dry run` run 44883223962).
+   - #5708's `scripts/tests/test_workflow_scripts.py` holds that every script a step names exists. On the tree it failed: `tests.yml`, a listed edit, still runs `prepare_oracle_runsc.py` and `ci_assert_junit_case.py`, which go.
+   - Three shapes were weighed:
+     - Set aside every test that reads an edited file. What a test reads (here, every workflow by a glob) can't be derived from the manifest, so it would be a hand list.
+     - Apply an edit's lines that name only what goes. A `run` block's lines are one shell script, and deleting some can leave a broken script or YAML, so the tree would test text no one wrote.
+     - The manifest's own rule, applied: an edit's `imports` names each file that goes which the file loads, and a step's script is a workflow's load as an import is a module's.
+   - The third is built. `tests.yml`'s edit declares the six old-suite scripts its steps run and `pr-scope-guard.yml`'s the one it names, so the dry run keeps them. A guard case holds every staying workflow and composite action to it, by the manifest's own path forms: a script that goes, named in a `run` shell by its path or as a module (`python -m scripts.x`), is declared on the file's edit. A declared workflow import counts as made where a step runs it. Nothing is special to the one test.
+   - On the tree, the process leg goes from 1 failed and 199 passed (6d679fd2b) to 200 passed.
+   - If #5710 (queue-freshness deleted) lands first, `queue_freshness.py`'s entry names a gone file and the guard says so: the PR that merges second removes the entry.
+9. **Left, each with where it goes.**
    - P6, which P6 PR 1 (`untangle/p6-process-code`) did not take: the queue helpers' and the hygiene gate's imports of the old suite (item 3) are `untangle/p6-queue-helpers`', and the carried tests' move itself is `untangle/p6-tests-beside`', which may land first.
    - B24 lists no platform Worker in the kit's `retired` list: the cutover retires none, since the import window's consumer lives in the doors.
