@@ -182,9 +182,9 @@ describe("the engine records", () => {
   const keys = [...records.values()].map(sourceRecord)
     .filter((record) => record.connect.includes("api_key"));
 
-  it("are the four vendor CLIs and pi's, none with an invoke", () => {
+  it("are the three vendor CLIs and pi's, none with an invoke", () => {
     expect(engines.map((record) => record.id).sort())
-      .toEqual(["claude-code", "codex", "gemini", "kimi", "pi"]);
+      .toEqual(["claude-code", "codex", "gemini", "pi"]);
     for (const record of engines) {
       expect(record.cli, record.id).not.toHaveProperty("invoke");
       expect(record.cli, record.id).not.toHaveProperty("state_paths");
@@ -224,7 +224,6 @@ describe("the engine records", () => {
       "claude-code": { vendor_login_in_sandbox: true, api_key: true },
       codex: { vendor_login_in_sandbox: false, api_key: true },
       gemini: { vendor_login_in_sandbox: false, api_key: true },
-      kimi: { vendor_login_in_sandbox: false },
       pi: { api_key: true },
     });
     expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toEqual({
@@ -266,7 +265,7 @@ describe("the engine records", () => {
                `${record.id} → ${engine}`).toBeDefined();
       }
     }
-    for (const engine of ["kimi", "codex", "nope", "groq"]) {
+    for (const engine of ["codex", "nope", "groq"]) {
       expect(() => catalogOf([...bundledRecords().filter((record) =>
         (record as Json)["id"] !== "anthropic"), { ...anthropic, engines: [engine] }])
         .get("anthropic")).toThrow(/^source record "anthropic": engine /);
@@ -289,7 +288,7 @@ describe("the engine records", () => {
                 "-c", "model_providers.tinyassets.wire_api=\"responses\""]);
     expect(runEnv(catalog, "gemini", "api_key").api_key_env["google"]).toEqual({
       base_url: "GOOGLE_GEMINI_BASE_URL", api_key: "GEMINI_API_KEY", base: "connection" });
-    for (const engine of ["claude-code", "codex", "gemini", "kimi"]) {
+    for (const engine of ["claude-code", "codex", "gemini"]) {
       const signedIn = runEnv(catalog, engine, "vendor_login_in_sandbox");
       expect(signedIn.api_key_env, engine).toEqual({});
       expect(signedIn.forbid_env.length, engine).toBeGreaterThan(0);
@@ -298,7 +297,7 @@ describe("the engine records", () => {
       .toEqual(expect.arrayContaining(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
                                        "ANTHROPIC_AUTH_TOKEN"]));
     // Only a served CLI record, on a credential it runs on.
-    for (const [engine, credential] of [["kimi", "api_key"], ["pi", "vendor_login_in_sandbox"],
+    for (const [engine, credential] of [["pi", "vendor_login_in_sandbox"],
                                         ["anthropic", "api_key"], ["nope", "api_key"]] as const) {
       expect(() => runEnv(catalog, engine, credential), engine).toThrow(SourceRecordError);
     }
@@ -354,13 +353,10 @@ describe("the engine records", () => {
       "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "CODE_ASSIST_ENDPOINT",
       "GOOGLE_GENAI_USE_GCA", "GOOGLE_CLOUD_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
       "GOOGLE_VERTEX_BASE_URL", "GEMINI_CLI_AUTH_OVERRIDE", "GEMINI_DEFAULT_AUTH_TYPE"]));
-    expect(forbidden("kimi")).toEqual(expect.arrayContaining([
-      "KIMI_API_KEY", "KIMI_BASE_URL", "MOONSHOT_API_KEY", "KIMI_CODE_BASE_URL",
-      "KIMI_MODEL_*", "KIMI_OAUTH_HOST", "KIMI_CODE_OAUTH_HOST", "OPENAI_*", "ANTHROPIC_*"]));
     // A pattern names every variable with its prefix, and nothing else.
-    expect(forbids(forbidden("kimi"), "KIMI_MODEL_API_KEY")).toBe(true);
-    expect(forbids(forbidden("kimi"), "OPENAI_BASE_URL")).toBe(true);
-    expect(forbids(forbidden("kimi"), "KIMI_CODE_HOME")).toBe(false);
+    expect(forbids(["MODEL_*"], "MODEL_API_KEY")).toBe(true);
+    expect(forbids(["OPENAI_*"], "OPENAI_BASE_URL")).toBe(true);
+    expect(forbids(["MODEL_*"], "MODEL")).toBe(false);
     expect(forbids(["OPENAI_*"], "XOPENAI_KEY")).toBe(false);
   });
 
@@ -427,28 +423,13 @@ describe("the engine records", () => {
   });
 
   it("pin each sign-in's page on its own login hosts, and cite its code's lifetime", () => {
-    for (const id of ["claude-code", "codex", "gemini", "kimi"]) {
+    for (const id of ["claude-code", "codex", "gemini"]) {
       const spec = sourceRecord(records.get(id)).cli!;
       const login = spec.login!;
-      const hosts = new Set([...spec.hosts.login, ...Object.values(spec.regions ?? {})
-        .flatMap((region) => region.hosts.login)]);
-      expect(login.url.hosts.every((host) => hosts.has(host)), id).toBe(true);
+      expect(login.url.hosts.every((host) => spec.hosts.login.includes(host)), id).toBe(true);
       expect(login.expires.s, id).toBeGreaterThan(0);
       expect(login.expires.citation.length, id).toBeGreaterThan(0);
     }
-  });
-
-  it("let a Kimi member sign in from either region, its hosts by the choice", () => {
-    const spec = sourceRecord(records.get("kimi")).cli!;
-    expect(spec.login!.argv).toEqual(["{bin}", "login", "--region", "{region}"]);
-    expect(Object.keys(spec.regions!).sort()).toEqual(["global", "mainland-cn"]);
-    expect(spec.regions!["global"]!.hosts.login).toContain("auth.kimi.ai");
-    expect(spec.regions!["mainland-cn"]!.hosts.login).toContain("auth.kimi.com");
-    const pattern = new RegExp(spec.login!.url_pattern);
-    for (const url of ["https://www.kimi.ai/device?x=1", "https://auth.kimi.com/device"]) {
-      expect(pattern.exec(url)?.[1], url).toBe(url);
-    }
-    expect(spec.no_update).toEqual({ env: { KIMI_CODE_NO_AUTO_UPDATE: "1" } });
   });
 
   it("never pass a prompt as a bare argument", () => {
@@ -464,7 +445,7 @@ describe("the engine records", () => {
       }
     }
     expect(engines.filter((record) => record.cli!.engine.stdin === undefined)
-      .map((record) => record.id)).toEqual(["kimi"]);
+      .map((record) => record.id)).toEqual([]);
   });
 
   // Each as its pinned CLI reports it (its source, read 2026-11-21): the vendor's limit, with
@@ -506,14 +487,6 @@ describe("the engine records", () => {
                                                          message: "quota" } }, null]],
       not: [{ type: "result", status: "error", error: { type: "FatalToolExecutionError",
                                                        message: "quota" } }],
-    },
-    kimi: {
-      limit: [[{ type: "ta.stderr", text: "provider.rate_limit: 429 Too Many Requests" }, null],
-              [{ type: "ta.stderr", text: "provider.api_error: You exceeded your current " +
-                 "token quota" }, null]],
-      // An MCP server or hook the agent runs writes to the CLI's stderr too.
-      not: [{ type: "ta.stderr", text: "provider.auth_error: invalid api key" },
-            { type: "ta.stderr", text: "wallet: insufficient balance\nprovider.api_error: 500" }],
     },
     pi: {
       limit: [[{ type: "auto_retry_end", success: false, attempt: 3,
@@ -561,7 +534,6 @@ describe("the engine records", () => {
               { type: "result", status: "error", error: { type: "Error", message: "x" } }],
       not: [{ type: "error", severity: "warning", message: "Loop detected, stopping execution" }],
     },
-    kimi: { error: [], not: [{ type: "ta.stderr", text: "provider.rate_limit: 429" }] },
     pi: {
       error: [{ type: "auto_retry_end", success: false, attempt: 3, finalError: "529" },
               { type: "compaction_end", reason: "overflow", aborted: false, willRetry: false,
@@ -647,8 +619,7 @@ describe("an engine record that does not fit", () => {
       delete s["per_credential"]; })],
     ["a credential twice", cli((s) => { s["credential"] = ["api_key", "api_key"]; }, pi)],
     ["API-key variables with no API key", cli((s) => {
-      s["api_key_env"] = { moonshot: { base_url: "KIMI_BASE_URL", api_key: "KIMI_API_KEY",
-                                       base: "sealed" } }; }, records.get("kimi") as Json)],
+      s["credential"] = ["vendor_login_in_sandbox"]; delete at(s, "unattended")["api_key"]; })],
     ["a sign-in with no vendor login", cli((s) => {
       s["credential"] = ["api_key"]; delete at(s, "unattended")["vendor_login_in_sandbox"];
       delete s["per_credential"]; })],
@@ -676,12 +647,8 @@ describe("an engine record that does not fit", () => {
       (at(s, "engine")["argv"] as string[]).push("{sid}"); })],
     ["a resume by id with no {sid}", cli((s) => {
       at(s, "engine")["resume_argv"] = ["{bin}", "-p", "--continue"]; })],
-    ["a resume in the cwd that names a session", cli((s) => {
-      at(s, "engine")["resume"] = "continue_in_cwd"; })],
-    ["a resume in the cwd still matching a session id", cli((s) => {
-      at(s, "engine")["resume"] = "continue_in_cwd";
-      at(s, "engine")["resume_argv"] = ["{bin}", "-p", "--continue"]; })],
-    ["an unknown resume", cli((s) => { at(s, "engine")["resume"] = "magic"; })],
+    ["a resume with no session id to resume by", cli((s) => {
+      at(s, "engine.events")["session_id"] = []; })],
     ["an engine that runs something else", cli((s) => {
       (at(s, "engine")["argv"] as string[])[0] = "/bin/sh"; })],
     ["a prompt both on stdin and in the argv", cli((s) => {
@@ -817,27 +784,6 @@ describe("an engine record that does not fit", () => {
       at(s, "env")["ANTHROPIC_BASE_URL"] = "https://example.com"; })],
     ["a sign-in part that sets a variable it forbids", cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["env"] = { ANTHROPIC_API_KEY: "x" }; })],
-    ["a Kimi sign-in with no forbidden variables", cli((s) => { delete s["per_credential"]; },
-                                                      records.get("kimi") as Json)],
-    // Regions as data.
-    ["regions on a record that does not sign in", cli((s) => {
-      s["regions"] = { global: { display_name: "G", hosts: { login: [], provider: [] } } }; }, pi)],
-    ["a region with an id outside the grammar", cli((s) => {
-      s["regions"] = { "Global!": { display_name: "G", hosts: { login: [], provider: [] } } };
-    }, records.get("kimi") as Json)],
-    ["a region host that is not a name", cli((s) => {
-      at(s, "regions.global.hosts")["login"] = ["https://auth.kimi.ai"]; },
-    records.get("kimi") as Json)],
-    ["a region with an unknown key", cli((s) => { at(s, "regions.global")["stray"] = 1; },
-                                         records.get("kimi") as Json)],
-    ["no regions", cli((s) => { s["regions"] = {}; }, records.get("kimi") as Json)],
-    ["regions the sign-in does not use", cli((s) => {
-      at(s, "login")["argv"] = ["{bin}", "login"]; }, records.get("kimi") as Json)],
-    ["a region placeholder with no regions", cli((s) => { delete s["regions"]; },
-                                                 records.get("kimi") as Json)],
-    ["a region placeholder outside the sign-in", cli((s) => {
-      (s["unattended_argv"] as string[]).push("--region={region}"); },
-    records.get("kimi") as Json)],
     // The run's environment is an allow-list, and no settings file carries a credential,
     // an environment block or a forbidden variable.
     ["a record variable shaped like a key", cli((s) => { at(s, "env")["MY_API_KEY"] = "x"; })],
@@ -853,7 +799,9 @@ describe("an engine record that does not fit", () => {
     ["a credential part that sets a token", cli((s) => {
       at(s, "per_credential.api_key")["env"] = { EXTRA_TOKEN: "x" }; }, records.get("codex") as Json)],
     ["a forbidden pattern's variable in the record", cli((s) => {
-      s["env"] = { OPENAI_ORG: "x" }; }, records.get("kimi") as Json)],
+      (at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] as string[])
+        .push("OPENAI_*");
+      at(s, "env")["OPENAI_ORG"] = "x"; })],
     ["a forbid pattern that is not one", cli((s) => {
       (at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] as string[])
         .push("OPENAI*_X"); })],
@@ -889,9 +837,9 @@ describe("an engine record that does not fit", () => {
       at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
         "{home}/.claude/notes.json": "{\"note\": \"ANTHROPIC_BASE_URL\"}" }; })],
     ["a settings file naming a forbidden pattern's variable", cli((s) => {
-      at(s, "mcp")["template"] = String(at(s, "mcp")["template"])
-        .replace("\"transport\"", "\"note\": \"KIMI_MODEL_NAME\", \"transport\""); },
-    records.get("kimi") as Json)],
+      const signedIn = at(s, "per_credential.vendor_login_in_sandbox");
+      (signedIn["forbid_env"] as string[]).push("MODEL_*");
+      signedIn["files"] = { "{home}/.claude/notes.json": "{\"note\": \"MODEL_NAME\"}" }; })],
     ["a wildcard session path that covers a secret below the first segment", cli((s) => {
       s["session_paths"] = ["{home}/.claude/*/"]; })],
     ["a prompt with something after it", cli((s) => {
@@ -911,7 +859,7 @@ describe("an engine record that does not fit", () => {
     // Citations.
     ["a read note on a refusal that cites nothing", cli((s) => {
       at(s, "unattended.vendor_login_in_sandbox")["read_note"] = "from memory"; },
-    records.get("kimi") as Json)],
+    records.get("codex") as Json)],
     ["a read note that is not text", cli((s) => { at(s, "unattended.api_key")["read_note"] = 1; })],
     ["a gateway source with no engines", Object.fromEntries(Object.entries(anthropic)
       .filter(([key]) => key !== "engines"))],
@@ -1031,7 +979,7 @@ describe("an engine's own pre-tool hook", () => {
 
 describe("how the agent's definition reaches an engine", () => {
   it("keeps every engine's whole, as its file holds it", () => {
-    for (const id of ["claude-code", "codex", "gemini", "pi", "kimi"]) {
+    for (const id of ["claude-code", "codex", "gemini", "pi"]) {
       const file = records.get(id) as Json;
       expect(sourceRecord(file).cli!.definition).toEqual(at(file, "cli.definition"));
     }
@@ -1092,8 +1040,7 @@ describe("how the agent's definition reaches an engine", () => {
       at(s, "definition.hooks.events")["stop"] = "SessionEnd"; })],
     ["hooks with no page", cli((s) => { delete at(s, "definition.hooks")["cite"]; })],
     ["hooks on an engine whose decide hook is unsupported", cli((s) => {
-      at(s, "definition")["hooks"] = structuredClone(at(claudeCli, "definition.hooks")); },
-    records.get("kimi") as Json)],
+      s["decide"] = { unsupported: "none" }; })],
     ["no hooks on an engine whose decide hook has a layer", cli((s) => {
       at(s, "definition")["hooks"] = { unsupported: "none" }; })],
   ])("refuses %s", (_what, record) => {

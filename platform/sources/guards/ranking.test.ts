@@ -23,10 +23,10 @@ describe("the platform's ranking", () => {
   it("ranks every engine that signs in by its plan's model, the Claude and Codex plans in " +
      "the top tier", () => {
     const plans = [...served().values()].filter(signsIn);
-    expect(plans.map((record) => record.id)).toEqual(["claude-code", "codex", "gemini", "kimi"]);
+    expect(plans.map((record) => record.id)).toEqual(["claude-code", "codex", "gemini"]);
     const tiers = Object.fromEntries(plans.map((record) => [record.id, shippedRanking()
       .place(planProvider(record), record.cli.login.model.id)?.tier]));
-    expect(tiers).toEqual({ "claude-code": 0, codex: 0, gemini: 1, kimi: 3 });
+    expect(tiers).toEqual({ "claude-code": 0, codex: 0, gemini: 1 });
   });
 
   it("ranks a model of every bundled key source's catalog, so none runs only unknown", () => {

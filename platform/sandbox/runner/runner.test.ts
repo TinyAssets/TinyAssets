@@ -42,8 +42,7 @@ import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 const sources = bundledSources();
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
-const SHAPES: Record<string, { lines: unknown[]; session: string | null; text: string;
-                               tool?: false }> = {
+const SHAPES: Record<string, { lines: unknown[]; session: string; text: string }> = {
   "claude-code": {
     lines: [{ type: "system", subtype: "init", session_id: "cs-1" },
             { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } },
@@ -62,11 +61,6 @@ const SHAPES: Record<string, { lines: unknown[]; session: string | null; text: s
             { type: "message", role: "assistant", content: "done" },
             { type: "result", status: "success", stats: { total_tokens: 3 } }],
     session: "g-1", text: "all done" },
-  kimi: {
-    // Kimi's matchers read the same event as its result first: its tool calls and its
-    // session are owed to the live check (tasks, "Kimi Code").
-    lines: [{ role: "assistant", content: "all done", tool_calls: [{ id: "t" }] }],
-    session: null, text: "all done", tool: false },
   pi: {
     lines: [{ type: "session", id: "p-1" }, { type: "tool_execution_start", tool: "bash" },
             { type: "message_end", message: { role: "assistant",
@@ -211,13 +205,12 @@ describe.each(Object.keys(SHAPES))("a run of %s", (engine) => {
     expect(frames.map((frame) => frame.seq)).toEqual(frames.map((_f, i) => i + 1));
     const events = sources.get(engine)!.cli!.engine.events;
     const reads = frames.map((frame) => readEvent(events, frame.event));
-    expect(reads.find((read) => read.session_id !== null)?.session_id ?? null)
-      .toBe(shape.session);
+    expect(reads.find((read) => read.session_id !== null)?.session_id).toBe(shape.session);
     const texts = reads.filter((read) => read.text !== null).map((read) => read.text!);
     const result = texts.some((text) => text.accumulate)
       ? texts.map((text) => text.value).join("") : texts.at(-1)?.value;
     expect(result).toBe(shape.text);
-    expect(reads.some((read) => read.kind === "tool_call")).toBe(shape.tool !== false);
+    expect(reads.some((read) => read.kind === "tool_call")).toBe(true);
     // The CLI ran as a pool user of its own, in group ta, on the allow-list alone, its
     // HOME a home of its own.
     const seen = box.ran(engine).at(-1)!;
@@ -239,8 +232,7 @@ describe.each(Object.keys(SHAPES))("a run of %s", (engine) => {
     } else {
       expect(seen.argv).toContain("--prompt=do the thing");
     }
-    expect(seen.cwd).toBe(record.engine.resume === "continue_in_cwd"
-      ? `/var/lib/ta-conv/${engine}/${start.conversation}` : "/workspace/agents/main");
+    expect(seen.cwd).toBe("/workspace/agents/main");
     // The owner's files were synced in, by the sync agent's own user.
     expect(readFileSync(box.path("/workspace/agents/main/AGENTS.md"), "utf8")).toBe("# main");
     expect(statSync(box.path("/workspace/agents/main/AGENTS.md")).uid).toBe(SYNC_UID);
@@ -654,10 +646,9 @@ const GEMINI_PAGE = "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=h
   "code_challenge_method=S256&code_challenge=abc_DEF-123&state=" + "a1".repeat(32) +
   "&response_type=code&client_id=681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps." +
   "googleusercontent.com";
-const KIMI_PAGE = "https://www.kimi.ai/code/authorize_device?user_code=K1-ABC";
 
 const LOGINS: Record<string, { lines: string[]; url: string; code: string | null;
-                                region?: string; paste?: string; exits?: boolean;
+                                paste?: string; exits?: boolean;
                                 writes: Record<string, string>;
                                 status?: { out: string; exit: number } }> = {
   "claude-code": {
@@ -690,14 +681,6 @@ const LOGINS: Record<string, { lines: string[]; url: string; code: string | null
     writes: { "~/.gemini/oauth_creds.json": JSON.stringify({ access_token: "stored-a",
                                                               refresh_token: "stored-r" }) },
   },
-  kimi: {
-    lines: [`Visit ${KIMI_PAGE} to sign in,`,
-            "or enter code: K1-ABC"],
-    url: KIMI_PAGE, code: "K1-ABC", region: "global",
-    exits: true,
-    writes: { "~/.kimi-code/credentials/kimi-code.json": JSON.stringify({
-      access_token: "stored-a", refresh_token: "stored-r" }) },
-  },
 };
 
 describe("the vendor's own sign-in", () => {
@@ -710,7 +693,7 @@ describe("the vendor's own sign-in", () => {
                                           ...(plan.exits === true ? { exit: 0 } : {}) },
                       ...(plan.status === undefined ? {} : { status: plan.status }) });
     const id = signinId();
-    box.login({ id, engine, region: plan.region ?? null }, doors);
+    box.login({ id, engine }, doors);
     expect(box.runner("login-launch", id).code).toBe(0);
     const open = await frameWhere(id, (frame) => frame["state"] === "open"
       && (frame["url"] !== null || frame["code"] !== null));
@@ -731,10 +714,9 @@ describe("the vendor's own sign-in", () => {
     await doors.ended_(25_000, id);
     expect(signinFrames(id).at(-1)).toMatchObject({ type: "ta.signin", state: "signed_in" });
     const seen = box.ran(engine)[0]!;
-    // The record's own login, `{region}` filled, as a user of its own, never root.
+    // The record's own login, as a user of its own, never root.
     expect(seen.uid).not.toBe(0);
-    expect(seen.argv).toEqual(login.argv.slice(1).map((arg) =>
-      arg.replaceAll("{region}", plan.region ?? "")));
+    expect(seen.argv).toEqual(login.argv.slice(1));
     // Always on a terminal of its own, each directory its record's home variables name made
     // (a CLI may refuse a configured home that is not there, as on a first sign-in).
     expect((seen as unknown as { tty: boolean }).tty).toBe(true);
@@ -752,20 +734,6 @@ describe("the vendor's own sign-in", () => {
     const report = doors.posts.filter((post) => post.path === "/signin").at(-1)!;
     expect(report.body).toEqual({ signins: [{ engine, signed_in: true }] });
     expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toMatch(/stored/);
-  });
-
-  it.each([
-    ["a code past a device code's length", "kimi",
-     "Visit https://www.kimi.ai/code/device and enter code: ABCDEFGHIJKLMNOPQRSTU"],
-  ])("relays nothing but the record's own shapes: not %s", async (_what, engine, line) => {
-    box.cli(engine, { lines: [], login: { lines: [line], code: true } });
-    const id = signinId();
-    box.login({ id, engine, region: engine === "kimi" ? "global" : null }, doors);
-    expect(box.runner("login-launch", id).code).toBe(0);
-    await doors.ended_(25_000, id);
-    expect(signinFrames(id).some((frame) => frame["state"] === "open")).toBe(false);
-    expect(signinFrames(id).at(-1)).toMatchObject({ state: "refused" });
-    expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toMatch(/ABCDEFGHIJKLMNOPQRSTU/);
   });
 
   it("never writes a secret it did not change back over a newer one", async () => {
@@ -790,9 +758,8 @@ describe("the vendor's own sign-in", () => {
                                                  code: true } });
     const probe = box.probe("login-probe", "claude-code");
     expect(probe.code).toBe(0);
-    expect(JSON.parse(probe.out)).toEqual({ engine: "claude-code", region: null, ok: true,
-                                            reason: null, host: "claude.com",
-                                            code_shown: false });
+    expect(JSON.parse(probe.out)).toEqual({ engine: "claude-code", ok: true, reason: null,
+                                            host: "claude.com", code_shown: false });
     // A sign-in that would send the browser back to localhost strands the owner: it fails.
     box.cli("claude-code", { lines: [], login: { lines: [CLAUDE_PAGE.replace(
       "https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback",
@@ -938,21 +905,21 @@ describe("the vendor's own sign-in", () => {
   });
 
   it("signs out: the engine's secrets gone from its store, its presence reported", async () => {
-    box.write("/var/lib/ta/store/kimi/.kimi-code/credentials/kimi-code.json",
+    box.write("/var/lib/ta/store/gemini/.gemini/oauth_creds.json",
               JSON.stringify({ access_token: "a".repeat(40), refresh_token: "b".repeat(40) }));
-    box.write("/var/lib/ta/store/kimi/.kimi-code/sessions/s.json", "{}");
+    box.write("/var/lib/ta/store/gemini/.gemini/tmp/p/chats/s.json", "{}");
     const id = signinId();
-    box.login({ id, engine: "kimi", mode: "out" }, doors);
+    box.login({ id, engine: "gemini", mode: "out" }, doors);
     box.runner("login-launch", id);
     await doors.ended_(25_000, id);
     expect(signinFrames(id).at(-1)).toMatchObject({ state: "signed_out" });
-    expect(() => lstatSync(box.path("/var/lib/ta/store/kimi/.kimi-code/credentials/" +
-                                    "kimi-code.json"))).toThrow();
+    expect(() => lstatSync(box.path("/var/lib/ta/store/gemini/.gemini/oauth_creds.json")))
+      .toThrow();
     // Its sessions are kept: only its secrets go.
-    expect(lstatSync(box.path("/var/lib/ta/store/kimi/.kimi-code/sessions/s.json")).isFile())
+    expect(lstatSync(box.path("/var/lib/ta/store/gemini/.gemini/tmp/p/chats/s.json")).isFile())
       .toBe(true);
     const report = doors.posts.filter((post) => post.path === "/signin").at(-1)!;
-    expect(report.body).toEqual({ signins: [{ engine: "kimi", signed_in: false }] });
+    expect(report.body).toEqual({ signins: [{ engine: "gemini", signed_in: false }] });
   });
 
   it("leaves no home's snapshot behind: a run's, a status check's, a sign-in's, a sign-out's",
@@ -1012,18 +979,17 @@ describe("a secret written back by compare-and-swap", () => {
 
   it("is never a sign-out undone: a run live across it is stopped, and writes nothing back",
      async () => {
-    // Kimi: no vendor logout, so the sign-out is the store's secrets deleted, at once.
-    const store = "/var/lib/ta/store/kimi/.kimi-code/credentials/kimi-code.json";
+    // Gemini: no vendor logout, so the sign-out is the store's secrets deleted, at once.
+    const store = "/var/lib/ta/store/gemini/.gemini/oauth_creds.json";
     box.write(store, "signed-in");
-    box.cli("kimi", { lines: [{ role: "assistant", content: "ok" }], sleepMs: 20_000,
-                      writes: { "~/.kimi-code/credentials/kimi-code.json":
-                                "refreshed-during-the-run" } });
-    const start = startDoc(doors, "kimi", { config: config("kimi") });
+    box.cli("gemini", { lines: SHAPES["gemini"]!.lines, sleepMs: 20_000,
+                        writes: { "~/.gemini/oauth_creds.json": "refreshed-during-the-run" } });
+    const start = startDoc(doors, "gemini", { config: config("gemini") });
     box.start(start);
     box.runner("launch", start.run);
-    await waitFor(() => box.ran("kimi").length > 0);
+    await waitFor(() => box.ran("gemini").length > 0);
     const id = signinId();
-    box.login({ id, engine: "kimi", mode: "out" }, doors);
+    box.login({ id, engine: "gemini", mode: "out" }, doors);
     expect(box.runner("login-launch", id).code).toBe(0);
     await doors.ended_(25_000, id);
     // The run was stopped by the sign-out, well before its CLI's own end.
@@ -1033,103 +999,104 @@ describe("a secret written back by compare-and-swap", () => {
 });
 
 describe("the store's generation and its lock", () => {
-  const KIMI = "/var/lib/ta/store/kimi/.kimi-code/credentials/kimi-code.json";
-  const KIMI_LINES = [{ role: "assistant", content: "ok" }];
+  const GEMINI = "/var/lib/ta/store/gemini/.gemini/oauth_creds.json";
+  const GEMINI_LINES = SHAPES["gemini"]!.lines;
 
-  async function liveKimi(sleepMs: number, writes: Record<string, string>) {
-    box.cli("kimi", { lines: KIMI_LINES, sleepMs, writes });
-    const start = startDoc(doors, "kimi", { config: config("kimi") });
+  async function liveGemini(sleepMs: number, writes: Record<string, string>) {
+    box.cli("gemini", { lines: GEMINI_LINES, sleepMs, writes });
+    const start = startDoc(doors, "gemini", { config: config("gemini") });
     box.start(start);
     box.runner("launch", start.run);
     return start;
   }
 
   it("keeps a live run's refresh when a sign-in only begins and fails meanwhile", async () => {
-    box.write(KIMI, "v1");
-    const start = await liveKimi(5000, {
-      "~/.kimi-code/credentials/kimi-code.json": "v2-refreshed" });
-    await waitFor(() => box.ran("kimi").length > 0);
-    // A sign-in begun and failed at once (no region; the same for a stop or an expiry).
+    box.write(GEMINI, "v1");
+    const start = await liveGemini(5000, { "~/.gemini/oauth_creds.json": "v2-refreshed" });
+    await waitFor(() => box.ran("gemini").length > 0);
+    // A sign-in begun and failed at once (its login exits, showing nothing; the same for a
+    // stop or an expiry).
+    box.cli("gemini", { lines: GEMINI_LINES, sleepMs: 5000,
+                        writes: { "~/.gemini/oauth_creds.json": "v2-refreshed" },
+                        login: { lines: [], exit: 1 } });
     const id = signinId();
-    box.login({ id, engine: "kimi", region: null }, doors);
+    box.login({ id, engine: "gemini" }, doors);
     box.runner("login-launch", id);
     await doors.ended_(25_000, id);
     expect(signinFrames(id).at(-1)).toMatchObject({ state: "failed" });
     await doors.ended_(25_000, start.run);
-    expect(readFileSync(box.path(KIMI), "utf8")).toBe("v2-refreshed");
+    expect(readFileSync(box.path(GEMINI), "utf8")).toBe("v2-refreshed");
   });
 
   it("keeps a live run's refresh when a sign-in is stopped meanwhile", async () => {
-    box.write(KIMI, "v1");
-    const start = await liveKimi(6000, {
-      "~/.kimi-code/credentials/kimi-code.json": "v2-refreshed" });
-    await waitFor(() => box.ran("kimi").length > 0);
-    box.cli("kimi", { lines: KIMI_LINES, sleepMs: 6000,
-                      writes: { "~/.kimi-code/credentials/kimi-code.json": "v2-refreshed" },
-                      login: { lines: LOGINS["kimi"]!.lines, code: true } });
+    box.write(GEMINI, "v1");
+    const start = await liveGemini(6000, { "~/.gemini/oauth_creds.json": "v2-refreshed" });
+    await waitFor(() => box.ran("gemini").length > 0);
+    box.cli("gemini", { lines: GEMINI_LINES, sleepMs: 6000,
+                        writes: { "~/.gemini/oauth_creds.json": "v2-refreshed" },
+                        login: { lines: LOGINS["gemini"]!.lines, code: true } });
     const id = signinId();
-    box.login({ id, engine: "kimi", region: "global" }, doors);
+    box.login({ id, engine: "gemini" }, doors);
     box.runner("login-launch", id);
     await frameWhere(id, (frame) => frame["state"] === "open");
     box.runner("login-cancel", id);
     await doors.ended_(25_000, id);
     await doors.ended_(25_000, start.run);
-    expect(readFileSync(box.path(KIMI), "utf8")).toBe("v2-refreshed");
+    expect(readFileSync(box.path(GEMINI), "utf8")).toBe("v2-refreshed");
   });
 
   it("lets a completed sign-in's new login win over a run live across it", async () => {
-    box.write(KIMI, "old-login");
-    const start = await liveKimi(6000, {
-      "~/.kimi-code/credentials/kimi-code.json": "old-login-refreshed" });
-    await waitFor(() => box.ran("kimi").length > 0);
+    box.write(GEMINI, "old-login");
+    const start = await liveGemini(6000, { "~/.gemini/oauth_creds.json": "old-login-refreshed" });
+    await waitFor(() => box.ran("gemini").length > 0);
     const login = JSON.stringify({ access_token: "a".repeat(40), refresh_token: "b".repeat(40) });
-    box.cli("kimi", { lines: KIMI_LINES, sleepMs: 6000,
-                      writes: { "~/.kimi-code/credentials/kimi-code.json": "old-login-refreshed" },
-                      login: { lines: LOGINS["kimi"]!.lines, exit: 0,
-                               writes: { "~/.kimi-code/credentials/kimi-code.json": login } } });
+    box.cli("gemini", { lines: GEMINI_LINES, sleepMs: 6000,
+                        writes: { "~/.gemini/oauth_creds.json": "old-login-refreshed" },
+                        login: { lines: LOGINS["gemini"]!.lines, exit: 0,
+                                 writes: { "~/.gemini/oauth_creds.json": login } } });
     const id = signinId();
-    box.login({ id, engine: "kimi", region: "global" }, doors);
+    box.login({ id, engine: "gemini" }, doors);
     box.runner("login-launch", id);
     await doors.ended_(25_000, id);
     expect(signinFrames(id).at(-1)).toMatchObject({ state: "signed_in" });
     await doors.ended_(25_000, start.run);
-    expect(readFileSync(box.path(KIMI), "utf8")).toBe(login);
+    expect(readFileSync(box.path(GEMINI), "utf8")).toBe(login);
   });
 
   it("takes over a lock a pid of another boot names: a reused pid never holds it", async () => {
-    const lock = box.path("/var/lib/ta/locks/kimi.lock");
+    const lock = box.path("/var/lib/ta/locks/gemini.lock");
     mkdirSync(dirname(lock), { recursive: true });
     writeFileSync(lock, "1 a-boot-before-this-one");  // pid 1, the box's init: always alive
-    const start = await liveKimi(0, {});
+    const start = await liveGemini(0, {});
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
-    expect(box.ran("kimi")).toHaveLength(1);
+    expect(box.ran("gemini")).toHaveLength(1);
   });
 
   it("runs past the store and sync locks an earlier runner left, its holder gone", async () => {
     // The earlier runner's forms: a directory naming its holder (`holder`, `pid`).
-    mkdirSync(box.path("/var/lib/ta/locks/kimi"), { recursive: true });
-    writeFileSync(box.path("/var/lib/ta/locks/kimi/holder"), "999999 a-boot-before-this-one");
+    mkdirSync(box.path("/var/lib/ta/locks/gemini"), { recursive: true });
+    writeFileSync(box.path("/var/lib/ta/locks/gemini/holder"), "999999 a-boot-before-this-one");
     mkdirSync(box.path("/var/lib/ta-sync/lock"));
     writeFileSync(box.path("/var/lib/ta-sync/lock/pid"), "999999");
     chownSync(box.path("/var/lib/ta-sync/lock"), SYNC_UID, SYNC_UID);
     chownSync(box.path("/var/lib/ta-sync/lock/pid"), SYNC_UID, SYNC_UID);
-    const start = await liveKimi(0, {});
+    const start = await liveGemini(0, {});
     const end = await doors.ended_(25_000, start.run);
     expect(end.body["end"]).toEqual({ exit_code: 0 });
-    expect(box.ran("kimi")).toHaveLength(1);
+    expect(box.ran("gemini")).toHaveLength(1);
   });
 
   it("waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly",
      { tags: ["large"] }, async () => {
-    const lock = box.path("/var/lib/ta/locks/kimi.lock");
+    const lock = box.path("/var/lib/ta/locks/gemini.lock");
     mkdirSync(dirname(lock), { recursive: true });
     const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
     writeFileSync(lock, `${box.live()} ${boot}`);  // a process of the box's: alive, this boot
-    const start = await liveKimi(0, {});
+    const start = await liveGemini(0, {});
     const end = await doors.ended_(90_000, start.run);
     expect((end.body["end"] as { exit_code: number }).exit_code).not.toBe(0);
-    expect(box.ran("kimi")).toEqual([]);
+    expect(box.ran("gemini")).toEqual([]);
     // Its event loop was never blocked: it beat while it waited.
     expect(doors.events().filter((post) => post.path.includes(start.run)).length)
       .toBeGreaterThan(2);
@@ -1161,7 +1128,7 @@ describe("an API-key run's base URL", () => {
                      signin: "https://egress.tinyassets.io/signin" } };
   }
   const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
-    continued: false, home: "/h", system: "/s", conversationDir: "/conv", skills: [] });
+    home: "/h", system: "/s", skills: [] });
 
   it("gives Codex's key run the door through its own model provider, and no sign-in run any",
      () => {
@@ -1171,7 +1138,7 @@ describe("an API-key run's base URL", () => {
     expect(key.argv).toContain("model_providers.tinyassets.env_key=\"CODEX_API_KEY\"");
     expect(key.argv).toContain("model_providers.tinyassets.wire_api=\"responses\"");
     expect(key.env["CODEX_API_KEY"]).toMatch(/^ta_ph_/);
-    for (const engine of ["claude-code", "codex", "gemini", "kimi"]) {
+    for (const engine of ["claude-code", "codex", "gemini"]) {
       const signedIn = call(keyStart(engine, "openai", "vendor_login_in_sandbox"));
       expect(signedIn.argv.join(" "), engine).not.toMatch(/base_?url|\/c\/c[0-9a-f]{24}/i);
     }
@@ -1505,11 +1472,11 @@ describe("the agent's definition, and nothing beside it", () => {
   it("keeps each engine's own settings out on every run, and hands pi each skill by its argv",
      () => {
     const skills = ["/workspace/agents/main/.agents/skills/mine", "/workspace/skills/owners"];
-    for (const engine of ["claude-code", "codex", "gemini", "kimi", "pi"]) {
+    for (const engine of ["claude-code", "codex", "gemini", "pi"]) {
       for (const unattended of [false, true]) {
         const start = startDoc(doors, engine, { config: config(engine), unattended });
         const { argv } = invocation(served().get(engine)!, start, {}, {
-          continued: false, home: "/h", system: "/s", conversationDir: "/conv", skills });
+          home: "/h", system: "/s", skills });
         const given = argv.flatMap((arg, at) => argv[at - 1] === "--skill" ? [arg] : []);
         if (engine === "pi") {
           // Its project's trust-gated files (.pi/mcp.json, .pi/extensions, .agents/skills)

@@ -236,7 +236,7 @@ describe("the sandbox's model clients' environment", () => {
     const engines = bundledRecords().map(sourceRecord)
       .filter((record) => record.cli?.credential.includes("vendor_login_in_sandbox"));
     expect(engines.map((record) => record.id).sort())
-      .toEqual(["claude-code", "codex", "gemini", "kimi"]);
+      .toEqual(["claude-code", "codex", "gemini"]);
     // Every API-key variable any record names, and the rule's for every provider.
     const keyNames = bundledRecords().map(sourceRecord).flatMap((record) =>
       Object.values(record.cli?.api_key_env ?? {}).flatMap((vars) =>
@@ -396,8 +396,14 @@ describe("the sandbox's model clients' environment", () => {
       .toThrow(/run_secret_env/);
     expect(planted(codex, { unattended_argv: ["--x={run_secret}"] })).toThrow(/run_secret/);
     // A record that runs on no key takes no header variable.
-    const kimi = records.find((record) => record.id === "kimi")!;
-    expect(planted(kimi, { run_secret_env: { env: "X_HEADERS", value: "x-ta-run: {run_secret}" } }))
+    const keyless = JSON.parse(JSON.stringify(codex)) as { cli: Record<string, unknown> };
+    keyless.cli["credential"] = ["vendor_login_in_sandbox"];
+    delete keyless.cli["api_key_env"];
+    delete (keyless.cli["unattended"] as Record<string, unknown>)["api_key"];
+    delete (keyless.cli["per_credential"] as Record<string, unknown>)["api_key"];
+    expect(planted(keyless, {})).not.toThrow();
+    expect(planted(keyless, { run_secret_env: { env: "X_HEADERS",
+                                                value: "x-ta-run: {run_secret}" } }))
       .toThrow(/run_secret_env/);
   });
 });

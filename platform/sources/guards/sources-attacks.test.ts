@@ -27,7 +27,6 @@ const claude = load("claude-code");
 const codex = load("codex");
 const pi = load("pi");
 const gemini = load("gemini");
-const kimi = load("kimi");
 const anthropic = load("anthropic");
 
 function cli(edit: (spec: Json) => void, record: Json = claude): Json {
@@ -60,7 +59,6 @@ describe("unknown keys at every level", () => {
     ["login", cli((s) => { at(s, "login")["stray"] = 1; })],
     ["login.state_checks[0]", cli((s) => {
       (at(s, "login")["state_checks"] as Json[])[0]!["stray"] = 1; }, codex)],
-    ["regions hosts", cli((s) => { at(s, "regions.global.hosts")["stray"] = []; }, kimi)],
     ["api_key_env entry", cli((s) => { at(s, "api_key_env.anthropic")["stray"] = 1; })],
     ["unattended entry (allowed)", cli((s) => {
       at(s, "unattended.vendor_login_in_sandbox")["stray"] = 1; })],
@@ -83,10 +81,11 @@ describe("unknown keys at every level", () => {
     ["definition.native", cli((s) => { at(s, "definition.native")["stray"] = 1; })],
     ["definition.mcp", cli((s) => { at(s, "definition.mcp")["stray"] = 1; })],
     ["definition.mcp (unsupported)", cli((s) => {
-      at(s, "definition.mcp")["stray"] = 1; }, kimi)],
+      at(s, "definition")["mcp"] = { unsupported: "none", stray: 1 }; })],
     ["definition.hooks", cli((s) => { at(s, "definition.hooks")["stray"] = 1; })],
     ["definition.hooks (unsupported)", cli((s) => {
-      at(s, "definition.hooks")["stray"] = 1; }, kimi)],
+      s["decide"] = { unsupported: "none" };
+      at(s, "definition")["hooks"] = { unsupported: "none", stray: 1 }; })],
     ["mcp (file)", cli((s) => { at(s, "mcp")["stray"] = 1; })],
     ["mcp.trust", cli((s) => { at(s, "mcp.trust")["stray"] = 1; })],
     ["mcp (unsupported)", cli((s) => { s["mcp"] = { unsupported: "none", stray: 1 }; }, pi)],
@@ -189,13 +188,6 @@ describe("prompt injection by argv", () => {
       delete at(s, "engine")["stdin"];
       at(s, "engine")["argv"] = argv;
       at(s, "engine")["resume_argv"] = [...argv, "--session", "{sid}"]; }, pi))).toBe(false);
-  });
-});
-
-describe("regions", () => {
-  it("refuses {region} in the engine's own argv", () => {
-    expect(accepted(cli((s) => {
-      (at(s, "engine")["argv"] as string[]).push("--region={region}"); }, kimi))).toBe(false);
   });
 });
 

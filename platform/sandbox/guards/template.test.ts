@@ -42,7 +42,7 @@ const SDK_RELEASE = "2.62.0";
  * Its copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
  * recipe is a new image: a paid build, then the pin PR.
  */
-const RECIPE = "118169ff55d21b618352fd644c222039785aa93c5b5c3dc3e28c25c7ada0c46e";
+const RECIPE = "34819aeb6ee19eb38c62c27ad60f195fadb34f4cbcf8ca2ea55d6ba94161a4ac";
 
 /**
  * E2B's SDK as far as the image's steps reach it (`Template`, `Template.to_json`), written
@@ -280,8 +280,8 @@ describe("the image", () => {
   it("is the recipe the next build will produce, as E2B's SDK serializes it", () => {
     const steps = JSON.parse(recipe()) as { steps: { type: string }[]; fromImage: string };
     expect(steps.fromImage).toBe("e2bdev/base");
-    expect(steps.steps).toHaveLength(21);
-    expect(steps.steps.filter((step) => step.type === "COPY")).toHaveLength(11);
+    expect(steps.steps).toHaveLength(18);
+    expect(steps.steps.filter((step) => step.type === "COPY")).toHaveLength(9);
     expect(sha(recipe())).toBe(RECIPE);
     expect(readFileSync(join(TEMPLATE, "requirements.txt"), "utf8"))
       .toContain(`\ne2b==${SDK_RELEASE} `);

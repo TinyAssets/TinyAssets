@@ -92,7 +92,7 @@ export interface DoorRequests {
   readonly fileChanges: DoorFields<"after" | "limit">;
   readonly runEvents: DoorFields<"frames", "end">;
   readonly runDecide: DoorFields<never, "check" | "tool_name" | "tool_input">;
-  readonly signinStart: DoorFields<"engine", "authority" | "region" | "mode">;
+  readonly signinStart: DoorFields<"engine", "authority" | "mode">;
   readonly signinCode: DoorFields<"id" | "code">;
   readonly signinCancel: DoorFields<"id">;
   readonly runList: DoorFields<never, "before" | "limit">;

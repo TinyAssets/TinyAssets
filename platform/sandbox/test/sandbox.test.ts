@@ -1219,9 +1219,10 @@ describe("a sign-in", () => {
   const SI = `si_${"5".repeat(32)}`;
   const ROUTE = "s".repeat(64);
   function signin(over: Record<string, unknown> = {}) {
-    return { id: SI, engine: "kimi", region: "global", mode: "in" as const, authority: "owner",
+    return { id: SI, engine: "codex", mode: "in" as const, authority: "owner",
              lease: LEASE, tokens: start().tokens, network: NETWORK as never,
-             hosts: ["auth.kimi.ai", "api.kimi.ai"], route: ROUTE, urls: signinUrls(SI), ...over };
+             hosts: ["auth.openai.com", "api.openai.com"], route: ROUTE, urls: signinUrls(SI),
+             ...over };
   }
 
   it("starts the record's login in the authority's sandbox, the hosts it hands let out",
@@ -1230,7 +1231,7 @@ describe("a sign-in", () => {
     expect(await stub(who).signin(signin() as never)).toEqual({ started: true });
     const state = await seen();
     const box = state.sandboxes[0]!;
-    expect(box.network.allowOut).toEqual(["api.kimi.ai", "auth.kimi.ai", "github.com",
+    expect(box.network.allowOut).toEqual(["api.openai.com", "auth.openai.com", "github.com",
                                           EGRESS_HOST]);
     // The sandbox a sign-in first makes carries its route, so its lifecycle events reach the
     // owner's object as a run's sandbox's do.
@@ -1238,7 +1239,7 @@ describe("a sign-in", () => {
     expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
       ["install", await runnerDigest()], ["prepare", "1.1.1.1"], ["login-launch", SI]]);
     const doc = JSON.parse(state.files[`${box.id}:${inboxDoc(SI)}`]!);
-    expect(doc).toEqual({ id: SI, engine: "kimi", region: "global", mode: "in",
+    expect(doc).toEqual({ id: SI, engine: "codex", region: null, mode: "in",
                           authority: "owner", urls: signin().urls });
     expect(shapeProblems(doc, PROTOCOLS[String(PROTOCOL)]!.documents.signin)).toEqual([]);
     // A sign-in's start that opens the lease hands the runner the same two tokens, no more.
@@ -1252,7 +1253,7 @@ describe("a sign-in", () => {
 
   it("hands a pasted code to the live sign-in, and stops it", async () => {
     const who = owner();
-    await stub(who).signin(signin({ engine: "claude-code", region: null }) as never);
+    await stub(who).signin(signin({ engine: "claude-code" }) as never);
     expect(await stub(who).signinInput({ authority: "owner", id: SI, code: "abc#d" }))
       .toEqual({ delivered: true });
     const state = await seen();
@@ -1270,7 +1271,7 @@ describe("a sign-in", () => {
   it("drops a pasted code whose hand-over failed: it never rests on disk",
      async () => {
     const who = owner();
-    await stub(who).signin(signin({ engine: "claude-code", region: null }) as never);
+    await stub(who).signin(signin({ engine: "claude-code" }) as never);
     await e2b("/script", { broken: "login-input" });
     const failed = await stub(who).signinInput({ authority: "owner", id: SI, code: "abc#d" })
       .then(() => null, (error: unknown) => error);

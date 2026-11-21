@@ -201,8 +201,6 @@ function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
         suggested: record.suggested, connect: record.connect,
         engines: record.engines ?? [], credentials: record.cli?.credential ?? [],
         signin: record.cli?.login === undefined ? null : {
-          regions: Object.entries(record.cli.regions ?? {}).map(([region, { display_name }]) =>
-            ({ id: region, display_name })),
           // Whether the platform offers it (the control record's switch, or the verdict), and
           // the verdict on the vendor's terms for hosted use, cited.
           enabled: switchedOn.includes(id),

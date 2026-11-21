@@ -292,9 +292,13 @@ function startDocument(start: SandboxStart, retentionDays: number | null): Start
   };
 }
 
-/** A sign-in's document as the runner reads it: the sign-in but its lease and its secrets. */
+/**
+ * A sign-in's document as the runner reads it: the sign-in but its lease and its secrets.
+ * Protocol 2's document carries a region, which no sign-in has any more: always null, until
+ * the next protocol drops it (`untangle-2026-11/drop-kimi.md`).
+ */
 function signinDocument(signin: SandboxSignin): SigninDoc {
-  return { id: signin.id, engine: signin.engine, region: signin.region, mode: signin.mode,
+  return { id: signin.id, engine: signin.engine, region: null, mode: signin.mode,
            authority: signin.authority,
            urls: { events: signin.urls.events, signin: signin.urls.signin } };
 }
@@ -811,7 +815,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * The vendor's own sign-in started in the authority's sandbox, or its
    * sign-out: the sandbox found, resumed or made as a run's start finds it (its turn in the
    * line, `sandbox_waiting` past the ceiling), its network let out to the vendor hosts it
-   * hands (the engine's and the chosen region's), and the runner's `login-launch` started
+   * hands (the engine's), and the runner's `login-launch` started
    * with the sign-in's document (no secret); the sign-in holds the lease as a launched run
    * does.
    */

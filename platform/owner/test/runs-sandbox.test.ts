@@ -91,10 +91,10 @@ describe("the vendor hosts a job hands the sandbox Worker", () => {
     expect(keyed.start.hosts).toEqual([]);
   });
 
-  it("are a sign-in's engine's and its chosen region's alone", async () => {
+  it("are a sign-in's engine's alone", async () => {
     const r = await gated();
-    await r.stub.signinStart(r.bind(), { engine: "kimi", region: "global" });
+    await r.stub.signinStart(r.bind(), { engine: "codex" });
     expect((await recorder(r.stub)).signins.at(-1)!.hosts)
-      .toEqual(["auth.kimi.ai", "api.kimi.ai", "www.kimi.ai"]);
+      .toEqual(["auth.openai.com", "chatgpt.com"]);
   });
 });

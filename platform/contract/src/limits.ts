@@ -346,8 +346,8 @@ export const SIGNIN_LIST_CHARS = 256;
 export const SIGNIN_URL_MAX = 8000;
 /**
  * The longest code a sign-in shows the owner: device codes are short by design (RFC 8628
- * section 6.1 recommends 8 characters for the user to type; the records' shapes, `XXXX-XXXXX`
- * and Kimi's, are within 16), so a longer "code" is not the vendor's prompt.
+ * section 6.1 recommends 8 characters for the user to type; Codex's shape, `XXXX-XXXXX`, is
+ * within 16), so a longer "code" is not the vendor's prompt.
  */
 export const SIGNIN_CODE_MAX = 16;
 /**

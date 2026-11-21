@@ -130,8 +130,7 @@ end.
   in the new stack only. It covers what only a real account shows:
   - a completed sign-in on each vendor, and how long a real sign-in with 2FA takes, which sets
     Claude's 600 s bound if that is too tight (`limits-audit.md`);
-  - Gemini loading its `{system}` settings on a run past the sign-in; Kimi's skills, read once
-    signed in;
+  - Gemini loading its `{system}` settings on a run past the sign-in;
   - onboarding writes `SOUL.md` and `USER.md`; "remember X" lands in knowledge and is recalled
     on another engine; a brief the agent made posts to the owner's room with main; a main
     agent finds the knowledge with `search` and `fetch` (ChatGPT deep research, `ui-test`);
@@ -837,8 +836,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] 15. Gradual deploys: a percentage, the canary the promote gate, and a rollback mode but
     across a Durable Object migration (`untangle/gradual-deploy`).
   - [ ] 16. The postmaster for cross-owner traffic, researched first (`untangle/postmaster`).
-  - [ ] 17. Kimi's record, lock, template install, probes and plan lines dropped
-    (`untangle/drop-kimi`).
+  - [x] 17. Kimi's record, lock, template install, probes and plan lines dropped, with the
+    sign-in regions and the resume in a working directory only it used
+    (`untangle/drop-kimi`; `untangle-2026-11/drop-kimi.md` says what brings it back).
   - [ ] 18. ADR-001 to ADR-031 superseded by ADR-032, what it says stands kept, `INDEX.md` the
     platform's set, and an ADR holding the answers that amend ADRs (`untangle/old-adrs`); the
     import's `archive` items an export download for the hold, never in the workspace
@@ -913,8 +913,8 @@ account, the founder's own test (§8) too.
   - every CLI: its event shapes against the matchers on a run and a resume; a resume after a
     cold create restores `session_paths`; MCP injection reaches the run's door with no bearer
     in the config; the tool filters and unattended flags run with no prompt; `no_update` holds;
-    every credential file it writes is in `secret_paths` (Kimi's MCP OAuth stores not yet
-    located); a signed-in run starts with every `forbid_env` name unset; on a key, its own
+    every credential file it writes is in `secret_paths`; a signed-in run starts with every
+    `forbid_env` name unset; on a key, its own
     model-call body and headers pass `api-rules.ts` through the egress door and any other call
     is cited free or refused; no synced file or transcript line holds a `secret_paths` file's
     bytes; project files that set a forbidden variable refuse the run; `HOME={home}` holds all
@@ -931,10 +931,6 @@ account, the founder's own test (§8) too.
     `--approval-mode yolo`; the `stream-json` fields; `--resume {sid}`; the `NO_BROWSER`
     sign-in; the prompt on stdin within 500 ms; whether the `gemini-api-key` type still sends
     to `GOOGLE_GEMINI_BASE_URL`; the node-pty and keytar install scripts;
-  - Kimi Code: `--continue` in a per-conversation cwd; its `stream-json` fields and matchers
-    for its errors and usage; the user-level `mcp.json`; where `session_index.jsonl` and the
-    region marker live; whether `config.toml` holds sign-in state; `login --region` in both
-    regions; `--prompt={prompt}`;
   - pi: `--mode json` event names, and a `final_text` matcher of the last assistant message
     only; `--session {sid}`; `PI_CODING_AGENT_DIR`; `models.json` `baseUrl`; the pi-ai key
     variables; `.pi/skills` under `--approve`; `--tools`; the user-level `mcp.json` over
@@ -1078,7 +1074,6 @@ Moved before the window, into lane R (d3 §F3, §G).
     content" line from `storageUsage`'s `deleted_content`, and that a lower figure shortens
     recovery; "last used" on a source card.
   - [ ] An MCP tool for the past runs.
-  - [ ] The region a Kimi run's provider hosts need, kept from the sign-in for its runs.
   - [ ] The runner reads a client's grant for its runs' agent definitions, so a full grant's run
     edits them with its CLI's own file tools, not only through the MCP door.
   - [ ] Codex's run secret as a header (`env_http_headers`).

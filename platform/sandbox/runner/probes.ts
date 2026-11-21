@@ -14,7 +14,7 @@
  * Its commands are its own, not the Worker's protocol with the runner (`protocol.ts`):
  * - `plan`: what to check, as JSON (`Plan`), run on the host that runs the checks: the
  *   sandboxes and their lifetimes and networks, and every step's command and bound;
- * - `login-probe <engine> [region]`: a record's sign-in up to its prompt, its shape judged;
+ * - `login-probe <engine>`: a record's sign-in up to its prompt, its shape judged;
  * - `route-probe <engine> <provider> <resolver>...`: a keyed engine's two turns on the door;
  * - `matcher-probe`: the sync-ignore automaton's step, judged against `STEP_NS`.
  * Each prints its result as one JSON line and exits 0 when it passed, 3 when it did not.
@@ -47,8 +47,8 @@ import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
 import { skillsOf } from "./project";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
-import { CONVERSATIONS, engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared,
-         sortedWalk, spawnBounded, STORE, systemOf, withRunUser } from "./session";
+import { engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared, sortedWalk,
+         spawnBounded, STORE, systemOf, withRunUser } from "./session";
 import { asUser } from "./users";
 
 /**
@@ -110,10 +110,10 @@ const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install
   ">/dev/null 2>&1; command -v strace >/dev/null";
 
 /**
- * The checks: each record's sign-in (every region of a record with regions) under the
- * production egress allowlist widened by that engine's own hosts, as the sandbox Worker
- * widens a sign-in's network; every keyed engine on every provider it keys, on a
- * sandbox whose network denies everything once prepared; and the matcher's step.
+ * The checks: each record's sign-in under the production egress allowlist widened by that
+ * engine's own hosts, as the sandbox Worker widens a sign-in's network; every keyed engine
+ * on every provider it keys, on a sandbox whose network denies everything once prepared;
+ * and the matcher's step.
  */
 export function plan(runner: string): Plan {
   const logins: PlanStep[] = [];
@@ -121,12 +121,8 @@ export function plan(runner: string): Plan {
   for (const rec of RECORDS.values()) {
     const cli = rec.cli;
     if (signsIn(rec)) {
-      const regions = Object.keys(cli.regions ?? {}).sort();
-      for (const region of regions.length > 0 ? regions : [null]) {
-        logins.push({ check: "login", timeout_s: 180,
-                      argv: [PROBE.login, rec.id, ...(region === null ? [] : [region])],
-                      network: closedNetwork(engineHosts(rec.id, region)) });
-      }
+      logins.push({ check: "login", timeout_s: 180, argv: [PROBE.login, rec.id],
+                    network: closedNetwork(engineHosts(rec.id)) });
     }
     for (const provider of Object.keys(cli.api_key_env ?? {}).sort()) {
       routes.push({ check: "route", timeout_s: 300, network: null,
@@ -156,7 +152,7 @@ export function plan(runner: string): Plan {
  * own shape (`signinShape`), the URL's host, whether a code was shown, and whether the URL
  * would send the owner's browser back to `localhost` (which strands it). No account needed.
  */
-async function loginProbe(engine: string, region: string | null): Promise<number> {
+async function loginProbe(engine: string): Promise<number> {
   const rec = record(engine);
   const login = rec.cli.login;
   if (login === undefined) {
@@ -171,7 +167,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
     // answer waits for its close, so no exited child is left unreaped for the user's
     // processes' kill to wait on.
     const cli = spawnBounded(asUser(as, [shared()],
-                                    onTerminal(loginArgv(login, binPath(rec), region))),
+                                    onTerminal(loginArgv(login, binPath(rec)))),
                              { env: engineEnv(rec, home), cwd: home,
                                stdio: ["pipe", "pipe", "pipe"] }, COMMAND_MS);
     let text = "";
@@ -189,12 +185,12 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   });
   const redirect = shown.url === null ? null : new URL(shown.url).searchParams.get("redirect_uri");
   const local = redirect !== null && /^https?:\/\/(?:localhost|127\.|\[::1\])/.test(redirect);
-  const refused = shown.url === null ? null : signinShape(rec, region, shown.url, shown.code);
+  const refused = shown.url === null ? null : signinShape(rec, shown.url, shown.code);
   const why = shown.url === null ? "no sign-in URL shown"
     : local ? "the URL sends the browser back to localhost"
       : refused === null ? null : SIGNIN_REFUSALS[refused];
   process.stdout.write(JSON.stringify({
-    engine, region, ok: why === null, reason: why,
+    engine, ok: why === null, reason: why,
     host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }));
   return why === null ? OK : NO;
 }
@@ -325,8 +321,6 @@ async function probeRoute(rec: Served, provider: string,
   }
   const name = `route-${rec.id}-${process.pid}`;
   const agentDir = `${AGENTS_DIR}/${first.agent}`;
-  const conversationDir = cli.engine.resume === "continue_in_cwd"
-    ? `${CONVERSATIONS}/${rec.id}/${first.conversation}` : undefined;
   const turns: ProbeTurn[] = [];
 
   /** One turn, as one run runs: its own user and home, then its home kept and dropped. */
@@ -336,8 +330,7 @@ async function probeRoute(rec: Served, provider: string,
     const system = systemOf(name);
     const trace = `${STATE}/route-${name}.trace`;
     const call = invocation(rec, start, process.env, {
-      continued: resumed, home, system, skills: [...skillsOf(WORKSPACE, start.agent).values()],
-      ...(conversationDir === undefined ? {} : { conversationDir }) });
+      home, system, skills: [...skillsOf(WORKSPACE, start.agent).values()] });
     if (call.resumed !== resumed) {
       throw new Error(resumed ? "the second turn does not resume the first"
         : "the first turn resumes nothing");
@@ -351,10 +344,6 @@ async function probeRoute(rec: Served, provider: string,
           throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
         }
         giveTree(agentDir, as);
-        if (conversationDir !== undefined) {
-          safeDirs("/", conversationDir, 0o700);
-          giveTree(conversationDir, as);
-        }
         const argv = [call.argv[0]!, ...extra, ...call.argv.slice(1)];
         const probe = spawnBounded(["strace", "-f", "-qq", "-e", "trace=connect", "-o", trace,
                                     "--", ...asUser(as, [shared()], argv)], {
@@ -411,7 +400,7 @@ async function probeRoute(rec: Served, provider: string,
       throw new Error(`the first turn did not complete (exit ${one.exit}${one.answered ? ""
         : ", no final text"}): ${one.stderr.trim().slice(-300)}`);
     }
-    if (cli.engine.resume === "session_id" && one.session_id === null) {
+    if (one.session_id === null) {
       throw new Error("the first turn named no session to resume");
     }
     const before = requests.length;
@@ -438,9 +427,6 @@ async function probeRoute(rec: Served, provider: string,
     failed = String(error instanceof Error ? error.message : error);
   } finally {
     remove(agentDir);
-    if (conversationDir !== undefined) {
-      remove(conversationDir);
-    }
     for (const rel of existsSync(store) ? sortedWalk(store) : []) {
       if (!had.has(rel)) {
         remove(join(store, rel));  // the probe's own sessions and its fake sign-in
@@ -518,7 +504,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     throw new Error(refused);
   }
   if (command === PROBE.login) {
-    return loginProbe(args[0] ?? "", args[1] ?? null);
+    return loginProbe(args[0] ?? "");
   }
   if (command === PROBE.route) {
     return routeProbe(args[0] ?? "", args[1] ?? "", args.slice(2));

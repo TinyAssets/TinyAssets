@@ -98,7 +98,7 @@ describe("the sign-in routes and door", () => {
     const by = new Map(listed.sources.map((source) => [source.id, source.signin]));
     expect(by.get("claude-code")).toMatchObject({ enabled: true,
                                                   hosted_use: { verdict: "allowed" } });
-    for (const id of ["codex", "gemini", "kimi"]) {
+    for (const id of ["codex", "gemini"]) {
       expect(by.get(id)).toMatchObject({ enabled: false });
     }
     await setControl({ ...OPEN, signins: { codex: true, "claude-code": false } });

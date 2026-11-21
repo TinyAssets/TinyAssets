@@ -23,8 +23,7 @@
  *   stdin or joined to its option (`--prompt={prompt}`), never bare; no value configures
  *   the engine to nothing (an empty argument, list or map); a run on the vendor's own
  *   sign-in carries none of the variables its `forbid_env` lists, its API-key variables
- *   among them; and a sign-in with regions takes the owner's choice as `{region}`. The
- *   checker holds shape only: no vendor is named there.
+ *   among them. The checker holds shape only: no vendor is named there.
  *
  * A CLI's own pre-tool hook (`decide`, R5 P-hooks; d3 §N3) is data too: where its root-owned
  * config goes, its template, the CLI's own names for each tool kind and for an MCP tool, and
@@ -94,13 +93,11 @@ export type Install =
 
 /**
  * One run of the engine (ADR-034 decision 4.3): a new conversation's argv, and the argv
- * that resumes one, by its session id (`{sid}`) or by continuing in the conversation's own
- * working directory when the stream names no id.
+ * that resumes one by its session id (`{sid}`).
  */
 export interface Engine {
   readonly argv: readonly string[];
   readonly resume_argv: readonly string[];
-  readonly resume: "session_id" | "continue_in_cwd";
   readonly stdin?: "{prompt}";
   readonly model_argv?: readonly string[];
   readonly events: EngineEvents;
@@ -229,12 +226,6 @@ export interface PerCredential {
   readonly forbid_env?: readonly string[];
 }
 
-/** A region the owner chooses for the vendor's own sign-in: its hosts, `{region}` its id. */
-export interface Region {
-  readonly display_name: string;
-  readonly hosts: Readonly<Record<"login" | "provider", readonly string[]>>;
-}
-
 /** The verdicts on the vendor's terms for a platform hosting its CLI's sign-in. */
 export type HostedUse = "allowed" | "unclear" | "forbidden";
 
@@ -337,8 +328,6 @@ export interface CliSpec {
   readonly install: Install;
   readonly credential: readonly CredentialKind[];
   readonly login?: LoginSpec;
-  /** The sign-in's regions, by id: the owner's choice fills `{region}` and adds its hosts. */
-  readonly regions?: Readonly<Record<string, Region>>;
   readonly api_key_env?: Readonly<Record<string, ApiKeyEnv>>;
   readonly unattended: Readonly<Partial<Record<CredentialKind, Unattended>>>;
   readonly per_credential?: Readonly<Partial<Record<CredentialKind, PerCredential>>>;

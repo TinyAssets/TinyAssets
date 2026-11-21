@@ -83,7 +83,6 @@
         "--session",
         "{sid}"
       ],
-      "resume": "session_id",
       "stdin": "{prompt}",
       "model_argv": [
         "--provider",

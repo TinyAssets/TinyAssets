@@ -77,7 +77,6 @@ interface SigninRow {
   readonly authority: string;
   readonly engine: string;
   readonly mode: SigninMode;
-  readonly region: string | null;
   readonly lease_id: string;
   readonly epoch: number;
   readonly state: string;
@@ -197,17 +196,17 @@ export class Signins {
   }
 
   /** In a unit: a sign-in begun in `authority`'s sandbox under its lease. Refused while one is. */
-  begin(authority: string, engine: string, mode: SigninMode, region: string | null,
+  begin(authority: string, engine: string, mode: SigninMode,
         lease: { lease_id: string; epoch: number }, now: number): SigninRow {
     if (this.#sql.exec("SELECT 1 FROM sandbox_signins WHERE authority = ?", authority)
       .toArray().length > 0) {
       throw new Refusal("signin_live", SIGNIN_LIVE);
     }
     const id = Signins.id();
-    this.#sql.exec("INSERT INTO sandbox_signins (id, authority, engine, mode, region, lease_id, " +
-                     "epoch, state, started_at, beat_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'starting', " +
-                     "?, ?)", id, authority, engine, mode, region, lease.lease_id, lease.epoch, now,
-                   now);
+    // Its `region` column (migration 1) stays null: no sign-in has a region any more.
+    this.#sql.exec("INSERT INTO sandbox_signins (id, authority, engine, mode, lease_id, epoch, " +
+                     "state, started_at, beat_at) VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?)",
+                   id, authority, engine, mode, lease.lease_id, lease.epoch, now, now);
     return this.get(id);
   }
 
@@ -267,7 +266,7 @@ export class Signins {
         const nextUrl = typeof event["url"] === "string" ? event["url"] : null;
         const nextCode = typeof event["code"] === "string" ? event["code"] : null;
         const why = nextUrl === null && nextCode === null ? "state"
-          : signinShape(rec, row.region, nextUrl, nextCode);
+          : signinShape(rec, nextUrl, nextCode);
         if (why !== null) {
           refuse(why);
           continue;
@@ -375,8 +374,6 @@ export interface SigninStartRequest {
   readonly engine: string;
   /** `owner` (the default), or one client's id: that client's own sandbox. */
   readonly authority?: string;
-  /** The owner's choice among the record's `cli.regions`, when it has any. */
-  readonly region?: string;
   readonly mode?: SigninMode;
 }
 export interface SigninRequestById {
@@ -448,14 +445,6 @@ export const signinsDoors = Object.freeze({
       if (mode === "in" && !switchedOn(o.storage, binding.signins, clock()).has(rec.id)) {
         throw new Refusal("signin_off", SIGNIN_OFF);
       }
-      const regions = rec.cli.regions === undefined ? [] : Object.keys(rec.cli.regions);
-      const region = r["region"] ?? null;
-      if (mode === "in" ? (regions.length === 0 ? region !== null
-                                                : !regions.includes(region as string))
-          : region !== null) {
-        throw new Refusal("invalid", regions.length === 0 ? "this sign-in takes no region"
-          : `this sign-in takes the owner's choice of region: ${regions.join(", ")}`);
-      }
       const authority = signinAuthority(r["authority"]);
       if (authority !== OWNER && !o.grants.live(authority)) {
         throw new Refusal("refused",
@@ -467,16 +456,15 @@ export const signinsDoors = Object.freeze({
       const live = o.files.sandboxLease(now, authority);
       const opened = live === null ? o.launcher.openLease(now, authority) : null;
       const lease = live ?? opened!.lease;
-      const row = o.signins.begin(authority, rec.id, mode, region as string | null,
-                                      { lease_id: lease.lease_id, epoch: lease.epoch }, now);
-      return { row, opened, region: region as string | null,
-               lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
+      const row = o.signins.begin(authority, rec.id, mode,
+                                  { lease_id: lease.lease_id, epoch: lease.epoch }, now);
+      return { row, opened, lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
     });
     const signin: SandboxSignin = {
-      id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
+      id: begun.row.id, engine: begun.row.engine, mode: begun.row.mode,
       authority: begun.row.authority, lease: begun.lease,
       tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
-      hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox", begun.region),
+      hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox"),
       route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
                                                    authority: begun.row.authority }),
       urls: signinUrls(begun.row.id) };

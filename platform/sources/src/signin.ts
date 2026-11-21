@@ -9,15 +9,6 @@ import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
 
 import type { SourceRecord, Sources } from "./schema";
 
-/** The hosts a record's sign-in may send the owner to: its login hosts, and its region's. */
-export function signinHosts(rec: SourceRecord, region: string | null): string[] {
-  const cli = rec.cli;
-  if (cli === undefined) {
-    return [];
-  }
-  return [...cli.hosts.login, ...(region === null ? [] : cli.regions?.[region]?.hosts.login ?? [])];
-}
-
 /**
  * A sign-in's states, the only ones a frame from the VM may carry: no text the VM chose
  * leaves it but the record's own URL and code.
@@ -72,19 +63,20 @@ const UNRESERVED = /^[A-Za-z0-9._~-]{1,128}$/;
 /**
  * Why a sign-in's prompt is not the record's own shape (a `SigninRefusal`), or null. The URL:
  * visible ASCII at most `SIGNIN_URL_MAX`, matching the record's `url_pattern` whole,
- * `https` on one of the record's `url.hosts` that is among its login hosts (and the chosen
- * region's), no user, password, port or fragment, its path the record's `url.path` exactly,
- * each of the record's `url.params` present with exactly its value, the record's `url.free`
- * parameters each at most once with an unreserved value (a state, a PKCE challenge, a user
- * code: never a URL, so no redirect chain), and no other parameter (so no other OAuth
- * client's page). The code: a device code's characters, at most `SIGNIN_CODE_MAX`. Neither
- * credential-shaped (`credentialLike`). Checked in the VM before a prompt leaves it, and
- * again by the owner's object before the owner sees it.
+ * `https` on one of the record's `url.hosts` that is among its login hosts, no user,
+ * password, port or fragment, its path the record's `url.path` exactly, each of the
+ * record's `url.params` present with exactly its value, the record's `url.free` parameters
+ * each at most once with an unreserved value (a state, a PKCE challenge, a user code: never
+ * a URL, so no redirect chain), and no other parameter (so no other OAuth client's page).
+ * The code: a device code's characters, at most `SIGNIN_CODE_MAX`. Neither credential-shaped
+ * (`credentialLike`). Checked in the VM before a prompt leaves it, and again by the owner's
+ * object before the owner sees it.
  */
-export function signinShape(rec: SourceRecord, region: string | null, url: string | null,
+export function signinShape(rec: SourceRecord, url: string | null,
                             code: string | null): SigninRefusal | null {
-  const login = rec.cli?.login;
-  if (login === undefined) {
+  const cli = rec.cli;
+  const login = cli?.login;
+  if (cli === undefined || login === undefined) {
     return "state";
   }
   if (url !== null) {
@@ -101,7 +93,7 @@ export function signinShape(rec: SourceRecord, region: string | null, url: strin
     if (whole === null || whole[1] !== url || parsed.protocol !== "https:"
         || parsed.username !== "" || parsed.password !== "" || parsed.port !== ""
         || parsed.hash !== "" || url.includes("#")
-        || !signinHosts(rec, region).includes(parsed.hostname)
+        || !cli.hosts.login.includes(parsed.hostname)
         || !login.url.hosts.includes(parsed.hostname) || parsed.pathname !== login.url.path) {
       return "url";
     }

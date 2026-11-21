@@ -210,7 +210,6 @@ async function agents(arg) {
   const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
                                                        || record.signin?.enabled === true);
   const engines = sources.filter((s) => usable(s).length > 0);
-  const signinOnly = sources.filter((s) => s.credentials.length > 0 && usable(s).length === 0);
   const name = h("input", { type: "text", placeholder: "main", autocomplete: "off" });
   const engine = h("select", {}, h("option", { value: "auto" },
     "Your strongest connected source"), engines.map((s) => h("option", { value: s.id },
@@ -268,10 +267,6 @@ async function agents(arg) {
            "AGENTS.md. This writes both; you change them later as files."),
          field("Name", name),
          field("Engine", engine, "What runs the agent: a provider's own app in your sandbox."),
-         signinOnly.length === 0 ? null : h("p", { class: "muted" }, "Signing in with a " +
-           `subscription is switched off for ${signinOnly.map((s) => s.display_name)
-             .join(", ")}, so ${signinOnly.length === 1 ? "it" : "they"} cannot run an ` +
-           "agent yet (Model sources says why)."),
          field("Runs on", credential),
          field("API key connection", connection, "Only for an agent that runs on an API key."),
          h("div", { class: "field" }, h("span", {}, "What its runs may do"),
@@ -568,9 +563,6 @@ function signinEnded(record, event) {
 
 function signinPanel(record, present, live) {
   const box = h("div", { class: "signin" });
-  const regionPick = record.signin.regions.length === 0 ? null
-    : h("select", {}, record.signin.regions.map((region) =>
-      h("option", { value: region.id }, region.display_name)));
   const show = (view) => {
     if (view === null && !record.signin.enabled) {
       // Off: no sign-in is offered, but a login already here can always be removed.
@@ -589,7 +581,6 @@ function signinPanel(record, present, live) {
              ? `Signed in with your ${record.display_name} subscription inside your sandbox.`
              : `Use your ${record.display_name} subscription: sign in inside your sandbox, ` +
                "on the vendor's own page."),
-           regionPick === null ? null : field("Region", regionPick),
            h("div", { class: "row" },
              action(present?.signed_in ? "Sign in again" : `Sign in to ${record.display_name}`,
                     () => begin("in"), report),
@@ -657,8 +648,7 @@ function signinPanel(record, present, live) {
   };
   const begin = async (mode) => {
     const view = await call("signin/start", {
-      engine: record.id, ...(mode === "out" ? { mode } : {}),
-      ...(mode === "in" && regionPick !== null ? { region: regionPick.value } : {}) });
+      engine: record.id, ...(mode === "out" ? { mode } : {}) });
     if (view.started === false) {
       say(view.code === "sandbox_waiting" ? "Your sandbox is waiting for room. Try again in a " +
           "moment." : `The sign-in could not start (${view.code}).`, "bad");

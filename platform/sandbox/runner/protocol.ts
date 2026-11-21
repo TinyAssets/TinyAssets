@@ -190,13 +190,14 @@ export interface StartDoc {
 }
 
 /**
- * A sign-in's document: the engine signed in or out, the region chosen among its record's,
- * whose sandbox, and its doors (its own events, and the presence report's).
+ * A sign-in's document: the engine signed in or out, whose sandbox, and its doors (its own
+ * events, and the presence report's). Protocol 2 records a `region`, always null and read by
+ * no runner; the next protocol drops it (`untangle-2026-11/drop-kimi.md`).
  */
 export interface SigninDoc {
   readonly id: string;
   readonly engine: string;
-  readonly region: string | null;
+  readonly region: null;
   readonly mode: "in" | "out";
   readonly authority: string;
   readonly urls: { readonly events: string; readonly signin: string };

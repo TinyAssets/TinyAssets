@@ -66,8 +66,8 @@
  */
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readdirSync,
-         readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
+         renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
@@ -105,9 +105,9 @@ import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxD
          type JobKind, JOBS, INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer,
          RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
          STATE_DIR } from "./protocol";
-import { type Bounded, CONVERSATIONS, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM,
-         loginFiles, nextGeneration, readJson, record, RECORDS, shared, sortedWalk,
-         spawnBounded, STORE, systemOf, withRunUser, withStore } from "./session";
+import { type Bounded, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM, loginFiles,
+         nextGeneration, readJson, record, RECORDS, shared, sortedWalk, spawnBounded, STORE,
+         systemOf, withRunUser, withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
 import { asUser, E2B_USER, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER, user } from "./users";
 
@@ -543,16 +543,15 @@ function lockSudo(): void {
  * - `/scratch`, group `ta` below its top: the agents' working files (`scratch.ts`), every
  *   run of the sandbox's by design, as the founder's rule has every agent of a user full
  *   power by default;
- * - each run's own home, each conversation's own cwd, the sync agent's directory: their
- *   own users', 0700, reached by no one else;
+ * - each run's own home, the sync agent's directory: their own users', 0700, reached by no
+ *   one else;
  * - `/proc` and `/sys`: the kernel's own;
  * and, wherever they are, sticky directories (`/tmp`, `/var/tmp`, `/dev/shm`, `/run/lock`:
  * every user's own entries, none another's), and device, socket and pipe nodes and links
  * (a node is no file root runs or reads as code; a link's own mode means nothing).
  */
 const WRITABLE: readonly string[] = Object.freeze(["/proc", "/sys", WORKSPACE, HOMES,
-                                                   "/var/lib/ta-conv", "/var/lib/ta-sync",
-                                                   SCRATCH]);
+                                                   "/var/lib/ta-sync", SCRATCH]);
 /**
  * Every path another user may write made root's alone, then checked: anything left fails
  * `prepare` loudly. E2B's base image boots with root's own programs world-writable
@@ -1197,13 +1196,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     const home = homeOf(run);
     const system = systemOf(run);
-    let conversationDir: string | undefined;
-    let continued = false;
-    if (cli.engine.resume === "continue_in_cwd") {
-      conversationDir = `${CONVERSATIONS}/${rec.id}/${start.conversation}`;
-      continued = existsSync(conversationDir);
-      safeDirs("/", conversationDir, 0o700);
-    }
     // The tools the owner's rules name that the CLI's own hook matches, asked first: its
     // file is written only for those.
     const decide = "unsupported" in cli.decide ? null : cli.decide;
@@ -1213,9 +1205,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     const hooked = asked !== null && asked.tools.length > 0;
     const skills = [...skillsOf(WORKSPACE, start.agent).values()];
     let call = invocation(rec, start, process.env, {
-      continued, home, system, skills, ...hook,
-      ...(conversationDir === undefined ? {} : { conversationDir }),
-      ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
+      home, system, skills, ...hook, ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
     await writeShared(rec.id, call.shared, asked?.generation ?? 0);
     if (recovering && !call.resumed) {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
@@ -1224,9 +1214,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     await withRunUser(rec, run, { signedIn: start.credential === "vendor_login_in_sandbox",
                                   keeps: true, files: call.files }, async ({ as }) => {
       try {
-        if (conversationDir !== undefined) {
-          lchownSync(conversationDir, as.uid, as.gid);
-        }
         // Before each start of the CLI, a resume's too: the env files it would load, never
         // one that sets what the run's own environment does not take, nor, for a hooked run,
         // the decide credential or a variable that loads code, which would reach the hook;
@@ -1303,8 +1290,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           }
           await killAll(as);
           call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-            continued: true, home, system, prompt: CONTINUE_PROMPT, skills, ...hook,
-            ...(conversationDir === undefined ? {} : { conversationDir }) });
+            home, system, prompt: CONTINUE_PROMPT, skills, ...hook });
           if (!call.resumed) {
             break;
           }
@@ -1475,7 +1461,7 @@ async function loginRun(id: string): Promise<number> {
       end = await withRunUser(rec, id, { signedIn: true, keeps: false }, async (session) => {
         const { as, home } = session;
         loginFiles(rec, session);
-        const command = loginArgv(login, binPath(rec), doc.region);
+        const command = loginArgv(login, binPath(rec));
         const secrets = atoms();
         let shown: Prompt = { url: null, code: null };
         let text = "";
@@ -1496,7 +1482,7 @@ async function loginRun(id: string): Promise<number> {
           }
           // Only the record's own shapes leave the VM (its login hosts, a device code); a
           // credential-shaped value is refused as a second line.
-          const why = signinShape(rec, doc.region, next.url, next.code)
+          const why = signinShape(rec, next.url, next.code)
             ?? ([next.url, next.code].some((value) => value !== null
               && credentialShaped(value, secrets)) ? "credential" : null);
           if (why !== null) {

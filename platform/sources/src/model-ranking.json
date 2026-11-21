@@ -31,7 +31,6 @@
       { "provider": "*", "model": "mistral-large-4*" },
       { "provider": "*", "model": "*glm-5*" },
       { "provider": "*", "model": "qwen*3.8*" },
-      { "provider": "*", "model": "kimi-for-coding" },
       { "provider": "*", "model": "gpt-5" },
       { "provider": "*", "model": "claude-haiku-*" },
       { "provider": "*", "model": "gemini-2.5-flash*" },

@@ -157,16 +157,13 @@ export interface Invocation {
 
 /**
  * The run's invocation. `inherited` is the runner's own environment, read only for the
- * basics the run keeps; `continued` whether a `continue_in_cwd` conversation already ran
- * in its cwd; `prompt` the input (a recovery's continuation, or the start's own).
+ * basics the run keeps; `prompt` the input (a recovery's continuation, or the start's own).
  */
 export function invocation(record: Served, start: StartDoc,
                            inherited: Readonly<Record<string, string | undefined>>,
-                           options: { readonly continued: boolean; readonly prompt?: string;
+                           options: { readonly prompt?: string;
                                       /** The run's own home and system directory. */
                                       readonly home: string; readonly system: string;
-                                      /** A `continue_in_cwd` conversation's own cwd. */
-                                      readonly conversationDir?: string;
                                       /** The agent's skills' directories (`skillsOf`). */
                                       readonly skills: readonly string[];
                                       /**
@@ -231,9 +228,7 @@ export function invocation(record: Served, start: StartDoc,
   if (env["HOME"] !== home) {
     throw new Error("a run's HOME is its engine home");
   }
-  // Which invocation: a resume by session id, a continued cwd, or a new conversation.
-  const resumed = cli.engine.resume === "session_id" ? start.session_id !== null
-    : options.continued;
+  const resumed = start.session_id !== null;
   const base = resumed ? cli.engine.resume_argv : cli.engine.argv;
   const prompt = options.prompt ?? start.prompt;
   const promptValues = { ...values, prompt };
@@ -299,12 +294,8 @@ export function invocation(record: Served, start: StartDoc,
       throw new Error("a record's files are under the run's home or its system directory");
     }
   }
-  if (cli.engine.resume === "continue_in_cwd" && options.conversationDir === undefined) {
-    throw new Error("a run that continues in its cwd is given its conversation's own");
-  }
-  const cwd = cli.engine.resume === "continue_in_cwd" ? options.conversationDir! : agentDir;
-  return { argv, stdin: cli.engine.stdin === undefined ? null : prompt, env, cwd, files,
-           resumed, shared };
+  return { argv, stdin: cli.engine.stdin === undefined ? null : prompt, env, cwd: agentDir,
+           files, resumed, shared };
 }
 
 /** A record's `secret_paths` and `session_paths`, each from its home (`a/b`, `a/` a tree). */
