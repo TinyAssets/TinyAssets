@@ -16,7 +16,7 @@ byte-identically to `.claude/skills/`); "gates" is `docs/reference/executable-ga
 
 | Host rule (file) | Where it lives |
 |---|---|
-| Parallel by default: a PR sharing no files with open work starts now, from main, never stacked; one blocked on some files starts now without them, with a named part 2; a lane is no two PRs on one file (founder_prefs 2026-11-21) | Skill, new "Parallel by default" bullet. The old "One PR in flight per lane, never stacked" is replaced by it; peer-agents' "Lanes are not capped, but RECONCILED ... Merges stay serialized" is cut to "shares files with another open PR: say so and stop" |
+| Parallel by default: a PR sharing no files with open work starts now, from main, never stacked; one blocked on some files starts now without them, with a named part 2; a lane is no two PRs on one file (founder_prefs 2026-11-21) | Skill, new "Parallel by default" bullet (no two PRs on one file follows from starting without the shared files, so it is not restated). The old "One PR in flight per lane, never stacked" is replaced by it; peer-agents' "Lanes are not capped, but RECONCILED ... Merges stay serialized" is cut to "shares files with another open PR: say so and stop" |
 | Push a draft early; CI is the one full run; builders run typecheck, the touched files' tests, the guards the change can break and their mutations, never whole-workspace suites (brief_lane) | Skill, CI bullet ("Push a draft once it compiles ... never a whole workspace's suite"); gates, the done-check (touched files' tests and the `ci/guards/` they can break, in place of `npm test -w <ws>` and the whole `guards/` run) |
 | The recorders are CI's (brief_lane) | Not moved: owed to the CI recorder job (below) |
 | Reviewer reruns two or three of the builder's mutations and one per new guard, gates only for its own fixes, recorders only if its fixes touch `platform/*/src` (brief_rvw2 Runs) | Already in the repo: skill, CI bullet ("A reviewer reruns two or three ...") |
@@ -53,7 +53,7 @@ ready-for-review instead of the last fails it.
 
 ## 3. Paid for inside the pins
 
-The skills' aggregate is 34,417 of 34,467 B (from 34,420), so `process/owed-in-decisions`'s
+The skills' aggregate is 34,404 of 34,467 B (from 34,420), so `process/owed-in-decisions`'s
 +45 B still fits. The new lines are paid for by: the builder bullet's `Test-Removal:` clause
 (the gates page's done-check says it), the reviewer's verdict-posting clause (the gates
 page says how to post it), "Process first" and the measured-size bullet reworded shorter,

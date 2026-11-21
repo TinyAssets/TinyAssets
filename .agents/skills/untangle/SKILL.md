@@ -38,8 +38,9 @@ Untangle the code a change touches, or a whole area, and finish the job.
   new `owed` entry, a literal live name or founder number outside configs and
   data, a code read from message text, a product parameter or binding only a
   test uses, a copy of a contract value, a per-module allow-list, an enforcer
-  (hook, gate, sandbox check) reading a run-time value the agent or its
-  settings can write (env, files), or start-checked elsewhere than it runs.
+  (hook, gate, sandbox check) reading or started under env or files the
+  agent or its settings can write (`NODE_OPTIONS`), or start-checked in an
+  env it does not enforce in.
   It asks only for what makes the code more correct or simpler, and calls a
   departure from the decided design better (the log is updated) or a
   shortcut. It commits its own fixes of up to 50 lines and approves that
@@ -48,7 +49,7 @@ Untangle the code a change touches, or a whole area, and finish the job.
 - After each batch of merges, a step-5 search across everything merged and
   open looks for drift between PRs; unopened branches wait for it.
 - CI is the one full run; a coordinator's prompt adds or drops no check this
-  section names. Push a draft once it compiles, having run only what the
+  section names. Push a draft once it compiles, having run once only what the
   diff can break (the done-check: `docs/reference/executable-gates.md`), never
   a whole workspace's suite, one mutation per declared change; the
   recorders (step 5) whenever it touches `platform/*/src`, meant to change an
@@ -58,7 +59,7 @@ Untangle the code a change touches, or a whole area, and finish the job.
   Merge `origin/main` in; never rebase.
 - **Parallel by default:** every PR sharing no file with open work starts now,
   from `main`, never stacked; one blocked on some files starts now without
-  them, naming its part 2. A lane is its files: no two open PRs edit one.
+  them, naming its part 2.
 - An agent runs git only in worktrees it made; a reviewer checks the PR out
   in its own detached one. On a shared host, heavy runs (`test:root`,
   `test:sizes`, `test:memory`, the deploy harness, the recorders) take the

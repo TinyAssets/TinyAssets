@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -106,4 +107,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except subprocess.CalledProcessError as exc:  # gh's own reason, not a bare exit status
+        raise SystemExit(f"pr_times: {' '.join(exc.cmd)}: {(exc.stderr or '').strip()}")
