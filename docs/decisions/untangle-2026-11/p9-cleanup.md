@@ -21,6 +21,9 @@ the cutover" (Lane R after #5674, 2026-11-17).
    `untangle/p6-tests-beside` gives the id check its own step. So the rule goes first, brought
    forward (`untangle/p9-ids`, after p6-tests-beside), and then the 13 changes go
    (`untangle/p9-openspec-rest`). Their manifest entries name both branches.
+   `box-subscription-sources` is the exception: its claimed ids also resolve through
+   `openspec/specs/box-subscription-sources`, so deleting it fails no gate (review's mutation,
+   0 findings). It goes with the other 12 all the same.
 3. **Readers that stay, re-pointed.** Each citation of a deleted change in a file that is not a
    decision record links to it at `88e74e1cd`, so the evidence still opens. There are 41
    citations in 28 files: 20 concern notes, `docs/host-actions.md`, three `docs/ops` pages, two
@@ -29,13 +32,16 @@ the cutover" (Lane R after #5674, 2026-11-17).
    That plan is gone, so they now say that the old stack keeps the name until the cutover. The
    S21 row names only `owner-daemon-in-box`. Its ceiling (2) only falls, so it needs no edit.
    The `full-channel-access` sentence in `http-connections-and-outbound-authority` said that the
-   change would join the spec. It now says that the change was deleted unbuilt.
+   change would join the spec. It now says that the change, built but for its live check
+   (task 11), was deleted unsynced. Review re-pointed four more citations that named archived
+   changes by their pre-archive path, which the guard cannot see: two in `ideas/INBOX.md`, one
+   concern note and `owner-split-cutover-runbook.md`.
 4. **`check_shapes.py`'s `adr-has-spec` goes now, not at the cutover.** It failed 14 accepted
    ADRs whose only cited spec was a deleted change (ADR-009, 012, 017 to 019 and 023 to 031).
    list3 P4 decided that the check goes with `check_shapes.py`, and that the ADRs that still
    stand keep their text, with citations of deleted specs left as history (ADR-005: an ADR's
    body is not edited after acceptance). Its subject left early, so it does too. No test
-   held it.
+   held it. Its row in `shape-convergence`'s design table now says it was deleted.
 5. **Left, with the reason.**
    - Decision records (`docs/decisions/`) keep their citations as history (ADR-005), and so does
      `p9-now.md`'s plan line.
