@@ -476,8 +476,8 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
    `docs/host-actions.md`, then `gh secret set IMPORT_EXCLUSION_LIST --env production`. An
    empty list stops `bundle`.
 5. **The R2 key, through Cloudflare's API.** The dashboard's R2 token form gives one
-   permission to every bucket it names, which would let the key write the live files bucket, every
-   user's file chunks. One API token with bucket-level policies cannot. You need:
+   permission to every bucket it names, which would let the key write the live files bucket,
+   every user's file chunks. One API token with bucket-level policies cannot. You need:
    - **A short-lived token that may make tokens.** My Profile → API Tokens → Create Token →
      the "Create Additional Tokens" template (User · API Tokens · Edit), with a TTL ending
      today. Delete it after this step.
@@ -489,8 +489,8 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
        back on the live host;
      - an end date just after the window, for example `2026-12-31T00:00:00Z`.
 
-   In Git Bash from the repository root, `read -rs` takes the bootstrap token without showing it, and curl reads its
-   header from a file descriptor, so the token is in no command line:
+   In Git Bash from the repository root, `read -rs` takes the bootstrap token without showing
+   it, and curl reads its header from a file descriptor, so the token is in no command line:
    ```sh
    read -rs BOOT
    acct='<account id>'; ip='<reserved IPv4>'; until='<end date>'
@@ -548,8 +548,8 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
    Without the doors' copy, the consumer drops every import message.
 8. **`IMPORT_DOORS_API_TOKEN`.** Manage Account → Account API Tokens → Create Token → Custom
    token, named `tinyassets-import-window-doors`: Workers · Editor, resources Specified Workers
-   → the Worker named by `doors` alone (Cloudflare's per-Worker roles, 2026-09-15; Editor manages a
-   Worker's secrets), with a TTL just after the window. Then
+   → the Worker named by `doors` alone (Cloudflare's per-Worker roles, 2026-09-15; Editor
+   manages a Worker's secrets), with a TTL just after the window. Then
    `gh secret set IMPORT_DOORS_API_TOKEN --env production`. Confirm, as you mint it, that the
    form scopes the token to that one Worker; if it cannot, stop and say so, rather than hand
    the window a token that edits every Worker.
@@ -651,8 +651,8 @@ The steps, on your own computer (about $0.50 a month at today's size):
    production` and `OFFSITE_B2_APPLICATION_KEY` (the write key), and `OFFSITE_B2_READ_KEY_ID`
    and `OFFSITE_B2_READ_KEY` (the read key), pasting each at the hidden prompt. Then sign the
    command line out (`b2 account clear`).
-5. **The R2 read key,** through Cloudflare's API, as the import window's step 5 makes its key. Use the
-   same checkout with its platform dependencies installed. From the repository root,
+5. **The R2 read key,** through Cloudflare's API, as the import window's step 5 makes its
+   key. Use the same checkout with its platform dependencies installed. From the repository root,
    make one read policy with no condition or end date:
    ```sh
    read -rs BOOT
@@ -691,8 +691,8 @@ failed drill fails that night's copy job, as a red night does. Dispatch **Off-ac
 
 ## A restore from the copy
 
-Mode `copyback` of **Platform deploy** writes back into the files Worker's `BLOBS` bucket the objects of one
-owner's namespace that R2 lacks, as the copy holds them now or held them at `at`, a time in the
+Mode `copyback` of **Platform deploy** writes back into the files Worker's `BLOBS` bucket the
+objects of one owner's namespace that R2 lacks, as the copy holds them now or held them at `at`, a time in the
 last 21 days, and never replaces one R2 holds (`deploy/offsite.ts` `copyBack`). Use it when R2
 lost an owner's objects: a mistaken deletion, or a restore whose chunks step names chunks
 missing.

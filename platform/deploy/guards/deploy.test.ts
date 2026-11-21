@@ -2740,8 +2740,9 @@ describe("the template and the pair", () => {
     expect(PAIR)
       .toBe(`${TEMPLATE}-r${sha(RUNNER).slice(0, 16)}-p${sha(PROBE_BUNDLE).slice(0, 16)}`);
     expect(() => pairTag(TEMPLATE, sha(RUNNER), "probes")).toThrow(/SHA-256/);
-    // This tree's image, as image.ts prints it: the kit's pin check reads it so.
-    expect(treeImage()).toMatch(/^[^:\s]+:s[0-9a-f]{16}$/);
+    // This tree's image, as image.ts prints it, under the pinned template's E2B name: the
+    // kit's pin check reads it so.
+    expect(treeImage()).toMatch(new RegExp(`^${TEMPLATE.split(":")[0]}:s[0-9a-f]{16}$`));
   });
 
   it("plans a tree whose image is not the pin, and refuses to apply it", async () => {
