@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-# The checkout's root, wherever the file sits (the cutover carries it to scripts/tests/).
+# The checkout's root, wherever the file sits.
 REPO_ROOT = next(at for at in Path(__file__).resolve().parents if (at / "AGENTS.md").is_file())
 HOOK = REPO_ROOT / ".claude" / "hooks" / "session_sync_gate_hook.py"
 

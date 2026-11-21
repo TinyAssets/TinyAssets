@@ -20,7 +20,7 @@ pytestmark = pytest.mark.verifies(
     "A review verdict is a check run only the review App posts"
 )
 
-# The checkout's root, wherever the file sits (the cutover carries it to scripts/tests/).
+# The checkout's root, wherever the file sits.
 _ROOT = next(at for at in Path(__file__).resolve().parents if (at / "AGENTS.md").is_file())
 _ENV = {
     **os.environ,
