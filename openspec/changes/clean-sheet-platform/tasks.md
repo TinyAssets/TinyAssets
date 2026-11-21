@@ -62,7 +62,8 @@ end.
 - [x] Erasure's order: mark, end every run, wipe. The erasure door closed the crash window
   with the directory's outside record (`doors/src/erase.ts`, `owner/src/erasure.ts`).
 - [ ] H2 live, narrowed to code mode (`platform/deploy/h2-probes.ts`), first on the live stage
-  (§10 step 8), since it decides code mode's on-by-default (list3 P14): a script past its
+  (§10 step 8), since code mode ships off until it passes (the founder, 2026-11-21;
+  `untangle-2026-11/founder-answers.md` call 10): a script past its
   interrupt budget against the Worker's `cpu_ms`; 10 s of one owner's script compute against
   another owner's; whether `exchange` calls count as subrequests of the owner object or of the
   code mode Worker; whether pi-codemode's own deadline fires in production while a script calls
@@ -749,7 +750,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (`i-deletion-withhold.md`).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
-  account-deletion pages corrected, in the founder's copy.
+  account-deletion pages corrected, in the founder's copy; its links to the deleted specs and its
+  old public-read surface gone or rebuilt on a platform door (`founder-answers.md` call 18).
 - [x] The mark's source is `WebSite/brand/mark.py`; the cutover manifest lists the old copy
   and the retired tray and onboarding exports and checks (d3 §C6 F4, `site-mark.md`).
 - [ ] The live stage's four PRs (d3 §H), in order, as cut in `untangle-2026-11/stage.md`: the
@@ -773,6 +775,87 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     question;
   - [x] Run, policy, egress and settled wake receipt retentions and their readers
     documented in `limits-audit.md`, “Chosen retentions” (§P item 6).
+  - [ ] The names the port carried, renamed for what they mean before a grant or `agent.json`
+    stores them: `read_graph`, `write_graph` and `run_graph`, as capabilities and tools; "command
+    center" dropped from registration, grants, tables and wake text unless research finds it a
+    real platform namespace (`founder-answers.md` call 18; `untangle/old-names`).
+  - [ ] The message ledger designed from the platform's own needs (`recipe_id` and the
+    never-served `a2a` gone, one delivery-method list, from the wake records); `turn_*` as
+    `run_*`; `pkce_user_key_v1` a protocol name; the salts and policy limits whose only reason is
+    the Python restated as the platform's own; each with its owner migration (call 18;
+    `untangle/ledger-shape`).
+- [ ] The founder's answers of 2026-11-21 (`untangle-2026-11/founder-answers.md`, by call), each
+  before the cutover: every shape fix stays before it, internal code shape included.
+  - [x] Strongest, the plan's half: each sign-in record declares its plan's model, so a plan
+    ranks on it (#5723).
+  - [x] Isolation: an owner object can name no other owner's sandbox (#5724).
+  - [x] R5's root-owned hooks, which every hook of the agent's own ranks under (#5707).
+  - [ ] The manifest's guard checks the tree its edits leave, not their anchors
+    (`untangle/manifest-content`, #5725); then its keeps of `ideas/`, `output/`, `templates/`
+    and the untangle logs become deletes, and `contract/src/ids.ts` `REHEARSAL_OWNER` an edit
+    (call 18; `untangle/manifest-history`).
+  - [ ] 1. The door serves the owner's `AGENTS.md` and skills to the user's own main agent as
+    MCP prompts and resources, in place of the fixed client text and the starter paths it
+    restates, and each profile names its instructions; research first, which main agents load
+    them (`untangle/main-agent-definition`).
+  - [ ] 2. One hook definition in the agent's files, rendered into each engine's format from its
+    record, under R5's root-owned hooks (`untangle/agent-hooks`).
+  - [ ] 3. The agent's own MCP servers merged beside TinyAssets' door, held to the egress
+    allowlist, each engine researched first (`untangle/agent-mcp`); and the connector credential
+    path that needs no host of ours, researched from E2B's per-host header transforms (the
+    cutover's bar; `untangle/connector-credentials`).
+  - [ ] The record's instruction fields read: a shadow instruction file, or an `AGENTS.md` past an
+    engine's cut, refuses the run and tells the owner (shortfall 3;
+    `untangle/record-instructions`).
+  - [ ] 4. The ranking shipped as data that an owner file overrides; a plan whose model is in the
+    top tier wins over a metered key; its `about` corrected (`untangle/strongest-ranking`).
+  - [ ] 5. An endpoint the owner declares: an owner-written `custom` record under the same check,
+    and its door (`untangle/custom-source`).
+  - [ ] 6. `/mcp` takes an owner-minted key through the `/api` door's key check, and `apps.json`
+    and `wake-kinds.json` agree on Muse's two ways in (`untangle/mcp-keys`).
+  - [ ] 7. S6's app serving, so no published app goes dark at `routes` (`untangle/s6-app-serving`).
+  - [ ] 9. The package format: the starter's generalized, a folder of agent files plus a manifest,
+    published by any owner, installed by copy (`untangle/packages`); then 8, the "New agent" form
+    a template picker that writes the agent's files (`untangle/template-picker`).
+  - [ ] 10. Code mode off by default until H2 passes (§5; `untangle/codemode-off`).
+  - [ ] 11. Fact 15: each retention an owner setting, off keeping forever, or a ceiling with its
+    derivation, and `client_share` and `owner_reserve` off by default
+    (`untangle/fact15-defaults`); `openPerRun`, code mode's limits taken from pi's defaults and
+    the 300 s idle cut (each engine record's data) put in one of Fact 15's kinds, and the 10 GB
+    guard's shares recorded as technical ceilings (`untangle/fact15-caps`); a guard holding every
+    cap in Worker and runner source to `limits-audit.md` (`untangle/limits-guard`).
+  - [ ] 12. A run past E2B's ceiling waits with a clear message (`untangle/runs-wait-message`).
+  - [ ] 13. An unreadable control record served from the last good copy, only the writes that
+    need a fresh one refused (`untangle/control-last-good`).
+  - [ ] 14. A Cloudflare-side kill switch beside the GitHub one (`untangle/kill-switch-cloudflare`).
+  - [ ] 15. Gradual deploys: a percentage, the canary the promote gate, and a rollback mode but
+    across a Durable Object migration (`untangle/gradual-deploy`).
+  - [ ] 16. The postmaster for cross-owner traffic, researched first (`untangle/postmaster`).
+  - [ ] 17. Kimi's record, lock, template install, probes and plan lines dropped
+    (`untangle/drop-kimi`).
+  - [ ] 18. ADR-001 to ADR-031 superseded by ADR-032, what it says stands kept, `INDEX.md` the
+    platform's set, and an ADR holding the answers that amend ADRs (`untangle/old-adrs`); the
+    import's `archive` items an export download for the hold, never in the workspace
+    (`untangle/import-export-download`); the shells' old desktop sign-in return and copy, in the
+    cutover (`untangle/shells-cutover`).
+  - [ ] ADR-034.7: a vendor's rate-limit or billing event, matched by each record as data, holds
+    the agent's schedules and leaves one notice (`untangle/vendor-limit-stop`).
+  - [ ] The canary's full run asks for a bash call and a TinyAssets tool call and reads the run's
+    receipts (`untangle/canary-full-run`).
+  - [ ] The pair check's capture server answers the run's MCP door, so every pin proves its
+    record's MCP leg (`untangle/probe-mcp-leg`).
+  - [ ] The commitments-to-proof table, one row per commitment with its test or live check,
+    every row proven before the window opens (`untangle/commitments-table`).
+  - [ ] The verifiers' smaller shape fixes: a malformed header from our own gateway fails the
+    egress call loudly (`untangle/egress-reseal-loud`); the gateway's `fetch` interposer and its
+    three module-state exemptions go, pi-ai's Google adapter taking `fetch` or that API failing
+    closed (`untangle/gateway-interposer`); `Mcp.unsupported` deleted
+    (`untangle/no-unsupported-mcp`); the sync's `fullGrant` default deleted, so every caller
+    passes one (`untangle/owner-test-seams`); a guard against a vendor or engine id in Worker or
+    runner source outside the records' data (`untangle/vendor-names-guard`); a workerd test with
+    the sandbox binding failing, every door but the run doors answering
+    (`untangle/sandbox-down-test`); a purged schedule lane coming back with no door or wake,
+    researched first (`untangle/lane-purge`).
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
@@ -787,7 +870,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (#5519), first: the kit's `locks` step refuses every mode until they do (`deploy/checklist.md`
   § The migration locks; #5511).
 - [ ] `dark` with the untangled build, the sandbox Worker included (the first `dark` stopped
-  there), its ring queue and control namespace. Checked live at it:
+  there), its ring queue and control namespace, as soon as the stage PRs that open the stage
+  land (the founder, 2026-11-21; Step 5's live stage). Checked live at it:
   - the deploy workflow's `pair` job, live;
   - E1's: a lease opened after the redeploy has its network marked applied, and its sandbox's
     model calls are admitted (d3 §K5, §M1); E3's: that lease's file holds no egress token
@@ -868,7 +952,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   Grok's webhook host, pinned as data once seen. E2B's lifecycle webhook: whether a kill of a
   paused sandbox carries the pause's execution and `sandbox_execution_id`, and E2B's retry
   timing against `BILLED_WINDOW_S`.
-- [ ] 8. The founder's own test (§8).
+- [ ] 8. A redeploy of the build as it then stands, then the founder's own test (§8; the
+  founder, 2026-11-21).
 
 Measured on the stage as it runs:
 
@@ -950,8 +1035,8 @@ Moved before the window, into lane R (d3 §F3, §G).
   only; its concern file, filed 2026-09-03, leaves with `docs/concerns/`).
 - [ ] Billing: a billing door, Stripe's endpoint on it, and `storage_full`'s upgrade (list3 P38).
   Until then a tier changes through the operator path.
-- [ ] Connectors for the owner's own agents: the agent's `mcp.json` merged into the run config,
-  then a `browser` skill; where a connector's credential lives is undecided (list3 P40).
+- [ ] A `browser` skill for the owner's own agents (list3 P40); their MCP servers and the
+  connector credential path come before the cutover (Step 5, `founder-answers.md` call 3).
 - [ ] Direction 1's standing comparison against the four main agents, and what "beat" is
   measured by (list3 P41).
 - [ ] The directory submissions (`platform/plugins/SUBMIT.md`, the founder's outward act, after
@@ -1002,10 +1087,19 @@ real data, in step 5 (d3 §P).
   agents, one post waking each member it addresses), on step 5's rooms table; `inbox_digest`
   over the owner's and outside agents' mailboxes.
 - [ ] S6, the app manifest and agent players, with the app's view of mail-started runs and
-  agents' chains.
+  agents' chains; the owner app is among the interfaces it lets the owner customize, and its app
+  serving comes before the cutover (Step 5; `founder-answers.md` call 7).
 - [ ] S7, the device runner; S8, real-time tiers.
-- [ ] The founder-approved primitives in `docs/architecture.md`: N2 phone push, N3 voice and
-  video, N4 a live takeover view, N6 undo by snapshot, N7 agent purchases, N9 media results.
+- [ ] The Shape registry's founder-approved rows, carried here before `docs/architecture.md`'s
+  registry goes (`founder-answers.md` call 18). Homes already: B1, the bubble agent tracks the
+  frontier, is Step 19's comparison, its loop changing only `platform/starter/` unless a primitive
+  is approved; B2, agents on unmodified engines, is ADR-034; S6, one extension unit, is the
+  package (Step 5); N1, one inbound door, is `/hooks/inbound`; N5, the owner's egress gate, is
+  G4; N8, the optional link to the user's computer, is S7; N10, the owner-only policy layer, is
+  R5; N11, one user-built app, is S6; N12, cost-driver receipts measured and never enforced, is
+  the sandbox time and the usage receipts. Still to build, each researched first: N2 phone push,
+  N3 realtime voice and video, N4 a live takeover view of the sandbox's browser, N6 undo by
+  snapshot, N7 agent purchases under the owner's caps with receipts, N9 media results.
 - [ ] Mail archive's later phases (ADR-036), past step 5's four: a batched or tiered merge for
   sparse late acks; unread mail archived, with its own research.
 
@@ -1019,17 +1113,19 @@ the new apps are ready (§F2); restore and the off-account copy built before rea
 §G); the ruleset is the coordinator's to change (§F4); the deletion as two or three PRs in one
 window (§F5); the files cipher `aes-gcm` (§G); imported owners' old "ask first" defaults kept as
 their own settings (§N7); no paid subscription exists (d2 B13); the founder's and the canary's
-owners start fresh (2026-11-04); the window is not announced (2026-11-07).
+owners start fresh (2026-11-04); the window is not announced (2026-11-07); the conformance
+page's calls, as recommended (2026-11-21, `untangle-2026-11/founder-answers.md`).
 
 Open questions, from the as-built record:
-1. Codex, Gemini and Kimi sign-ins are off, because each vendor's terms for hosted use are
-   unclear (`cli.login.hosted_use`). Turn any of them on?
+1. Codex and Gemini sign-ins are off, because each vendor's terms for hosted use are unclear
+   (`cli.login.hosted_use`). Turn either on? (Kimi's record is dropped until it has a usable
+   path: `founder-answers.md` call 17.)
 2. Capture always on gives a recovery point of minutes instead of a night. It costs about $62 a
    month for a heavy owner and $0.20 for a light one, against about $0.70 for the heavy one
    today. Turn it on?
-3. Non-model credentials (GitHub, Notion and the rest), git through credentials, WebSocket APIs
-   and SigV4 need a TLS-terminating proxy, which is a host (Direction 8). Keep them out of v1, or
-   choose one?
+3. Answered (2026-11-21): the connector credential path needs no host of ours, and its shape
+   exists before the cutover; the connectors themselves can follow (Step 5,
+   `untangle/connector-credentials`).
 4. When the directory submission is made: should the listing get its own MCP door, with grants
    pinned to the `directory` profile, against Direction 2's "one MCP door"? The old stack built
    and retired `/mcp-directory`.
@@ -1051,5 +1147,6 @@ E2B API key rotated; the Spaces read key; the two store dashboards; AuthKit's pr
 and GitHub apps; a Backblaze B2 account for the off-account copy; the stage's two accounts; the
 canary's dispatch token and free-tier model key (d3 §J4); the imported owners' notice wording
 (d3 §N7); the window's credentials; asking E2B for workload identity (gateway research §13); the
-end-of-hold deletions. Optional: a zone WAF rule with his own number
+end-of-hold deletions; the Direction text's replacement lines, drafted by the coordinator
+(2026-11-21); raising E2B's tier, once the canary's E2B metrics near the ceiling. Optional: a zone WAF rule with his own number
 (`platform/deploy/checklist.md`).
