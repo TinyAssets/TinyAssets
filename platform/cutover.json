@@ -332,7 +332,6 @@
         { "edit": ".github/workflows/restart-daemon.yml", "names": ["Converge host uptime services", "deploy/install-host-uptime-services.sh", "install_watchdog"], "what": "its converge step, which reads deploy/: a handback's restart needs only the daemon's restart" },
         { "edit": ".github/workflows/main-red.yml", "names": ["the test IDs a red run names are the old stack's"], "what": "the old suite's note" },
         { "edit": "platform/ci/guards/legs.test.ts", "names": ["targets.length < 2", "the process's tests still under tests/"], "what": "the process tests left under tests/, carried out to scripts/tests/" },
-        { "edit": "scripts/queue_freshness.py", "names": ["import affected_tests", "import ci_required_tests as gate", ".github/known-failing-tests.txt"], "what": "the old suite's selection and quarantine it probes with (P6 reshapes it onto the platform legs)" },
         { "edit": "scripts/main_red.py", "names": ["import ci_required_tests as gate", "heavy-tests"], "what": "the old suite's quarantine and heavy files (P6)" },
         { "edit": "scripts/test_hygiene_gate.py", "names": ["from ci_required_tests import split_ledger_line", "LEDGER = \".github/known-failing-tests.txt\""], "what": "the old suite's quarantine ledger (P6)" },
         { "edit": "scripts/test_inventory.py", "names": [".github/known-failing-tests.txt"], "what": "the old suite's ledger (P6)" },
