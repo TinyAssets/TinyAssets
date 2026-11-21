@@ -35,7 +35,6 @@ import { migrate } from "../../contract/src/migrate";
 import { SLOTS_MIGRATIONS } from "./schema";
 import type { SandboxEnv } from "./env";
 
-/** The one line's name. */
 export const SLOTS = "slots";
 
 /** The line, as the sandbox Worker's control and entrypoint call it. */

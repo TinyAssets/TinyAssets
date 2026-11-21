@@ -23,10 +23,12 @@
         { "delete": "platform/cutover.json", "what": "this manifest, once the rest of it is done" },
         { "delete": "platform/ci/kit/cutover.ts", "what": "the manifest's reader" },
         { "delete": "platform/ci/guards/cutover.test.ts", "what": "the manifest's guard" },
+        { "delete": "scripts/platform_setup.py", "what": "the founder's one-time setup, done (deploy/checklist.md): its keyring maker is a copy of keyring-new's, which the kit keeps (o-keyrings.md)" },
+        { "delete": "tests/test_platform_setup.py", "what": "the setup's tests" },
 
         { "edit": "platform/package.json", "names": ["\"import\""], "what": "the import workspace" },
         { "edit": "platform/package-lock.json", "names": ["\"import\""], "what": "the import workspace, by npm install" },
-        { "edit": ".github/workflows/tests.yml", "names": ["npm run test -w import"], "what": "the import leg" },
+        { "edit": ".github/workflows/tests.yml", "names": ["npm run test -w import", "tests/test_platform_setup.py"], "what": "the import leg, and the setup's tests in the process leg" },
         { "edit": "platform/ci/budgets.json", "names": ["import/guards"], "what": "the import guards' budget" },
         { "edit": "platform/ci/kit/layers.ts", "names": ["the importer", "platform/cutover.json"], "what": "the importer's layer, and the cutover layer's note and reach" },
         { "edit": "platform/ci/kit/imports.ts", "names": ["cutoverLayer", "isGone"], "imports": ["platform/ci/kit/cutover.ts"], "what": "the cutover layer" },
@@ -71,7 +73,7 @@
 
         { "edit": "platform/deploy/facts.ts", "names": ["IMPORT_NAMES", "--import"], "imports": ["platform/contract/src/import-names.ts"], "what": "facts.ts --import, the job's live names" },
         { "edit": "platform/deploy/deploy.ts", "names": ["IMPORT_KEY"], "imports": ["platform/contract/src/import-message.ts"], "what": "mode rotation's refusal while the doors hold the window's key" },
-        { "edit": "platform/deploy/guards/deploy.test.ts", "names": ["IMPORT_NAMES", "IMPORT_KEY", "windowOpen"], "imports": ["platform/contract/src/import-message.ts"], "what": "the job's live names' case, and the rotation's refusal in the window" },
+        { "edit": "platform/deploy/guards/deploy.test.ts", "names": ["IMPORT_NAMES", "IMPORT_KEY", "windowOpen", "takes the keyring the founder's setup makes"], "imports": ["platform/contract/src/import-message.ts"], "what": "the job's live names' case, the rotation's refusal in the window, and the case that runs the founder's setup's keyring maker (keyring-new's own cases stay)" },
         { "edit": "platform/deploy/checklist.md", "names": ["## The import window's credentials"], "what": "the import window's credentials" },
         { "edit": "docs/architecture.md", "names": ["`platform/import/`"], "what": "the importer's row" },
         { "edit": "openspec/changes/clean-sheet-platform/specs/doors/spec.md", "names": ["say nothing of the cutover's import"], "what": "the MCP instructions' silence on the import, which the importer's README explains" },

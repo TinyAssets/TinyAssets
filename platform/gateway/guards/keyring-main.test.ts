@@ -28,12 +28,16 @@ const { k1, k2 } = VECTORS.keys;
 const OLD = { GATEWAY_KEYRING: JSON.stringify({ active: "k1", keys: { k1 } }) };
 const ROTATED = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k1, k2 } }) };
 const RETIRED = { GATEWAY_KEYRING: JSON.stringify({ active: "k2", keys: { k2 } }) };
-const BOUND = VECTORS.gateway.binding;
+// Each golden bound as the gateway binds a stored record: by its names, through today's grammar.
+const BOUND = keyring.binding(VECTORS.gateway.binding.owner, VECTORS.gateway.binding.connection,
+                              VECTORS.gateway.binding.version);
+const VALUE = VECTORS.gateway.value;
+const VALUE_BOUND = keyring.binding(VALUE.binding.owner, VALUE.binding.connection,
+                                    VALUE.binding.version);
 const CREDENTIAL = VECTORS.gateway.credential as unknown as Parameters<Keyring["seal"]>[2];
 const SECRET = { secret: VECTORS.gateway.credential.secret };
 const BELL = VECTORS.gateway.doorbell;
-const BELL_BOUND = { owner: BELL.owner, connection: `wake.${BELL.subscription}`,
-                     version: BELL.version };
+const BELL_BOUND = keyring.wakeBinding(BELL.owner, BELL.subscription, BELL.version);
 const BELL_SECRET = "sk-ant-oat01-" + "v".repeat(40);
 const BELL_INPUT = { record: BELL.value.record, url: BELL.value.url, secret: BELL_SECRET };
 const bell = (kid: "k1" | "k2") =>
@@ -180,7 +184,7 @@ describe("every refusal is main's", () => {
       context: `ta-cred/v1\0${bound.owner}\0${bound.connection}\0${bound.version}`,
     }, new TextEncoder().encode(JSON.stringify("x".repeat(chars))));
     sized = [];
-    for (const bound of [BOUND, VECTORS.gateway.value.binding]) {
+    for (const bound of [BOUND, VALUE_BOUND]) {
       // A JSON string of n characters is n + 2 bytes; with its tag, 49,134 bytes are 65,512
       // base64url characters, so the blob is 65,535 long.
       sized.push({ bound, at: await seal(bound, 49_116), over: await seal(bound, 49_300) });
@@ -203,7 +207,6 @@ describe("every refusal is main's", () => {
   });
 
   it("for every ring and every blob, as credentials, doorbells and plain values", async () => {
-    const value = VECTORS.gateway.value;
     const over = sized.map(({ over: each }) => each);
     for (const raw of RINGS) {
       const ring = { GATEWAY_KEYRING: raw } as keyring.KeyringEnv;
@@ -219,9 +222,9 @@ describe("every refusal is main's", () => {
           .toBe(await outcome(() => main.keyring.openValue(ring, BELL_BOUND, blob,
                                                            main.doorbell.doorbellSecret)));
       }
-      for (const blob of [...tampered(value.k2), ...over]) {
-        expect(await outcome(() => keyring.openValue(ring, value.binding, blob, same)), what(blob))
-          .toBe(await outcome(() => main.keyring.openValue(ring, value.binding, blob, same)));
+      for (const blob of [...tampered(VALUE.k2), ...over]) {
+        expect(await outcome(() => keyring.openValue(ring, VALUE_BOUND, blob, same)), what(blob))
+          .toBe(await outcome(() => main.keyring.openValue(ring, VALUE_BOUND, blob, same)));
       }
       expect(await outcome(() => keyring.seal(ring, BOUND, CREDENTIAL)))
         .toBe(await outcome(() => main.keyring.seal(ring, BOUND, CREDENTIAL)));
@@ -234,7 +237,7 @@ describe("the gateway's domain", () => {
     const ns = VECTORS.files.namespace;
     for (const wrapped of [VECTORS.files.k1.wrapped, VECTORS.files.k2.wrapped,
                            VECTORS.files.rewrapped]) {
-      for (const bound of [keyring.binding(ns, "c1", 1), BOUND, BELL_BOUND]) {
+      for (const bound of [keyring.binding(ns, BOUND.connection, 1), BOUND, BELL_BOUND]) {
         expect(await outcome(() => keyring.openValue(ROTATED, bound, wrapped, same)))
           .toBe("credential_refused");
         expect(await outcome(() => keyring.open(ROTATED, bound, wrapped)))
@@ -242,9 +245,8 @@ describe("the gateway's domain", () => {
       }
     }
     // The same-sized value of its own, under that namespace as the owner, opens.
-    expect((await keyring.openValue(ROTATED, VECTORS.gateway.value.binding,
-                                    VECTORS.gateway.value.k2, same)).value)
-      .toBe(VECTORS.gateway.value.value);
+    expect((await keyring.openValue(ROTATED, VALUE_BOUND, VALUE.k2, same)).value)
+      .toBe(VALUE.value);
   });
 
   it("opens no doorbell as a model credential, nor a credential as a doorbell", async () => {

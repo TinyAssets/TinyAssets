@@ -1,5 +1,5 @@
 /**
- * E2B's wire, for every caller of it (untangle B11): the sandbox Worker (`src/e2b.ts`), the
+ * E2B's wire, for every caller of it: the sandbox Worker (`src/e2b.ts`), the
  * template's checks and the deploy kit (`admin.ts`), and the sandbox's tools. Raw HTTP, no
  * SDK, in the field names of E2B's OpenAPI document (`docs.e2b.dev/openapi-public.yaml`, read
  * 2026-11-03), checked live by the sandbox's probes

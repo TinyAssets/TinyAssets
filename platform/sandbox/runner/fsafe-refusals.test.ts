@@ -1,7 +1,7 @@
 /**
  * `fsafe`'s refusals, each path's: no link followed, no special file read or written
  * through, a directory never replaced, modes and owner set on the descriptor, and the one
- * walker's order and refusals (rva6a's attack, held).
+ * walker's order and refusals.
  */
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync,

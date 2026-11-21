@@ -32,7 +32,6 @@ configTests(CONFIG, {
     ["workers_dev left to its default", { workers_dev: undefined }],
     ["a preview URL", { preview_urls: true }],
     ["a var", { vars: { NS: "x" } }],
-    ["a cipher choice", { vars: { FILES_CIPHER: "ssec" } }],
     ["no ctx.exports flag", { compatibility_flags: [] }],
     ["no keyring", { secrets: undefined }],
     ["a second secret", { secrets: { required: ["FILES_KEYRING", "OTHER"] } }],

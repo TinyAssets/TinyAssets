@@ -1,9 +1,9 @@
 /**
  * Every data key the files Worker ever wrapped stays readable, and every key it wraps now
- * opens on the code that wrapped before (untangle A5): the data keys' ring, a binding over
- * the one sealed envelope (`contract/src/envelope.ts`), against main's own copy of the
- * scheme as it stood at `ci/keyring-vectors.json`'s commit, the last before the envelope,
- * read from git and run as it was.
+ * opens on the code that wrapped before: the data keys' ring, a binding over the one sealed
+ * envelope (`contract/src/envelope.ts`), against main's own copy of the scheme as it stood at
+ * `ci/keyring-vectors.json`'s commit, the last before the envelope, read from git and run as
+ * it was.
  *
  * - Main's golden wrapped keys, checked in, open under today's code, and rewrap.
  * - Keys wrapped today open on main's code, and main's fresh keys on today's.
@@ -12,9 +12,10 @@
  *   refusal, by `unwrap`, `rewrap` and `mint` alike.
  * - No blob the gateway sealed opens here as a data key, under the very same ring, even
  *   one of a data key's size sealed for this namespace as its owner.
- * - Every object main's cipher sealed (B21: `files/src/cipher.ts`, now the envelope's
- *   per-object seal) opens byte for byte under today's, and every object sealed today opens
- *   on main's; neither opens at another object key, under another data key, or changed.
+ * - Every object main's cipher sealed (`files/src/cipher.ts` at that commit, now the
+ *   envelope's per-object seal) opens byte for byte under today's, and every object sealed
+ *   today opens on main's; neither opens at another object key, under another data key, or
+ *   changed.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 

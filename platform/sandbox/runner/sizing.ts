@@ -2,8 +2,8 @@
  * The sync agent's heap in the sandbox, which bounds the sync-ignore list it compiles
  * (`LIST_BYTES`, `contract/src/sync-ignore.ts`): (`SANDBOX_HEAP` − `AGENT_PEAK`) /
  * `HEAP_PER_LIST_BYTE` holds `LIST_BYTES` (`sync.test.ts`). Measured in throwaway sandboxes
- * of the pinned template, with the sandbox's own Node, on 2026-11-03, by a one-off probe since
- * deleted (untangle B1); the arithmetic and the runs are `limits-audit.md`'s `LIST_BYTES` row.
+ * of the pinned template, with the sandbox's own Node, on 2026-11-03, by a one-off probe; the
+ * arithmetic and the runs are `limits-audit.md`'s `LIST_BYTES` row.
  * They change with the sandbox's VM, its Node and the agent, so they are the runner's.
  */
 
