@@ -1,13 +1,13 @@
 /**
- * Outside-client authority over the owner's agents (agent research §4; tasks 5, A2; kept
- * by ADR-034 as a run's authority): what work an outside client's stamp may still do,
+ * Outside-client authority over the owner's agents (agent research §4; kept by ADR-034 as
+ * a run's authority): what work an outside client's stamp may still do,
  * decided at each check.
  *
  * Work runs under an authority: the owner's, an outside client's stamp, or none. None can
  * do nothing, so the owner's case is explicit, never the absence of a stamp. A stamp is the
  * client, its grant's generation and its sign-in time, plus where the work acts: the
  * universe (the command center) and the agent a scoped grant's triples name, fixed when
- * the work is admitted, as the Python's run context fixed them for `check_identity`.
+ * the work is admitted.
  *
  * Under a client's stamp each check reads, synchronously, that the client's grant still
  * stands at the stamped generation (`Grants.standing`: not changed, not revoked, no revoke

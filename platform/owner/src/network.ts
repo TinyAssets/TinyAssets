@@ -1,6 +1,6 @@
 /**
- * The sandbox's network, from the owner's own state (gateway research §5.4 steps 1-3; tasks
- * 4 G4). Pure functions: the sandbox slice (8b) sends the network document to E2B, and
+ * The sandbox's network, from the owner's own state (gateway research §5.4 steps 1-3). Pure
+ * functions: the sandbox Worker sends the network document to E2B, and
  * nothing here reaches E2B. The egress wire it names (the door's host, its headers, the
  * resolver) and the environment a run's model clients reach the door by (`sandboxEnv`) are
  * the contract's (`contract/src/egress.ts`).

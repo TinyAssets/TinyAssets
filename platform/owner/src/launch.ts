@@ -1,7 +1,8 @@
 /**
  * Runs launched, delivered and given their sandbox (ADR-034 decision 4;
- * `docs/decisions/untangle-2026-11-wave-1.md` A2): the object's half of a run, around `runs.ts`'s
- * rows and decisions. One `Launcher` an object, which serves Runs its one narrow interface
+ * `docs/decisions/untangle-2026-11-wave-1.md` A2): the object's half of a run, around
+ * `runs.ts`'s rows and decisions. One `Launcher` an object, which serves Runs its one narrow
+ * interface
  * (`RunHost`) and holds:
  *
  * - **a launch** (`launch`): the agent's `agent.json` read whole (`readAgent`), its run admitted
@@ -198,10 +199,10 @@ export class Launcher implements RunHost {
   }
 
   releaseLease(leaseId: string, epoch: number): void {
-    // A lease a sign-in holds stays: its sandbox is in use with no run (slice SIGNIN).
+    // A lease a sign-in holds stays: its sandbox is in use with no run.
     if (!this.#o.signins.holds(leaseId) && this.#o.files.leaseRelease(leaseId, epoch).released) {
       this.#o.egress.end("lease", (live) => live.lease === leaseId);
-      // Once the unit is over, its sandbox paused: no run lives in it (slice S).
+      // Once the unit is over, its sandbox paused: no run lives in it.
       queueMicrotask(() => void this.#sandboxRelease(leaseId));
     }
   }
@@ -211,7 +212,7 @@ export class Launcher implements RunHost {
   }
 
   leasesLapsed(now: number): void {
-    // Each lapsed lease's sandbox paused, as a given-back one's is (slice S).
+    // Each lapsed lease's sandbox paused, as a given-back one's is.
     for (const leaseId of this.#o.files.leasesLapsed(now)) {
       queueMicrotask(() => void this.#sandboxRelease(leaseId));
     }
@@ -275,7 +276,7 @@ export class Launcher implements RunHost {
 
   /**
    * A new owner's starter seed, awaited before a door reads an agent: its first `converse`
-   * finds `main` however soon it comes (review L3), the lane's pass joined if it runs.
+   * finds `main` however soon it comes, the lane's pass joined if it runs.
    */
   async seeded(): Promise<void> {
     if (this.#o.starter.version() === 0) {
@@ -520,7 +521,7 @@ export class Launcher implements RunHost {
 
   /**
    * The switched-on sign-ins, read by the lane itself from the control record the object
-   * binds (`CONTROL`), and kept (review N1): so a source switched off stops powering the
+   * binds (`CONTROL`), and kept: so a source switched off stops powering the
    * lane's runs (a schedule's, a mail's, a waiting one's) at its next pass, though the owner
    * makes no door call (`ControlGate.signins`, fail-closed).
    */
@@ -831,7 +832,7 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * One run's whole environment (slice E's `runEnv`, G4's `sandboxEnv`), from its record,
+   * One run's whole environment, from its record,
    * its credential and an API-key run's connection, with the owner's egress policy and its
    * generation: refused (`invalid`) when the record does not run on that credential.
    */

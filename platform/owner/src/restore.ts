@@ -1,15 +1,15 @@
 /**
- * Restore (d3 §G; `operator_research.md` §3, adopted whole; `docs/decisions/untangle-2026-11/
- * r5r.md`): the whole owner, from one finished generation (`backup.ts`, `export.ts`), into the
- * owner's own object, only while that object is `pending` and empty. The platform's alone: its
- * doors take the reserved caller (`PLATFORM_CALLER`), which only the operator channel binds
- * for it (`doors/src/operator.ts`, ops `restore.*`).
+ * Restore (d3 §G; `docs/decisions/untangle-2026-11/r5r.md`): the whole owner, from one finished
+ * generation (`backup.ts`, `export.ts`), into the owner's own object, only while that object is
+ * `pending` and empty. The platform's alone: its doors take the reserved caller
+ * (`PLATFORM_CALLER`), which only the operator channel binds for it (`doors/src/operator.ts`, ops
+ * `restore.*`).
  *
  * **What it reads.** The generation's root, its base parts and its log segments, through the
  * files Worker's manifest reads (`Bucket`, `FILES`), the same reads an export makes. The
  * files Worker opens each under the owner's data key; nothing here holds a key or puts to R2,
  * and it deletes only the chunks its `sweep` step finds no row names. A restore from the
- * off-account copy (lane R's eighth PR) puts the copy's bytes back at the same R2 keys first
+ * off-account copy puts the copy's bytes back at the same R2 keys first
  * (the seal binds the key, `r4.md` item 6), so this reads them unchanged: only where
  * `{namespace, gen}` comes from differs.
  *
@@ -997,11 +997,8 @@ function finish(o: RestoreDoorNeeds, held: Held, root: ManifestRoot): void {
   sql.exec("UPDATE owner_restore SET step = 'done', after = NULL");
 }
 
-// -- THE DOORS: the `restore` rows' handlers (`owner/doors.json`) ----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`RestoreDoorNeeds`) once the row's steps held: the bind (the platform's
-// reserved caller), and the fields.
+// -- THE DOORS: the `restore` rows' handlers (`owner/doors.json`)
+// ----------------------------------
 
 /**
  * What the `restore` doors reach: the generations (`Backups`) and the bucket they are read
@@ -1067,7 +1064,6 @@ async function ownGeneration(o: RestoreDoorNeeds, ns: string, gen: string):
   return { root, schema: header.schema };
 }
 
-/** The `restore` doors' handlers, by door. */
 export const restoreDoors = Object.freeze({
   /**
    * What a restore could read for this owner: its namespace and its finished generations, as
@@ -1322,9 +1318,9 @@ export const restoreDoors = Object.freeze({
    * bucket having a row first: the bucket name of each of `NAMES_ROWS` of its chunk rows, in
    * any state but `deleting`, from the `from`th in hash order, and every finished generation
    * it holds. So a chunk the owner's own collection deleted or is deleting (garbage past its
-   * grace, a redaction's) is never written back. A read. Pages go by offset, so no hash leaves the object (the operator log
-   * keeps every answer): a row gone between two pages moves one past the next page's start,
-   * a name left out, never one added, and a run again finds it still lacking.
+   * grace, a redaction's) is never written back. A read. Pages go by offset, so no hash leaves the
+   * object (the operator log keeps every answer): a row gone between two pages moves one past the
+   * next page's start, a name left out, never one added, and a run again finds it still lacking.
    */
   async restoreNames(o: RestoreDoorNeeds, door: Door<RestoreNamesRequest>): Promise<RestoreNames> {
     const read = await o.door(() => {

@@ -12,13 +12,12 @@
  * synchronous turn (`ErasureParts.wipe`: the erased admission row, `admission.ts`), and
  * again once the wipe resolves. That leaves a window: a crash after the wipe is durable
  * and before the tombstone is leaves the wiped database with no tombstone, and a later
- * `getByName` makes the owner afresh, admitted (workerd shows it). The facet probe's Q8
- * (run 41247617223, `facet-probe.md`) found the order right with no crash, but did not
- * measure the window: production's `ctx.abort()` rolled back everything since the last
- * durable point, even an awaited `deleteAll`. The window stands until slice 10 closes it
- * (a record outside the object, or an explicit platform admit), and the erasure door
- * waits for it (`tasks.md`). No other source disables Lifecycle's alarm or wipes a
- * database (the alarm guard).
+ * `getByName` makes the owner afresh (workerd shows it), though pending (`admission.ts`): every
+ * door refuses it until the platform admits it, and the doors keep the owner's erased record
+ * (step 2). The facet probe's Q8 (run 41247617223, `facet-probe.md`) found the order right
+ * with no crash, but did not measure the window: production's `ctx.abort()` rolled back
+ * everything since the last durable point, even an awaited `deleteAll`. No other source disables
+ * Lifecycle's alarm or wipes a database (the alarm guard).
  */
 import {
   LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
@@ -167,9 +166,9 @@ export class Erasure extends LifecycleCapability {
       });
     }
     // 3. Every R2 copy deleted by the namespace's prefix, once a put any instance began
-    // before the mark has had its time to land (`PUT_GRACE_MS`) (a failure rejects, and the retry deletes
-    // again); then the owner wiped whole, Lifecycle's alarm disabled first so nothing is
-    // written after; then the prefix deleted once more.
+    // before the mark has had its time to land (`PUT_GRACE_MS`) (a failure rejects, and the
+    // retry deletes again); then the owner wiped whole, Lifecycle's alarm disabled first so nothing
+    // is written after; then the prefix deleted once more.
     const due = erasureStartedAt(storage) * 1000 + PUT_GRACE_MS;
     if (due > clockMs()) {
       // Not yet: the erasure's job wakes it when the grace is up (a day), held in storage,

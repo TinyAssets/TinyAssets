@@ -1,5 +1,5 @@
 /**
- * Cron recurrence for scheduled launches (tasks 5, F1): our own small, pure next-occurrence
+ * Cron recurrence for scheduled launches: our own small, pure next-occurrence
  * function, since agents exports none (its `schedules/parser` holds only a prompt and a zod
  * schema).
  *

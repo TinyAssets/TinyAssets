@@ -1,8 +1,7 @@
 /**
  * A run's live output, relayed to the owner's app sockets (ADR-034 decision 10;
- * `engines-replan.md` §2.2). Salvaged from A6 (`platform-a6`'s `sockets.ts`): the socket
- * ticket, the binder's upgrade path, the ticket's grant and expiry binding and sign-out
- * ending sockets; not its pi `watch()` or live tee, which went with pi.
+ * `engines-replan.md` §2.2): the socket ticket, the binder's upgrade path, the ticket's grant
+ * and expiry binding and sign-out ending sockets.
  *
  * The transport is the Agents SDK's `WebSockets` capability (`agents/websockets`), on the
  * object's own `new Lifecycle(this)` beside the schedule, still without Lifecycle's
@@ -75,7 +74,7 @@ const EXPIRE_FN = "expire";
 export const OWNER_SOCKETS = 1024;
 /**
  * The frames' tails kept for late joiners, in UTF-16 code units, every run's of every object
- * in the isolate together (`slots.ts`' `SharedBudget`, review M5): the object holding the
+ * in the isolate together (`slots.ts`' `SharedBudget`): the object holding the
  * most drops its oldest frame past it.
  */
 export const TAIL_UNITS = 4_194_304;
@@ -424,10 +423,6 @@ export interface ConversationRequest {
 }
 
 // -- THE DOORS: the `relay` rows' handlers (`owner/doors.json`) -----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`RelayDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `relay` doors reach: the sockets, the tickets, which conversations are the
@@ -441,7 +436,6 @@ export interface RelayDoorNeeds extends Pick<DoorUnits, "door">, Pick<ObjectRead
   readonly signins: Pick<Signins, "owned">;
 }
 
-/** The `relay` doors' handlers, by door. */
 export const relayDoors = Object.freeze({
   /**
    * A socket ticket for one of the owner's own conversations (`read`): a routing-MAC token

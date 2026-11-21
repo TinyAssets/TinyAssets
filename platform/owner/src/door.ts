@@ -81,7 +81,7 @@ interface Proof<K extends string> {
   readonly minted: typeof minted;
 }
 /**
- * The owner's live session, as `Sessions.live` found its row (S30, N10): a session row's
+ * The owner's live session, as `Sessions.live` found its row: a session row's
  * proof, which every widening in the owner's session takes. `hash` is its id (the receipts').
  */
 export interface LiveSession extends Proof<"session"> {

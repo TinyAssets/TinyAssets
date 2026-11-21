@@ -1,11 +1,7 @@
 /**
  * The owner's model spend: one reservation per model call, held against the owner's
- * model policy, settled from what the call cost (gateway research §4; tasks 4 G2), each
- * keyed to its run (ADR-034 decision 7).
- *
- * Ported from `TurnRequestBudget` and its ledger (`tinyassets/request_budget.py`) and the
- * spend reservations of `PolicyStore.decide` (`tinyassets/broker/policy.py`), with their
- * states: `reserved` → `dispatched` → `succeeded` | `failed` | `unknown`, or `reserved` →
+ * model policy, settled from what the call cost, each keyed to its run (ADR-034 decision
+ * 7). Its states: `reserved` → `dispatched` → `succeeded` | `failed` | `unknown`, or `reserved` →
  * `not_sent`; plus `refused`, a reservation the ceilings turned down, kept as its receipt.
  * The sandbox's egress (`egress.ts`) holds its calls to the same states and counters
  * (`model_spend`), and counts each call to its run too (the `runs` row's requests, tokens
@@ -37,15 +33,11 @@
  *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
  * token at price `p` costs `p` µ$. A call's estimate is pi-ai's own `calculateCost` over the
- * target model's whole cost record (pi audit F6), so a long-context tier applies to the
+ * target model's whole cost record, so a long-context tier applies to the
  * whole request once its input passes the tier's threshold, as the provider bills it. A
  * source is a connection's source record (`connections.ts`), so its ceilings survive a
- * reconnect. The day and month are UTC.
- *
- * Declared differences from the Python: the free-tier pools, their consecutive-failure
- * stop and the advisory daily evidence have no counterpart (no platform-paid source
- * exists); a reservation shrinks its output to fit what the ceilings leave, where the
- * Python counted attempts only.
+ * reconnect. The day and month are UTC. A reservation shrinks its output to fit what the
+ * ceilings leave.
  */
 import { randomHex } from "../../contract/src/ids";
 
@@ -364,17 +356,12 @@ export class Usage {
 }
 
 // -- THE DOORS: the `usage` rows' handlers (`owner/doors.json`) -----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`UsageDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /** What the `usage` doors reach: the model calls' receipts. */
 export interface UsageDoorNeeds {
   readonly usage: Usage;
 }
 
-/** The `usage` doors' handlers, by door. */
 export const usageDoors = Object.freeze({
   /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
   usageReceipts(o: UsageDoorNeeds, _call: Call<undefined>): { receipts: UsageReceipt[] } {

@@ -7,15 +7,15 @@
  * own data key, which this object holds only wrapped (`data_key`, made with the
  * namespace by `FILES.mintKey`): opened by the files Worker's keyring for one call at a
  * time, never here, and gone with the object at erasure (crypto-erasure, `datakey.ts`).
- * The files Worker (`FILES`) moves them and never sees a path. Everything that says what a file is lives in this object's
- * SQLite: paths, versions and history, which chunks make which content, the chunks'
- * reference counts, upload intents, quotas, the change feed and the sync lease. Files of
- * 4 KiB or less are kept inline, so reading `AGENTS.md` or a skill touches no bucket.
+ * The files Worker (`FILES`) moves them and never sees a path. Everything that says what a file is
+ * lives in this object's SQLite: paths, versions and history, which chunks make which content, the
+ * chunks' reference counts, upload intents, quotas, the change feed and the sync lease. Files of 4
+ * KiB or less are kept inline, so reading `AGENTS.md` or a skill touches no bucket.
  *
  * - Versions. Every commit is stamped with the next owner-wide `seq`, and a version is
  *   named by that seq: it never repeats across a delete, a re-create or a history prune,
  *   with no tombstone kept. Each write is a compare-and-swap on the entry's etag, as on
- *   the board (S34): `expected` null writes unconditionally, `""` only creates, and
+ *   the board: `expected` null writes unconditionally, `""` only creates, and
  *   anything else must be the current etag; a lost swap is answered with the entry as it
  *   stands ({@link fileConflict}).
  * - Content. A content id names its kind and size with its bytes (inline, or a chunk
@@ -61,7 +61,7 @@
  *   keeps bytes alive at another's cost; an upload is told a chunk need not be sent only
  *   when its writer's own scope holds it, and commits only the chunks it sent or holds.
  * - The sandbox leases, one an authority (the owner's own work's sandbox, and each outside
- *   client's own; slice R's review H-1), each for its sandbox's runs and sync agent: a
+ *   client's own), each for its sandbox's runs and sync agent: a
  *   random `lease_id` is the claim token and a rising `epoch` (one counter for all) the
  *   fencing number, as the ledger's claims are. A sync commit is refused unless both are a
  *   live lease's; a client's sandbox writes as that client (its share) and never into the
@@ -1053,7 +1053,7 @@ export class Files {
   /**
    * Bytes `[from, to)` of the content `chunks` make, in order, joined: each chunk the range
    * spans read by the part of it the range needs, verified (`FILES` reads the whole chunk,
-   * rechecks its hash and answers the part: review L7), so a range holds only itself. A range
+   * rechecks its hash and answers the part), so a range holds only itself. A range
    * past the chunks is a bug.
    */
   async range(chunks: readonly ChunkRef[], from: number, to: number): Promise<Uint8Array> {
@@ -1528,7 +1528,7 @@ export class Files {
 
   /**
    * An open upload's chunk plan, each chunk's hash and size in order, and the chunks it
-   * still has to send: what the binder streams a file's bytes to `FILES` by (tasks 6.1).
+   * still has to send: what the binder streams a file's bytes to `FILES` by.
    */
   uploadPlan(intentId: unknown): { chunks: { sha256: string; size: number }[];
                                    pending: string[] } {
@@ -2467,16 +2467,16 @@ export class Files {
    * Where a conflicting write's content goes: the blocked ancestor, or else the path,
    * under the first conflict name nothing holds, so a copy never replaces anything. The
    * copy's name is a valid path and the rest is the end of one, so only the whole path's
-   * length can fail: one that would pass 4096 bytes is refused, as that op's outcome. The sandbox keeps such a file and the sync agent
-   * reports it on every sync until it is renamed or the conflict resolved (tasks 6).
+   * length can fail: one that would pass 4096 bytes is refused, as that op's outcome. The
+   * sandbox keeps such a file and the sync agent reports it on every sync until it is renamed
+   * or the conflict resolved.
    */
   #copyPath(path: string, epoch: number): string {
     const at = this.#blocked(path) ?? path;
     const rest = path.slice(at.length);
     // Each copy is an entry, so a free name is among the first one past the entries the owner
     // holds. Every candidate starts with the name as cut for the longest suffix that count
-    // allows, so the names taken are found in one range read of the parent's entries (review
-    // rvlim N6).
+    // allows, so the names taken are found in one range read of the parent's entries.
     const most = this.#space().entries + 1;
     const longest = conflictName(nameOf(at), epoch, most);
     const cut = longest.slice(0, longest.length - `.ta-conflict-${epoch}-${most}`.length);
@@ -2861,7 +2861,7 @@ export function whole(value: unknown, what: string, fallback: number, high: numb
 }
 
 /**
- * A search's `next_cursor`: the stored path it resumes after, as base64url (review L5), an
+ * A search's `next_cursor`: the stored path it resumes after, as base64url, an
  * opaque token at most 5,462 characters with nothing to escape, so a path of escaped
  * characters never makes an answer too wide to go on.
  */
@@ -2887,14 +2887,14 @@ export const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
  * one's among them, so those in flight when it starts can beat it at most
  * `MAX_OPEN_INTENTS - 1` times before every one has landed: `MAX_OPEN_INTENTS` tries outlast
  * them. A small whole write holds no upload; one landing in each of that many windows in a
- * row is a flood, refused loudly rather than retried without end. Measured (review rvbr):
+ * row is a flood, refused loudly rather than retried without end. Measured:
  * 80 and then 300 concurrent appends to one small file all landed, none refused.
  */
 export const APPEND_TRIES = MAX_OPEN_INTENTS;
 
 /**
  * An outside agent's or a run's remove, rename or restore with no etag: it never removes,
- * moves or overwrites an entry it did not read (review R2-L3, as `UNREAD_WRITE`).
+ * moves or overwrites an entry it did not read (as `UNREAD_WRITE`).
  */
 export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\" where there " +
   "is none: read it first (file_stat, fetch or file_read)";
@@ -2933,7 +2933,7 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
 }
 
 /**
- * The most bytes one `file_edit` edits (ADR-037's ruling 2): no longer `WHOLE_BYTES`, since a
+ * The most bytes one `file_edit` edits (ADR-037): no longer `WHOLE_BYTES`, since a
  * chunk-wise edit's memory does not depend on the file, but the time one call takes, its
  * tightest bound. The workerd memory leg times the worst edit (the first chunk's, longer, so
  * every chunk is read, remade and put) on the real path, with the files Worker's own hashing
@@ -3028,7 +3028,7 @@ export interface SearchResult {
 export interface FetchMetadata {
   /** Its path, its id's; left out when its fields were cut to fit one answer (`fields_cut`). */
   readonly path?: string;
-  /** Whether its frontmatter's fields were cut to fit one answer (review L5). */
+  /** Whether its frontmatter's fields were cut to fit one answer. */
   readonly fields_cut?: true;
   readonly size: number;
   readonly version: number;
@@ -3059,7 +3059,7 @@ export interface FileChunksRequest {
 export interface FileWriteRequest {
   readonly path: string;
   readonly expected_etag: string | null;
-  /** The file's bytes, or its text, written as UTF-8 (`file_write`, slice BRAIN). */
+  /** The file's bytes, or its text, written as UTF-8 (`file_write`). */
   readonly content: Uint8Array | string;
   readonly mode?: number;
 }
@@ -3152,11 +3152,7 @@ export interface FileConflicted {
 
 // -- THE DOORS: the `files` rows' handlers (`owner/doors.json`) -----------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`FilesDoorNeeds`) once the row's steps held: the bind, the account, the scope
-// and the fields.
-//
-// These doors move at most two chunks a call. The HTTP and MCP doors (tasks 2) stream
+// These doors move at most two chunks a call. The HTTP and MCP doors stream
 // larger files from the binder to `FILES` itself. Another RPC may run in the object
 // whenever one awaits `FILES`, so a door that crosses to it writes its account first,
 // in a unit, and its later steps through units of their own (`Files`).
@@ -3396,7 +3392,6 @@ function writerNamed(o: SyncIgnoreTold, writer: string): string {
   return writer === OWNER ? "you" : writer;
 }
 
-/** The `files` doors' handlers, by door. */
 export const filesDoors = Object.freeze({
   fileStat(o: FilesDoorNeeds, { r }: Call<FileRequest>): { entry: Entry | null } {
     return { entry: o.files.stat(r["path"]) };
@@ -3468,10 +3463,10 @@ export const filesDoors = Object.freeze({
     // `truncated` with `next_offset` for file_read to go on from.
     const read = await textWindow(o, content, 0, PAGE_BYTES);
     // A file search found that is not text (a scan, an image) is answered with its metadata
-    // and no text, never refused: every id a search answers is fetchable (review L4).
+    // and no text, never refused: every id a search answers is fetchable.
     const found = frontmatter(read.text ?? "");
     const path = content.entry.path;
-    // A frontmatter too wide for one answer beside its path is cut, said so (review L5):
+    // A frontmatter too wide for one answer beside its path is cut, said so:
     // every id a search answers is fetchable, whatever its fields hold.
     let front = found;
     let cut = false;
@@ -3509,7 +3504,7 @@ export const filesDoors = Object.freeze({
       : part.bytes);
   },
   /**
-   * Text added at the end of a file (`file_append`, slice BRAIN: an outside agent's everyday
+   * Text added at the end of a file (`file_append`: an outside agent's everyday
    * write-back), the file made when absent. It never changes a byte already there, so it is
    * additive (OpenAI's `destructiveHint: false`): the file is read, the text put after it, and
    * the whole written at the etag it was read at, so two appends never lose each other; one
@@ -3620,7 +3615,7 @@ export const filesDoors = Object.freeze({
    * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
    * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement). An
    * outside client or a run writes at the etag it read, or `""` to create a file only when it
-   * is absent, never with no etag at all (review H1): a replacement never lands over a file
+   * is absent, never with no etag at all: a replacement never lands over a file
    * the agent did not read. The owner's own app may still write with none.
    */
   async fileWrite(o: FilesDoorNeeds, door: Door<FileWriteRequest>):
@@ -3654,7 +3649,7 @@ export const filesDoors = Object.freeze({
   },
   /**
    * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
-   * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
+   * the caller read (`file_edit`: a correction, as a stale directive rewritten in
    * place). Text that occurs nowhere, or more than once, is refused with how many times, so
    * the caller gives more of the text around it. A chunked file is edited chunk by chunk
    * (`edit.ts`, ADR-037), each chunk read or made in a step of the isolate's units of its
@@ -3860,7 +3855,7 @@ export const filesDoors = Object.freeze({
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
     const plan = await o.door(() => o.files.uploadPlan(door.check().r["intent_id"]));
-    // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
+    // The namespace and its wrapped data key, which only `FILES` opens.
     const { ns, key } = await o.files.space();
     return { namespace: ns, key, ...plan };
   },
@@ -3964,7 +3959,7 @@ export const filesDoors = Object.freeze({
   },
   /**
    * The sync agent's upload of a file past one inline write (`INLINE_BYTES`), through the
-   * files plane's own upload (slice S review M-6): begun as the lease's own writer, so its
+   * files plane's own upload: begun as the lease's own writer, so its
    * sync commit (`intent_id`) takes it, fenced by the live lease.
    */
   fileSyncUploadBegin(o: FilesDoorNeeds, { r }: Call<SyncUploadBeginRequest>):

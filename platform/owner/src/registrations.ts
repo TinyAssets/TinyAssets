@@ -1,5 +1,5 @@
 /**
- * An MCP client's held agent registration (slice 3's review L2), mirroring a held policy
+ * An MCP client's held agent registration, mirroring a held policy
  * proposal (`policy.ts`).
  *
  * Registering an agent is the owner's act, in its protected session, but the identity an
@@ -193,17 +193,12 @@ export interface RegistrationCardRequest {
 }
 
 // -- THE DOORS: the `registrations` rows' handlers (`owner/doors.json`) ---------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`RegistrationsDoorNeeds`) once the row's steps held: the bind, the account,
-// the scope and the fields.
 
 /** What the `registrations` doors reach: the held cards. */
 export interface RegistrationsDoorNeeds {
   readonly registrations: Registrations;
 }
 
-/** The `registrations` doors' handlers, by door. */
 export const registrationsDoors = Object.freeze({
   /**
    * An MCP client files the registration of its agent on its own verified call, so the

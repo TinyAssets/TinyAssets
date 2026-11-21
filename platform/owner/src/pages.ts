@@ -52,7 +52,7 @@ export function bodied<T extends { readonly body: string | null }>(
   if (!first) {
     return null;
   }
-  // Its fields at their widest (review L1): `false` over `true`, and the wider of `null`
+  // Its fields at their widest: `false` over `true`, and the wider of `null`
   // and the size's digits for where the rest starts.
   const meta = jsonBytes({ ...item, body: "", body_bytes: window.size,
                            body_next_offset: String(window.size).length >= 4 ? window.size
@@ -264,8 +264,8 @@ function agentKey(list: (typeof AGENT_LISTS)[number], item: Keyed): string {
 }
 
 /**
- * The agents a caller sees, fitted to one answer after the cursor `after` (`outsideAgents`,
- * review M3 and its verification): the three lists read as one sequence, each by its stable
+ * The agents a caller sees, fitted to one answer after the cursor `after` (`outsideAgents`):
+ * the three lists read as one sequence, each by its stable
  * key, so an agent added or removed between pages is neither skipped nor answered twice;
  * `next`, the last one answered's `<list>:<key>`, when some are left.
  */
