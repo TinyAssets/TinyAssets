@@ -38,6 +38,6 @@ Three distinct problems filed as one row:
 
 ## Note on scope
 
-Item 3 overlaps the merge-attribution and `pr-scope-guard` work. `scripts/drain_review_gate.py`
-(kept in the 2026-08-25 harness reset) enforces exact-head review receipts on sensitive-file PRs
-including `.github/workflows/`, which narrows but does not close the secret-request surface.
+Item 3 overlaps the merge-attribution and `pr-scope-guard` work. The required `review` check
+(`scripts/review_checks.py`, ADR-038) reviews every PR, `.github/workflows/` edits included,
+which narrows but does not close the secret-request surface.
