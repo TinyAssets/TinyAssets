@@ -10,9 +10,9 @@ applied, and what the egress boundary admits.
 touching the capability is proven. It carries the owner-configured review
 contract (2026-10-04) and capability-URL requirements (change
 `capability-url-connections`, landed 2026-09-30, PR #4115).
-The `exact` / `full` access-mode requirements live in the still-open
-`openspec/changes/full-channel-access/` delta and join here when that change
-archives.
+The `exact` / `full` access-mode requirements were in
+[the `full-channel-access` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/full-channel-access), which
+was deleted unbuilt with the old stack's open changes (`untangle/p9-cleanup`).
 
 ## Requirements
 

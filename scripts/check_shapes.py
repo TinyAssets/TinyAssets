@@ -1148,14 +1148,6 @@ def check(root: Path = ROOT, *, added: set[str] | None = None) -> list[str]:
                 second_path_problems(rel, path.read_text(encoding="utf-8", errors="replace"))
             )
     problems.extend(added_line_problems(git_added_lines(root)))
-    for adr in files("docs/decisions/ADR-*.md", root):
-        source = adr.read_text(encoding="utf-8")
-        status = re.search(r"(?m)^## Status\s*\n\s*([^\n]+)", source)
-        if not status or not status.group(1).startswith("Accepted"):
-            continue
-        cited = re.findall(r"openspec/(?:specs|changes)/[\w./-]+", source)
-        if not any((root / ref.rstrip(".,);`")).exists() for ref in cited):
-            problems.append(f"adr-has-spec: {adr.relative_to(root)}")
     for proposal in files("openspec/changes/*/proposal.md", root):
         source = proposal.read_text(encoding="utf-8")
         for name in re.findall(r"(?i)\bsupersedes?\s*:?\s*[`'\"]?([a-z][a-z0-9-]+)", source):

@@ -278,7 +278,15 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;
   what stayed and why: `untangle-2026-11/p9-now.md`).
 - [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
-  their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
+  their readers re-pointed, so the window's deletion is smaller:
+  - [x] the archive and the 72 old changes no test claims an id of, their readers re-pointed
+    at main's last commit holding them, and `check_shapes.py`'s `adr-has-spec` with them
+    (`untangle/p9-cleanup`; `untangle-2026-11/p9-cleanup.md`);
+  - [ ] the verifies-id step leaves, brought forward from the cutover: `test_shape.py`, its
+    scope-guard step, `test-shape-prune.yml` and their tests (`untangle/p9-ids`, after
+    `untangle/p6-tests-beside`);
+  - [ ] then the 13 old changes whose ids the old suite's tests claim, and their manifest
+    entries (`untangle/p9-openspec-rest`).
 - [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
   protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
   from `land/3`; `untangle-2026-11/slow-tests.md`).
@@ -523,9 +531,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] An erasure of a lost object marks nothing (its object and no restore record name a
     namespace): mode `erase` finds its namespaces first, and refuses while R2 holds one naming
     it, until it is restored (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
-  - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
-    it, since `copyback` needs an object naming the namespace and `recover` begins every owner
-    (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
@@ -872,6 +877,11 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
   exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
   then its build (`untangle/r7-unopenable`).
+- [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
+  it, since `copyback` needs an object naming the namespace and `recover` begins every owner
+  (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`). Nothing builds on it, it is rare, it
+  is loud (the operator sees the refusal) and it is recoverable (the copy keeps the current
+  objects), so it waits until after the cutover (Lane R after #5674, 2026-11-17).
 
 ### Step 17. Restore and the off-account copy
 
