@@ -112,6 +112,7 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
 /** Outside-callable doors the doors call themselves, never a tool, and why. */
 const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
   toolProfile: "the MCP and API doors' read of which tools the caller is served",
+  definitionRead: "the MCP door's resources, agent prompt and Skills extension, never a tool",
   fileUploadTarget: "the file door's bytes: the binder's read of an upload's plan (slice L)",
   fileUploadStored: "the file door's bytes: the binder's report of the chunks it stored",
   wakeEvents: "the MCP door's events/list (MCP Events, slice W), never a tool",

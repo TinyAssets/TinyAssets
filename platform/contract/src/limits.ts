@@ -85,6 +85,15 @@ export const BODY_BYTES_MAX = EGRESS_BODY_MAX / 2;
  * `BODY_BYTES_MAX` go by `/api`.
  */
 export const MCP_BODY_MAX = 4 * 1024 * 1024;
+/**
+ * The most bytes of an agent's definition the MCP door serves a main agent (its `AGENTS.md`,
+ * `SOUL.md` and skills' files, `definitionRead`), a technical ceiling: the SDK materializes
+ * each answer whole, the `agent` prompt both files at once, so it is half `MCP_BODY_MAX`, an
+ * answer with its JSON escapes (or a file as base64) within what the doors' isolate holds a
+ * few at a time (ADR-037); the object reads it in one unit (`DEFINITION_UNITS`). Past it the
+ * definition is refused, never cut.
+ */
+export const DEFINITION_BYTES_MAX = MCP_BODY_MAX / 2;
 /** The consent form's body: its handle and decision, a few short fields. */
 export const AUTHORIZE_BODY_MAX = 4 * 1024;
 /** An E2B lifecycle event's body: a few hundred bytes in practice, the metadata's included. */

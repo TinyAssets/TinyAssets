@@ -6,7 +6,8 @@
  *
  * - `agent.json`: its engine, model and run scopes (`agentFile`).
  * - `AGENTS.md`: its instructions, and `SOUL.md`, which they name.
- * - `.agents/skills/<name>/SKILL.md`: its own skills (the Agent Skills layout).
+ * - `.agents/skills/<name>/SKILL.md`: its own skills (the Agent Skills layout), which with the
+ *   owner's shared ones make its skills (`skillUnion`).
  * - `mcp.json`: its own MCP servers (`agentMcp`), each a URL or a command, never a credential:
  *   a server's credential comes through the owner's connection, as a connector's does.
  * - `hooks.json`: its own hooks (`agentHooks`), each an argv run on an engine-neutral event. A
@@ -21,7 +22,7 @@ import { isHookKind, type HookKind, TOOL_MATCHER } from "./acts.ts";
 import { RUN_CAPABILITIES, type RunCapability } from "./capabilities.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { CONNECTION_ID } from "./ids.ts";
-import { AGENTS_DIR } from "./paths.ts";
+import { ABILITIES_DIR, AGENTS_DIR, SKILLS_DIR } from "./paths.ts";
 import { Refusal } from "./refusal.ts";
 import { CREDENTIAL_KINDS, type CredentialKind } from "./sandbox.ts";
 import { AGENT_ID, CREDENTIAL_NAME, isPrintable } from "./text.ts";
@@ -45,6 +46,59 @@ export const RUN_DOOR_SERVER = "tinyassets";
 /** The path of `agent`'s definition file `name` (`AGENT_FILES`). */
 export function agentPath(agent: string, name: string): string {
   return `${AGENTS_DIR}/${agent}/${name}`;
+}
+
+// ---- the skills ----
+
+/** The file that makes a directory a skill (the Agent Skills layout). */
+const SKILL_FILE = "SKILL.md";
+
+/** The owner's files as the skill union reads them, at their `/workspace` paths. */
+export interface SkillTree {
+  /** The names of the directories directly in `dir`; none when it is no directory. */
+  dirs(dir: string): readonly string[];
+  /** Whether `path` is a file. */
+  file(path: string): boolean;
+}
+
+/**
+ * `agent`'s skills, each name once with the directory it is served from: the agent's own
+ * (`.agents/skills` in its directory), then the owner's shared abilities
+ * (`/workspace/.agents/skills`), then the owner's skills (`/workspace/skills`), the first that
+ * holds a name winning it, in name order within each source. A skill is a directory, its name
+ * not hidden, holding `SKILL.md`. The runner projects these into each engine's skills paths (or
+ * its argv, in this order) and the doors serve them to a main agent, so both read one union.
+ */
+export function skillUnion(agent: string, tree: SkillTree): ReadonlyMap<string, string> {
+  const chosen = new Map<string, string>();
+  for (const source of [agentPath(agent, AGENT_FILES.skills), `${ABILITIES_DIR}/skills`,
+                        SKILLS_DIR]) {
+    for (const name of [...tree.dirs(source)].sort()) {
+      if (!name.startsWith(".") && !chosen.has(name)
+          && tree.file(`${source}/${name}/${SKILL_FILE}`)) {
+        chosen.set(name, `${source}/${name}`);
+      }
+    }
+  }
+  return chosen;
+}
+
+/**
+ * An agent's definition as the owner answers the doors (`definitionRead`), which serve it to a
+ * main agent as MCP resources, the `agent` prompt and the Skills extension: its instructions
+ * and soul (null when absent), and each skill of its union (`skillUnion`) with every file's
+ * bytes by its path in the skill's directory. The bytes are as stored (Fact 9), never run.
+ */
+export interface ServedDefinition {
+  readonly agent: string;
+  readonly instructions: Uint8Array | null;
+  readonly soul: Uint8Array | null;
+  readonly skills: readonly ServedSkill[];
+}
+
+export interface ServedSkill {
+  readonly name: string;
+  readonly files: Readonly<Record<string, Uint8Array>>;
 }
 
 function refuse(name: string, what: string): never {

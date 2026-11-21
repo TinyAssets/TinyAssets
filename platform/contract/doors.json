@@ -850,6 +850,9 @@
       "door": "toolProfile", "class": "read", "capability": null, "args": "none"
     },
     {
+      "door": "definitionRead", "class": "read", "capability": "read_files", "args": "none"
+    },
+    {
       "door": "mailChain", "class": "read", "capability": null,
       "args": {
         "refused": "invalid ledger request", "required": { "message_id": {}, "limit": {} },

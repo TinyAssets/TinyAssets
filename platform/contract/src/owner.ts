@@ -23,6 +23,7 @@
  * `EgressReserved`, `EgressRefusal`) and the billed event the E2B hook routes
  * (`BilledEvent`).
  */
+import type { ServedDefinition } from "./agent-definition.ts";
 import type { Binding, InboundAnswer } from "./binding.ts";
 import type { TierName } from "./control.ts";
 import type { ProfileName } from "./doors.ts";
@@ -454,8 +455,10 @@ export interface DoorTypes {
       { readonly keys: readonly string[]; readonly routes: readonly string[] } | null;
   };
   readonly toolProfile: {
-    readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[] };
+    readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[];
+                       readonly withheld: readonly string[] };
   };
+  readonly definitionRead: { readonly answer: ServedDefinition };
   readonly wakeEvents: {
     readonly loose: [commandCenter?: string];
     readonly answer: { readonly events: readonly Events[] };
@@ -644,7 +647,8 @@ export interface DoorTypes {
   readonly policyRead: {
     readonly answer: { readonly generation: number; readonly policy: PolicyDocument;
                        readonly notes: readonly { readonly holds_at: readonly string[];
-                                                  readonly not_enforced: readonly string[] }[] };
+                                                  readonly not_enforced: readonly string[] }[];
+                       readonly codemode: { readonly on: boolean } };
   };
   readonly policyProposal: { readonly answer: { readonly digest: string } };
   readonly grantList: {

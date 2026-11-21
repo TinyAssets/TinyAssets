@@ -153,6 +153,7 @@ import {
 import { type OwnerStorage, WriteGate } from "./gate";
 import { Grants, grantsDoors } from "./grants";
 import { codemodeDoors } from "./codemode";
+import { definitionDoors } from "./definition";
 import {
   actorOf, Ledger, ledgerDoors, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
@@ -407,8 +408,8 @@ type Parts = Readonly<Stores & Built & DoorUnits & ObjectReads>;
  */
 const HANDLERS = Object.freeze({
   actions: actionsDoors, admission: admissionDoors, codemode: codemodeDoors,
-  collections: collectionsDoors, connections: connectionsDoors, egress: egressDoors,
-  erasure: erasureDoors,
+  collections: collectionsDoors, connections: connectionsDoors, definition: definitionDoors,
+  egress: egressDoors, erasure: erasureDoors,
   export: exportDoors, files: filesDoors, grants: grantsDoors, import: importDoors,
   inbound: inboundDoors, keys: keysDoors, ledger: ledgerDoors, notices: noticesDoors,
   policy: policyDoors, registrations: registrationsDoors, relay: relayDoors,

@@ -561,7 +561,7 @@ describe("the doors' routes and gates", () => {
     const tokens = await connect(await registerClient(), { owner: owner() });
     const broken = { getByName: () => ({
       toolProfile: () => Promise.resolve({ profile: "directory",
-                                           tools: profileNames("directory") }),
+                                           tools: profileNames("directory"), withheld: [] }),
       outsideAgents: () => Promise.reject(new Error("db at 10.0.0.7 is down")) }) };
     const environment = { ...doorsEnv, OWNER: broken } as unknown as DoorsEnv;
     vi.spyOn(console, "error").mockImplementation(() => undefined);

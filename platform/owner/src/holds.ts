@@ -195,6 +195,12 @@ export const BURST_UNITS = (BURST_PEAK_BYTES + UNIT_BYTES - 1
 export const WINDOW_UNITS = 1;
 
 /**
+ * An agent's definition read whole (`definitionRead`): at most `DEFINITION_BYTES_MAX`, half a
+ * unit, each file's read parts and their joined copy in hand at once.
+ */
+export const DEFINITION_UNITS = 1;
+
+/**
  * A whole body's read (`Bodies.fetch`): per chunk, its bytes, its text (a one-byte string, or
  * UTF-16 for wider text: never more bytes than its UTF-8) and slack (measured 8.01 MiB for a
  * two-chunk body, the text taken after its parts are let go).

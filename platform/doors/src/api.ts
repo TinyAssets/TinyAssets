@@ -4,7 +4,8 @@
  * the door's result. The same table as `/mcp` (`tools.ts`), held to the same profile
  * (`profileOf`: the key's grant names it), so the two can never serve different operations;
  * the object checks every field. A tool outside the key's profile is `404`, as one that
- * does not exist.
+ * does not exist; one its profile holds that the owner's policy withholds (`code` while code
+ * mode is off) is called, and its door's refusal says why.
  *
  * A key that does not verify (`presentedKey`, the `/mcp` door's key check too) is `401` and
  * no object is reached; then the kill switch, fail-closed. The request's `Cookie` header is
@@ -33,9 +34,10 @@ export async function serveApi(request: Request, env: DoorsEnv, sources: Sources
   }
   return answered(asJson, async () => {
     const held = await outsideAccount(env, bound, sources);
-    const { tools } = await profileOf(held);
+    const { tools, withheld } = await profileOf(held);
     const match = TOOL_PATH.exec(new URL(request.url).pathname);
-    const tool = match === null ? undefined : tools.find((row) => row.name === match[1]);
+    const tool = match === null ? undefined
+      : [...tools, ...withheld].find((row) => row.name === match[1]);
     if (tool === undefined) {
       return failure(404, "no such tool");
     }

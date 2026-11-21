@@ -674,14 +674,15 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.getByRole("checkbox", { name: "Read your files" }).check();
   await page.getByRole("button", { name: "Make the key" }).click();
   assert.match(await page.locator(".secret").innerText(), /^ta_key_[0-9a-f]{16}_/);
-  // Code mode off, in the owner's session.
+  // Code mode, off by default, turned on in the owner's session.
   await page.goto(`${ORIGIN}/app#apps`);
   const codemode = page.locator("section", { hasText: "Code mode" });
-  await codemode.getByRole("checkbox").uncheck();
+  assert.equal(await codemode.getByRole("checkbox").isChecked(), false);
+  await codemode.getByRole("checkbox").check();
   await codemode.getByRole("button", { name: "Save" }).click();
   await page.locator(".message.good", { hasText: "Saved." }).waitFor();
   assert.equal(await page.locator("section", { hasText: "Code mode" }).getByRole("checkbox")
-    .isChecked(), false);
+    .isChecked(), true);
   // No main agent has joined, so no wake-up is offered.
   await page.goto(`${ORIGIN}/app#apps`);
   await page.getByText("No main agent has joined yet.").waitFor();
@@ -918,7 +919,8 @@ test("no cross-site post changes anything (CSRF)", { timeout: 60_000 }, async ()
       contentType: "text/html", body: "<p>hi</p>" }));
     await evil.goto(`${attacker}/`);
     const body = JSON.stringify({ expected_generation: generation,
-                                  policy: { ...policy.body.policy, codemode: { on: true } } });
+                                  policy: { ...policy.body.policy,
+                                            codemode: { on: !policy.body.codemode.on } } });
     await evil.evaluate(async ([origin, b]) => {
       for (const init of [
         { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },

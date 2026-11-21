@@ -137,7 +137,7 @@ A door that does one of the acts an owner's action rule names (`contract/acts.js
 - **THEN** the door table's check refuses the row, naming its act
 
 ### Requirement: A main agent spends few calls
-`/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, deletions included, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the codemode Worker, refused once the owner's policy turns code mode off, on by default, or where the caller's profile lacks it).
+`/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, deletions included, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the codemode Worker, only while the owner's policy turns code mode on, off by default until its isolation probe (H2) passes, and where the caller's profile holds it). While it is off, `code` SHALL be listed to no caller, and an API key's call of it SHALL be answered with the object's `code_mode_off` refusal, which says why.
 
 #### Scenario: A script of two calls
 - **WHEN** a new client calls `code` with a script that writes a board row and reads the board digest

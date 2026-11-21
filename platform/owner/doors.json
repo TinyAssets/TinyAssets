@@ -159,6 +159,8 @@
     { "door": "ownerState", "caller": "reserved", "action": "admission", "handler": "admission",
       "gate": "units" },
     { "door": "toolProfile", "caller": "account", "handler": "codemode", "gate": "door" },
+    { "door": "definitionRead", "caller": "account", "handler": "definition", "gate": "units",
+      "seeded": true },
     { "door": "mailChain", "caller": "owner", "action": "read its agents' mail chains",
       "handler": "ledger", "gate": "units" },
     { "door": "wakeEvents", "caller": "account", "scope": "handler", "handler": "ledger",

@@ -16,7 +16,7 @@ import {
   RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { SOCKET_VERSION, TICKET_REFUSED } from "../../contract/src/socket-shape";
-import { RUN_INSTRUCTIONS } from "../src/instructions";
+import { INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { secretOf, until } from "../../ci/workerd";
@@ -192,6 +192,24 @@ describe("the owner's /app/api/agent/* routes", () => {
 });
 
 describe("a run's own doors on the egress host", () => {
+  it("serve its own agent's definition, not main's", async () => {
+    const { who, app } = await owned();
+    for (const [name, text] of [["agent.json", JSON.stringify(SIGNED_IN)],
+                                ["AGENTS.md", "# The writer's own instructions"]]) {
+      const written = await appPost("files/write", app.access_token, app.session, {
+        path: `/workspace/agents/writer/${name}`, expected_etag: "", text });
+      expect(written.status).toBe(200);
+    }
+    await appPost("agent/submit", app.access_token, null,
+                  { message: "go", client_send_id: "w-1", agent_id: "writer" });
+    const client = await engine((await starts(who))[0]!);
+    expect((await client.listResources()).resources.map((resource) => resource.uri))
+      .toContain("tinyassets://agent/writer/AGENTS.md");
+    expect((await client.readResource({ uri: "tinyassets://agent/writer/AGENTS.md" })).contents)
+      .toMatchObject([{ text: "# The writer's own instructions" }]);
+    await client.close();
+  });
+
   it("serve its MCP tools but converse, held to its grant's scopes", async () => {
     const { who, app } = await owned();
     await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "e-1" });
@@ -205,10 +223,11 @@ describe("a run's own doors on the egress host", () => {
     // Nor a mailbox tool: the inbox digest's mail part is a mailbox read.
     expect(tools.some((tool) => ["mailbox_read", "mailbox_ack", "inbox_digest"]
       .includes(tool.name))).toBe(false);
-    // Exactly the run profile, code mode on by default.
-    expect(tools.map((tool) => tool.name)).toEqual(profileNames("run"));
+    // Exactly the run profile, but code: code mode is off by default.
+    expect(tools.map((tool) => tool.name))
+      .toEqual(profileNames("run").filter((name) => name !== "code"));
     // The engine is told where working files go: its scratch, never the owner's storage.
-    expect(client.getInstructions()).toBe(RUN_INSTRUCTIONS);
+    expect(client.getInstructions()).toBe(INSTRUCTIONS.run);
     expect(structured(await client.callTool({ name: "file_stat",
                                               arguments: { path: "/workspace" } })))
       .toMatchObject({ entry: { kind: "dir" } });
