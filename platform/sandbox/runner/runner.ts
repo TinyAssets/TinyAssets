@@ -67,13 +67,13 @@
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readdirSync,
-         readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+         readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
 import { CODE_LOADING_ENV, RUN_BASICS } from "../../sources/src/run-env";
-import type { Decide } from "../../sources/src/schema";
+import type { Decide, Definition } from "../../sources/src/schema";
 import { type Served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { DECIDE_HEADER, decideDoor, RUNNER_HEADER } from "../../contract/src/egress";
@@ -87,9 +87,9 @@ import { DECIDE_ENV, DECIDE_MS, decideCommand, helperArgv, helperCommand,
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
-import { ancestorEnvFile, envScanReach, homeEnvFile, projectEnvFile,
+import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
-import { project } from "./project";
+import { project, skillsOf } from "./project";
 import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
          scratchCleared, type ScratchCleared,
          markUsed,
@@ -969,6 +969,26 @@ class RunRefused extends Error {
 }
 
 /**
+ * Refuses the run, saying why, while its cwd or an ancestor under `/workspace` holds what its
+ * engine would read beside its definition, or instructions past what it reads
+ * (`definitionRefusal`). Checked before each start of the CLI, so a file the agent wrote
+ * mid-run never reaches a resumed one.
+ */
+function definitionHeld(definition: Definition, cwd: string, outbox: Outbox): void {
+  const refusal = definitionRefusal(definition, cwd, (path) => {
+    try {
+      return statSync(path).size;
+    } catch {
+      return lstatSync(path, { throwIfNoEntry: false })?.size ?? null;  // a link to nowhere
+    }
+  });
+  if (refusal !== null) {
+    outbox.push({ type: "ta.refused", ...refusal });
+    throw new RunRefused(refusal.code);
+  }
+}
+
+/**
  * The env files a CLI would load: its home's (but the run's own config files, `own`, which
  * root wrote), its cwd's, and each ancestor's of its cwd.
  */
@@ -1195,8 +1215,9 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     const asked = door === null ? null : await hookTools(door.url, door.credential);
     const hook = asked === null ? {} : { hook: { tools: asked.tools, digest: ownDigest() } };
     const hooked = asked !== null && asked.tools.length > 0;
+    const skills = [...skillsOf(WORKSPACE, start.agent).values()];
     let call = invocation(rec, start, process.env, {
-      continued, home, system, ...hook,
+      continued, home, system, skills, ...hook,
       ...(conversationDir === undefined ? {} : { conversationDir }),
       ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
     await writeShared(rec.id, call.shared, asked?.generation ?? 0);
@@ -1223,14 +1244,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           outbox.push({ type: "ta.refused", ...refusal });
           throw new RunRefused(refusal.code);
         }
-        // A settings file the CLI would load beside the hook, which the agent can write:
-        // never while a rule needs the hook (the record's `refuses`).
-        const beside = (hooked ? decide!.refuses ?? [] : []).find((rel) =>
-          lstatSync(join(call.cwd, rel), { throwIfNoEntry: false }) !== undefined);
-        if (beside !== undefined) {
-          outbox.push({ type: "ta.refused", code: "hook_settings_refused", path: beside });
-          throw new RunRefused("hook_settings_refused");
-        }
+        definitionHeld(cli.definition, call.cwd, outbox);
         if (hooked) {
           await startCheck(as, call, decide!, door!.url);
         }
@@ -1289,11 +1303,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           }
           await killAll(as);
           call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-            continued: true, home, system, prompt: CONTINUE_PROMPT, ...hook,
+            continued: true, home, system, prompt: CONTINUE_PROMPT, skills, ...hook,
             ...(conversationDir === undefined ? {} : { conversationDir }) });
           if (!call.resumed) {
             break;
           }
+          definitionHeld(cli.definition, call.cwd, outbox);
           outbox.push({ type: "ta.resumed", after: "renewal" });
         }
       } finally {
