@@ -1,7 +1,7 @@
 /**
- * The refusal guard (untangle B2): every answer a Worker refuses with is the contract's one
- * `Refusal` (`contract/src/refusal.ts`), told apart by its `code`, never by its message. So
- * in any Worker's own source:
+ * The refusal guard: every answer a Worker refuses with is the contract's one `Refusal`
+ * (`contract/src/refusal.ts`), told apart by its `code`, never by its message. So in any
+ * Worker's own source:
  *
  * - no class extends an error: an error class of a Worker's own is a refusal the contract's
  *   code list does not hold, or a signal some caller must know to catch;

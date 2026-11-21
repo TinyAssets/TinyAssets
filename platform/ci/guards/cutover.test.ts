@@ -1,5 +1,5 @@
 /**
- * The cutover's manifest (untangle B24, `platform/cutover.json`, read by `ci/kit/cutover.ts`)
+ * The cutover's manifest (`platform/cutover.json`, read by `ci/kit/cutover.ts`)
  * held to the tree, so the cutover's change is the manifest applied and nothing else:
  * - it is in its shape: three phases, each entry a delete, an edit, a move or a live object;
  * - every entry exists: each path, each name an edit or a move takes out of its file, each

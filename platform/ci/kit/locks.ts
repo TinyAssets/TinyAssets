@@ -1,9 +1,8 @@
 /**
- * The migration locks: append-only migrations from each Worker's first deploy (tasks
- * "Append-only migrations from the first deploy"; slice P). One lock a Durable Object class
- * that keeps tables, each Worker's held by its migrations guard: a Worker states its locks,
- * each lock's path from `platform/` to the migrations the code holds for it, as `LOCKS` in
- * its `guards/locks.ts`.
+ * The migration locks: append-only migrations from each Worker's first deploy. One lock a
+ * Durable Object class that keeps tables, each Worker's held by its migrations guard: a Worker
+ * states its locks, each lock's path from `platform/` to the migrations the code holds for it,
+ * as `LOCKS` in its `guards/locks.ts`.
  *
  * Once a migration has run on a live object it is never edited: a new shape is a new
  * migration at the end. A lock holds:

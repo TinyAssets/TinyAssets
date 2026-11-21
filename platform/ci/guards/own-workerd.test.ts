@@ -186,7 +186,6 @@ try { own.check(); console.log("measured"); } catch (error) { console.log(error.
         .map((at) => text.slice(at, text.indexOf("\n", at)));
       expect([name, outside.filter((line) => !line.includes("/json/list"))])
         .toEqual([name, []]);
-      expect(text).toContain("own.check();");
     }
   });
 

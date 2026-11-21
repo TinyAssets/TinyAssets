@@ -1,7 +1,6 @@
 /**
- * H2's live probes, narrowed to code mode (tasks 5, "H2 live"; slice L builds them, the
- * founder runs them after the dark deploy, once the doors are routed and a probe owner
- * exists): what workerd cannot show about a `code` script in production. Each probe is a
+ * H2's live probes, narrowed to code mode (the founder runs them after the dark deploy,
+ * once the doors are routed and a probe owner exists): what workerd cannot show about a `code` script in production. Each probe is a
  * measurement printed as a row, never a pass a mock could fake; a probe whose answer is a
  * transport failure stops the run loudly.
  *

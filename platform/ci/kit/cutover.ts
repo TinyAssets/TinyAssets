@@ -1,5 +1,5 @@
 /**
- * The cutover's manifest (untangle B24, `platform/cutover.json`): what the cutover deletes,
+ * The cutover's manifest (`platform/cutover.json`): what the cutover deletes,
  * edits, moves and takes down, phase by phase, so the cutover's change is "do what it lists,
  * then delete it". `ci/guards/cutover.test.ts` holds it to the tree; the layer table
  * (`imports.ts`) reads the paths it deletes as the cutover layer.

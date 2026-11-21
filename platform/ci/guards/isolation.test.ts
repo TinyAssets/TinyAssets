@@ -1,5 +1,5 @@
 /**
- * One import-layer table over every file (untangle B1, `ci/kit/layers.ts`): every script
+ * One import-layer table over every file (`ci/kit/layers.ts`): every script
  * under `platform/` and `scripts/` is in exactly one layer, by its path; each of its imports,
  * by every way one module names another, lands where its layer may import; and so does each
  * workflow's inline module. The only exceptions are what each workspace owes

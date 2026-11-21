@@ -4,8 +4,8 @@
  * migrations, and so the deploy order), `platform.json` (what no config can say, each entry
  * with its reason, and so each Worker's record, `WORKER_FACTS`), the shared apps' file it
  * names (their signing secrets) and `contract/identity.json` (the doors' public identity).
- * The deploy kit, its workflow's guard, the environment guard and the founder's setup read
- * them here or from those files; none holds a list of its own.
+ * The deploy kit, its workflow's guard, the import job and the founder's setup read them
+ * here or from those files; none holds a list of its own.
  *
  * Node runs this file as it is (type stripping), as the kit does. Run with `--import`, it prints
  * the import job's names (`IMPORT_NAMES`) as JSON, for the job's bundle.

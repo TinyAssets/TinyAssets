@@ -1,5 +1,5 @@
 /**
- * The platform's canary (d3 §J2, untangle B14 as d3 §A7 has it): the platform checked from
+ * The platform's canary (d3 §J2, §A7): the platform checked from
  * outside, through its public routes, as a user's client reaches it. It runs on GitHub's
  * runners (`.github/workflows/platform-canary.yml`), started every ten minutes by the doors'
  * clock (`doors/src/canary-clock.ts`), and after each deploy by the kit (`deploy.ts`). A

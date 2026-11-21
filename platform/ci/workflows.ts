@@ -26,7 +26,6 @@ export function actionFiles(): string[] {
       .map((name) => `.github/actions/${entry.name}/${name}`)).sort();
 }
 
-/** Every workflow file's name, sorted. */
 export function workflowNames(): string[] {
   return readdirSync(WORKFLOWS).filter((name) => /\.ya?ml$/.test(name)).sort();
 }

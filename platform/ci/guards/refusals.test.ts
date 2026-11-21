@@ -1,5 +1,5 @@
 /**
- * The refusal guard (untangle B2, `ci/kit/refusals.ts`): no Worker's own source has an error
+ * The refusal guard (`ci/kit/refusals.ts`): no Worker's own source has an error
  * class of its own or reads a code from a message, with no exception: no workspace's `OWED`
  * (`ci/kit/owed.ts`) holds one.
  */
