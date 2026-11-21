@@ -11,7 +11,7 @@ import pytest
 
 _SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SCRIPTS))
-import drain_review_gate as gate  # noqa: E402
+import review_checks as gate  # noqa: E402
 
 _ENV = {
     **os.environ,
@@ -93,7 +93,7 @@ def _decide(repo: Path, base: str, head: str, check: str) -> subprocess.Complete
     root = repo.parent
     (root / "body.md").write_text(check, encoding="utf-8")
     return subprocess.run(
-        [sys.executable, str(_SCRIPTS / "drain_review_gate.py"), "--untangle-check",
+        [sys.executable, str(_SCRIPTS / "review_checks.py"), "--untangle-check",
          "--head", head, "--base", base, "--body-file", str(root / "body.md")],
         cwd=repo, capture_output=True, text=True)
 

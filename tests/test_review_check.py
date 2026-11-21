@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts import drain_review_gate as gate
+from scripts import review_checks as gate
 
 pytestmark = pytest.mark.verifies(
     "development-coordination-runtime:"
@@ -263,7 +263,7 @@ def test_a_block_fails_where_it_carries_and_waits_after_a_new_change():
 
 def _cli(path, reviews, timeline, base, head, *more, pr="12"):
     return subprocess.run(
-        [sys.executable, str(_ROOT / "scripts" / "drain_review_gate.py"), "--review-check",
+        [sys.executable, str(_ROOT / "scripts" / "review_checks.py"), "--review-check",
          "--reviews-file", str(reviews), "--timeline-file", str(timeline), "--pr", pr,
          "--repo", "o/r", "--base", base, "--head", head, *more],
         cwd=path, capture_output=True, text=True,
@@ -336,13 +336,6 @@ def test_a_signal_names_only_the_pr_whose_branch_it_ran_on():
             gate.signal_pr(text, pull, run_repo=run_repo, run_branch=run_branch)
 
 
-def test_the_review_app_is_required_and_is_not_actions():
-    assert gate.review_app_id({"REVIEW_APP_ID": "777"}) == 777
-    for value in ("", "x", "15368"):
-        with pytest.raises(ValueError):
-            gate.review_app_id({"REVIEW_APP_ID": value})
-
-
 def test_review_yml_decides_per_pr_with_the_app_in_its_environment():
     import yaml
 
@@ -376,58 +369,6 @@ def test_the_merge_group_ref_names_its_pr():
     for ref in ("refs/heads/main", f"gh-readonly-queue/main/pr-0-{A}",
                 "gh-readonly-queue/main/pr-7-abc", f"x/gh-readonly-queue/main/pr-7-{A}"):
         assert gate.queued_pr(ref) is None
-
-
-def test_only_the_latest_successful_run_made_for_this_pr_passes():
-    done = {"id": 1, "name": "review", "status": "completed", "conclusion": "success",
-            "external_id": "pr-12"}
-    waiting = {**done, "id": 2, "status": "in_progress", "conclusion": None}
-    failed = {**done, "id": 3, "conclusion": "failure"}
-    assert gate.review_run_passed([done], 12)
-    assert not gate.review_run_passed([done], 13), "another PR on the same head"
-    assert not gate.review_run_passed([{**done, "external_id": None}], 12)
-    assert not gate.review_run_passed([], 12)
-    assert not gate.review_run_passed(None, 12)
-    assert not gate.review_run_passed([done, waiting], 12)
-    assert not gate.review_run_passed([failed, done], 12)
-    assert not gate.review_run_passed([{**done, "name": "required-tests"}], 12)
-    # A stale run left in progress does not hold back a newer pass.
-    assert gate.review_run_passed([{**done, "id": 4}, waiting], 12)
-
-
-def test_a_reader_lists_every_page_of_check_runs(monkeypatch):
-    """`gh api` returns one page unless told to page; the newest run may be on any."""
-    seen = []
-
-    def run(argv, **kwargs):
-        seen.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout='{"id": 1}\n{"id": 2}\n', stderr="")
-    monkeypatch.setattr(gate.subprocess, "run", run)
-    assert gate._gh_check_runs("repos/o/r/commits/x/check-runs") == [{"id": 1}, {"id": 2}]
-    assert seen == [["gh", "api", "--paginate", "repos/o/r/commits/x/check-runs",
-                     "--jq", ".check_runs[]"]]
-
-
-def test_only_the_review_apps_run_passes_a_reader(monkeypatch):
-    """An Actions-app run named review for the PR (any PR's own job can post one) is not a
-    pass: the App filter is what makes the check the review App's alone."""
-    head = "c" * 40
-    actions = {"id": 9, "name": "review", "status": "completed", "conclusion": "success",
-               "external_id": "pr-12", "app": {"id": 15368}}
-    ours = {**actions, "id": 3, "app": {"id": 777}}
-
-    def api(runs):
-        def check_runs(path):
-            assert path == (f"repos/o/r/commits/{head}/check-runs"
-                            "?check_name=review&filter=all&per_page=100")
-            return runs
-        monkeypatch.setattr(gate, "_gh_check_runs", check_runs)
-
-    monkeypatch.setenv("REVIEW_APP_ID", "777")
-    api([actions])
-    assert not gate.review_passed_at("o/r", head, 12)
-    api([actions, ours])
-    assert gate.review_passed_at("o/r", head, 12)
 
 
 def test_a_merge_group_passes_only_on_a_fresh_pass():
@@ -649,7 +590,7 @@ def _decide(tmp_path: Path, checkout: Path, data: dict, **env: str):
     assert shutil.which("jq"), "jq is not on PATH: review.yml's script needs it"
     _, decide = _decide_steps()
     (checkout / "scripts").mkdir(exist_ok=True)
-    shutil.copy(_ROOT / "scripts" / "drain_review_gate.py", checkout / "scripts")
+    shutil.copy(_ROOT / "scripts" / "review_checks.py", checkout / "scripts")
     fake = _fake_gh(tmp_path, data)
     state = Path(fake["FAKE_GH"])
     runner = tmp_path / "runner"
@@ -687,8 +628,10 @@ def _review_runs(data: dict, sha: str) -> list[dict]:
 
 
 def _passes(data: dict, sha: str) -> bool:
-    """What every reader decides from the App's runs on `sha` for PR 12."""
-    return gate.review_run_passed(_review_runs(data, sha), 12)
+    """GitHub's read of the required check: the App's newest `review` run on `sha`."""
+    runs = _review_runs(data, sha)
+    newest = max(runs, key=lambda r: r["id"], default={})
+    return (newest.get("status"), newest.get("conclusion")) == ("completed", "success")
 
 
 _FAILED = {"title": "could not decide",

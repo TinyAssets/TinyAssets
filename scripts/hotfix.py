@@ -51,11 +51,73 @@ def eligible(path):
     )
 
 
+# GitHub Actions: the app every Actions job's check run reports as. A job named
+# `review` in any workflow reports as it too, so the review check is not this app's.
+_ACTIONS_APP_ID = 15368
+
+
+def review_app_id():
+    """The review App's id (`REVIEW_APP_ID`, the repository variable).
+
+    The `review` check is created only by that App, whose key lives in the main-only
+    `review` environment, and the ruleset pins the context to it, so no PR's workflow
+    can satisfy it. Missing or malformed fails closed.
+    """
+    value = os.environ.get("REVIEW_APP_ID", "")
+    if not value.isdigit() or int(value) == _ACTIONS_APP_ID:
+        raise ValueError("REVIEW_APP_ID is not the review App's id")
+    return int(value)
+
+
+def review_run_passed(check_runs, number):
+    """Does the latest `review` run made for PR `number` read success?
+
+    `check_runs` is the `check_runs` list of
+    `GET /commits/{head}/check-runs?check_name=review`, already narrowed to the
+    review App. Latest is the highest id, the order GitHub created them in. A run
+    made for another PR on the same head, no run, or anything unreadable, is not a
+    pass.
+    """
+    # Imported here: the host runs this file alone (`remote`), with no repository.
+    from scripts.review_checks import external_id
+
+    if not isinstance(check_runs, list):
+        return False
+    runs = [r for r in check_runs if isinstance(r, dict) and isinstance(r.get("id"), int)
+            and r.get("name") == "review" and r.get("external_id") == external_id(number)]
+    if not runs:
+        return False
+    latest = max(runs, key=lambda r: r["id"])
+    return latest.get("status") == "completed" and latest.get("conclusion") == "success"
+
+
+def _gh_check_runs(path):
+    """Every check run a `check-runs` listing holds, across all its pages."""
+    out = run("gh", "api", "--paginate", path, "--jq", ".check_runs[]").decode()
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def review_passed_at(repo, head, number):
+    """Does `head`'s latest `review` run, by the review App, for PR `number`, read success?
+
+    A merge group decides afresh (`review_checks.py --review-check --group-sha`); this
+    reads the PR's own check. It lists every run (`filter=all`, every page), because the
+    API's default `filter=latest` keeps one run per name and suite by its own choice, not
+    the highest id `review_run_passed` takes. Raises on a read that fails: a caller that
+    cannot read the check treats the head as unreviewed.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ValueError(f"not a commit: {head!r}")
+    app = review_app_id()
+    listed = _gh_check_runs(
+        f"repos/{repo}/commits/{head}/check-runs?check_name=review&filter=all&per_page=100")
+    return review_run_passed([r for r in listed if isinstance(r, dict)
+                              and (r.get("app") or {}).get("id") == app], number)
+
+
 def require_review(branch, commit, paths):
     # Every PR needs a passing `review` check (review.yml: an APPROVE PR review that
     # carries to the head, ADR-038). There is no selective floor path list.
-    from scripts.drain_review_gate import review_passed_at
-
     pr = json.loads(run("gh", "pr", "view", branch, "--json", "number,headRefOid"))
     repo = json.loads(run("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
     if pr["headRefOid"] != commit or not review_passed_at(repo, commit, pr["number"]):
