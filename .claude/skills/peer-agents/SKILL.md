@@ -38,13 +38,9 @@ HARD CONSTRAINTS ON HOW YOU WORK:
   subprocess, no new worktree. You are the reviewer; review it yourself.
 - Do NOT run the full suite; CI does. Run at most the one test file needed.
 - Budget ~10 minutes. Read the diff and the cited files and reason.
-- Do the untangle skill's searches (Fact 16) yourself, inside this block's
-  limits: no subagents.
-- Lanes are not capped, but they are RECONCILED: if this brief collides with
-  another open lane (shared files or overlapping intent), or the design direction
-  it assumes has changed, say so and stop rather than working around it. The lead
-  folds colliding or superseded lanes into one, or rebases the briefs onto the new
-  direction, so every objective keeps moving. Merges stay serialized.
+- Run the untangle skill's searches (Fact 16) yourself, no subagents.
+- If this brief shares files with another open PR, or the direction it
+  assumes has changed, say so and stop rather than working around it.
 ```
 
 Habits from the same incident:
