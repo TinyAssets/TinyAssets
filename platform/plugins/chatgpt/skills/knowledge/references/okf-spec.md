@@ -1,5 +1,11 @@
-<!-- ta-okf-vendored: GoogleCloudPlatform/open-knowledge-format SPEC.md at commit ad30107c31c06aec8a7d5636e0d1058118604e6f (blob c06e3eede0c910d0ecf12524c34204156f8795ac), Apache-2.0 (LICENSE.md in that repository). The canonical home is https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md, for provenance only: this copy is never refreshed at use time, only by a reviewed TinyAssets update. Everything below this line is the upstream file, byte for byte. -->
+<!-- ta-okf-vendored: GoogleCloudPlatform/open-knowledge-format SPEC.md at commit 8a8ff87bfd3847c34c9ddd4fbfd9296be2aee4a3 (blob a0b7df1477ed8e92340900ec77d8c639e095a3ff), Apache-2.0 (LICENSE.md in that repository). The canonical home is https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md, for provenance only: this copy is never refreshed at use time, only by a reviewed TinyAssets update. Everything below this line is the upstream file, byte for byte. -->
 # Open Knowledge Format (OKF)
+
+> [!WARNING]
+> **This repository is deprecated.** OKF development has moved to
+> [open-knowledge-format/open-knowledge-format](https://github.com/open-knowledge-format/open-knowledge-format),
+> which has the latest spec (v0.3), bundles, and tooling. This repository
+> is no longer updated; please open issues and pull requests there.
 
 **Version 0.2**
 
