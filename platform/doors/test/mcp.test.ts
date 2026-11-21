@@ -2,13 +2,17 @@
  * The MCP door (research §4; checklist 9, 10, 24): both revisions from one factory, the
  * tool table with every hint, the verified origin, source and sign-in reaching the
  * object, GET 405 and a foreign Origin 403; an owner's key (ADR-039 decision 2.18) served
- * as a token is, by the `/api` door's own check, from the `Authorization` header alone.
+ * as a token is, by the `/api` door's own check, from the `Authorization` header alone. Beside
+ * the tools, the agent's definition: its two files as resources and in the `agent` prompt, its
+ * skills by the Skills extension, each file's digest the bytes' served.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MCP_RESOURCE } from "../../contract/src/identity";
+import { DEFINITION_BYTES_MAX } from "../../contract/src/limits";
 import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
 import { profileNames, toolTable } from "../../contract/src/doors";
@@ -47,6 +51,36 @@ afterEach(() => {
   restore();
 });
 
+/** The owner's file at `path` as `client` reads it with the file tools. */
+async function stored(client: Client, path: string): Promise<string> {
+  return answerOf(await client.callTool({ name: "fetch", arguments: { id: path } }))["text"] as
+    string;
+}
+
+/** The skills of a new owner's `main`: the starter's shared ones, as it has none of its own. */
+async function seededSkills(client: Client): Promise<string[]> {
+  const listed = answerOf(await client.callTool({ name: "file_list", arguments: {
+    dir: "/workspace/.agents/skills", limit: 100 } })) as { entries: { path: string }[] };
+  return listed.entries.map((entry) => entry.path.split("/").at(-1)!).sort();
+}
+
+describe("the agent's definition past DEFINITION_BYTES_MAX", () => {
+  it("is refused result_too_large, never cut, while its tools still serve", async () => {
+    const client = await mcpClient(await connect(await registerClient(), { owner: owner() }),
+                                   { pin: "2026-07-28" });
+    const content = `---\nname: big\ndescription: A skill past the ceiling.\n---\n${
+      "x".repeat(DEFINITION_BYTES_MAX)}`;
+    expect((await client.callTool({ name: "file_write", arguments: {
+      path: "/workspace/skills/big/SKILL.md", expected_etag: "", content } })).isError)
+      .toBeFalsy();
+    for (const asked of [() => client.listResources(), () => client.getPrompt({ name: "agent" })]) {
+      await expect(asked()).rejects.toThrow("result_too_large");
+    }
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+    await client.close();
+  });
+});
+
 describe.each([
   ["2026-07-28", { pin: "2026-07-28" }],
   ["2025-11-25", "legacy"],
@@ -70,6 +104,39 @@ describe.each([
     }
     for (const model of ["read", "write", "edit", "bash", "ta"]) {
       expect(tools.map((tool) => tool.name)).not.toContain(model);
+    }
+    await client.close();
+  });
+
+  it("serves the agent's definition: its two files as resources and in the agent prompt, " +
+     "its skills by the extension, each digest the bytes'", async () => {
+    const client = await mcpClient(await connect(await registerClient(), { owner: owner() }),
+                                   mode);
+    expect((await client.listPrompts()).prompts.map((prompt) => prompt.name)).toEqual(["agent"]);
+    const files = await Promise.all(["AGENTS.md", "SOUL.md"].map(async (name) =>
+      [`tinyassets://agent/main/${name}`, await stored(client, `/workspace/agents/main/${name}`)]));
+    const skills = (await seededSkills(client)).map((name) => `skill://${name}/SKILL.md`);
+    expect(skills.length).toBeGreaterThan(0);
+    const { messages } = await client.getPrompt({ name: "agent" });
+    expect(messages.map(({ content }) => content.type === "resource"
+      ? [content.resource.uri, "text" in content.resource ? content.resource.text : null]
+      : content.type === "resource_link" ? content.uri : null))
+      .toEqual([...files, ...skills]);
+    expect((await client.listResources()).resources.map((resource) => resource.uri).sort())
+      .toEqual([...files.map(([uri]) => uri), ...skills].sort());
+    expect((await client.readResource({ uri: files[1]![0]! })).contents)
+      .toEqual([{ uri: files[1]![0], mimeType: "text/markdown", text: files[1]![1] }]);
+    const extension = new SkillsClient(client);
+    expect(extension.supported).toBe(true);
+    const { skills: entries } = await extension.list();
+    expect(entries.map((entry) => entry.uri).sort()).toEqual(skills.sort());
+    for (const entry of entries) {
+      for (const { uri } of entry.resources === "dynamic" ? [] : entry.resources) {
+        // Read and checked against the entry's size and digest by the SDK's own client.
+        const file = await extension.read(entry, uri);
+        expect(new TextDecoder().decode(file.bytes))
+          .toBe(await stored(client, uri.replace("skill://", "/workspace/.agents/skills/")));
+      }
     }
     await client.close();
   });
@@ -131,6 +198,15 @@ describe.each([
     expect(profiled!.binding).toMatchObject({
       owner: alice, caller: alice, origin: apiKeyOrigin(key_id),
       source: { kind: "api_key", ref: key_id } });
+    // Its definition is read as its grant reads a file, refused as its file_read is: a key's
+    // scoped grant reads where its agent is registered, and none is.
+    const read = await client.callTool({ name: "file_read",
+                                         arguments: { path: "/workspace/agents/main/AGENTS.md" } });
+    expect(read.isError).toBe(true);
+    await expect(client.listResources()).rejects.toThrow(
+      (read.content as { text: string }[])[0]!.text);
+    const [defined] = await crossed(alice, "definitionRead");
+    expect(defined!.binding).toMatchObject({ origin: apiKeyOrigin(key_id) });
     await client.close();
   });
 });

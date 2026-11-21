@@ -12,13 +12,20 @@ import { PLATFORM } from "../../ci/paths";
 import {
   CLIENT_PROFILES, profileNames, toolNames, toolTable,
 } from "../../contract/src/doors";
-import { CLIENT_INSTRUCTIONS, CLIENT_KEY, RUN_INSTRUCTIONS } from "../src/instructions";
+import { AGENT_PROMPT, CLIENT_KEY, INSTRUCTIONS } from "../src/instructions";
 
 describe("the MCP instructions", () => {
   it("tells an outside client's agent the brain's rules in its first 512 characters, a " +
-     "run's engine its working files", () => {
+     "run's engine its working files, and only the owner's own connector the agent prompt",
+     () => {
     expect(CLIENT_KEY.length).toBeLessThanOrEqual(512);
-    expect(CLIENT_INSTRUCTIONS.startsWith(CLIENT_KEY)).toBe(true);
+    for (const profile of CLIENT_PROFILES) {
+      expect(INSTRUCTIONS[profile].startsWith(CLIENT_KEY)).toBe(true);
+      expect(INSTRUCTIONS[profile]).not.toBe(INSTRUCTIONS.run);
+    }
+    // A directory's text names no prompt: its rules refuse text that pulls instructions in.
+    expect(INSTRUCTIONS.custom).toContain(`${AGENT_PROMPT.name} prompt`);
+    expect(INSTRUCTIONS.directory).not.toContain("prompt");
     // Each rule in the key part: goals, look first, save, claim.
     for (const named of ["/workspace/goals/index.md", "search", "fetch", "/workspace/index.md",
                          "file_append", "file_edit", "collection_write"]) {
@@ -28,7 +35,6 @@ describe("the MCP instructions", () => {
       expect(profileNames(profile)).toEqual(expect.arrayContaining(
         ["search", "fetch", "file_append", "file_edit", "collection_write", "agents_list"]));
     }
-    expect(RUN_INSTRUCTIONS).not.toBe(CLIENT_INSTRUCTIONS);
   });
 });
 
@@ -62,7 +68,8 @@ describe("the agent's definition", () => {
   const texts: [string, string][] = [
     ...starter.files.filter((file) => file.path !== starter.okf.vendored)
       .map((file): [string, string] => [file.path, file.text]),
-    ["CLIENT_INSTRUCTIONS", CLIENT_INSTRUCTIONS], ["RUN_INSTRUCTIONS", RUN_INSTRUCTIONS]];
+    ...Object.entries(INSTRUCTIONS).map(([profile, text]): [string, string] =>
+      [`INSTRUCTIONS.${profile}`, text])];
 
   it("names only the door table's tools", () => {
     for (const [where, text] of texts) {

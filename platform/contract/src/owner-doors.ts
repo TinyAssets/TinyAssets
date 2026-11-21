@@ -302,6 +302,7 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     Promise<DoorAnswer<"admissionSet">>;
   ownerState(binding: Binding): Promise<DoorAnswer<"ownerState">>;
   toolProfile(binding: Binding): Promise<DoorAnswer<"toolProfile">>;
+  definitionRead(binding: Binding): Promise<DoorAnswer<"definitionRead">>;
   mailChain(binding: Binding, request: DoorRequest<"mailChain">): Promise<DoorAnswer<"mailChain">>;
   wakeEvents(binding: Binding, ...request: DoorLoose<"wakeEvents">):
     Promise<DoorAnswer<"wakeEvents">>;

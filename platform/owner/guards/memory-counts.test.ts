@@ -114,8 +114,8 @@ describe("an owner isolate's counts", () => {
   it("lets every declared hold run: each fits the pool beside its reserve", () => {
     const larger = holds.OWNER_POOL_UNITS - holds.OWNER_RESERVE_UNITS;
     for (const units of [holds.EDIT_READ_UNITS, holds.EDIT_MAKE_UNITS, holds.APPEND_UNITS,
-                         holds.WINDOW_UNITS, holds.bodyUnits(1), holds.bodyUnits(2),
-                         holds.BURST_UNITS, holds.SHIP_UNITS,
+                         holds.WINDOW_UNITS, holds.DEFINITION_UNITS, holds.bodyUnits(1),
+                         holds.bodyUnits(2), holds.BURST_UNITS, holds.SHIP_UNITS,
                          holds.moveTableUnits(MOVE_RECORDS) + holds.MOVE_PASS_UNITS]) {
       expect(units === 1 || units <= larger).toBe(true);
     }

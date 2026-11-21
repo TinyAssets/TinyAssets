@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_FILES, agentFile, agentHooks, agentMcp, agentPath, checkDefinitionFile,
-  definitionFileOf, definitionWidening, HOOK_EVENTS,
+  definitionFileOf, definitionWidening, HOOK_EVENTS, skillUnion,
 } from "../src/agent-definition";
 import { Refusal } from "../src/refusal";
 
@@ -166,6 +166,28 @@ describe("the definition's files", () => {
     expect(() => checkDefinitionFile("/workspace/agents/main/mcp.json", "{\"mcpServers\": {}}"))
       .not.toThrow();
     expect(() => checkDefinitionFile("/workspace/.agents/skills/x/mcp.json", "{")).not.toThrow();
+  });
+});
+
+describe("an agent's skills", () => {
+  it("are the union of its own, the shared abilities and the owner's, the first holding a " +
+     "name winning it; a hidden directory or one with no SKILL.md is none", () => {
+    const files = new Set([
+      "/workspace/agents/main/.agents/skills/mine/SKILL.md",
+      "/workspace/agents/main/.agents/skills/both/SKILL.md",
+      "/workspace/.agents/skills/both/SKILL.md", "/workspace/.agents/skills/shared/SKILL.md",
+      "/workspace/.agents/skills/.hidden/SKILL.md", "/workspace/skills/shared/SKILL.md",
+      "/workspace/skills/owners/SKILL.md", "/workspace/skills/notes/README.md",
+    ]);
+    const dirs = (dir: string) => [...new Set([...files].filter((path) =>
+      path.startsWith(`${dir}/`)).map((path) => path.slice(dir.length + 1).split("/")[0]!))];
+    expect(Object.fromEntries(skillUnion("main", { dirs, file: (path) => files.has(path) })))
+      .toEqual({
+        mine: "/workspace/agents/main/.agents/skills/mine",
+        both: "/workspace/agents/main/.agents/skills/both",
+        shared: "/workspace/.agents/skills/shared",
+        owners: "/workspace/skills/owners",
+      });
   });
 });
 

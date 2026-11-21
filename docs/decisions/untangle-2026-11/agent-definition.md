@@ -141,7 +141,8 @@ Departures:
   mid-session is read by that session until its CLI ends; the next start is refused. That
   session's agent holds no rule a layer could lift, and its shell already does what one could.
   Gemini and Codex read theirs at start, and `--no-approve` holds for pi's whole process.
-- **`skillsOf` is exported from `project.ts`** for the run's argv; D3 moves it into the contract.
+- **`skillsOf` is exported from `project.ts`** for the run's argv; D3 moved its rule into the
+  contract (`skillUnion`), which it now reads.
 
 ## Owed
 
@@ -150,6 +151,6 @@ Departures:
 - [ ] live: at the dark redeploy, B2: a run on a fresh `CLAUDE_CONFIG_DIR` loads `AGENTS.md` (its `system/init`, or a probe question), not skipped as a first session.
 - [ ] live: at the dark redeploy, B3: Codex 0.166.0 reads no `.codex/config.toml` or `.codex/hooks.json` from the agent's folder in a fresh `CODEX_HOME`, so the start's refusal is the only path they take.
 - [ ] live: at the dark redeploy, B4: pi 1.4.0 with `--no-approve` and `--skill` per skill (and `-e` on a hooked run) in `--mode json` lists the skills, connects the run's door, and loads no `.pi/` file of the agent's.
-- [ ] D3: the doors serve the definition (`AGENT_FILES`) as resources, prompts and the Skills extension on SDK 2.4.0, the skill union moved here from `project.ts` (`untangle/agent-definition-door`).
+- [x] D3: the doors serve the definition (`AGENT_FILES`) as resources, prompts and the Skills extension on SDK 2.4.0, the skill union moved here from `project.ts` (`untangle/agent-definition-door`). Done (`agent-definition-door.md`).
 - [ ] D4: the agent's own MCP servers run, `agentMcp` read at admission and filtered by the egress allowlist, rendered by `definition.mcp`, the run door one entry of the same template; Gemini's `--allowed-mcp-server-names` taking each name is checked there (`untangle/agent-mcp`).
 - [ ] D5: one hook definition, `agentHooks` rendered for a runner-owned dispatcher in the decide hook's root-owned layer, which drops any allow or rewrite from a hook's answer; ADR-034 decisions 2 and 11 Status lines (`untangle/agent-hooks`).

@@ -1,15 +1,16 @@
 /**
  * The MCP door (research §4): the MCP SDK v2's stateless `createMcpHandler`
- * (`@modelcontextprotocol/server` 2.3.1, pinned exactly), one factory for both
+ * (`@modelcontextprotocol/server` 2.4.0, pinned exactly), one factory for both
  * revisions. 2026-07-28 is served on its own per-request envelope; 2025-11-25, which
  * clients on MCP SDK 1.x still speak, by the stateless legacy fallback
  * (`legacy: 'stateless'`), a fresh instance from the same factory per request, so the
  * two revisions can never serve different tools. GET and DELETE from an older client
  * get `405`. No session is kept anywhere.
  *
- * Each profile is told its own `instructions`: a run's engine where its working files go
- * (`RUN_INSTRUCTIONS`), an outside client's agent the shared brain's rules
- * (`CLIENT_INSTRUCTIONS`).
+ * Each profile is told its own `instructions` (`INSTRUCTIONS`): a run's engine where its
+ * working files go, an outside client's agent the shared brain's rules. Beside the tools, the
+ * caller's agent definition is served as resources, the `agent` prompt and the Skills
+ * extension (`definition.ts`).
  *
  * Every tool is a row of the owner's door table calling its door with the binder's binding
  * (`tools.ts`), and a request is served only the tools of its caller's profile, which the
@@ -37,7 +38,8 @@ import { MCP_BODY_MAX } from "../../contract/src/limits";
 
 import type { DoorsEnv } from "./env";
 import { serveEvents } from "./events";
-import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "./instructions";
+import { serveDefinition } from "./definition";
+import { INSTRUCTIONS } from "./instructions";
 import { answered, asJson, asTool } from "./refused";
 import { type ProfileName, type Tool, toolsNamed } from "../../contract/src/doors";
 import { callDoor } from "./tools";
@@ -86,6 +88,7 @@ function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv,
     }, (args: Record<string, unknown>) => called(bound, tool, args));
   }
   serveEvents(mcp, bound, env);
+  serveDefinition(mcp, bound);
   return mcp;
 }
 
@@ -104,8 +107,7 @@ export async function profileOf(bound: Bound):
 export function serveMcp(request: Request, bound: Bound, env: DoorsEnv): Promise<Response> {
   return answered(asJson, async () => {
     const got = await profileOf(bound);
-    const instructions = got.profile === "run" ? RUN_INSTRUCTIONS : CLIENT_INSTRUCTIONS;
-    return createMcpHandler(() => server(bound, got.tools, env, instructions), {
+    return createMcpHandler(() => server(bound, got.tools, env, INSTRUCTIONS[got.profile]), {
       legacy: "stateless", responseMode: "auto", maxRequestBodySize: MCP_BODY_MAX,
     }).fetch(request);
   });

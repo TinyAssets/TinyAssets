@@ -12,7 +12,9 @@
 import {
   type AuthRequest, authorizationErrorRedirect,
 } from "@cloudflare/workers-oauth-provider";
-import { type CallToolResult, ProtocolError } from "@modelcontextprotocol/server";
+import {
+  type CallToolResult, ProtocolError, ProtocolErrorCode,
+} from "@modelcontextprotocol/server";
 
 import { keyed, whole } from "../../contract/src/checks";
 import { type FaultCode, type Refusal, refusalOf } from "../../contract/src/refusal";
@@ -120,6 +122,20 @@ export const asEvent: Surface<never> = (refusal) => {
     });
   }
   throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden", { reason: refusal.message });
+};
+
+/**
+ * An MCP request's other than a tool call's (the definition's resources, prompt and skills,
+ * `definition.ts`): its JSON-RPC error, thrown, which the SDK answers: invalid params for an
+ * invalid request, else an internal error, the refusal's reason and wait in its `data`.
+ */
+export const asRequest: Surface<never> = (refusal) => {
+  const seconds = refusal.retryAfter;
+  throw new ProtocolError(
+    refusal.invalid ? ProtocolErrorCode.InvalidParams : ProtocolErrorCode.InternalError,
+    refusal.message,
+    { reason: refusal.message, ...(seconds === undefined ? {} : { retryAfterMs: seconds * 1000 }) },
+  );
 };
 
 /**

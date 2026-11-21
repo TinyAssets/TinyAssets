@@ -16,6 +16,7 @@ import type { Binding } from "../../contract/src/binding";
 import { mcpOrigin } from "../src/binder";
 import { profileNames } from "../../contract/src/doors";
 import { APP_RESOURCE } from "../../contract/src/identity";
+import { INSTRUCTIONS } from "../src/instructions";
 import {
   answerOf, appPost, call, connect, doorsEnv, grantsOf, legacyPost, OPEN, ownDoor,
   registerClient, serveFirstPartyDocument, setControl, signInApp, type Tokens, url,
@@ -108,6 +109,25 @@ describe("the MCP door's tool profiles", () => {
       .then((result) => JSON.stringify(result), (error: Error) => error.message);
     expect(outside).toMatch(/not found/i);
     await client.close();
+  });
+
+  it("tells each client its profile's instructions, the agent prompt named to the owner's " +
+     "own connector alone, and serves each the agent's definition", async () => {
+    const o = await signedIn();
+    const listedClient = await registerClient("Listed");
+    const listedTokens = await connect(listedClient, { owner: o.who });
+    const customTokens = await connect(await registerClient("Custom"), { owner: o.who });
+    await listed(listedTokens);  // its grant's row, made by its first call
+    await o.profile((await mcpOrigin(listedClient.clientId, listedClient.redirectUri)).client,
+                    "directory");
+    for (const [tokens, profile] of [[customTokens, "custom"],
+                                     [listedTokens, "directory"]] as const) {
+      const client = await mcpClient(tokens);
+      expect(client.getInstructions()).toBe(INSTRUCTIONS[profile]);
+      expect((await client.getPrompt({ name: "agent" })).messages[0]!.content).toMatchObject({
+        type: "resource", resource: { uri: "tinyassets://agent/main/AGENTS.md" } });
+      await client.close();
+    }
   });
 
   it("serves search, fetch and file_read in ChatGPT's shape to a directory client", async () => {
