@@ -67,7 +67,7 @@
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readdirSync,
-         readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+         readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
@@ -972,16 +972,12 @@ class RunRefused extends Error {
  * Refuses the run, saying why, while its cwd or an ancestor under `/workspace` holds what its
  * engine would read beside its definition, or instructions past what it reads
  * (`definitionRefusal`). Checked before each start of the CLI, so a file the agent wrote
- * mid-run never reaches a resumed one.
+ * mid-run never reaches a resumed one. Root follows no link of the agent's: a link counts as
+ * itself (the sync carries none, so the owner's files are measured whole).
  */
 function definitionHeld(definition: Definition, cwd: string, outbox: Outbox): void {
-  const refusal = definitionRefusal(definition, cwd, (path) => {
-    try {
-      return statSync(path).size;
-    } catch {
-      return lstatSync(path, { throwIfNoEntry: false })?.size ?? null;  // a link to nowhere
-    }
-  });
+  const refusal = definitionRefusal(definition, cwd, (path) =>
+    lstatSync(path, { throwIfNoEntry: false })?.size ?? null);
   if (refusal !== null) {
     outbox.push({ type: "ta.refused", ...refusal });
     throw new RunRefused(refusal.code);
