@@ -42,8 +42,8 @@
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
  *   passed. It limits nothing: the founder's cost view.
  */
-import { type RefusalCode, refusalOf } from "../../contract/src/refusal";
-import { keyed } from "../../contract/src/checks";
+import { namedRefusal, type RefusalCode, refusalOf } from "../../contract/src/refusal";
+import { keyed, object } from "../../contract/src/checks";
 import {
   type CredentialKind, type SandboxService, START_CODES, type Started,
 } from "../../contract/src/sandbox";
@@ -102,14 +102,19 @@ const START_MALFORMED = "start_malformed";
  * - a refusal it threw, by its code: the sandbox Worker refuses only before it launches
  *   anything (its runner's two alerts, `sandbox/src/control.ts`), and the runtime's overload
  *   of an object (`object_overloaded`) is thrown before the call runs, so nothing started;
- * - `started: null`: no answer the object can read, so the job may have launched. Either the
- *   call threw (`START_LOST`: its answer lost on the way, or the sandbox Worker's own fault,
- *   which crosses as a plain error the object cannot tell from a loss), or it answered out
- *   of shape (`START_MALFORMED`).
+ * - `started: null`: no answer the object can read, so the job may have launched, and is
+ *   stopped in case it did. Its `state` says what the job's start came to:
+ *   - `unknown` (`START_LOST`): the call threw, its answer lost on the way or the sandbox
+ *     Worker's own fault, which crosses as a plain error the object cannot tell from a loss;
+ *   - `failed` (`START_MALFORMED`): an answer came, returned or thrown as a refusal, out of
+ *     the contract's shape (another version's code, say). The call is over and its fault
+ *     is the sandbox Worker's, but an answer out of the contract says nothing of what it
+ *     launched.
  */
 export type StartOutcome = Started
   | { readonly started: false; readonly code: RefusalCode }
-  | { readonly started: null; readonly code: typeof START_LOST | typeof START_MALFORMED };
+  | { readonly started: null; readonly code: typeof START_LOST; readonly state: "unknown" }
+  | { readonly started: null; readonly code: typeof START_MALFORMED; readonly state: "failed" };
 
 /**
  * What came of `start`, a call to the sandbox Worker's `start` or `signin` for `job` (as its
@@ -127,15 +132,23 @@ export type StartOutcome = Started
 export async function startOutcome(job: "a run" | "a sign-in", start: () => Promise<unknown>,
                                    stands: () => Promise<boolean>): Promise<StartOutcome> {
   const bound = clockMs() + LANE_CALL_MS;
+  const malformed = (answer: string): StartOutcome => {
+    console.error(`the sandbox answered ${job}'s start out of the contract's shape (${answer}), ` +
+                  "a sandbox Worker bug: it failed, and is stopped in case it launched");
+    return { started: null, code: START_MALFORMED, state: "failed" };
+  };
   for (;;) {
     let value: unknown;
     try {
       value = await start();
     } catch (error) {
       const refusal = refusalOf(error);
+      if (refusal === null && namedRefusal(error)) {
+        return malformed(`a refusal of code ${String((error as { code?: unknown }).code)}`);
+      }
       if (refusal === null) {
         console.error(`${job}'s start did not answer: whether it launched is unknown`, error);
-        return { started: null, code: START_LOST };
+        return { started: null, code: START_LOST, state: "unknown" };
       }
       const waitMs = (refusal.retryAfter ?? 0) * 1000;
       if (refusal.transient && clockMs() + waitMs <= bound) {
@@ -157,8 +170,9 @@ export async function startOutcome(job: "a run" | "a sign-in", start: () => Prom
     if (code !== undefined) {
       return { started: false, code };
     }
-    console.error(`the sandbox answered ${job}'s start out of the contract's shape, a sandbox ` +
-                  "Worker bug: whether it launched is unknown");
-    return { started: null, code: START_MALFORMED };
+    // The contract's two fields as they came, and only the names of any other: a bug's answer
+    // is no place a log can trust to hold nothing secret.
+    return malformed(object(value) ? `started ${String(value["started"])}, code ${
+      String(value["code"])}, keys ${Object.keys(value).join(" ")}` : typeof value);
   }
 }

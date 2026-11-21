@@ -9,7 +9,8 @@
  *   platform's), its run admitted in one unit against the file still at the etag it was
  *   read at, then started through the
  *   sandbox Worker (`SANDBOX`), and what came of it recorded (`running`, `failed` with the
- *   sandbox's code, `unknown` when its answer never came, or `waiting` for a sandbox to free);
+ *   sandbox's code or for an answer out of its shape, `unknown` when its answer never came,
+ *   or `waiting` for a sandbox to free);
  *   a door's bounded wait for its run to settle (`settledWithin`), woken on this instance;
  * - **the `runs` lane's pass** (`pass`): runs whose runner was lost settled, waiting runs
  *   started on their turn, mail no run took delivered as its agent's run (`#deliver`), and due
@@ -366,8 +367,8 @@ export class Launcher implements RunHost {
    * at the etag it was read at), then start it through the sandbox and record what came of
    * it (`StartOutcome`): `running`, `failed` with the sandbox's code or its refusal's (a
    * transient one's once its start, sent again while the run holds its grant, did not start
-   * within the bound), or
-   * `unknown` when no answer it can read came (the run is then cancelled too, in case it did
+   * within the bound), `failed` `start_malformed` when its answer came out of the contract's
+   * shape, or `unknown` when no answer came (either then cancelled too, in case it did
    * start). Its id: a run that waits for its conversation's live run is written `waiting`
    * and starts from the lane, its turn come (`waiting`, the run the lane starts).
    */
@@ -407,7 +408,7 @@ export class Launcher implements RunHost {
                                         this.runs.grant(admitted.run) !== null));
     await this.#o.door(() => {
       if (answer.started === null) {
-        this.runs.settle(admitted.run, "unknown", answer.code, null, clock());
+        this.runs.settle(admitted.run, answer.state, answer.code, null, clock());
       } else if (answer.started) {
         this.runs.started(admitted.run, clock());
       } else if (answer.code === SANDBOX_WAITING) {

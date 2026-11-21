@@ -219,8 +219,8 @@ describe("a sign-in", () => {
     expect(await s.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
   });
 
-  it("ends a start that did not answer, answered out of shape or was refused, each by its " +
-     "own code", async () => {
+  it("ends a start that did not answer, answered or refused out of shape, or was refused, " +
+     "each by its own code", async () => {
     const r = await gated();
     const start = () => r.stub.signinStart(r.bind(), { engine: "codex" });
     await scripted(r.stub, { signinAnswer: "throw" });
@@ -228,17 +228,23 @@ describe("a sign-in", () => {
     await scripted(r.stub, { signinAnswer: { started: "yes" } as never });
     expect(await start()).toEqual({ started: false, code: "start_malformed" });
     await scripted(r.stub, { signinAnswer: { started: true } });
-    await gateFor(env.SANDBOX_GATE, r.name).arm("signin", { refuse: {
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signin", { refuse: { code: "e2b_quota",
+                                         message: "another version's refusal" } });
+    expect(await start()).toEqual({ started: false, code: "start_malformed" });
+    await gate.arm("signin", { refuse: {
       code: "sandbox_runner_protocol", message: "the sandbox's runner speaks another protocol" } });
     expect(await start()).toEqual({ started: false, code: "sandbox_runner_protocol" });
     // Each ended, its lease given back.
     expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
     expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
-    // The two with no answer it can read stopped in the sandbox, in case their CLI launched;
+    // The three with no answer it can read stopped in the sandbox, in case their CLI launched;
     // the refused one launched nothing.
-    const { signins, signinCancels } = await recorder(r.stub);
-    expect(signinCancels).toEqual(signins.map(({ id }) => ({ authority: "owner", id })));
-    expect(signinCancels).toHaveLength(2);
+    const sent = (await gate.calls()).filter((call) => call.method === "signin")
+      .map((call) => (call.args as [string, SandboxSignin])[1].id);
+    expect(sent).toHaveLength(4);
+    expect((await recorder(r.stub)).signinCancels)
+      .toEqual(sent.slice(0, 3).map((id) => ({ authority: "owner", id })));
   });
 
   it("sends a start refused for the moment again, the same start, and begins", async () => {
