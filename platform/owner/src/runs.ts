@@ -1769,8 +1769,7 @@ function initiated(binding: Binding, account: Account, universe: string | null,
  * reaches.
  */
 export interface RunsDoorNeeds extends Pick<DoorUnits, "door" | "synced" | "sync">,
-                                       Pick<ObjectReads, "owner" | "gone"> {
-  readonly env: Pick<OwnerEnv, "SANDBOX">;
+                                       Pick<ObjectReads, "gone" | "sandbox"> {
   readonly runs: Runs;
   readonly launcher: Pick<Launcher, "beginReply" | "cancel" | "launch" | "readAgent" | "seeded"
     | "settledWithin" | "withReply">;
@@ -1968,7 +1967,7 @@ export const runsDoors = Object.freeze({
     }
     const waiting = await o.door(() => o.runs.sandboxRung());
     if (waiting === 0) {
-      await o.env.SANDBOX.unwait(o.owner());
+      await o.sandbox.unwait();
     }
     await o.sync();
     return { waiting };

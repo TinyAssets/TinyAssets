@@ -106,8 +106,9 @@ export interface SandboxRun {
  * starter seed; and the object's units and reads.
  */
 export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
-                                       Pick<ObjectReads, "owner" | "storage" | "control"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY" | "SANDBOX">;
+                                       Pick<ObjectReads, "owner" | "sandbox" | "storage"
+                                         | "control"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
   readonly admission: {
     numbers(): Tiers;
     tier(): TierName;
@@ -343,7 +344,7 @@ export class Launcher implements RunHost {
     }
     let answer: Started | null = null;
     try {
-      answer = started(await this.#o.env.SANDBOX.start(this.#o.owner(), {
+      answer = started(await this.#o.sandbox.start({
         run: admitted.run, agent, conversation: admitted.conversation,
         engine: admitted.engine, credential: admitted.credential, model: admitted.model,
         session_id: admitted.session_id, prompt: admitted.prompt, unattended,
@@ -419,7 +420,7 @@ export class Launcher implements RunHost {
   /** Stop a run's CLI through the sandbox; a failure is logged, the run settles regardless. */
   async cancel(run: string): Promise<void> {
     try {
-      await this.#o.env.SANDBOX.cancel(this.#o.owner(), { run });
+      await this.#o.sandbox.cancel({ run });
     } catch {
       console.error("a run's cancel did not reach the sandbox");
     }
@@ -433,7 +434,7 @@ export class Launcher implements RunHost {
    */
   async #sandboxRelease(leaseId: string): Promise<void> {
     try {
-      await this.#o.env.SANDBOX.release(this.#o.owner(), { lease_id: leaseId });
+      await this.#o.sandbox.release({ lease_id: leaseId });
     } catch {
       console.error("a lease's release did not reach the sandbox; its idle reap pauses it");
     }
@@ -795,7 +796,7 @@ export class Launcher implements RunHost {
    * records nothing: the send's retry clock stands.
    */
   async reapply(): Promise<void> {
-    const sandbox = this.#o.env.SANDBOX;
+    const { sandbox } = this.#o;
     const sent = await this.#o.door(() => {
       if (this.#o.admission.unadmitted() !== null) {
         return [];
@@ -814,7 +815,7 @@ export class Launcher implements RunHost {
     await Promise.all(sent.map(async ({ lease, generation, network }) => {
       let answer: "applied" | "at_resume" | "failed" = "failed";
       try {
-        const got = await inTime(sandbox.network(this.#o.owner(), {
+        const got = await inTime(sandbox.network({
           authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
           network }), LANE_CALL_MS);
         if (got === "late") {
