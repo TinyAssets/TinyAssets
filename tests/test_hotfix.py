@@ -17,6 +17,8 @@ spec = importlib.util.spec_from_file_location("hotfix", SCRIPT)
 hotfix = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hotfix)
 
+from scripts import drain_review_gate as gate  # noqa: E402
+
 
 def packed(before, after):
     path = "tinyassets/example.py"
@@ -169,27 +171,28 @@ def test_eligible_paths(path):
 
 
 @pytest.mark.parametrize("approved,head_matches", [(False, True), (True, False), (True, True)])
-def test_floor_receipt_bound_to_exact_head(monkeypatch, approved, head_matches):
+def test_floor_review_bound_to_exact_head(monkeypatch, approved, head_matches):
     head = "b" * 40
-    url = "https://github.com/org/repo/pull/12#issuecomment-123"
-    receipt = (
-        f"Drain-Review-Verdict: {'APPROVE' if approved else 'BLOCK'}\n"
-        f"Drain-Review-Head: {head if head_matches else 'c' * 40}\n"
-        f"Drain-Review-Artifact: {url}"
-    )
+    asked = []
+
+    def passed(repo, commit, number):
+        asked.append((repo, commit, number))
+        return approved
 
     def fake_run(*args):
         if args[1:3] == ("pr", "view"):
-            return json.dumps({"number": 12, "body": receipt, "headRefOid": head}).encode()
-        if args[1:3] == ("repo", "view"):
-            return b'{"nameWithOwner":"org/repo"}'
-        return json.dumps({"url": url, "association": "OWNER", "body": receipt}).encode()
+            return json.dumps({"number": 12,
+                               "headRefOid": head if head_matches else "c" * 40}).encode()
+        assert args[1:3] == ("repo", "view"), args
+        return b'{"nameWithOwner":"org/repo"}'
 
+    monkeypatch.setattr(gate, "review_passed_at", passed)
     monkeypatch.setattr(hotfix, "run", fake_run)
     if approved and head_matches:
         hotfix.require_review("fix/signin", head, ["tinyassets/auth/provider.py"])
+        assert asked == [("org/repo", head, 12)]
     else:
-        with pytest.raises(ValueError, match="APPROVE receipt"):
+        with pytest.raises(ValueError, match="passing `review` check"):
             hotfix.require_review("fix/signin", head, ["tinyassets/auth/provider.py"])
 
 
@@ -558,13 +561,14 @@ def test_merged_pr_without_hotfix_bytes_cannot_archive(legacy, monkeypatch):
         "tinyassets/example.py",
     ],
 )
-def test_canonical_gate_requires_receipt_without_private_path_exemptions(monkeypatch, path):
+def test_canonical_gate_requires_review_without_private_path_exemptions(monkeypatch, path):
+    monkeypatch.setattr(gate, "review_passed_at", lambda repo, commit, number: False)
     monkeypatch.setattr(
         hotfix,
         "run",
-        lambda *a: b'{"number":1,"body":"","headRefOid":"wrong","nameWithOwner":"org/repo"}',
+        lambda *a: b'{"number":1,"headRefOid":"' + b"b" * 40 + b'","nameWithOwner":"org/repo"}',
     )
-    with pytest.raises(ValueError, match="APPROVE receipt"):
+    with pytest.raises(ValueError, match="passing `review` check"):
         hotfix.require_review("fix", "b" * 40, [path])
 
 

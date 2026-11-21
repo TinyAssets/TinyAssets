@@ -298,7 +298,7 @@ export default {
     log.push({ method: request.method, url: request.url,
                headers: Object.fromEntries(request.headers), body });
     if (url.hostname === "callback.test") {
-      // An MCP Events receiver (slice W): `/echo...` echoes the verification's challenge,
+      // An MCP Events receiver: `/echo...` echoes the verification's challenge,
       // `/wrong...` answers another, anything else a 404.
       const sent = body === "" ? {} : JSON.parse(body) as { challenge?: string };
       if (url.pathname.startsWith("/echo")) {

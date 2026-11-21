@@ -20,7 +20,7 @@ export const RUN_INSTRUCTIONS = "Working files: clone repositories, install depe
 
 /**
  * What an outside client's agent is told when it connects (the `custom` and `directory`
- * profiles; slice BRAIN, shared_brain_research.md §6.2, autoconnect_research.md §5.1,
+ * profiles; shared_brain_research.md §6.2, autoconnect_research.md §5.1,
  * goals_research.md §6.2): the user's workspace is the one brain all their agents share.
  * Read the goals before acting, look here before asking, save what the user says here, and
  * claim an act before taking it; then onboarding for a user new to TinyAssets, its steps the

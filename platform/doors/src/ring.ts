@@ -1,5 +1,5 @@
 /**
- * The sandbox line's doorbell (slice S; `sandbox/src/slots.ts`): the ring queue's consumer.
+ * The sandbox line's doorbell (`sandbox/src/slots.ts`): the ring queue's consumer.
  * The sandbox Worker, which binds no `OWNER`, puts `{owner}` on the queue when a sandbox of
  * the platform frees and that owner is first in line; this rings that owner's object
  * (`sandboxRung`), whose waiting runs start again through their whole admission. A ring

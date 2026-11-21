@@ -1,5 +1,5 @@
 /**
- * The connect doors (gateway research §7.2, §7.3; tasks 4 G3), in workerd, through the
+ * The connect doors (gateway research §7.2, §7.3), in workerd, through the
  * real gateway Worker (its `ConnectGateway` entrypoint, as the config binds it) and the
  * real owner object, against fake providers.
  *

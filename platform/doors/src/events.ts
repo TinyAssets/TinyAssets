@@ -1,5 +1,5 @@
 /**
- * MCP Events at the MCP door (slice W2; OpenAI's MCP Events page and the MCP Events design
+ * MCP Events at the MCP door (OpenAI's MCP Events page and the MCP Events design
  * sketch it cites): `events/list`, `events/subscribe` and `events/unsubscribe` on the same
  * authenticated endpoint as the tools, and `events` in the capabilities `initialize` and
  * `server/discover` answer. ChatGPT supports webhook delivery and callback verification

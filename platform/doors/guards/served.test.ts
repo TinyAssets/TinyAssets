@@ -1,5 +1,5 @@
 /**
- * What the doors serve an outside agent (slice BRAIN): the MCP instructions, each tool's
+ * What the doors serve an outside agent: the MCP instructions, each tool's
  * text, the plugins built from the starter's skills (`platform/plugins`, which `npm run
  * generate` writes) and what they connect to, and each app's connect sentence
  * (`contract/apps.json`, whose data `contract/guards/apps.test.ts` holds). None asks an agent

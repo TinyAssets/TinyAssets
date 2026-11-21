@@ -1,7 +1,7 @@
 /**
  * The doors' answers (`answers.ts`): a tool's result is its JSON once, and a result past one
  * answer is a bug failed loudly, never cut. A write past one answer is answered whole, its
- * row without its body (review H3).
+ * row without its body.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,7 +29,7 @@ describe("a tool's answer", () => {
     }
   });
 
-  it("answers a collection_write longer than one answer with its row, not its body (H3)",
+  it("answers a collection_write longer than one answer with its row, not its body",
      async () => {
     const who = `user_${crypto.randomUUID().replace(/-/g, "")}`;
     const tokens = await connect(await registerClient(), { owner: who });

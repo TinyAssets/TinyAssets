@@ -1,5 +1,5 @@
 /**
- * MCP Events at the MCP door (slice W2): `events` advertised, `events/list`,
+ * MCP Events at the MCP door: `events` advertised, `events/list`,
  * `events/subscribe` with the gateway's signed callback challenge (a failure a category
  * under the record's code), the server-derived id, `ttlMs`, and `events/unsubscribe`; and
  * the owner surface's doorbell and wake-limits routes, whose token never comes back.

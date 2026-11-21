@@ -1,36 +1,21 @@
 /**
  * The doors' router: every path the doors Worker serves on `tinyassets.io`, and the egress
- * door on `egress.tinyassets.io`.
+ * door on `egress.tinyassets.io` (`egress.ts`), whose host the deploy kit's mode `routes`
+ * attaches. Nothing else is served on that origin, and the egress door is served on no other,
+ * so a sandbox token reaches no other door. Any other origin or path is `404`.
  *
- * - `egress.tinyassets.io/r/<run>/...`: a run's model calls (`c/<connection>/*`), its MCP
- *   door (`mcp`) and its event door (`events`), by the egress token (`egress.ts`), the
- *   `Cookie` header removed. Nothing else is served on that
- *   origin, and the egress door is served on no other, so a sandbox token reaches no other
- *   door. No route is deployed for it until the routes slice.
+ * Every door a token, a key or a capability opens (`/mcp`, `/api/*`, `/hooks/*` and the
+ * egress door) sees the request without its `Cookie` header; the owner surface, the app's
+ * pages and the sign-in keep it.
  *
- * - `/mcp`: the `Cookie` header removed, a present `Origin` refused (`403`), then the
- *   resource host (the token), the kill switch, the binder and the MCP handler.
- * - `/api/*`: the `Cookie` header removed, then the key (`api.ts`).
- * - `/hooks/inbound/<token>`: the inbound door (`inbound.ts`), the `Cookie` header removed;
- *   any other `/hooks/` path is `404`, its request never read.
+ * No caller is counted or capped by the doors (the founder's rule: no invented limits). An
+ * owner object the runtime reports overloaded (Cloudflare's soft limit of 1,000 requests a
+ * second an object) is answered `429` with `Retry-After`, never retried: a technical
+ * ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS protection, in front of
+ * every Worker.
  *
- * No caller is counted or capped by the doors (the founder's rule: no invented limits;
- * slice L's review). An owner object the runtime reports overloaded (Cloudflare's soft
- * limit of 1,000 requests a second an object) is answered `429` with `Retry-After`, never
- * retried: a technical ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS
- * protection, in front of every Worker.
- * - `/app/api/*`: the owner surface (`app.ts`).
- * - `/app` and its named pages and files: the owner app itself (`pages.ts`).
- * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
- * - `/oauth/connect/callback/<source>[/<state>]`: a model source's OAuth redirect
- *   (`connect.ts`).
- * - `/oauth/clients/web.json`: the first-party app's Client ID Metadata Document.
- * - `/.well-known/oauth-protected-resource/mcp`: the resource's metadata.
- * - `/.well-known/oauth-authorization-server`, `/oauth/token`, `/oauth/register` (only
- *   with `DCR_ENABLED`): the provider's own endpoints.
- *
- * Any other origin or path is `404`. The source records are the caller's: `index.ts`
- * passes the bundled records, and a test of a record the bundle lacks its own catalog.
+ * The source records are the caller's: `index.ts` passes the bundled records, and a test of a
+ * record the bundle lacks its own catalog.
  */
 import { e2bLifecycle } from "./e2b-hooks";
 import { serveApi } from "./api";

@@ -359,7 +359,7 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await connection.selectOption(groq);
   await form.getByRole("checkbox", { name: "Read your files" }).check();
   // Every change the making sends, in order: the agent is its agent.json, so that is the
-  // last write, after its folder and its AGENTS.md (review L3).
+  // last write, after its folder and its AGENTS.md.
   const changes = [];
   const onRequest = (request) => {
     const path = new URL(request.url()).pathname;
@@ -508,7 +508,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
                end: { exit_code: 0 } });
   await page.locator(".message.good", { hasText: "Signed in to Claude." }).waitFor();
   await shot("signin");
-  // A look-alike page is refused in plain words (review L6), and the panel offers a new one.
+  // A look-alike page is refused in plain words, and the panel offers a new one.
   /** A new sign-in started from the panel, its page shown (so the app is watching it). */
   const again = async (n) => {
     await card.getByRole("button", { name: /^Sign in/ }).click();
@@ -524,7 +524,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
                                                    code: null } }] });
   await page.locator(".message.bad", {
     hasText: "it showed a link that is not the vendor's own sign-in page" }).waitFor();
-  // A code past its lifetime ends the sign-in, and the app offers to start again (review M4).
+  // A code past its lifetime ends the sign-in, and the app offers to start again.
   await again(2);
   await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "expired" } }] });
   await page.locator(".message.bad", { hasText: "The code expired; start again." }).waitFor();
@@ -604,8 +604,8 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
   await page.locator(".message.good", { hasText: "Signed in to Claude." }).last().waitFor();
 });
 
-test("a talk whose socket drops mid-run goes on on a new socket, each frame shown once " +
-     "(review M1)", { timeout: 120_000 }, async () => {
+test("a talk whose socket drops mid-run goes on on a new socket, each frame shown once",
+     { timeout: 120_000 }, async () => {
   // The sockets are kept by the script the sign-in drop's test added to the context.
   await page.goto(`${ORIGIN}/app#agents/helper`);
   await page.reload();
@@ -685,14 +685,14 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   // No main agent has joined, so no wake-up is offered.
   await page.goto(`${ORIGIN}/app#apps`);
   await page.getByText("No main agent has joined yet.").waitFor();
-  // "Every tool" holds every pick on, fixed, so no choice is silently dropped (review L5).
+  // "Every tool" holds every pick on, fixed, so no choice is silently dropped.
   const picks = page.locator("section", { hasText: "Tools your connected apps see" });
   assert.equal(await picks.getByRole("checkbox", { name: /Every tool/ }).isChecked(), true);
   assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), true);
   await picks.getByRole("checkbox", { name: /Every tool/ }).uncheck();
   assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), false);
   // The doors this app knows are missing say so before anything is clicked, with no button;
-  // past runs are said plainly under Talk (review M3).
+  // past runs are said plainly under Talk.
   await page.goto(`${ORIGIN}/app#data`);
   await page.getByText(/^Exporting everything you hold is not here yet/).waitFor();
   assert.equal(await page.getByRole("button", { name: /Export/ }).count(), 0);
@@ -700,7 +700,7 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.getByText(/not kept across reloads/).waitFor();
 });
 
-// -- The review's attacks, kept as tests (slice APP review) ---------------------------------
+// -- Attacks on the app, kept as tests -----------------------------------------------------
 
 const P_IMG = `<img src=x onerror="window.__xss=(window.__xss||0)+1">`;
 const P_SVG = `"><svg onload="window.__xss=(window.__xss||0)+1"></svg>`;
@@ -837,7 +837,7 @@ test("no payload runs through file names, file text, frames, results, posts or t
   assert.equal(await page.locator("textarea.editor").inputValue(), PAYLOAD);
   await page.getByRole("link", { name: `${P_IMG}.md` }).click();
   await page.locator("textarea.editor").waitFor();
-  // A run whose frames and result are the payload, and one frame with no event (review L2).
+  // A run whose frames and result are the payload, and one frame with no event.
   const before = (await starts()).length;
   await page.getByPlaceholder("Say something to helper").fill(PAYLOAD);
   await page.getByRole("button", { name: "Send" }).click();
@@ -880,7 +880,7 @@ test("no payload runs through file names, file text, frames, results, posts or t
   page.off("dialog", onDialog);
 });
 
-test("a malformed hash opens home, with no page error (review L1)", { timeout: 30_000 },
+test("a malformed hash opens home, with no page error", { timeout: 30_000 },
      async () => {
   await page.goto(`${ORIGIN}/app#data`);
   await page.getByRole("heading", { name: "Your data" }).waitFor();
@@ -966,8 +966,8 @@ test("the return pages exchange no stranger's code and send no one off-site", { 
   assert.ok(!seen.slice(from).some((r) => r.url.startsWith("https://evil.test")));
 });
 
-test("a leaked token alone changes no agent's definition, and a missing door is a real 404 " +
-     "(review M1, M3)", { timeout: 60_000 }, async () => {
+test("a leaked token alone changes no agent's definition, and a missing door is a real 404",
+     { timeout: 60_000 }, async () => {
   await page.goto(`${ORIGIN}/app#home`);
   await page.getByRole("heading", { name: "Home" }).waitFor();
   const read = await bare("files/read", { path: "/workspace/agents/main/agent.json" });
@@ -1071,7 +1071,7 @@ async function holding(pattern, body) {
   }
 }
 
-test("a save re-lists its own folder, never the folder the owner went to since (review L2)",
+test("a save re-lists its own folder, never the folder the owner went to since",
      { timeout: 60_000 }, async () => {
   const folder = "/workspace/agents/helper";
   await page.goto(`${ORIGIN}/app#data/${encodeURIComponent(folder)}`);
@@ -1099,7 +1099,7 @@ test("a save re-lists its own folder, never the folder the owner went to since (
   assert.equal(await page.getByRole("heading", { name: `Files in ${folder}` }).count(), 0);
 });
 
-test("a screen still loading never paints over the signed-out view (review L1)",
+test("a screen still loading never paints over the signed-out view",
      { timeout: 60_000 }, async () => {
   await page.goto(`${ORIGIN}/app#home`);
   await page.getByRole("heading", { name: "Home", exact: true }).waitFor();

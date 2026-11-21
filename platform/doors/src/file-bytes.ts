@@ -1,25 +1,24 @@
 /**
- * The file door's bytes (tasks 2, "Owed by 6.1"; slice L, after its review): the binder
- * streams an upload's chunks to `FILES` itself. Decided in 6.1: the binder is the trust
- * root and already reaches every owner's object, so its reading an owner's chunk namespace
- * from that owner's object weakens no isolation, and a file's bytes never pass through the
- * owner's object.
+ * The file door's bytes: the binder streams an upload's chunks to `FILES` itself. The binder
+ * is the trust root and already reaches every owner's object, so its reading an owner's
+ * chunk namespace from that owner's object weakens no isolation, and a file's bytes never
+ * pass through the owner's object.
  *
  * The owner's app, on the owner surface, with its own token:
  * 1. `files/upload/begin` (JSON): the object's `fileUploadBegin`, the file's size and the
- *    SHA-256 of each 4 MiB of it; its intent, and the chunks it still needs.
+ *    SHA-256 of each chunk (`CHUNK_BYTES`) of it; its intent, and the chunks it still needs.
  * 2. `PUT files/upload/<intent_id>/<index>` (`application/octet-stream`), one per chunk of
  *    the plan, in any order and again after any failure: exactly that chunk's bytes. The
  *    door reads the plan, the owner's namespace and its wrapped data key, which only `FILES`
- *    opens (`fileUploadTarget`), checks the bytes
- *    against the chunk's declared SHA-256, puts a chunk the intent still needs to `FILES`
- *    (R2 checks its hash again) and reports it (`fileUploadStored`). It answers the chunk's
- *    SHA-256 as `Content-Digest` (RFC 9530) and checks one the client sent. A chunk sent
- *    again is answered without a second put, so an upload resumes where it stopped.
+ *    opens (`fileUploadTarget`), checks the bytes against the chunk's declared SHA-256, puts
+ *    a chunk the intent still needs to `FILES` (R2 checks its hash again) and reports it
+ *    (`fileUploadStored`). It answers the chunk's SHA-256 as `Content-Digest` (RFC 9530) and
+ *    checks one the client sent. A chunk sent again is answered without a second put, so an
+ *    upload resumes where it stopped.
  * 3. `files/upload/commit` (JSON): the object's `fileUploadCommit`.
  *
  * So a file is bounded by the owner's policy (`max_file_bytes`, the intent's plan), never
- * by one request: each request carries one chunk, at most 4 MiB, far inside Cloudflare's
+ * by one request: each request carries one chunk, at most `CHUNK_BYTES`, far inside Cloudflare's
  * per-request body size (100 MB on Free and Pro, by its Workers limits page). A refusal at
  * any step (an expired intent, the erasure's mark, a chunk R2 refused) answers its fixed
  * code. The object's chunk doors (`fileUploadChunks`) stay for in-object callers.

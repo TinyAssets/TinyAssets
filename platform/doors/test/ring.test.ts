@@ -1,6 +1,6 @@
 /**
- * The sandbox line's doorbell (slice S; `src/ring.ts`), in workerd through the real owner
- * object (its `SANDBOX` a recording fake, `entry.ts`): a ring reaches the owner it names,
+ * The sandbox line's doorbell (`src/ring.ts`), in workerd through the real owner
+ * object (its `SANDBOX` a recording fake, `ci/fake-sandbox.ts`): a ring reaches the owner it names,
  * whose object, with no run waiting, leaves the line; a ring out of shape is dropped, never
  * guessed at, and acknowledged so the queue does not retry it. The doors' queue entry takes
  * each batch by its queue's name (`QUEUES`) and fails loudly on any other.

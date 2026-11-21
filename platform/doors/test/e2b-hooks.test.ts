@@ -1,5 +1,5 @@
 /**
- * E2B's signed lifecycle webhook (slice P, `e2b-hooks.ts`): verified by E2B's own signature
+ * E2B's signed lifecycle webhook (`e2b-hooks.ts`): verified by E2B's own signature
  * scheme, its body read no further than its bound, parsed strictly, routed by the sealed
  * route E2B echoes from the sandbox's metadata to the owner's object, which counts each
  * billed execution once, and only while the event's own signed time is inside its window.
@@ -87,7 +87,7 @@ describe("E2B's lifecycle webhook", () => {
     ]);
   });
 
-  it("counts one execution once, though a pause and a later kill both carry it (review L1)",
+  it("counts one execution once, though a pause and a later kill both carry it",
      async () => {
     const who = await admitted();
     const paused = event(who, { sandbox_execution_id: "exec-1" });
@@ -103,7 +103,7 @@ describe("E2B's lifecycle webhook", () => {
   });
 
   it("hands the owner each event at the time it signs, however old or ahead, and a replay is " +
-     "refused by the execution it names (review L2)", async () => {
+     "refused by the execution it names", async () => {
     // The window the owner counts an event in is the owner's (`sandbox-time.test.ts`).
     const timed = await admitted();
     const times = [Date.now() - 7 * 86_400_000, Date.now() + 3600_000];
@@ -131,7 +131,7 @@ describe("E2B's lifecycle webhook", () => {
     expect(lifecycleEvent(JSON.stringify(unnamed))).toBeNull();
   });
 
-  it("reads a body no further than its bound, with or without a length (review L3)",
+  it("reads a body no further than its bound, with or without a length",
      async () => {
     let pulled = 0;
     const endless = new ReadableStream<Uint8Array>({
@@ -197,8 +197,8 @@ describe("E2B's lifecycle webhook", () => {
     expect(signed(SECRET, "{}", signature("{ }"))).toBe(false);
   });
 
-  it("routes the events of a sandbox a sign-in first made, by the route the sign-in sealed " +
-     "(S14)", async () => {
+  it("routes the events of a sandbox a sign-in first made, by the route the sign-in sealed",
+     async () => {
     await setControl(OPEN);
     const restore = serveFirstPartyDocument();
     try {
