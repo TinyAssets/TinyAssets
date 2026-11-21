@@ -701,7 +701,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     list in the contract beside the hook's path (`identity.json`) (`pass-ci-deploy.md` §2;
     `untangle/e2b-hook-events`).
   - [ ] `contract/src/wake-kinds.ts` `canonicalJson`, a second canonical JSON, gone for
-    `canonical.ts`'s, the platform's one (`pass-contract.md` §4).
+    `canonical.ts`'s, the platform's one (`pass-contract.md` §4; `untangle/wake-canonical`).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 

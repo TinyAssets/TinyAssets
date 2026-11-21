@@ -137,8 +137,11 @@ step), and the reason comments.
 - to `guards/egress-scope.test.ts`: `credential.test.ts`'s `allows` table and its dotted path.
 
 The moved tests' two stream helpers (`sse`, `streamOf`, three lines each) are written again in
-the contract's file: the gateway's tests still read them, and a contract guard may not import a
-gateway's test.
+the contract's file. Each is a test's own frames, written from the SSE specification, so no
+copy has to change with another. The gateway holds `sse` twice already, `meter.test.ts`'s and
+`test/fake-upstream.ts`'s, and the fake cannot import one: `ci/workers.ts` `fake` transpiles
+it as a single module. A shared support module would serve two of the three and tie the
+gateway's tests to the contract's guards for three lines.
 
 ## 3. Found and fixed beyond comments
 
@@ -164,7 +167,8 @@ The seven files `untangle/r5-hooks` changes, not touched here so the two merge c
 
 And the test pass on the same files.
 
-**Found and left, a code change** (a sub-line of `tasks.md`'s re-check loop line):
+**Found and left, a code change** (a sub-line of `tasks.md`'s re-check loop line,
+`untangle/wake-canonical`):
 `wake-kinds.ts` `canonicalJson` is a second canonical JSON beside `canonical.ts`, the
 platform's one (`contract-copies.md` item 3). It differs only on `undefined` (it never drops
 a field), which no subscription's JSON arguments hold, so `subscriptionId` would read the
