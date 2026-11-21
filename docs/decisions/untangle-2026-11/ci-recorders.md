@@ -43,8 +43,11 @@ reviewers stop running whole workspace suites and the recorders before a PR open
    head on one runner cancel what the runner adds.
    - It runs on every event, with no job `if` (a skipped required leg passes,
      `legs.test.ts`). The script decides: a run whose working tree's diff from its base
-     touches no `platform/*/src` records nothing and passes, the skill's rule since #5644; a
-     push, schedule or dispatch has no change to compare.
+     touches no `platform/` file but Markdown records nothing and passes; a push, schedule or
+     dispatch has no change to compare. Not `platform/*/src`, the skill's rule since #5644: a
+     recording also reads `contract/*.json`, `doors/onboarding.json`, `starter/starter.json`,
+     `sources/records/`, each `wrangler.jsonc`, the `ci/` kit, the recorders' test support and
+     the lockfile, so a door added as data alone passed unrecorded (review).
 4. **Sharded by test, base and head at once.**
    - One leg a tree would take about 18 minutes, three times the slowest platform leg: the
      build host's single thread is about a usual runner's (`budgets-variance.md`), and a
@@ -82,9 +85,12 @@ reviewers stop running whole workspace suites and the recorders before a PR open
    aggregate's gate step reading its result, and the script's verdict and shard split.
 8. **Found:** at main `88e74e1cd`, the wire recorder's `wire: inbound hooks` test gets 404
    `not_found` for every event, `inbound ok` included (its URL is the door's own,
-   `https://tinyassets.io/hooks/inbound/<token>`). So a change to `inbound.ts`'s capability
-   refusals shows in no recorder; this PR's first mutation, there, came out the same.
-   - [ ] The wire recorder sees the capability door's answers (`untangle/recorder-inbound`).
+   `https://tinyassets.io/hooks/inbound/<token>`). A test-setup gap, not a door bug: that
+   test runs under `OPEN`, whose `inbound` gate is off (`ci/fixtures.ts`), and with the gate
+   off the door does not exist (`inbound.ts` step 1). `wire-reach.record.ts` records the same
+   events with the gate on, as another test, in another shard than 3/4, the one the first
+   mutation ran (by the `" > "` full names' hash), so that mutation came out the same.
+   - [ ] The duplicate gate-off block leaves `wire.record.ts` (`untangle/recorder-inbound`).
 9. **Left:** the watchdog, 45 minutes, is about six times the estimate in item 4 until CI
    measures the shards.
    - [ ] The shards' time read from this PR's own run (`live:` its `platform-recorders` legs);

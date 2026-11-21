@@ -10,8 +10,8 @@
  * on each one's own workerd project (`project.ts` `recording`), and no test run includes
  * them: they are heavy, and CI is the one full run.
  *
- * When the working tree's diff from `<base-commit>` touches a Worker's source
- * (`platform/<workspace>/src`), the check records shard k of n of the base (a worktree of it,
+ * When the working tree's diff from `<base-commit>` touches a platform file other than prose
+ * (`RECORDED`), the check records shard k of n of the base (a worktree of it,
  * installed by `npm ci`) and of this tree at once, by this runner, and prints each recorder's
  * lines that differ. It fails when a recorder differs that the body's one `Recorders-Differ:`
  * line does not name (`Recorders-Differ: rpc, rv -- why`), and when a run fails, after its
@@ -40,8 +40,12 @@ const TABLE = Object.freeze([
   { name: "rv", workspace: "owner", files: ["rv"], prefix: "RV" },
 ]);
 
-/** A diff the recorders can see: one that touches a Worker's source. */
-const RECORDED = /^platform\/[^/]+\/src\//;
+/**
+ * A diff the recorders can see: any platform file but prose. A recording reads a Worker's
+ * source, its data and config outside `src` (`contract/*.json`, `wrangler.jsonc`), the kit and
+ * test support it runs on, and the locked dependencies, so no narrower list holds.
+ */
+export const RECORDED = /^platform\/(?!.*\.md$)/;
 const DECLARED = /^Recorders-Differ:(.*)$/gm;
 
 export interface Shard {
@@ -203,7 +207,7 @@ async function installed(platform: string): Promise<void> {
 
 async function check(base: string, shard: Shard, body: string): Promise<number> {
   if (!git("diff", "--name-only", base).split("\n").some((path) => RECORDED.test(path))) {
-    console.log(`The diff from ${base} touches no Worker's source: the recorders see nothing.`);
+    console.log(`The diff from ${base} touches no platform file but prose: the recorders see nothing.`);
     return 0;
   }
   const wanted = declared(readFileSync(body, "utf8"));

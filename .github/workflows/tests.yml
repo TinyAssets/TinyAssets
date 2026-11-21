@@ -437,8 +437,8 @@ jobs:
       - run: npm run test:app -w doors
 
   # The recorders, base against head (platform/ci/record.ts), on a pull request (base: HEAD^1
-  # of its merge commit) and a merge group (its base), when the diff touches a Worker's
-  # source: a recorder that differs fails its shard unless the PR body's `Recorders-Differ:`
+  # of its merge commit) and a merge group (its base), when the diff touches a platform file
+  # other than prose: a recorder that differs fails its shard unless the PR body's `Recorders-Differ:`
   # line names it, and each shard's log shows its lines that differ, for the reviewer. The
   # body is read when the leg runs, so a re-run reads it as edited. Every other event has no
   # change to compare. Each shard records its part of base and head at once. Required through

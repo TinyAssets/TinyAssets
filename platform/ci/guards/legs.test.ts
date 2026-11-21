@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { keyed } from "../../contract/src/checks";
-import { declared, inShard, problems as recordProblems, shardOf } from "../record";
+import { declared, inShard, problems as recordProblems, RECORDED, shardOf } from "../record";
 import { largeTests } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
 import { type Data, json, workflow } from "../workflows";
@@ -478,6 +478,17 @@ describe("platform-recorders", () => {
     for (const body of ["Recorders-Differ: rcp", "Recorders-Differ:",
                         "Recorders-Differ: rpc\nRecorders-Differ: rv"]) {
       expect(() => declared(body), body).toThrow();
+    }
+  });
+
+  it("records a diff that touches any platform file but prose", () => {
+    for (const path of ["platform/contract/doors.json", "platform/doors/wrangler.jsonc",
+                        "platform/ci/workerd.ts", "platform/package-lock.json",
+                        "platform/owner/test/support.ts", "platform/owner/src/owner-do.ts"]) {
+      expect(RECORDED.test(path), path).toBe(true);
+    }
+    for (const path of ["platform/README.md", "docs/architecture.md", "scripts/x.py"]) {
+      expect(RECORDED.test(path), path).toBe(false);
     }
   });
 
