@@ -18,7 +18,7 @@ import {
 } from "../src/wakes";
 import type { OwnerDO, Stores } from "../src/owner-do";
 import {
-  DOT, FakeSender, MUSE, origin, registerOn, rig, type Rig, subscription,
+  DOT, FakeSender, MUSE, origin, registerOn, rig, type Rig, subscription, dm
 } from "./ledger-support";
 import { atClock, drainDue, failure, faulty, laneJobs, storesOn } from "./support";
 
@@ -78,9 +78,9 @@ describe("one open wake per ringing recipient", () => {
      async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 60 });
-    const first = await r.post(null, `dm:${muse}`, { cmid: "c1" });
-    await r.post(null, `dm:${muse}`, { body: "again", cmid: "c2" });
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });  // a resend is the same message
+    const first = await r.post(null, dm(muse), { cmid: "c1" });
+    await r.post(null, dm(muse), { body: "again", cmid: "c2" });
+    await r.post(null, dm(muse), { cmid: "c1" });  // a resend is the same message
     const [wake] = await wakes(r);
     expect([wake!["state"], wake!["agent_id"], wake!["attempts"]]).toEqual(["pending", muse, 0]);
     // A new wake waits out the agent's batch window, so the burst rings once.
@@ -101,7 +101,7 @@ describe("one open wake per ringing recipient", () => {
     expect(new Set(await states(r, "ledger_recipients"))).toEqual(new Set(["woken"]));
     const [mail] = (await r.read(MUSE)).messages;
     expect(mail!.message_id).toBe(first.message_id);
-    await r.post(null, `dm:${muse}`, { body: "later", cmid: "c3" });
+    await r.post(null, dm(muse), { body: "later", cmid: "c3" });
     expect(await states(r)).toEqual(["sent", "pending"]);
   });
 
@@ -109,11 +109,11 @@ describe("one open wake per ringing recipient", () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot", "pull");
-    const first = await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    const first = await r.post(null, dm(muse), { cmid: "c1" });
     expect(await r.tick()).toBe(1);
     await r.read(MUSE);
-    await r.post(MUSE, `dm:${muse}`, { body: "reply", cmid: "r1", parent: first.message_id });
-    await r.post(null, `dm:${dot}`, { cmid: "d1" });
+    await r.post(MUSE, dm(muse), { body: "reply", cmid: "r1", parent: first.message_id });
+    await r.post(null, dm(dot), { cmid: "d1" });
     expect((await wakes(r)).map((w) => [w["agent_id"], w["state"]])).toEqual([[muse, "sent"]]);
     expect(await r.tick(clock() + HOUR_S)).toBe(0);
     expect(r.sender.sent).toHaveLength(1);
@@ -149,7 +149,7 @@ describe("one open wake per ringing recipient", () => {
   it("suppresses a disabled agent's open wake, or one moved off mcp_event", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "revoked" });
     expect(await wakeStates(r)).toEqual(["suppressed"]);
     expect(JSON.parse((await wakes(r))[0]!["receipt_json"] as string))
@@ -157,7 +157,7 @@ describe("one open wake per ringing recipient", () => {
     expect(await r.tick(clock() + HOUR_S)).toBe(0);
     expect(r.sender.sent).toEqual([]);
     await r.register(MUSE, "Muse", "mcp_event");
-    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    await r.post(null, dm(muse), { cmid: "c2" });
     await r.register(MUSE, "Muse", "pull");
     expect(await wakeStates(r)).toEqual(["suppressed", "suppressed"]);
     const second = (await wakes(r))[1]!;
@@ -169,7 +169,7 @@ describe("one open wake per ringing recipient", () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "revoked" });
     expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);  // in the disable's unit
     // A wake left open by a direct store change, as a crash would.
@@ -185,14 +185,14 @@ describe("a wake is sent once and never replayed", () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push({ state: "rate_limited", status: 429, retry_after: 120 });
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     const now = clock() + 1;
     expect(await r.tick(now)).toBe(0);  // only an accepted wake counts
     expect(r.sender.sent).toHaveLength(1);
     const [wake] = await wakes(r);
     expect(wake!["state"]).toBe("rate_limited");
     expect(wake!["due"]).toBeCloseTo(now + 120, 6);
-    await r.post(null, `dm:${muse}`, { body: "more", cmid: "c2" });  // extends; still waits
+    await r.post(null, dm(muse), { body: "more", cmid: "c2" });  // extends; still waits
     expect(await wakes(r)).toEqual([{ ...wake, fold: (wake!["fold"] as number) + 1 }]);
     expect(new Set(await states(r, "ledger_recipients"))).toEqual(new Set(["queued"]));
     expect(await r.tick(now + 60)).toBe(0);
@@ -226,7 +226,7 @@ describe("a wake is sent once and never replayed", () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push({ state: "unknown" });  // the connection dropped after it left
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     const now = clock() + 1;
     expect(await r.tick(now)).toBe(0);
     expect(r.sender.sent).toHaveLength(1);
@@ -238,7 +238,7 @@ describe("a wake is sent once and never replayed", () => {
 
     /** A claim, perhaps the durable may-have-sent mark, then the object dies. */
     const crashMidSend = async (mark: boolean) => {
-      await r.post(null, `dm:${muse}`, { body: crypto.randomUUID(), cmid: crypto.randomUUID() });
+      await r.post(null, dm(muse), { body: crypto.randomUUID(), cmid: crypto.randomUUID() });
       const open = (await wakes(r)).find((w) => w["state"] === "pending")!;
       const at = clock() + 1;
       const claim = await r.inLedger((ledger) => ledger.claim(open["wake_id"], at));
@@ -269,7 +269,7 @@ describe("a wake is sent once and never replayed", () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push("crash");
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     const now = clock() + 1;
     expect(await r.tick(now)).toBe(0);
     expect(await states(r)).toEqual(["sending"]);
@@ -281,7 +281,7 @@ describe("a wake is sent once and never replayed", () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     r.sender.answers.push({ state: "failed", reason: "not_sent" });
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     expect(await r.tick(clock() + 1)).toBe(0);
     const [wake] = await wakes(r);
     expect([wake!["state"], JSON.parse(wake!["receipt_json"] as string)["reason"]])
@@ -298,7 +298,7 @@ describe("a wake is sent once and never replayed", () => {
     for (const [step, answer] of answers.entries()) {
       r.sender.answers.push(answer);
       bodies.push("BODY-" + crypto.randomUUID());
-      await r.post(null, `dm:${muse}`, { body: bodies.at(-1)!, cmid: `c${step}` });
+      await r.post(null, dm(muse), { body: bodies.at(-1)!, cmid: `c${step}` });
       await r.tick(start + 100 * (step + 1));
       expect(r.sender.sent).toHaveLength(step + 1);
     }
@@ -323,8 +323,8 @@ describe("a claim settles only by its holder", () => {
       const muse = ringing(stores);
       const dot = registerOn(stores, DOT, { ...RINGS, display_name: "Dot" }).agent_id;
       ledger.setWakeLimits(dot, null, 60);  // the owner's batch window for Dot
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, now);
-      ledger.post(null, `dm:${dot}`, "c2", "hello", null, now);  // its batch window: not due
+      ledger.post(null, dm(muse), "c1", "hello", null, now);
+      ledger.post(null, dm(dot), "c2", "hello", null, now);  // its batch window: not due
       const due = ledger.dueOpen(now, 16);
       expect(due.map((w) => [w.agent_id, w.state])).toEqual([[muse, "pending"]]);
       const later = ledger.agents(null).find((a) => a.agent_id === dot)!;
@@ -348,7 +348,7 @@ describe("a claim settles only by its holder", () => {
   it("stops a sender whose mark fails, before its first byte", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     const now = clock() + 1;
     const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
       // The claim lapses and is taken again while the sender is handed its target.
@@ -370,7 +370,7 @@ describe("a claim settles only by its holder", () => {
   it("counts no send whose settle cannot be written, and backs its row off", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     const now = clock() + 1;
     // The pass's units: the claim, the mark, then the settle, which fails.
     const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
@@ -388,7 +388,7 @@ describe("a claim settles only by its holder", () => {
     const t = clock();
     const marked = await r.inLedger((ledger, stores) => {
       const muse = ringing(stores);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t);
+      ledger.post(null, dm(muse), "c1", "hello", null, t);
       const [wake] = ledger.dueOpen(t, 1);
       const stale = ledger.claim(wake!.wake_id, t);
       expect(ledger.recover(wake!.wake_id, t + WAKE_LEASE_S)).toBe("pending");  // unmarked
@@ -411,12 +411,12 @@ describe("a claim settles only by its holder", () => {
     const t = clock();
     await r.inLedger((ledger, stores) => {
       const muse = ringing(stores);
-      ledger.post(null, `dm:${muse}`, "c1", "first", null, t);
+      ledger.post(null, dm(muse), "c1", "first", null, t);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       if (claim.outcome !== "claimed") {
         throw new Error("expected a claim");
       }
-      ledger.post(null, `dm:${muse}`, "c2", "after the claim", null, t);  // its own next wake
+      ledger.post(null, dm(muse), "c2", "after the claim", null, t);  // its own next wake
       ledger.settle(claim.target.wake_id, claim.target.claim_id, { state: "sent" }, t);
     });
     expect(await states(r, "ledger_recipients")).toEqual(["woken", "queued"]);
@@ -431,13 +431,13 @@ describe("a claim settles only by its holder", () => {
       const muse = ringing(stores);
       for (const [n, answer] of [[1, { state: "pending" }],
                                  [2, { state: "rate_limited", retry_after: 300 }]] as const) {
-        ledger.post(null, `dm:${muse}`, `c${n}`, `body ${n}`, null, t);
+        ledger.post(null, dm(muse), `c${n}`, `body ${n}`, null, t);
         const open = ledger.dueOpen(t, 1)[0]!;
         const claim = ledger.claim(open.wake_id, t);
         if (claim.outcome !== "claimed") {
           throw new Error("expected a claim");
         }
-        ledger.post(null, `dm:${muse}`, `n${n}`, "meanwhile", null, t);  // opens the next
+        ledger.post(null, dm(muse), `n${n}`, "meanwhile", null, t);  // opens the next
         expect(ledger.settle(open.wake_id, claim.target.claim_id, answer, t)).toBe(true);
         // The claimed wake folds into the open one; nothing is left to send twice.
         const rows = ledger.dueOpen(t + 1000, 16);
@@ -466,9 +466,9 @@ describe("the wake limits", () => {
     const muse = await r.register(MUSE, "Muse", "mcp_event",
                                   { max_wakes_per_hour: 2, batch_window_s: 0 });
     const t = clock() + 1;
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     expect(await r.tick(t)).toBe(1);
-    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    await r.post(null, dm(muse), { cmid: "c2" });
     expect(await r.tick(t + 10)).toBe(0);
     const open = (await wakes(r)).find((w) => w["state"] === "pending")!;
     expect(open["due"]).toBeCloseTo(t + HOUR_S / 2, 6);
@@ -491,7 +491,7 @@ describe("the wake limits", () => {
       .toBe(100_000);
     const t = clock() + 1;
     for (const n of [1, 2, 3]) {
-      await r.post(null, `dm:${muse}`, { cmid: `c${n}` });
+      await r.post(null, dm(muse), { cmid: `c${n}` });
       expect(await r.tick(t + n)).toBe(1);  // 0.036 s apart: never held at this rate
     }
   });
@@ -501,9 +501,9 @@ describe("the wake limits", () => {
     const muse = await r.register(MUSE, "Muse", "mcp_event",
                                   { max_wakes_per_hour: 1, batch_window_s: 0 });
     const t = clock() + 1;
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     expect(await r.tick(t)).toBe(1);
-    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    await r.post(null, dm(muse), { cmid: "c2" });
     expect(await r.tick(t + 1)).toBe(0);  // capped
     expect(await states(r, "ledger_recipients")).toEqual(["woken", "held_cap"]);
     await r.read(MUSE);
@@ -517,14 +517,14 @@ describe("the wake limits", () => {
     const t = clock();
     const claims = await r.inLedger((ledger, stores) => {
       const muse = ringing(stores, MUSE, 1);
-      ledger.post(null, `dm:${muse}`, "c0", "x", null, t);
+      ledger.post(null, dm(muse), "c0", "x", null, t);
       const first = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       if (first.outcome !== "claimed") {
         throw new Error("expected a claim");
       }
       ledger.settle(first.target.wake_id, first.target.claim_id, { state: "sent" }, t);
       ledger.setWakeLimits(muse, 1, 0);  // the same cap, set again: counted afresh
-      ledger.post(null, `dm:${muse}`, "c1", "x", null, t + 10);
+      ledger.post(null, dm(muse), "c1", "x", null, t + 10);
       return ledger.claim(ledger.dueOpen(t + 10, 1)[0]!.wake_id, t + 10).outcome;
     });
     expect(claims).toBe("claimed");
@@ -533,7 +533,7 @@ describe("the wake limits", () => {
   it("pushes a new wake's due time by the agent's batch window", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 300 });
-    await r.post(null, `dm:${muse}`);
+    await r.post(null, dm(muse));
     const [wake] = await wakes(r);
     expect(wake!["due"] as number - (wake!["created_at"] as number)).toBe(300);
     expect(await r.tick((wake!["due"] as number) - 1)).toBe(0);
@@ -547,7 +547,7 @@ describe("the wakes lane of the object's one schedule", () => {
     const t = clock();
     const due = await r.inLedger((ledger, stores) => {
       const muse = ringing(stores);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+      ledger.post(null, dm(muse), "c1", "hello", null, t - 100);
       const [wake] = ledger.dueOpen(t, 1);
       expect(ledger.claim(wake!.wake_id, t).outcome).toBe("claimed");
       ledger.defer(wake!.wake_id, t + 1);
@@ -562,7 +562,7 @@ describe("the wakes lane of the object's one schedule", () => {
     const open = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const stores = storesOn(state);
       const { ledger, gate } = stores;
-      await gate.write(() => ledger.post(null, `dm:${ringing(stores)}`, "c1", "hello", null,
+      await gate.write(() => ledger.post(null, dm(ringing(stores)), "c1", "hello", null,
                                          t - 100));
       expect(await runWakes(ledger, r.sender, gate.write, 16, LANE_CALL_MS, clock() - 1))
         .toBe(0);
@@ -580,7 +580,7 @@ describe("the wakes lane of the object's one schedule", () => {
       const { ledger, gate } = stores;
       const row = () => state.storage.sql.exec(
         "SELECT state, marked FROM ledger_wakes").one();
-      await gate.write(() => ledger.post(null, `dm:${ringing(stores)}`, "c1", "hello", null,
+      await gate.write(() => ledger.post(null, dm(ringing(stores)), "c1", "hello", null,
                                          t - 100));
       const hanging = new HangingSender();
       const started = Date.now();
@@ -609,7 +609,7 @@ describe("the wakes lane of the object's one schedule", () => {
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
       const stores = storesOn(state);
       const { ledger, gate } = stores;
-      await gate.write(() => ledger.post(null, `dm:${ringing(stores)}`, "c1", "hello", null,
+      await gate.write(() => ledger.post(null, dm(ringing(stores)), "c1", "hello", null,
                                          t - 100));
       state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
                              "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
@@ -634,7 +634,7 @@ describe("the wakes lane of the object's one schedule", () => {
      "retry out, never a busy loop", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.post(null, `dm:${muse}`);
+    await r.post(null, dm(muse));
     await r.sql("UPDATE ledger_wakes SET due = due - 120");
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // a wake re-derives the schedule as stored
@@ -655,7 +655,7 @@ describe("the wakes lane of the object's one schedule", () => {
     const claimed = await r.inLedger((ledger, stores) => {
       const ids = Array.from({ length: 17 }, (_, n) => ringing(stores, origin(n)));
       for (const id of ids) {
-        ledger.post(null, `dm:${id}`, `c-${id}`, "hello", null, t);  // 17 wakes due at t
+        ledger.post(null, dm(id), `c-${id}`, "hello", null, t);  // 17 wakes due at t
       }
       // The last agent's wake is claimed and marked, and its sender died: its lease ends
       // at t + 160, after the 16 open wakes still due ahead of it.
@@ -689,8 +689,8 @@ describe("the wakes lane of the object's one schedule", () => {
     const times = await r.inLedger((ledger, stores) => {
       const muse = ringing(stores);
       const dot = ringing(stores, DOT);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
-      ledger.post(null, `dm:${dot}`, "c2", "hello", null, t + 500);
+      ledger.post(null, dm(muse), "c1", "hello", null, t - 100);
+      ledger.post(null, dm(dot), "c2", "hello", null, t + 500);
       const empty = ledger.nextDue(t, true);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       expect(claim.outcome).toBe("claimed");
@@ -710,7 +710,7 @@ describe("the wakes lane of the object's one schedule", () => {
     const t = clock();
     await r.inLedger((ledger, stores) => {
       for (let n = 0; n < 17; n++) {
-        ledger.post(null, `dm:${ringing(stores, origin(n))}`, `c${n}`, "hello", null, t);
+        ledger.post(null, dm(ringing(stores, origin(n))), `c${n}`, "hello", null, t);
       }
     });
     expect(await r.tick(t)).toBe(16);
@@ -724,7 +724,7 @@ describe("the wakes lane of the object's one schedule", () => {
     const t = clock();
     const lease = await r.inLedger((ledger, stores) => {
       const muse = ringing(stores);
-      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t);
+      ledger.post(null, dm(muse), "c1", "hello", null, t);
       const claim = ledger.claim(ledger.dueOpen(t, 1)[0]!.wake_id, t);
       expect(claim.outcome).toBe("claimed");
       return t + WAKE_LEASE_S;

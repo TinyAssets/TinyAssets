@@ -31,9 +31,6 @@ import { exported } from "./export";
 import { CHUNK_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 
-/** What the log holds in place of an image past `IMAGE_MAX`. */
-export const LOG_WIDE = '{"t":"wide"}';
-
 /** The capture's one row. */
 export type Capture = {
   readonly gen: string | null;

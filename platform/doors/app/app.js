@@ -501,7 +501,7 @@ async function rooms(arg = null) {
     call("tools/inbox_digest", { limit: 100, after: 0 }),
     call("tools/board_digest", { limit: 100, after: 0 }), call("tools/agents_list")]);
   const room = h("select", {}, owned.filter((a) => a.retired_at === null).map((a) =>
-    h("option", { value: `dm:${a.agent_id}` }, `You and ${a.agent}`)));
+    h("option", { value: a.room_id }, `You and ${a.agent}`)));
   const body = h("textarea", {});
   const mail = inbox.mail.messages;
   paint(turn,

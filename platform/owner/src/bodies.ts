@@ -50,9 +50,6 @@ export const READ_PAGE_BYTES = 2 * CHUNK_BYTES;
 /** The bytes a page fits its items to: the answer, less what its last fields may add. */
 export const PAGE_BYTES = RESULT_CHARS - FIT_SLACK;
 
-/** How many times a placed body begins again past a chunk the sweep is deleting. */
-const PLACE_TRIES = 5;
-
 /**
  * How often a mailbox read reads its placed bodies again when mail that came between its
  * read of them and its unit put an unread placed body first (ADR-035).
@@ -265,7 +262,9 @@ export class Bodies {
   /**
    * A write door with a body (ADR-035). Its first unit checks its caller and request
    * (`prepare`, the body and the writer it is placed as); a body its row keeps is written
-   * in that same unit (`act`). A body past `PLACE_BYTES` is begun there instead, sent to R2,
+   * in that same unit (`act`). A body past `PLACE_BYTES` is begun there instead (a chunk of
+   * it the sweep's delete in flight takes waits for that delete, `Files.deleteLanded`; one a
+   * failed delete left is refused, `chunk_deleting`, to begin again later), sent to R2,
    * and written in a second unit, which checks the caller again and adopts it; its upload
    * is released after, whatever the unit did (none once adopted). A conflict's current row,
    * placed, is read back as a read door reads it (`shown`).
@@ -274,32 +273,40 @@ export class Bodies {
                    act: (placed: Placed | null) => T, shown?: Shown<T>): Promise<T> {
     const located = (value: T) => ({ value, located: this.locate(
       shown === undefined ? [] : shown.contents(value)) });
-    // A body whose chunk the sweep is deleting this moment begins again once the delete
-    // lands, a few times, then the refusal stands.
-    let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
+    type First = { done: { value: T; located: Located } } | { placing: Placing };
     // Whose files scope the write's bodies count in: the tier's one storage number holds
     // them, inline or placed, retention making room first (`Files.held`).
     let writer = OWNER;
-    for (let tries = 1; first === undefined; tries++) {
-      try {
-        first = await this.#write(():
-            { done: { value: T; located: Located } } | { placing: Placing } => {
-          const prepared = prepare();
-          if ("done" in prepared) {
-            return { done: located(prepared.done) };
-          }
-          writer = prepared.writer;
-          const placing = this.begin(prepared.body as string, prepared.writer);
-          return placing === null ? { done: located(this.#files.held(writer, () => act(null))) }
-            : { placing };
-        });
-      } catch (error) {
-        if (!(error instanceof Refusal) || error.code !== "chunk_deleting"
-            || tries >= PLACE_TRIES) {
-          throw error;
+    let first: First | { landing: Promise<void> };
+    for (;;) {
+      first = await this.#write((): First | { landing: Promise<void> } => {
+        const prepared = prepare();
+        if ("done" in prepared) {
+          return { done: located(prepared.done) };
         }
-        await new Promise((resolve) => setTimeout(resolve, 100 * tries));
+        writer = prepared.writer;
+        let placing: Placing | null;
+        try {
+          placing = this.begin(prepared.body as string, prepared.writer);
+        } catch (error) {
+          // Read in the unit that met it: the delete that takes the chunk, or none (left by
+          // one that failed), never a delete that landed since.
+          const landing = error instanceof Refusal && error.code === "chunk_deleting"
+            ? this.#files.deleteLanded(chunked(bodyBytes(prepared.body as string))
+              .map((chunk) => chunk.sha256))
+            : null;
+          if (landing === null) {
+            throw error;
+          }
+          return { landing };
+        }
+        return placing === null ? { done: located(this.#files.held(writer, () => act(null))) }
+          : { placing };
+      });
+      if (!("landing" in first)) {
+        break;
       }
+      await first.landing;
     }
     let done: { value: T; located: Located };
     if ("done" in first) {

@@ -23,7 +23,7 @@ import type { Origin } from "../../contract/src/binding";
 import { type Refusal, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import type { OwnerDO } from "../src/owner-do";
 import { MOVE_BYTES, RECORD_TRAILER_BYTES } from "../src/segments";
-import { ballast, counters, DOT, MUSE, origin, registerOn, rig } from "./ledger-support";
+import { ballast, counters, DOT, MUSE, origin, registerOn, rig, dm } from "./ledger-support";
 import { drainDue, failure, starterSeed, storesOn } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
@@ -115,12 +115,12 @@ describe("the ledger's bounds", () => {
     const [muse, dot] = await r.inLedger((ledger: Ledger, stores) => {
       const a = registerOn(stores, MUSE, PULL).agent_id;
       for (const n of [1, 2, 3]) {
-        ledger.post(null, `dm:${a}`, `c${n}`, `body ${n}`, null);  // never read nor acked
+        ledger.post(null, dm(a), `c${n}`, `body ${n}`, null);  // never read nor acked
       }
       ledger.disable(a, "gone");
       const b = registerOn(stores, DOT, { ...PULL, display_name: "Dot" }).agent_id;
       for (const n of [1, 2, 3]) {
-        ledger.post(null, `dm:${b}`, `d${n}`, `body ${n}`, null);
+        ledger.post(null, dm(b), `d${n}`, `body ${n}`, null);
       }
       return [a, b];
     });
@@ -128,7 +128,7 @@ describe("the ledger's bounds", () => {
     expect(await r.sql("SELECT unacked FROM ledger_usage")).toEqual([{ unacked: 3 }]);
     const messages = await r.table("ledger_messages");
     expect(messages.map((m) => m["room_id"])).toEqual([
-      `dm:${muse}`, `dm:${muse}`, `dm:${muse}`, `dm:${dot}`, `dm:${dot}`, `dm:${dot}`]);
+      dm(muse), dm(muse), dm(muse), dm(dot), dm(dot), dm(dot)]);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
   });
@@ -138,14 +138,14 @@ describe("the ledger's bounds", () => {
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot");
     await r.subscribe(MUSE);
-    const first = await r.post(null, `dm:${muse}`, { cmid: "o1" });
+    const first = await r.post(null, dm(muse), { cmid: "o1" });
     await r.tick(clock() + 1);
     await r.read(MUSE);
     await r.ack(MUSE, 1);
-    await r.post(MUSE, `dm:${muse}`, { cmid: "m1", body: "reply", parent: first.message_id });
-    await r.post(null, `dm:${muse}`, { cmid: "o2" });  // an open wake
+    await r.post(MUSE, dm(muse), { cmid: "m1", body: "reply", parent: first.message_id });
+    await r.post(null, dm(muse), { cmid: "o2" });  // an open wake
     await r.read(null);
-    const toDot = await r.post(null, `dm:${dot}`, { cmid: "d1" });
+    const toDot = await r.post(null, dm(dot), { cmid: "d1" });
     await r.read(DOT);
     const deleted = await r.stub.deleteAgent(r.session(null), { agent_id: muse });
     expect(deleted).toEqual({ agent_id: muse, messages: 3 });
@@ -207,7 +207,7 @@ describe("the ledger's bounds", () => {
   it("answers a retried ack, and dedupes a resend of what it holds hot", async () => {
     const r = await rig();
     await r.inLedger((ledger: Ledger, stores) => {
-      const room = `dm:${registerOn(stores, MUSE, PULL).agent_id}`;
+      const room = dm(registerOn(stores, MUSE, PULL).agent_id);
       const sent = ledger.post(null, room, "c1", "hello", null);
       expect(ledger.post(null, room, "c1", "hello", null)).toEqual(sent);  // held: the same
       ledger.ack(MUSE, 1);
@@ -224,7 +224,7 @@ describe("the ledger's bounds", () => {
       const muse = registerOn(stores, MUSE, RINGS).agent_id;
       ledger.setWakeLimits(muse, null, 0);
       for (let n = 1; n <= maxSettledWakes + 1; n++) {
-        ledger.post(null, `dm:${muse}`, `c${n}`, `body ${n}`, null, now + n);
+        ledger.post(null, dm(muse), `c${n}`, `body ${n}`, null, now + n);
         const [wake] = ledger.dueOpen(now + n, 1);
         const claim = ledger.claim(wake!.wake_id, now + n);
         if (claim.outcome !== "claimed") {
@@ -239,7 +239,7 @@ describe("the ledger's bounds", () => {
       // A week on, the next settle prunes them all but its own.
       const later = now + maxSettledWakes + 1 + LEDGER_LIMITS.settledWakeRetentionS + 10;
       const [agent] = ledger.agents(null);
-      ledger.post(null, `dm:${agent!.agent_id}`, "c-later", "body later", null, later);
+      ledger.post(null, dm(agent!.agent_id), "c-later", "body later", null, later);
       ledger.disable(agent!.agent_id, "revoked", null, later);
     });
     expect((await r.table("ledger_wakes")).map((w) => w["state"])).toEqual(["suppressed"]);
@@ -252,11 +252,11 @@ describe("the ledger's bounds", () => {
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot");
     for (const n of [1, 2, 3, 4, 5]) {
-      const sent = await r.post(null, `dm:${muse}`, { body: `é ${n}`, cmid: `o${n}` });
-      await r.post(null, `dm:${dot}`, { body: "x".repeat(n * 100), cmid: `d${n}` });
+      const sent = await r.post(null, dm(muse), { body: `é ${n}`, cmid: `o${n}` });
+      await r.post(null, dm(dot), { body: "x".repeat(n * 100), cmid: `d${n}` });
       await r.tick(clock() + n);
       await r.read(MUSE);
-      await r.post(MUSE, `dm:${muse}`, { body: `reply ${n}`, cmid: `m${n}`,
+      await r.post(MUSE, dm(muse), { body: `reply ${n}`, cmid: `m${n}`,
                                          parent: sent.message_id });
     }
     const page = await r.read(null);
@@ -300,9 +300,9 @@ describe("the ledger's bounds", () => {
           const act = pick(8);
           try {
             if (act <= 1) {
-              ledger.post(null, `dm:${idOf(who)}`, `o${step}`, body, null);
+              ledger.post(null, dm(idOf(who)), `o${step}`, body, null);
             } else if (act === 2) {
-              ledger.post(who, `dm:${idOf(who)}`, `a${step}`, body, null);
+              ledger.post(who, dm(idOf(who)), `a${step}`, body, null);
             } else if (act <= 4) {
               const reader = act === 3 ? null : who;
               const page = ledger.read(reader, 10);
@@ -380,7 +380,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
      "by its bytes, then lands it, nothing lost", { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    const room = `dm:${muse}`;
+    const room = dm(muse);
     const filled = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
       const count = counted(state.storage);
       const { ledger, gate } = storesOn({ id: state.id, storage: count.storage });
@@ -487,27 +487,27 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
           "SELECT unacked AS n FROM ledger_usage").one().n;
         const refusal = (cmid: string) => {
           try {
-            ledger.post(null, `dm:${dot}`, cmid, BODY, null);
+            ledger.post(null, dm(dot), cmid, BODY, null);
             return null;
           } catch (error) {
             return (error as Error).message;
           }
         };
         // The ledger's one-time rows and both readers' counters made, Muse's one message acked.
-        ledger.post(null, `dm:${muse}`, "m0", BODY, null);
-        ledger.post(null, `dm:${dot}`, "d0", BODY, null);
+        ledger.post(null, dm(muse), "m0", BODY, null);
+        ledger.post(null, dm(dot), "d0", BODY, null);
         ledger.ack(MUSE, ledger.read(MUSE, 1).messages[0]!.seq);
         const atOne = unread();
         count.take();
-        ledger.post(null, `dm:${dot}`, "d1", BODY, null);
+        ledger.post(null, dm(dot), "d1", BODY, null);
         const first = count.take();
         // Unread to one short of the ceiling, three in five to Muse.
         for (let n = 0; unread() < maxUnacked - 1; n++) {
-          ledger.post(null, `dm:${n % 5 < 3 ? muse : dot}`, `c${n}`, BODY, null);
+          ledger.post(null, dm(n % 5 < 3 ? muse : dot), `c${n}`, BODY, null);
         }
         const atLast = unread();
         count.take();
-        ledger.post(null, `dm:${dot}`, "d2", BODY, null);
+        ledger.post(null, dm(dot), "d2", BODY, null);
         const last = count.take();
         const readers = state.storage.sql.exec<{ reader: string; unacked: number }>(
           "SELECT reader, unacked FROM ledger_readers").toArray();
@@ -515,7 +515,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
         // Mail to the owner waits on the same one ceiling: no mailbox has its own.
         let toOwner = null;
         try {
-          ledger.post(MUSE, `dm:${muse}`, "to-owner", BODY, null);
+          ledger.post(MUSE, dm(muse), "to-owner", BODY, null);
         } catch (error) {
           toOwner = (error as Error).message;
         }
