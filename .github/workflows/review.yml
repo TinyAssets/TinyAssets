@@ -5,7 +5,7 @@ name: review
 # The reviewer posts a PR review on the commit it read (`commit_id`, event COMMENT),
 # its body's first non-blank line exactly `APPROVE` or `BLOCK`, the evidence below.
 # This workflow turns that into a check run named `review` on the head
-# (scripts/drain_review_gate.py `review_check`):
+# (scripts/review_checks.py `review_check`):
 #
 #   no verdict                         -> in progress, "waiting for review of <head>"
 #   BLOCK that carries to the head     -> failure
@@ -93,10 +93,10 @@ jobs:
           if [ -n "${EVENT_PR:-}" ]; then
             PR="$EVENT_PR"; KIND="pr"
           elif [ "$RUN_EVENT" = merge_group ]; then
-            PR="$(python -c 'import sys; from scripts.drain_review_gate import queued_pr; print(queued_pr(sys.argv[1]) or "")' "$RUN_BRANCH")"
+            PR="$(python -c 'import sys; from scripts.review_checks import queued_pr; print(queued_pr(sys.argv[1]) or "")' "$RUN_BRANCH")"
             KIND="queue"
           else
-            PR="$(python scripts/drain_review_gate.py --signal-pr \
+            PR="$(python scripts/review_checks.py --signal-pr \
               --signal-file "$RUNNER_TEMP/signal/pr" --repo "$REPO" \
               --run-repo "$RUN_REPO" --run-branch "$RUN_BRANCH")"
             KIND="pr"
@@ -193,8 +193,8 @@ jobs:
           }
           trap on_exit EXIT
 
-          # A read, asked again after GitHub's 5xx by drain_review_gate.py's `_gh_read`.
-          get() { python scripts/drain_review_gate.py --gh-read "$@"; }
+          # A read, asked again after GitHub's 5xx by review_checks.py's `_gh_read`.
+          get() { python scripts/review_checks.py --gh-read "$@"; }
 
           # The PR's head and base as they are now, from the API, never from the event.
           read -r HEAD BASE < <(get "repos/${REPO}/pulls/${PR}" --jq '"\(.head.sha) \(.base.sha)"')
@@ -233,7 +233,7 @@ jobs:
               || echo "::warning::could not fetch ${sha}"
           done
 
-          python scripts/drain_review_gate.py --review-check \
+          python scripts/review_checks.py --review-check \
             --reviews-file "$RUNNER_TEMP/reviews.json" \
             --timeline-file "$RUNNER_TEMP/timeline.json" --pr "$PR" --repo "$REPO" \
             --base "$BASE" --head "$HEAD" "${GROUP[@]}" > "$RUNNER_TEMP/run.json"

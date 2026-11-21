@@ -32,6 +32,28 @@ describe("budgets.mjs", () => {
                                           ms: 1234.5, large: true, calibration_ms: 30 }]);
   });
 
+  const reportWith = (duration: unknown, calibration_ms: unknown) => ({
+    testResults: [{ name: "/ci/platform/owner/test/files.test.ts", assertionResults: [
+      { status: "passed", fullName: "short", duration: 9, meta: { calibration_ms: 20 } },
+      { status: "passed", fullName: "long", duration, meta: { calibration_ms } },
+    ] }],
+  });
+
+  it("refuses to set a budget from the other passing tests when a duration is lost", () => {
+    for (const duration of [undefined, null, "9", -1, Infinity]) {
+      expect(() => measured([reportWith(duration, 20)]))
+        .toThrow("owner/test/files.test.ts > long: expected a finite, nonnegative duration");
+    }
+    expect(measured([reportWith(0, 20)])[1]?.ms).toBe(0);
+  });
+
+  it("requires a usable runner calibration on every passed test", () => {
+    for (const calibration of [undefined, null, "20", 0, -1, Infinity]) {
+      expect(() => measured([reportWith(9, calibration)]))
+        .toThrow("owner/test/files.test.ts > long: expected a finite, positive runner calibration");
+    }
+  });
+
   const old = { slowest_ms: 10, test: "a/guards/a.test.ts > a", measured: "run 1" };
   const budgets = { factor: 4, runner: { calibration_ms: 30, measured: "run 1" },
                     medium: { "a/guards": old, "b/guards": old }, large: old };

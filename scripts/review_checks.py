@@ -2,8 +2,7 @@
 """The review check and the body's Untangle check (ADR-038).
 
 * `review.yml` posts the one review gate, the required `review` check, from the PR's
-  reviews (`--review-check`, `review_check`); the queue's freshness probe and the floor
-  hotfix read it (`review_passed_at`).
+  reviews (`--review-check`, `review_check`).
 * `pr-scope-guard.yml`, the required `Diff scope declared`, asks a change to more than
   prose for an Untangle check in its body (`--untangle-check`, `untangle_check_problems`).
 
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -482,25 +480,6 @@ def external_id(number: int) -> str:
     return f"pr-{number}"
 
 
-def review_run_passed(check_runs: object, number: int) -> bool:
-    """Does the latest `review` run made for PR `number` read success?
-
-    `check_runs` is the `check_runs` list of
-    `GET /commits/{head}/check-runs?check_name=review`, already narrowed to the
-    review App. Latest is the highest id, the order GitHub created them in. A run
-    made for another PR on the same head, no run, or anything unreadable, is not a
-    pass.
-    """
-    if not isinstance(check_runs, list):
-        return False
-    runs = [r for r in check_runs if isinstance(r, dict) and isinstance(r.get("id"), int)
-            and r.get("name") == "review" and r.get("external_id") == external_id(number)]
-    if not runs:
-        return False
-    latest = max(runs, key=lambda r: r["id"])
-    return latest.get("status") == "completed" and latest.get("conclusion") == "success"
-
-
 def _check_run(name_sha: str, state: CheckState, ident: str) -> dict[str, object]:
     run: dict[str, object] = {
         "name": "review",
@@ -536,7 +515,7 @@ def _review_check(argv: list[str]) -> int:
     It never reads the PR's own `review` runs, so a BLOCK whose own decision has not
     landed, or never could, still fails the group.
     """
-    parser = argparse.ArgumentParser(prog="drain_review_gate.py --review-check")
+    parser = argparse.ArgumentParser(prog="review_checks.py --review-check")
     parser.add_argument("--reviews-file", type=Path, required=True,
                         help="the PR's reviews, one JSON array")
     parser.add_argument("--timeline-file", type=Path, required=True,
@@ -594,7 +573,7 @@ def signal_pr(text: str, pull: object, *, run_repo: str, run_branch: str) -> int
 
 def _signal_pr(argv: list[str]) -> int:
     """`--signal-pr`: print the PR a review signal names, verified (`signal_pr`)."""
-    parser = argparse.ArgumentParser(prog="drain_review_gate.py --signal-pr")
+    parser = argparse.ArgumentParser(prog="review_checks.py --signal-pr")
     parser.add_argument("--signal-file", type=Path, required=True)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--run-repo", required=True)
@@ -609,24 +588,6 @@ def _signal_pr(argv: list[str]) -> int:
         print(f"refusing the signal: {exc}", file=sys.stderr)
         return 2
     return 0
-
-
-# GitHub Actions: the app every Actions job's check run reports as. A job named
-# `review` in any workflow reports as it too, so the review check is not this app's.
-_ACTIONS_APP_ID = 15368
-
-
-def review_app_id(env: dict[str, str] | None = None) -> int:
-    """The review App's id (`REVIEW_APP_ID`, the repository variable).
-
-    The `review` check is created only by that App, whose key lives in the main-only
-    `review` environment, and the ruleset pins the context to it, so no PR's workflow
-    can satisfy it. Missing or malformed fails closed.
-    """
-    value = (os.environ if env is None else env).get("REVIEW_APP_ID", "")
-    if not value.isdigit() or int(value) == _ACTIONS_APP_ID:
-        raise ValueError("REVIEW_APP_ID is not the review App's id")
-    return int(value)
 
 
 def _gh_read(args: list[str], timeout: int) -> str:
@@ -650,38 +611,12 @@ def _gh_json(path: str) -> object:
     return json.loads(_gh_read([path], 60))
 
 
-def _gh_check_runs(path: str) -> list[object]:
-    """Every check run a `check-runs` listing holds, across all its pages."""
-    out = _gh_read(["--paginate", path, "--jq", ".check_runs[]"], 120)
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
-
-
-def review_passed_at(repo: str, head: str, number: int, *, app_id: int | None = None) -> bool:
-    """Does `head`'s latest `review` run, by the review App, for PR `number`, read success?
-
-    The reader for what acts on the PR's own check outside a merge group (the
-    queue's freshness probe, the floor hotfix); a merge group decides afresh
-    (`--review-check --group-sha`). It lists every run
-    (`filter=all`, every page), because the API's default `filter=latest` keeps one
-    run per name and suite by its own choice, not the highest id `review_run_passed`
-    takes. Raises on a read that fails: a caller that cannot read the check treats
-    the head as unreviewed.
-    """
-    if not _SHA_RE.fullmatch(head):
-        raise ValueError(f"not a commit: {head!r}")
-    app = review_app_id() if app_id is None else app_id
-    listed = _gh_check_runs(
-        f"repos/{repo}/commits/{head}/check-runs?check_name=review&filter=all&per_page=100")
-    return review_run_passed([r for r in listed if isinstance(r, dict)
-                              and (r.get("app") or {}).get("id") == app], number)
-
-
 def _untangle_check(argv: list[str]) -> int:
     """`--untangle-check`: does the body's Untangle check hold for the PR's change?
 
     Prints `allow` (exit 0) or `deny` (exit 2), each problem on stderr.
     """
-    parser = argparse.ArgumentParser(prog="drain_review_gate.py --untangle-check")
+    parser = argparse.ArgumentParser(prog="review_checks.py --untangle-check")
     parser.add_argument("--base", required=True, help="the PR's base commit")
     parser.add_argument("--head", required=True, help="the PR's head commit")
     parser.add_argument("--body-file", type=Path, required=True)
@@ -718,7 +653,7 @@ _COMMANDS = {
 def main() -> int:
     command = _COMMANDS.get(sys.argv[1] if len(sys.argv) > 1 else "")
     if command is None:
-        print(f"usage: drain_review_gate.py {{{','.join(_COMMANDS)}}} ...", file=sys.stderr)
+        print(f"usage: review_checks.py {{{','.join(_COMMANDS)}}} ...", file=sys.stderr)
         return 2
     return command(sys.argv[2:])
 
