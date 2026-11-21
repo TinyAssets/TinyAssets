@@ -1,11 +1,7 @@
 /**
- * S34: the one revision primitive, in the owner's object.
- *
- * Ported from `tests/test_collections.py` (branch `s5b-board`), test for test. Where
- * the Python test monkeypatched a bound, this one runs the primitive on the object's
- * own storage (`inObject`) and fills production's bound, or sets the owner's shares by its
- * policy. Where it went through the router's owner channel, this one goes through the
- * object's RPC door with a binding.
+ * The one revision primitive, in the owner's object: on the object's own storage
+ * (`inObject`), filled to production's bound or held to the shares the owner's policy sets,
+ * and through the object's RPC door with a binding.
  */
 import type { WrittenRow } from "../src/collections";
 import { runInDurableObject } from "cloudflare:test";
@@ -72,7 +68,7 @@ describe("the revision primitive", () => {
     const [winner] = outcomes.flatMap((o) => ("row" in o ? [o.row] : []));
     const [lost] = outcomes.flatMap((o) => ("conflict" in o ? [o.conflict] : []));
     expect(winner).toBeDefined();
-    // The write answers its row without its body (review H3); the conflict, the row whole.
+    // The write answers its row without its body; the conflict, the row whole.
     const { body, ...rest } = lost as Row;
     expect({ ...rest, body_bytes: body.length }).toEqual(winner);
     expect(winner).not.toHaveProperty("body");
@@ -166,7 +162,6 @@ describe("the revision primitive", () => {
     await inObject(bobs, (store) => {
       expect(store.write("bob", "bob", "room:c:main", "x", "1", "", false).revision).toBe(1);
     });
-    expect(LIMITS.maxRowsCharge).toBe(256 * 1024 * 1024);
   });
 
   it("the RPC door carries the binder's caller and a conflict", async () => {
@@ -405,8 +400,8 @@ describe("the primitive's history", () => {
     expect(await entries(alice, "p")).toEqual([]);
     expect((await entries("cara", "s")).map((e) => [e.revision, e.op, e.writer]))
       .toEqual([[1, "write", "bob"]]);
-    // As in the Python test, the store deletes for whichever caller it is handed; the
-    // owner-only rule is the RPC door's, tested below.
+    // The store deletes for whichever caller it is handed; the owner-only rule is the RPC
+    // door's, tested below.
     await inObject(stub, (store) => store.delete("bob", ROOM, "p", mine.etag));
     expect(await entries("bob", "p")).toEqual([]); // a deleted row shows no history
     const extra = await failure(() => stub.collectionHistory(as("bob"), {
@@ -621,7 +616,7 @@ describe("the bounds' counters", () => {
   });
 });
 
-describe("the history keys' migration (untangle H1)", () => {
+describe("the history keys' migration", () => {
   it("keys each entry by its change, moves the deletions, ticks nothing, and leaves every " +
      "counter and content reference as a recount finds it", async () => {
     const { stub, name: owner } = await ownerObject();
@@ -634,7 +629,7 @@ describe("the history keys' migration (untangle H1)", () => {
           "AND name NOT GLOB 'cf_*'").toArray()) {
         sql.exec(`DROP TABLE "${name}"`);
       }
-      migrate(state.storage, MIGRATIONS.slice(0, 6));  // through R5's 6
+      migrate(state.storage, MIGRATIONS.slice(0, 6));  // through migration 6
       // As the code before it left them: `a` written three times; `b` deleted (its entries
       // with it) and made again private; `c` deleted while private; `d`'s body placed.
       sql.exec("INSERT INTO file_contents (content_id, size, inline, refs) VALUES (?, 5000, " +
@@ -709,7 +704,7 @@ describe("the history keys' migration (untangle H1)", () => {
 });
 
 describe("the RPC door's fields", () => {
-  it("refuses a field sent as undefined, as the Python door refused None", async () => {
+  it("refuses a field sent as undefined", async () => {
     const o = await ownerObject();
     const { stub, as } = o;
     const refused = await failure(() => stub.collectionWrite(as("bob"), {

@@ -19,13 +19,13 @@
  * `acts.json`, and `when`, the condition under which a call is the act, every call when it
  * names none), so a rule on that act holds at that door.
  *
- * The outside-callable doors' rows carry their MCP tool (`tool`, research §4.3), which the
+ * The outside-callable doors' rows carry their MCP tool (`tool`), which the
  * doors serve on `/mcp` and as `POST /api/tools/<name>` (`doors/src/tools.ts`): its capability
  * and its arguments are its door's own. Each tool's four hints are explicit (OpenAI's
  * directory requires three, and `idempotentHint`); none is open world, each confined to the
  * owner's own account; `room_post` is destructive, since a send cannot be taken back; no tool
  * selects an operation. The run tools start an engine run in the owner's sandbox, so their
- * effects cannot be taken back; `code` (code mode, slice M) is a generic executor, never in
+ * effects cannot be taken back; `code` (code mode) is a generic executor, never in
  * the directory profile. Descriptions say what a tool does and when to use it, never "always",
  * and name no other vendor's tool: both directories' rules.
  *
@@ -246,7 +246,10 @@ export function argsSchema(args: DoorArgs): JsonSchema {
            required: Object.keys(fields.required), additionalProperties: false };
 }
 
-/** A tool as the doors serve it and code mode calls it: its door's tool, capability and arguments. */
+/**
+ * A tool as the doors serve it and code mode calls it: its door's tool, capability and
+ * arguments.
+ */
 export interface Tool extends ToolInfo {
   readonly door: string;
   readonly capability: RunCapability | null;

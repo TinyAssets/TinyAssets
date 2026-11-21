@@ -146,7 +146,7 @@ describe("open uploads, apart from what is stored", () => {
   });
 
   it("leave a begin that letting history go would admit at storage_full, never uploads_open, " +
-     "and let no history go (round 9, untangle F1)", async () => {
+     "and let no history go", async () => {
     const r = await rig();
     const at = r.bind(null, { tiers: SMALL });
     // An upload open: 4,200 bytes held apart.
@@ -307,8 +307,8 @@ describe("the sync's ignore list", () => {
                                      "bytes is not applied");
   });
 
-  it("never gives an outside client's sandbox count, which sees only its part of the files " +
-     "(verification round 3, R3-2)", async () => {
+  it("never gives an outside client's sandbox count, which sees only its part of the files",
+     async () => {
     const r = await rig();
     const client = "c".repeat(64);
     const lease = await inFiles(r.stub, (files, unit) =>

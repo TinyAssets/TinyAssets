@@ -1,15 +1,14 @@
 /**
- * Code mode at the MCP door (slice M): the object's `codeRun`, in workerd with the real
- * codemode Worker behind `CODEMODE_VM`. On by default, and refused and hidden from the caller's
- * tools once the owner's policy turns `codemode.on` off; served only where the caller's
- * profile holds `code`; one script calls several tools, each the caller's own door,
- * admitted again against its grant and the control record's gates (the record flipped while
- * a call is held at the FILES gate, the object's clock moved by a fake `Date`); no tool outside the profile and no capability outside the
- * grant; a revoked client and another owner's binding refused; a script past its wall time
- * (`CODEMODE_TIMEOUT_MS`, under a clock that moves a second at each reading) stopped, saying
- * which calls landed; output past one answer cut and said so, a value past it refused
- * `answer_too_large`. A script past its compute is the codemode Worker's to stop
- * (`codemode/test/`).
+ * Code mode at the MCP door: the object's `codeRun`, in workerd with the real codemode Worker
+ * behind `CODEMODE_VM`. On by default, and refused and hidden from the caller's tools once the
+ * owner's policy turns `codemode.on` off; served only where the caller's profile holds `code`; one
+ * script calls several tools, each the caller's own door, admitted again against its grant and the
+ * control record's gates (the record flipped while a call is held at the FILES gate, the object's
+ * clock moved by a fake `Date`); no tool outside the profile and no capability outside the grant; a
+ * revoked client and another owner's binding refused; a script past its wall time
+ * (`CODEMODE_TIMEOUT_MS`, under a clock that moves a second at each reading) stopped, saying which
+ * calls landed; output past one answer cut and said so, a value past it refused `answer_too_large`.
+ * A script past its compute is the codemode Worker's to stop (`codemode/test/`).
  */
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

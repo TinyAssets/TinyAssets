@@ -74,4 +74,4 @@ an authority change plus a recovery-shape change, not a UI change:
   neither does. (Codex, reviewing PR #4038, 2026-09-26.)
 
 Belongs in its own OpenSpec change — it is public surface and authority. Until
-then, `openspec/changes/composable-ui-experiences` carries it as remaining work.
+then, [the `composable-ui-experiences` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/composable-ui-experiences) carries it as remaining work.

@@ -1,9 +1,8 @@
 /**
- * The owner-bound guard's honesty, against the migrated database itself (review rvlim H1):
- * every index SQLite makes on its own is in the guard's list (`guards/autoindexes.ts`), and
- * a collection row at the validators' widest names is charged at least what it takes laid
- * out as SQLite lays it, every index entry with it, so the rows' charge bounds them
- * whatever names a caller picks.
+ * The owner-bound guard's honesty, against the migrated database itself: every index SQLite makes
+ * on its own is in the guard's list (`guards/autoindexes.ts`), and a collection row at the
+ * validators' widest names is charged at least what it takes laid out as SQLite lays it, every
+ * index entry with it, so the rows' charge bounds them whatever names a caller picks.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -53,9 +52,8 @@ describe("the owner-bound guard against the database", () => {
       const charged = charge() - before;
       const N = 9;
       const [collection, row, principal] = [1024, 1024, 2048];
-      // The reviewer's recount (rvlim_guard): the row's record (slice M's change in it) and
-      // its five index entries (slice M's `collection_changes` among them), its collection's
-      // seq row, laid out as the guard lays them.
+      // The row's record (its change in it) and its five index entries (`collection_changes`
+      // among them), its collection's seq row, laid out as the guard lays them.
       const honest = laid(collection + row + 5 * N + 64 + 2 * principal + 1 + PLACE_BYTES + 71,
                           TABLE_KEPT)
         + laid(collection + row + N, INDEX_KEPT) + laid(collection + 2 * N, INDEX_KEPT)

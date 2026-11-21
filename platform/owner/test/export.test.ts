@@ -1,5 +1,5 @@
 /**
- * The owner export and the nightly manifest, one artifact (slice P; `export.ts`, `backup.ts`,
+ * The owner export and the nightly manifest, one artifact (`export.ts`, `backup.ts`,
  * `changelog.ts`): a generation, a fuzzy base copy and the change log captured while it was
  * read, consistent at its end E however the owner writes meanwhile; resumable from any
  * cursor, the owner's alone; written each night by the owner's own schedule, and gone with
@@ -165,7 +165,7 @@ describe("the owner export", () => {
       .toEqual([]);
   });
 
-  it("resumes from every cursor it ever handed out, to the same owner at E (review R4-2)",
+  it("resumes from every cursor it ever handed out, to the same owner at E",
      async () => {
     const o = await owner();
     await notices(o, BURST + 3 * PAGE);  // past one burst, so writes land between its pages
@@ -248,7 +248,7 @@ describe("the owner export", () => {
 
 describe("a generation", () => {
   it("ends as the owner at E though the owner writes at every outside call and after " +
-     "every unit (review R4-3)", async () => {
+     "every unit", async () => {
     const o = await owner();
     await notices(o, BURST + 3 * PAGE);
     let after = 0;
@@ -267,7 +267,7 @@ describe("a generation", () => {
     expect(digest(replay(made.lines))).toBe(made.atE);
   });
 
-  it("carries the starter's receipts as they change while it runs (slice STARTER)",
+  it("carries the starter's receipts as they change while it runs",
      async () => {
     // The seed's own receipts, one a file, and its state at the carried version: a pass of
     // a later version changes them while the generation runs.
@@ -301,7 +301,7 @@ describe("a generation", () => {
       .toEqual([later]);
   });
 
-  it("settles though a 5,000-file sync runs through its pass (review R4-3)", { tags: ["large"] },
+  it("settles though a 5,000-file sync runs through its pass", { tags: ["large"] },
      async () => {
     const o = await owner();
     await notices(o, 3 * BURST);  // three bursts: tens of units and calls
@@ -320,7 +320,7 @@ describe("a generation", () => {
   });
 
   it("repeats only what was not acknowledged, wherever a pass is cut: before or after " +
-     "each outside call (review R4-1; crash points)", { tags: ["large"] }, async () => {
+     "each outside call (crash points)", { tags: ["large"] }, async () => {
     const plain = await owner();
     await notices(plain, BURST + PAGE);  // two bursts: segments before E and after
     const { calls, lines } = await generate(plain.stub, { duringCall: busy(3) });
@@ -339,7 +339,7 @@ describe("a generation", () => {
   });
 
   it("gives up one a migration ran under, loudly, and begins a fresh one under the new " +
-     "schema: never two schemas in one (review L5-2)", async () => {
+     "schema: never two schemas in one", async () => {
     const o = await owner();
     await notices(o, 200);
     const before = await generate(o.stub, { onePass: true });
@@ -360,7 +360,7 @@ describe("a generation", () => {
 
   it("takes its burst's units of the pool now or yields: with the pool full it reads and " +
      "puts nothing and goes on later; with room, each part's put inside its units, each " +
-     "segment's inside its own, never a burst's (burstlease, rvburst W1)", async () => {
+     "segment's inside its own, never a burst's", async () => {
     const pool = ownerSlots();
     const o = await owner();
     await notices(o, BURST + PAGE);  // two bursts, the first of two parts
@@ -394,7 +394,7 @@ describe("a generation", () => {
   });
 
   it("ships a log segment outside a burst inside its own units, now or not at all: with the " +
-     "pool full it puts nothing and goes on later (rvburst 1)", async () => {
+     "pool full it puts nothing and goes on later", async () => {
     const pool = ownerSlots();
     const o = await owner();
     await notices(o, 200);
@@ -423,7 +423,7 @@ describe("a generation", () => {
   });
 
   it("begins no burst once the owner's erasure begins while the log ships: no part put, " +
-     "the pool never past the ship's units (rvburst V2)", async () => {
+     "the pool never past the ship's units", async () => {
     const pool = ownerSlots();
     const o = await owner();
     await notices(o, 200);
@@ -583,7 +583,7 @@ const nsOf = async (o: Owner) =>
   (await sqlIn(o.stub, "SELECT ns FROM file_space"))[0]!["ns"] as string;
 
 describe("an open export", () => {
-  it("holds no chunk: garbage written after it opened goes on its own grace (review H1)",
+  it("holds no chunk: garbage written after it opened goes on its own grace",
      async () => {
     const o = await owner();
     await exportFrom(o, null);
@@ -708,8 +708,8 @@ describe("the nightly manifest", () => {
     expect(await laneAt(o.stub, "manifest")).toBe(tomorrow + spread(o.name));
   });
 
-  it("past its ceiling, is given up once and the owner told, never retried in a loop " +
-     "(review L7)", async () => {
+  it("past its ceiling, is given up once and the owner told, never retried in a loop",
+     async () => {
     const o = await owner();
     await write(o, `${W}/k.bin`, filled(INLINE_BYTES + 10, 9));
     await sqlIn(o.stub, LAST_YEARS);
@@ -762,8 +762,8 @@ describe("the nightly manifest", () => {
       .toEqual({ rewrapped: false, roots: 1, left: 0, kid: "k2" });
   });
 
-  it("is wrapped again, with the object's key, by a rotation's sweep, an idle owner's too " +
-     "(review M4)", async () => {
+  it("is wrapped again, with the object's key, by a rotation's sweep, an idle owner's too",
+     async () => {
     const o = await owner();
     const ns = await olderKey(o);
     const body = filled(INLINE_BYTES + 10, 11);

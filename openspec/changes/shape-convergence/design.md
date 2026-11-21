@@ -125,7 +125,7 @@ or modules with a ceiling) and `forbid` (patterns that must not appear).
 | `second-path` | a new module defines a registered entry symbol (model call, `session.start`, budget root, admission, box access, extension loader, agent definition loader, MCP handle registration) outside the shape's `paths` |
 | `opt-in-flags` | a new `TINYASSETS_*` flag selects between two paths of one registered shape |
 | `doc-homes` | a new file is added under `docs/` outside the homes: `architecture.md`, `decisions/`, `concerns/`, `host-actions.md`, `reference/`, `getting-started/`, `ops/` runbooks. This covers "a new design note duplicating a registered shape" without judging content |
-| `adr-has-spec` | an accepted ADR names no existing `openspec/specs/` or `openspec/changes/` path. This replaces "a decided note without a spec" |
+| `adr-has-spec` | Deleted 2026-11-21 (`untangle/p9-cleanup`): an ADR keeps a deleted spec's citation as history (ADR-005). It failed when an accepted ADR named no existing `openspec/specs/` or `openspec/changes/` path |
 | `superseded-open` | an `openspec/changes/*/proposal.md` says it supersedes a change that still exists outside `archive/` |
 | `public-routes` | a new public route prefix appears beside `/mcp` and `/app` |
 

@@ -1,7 +1,6 @@
 /**
  * `auto`, the owner's strongest connected model (`auto.ts`): the ranking data file, and
- * the order it gives the connected models (Direction 4). The runs slice (R) picks a run's
- * source from it.
+ * the order it gives the connected models (Direction 4), from which a run's source is picked.
  */
 import { describe, expect, it } from "vitest";
 

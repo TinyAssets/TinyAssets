@@ -1,6 +1,5 @@
 /**
- * Inbound proof (tasks 2, `/hooks/inbound`; slice L), ported from the Python's
- * `broker/inbound_verification.py`: a verification profile, as data, and the check of a
+ * Inbound proof (`/hooks/inbound`): a verification profile, as data, and the check of a
  * request's raw bytes against it. The binder checks a shared app's (the platform's own
  * signing secret, `doors/src/inbound.ts`); the owner's object checks an owner's own
  * capability hook's, against the secret the owner holds there (`inbound.ts`).

@@ -1,7 +1,0 @@
-schema: spec-driven
-created: 2026-08-04
-applyRequires:
-  - proposal.md
-  - design.md
-  - specs/requester-provider-enrollment/spec.md
-  - tasks.md
