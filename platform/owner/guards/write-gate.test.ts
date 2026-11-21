@@ -259,9 +259,9 @@ export function ungatedHandlers(
 
 /**
  * The state's members that hold no storage of the gate's: the app's sockets, the events
- * posts' count, and the env's bindings (R2, the sandbox's service).
+ * posts' count, the env's bindings (R2), and the sandbox Worker bound to the owner.
  */
-const NOT_STORED: ReadonlySet<string> = new Set(["relay", "posts", "env"]);
+const NOT_STORED: ReadonlySet<string> = new Set(["relay", "posts", "env", "sandbox"]);
 /** Each gate helper of the parts, and which of its arguments run in its unit. */
 const UNIT_ARGUMENTS: Readonly<Record<string, readonly number[]>> = Object.freeze({
   door: [0], quiet: [0], synced: [0], filing: [0], "bodies.placing": [0, 1],

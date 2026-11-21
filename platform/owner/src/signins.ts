@@ -403,8 +403,8 @@ export interface SigninRequest {
  * owner's notices.
  */
 export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
-                                          Pick<ObjectReads, "owner" | "storage"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY" | "SANDBOX">;
+                                          Pick<ObjectReads, "owner" | "sandbox" | "storage"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
   readonly signins: Signins;
   readonly files: Pick<Files, "leaseRenew" | "leaseSignins" | "liveLeases" | "sandboxLease">;
   readonly grants: { live(client: string): boolean };
@@ -469,7 +469,7 @@ export const signinsDoors = Object.freeze({
     });
     let answer: Started | null = null;
     try {
-      answer = started(await o.env.SANDBOX.signin(o.owner(), {
+      answer = started(await o.sandbox.signin({
         id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
         authority: begun.row.authority, lease: begun.lease,
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
@@ -522,8 +522,7 @@ export const signinsDoors = Object.freeze({
     }
     if (stopped) {
       // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
-      await o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority,
-                                                               id: row.id })
+      await o.sandbox.signinCancel({ authority: row.authority, id: row.id })
         .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
     }
     return { accepted: frames.length, ended };
@@ -542,14 +541,13 @@ export const signinsDoors = Object.freeze({
       }
       return { row, code };
     });
-    return o.env.SANDBOX.signinInput(o.owner(), { authority: row.authority, id: row.id,
-                                                  code });
+    return o.sandbox.signinInput({ authority: row.authority, id: row.id, code });
   },
   /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
   async signinCancel(o: SigninsDoorNeeds, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
     const row = await o.door(() => o.signins.get(door.check().r["id"]));
-    return o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority, id: row.id });
+    return o.sandbox.signinCancel({ authority: row.authority, id: row.id });
   },
   /**
    * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
