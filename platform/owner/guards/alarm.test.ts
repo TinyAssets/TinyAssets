@@ -1,5 +1,5 @@
 /**
- * The object's one alarm is Lifecycle's (ADR-032).
+ * The object's one alarm is Lifecycle's (ADR-032, tasks 3.6).
  *
  * A Durable Object has one alarm, and the Agents SDK's Lifecycle owns it: its job queue
  * derives the alarm from every queued job, the lanes' and the erasure's, so a source that
@@ -19,10 +19,11 @@
  *   module by a name computed at run time;
  * - never installs Lifecycle's runtime handlers (`Lifecycle.install`, `installHandlers`),
  *   which would add handlers the object never chose to its surface;
- * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`, and the owner app's sockets'
- *   reserved methods only as the object's hand-offs (`RESERVED`): `fetch`, in `owner-do.ts` alone,
- *   the binder's upgrade attached by the relay and handed to Lifecycle's `fetch` (`relay.ts`
- *   refuses anything else), and each `webSocket*` handed to Lifecycle's method of the same name.
+ * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`, and the owner app's
+ *   sockets' reserved methods (slice R, salvaged from A6) only as the object's hand-offs
+ *   (`RESERVED`): `fetch`, in `owner-do.ts` alone, the binder's upgrade attached by the
+ *   relay and handed to Lifecycle's `fetch` (`relay.ts` refuses anything else), and each
+ *   `webSocket*` handed to Lifecycle's method of the same name.
  * Lifecycle's own tables (`cf_agents_*`) are named by no source (the policy-boundary
  * guard). The guard is a tripwire for our own code's
  * mistakes, not proof against a source written to evade it.
@@ -294,7 +295,7 @@ describe("alarm guard", () => {
     "export class O { async alarm() { await this.#lifecycle.start(); " +
       "await this.#lifecycle.alarm(); } }",
     "export const handlers = { alarm: () => undefined };",
-    // Each a way past a guard that read only the plain call.
+    // Slice 5's review N4: each bypass the first guard let through.
     "export function f(s: DurableObjectStorage) { return s['set' + 'Alarm'](1); }",
     "export function f(s: DurableObjectStorage) { const k = `set${'Alarm'}`; return s[k](1); }",
     "export function f(s: any) { const n = ['set', 'Alarm'].join(''); return s[n](1); }",

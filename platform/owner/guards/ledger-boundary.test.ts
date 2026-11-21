@@ -1,21 +1,25 @@
 /**
- * The ledger boundary: the trusted ledger is reached through the owner object's door only.
+ * S30 ledger-boundary: the trusted ledger is reached through the owner object's door only.
  *
- * Only the object and its alarm's wake runner import the ledger module, and only the ledger
- * and the schema name its tables, so no other module can read or write mail around the
- * ledger's rules. That list only shrinks, but for the object's own lanes in their modules,
- * each reaching the ledger only through its methods, as the object does: the archive lane
- * and its reads of archived mail (`archive.ts`), and the runs lane, its mail delivered as
- * runs and their replies posted (`launch.ts`). The owner export (`export.ts`) names them
- * too, only to read them for the owner (its source holds no SQL but `SELECT`, held by the
- * policy-boundary guard's read-only check); the restore (`restore.ts`) names them in its
- * load table, only to load a generation into a pending, empty owner (its SQL names no
+ * Ported from `tests/test_ledger_boundary.py` (origin/main 8b415f569) where it is not
+ * about the Python box channel. There, only the broker server and account erasure could
+ * import the ledger stores, and only those stores named their files. Here, only the
+ * object and its alarm's wake runner import the ledger module, and only the ledger and
+ * the schema name its tables, so no other module can read or write mail around the
+ * ledger's rules. That list only shrinks, but for the object's own lanes moved out of the
+ * object to their modules (untangle A2), each reaching the ledger only through its methods,
+ * as the object does: the archive lane and its reads of archived mail (`archive.ts`), and
+ * the runs lane, its mail delivered as runs and their replies posted (`launch.ts`). The owner export
+ * (`export.ts`, slice P) names
+ * them too, only to read them for the owner (its source holds no SQL but `SELECT`, held by
+ * the policy-boundary guard's read-only check); the restore (`restore.ts`, lane R) names them
+ * in its load table, only to load a generation into a pending, empty owner (its SQL names no
  * table but its own, held by the policy-boundary guard's loader check), and reaches the
  * ledger once, for its seq allocator (`Ledger.restored`).
  *
- * The doors' handlers sit in their modules, and reach the ledger through what the object hands
- * them, not by an import: each module declares the ledger's methods its handlers call
- * (`<Module>DoorNeeds`), and `tsc` holds the object's parts to it.
+ * The doors' handlers sit in their modules, and reach the ledger through what the object
+ * hands them, not by an import (review F3): each module declares the ledger's methods its
+ * handlers call (`<Module>DoorNeeds`), and `tsc` holds the object's parts to it.
  */
 import { describe, expect, it } from "vitest";
 

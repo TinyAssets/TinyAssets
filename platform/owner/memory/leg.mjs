@@ -1,15 +1,16 @@
 // The workerd memory leg (ADR-037): each of the owner's real paths that holds chunks, run at
 // its worst, holds what it declares, whatever the size of its data, proven by differences.
 //
-// It bundles `probe.ts` (the platform's own owner object, files and bodies code) and runs it in
-// standalone workerd with `--expose-gc`, against an in-memory chunk store in another isolate.
-// Checkpoints: every chunk call (at the store, and in the owner isolate before it and after a chunk
-// arrives) and the end of every hold, before its release. At each the path waits on this driver
-// while it collects the owner isolate (a swept full collection) and reads `usedSize +
-// backingStorageSize` through the inspector, so a sample is the live set, byte arrays included (a
-// read must be atomic with its collection); with several paths at once it waits until every one is
-// parked or done. The owner isolate's checkpoints say the units its pool holds. Each file's chunks
-// are distinct, so a longer edit makes and puts every chunk after its change. Then:
+// It bundles `probe.ts` (the platform's own owner object, files and bodies code) and runs it
+// in standalone workerd with `--expose-gc`, against an in-memory chunk store in another
+// isolate. Checkpoints: every chunk call (at the store, and in the owner isolate before it
+// and after a chunk arrives) and the end of every hold, before its release (review M-a).
+// At each the path waits on this driver while it collects the owner isolate (a swept full
+// collection) and reads `usedSize + backingStorageSize` through the inspector, so a sample
+// is the live set, byte arrays included (rpcretain_research.md §4: a read must be atomic with
+// its collection); with several paths at once it waits until every one is parked or done.
+// The owner isolate's checkpoints say the units its pool holds. Each file's chunks are
+// distinct, so a longer edit makes and puts every chunk after its change. Then:
 // - the control holds: a path that keeps every chunk reads as growing, or the leg proves
 //   nothing;
 // - the baseline: the isolate at rest, one owner object built and served, is within
@@ -22,13 +23,13 @@
 // - each path's cost: its worst run's peak is within the units it declares (`holds.ts`);
 // - the archive (STORE item 2): what a move's records hold at `MOVE_RECORDS` (built by the
 //   move's own code: no real mail reaches it) within `moveTableUnits` and 256 bytes a record;
-//   the merge of the most records real mail reaches, its records within the same
+//   the merge of the most records real mail reaches (round 5's), its records within the same
 //   at its passes' ends; a tail seal of small messages, a move of
 //   two large bodies as one segment (4 MiB each, against the largest segment production
 //   makes, 8 MiB and the largest body short of the seal: O(1) in size) and a purge's rewrite,
 //   each run by the object's own `archive` lane, every pass within its table's and its own
 //   units;
-// - a generation's burst: at production sizes, of the smallest lines, run by the
+// - a generation's burst (slice P): at production sizes, of the smallest lines, run by the
 //   real lane, its pages and parts at every part's put within the units it holds
 //   (`BURST_UNITS`), an owner's write during a part's put shipping a full segment inside them;
 // - a log segment shipped outside a burst: a full segment of wide lines, its build and its
@@ -38,7 +39,7 @@
 //   `EDIT_BYTES_MAX` inside a request's CPU limit (`guards/cpu.ts`; the time is wall time, at
 //   least the CPU it spent), and each class's full queue turns over within `SLOT_WAIT_MS`,
 //   each bound on the budgets' runners, times this runner's speed (`ci/classes.ts` `RUNNER`).
-// Differences cancel the baseline and the probe's own code; the absolute figure
+// Differences cancel the baseline and the probe's own code (review M4); the absolute figure
 // is production's (`memoryUsageBytes`). Run: `npm run test:memory -w owner`. Exits non-zero
 // on any failed check, printing every figure.
 import { createServer } from "node:http";
@@ -212,7 +213,7 @@ try {
     let most = 0;
     let points = 0;
     // The most a sample in the owner isolate read past the units its pool held then: each
-    // step's live set against its own units, the reading steps' among them.
+    // step's live set against its own units, the reading steps' among them (review M-a).
     let over = -Infinity;
     active = n;
     let where = "";
@@ -363,7 +364,7 @@ try {
 
   // A generation's burst at production sizes, of the smallest lines (the most lines its bytes
   // allow), run by the real lane: at every part's put, its pages and parts within the units
-  // it holds (above, at every checkpoint), and its peak within BURST_UNITS.
+  // it holds (above, at every checkpoint), and its peak within BURST_UNITS (review rvbackup 1).
   check("a generation's burst: peak, the smallest lines", await peak("burst", 0),
         costs.BURST_UNITS * UNIT, "BURST_UNITS");
   // Its log's ships after it (each under `SHIP_UNITS` alone): compared with a ship alone below.
@@ -382,7 +383,7 @@ try {
     throw new Error(`the ship case's widest segment was ${peak.answer[0]} bytes, not a full one`);
   }
   // A burst's log ships with nothing of the burst live, and each segment's bytes let go before
-  // the next is built: its ships read about what a ship alone does.
+  // the next is built (rvburst X2): its ships read about what a ship alone does.
   check("a generation's burst: its log's ships after it, about a ship alone",
         burstShips - peak.ship, QUARTER, "a quarter chunk past the ship alone");
 

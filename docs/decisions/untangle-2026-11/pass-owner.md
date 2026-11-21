@@ -165,14 +165,16 @@ through unchanged and makes no call refuse. Both are kept, each with its reason:
 
 ## 6. Part 2 as built (`untangle/pass-owner-2`, 2026-11-21)
 
-The comments of `test/`, `guards/` and `memory/`, the tests pass's changes, the spec's name and
-the swallowed errors and retries, on `origin/main` `88e74e1cd`. Behaviour is unchanged: no
-line of product code changed (§6.6).
+The comments of `test/` and of the two guards whose checks it changes (`owner-bound`,
+`write-gate`), the tests pass's changes, the spec's name and the swallowed errors and retries,
+on `origin/main` `88e74e1cd`. Behaviour is unchanged: no line of product code changed (§6.6).
+The comments of the other guards and of `memory/` were done here too, but with them the diff
+passed 1,500 changed lines, so they move to part 3 (§6.5).
 
 ### 6.1 Comments
 
-**Removed or rewritten**, across 80 files:
-- **Provenance tags,** about 330: the slice names (`slice P`, `M`, `L`, `R`, `S`, `W`, `ID`,
+**Removed or rewritten**, across 64 files:
+- **Provenance tags,** about 270: the slice names (`slice P`, `M`, `L`, `R`, `S`, `W`, `ID`,
   `SIGNIN`, `BRAIN`, `STORE item 2, phase 1`, `slice 3`, `slice 5`, `slice D`), `lane R`,
   `untangle A2`, `B4`, `F1`, `H1`, `R5 P-decide`, `P-resume`, the old plan's ids (`tasks 2` to
   `tasks 7`, `S30`, `S34`, `S3b`, `W3`, `N10`, `P0-3`, `G2`, `G4`, `E1`, `E2`, `D2`, `B23`,
@@ -187,24 +189,21 @@ line of product code changed (§6.6).
   (the wake limits). A test's name is no record: `ci/budgets.json`'s slowest-test names are a
   past run's measurement and stay as measured.
 - **The old stack:** the "Ported from `tests/test_*.py`" headers of `ledger.test.ts`,
-  `collections.test.ts`, `sessions.test.ts`, `wakes.test.ts`, `grants.test.ts`,
-  `policy-boundary.test.ts`, `ledger-boundary.test.ts` and `revision-primitive.test.ts`,
+  `collections.test.ts`, `sessions.test.ts`, `wakes.test.ts` and `grants.test.ts`,
   `usage.test.ts`'s `tinyassets/request_budget.py` and `broker/policy.py` (its transition
   rules stay, as the object's), `ledger-bounds.test.ts`'s "the Python's owed L5", and "As in
   the Python test" and "as the Python door refused None". What each said that holds of the
   object stays, as a fact of the object (the object is the account, so no test erases one).
-- **Working files never in the repo:** `history_research.md`, `operator_research.md`, and
-  `rpcretain_research.md` (four places; the figure each cited stays, as measured).
+- **Working files never in the repo:** `history_research.md` and `operator_research.md`.
 - **Stale:** `owner-bound.test.ts`'s header kept a changelog of which slice added which table
   (S, W, ID, M, H1); the guard computes every term, and git holds the history.
-  `admission-caller.test.ts`'s "nothing is deployed, so no tombstone exists yet".
   `codemode.test.ts`'s "is slice M's" (the `code` door is `code-door.test.ts`'s) and "owed to
   H2's live probe" (no such probe is owed; workerd shows neither CPU limits nor isolation).
   `erasure.test.ts`'s and `cron.test.ts`'s "carried over from the deleted ... tests".
-- **Run-on and short lines** a removed tag left: about 45 paragraphs reflowed to 100 columns.
+- **Run-on and short lines** a removed tag left: about 35 paragraphs reflowed to 100 columns.
 
 **Kept:** the ADR, spec, d3 and plan pointers (`d3 §N6`, `plan §6`), measured figures with the
-run they came from, `rules.ts`'s live probe `P1` (a measured limit's source), `network.test.ts`'s
+run they came from, `network.test.ts`'s
 "the old stack's `ask` mode", which names the policy shape the validator refuses, and
 `rv.record.ts`'s "the reviewer's RPC recorder", the tool's name. `test/import.test.ts` goes at
 the cutover, as `src/import.ts` does, and is skipped.
@@ -332,3 +331,25 @@ The files R5's hooks change, so the two merge cleanly, untouched here:
   to be read with §6.2's rule.
 - `guards/doors.test.ts`: ten door reasons, strings the guard prints, carry `slice L`, `slice
   W`, `tasks 6` and "slice SIGNIN, owed: an MCP tool for the past runs".
+
+And the comments of the other 13 guards and of `memory/`, moved here from part 2 for its size
+(about 300 changed lines; none of them in a file #5707 changes): their tags (`slice R`, `L`,
+`S`, `M`, `untangle A2`, `B4`, `review L5-2`, `L6-2`, `M3`, `M4`, `M-a`, `rvburst`, `rvbackup 1`,
+`round 5`, `H0`, `decisions A7`, `tasks 2`, `3.6`), the "Ported from" headers of
+`policy-boundary.test.ts`, `ledger-boundary.test.ts` and `revision-primitive.test.ts`,
+`rpcretain_research.md` (a working file never in the repo, four places),
+`admission-caller.test.ts`'s "nothing is deployed, so no tombstone exists yet", `alarm.test.ts`'s
+"salvaged from A6", and the paragraphs they leave short.
+
+### 6.6 Proof
+
+- Every source of the workspace (`src/`, `guards/`, `test/`, `memory/`, `wrangler.jsonc`
+  without its comments, the JSON records), minified with esbuild after blanking each test's
+  titles, and the Worker's entry bundled with all it imports: the same digest on base
+  `88e74e1cd` and head, but for the 18 test files of §6.2.
+- The recorders: `wire`, `tools`, `rpc` and `rv` are the same.
+- Mutations, each killed by the changed test: `ALL_TRAFFIC` as `0.0.0.0/1`; the lane's job given
+  `LANE_PASS_S` as its hung timeout; the refused receipts kept one past `refusalsKept`;
+  `MODEL_DEFAULTS.turn_cost` set to 1; `EGRESS_PATH_MAX` as 4096; `#door` running its act
+  outside the gate. A reformat of `#door` across lines with a trailing comma passes the
+  write-gate guard and fails its old check.

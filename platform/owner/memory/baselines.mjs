@@ -1,10 +1,11 @@
-// The doors' and the files Worker's module-load floors in workerd (ADR-037): each bundle, as a
-// deploy builds it, loaded with no bindings, one request served by a stub entry (not the Worker's
-// own code), then a swept full collection, and its heap plus backing stores read through the
-// inspector. A floor, not a baseline: no object is built and the Worker's own paths stay
-// uncompiled. The owner's baseline is measured with an owner object built, migrated and served, by
-// the memory leg (`memory/leg.mjs`), which holds it within `OWNER_BASELINE_BYTES`; the doors' and
-// files' pools (PR 3b, PR 4) measure theirs the same way. Run by hand: `node memory/baselines.mjs`.
+// The doors' and the files Worker's module-load floors in workerd (ADR-037): each bundle, as
+// a deploy builds it, loaded with no bindings, one request served by a stub entry (not the
+// Worker's own code), then a swept full collection, and its heap plus backing stores read
+// through the inspector. A floor, not a baseline: no object is built and the Worker's own
+// paths stay uncompiled (review M4). The owner's baseline is measured with an owner object
+// built, migrated and served, by the memory leg (`memory/leg.mjs`), which holds it within
+// `OWNER_BASELINE_BYTES`; the doors' and files' pools (PR 3b, PR 4) measure theirs the same
+// way. Run by hand: `node memory/baselines.mjs`.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

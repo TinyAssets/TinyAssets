@@ -1,28 +1,30 @@
 /**
- * The policy writers: owner policy, grants and sessions are written through the object's
- * doors only.
+ * N10 and P0-3 policy-writers: owner policy, grants and sessions are written through
+ * the object's doors only.
  *
- * Only the object imports the session and grant modules (so only its doors, which check the
- * owner's session themselves, can call a widening), and each policy table is named only by
- * the module that keeps it and the schema. The held agent registrations and the owner's
+ * Ported from `tests/test_policy_writers.py` (origin/main 1fd430857, and its P0-3 form on
+ * `p0-3-outside-grants`). There, only the broker's policy store wrote policy and grants
+ * and only the router's owner channel submitted a widening. Here, only the object
+ * imports the session and grant modules (so only its doors, which check the owner's
+ * session themselves, can call a widening), and each policy table is named only by the
+ * module that keeps it and the schema. The held agent registrations and the owner's
  * admission are held to the same: only the object imports them, and the admission row is
  * its module's and the schema's alone; so are the action rules' held calls and receipts,
- * whose module the object and the policy's receipts door (a type) alone import. So are the
- * model connections and their spend: only the object builds them, `auto` reads their types,
- * and their tables (the connections, their blobs and flows, the reservations and the spend
- * counters) are their modules' alone, and so are the sandbox's egress rows and the owner's
- * erasure mark, and the runs' rows (runs, their grants, conversations and schedules, the
- * tier numbers kept, the socket tickets), each its module's and the schema's. The lists
- * only shrink.
+ * whose module the object and the policy's receipts door (a type) alone import. So are the model connections and their spend: only the
+ * object builds them, `auto` reads their types, and their tables (the connections, their
+ * blobs and flows, the reservations and the spend counters) are their modules' alone, and
+ * so are the sandbox's egress rows and the owner's erasure mark, and the runs' rows (slice R:
+ * runs, their grants, conversations and schedules, the tier numbers kept, the socket
+ * tickets), each its module's and the schema's. The lists only shrink.
  *
  * One module names every table to read it, never to write it: the owner export
- * (`export.ts`), which reads everything the owner holds for the owner alone. Its source is
- * held to SQL that only reads (`READ_ONLY`): no statement but `SELECT`, and no policy module
- * imported. One names every table to load it: the restore (`restore.ts`), which loads a
- * generation into a pending, empty owner for the platform's reserved caller alone. It names
- * them as data, in its load table, and its SQL names no guarded table: a table's own
- * statements take the table from the load table (`${load.table}`), and every other change
- * (its fence, its allocators) is the owning module's (`LOADER`).
+ * (`export.ts`, slice P), which reads everything the owner holds for the owner alone. Its
+ * source is held to SQL that only reads (`READ_ONLY`): no statement but `SELECT`, and no
+ * policy module imported. One names every table to load it: the restore (`restore.ts`, lane
+ * R), which loads a generation into a pending, empty owner for the platform's reserved caller
+ * alone. It names them as data, in its load table, and its SQL names no guarded table: a
+ * table's own statements take the table from the load table (`${load.table}`), and every
+ * other change (its fence, its allocators) is the owning module's (`LOADER`).
  *
  * The widenings themselves are a type fact (`door.ts`): each takes as its first argument the
  * proof its caller made, a row's call carries only its own caller's proof, and the cast rule

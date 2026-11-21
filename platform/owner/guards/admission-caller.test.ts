@@ -1,11 +1,11 @@
 /**
- * The platform's reserved caller: the owner's object takes `admissionSet` only from the
- * caller named `PLATFORM_CALLER` (the contract's, `contract/src/binding.ts`), and refuses
- * that name at every other door and as an owner. So no source may spell the name but where
- * it is defined, and no source but the binder, which sends it (the sign-up's explicit
- * admit), the owner's object, which reads it, and the operator channel's contract, which
- * addresses the platform's own ops to it as the principal no owner is named (`addressed`,
- * `contract/src/operator-message.ts`), may name the constant.
+ * The platform's reserved caller (tasks 2, "Owner admission and erasure"; F1): the owner's
+ * object takes `admissionSet` only from the caller named `PLATFORM_CALLER` (the contract's,
+ * `contract/src/binding.ts`), and refuses that name at every other door and as an owner. So
+ * no source may spell the name but where it is defined, and no source but the binder, which
+ * sends it (the sign-up's explicit admit, slice L), the owner's object, which reads it, and the
+ * operator channel's contract, which addresses the platform's own ops to it as the principal no
+ * owner is named (`addressed`, `contract/src/operator-message.ts`), may name the constant.
  *
  * In every Worker source, this guard finds the name spelled as a string (a literal, a
  * template with no substitution, or the obvious split spellings: literals joined by `+`, a
@@ -163,6 +163,7 @@ describe("admission caller guard", () => {
   it("pins the tombstone's shape, which an erased owner's database keeps unmigrated", () => {
     // A tombstone is never migrated, and migration 10 and the erasure share the table's
     // text: changing either is a new migration and a tombstone reader that still reads this.
+    // (Slice L added `pending` in place: nothing is deployed, so no tombstone exists yet.)
     const schema = readFileSync(join(PLATFORM, "owner", "src", "schema.ts"), "utf8");
     expect(schema).toContain(
       'export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +\n' +

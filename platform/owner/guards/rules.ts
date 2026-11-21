@@ -21,13 +21,14 @@
  * build) is that Worker's own allow-list, its `guards/rules.ts`:
  * - `FILES`, the files Worker: its one R2 bucket;
  * - `GATEWAY`, the model gateway: no binding at all;
- * - `CODEMODE_VM`, the codemode Worker (narrowed to code mode by ADR-034): one namespace
+ * - `CODEMODE_VM`, the codemode Worker (H0, narrowed to code mode by ADR-034): one namespace
  *   of its own class, and no `OWNER`, no storage binding and no Worker Loader, so a script
  *   reaches no owner;
- * - `SANDBOX`, the sandbox Worker: two namespaces of its own classes (one per owner, its E2B calls;
- *   one for the platform's line), one KV namespace (the control record's, read for its sandbox
- *   numbers alone) and one queue producer, the ring's. It reaches nothing but E2B and the ring
- *   (`sandbox/guards/config.test.ts` reads its every fetch).
+ * - `SANDBOX`, the sandbox Worker (slice S): two namespaces of its own classes (one per
+ *   owner, its E2B calls; one for the platform's line), one KV namespace (the control
+ *   record's, read for its sandbox numbers alone) and one queue producer, the ring's. It
+ *   reaches nothing but E2B and the ring (`sandbox/guards/config.test.ts` reads its every
+ *   fetch).
  *
  * Its compatibility flags carry `disable_ctx_exports`, so the runtime does not hand the
  * object its own namespaces as `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top
@@ -37,11 +38,11 @@
  * most, 10,000,000: live probe P1 found calls stopped at exactly 10,000 at the default and
  * passed at 1,000,000. Edge Workers bind `OWNER` from their own configs.
  *
- * Its one store, at top level only, is `CONTROL`: the namespace of the platform's control record
- * alone, the doors' own `CONTROL` by binding name (the deploy kit fills every namespace's id by its
- * binding, `deploy/deploy.ts` `deployedConfig`), so the object reads the gates again at code mode's
- * calls and reaches no directory entry or other owner's state. Only `control-gate.ts` reads it, by
- * `readControl`, and nothing writes it.
+ * Its one store, at top level only, is `CONTROL` (slice M review M1): the namespace of the
+ * platform's control record alone, the doors' own `CONTROL` by binding name (the deploy kit
+ * fills every namespace's id by its binding, `deploy/deploy.ts` `deployedConfig`), so the
+ * object reads the gates again at code mode's calls and reaches no directory entry or other
+ * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
  *
  * Its top level is held by the platform's config checker (`CONFIG`), as every Worker's is;
  * its environments and the Workers it binds are its own guard's (`config.test.ts`).
@@ -51,13 +52,14 @@ import type { Exemption } from "../../ci/kit/module-state";
 import type { Owed } from "../../ci/kit/owed";
 
 /**
- * The module state the owner Worker keeps by design (`ci/kit/module-state.ts`): its isolate's chunk
- * slots (`holds.ts`, with the relay's tails; the pool itself is the contract's,
- * `contract/src/slots.ts`, which holds no state). The pool is the isolate's, shared by every object
- * and request in it; it holds a count of slots in use, the calls waiting and the leases holding
- * units, each with the owner id it waits or holds for, never an owner's data. And the object's
- * doors (`owner-do.ts`): its static block defines each row of the door table as a method on its
- * prototype when the class loads, once, none writable, so it runs at load but keeps no state.
+ * The module state the owner Worker keeps by design (`ci/kit/module-state.ts`): its isolate's
+ * chunk slots (`holds.ts`, with the relay's tails; the pool itself is the contract's,
+ * `contract/src/slots.ts`, which holds no state). The pool is the isolate's, shared by every
+ * object and request in it; it holds a count of slots in use, the calls waiting and the
+ * leases holding units, each with the owner id it waits or holds for, never an owner's data.
+ * And the object's doors (`owner-do.ts`, untangle B4): its static block defines each row of
+ * the door table as a method on its prototype when the class loads, once, none writable, so
+ * it runs at load but keeps no state.
  */
 export const MODULE_STATE: readonly Exemption[] = Object.freeze([
   Object.freeze({ file: "owner/src/holds.ts", symbol: "ISOLATE",
@@ -81,7 +83,7 @@ export const LIMITS = Object.freeze({ subrequests: 10_000_000 });
  *   MAC'd under (`contract/src/routing-mac.ts`), the doors Worker's too;
  * - one class, `OwnerDO`, SQLite-backed;
  * - one KV namespace, `CONTROL`;
- * - one queue, the erasure queue's producer, whose one consumer, the doors Worker,
+ * - one queue, the erasure queue's producer (slice L), whose one consumer, the doors Worker,
  *   makes an erasure's outside record and confirms it to that owner's object
  *   (`doors/src/erase.ts`); a message is `{owner}`, granting nothing;
  * - its `limits`, exactly `LIMITS`.

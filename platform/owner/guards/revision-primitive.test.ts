@@ -1,8 +1,11 @@
 /**
- * One compare-and-swap primitive on the platform. An etag compare-and-swap store is a
- * persisting module that compares a stored etag with an expected one (a line naming `etag`
- * and `expected` with `==` or `!=`, or SQL `etag = ?`), or a revision the same way beside a
- * `seq`. The collection primitive is the only one for rows; app rooms and the board are row
+ * S34 revision-primitive: one compare-and-swap primitive on the platform.
+ *
+ * Ported from `test_one_revision_primitive` (`tests/test_revision_primitive.py`,
+ * branch `s5b-board`). An etag compare-and-swap store is a persisting module that
+ * compares a stored etag with an expected one (a line naming `etag` and `expected`
+ * with `==` or `!=`, or SQL `etag = ?`), or a revision the same way beside a `seq`.
+ * The collection primitive is the only one for rows; app rooms and the board are row
  * sets in it. The owner's file manifest (`files.ts`, plan §6) keeps the same rules on
  * file entries (an etag swap, an owner-wide seq that never repeats, history), with its
  * own tables, because a file's content is chunk references and a directory moves as one:

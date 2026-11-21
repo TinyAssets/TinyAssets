@@ -1,18 +1,19 @@
 /**
- * The runs' live output stays well inside the isolate's memory (`relay.ts`), beside the
- * owner-bound guard's database bound.
+ * The runs' live output stays well inside the isolate's memory (slice R, `relay.ts`; A6's
+ * guard, salvaged), beside the owner-bound guard's database bound.
  *
  * An owner's object runs in an isolate of 128 MB that objects of one class may share, so
  * what its live output keeps in memory is bounded by the code and counted here, each term
  * at its worst, against `RELAY_MEMORY_BUDGET` (an eighth of the isolate):
  * - the runs' tails: every live run's kept frames together, at most `TAIL_UNITS` UTF-16 code
  *   units (two bytes each);
- * - the runners' events posts the object holds while it reads and relays them: each its body, at
- *   most `EVENTS_BODY_MAX` bytes, once as it arrived and once parsed (its strings two bytes a
- *   unit), the one frame being relayed as its JSON text (at most `FRAME_UNITS_MAX` units, two bytes
- *   each), and each of its at most `EVENT_FRAMES_MAX` frames' own objects; the posts the object
- *   holds at once, at most `EVENTS_IN_FLIGHT` whatever the tier (`runEvents`' gate: one more is
- *   answered `events_busy` and posted again), and the one being refused beside them;
+ * - the runners' events posts the object holds while it reads and relays them (slice R's
+ *   review M-4 and round 2): each its body, at most `EVENTS_BODY_MAX` bytes, once as it
+ *   arrived and once parsed (its strings two bytes a unit), the one frame being relayed as
+ *   its JSON text (at most `FRAME_UNITS_MAX` units, two bytes each), and each of its at most
+ *   `EVENT_FRAMES_MAX` frames' own objects; the posts the object holds at once, at most
+ *   `EVENTS_IN_FLIGHT` whatever the tier (`runEvents`' gate: one more is answered
+ *   `events_busy` and posted again), and the one being refused beside them;
  * - each socket's attachment, the platform's at most 2 KiB, and the SDK's cached copy, at
  *   `OWNER_SOCKETS`, the relay's technical ceiling;
  * - the told sign-outs held (`SIGNED_OUT_KEPT`).
@@ -52,7 +53,7 @@ describe("the runs' live output's memory bound", () => {
     const relay = readFileSync(join(SRC, "relay.ts"), "utf8");
     expect(relay).not.toMatch(/\.sql\b|storage\./);
     // The tail is trimmed to its bound as each frame is kept, the longest tail's oldest first.
-    // Every object's tails in the isolate share one budget (`holds.ts`).
+    // Every object's tails in the isolate share one budget (`holds.ts`, review M5).
     expect(relay).toContain("const tails = ownerTails(TAIL_UNITS);");
     expect(relay).toContain("tails.trim();");
     expect(relay).toContain("if (text.length <= TAIL_FRAME_UNITS) {");
