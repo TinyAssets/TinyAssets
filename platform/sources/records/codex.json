@@ -70,6 +70,10 @@
       "hosted_use": {
         "verdict": "unclear",
         "citation": "subscription-engines.md section 2 and 11: no text permits or forbids a platform hosting the unmodified Codex CLI for a user's own ChatGPT sign-in; OpenAI names API keys for automation and ChatGPT sign-in only on trusted private infrastructure"
+      },
+      "model": {
+        "id": "gpt-6.1-sol",
+        "citation": "the models.json bundled in the pinned @openai/codex 0.166.0 binary (read 2026-11-21): gpt-6.1-sol is its priority-1 model, the picker's first; the live catalog is the account's and can differ (strongest-plan.md)"
       }
     },
     "api_key_env": {

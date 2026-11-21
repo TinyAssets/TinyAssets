@@ -63,6 +63,10 @@
       "hosted_use": {
         "verdict": "unclear",
         "citation": "gemini-cli docs/resources/tos-privacy.md: third-party software using Gemini CLI OAuth to reach its services is a violation; a platform hosting the unmodified CLI for the user's own sign-in is not addressed (subscription-engines.md section 11)"
+      },
+      "model": {
+        "id": "gemini-3.1-pro-preview",
+        "citation": "the pinned @google/gemini-cli 0.66.0 bundle's resolveModel (read 2026-11-21): the default auto resolves to gemini-3.1-pro-preview where Gemini 3.1 is launched and the account has preview access, else gemini-3-pro-preview or gemini-2.5-pro (strongest-plan.md)"
       }
     },
     "api_key_env": {

@@ -24,7 +24,7 @@ import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED, SIGNIN
          TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
-import { gated, type Gated, OPENAI } from "./gateway-support";
+import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
@@ -39,6 +39,9 @@ afterEach(() => {
 /** The owner's run of Claude Code on its own sign-in: no key, no connection. */
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
+
+/** The model Claude Code's record says a run on its plan is given (`cli.login.model`). */
+const PLAN_MODEL = "claude-opus-5-5";
 
 /** The runner's report of Claude Code's sign-in, under the sandbox's live lease. */
 function claudeSignin(r: Gated, start: SandboxStart, signedIn: boolean) {
@@ -593,20 +596,51 @@ describe("auto and the owner's sign-ins", () => {
     expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "helper"))).message)
       .toMatch(/^no_source/);
     // The owner's own Claude Code run opens the sandbox; its runner reports the sign-in:
-    // presence only, its time, never a credential.
-    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    // presence only, its time, never a credential. A run naming the engine on its sign-in
+    // is given its plan's model too.
+    const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    expect(run.model).toBe(PLAN_MODEL);
+    expect(start.model).toBe(PLAN_MODEL);
     expect(await claudeSignin(r, start, true)).toEqual({ recorded: 1, lapsed: [] });
     const [row] = await r.sql("SELECT * FROM engine_signins");
     expect(row).toMatchObject({ engine: "claude-code", signed_in: 1, models: "[]" });
     expect(Object.keys(row!).sort())
       .toEqual(["changed_at", "checked_at", "engine", "models", "signed_in"]);
+    // The plan runs the model its record says it does, and the receipt says which.
     const auto = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(auto.run).toMatchObject({ state: "running", engine: "claude-code",
-                                     credential: "vendor_login_in_sandbox" });
+                                     credential: "vendor_login_in_sandbox", model: PLAN_MODEL });
     expect(auto.start).toMatchObject({ engine: "claude-code",
-                                       credential: "vendor_login_in_sandbox" });
+                                       credential: "vendor_login_in_sandbox", model: PLAN_MODEL });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?", auto.run.run_id))
       .toEqual([{ connection: null }]);
+    // An agent that names its model runs that one.
+    await defineAgent(r.stub, r.bind(), "named", { ...AUTO_AGENT, model: "claude-sonnet-5-5" });
+    expect((await ownerRun(r.stub, r.bind(), undefined, "named")).start)
+      .toMatchObject({ credential: "vendor_login_in_sandbox", model: "claude-sonnet-5-5" });
+  });
+
+  it("ranks a subscription against another provider's key by the plan's model, both ways",
+     async () => {
+    const r = await gated();
+    const [base] = await catalog(OPENAI);
+    const weaker = await r.connect("sk-good", OPENAI, "Weaker", [{ ...base!, id: "gpt-5.1-codex" }]);
+    await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    const keyed = await ownerRun(r.stub, r.bind(), undefined, "helper");
+    expect(keyed.run).toMatchObject({ credential: "api_key", model: "gpt-5.1-codex" });
+    // Signed in: Claude's plan (`claude-opus-5*`) ranks above the other provider's key.
+    await claudeSignin(r, keyed.start, true);
+    expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
+      .toMatchObject({ engine: "claude-code", credential: "vendor_login_in_sandbox",
+                       model: PLAN_MODEL });
+    // That provider's key on a model ranked above the plan's: the key.
+    const stronger = await r.connect("sk-good", OPENAI, "Stronger",
+                                     [{ ...base!, id: "gpt-6.1-sol" }]);
+    const strongest = await ownerRun(r.stub, r.bind(), undefined, "helper");
+    expect(strongest.run).toMatchObject({ credential: "api_key", model: "gpt-6.1-sol" });
+    expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?",
+                       strongest.run.run_id)).toEqual([{ connection: stronger }]);
+    expect(stronger).not.toBe(weaker);
   });
 
   it("prefers the subscription to a key of its provider; a lapse is refused and noticed, " +
@@ -619,11 +653,12 @@ describe("auto and the owner's sign-ins", () => {
     expect(keyed.run).toMatchObject({ credential: "api_key" });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?", keyed.run.run_id))
       .toEqual([{ connection }]);
-    // Signed in as well: the plan covers the key's provider, and is used.
+    // Signed in as well: the plan covers the key's provider, and is used, on its own model.
     await claudeSignin(r, keyed.start, true);
     const planned = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(planned.run).toMatchObject({ engine: "claude-code",
-                                        credential: "vendor_login_in_sandbox" });
+                                        credential: "vendor_login_in_sandbox",
+                                        model: PLAN_MODEL });
     // The sign-in lapses: a "sign in again" notice, and auto stops picking it, the key
     // never taken in its place.
     expect(await claudeSignin(r, keyed.start, false))
@@ -659,9 +694,8 @@ describe("auto and the owner's sign-ins", () => {
     for (const bad of [[], [{ engine: "nope", signed_in: true }], [...one, ...one],
                        [{ engine: "pi", signed_in: true }],
                        [{ engine: "claude-code", signed_in: "yes" }],
-                       [{ engine: "claude-code", signed_in: true, models: ["a b"] }],
-                       [{ engine: "claude-code", signed_in: true,
-                          models: ["m".repeat(256), ...Array(8).fill("m".repeat(256))] }]]) {
+                       // A plan's model is its record's, never the runner's word.
+                       [{ engine: "claude-code", signed_in: true, models: [PLAN_MODEL] }]]) {
       expect((await report(runnerSandbox(r, start), bad)).code).toBe("invalid");
     }
     expect(await r.sql("SELECT engine FROM engine_signins")).toEqual([]);

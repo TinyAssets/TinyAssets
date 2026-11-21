@@ -48,6 +48,15 @@ export function signsIn(record: Served | undefined): record is SignsIn {
   return record?.cli.login !== undefined;
 }
 
+/**
+ * The provider a sign-in's plan covers: its record's one API-key provider (Claude Code's
+ * `anthropic`), else the engine itself. Data only: no provider is named here.
+ */
+export function planProvider(record: SignsIn): string {
+  const providers = Object.keys(record.cli.api_key_env ?? {});
+  return providers.length === 1 ? providers[0]! : record.id;
+}
+
 export function npmInstalled(record: Served): record is NpmInstalled {
   return record.cli.install.manager === "npm";
 }

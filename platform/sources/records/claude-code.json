@@ -69,6 +69,10 @@
       "hosted_use": {
         "verdict": "allowed",
         "citation": "code.claude.com/docs/en/legal-and-compliance.md (read 2026-11-03): an end user may sign in to the unmodified Claude Code binary with their own subscription, including where a platform hosts it, under the Commercial Terms; the platform may not collect, store or intermediate the credentials"
+      },
+      "model": {
+        "id": "claude-opus-5-5",
+        "citation": "code.claude.com/docs/en/model-config (read 2026-11-21): Pro, Max, Ultra, Team and Enterprise default to Opus 5.5, and opus resolves to Opus 5.5 from v2.1.280 on the Anthropic API; no Fable model is the default on any plan (strongest-plan.md)"
       }
     },
     "api_key_env": {
