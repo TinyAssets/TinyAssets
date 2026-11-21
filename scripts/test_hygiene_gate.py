@@ -22,7 +22,8 @@ scope guard) and fails when:
 1. **tampering** -- a test that exists at the merge base is removed, has
    fewer assertions, or gains a skip/xfail; or a known-failing entry is
    added -- and the body has no ``Test-Removal: retired|consolidated|wrong --
-   <why>`` line. A platform test (``platform/**/*.test.ts``, or a platform
+   <why>`` line. A Python test is one pytest collects, under any ``tests/``
+   folder (``python_tests.py``). A platform test (``platform/**/*.test.ts``, or a platform
    file that imports a test runner) is read as text by ``platform_tests.py``:
    a file that loses cases or expectations, or gains a skip, needs the same
    line. Only the line, beside product code too: refactors move and rewrite
@@ -69,8 +70,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import platform_tests  # noqa: E402
-import test_inventory as inv  # noqa: E402  (one definition of a marker)
-import test_shape  # noqa: E402
+import python_tests as py  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAX_EXPIRY_DAYS = 180
@@ -94,7 +94,6 @@ class Finding:
 
 @dataclass
 class Delta:
-    shape: list[Finding] = field(default_factory=list)
     tampering: list[Finding] = field(default_factory=list)
     unexplained_markers: list[Finding] = field(default_factory=list)
     expired: list[Finding] = field(default_factory=list)
@@ -132,6 +131,36 @@ def _show(rev: str, path: str, root: Path) -> str | None:
     if subprocess.run(probe, capture_output=True).returncode != 0:
         return None
     return _git("show", f"{rev}:{path}", root=root)
+
+
+def _texts(rev: str, paths: list[str], root: Path) -> dict[str, str]:
+    """Each file's text at `rev`, read in one git process, not two for each file.
+
+    Every path is one the diff names at `rev`, so a blob git cannot give (a lazy fetch
+    that failed) raises: reading it as absent would undercount what the PR changes.
+    """
+    if not paths:
+        return {}
+    if any("\n" in p for p in paths):
+        raise RuntimeError("a changed test path holds a newline")
+    out = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input="".join(f"{rev}:{p}\n" for p in paths).encode(),
+        capture_output=True,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"git cat-file --batch: {out.stderr.decode(errors='replace').strip()}")
+    texts, at = {}, 0
+    for path in paths:
+        end = out.stdout.index(b"\n", at)
+        header = out.stdout[at:end].split()
+        if len(header) != 3 or header[1] != b"blob":
+            raise RuntimeError(f"git cat-file {rev}:{path}: {b' '.join(header).decode()}")
+        at = end + 1
+        size = int(header[2])
+        texts[path] = out.stdout[at : at + size].decode("utf-8", errors="replace")
+        at += size + 1
+    return texts
 
 
 def merge_base(base: str, head: str, root: Path) -> str:
@@ -174,7 +203,7 @@ class FileModel:
     tests: dict[str, ast.FunctionDef]
     asserts: dict[str, int]
     bodies: dict[str, str]
-    markers: list[inv.Marker]
+    markers: list[py.Marker]
     lines: list[str]
     comments: dict[int, str] = field(default_factory=dict)
 
@@ -185,7 +214,7 @@ def _assertions(func: ast.AST) -> int:
         if isinstance(node, ast.Assert):
             n += 1
         elif isinstance(node, ast.Call):
-            name = inv._dotted(node.func)
+            name = py.dotted(node.func)
             last = name.rsplit(".", 1)[-1]
             if last.startswith("assert") or last in ("raises", "warns", "fail"):
                 n += 1
@@ -201,19 +230,19 @@ def model(text: str | None, rel: str) -> FileModel:
     except SyntaxError:
         return empty
     tests: dict[str, ast.FunctionDef] = {}
-    for cls, func in inv.iter_tests(tree):
+    for cls, func in py.iter_tests(tree):
         tests[f"{cls}::{func.name}" if cls else func.name] = func
     return FileModel(
         tests=tests,
         asserts={k: _assertions(f) for k, f in tests.items()},
-        bodies={k: inv._norm_body(f) for k, f in tests.items()},
-        markers=inv.scan_markers(tree, rel),
+        bodies={k: py.norm_body(f) for k, f in tests.items()},
+        markers=py.scan_markers(tree, rel),
         lines=text.splitlines(),
         comments=_comments(text),
     )
 
 
-def _enclosing(m: inv.Marker, fm: FileModel) -> str | None:
+def _enclosing(m: py.Marker, fm: FileModel) -> str | None:
     """The test a marker suppresses: its decorated function, or the function
     whose body holds the call. None for module/class-level markers."""
     for name, func in fm.tests.items():
@@ -238,7 +267,7 @@ def _comments(text: str) -> dict[int, str]:
     return out
 
 
-def marker_problem(m: inv.Marker, today: dt.date, comments: str = "") -> str | None:
+def marker_problem(m: py.Marker, today: dt.date, comments: str = "") -> str | None:
     """Why an ADDED marker is not acceptable, or None.
 
     `owner=` and `runs-in=` may sit in the reason or in `comments` -- the
@@ -246,12 +275,12 @@ def marker_problem(m: inv.Marker, today: dt.date, comments: str = "") -> str | N
     wrapping a reason never fails the gate. `expires=` must be in the reason:
     the weekly inventory reads it from there.
     """
-    if m.kind != "xfail" and inv.is_environment_guard(m.reason):
+    if m.kind != "xfail" and py.is_environment_guard(m.reason):
         return None
     missing = []
     if not OWNER_RE.search(m.reason) and not OWNER_RE.search(comments):
         missing.append("`owner=<who>`")
-    hit = inv.EXPIRY_RE.search(m.reason)
+    hit = py.EXPIRY_RE.search(m.reason)
     if hit:
         try:
             when = dt.date.fromisoformat(hit.group(1))
@@ -357,7 +386,7 @@ def _real_root(node: ast.AST) -> str | None:
         elif isinstance(node, ast.Attribute):
             node = node.value
         elif isinstance(node, ast.Call):
-            name = inv._dotted(node.func)
+            name = py.dotted(node.func)
             if name in _REAL_PATHS:
                 return f"`{name}()`"
             if name in ("Path", "pathlib.Path", "os.path.join") and node.args:
@@ -396,7 +425,7 @@ def hermeticity(func: ast.FunctionDef, lines: list[str]) -> tuple[list, list]:
     for node in ast.walk(func):
         if not isinstance(node, ast.Call):
             continue
-        name = inv._dotted(node.func)
+        name = py.dotted(node.func)
         target = None
         why = None
         if name in _SLEEPS and node.args:
@@ -449,60 +478,23 @@ def _ledger(text: str | None) -> dict[str, tuple]:
     return out
 
 
-def collectable(path: str | None) -> bool:
-    """Would pytest's default discovery collect tests from this path?"""
-    if not path or not path.startswith("tests/") or not path.endswith(".py"):
-        return False
-    name = path.rsplit("/", 1)[-1]
-    return name.startswith("test_") or name.endswith("_test.py")
-
-
 def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
     delta = Delta()
     base = merge_base(base, head, root)
     changes = changed_files(base, head, root)
-    shape_files = test_shape.sources(root, head)
-    old_shape_files = test_shape.sources(root, base)
-    rows = test_shape.registry(shape_files)
-    old_rows = test_shape.registry(old_shape_files)
-    changed_tests = {new for _, _, new in changes if collectable(new)}
-    retired = {row for row, state in old_rows.items()
-               if state == "current" and rows.get(row) != "current"}
-    for test in test_shape.inventory(shape_files):
-        if test.node.split("::")[0] in changed_tests:
-            if not test.ids:
-                delta.shape.append(Finding(test.node, "test has no verifies id"))
-            for claim in sorted(test.ids):
-                if rows.get(claim) != "current":
-                    delta.shape.append(Finding(test.node, f"unresolvable verifies id: {claim}"))
-        for claim in sorted(test.ids & retired):
-            delta.shape.append(Finding(test.node, f"spec retires an id still named: {claim}"))
-
     test_changes = [
-        (old, new)
-        for _s, old, new in changes
-        if ((old or "").startswith("tests/") and (old or "").endswith(".py"))
-        or ((new or "").startswith("tests/") and (new or "").endswith(".py"))
+        (old, new) for _s, old, new in changes if py.in_tests(old) or py.in_tests(new)
     ]
-    # The shape resolver already batch-read every collectable test blob.
-    # Reuse that text instead of spawning two more git processes per file.
-    def test_text(revision, path, blobs):
-        return blobs.get(path) if collectable(path) else _show(revision, path, root)
-
-    befores = {
-        old: model(test_text(base, old, old_shape_files), old)
-        for old, _ in test_changes if old
-    }
-    afters = {
-        new: model(test_text(head, new, shape_files), new)
-        for _, new in test_changes if new
-    }
+    old_texts = _texts(base, [old for old, _ in test_changes if old], root)
+    new_texts = _texts(head, [new for _, new in test_changes if new], root)
+    befores = {old: model(text, old) for old, text in old_texts.items()}
+    afters = {new: model(text, new) for new, text in new_texts.items()}
     # A test counts as MOVED only if an identical body was ADDED to a file
     # pytest still collects; matched one-to-one, so a surviving copy can never
     # vouch for a deleted one.
     added_bodies: Counter = Counter()
     for old, new in test_changes:
-        if not collectable(new):
+        if not py.is_test_file(new):
             continue
         b = befores.get(old) if old else model(None, "")
         a = afters[new]
@@ -515,7 +507,7 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
         b = befores.get(old) if old else model(None, "")
         a = afters.get(new) if new else model(None, "")
         rel = new or old or ""
-        lost_collection = old is not None and collectable(old) and not collectable(new)
+        lost_collection = old is not None and py.is_test_file(old) and not py.is_test_file(new)
         for name, body in b.bodies.items():
             if name not in a.tests or lost_collection:
                 if moved_bodies[body] and body:
@@ -539,7 +531,7 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
                 for line, why in report:
                     delta.notes.append(Finding(f"{rel}:{line} ({name})", why))
 
-        def key(m: inv.Marker, fm: FileModel) -> tuple:
+        def key(m: py.Marker, fm: FileModel) -> tuple:
             return (m.kind, " ".join(m.reason.split()), _enclosing(m, fm), m.scope)
 
         had = Counter(key(m, b) for m in b.markers)
@@ -606,7 +598,7 @@ def compute_delta(base: str, head: str, root: Path, today: dt.date) -> Delta:
 
 
 def evaluate(delta: Delta, body: str) -> list[str]:
-    failures = [f"{f.where} {f.what}" for f in delta.shape]
+    failures = []
     tampered = delta.tampering + delta.platform_tampering
     if tampered and not REMOVAL_RE.search(body or ""):
         listed = "; ".join(f"{f.where} ({f.what})" for f in tampered[:20])

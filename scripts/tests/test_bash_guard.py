@@ -5,9 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
-# The checkout's root, wherever the file sits (the cutover carries it to scripts/tests/).
+# The checkout's root, wherever the file sits.
 _ROOT = next(at for at in Path(__file__).resolve().parents if (at / "AGENTS.md").is_file())
 _ENV = {
     **os.environ,
@@ -27,9 +25,6 @@ def _guard():
     return module
 
 
-@pytest.mark.verifies(
-    "development-coordination-runtime:Agent shell commands that lost time are refused"
-)
 def test_heredoc_and_pkill_hazards_are_refused():
     guard = _guard()
     assert guard.heredoc_backslash("cat > f <<'EOF'\na\\nb\nEOF\n")
@@ -39,9 +34,6 @@ def test_heredoc_and_pkill_hazards_are_refused():
     assert guard.self_matching_pkill("pkill -9 node") is None
 
 
-@pytest.mark.verifies(
-    "development-coordination-runtime:Agent shell commands that lost time are refused"
-)
 def test_a_push_that_did_not_land_is_reported(tmp_path):
     def git(cwd, *args):
         subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
