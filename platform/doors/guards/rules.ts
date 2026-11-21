@@ -47,6 +47,8 @@
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - `triggers`: the canary's clock (`src/canary-clock.ts`), whose schedule is the config's.
+ * - `version_metadata` (`CF_VERSION_METADATA`): the serving version, which every answer names
+ *   (`src/index.ts`).
  * - Flags carrying `disable_ctx_exports` (no way to the Worker's own namespaces) and
  *   `global_fetch_strictly_public`, which Client ID Metadata Documents require: the provider
  *   fetches each client's metadata URL, the flag keeps that fetch off same-zone routing (its
@@ -98,7 +100,7 @@ export const CONFIG: ConfigRules = Object.freeze({
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "vars", "durable_objects", "services",
                        "kv_namespaces", "secrets", "queues", "assets", "r2_buckets",
-                       "triggers"]),
+                       "triggers", "version_metadata"]),
   flags: Object.freeze({ carries: Object.freeze(["disable_ctx_exports",
                                                  "global_fetch_strictly_public"]) }),
   secrets: Object.freeze([...SHARED_SECRETS["owner"]!, "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
@@ -113,6 +115,7 @@ export const CONFIG: ConfigRules = Object.freeze({
   exact: Object.freeze({
     assets: { directory: "./app", binding: "ASSETS", run_worker_first: true,
               html_handling: "none", not_found_handling: "none" },
+    version_metadata: { binding: "CF_VERSION_METADATA" },
   }),
 });
 

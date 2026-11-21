@@ -17,6 +17,7 @@ export interface DoorsEnv {
   readonly OPERATOR_LOG: R2Bucket;
   readonly IMPORTS: Queue<ImportMessage>;
   readonly OPERATOR: Queue<OperatorMessage>;
+  readonly CF_VERSION_METADATA: WorkerVersionMetadata;
   readonly ASSETS: Fetcher;
   readonly DCR_ENABLED: string;
   readonly OWNER_ISSUER: string;

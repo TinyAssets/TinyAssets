@@ -80,7 +80,8 @@
  *   a locked bucket's one lock rule (`platform.json` `bucket_locks`) set only when its rules
  *   answered and are not that rule alone;
  * - a secret is set only on a Worker whose secret listing answered and lacks it, or that the
- *   account's Workers listing lacks (whether a Worker exists is that listing's word alone);
+ *   account's Workers listing lacks (whether a Worker exists is that listing's word alone),
+ *   and only with the version the run deploys there;
  *   the kit never makes a secret's value (`keyring-new` makes a first keyring,
  *   `scripts/platform_setup.py` stores one). A held one is never replaced unless `--rotate`
  *   names it, a keyring only by adding a key (mode `retire` alone takes its old kids out);
@@ -99,10 +100,10 @@
  *   (`PLACEHOLDER`) stops `routes` before any change;
  * - nothing is deployed unless every migration lock (`owner/migrations.json`, and the sandbox
  *   Worker's `sandbox/migrations/<class>.json`) marks the first deploy and pins every
- *   migration the code ships, in order (`lockRefusal`, by `ci/kit/locks.ts`);
+ *   migration the code ships, in order (`lockCounts`, by `ci/kit/locks.ts`);
  * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it,
  *   which never touches a route; `--migrate` names a Worker with a pending Durable Object
- *   migration to deploy whole;
+ *   migration to deploy whole; each version is tagged with the commit and its locks' counts;
  * - a retired Worker (`platform.json`) is deleted, with its Durable Objects, only after every
  *   Worker is deployed and only when the account's Workers listing holds it, never forced:
  *   Cloudflare refuses while another Worker still references it. It is the one way the kit
@@ -209,6 +210,8 @@ export interface Io {
   /** The runner and the probes this tree builds, and its image (`sandbox/template/pair.ts`). */
   readonly bundles: () => Bundles;
   readonly treeImage: () => string;
+  /** The commit the checkout is at, which each Worker's version is tagged with. */
+  readonly commit: () => string;
   readonly log: (line: string) => void;
   /** The clock: a route record's time, and how long the operator's answer is waited for. */
   readonly now: () => Date;
@@ -222,6 +225,8 @@ export const IO: Io = Object.freeze({
     typeof execFileSync,
   bundles,
   treeImage,
+  commit: () => execFileSync("git", ["rev-parse", "HEAD"], { cwd: PLATFORM, encoding: "utf8" })
+    .trim(),
   log: (line: string) => console.log(line),
   now: () => new Date(),
   sleep: (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }),
@@ -307,8 +312,10 @@ export interface Values {
   readonly stage: Stage;
   /** The account's Workers, by name, as its listing answered before any deploy. */
   readonly deployed: readonly string[];
-  /** The secrets the run sets, each on its Worker. */
+  /** The secrets the run sets, each on its Worker, with the version the run deploys. */
   readonly setting: readonly { worker: string; name: string }[];
+  /** Each migrated Worker's locks' counts, by lock path (`lockCounts`). */
+  readonly migrations: Readonly<Record<string, Readonly<Record<string, number>>>>;
   /** The route record `handback` reads, and its handback on the zone as it stands. */
   readonly record: RouteRecord;
   readonly back: readonly RouteChange[];
@@ -406,16 +413,38 @@ function report({ summarize: add }: Reporter, plan: readonly string[], run: Run)
 // --- The migration locks ----------------------------------------------------------------
 
 /**
- * Why `worker` may not deploy under its migration locks, or null: the locks' command line
- * (`ci/kit/locks.ts digests`) refuses unless each lock marks the first deploy and pins
- * exactly the migrations the code ships, in order, and unless the Worker states a lock.
+ * How many migrations each of `worker`'s locks pins, by its path, or a throw naming why it
+ * may not deploy: the locks' command line (`ci/kit/locks.ts digests`) refuses unless each
+ * lock marks the first deploy and pins exactly the migrations the code ships, in order, and
+ * unless the Worker states a lock.
  */
-export function lockRefusal(worker: string, run: Run): string | null {
+export function lockCounts(worker: string, run: Run): Record<string, number> {
   const result = run.io.spawn(process.execPath,
                               [join(PLATFORM, "ci", "kit", "locks.ts"), "digests", worker],
                               { cwd: PLATFORM, encoding: "utf8", env: {} });
-  return result.status === 0 ? null : `${worker}'s migration locks refuse the deploy ` +
-    `(exit ${result.status}): ${String(result.stderr).trim()}`;
+  if (result.status !== 0) {
+    throw new Error(`${worker}'s migration locks refuse the deploy (exit ${result.status}): ` +
+                    String(result.stderr).trim());
+  }
+  const digests = JSON.parse(String(result.stdout)) as Record<string, unknown>;
+  return Object.fromEntries(Object.entries(digests).map(([path, pinned]) => {
+    if (!Array.isArray(pinned)) {
+      throw new Error(`the migration locks' digests of ${worker} name ${path} with no list`);
+    }
+    return [path, pinned.length];
+  }));
+}
+
+/**
+ * A version's tag and message (`wrangler versions upload`, `wrangler deploy`): the tag, the
+ * commit's first 12 digits and, for a Worker with migration locks, `-m` and each lock's
+ * count in its path's order (`-m3`, `-m2.1`), which a rollback below it would strand; the
+ * message, the whole commit.
+ */
+function versionFlags(commit: string, counts: Readonly<Record<string, number>>): string[] {
+  const pinned = Object.keys(counts).sort().map((path) => counts[path]);
+  return ["--tag", `${commit.slice(0, 12)}${pinned.length === 0 ? "" : `-m${pinned.join(".")}`}`,
+          "--message", commit];
 }
 
 // --- WorkOS and the owner issuer --------------------------------------------------------
@@ -1022,15 +1051,12 @@ async function placedBefore({ cloudflare, zone: id }: Pick<Values, "cloudflare" 
 // --- The steps --------------------------------------------------------------------------
 
 /** No Worker deploys a migration its lock does not pin, checked before anything is changed. */
-const locks = step(({ run, say }) => {
+const locks = step<never, "migrations">(({ run, say }) => {
   const workers = migrated();
-  for (const worker of workers) {
-    const refused = lockRefusal(worker, run);
-    if (refused !== null) {
-      throw new Error(refused);
-    }
-  }
+  const migrations = Object.fromEntries(workers.map((worker) =>
+    [worker, lockCounts(worker, run)]));
   say(`the migration locks pin every migration the ${workers.join(" and ")} Workers ship`);
+  return { migrations };
 });
 
 /** The zone and its account, which Cloudflare's client and wrangler are given. */
@@ -1345,15 +1371,16 @@ const queues = storage("queue", QUEUES,
 const staged = step<"ids" | "upstream", "stage">((ctx, got) => ({
   stage: stageOf(ctx.scratch, got.ids, got.upstream) }));
 
-type Secrets = "cloudflare" | "account" | "wrangler" | "stage";
+type Secrets = "cloudflare" | "account";
 
 /**
- * Each Worker's missing secrets (and the rotated), set first: `secrets.required` refuses a
- * deploy. Whether a Worker exists is the account's Workers listing's word: a missing one holds
- * none. `values` is the run's secrets, or null in the plan job, which holds none: an optional
- * secret (a shared app's, the canary clock's) the run is not given is left unset.
+ * Each Worker's missing secrets (and the rotated), which ride the version the run deploys
+ * (`workers`): `secrets.required` refuses a deploy without them. Whether a Worker exists is
+ * the account's Workers listing's word: a missing one holds none. `values` is the run's
+ * secrets, or null in the plan job, which holds none: an optional secret (a shared app's, the
+ * canary clock's) the run is not given is left unset.
  */
-async function setSecrets({ run, say }: Context, got: Pick<Values, Secrets>,
+async function setSecrets({ say }: Context, got: Pick<Values, Secrets>,
                           values: ((name: string) => string | undefined) | null,
                           rotate: ReadonlySet<string>):
     Promise<Pick<Values, "deployed" | "setting">> {
@@ -1363,17 +1390,11 @@ async function setSecrets({ run, say }: Context, got: Pick<Values, Secrets>,
     held[worker] = deployed.includes(NAMES[worker]!)
       ? await got.cloudflare.secrets(got.account, NAMES[worker]!) : [];
   }
-  const setting = secretPlan(held, rotate, values);
+  const setting = secretPlan(held, rotate, values)
+    .filter(({ name }) => values === null || values(name) !== undefined);
   for (const { worker, name } of setting) {
-    const value = values?.(name);
-    if (values !== null && value === undefined) {
-      continue;
-    }
-    say(`set the secret ${name} on ${NAMES[worker]}${values !== null ? ""
+    say(`set the secret ${name} on ${NAMES[worker]} with its version${values !== null ? ""
       : ` (its value, or its absence if optional: ${LATER})`}`);
-    if (run.apply) {
-      got.wrangler(["secret", "put", name, "--config", got.stage.config(worker)], value);
-    }
   }
   return { deployed, setting };
 }
@@ -1390,24 +1411,54 @@ const secretsLater = step<Secrets, "deployed" | "setting">((ctx, got) =>
  * listing lacks it) is `wrangler deploy`; later ones are Cloudflare's staged path,
  * `versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
  * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration:
- * `--migrate <worker>` deploys it whole.
+ * `--migrate <worker>` deploys it whole. The secrets the run sets on a Worker go up with its
+ * version (`--secrets-file`; one the file omits is kept from the version before), never by
+ * `wrangler secret put`, which deploys the code already there at once; each version is tagged
+ * (`versionFlags`).
  */
-const workers = step<"wrangler" | "deployed" | "stage">(({ run, say }, got) => {
+const workers = step<"wrangler" | "deployed" | "stage" | "setting" | "migrations">((
+    { run, say, scratch }, got) => {
+  const commit = run.io.commit();
   for (const worker of WORKERS) {
     const whole = !got.deployed.includes(NAMES[worker]!) || run.migrate.has(worker);
     say(`${whole ? "deploy" : "upload and deploy a version of"} ${NAMES[worker]}, touching no ` +
         "route");
     if (run.apply) {
       const config = got.stage.config(worker);
+      const flags = ["--config", config, ...versionFlags(commit, got.migrations[worker] ?? {}),
+                     ...secretsFile(run, scratch, worker, got.setting)];
       if (whole) {
-        got.wrangler(["deploy", "--config", config]);
+        got.wrangler(["deploy", ...flags]);
       } else {
-        const id = versionOf(got.wrangler(["versions", "upload", "--config", config]));
+        const id = versionOf(got.wrangler(["versions", "upload", ...flags]));
         got.wrangler(["versions", "deploy", `${id}@100`, "--yes", "--config", config]);
       }
     }
   }
 });
+
+/**
+ * The `--secrets-file` of the secrets `setting` names on `worker`, their values the run's, or
+ * no flag when it names none. The file holds those names alone, as JSON (wrangler expands `$`
+ * in a dotenv file), mode 0600, in the run's scratch, which the run removes at its end, a
+ * throw's included (`perform`).
+ */
+function secretsFile(run: Run, scratch: () => string, worker: string,
+                     setting: Values["setting"]): string[] {
+  const names = setting.filter((each) => each.worker === worker).map((each) => each.name);
+  if (names.length === 0) {
+    return [];
+  }
+  const file = join(scratch(), `${worker}.secrets.json`);
+  writeFileSync(file, JSON.stringify(Object.fromEntries(names.map((name) => {
+    const value = input(run, name);
+    if (value === undefined) {
+      throw new Error(`${name} is not set, and the plan sets it on ${NAMES[worker]}`);
+    }
+    return [name, value];
+  }))), { mode: 0o600 });
+  return ["--secrets-file", file];
+}
 
 /**
  * Each retired Worker the account holds (its Workers listing), deleted with its Durable
