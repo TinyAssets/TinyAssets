@@ -65,22 +65,21 @@ jobs:
           # we only lint workflow files this change touched.
           # Manual dispatch remains an explicit all-workflows audit.
           set -euo pipefail
+          range=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            head="${{ github.event.pull_request.head.sha }}"
-            changed=$(git diff --name-only --diff-filter=ACMR \
-                "${base}" "${head}" \
-                | grep -E '^\.github/workflows/.+\.ya?ml$' || true)
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            base="${{ github.event.before }}"
-            head="${{ github.sha }}"
-            if [ "${base}" = "0000000000000000000000000000000000000000" ]; then
-              changed=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null || true)
-            else
-              changed=$(git diff --name-only --diff-filter=ACMR \
-                  "${base}" "${head}" \
-                  | grep -E '^\.github/workflows/.+\.ya?ml$' || true)
-            fi
+            # From the merge base (three dots): what the PR itself changed. A
+            # two-dot diff from main's tip names a file main deleted after the
+            # branch began as "added", and the checkout (the merge) lacks it.
+            range="${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ] \
+              && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            range="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          if [ -n "${range}" ]; then
+            # A range git cannot read fails the job; only grep finding no
+            # workflow file is not an error.
+            files=$(git diff --name-only --diff-filter=ACMR "${range}")
+            changed=$(grep -E '^\.github/workflows/.+\.ya?ml$' <<< "${files}" || true)
           else
             changed=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null || true)
           fi

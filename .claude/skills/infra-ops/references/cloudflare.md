@@ -86,7 +86,7 @@ Minimum scopes for the workflow uptime stack:
 - **Account:Workers Scripts:Edit** — deploy or rollback the Worker code itself.
 
 The platform's deploy kit (`platform/deploy/deploy.ts`, `platform-deploy.yml`) uses the
-`CLOUDFLARE_API_TOKEN` repository secret. It needs Account R2, Workers KV Storage, Queues and
+`CLOUDFLARE_API_TOKEN` secret of the `production` environment. It needs Account R2, Workers KV Storage, Queues and
 Workers Scripts edit, Zone Workers Routes edit, and Zone DNS Edit:
 - mode `routes` lists the egress host's DNS records (the API reference accepts DNS Read or
   DNS Write);

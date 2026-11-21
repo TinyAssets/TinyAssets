@@ -80,7 +80,6 @@ async function refusedOf(answer: Response): Promise<GatewayCode> {
   return error === "invalid_grant" ? "oauth_invalid_grant" : "oauth_rejected";
 }
 
-/** One POST to an OAuth endpoint, authenticated as the client. */
 async function post(client: OAuthClient, url: string, params: Record<string, string>):
     Promise<Response> {
   const body = new URLSearchParams(params);
@@ -138,7 +137,6 @@ function oauthCredential(base: Source, grant: OAuthGrant): Credential {
            sealed_at: Date.now() };
 }
 
-/** The callback's code, the flow's verifier and its https redirect URI, checked. */
 function authorizationGrant(grant: unknown): { code: string; verifier: string; redirect: URL } {
   if (!keyed(grant, ["code", "redirect_uri", "verifier"])
       || typeof grant["code"] !== "string" || !CODE.test(grant["code"])
@@ -183,10 +181,10 @@ export async function exchange(env: KeyringEnv, bound: Binding, grant: unknown,
 }
 
 /**
- * The Python's `pkce_user_key_v1` (`broker/acquisition.py` `exchange_key`, OpenRouter's
- * PKCE flow): the code and verifier posted once as JSON to the sealed exchange endpoint,
- * whose `{key}` is sealed as an API key, with no expiry. Never retried: the provider may
- * already have used the code. The redirect URI is the flow's own and is not sent.
+ * A `pkce_user_key_v1` source's exchange (OpenRouter's PKCE flow): the code and verifier
+ * posted once as JSON to the sealed exchange endpoint, whose `{key}` is sealed as an API
+ * key, with no expiry. Never retried: the provider may already have used the code. The
+ * redirect URI is the flow's own and is not sent.
  */
 async function keyExchange(env: KeyringEnv, bound: Binding, grant: unknown,
                            record: unknown): Promise<Exchanged> {
