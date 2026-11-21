@@ -28,7 +28,7 @@
         ]
       },
       "connect": {
-        "link": "https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=TinyAssets&connectorUrl=https%3A%2F%2Ftinyassets.io%2Fmcp",
+        "link": "https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=TinyAssets&connectorUrl={mcp}",
         "steps": [
           "Open the link while signed in to Claude: it opens the custom connector dialog with TinyAssets filled in.",
           "Select Add, then Connect, and sign in to TinyAssets.",
@@ -66,12 +66,12 @@
         "link": "https://chatgpt.com/plugins",
         "steps": [
           "On chatgpt.com in a browser, open Plugins and select the plus button, then Add custom MCP server.",
-          "Name it TinyAssets and enter the server address https://tinyassets.io/mcp, with OAuth.",
+          "Name it TinyAssets and enter the server address {mcp}, with OAuth.",
           "Review the warning, select I understand and want to continue, then Create as a plugin.",
           "Install the plugin and sign in to TinyAssets. Dots use the plugins installed for your account.",
           "For Codex in a terminal, run the two commands below instead."
         ],
-        "code": "codex mcp add TinyAssets --url https://tinyassets.io/mcp\ncodex mcp login TinyAssets"
+        "code": "codex mcp add TinyAssets --url {mcp}\ncodex mcp login TinyAssets"
       },
       "source": "https://developers.openai.com/api/docs/guides/custom-mcp-server.md; https://developers.openai.com/apps-sdk/build/auth.md",
       "checked": "2026-11-04"
@@ -91,7 +91,7 @@
         "redirects": []
       },
       "connect": {
-        "say": "Add the MCP server https://tinyassets.io/mcp as TinyAssets, and save the TinyAssets skill: it's my shared memory with my other assistants, so check it before asking me and save what I tell you there.",
+        "say": "Add the MCP server {mcp} as TinyAssets, and save the TinyAssets skill: it's my shared memory with my other assistants, so check it before asking me and save what I tell you there.",
         "steps": [
           "In a chat with your Bot, send the sentence below.",
           "Sign in to TinyAssets on the Connect card it shows. A connected app is available to every Bot you run."
@@ -116,7 +116,7 @@
         "redirects": []
       },
       "connect": {
-        "say": "Connect to the MCP server at https://tinyassets.io/mcp as a custom integration named TinyAssets, and save the TinyAssets skill: it's my shared memory with my other assistants, so check it before asking me and save what I tell you there.",
+        "say": "Connect to the MCP server at {mcp} as a custom integration named TinyAssets, and save the TinyAssets skill: it's my shared memory with my other assistants, so check it before asking me and save what I tell you there.",
         "steps": [
           "In the TinyAssets app, open API keys and make a key for Muse. Copy it: it is shown once.",
           "In a chat with Muse, send the sentence below. When Muse asks whether the server needs an API key or a header, give it the key as an Authorization: Bearer header in its secure credential prompt, never in the chat.",
@@ -144,7 +144,7 @@
         "link": "https://gemini.google.com",
         "steps": [
           "On gemini.google.com in a browser, open Settings, then Connected Apps, then Add a custom app.",
-          "Enter the server address https://tinyassets.io/mcp and sign in to TinyAssets.",
+          "Enter the server address {mcp} and sign in to TinyAssets.",
           "Gemini offers custom apps on a personal Google account, to people 18 or older in the US, with History on.",
           "To make sure Gemini uses it in a chat, type @ and pick TinyAssets."
         ]
@@ -168,10 +168,10 @@
       },
       "connect": {
         "steps": [
-          "In Cursor, add a remote MCP server with the address https://tinyassets.io/mcp, or put the text below in .cursor/mcp.json.",
+          "In Cursor, add a remote MCP server with the address {mcp}, or put the text below in .cursor/mcp.json.",
           "Sign in to TinyAssets when Cursor asks."
         ],
-        "code": "{\n  \"mcpServers\": {\n    \"TinyAssets\": { \"url\": \"https://tinyassets.io/mcp\" }\n  }\n}"
+        "code": "{\n  \"mcpServers\": {\n    \"TinyAssets\": { \"url\": \"{mcp}\" }\n  }\n}"
       },
       "source": "https://cursor.com/docs/mcp.md",
       "checked": "2026-11-03"

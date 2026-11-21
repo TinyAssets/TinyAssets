@@ -30,7 +30,7 @@ import { OWNER } from "./authority";
 import type { Notices } from "./notices";
 import {
   type Content as Stored, lineAt, makeChunk, streamChunks, MOVE_BYTES, MOVE_RECORDS,
-  MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
+  MoveTable, pack, parseTrailer, planSegment, SEGMENT_LEAST_BYTES,
   type Source as Run,
 } from "./segments";
 
@@ -451,9 +451,8 @@ export class Archive {
         return null;
       }
       const mail = found.mail;
-      const purged = await this.#door(() => this.#ledger.purgedAgents());
-      return mail.message.message_id === messageId
-        && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
+      const purged = await this.#door(() => this.#ledger.purgedRooms());
+      return mail.message.message_id === messageId && !purged.includes(mail.message.room_id)
         ? mail : null;
     }
     throw archiveMoving();
@@ -482,7 +481,7 @@ export class Archive {
    * or none: never a poll.
    */
   next(now: number): number | null {
-    return this.#ledger.archiveDue() || this.#ledger.purgedAgents().length > 0
+    return this.#ledger.archiveDue() || this.#ledger.purgedRooms().length > 0
       || this.#ledger.archiveCompactPending() ? now : null;
   }
 
@@ -654,8 +653,8 @@ export class Archive {
     if (target === null) {
       return false;
     }
-    const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
-    const keep = (room: string) => !roomMembers(room).some((member) => purged.has(member));
+    const purged = new Set(await this.#door(() => this.#ledger.purgedRooms()));
+    const keep = (room: string) => !purged.has(room);
     // Its table's units before its records arrive, grown as it takes in each neighbour.
     const hold = await MoveHold.take(ownerSlots(), target.fence.records);
     try {
@@ -783,13 +782,11 @@ export class Archive {
     }, () => reader.letGo());
     reader.bodiesChecked();
     const pieces = plans.map(({ plan, indices: at }) => {
-      const members = new Set<string>();
+      const rooms = new Set<string>();
       let firstAt = Number.MAX_SAFE_INTEGER;
       let lastAt = 0;
       for (const n of at) {
-        for (const member of roomMembers(table.room(n))) {
-          members.add(member);
-        }
+        rooms.add(table.room(n));
         firstAt = Math.min(firstAt, table.at(n));
         lastAt = Math.max(lastAt, table.at(n));
       }
@@ -797,7 +794,7 @@ export class Archive {
         first_key: plan.first, last_key: plan.last, first_at: firstAt, last_at: lastAt,
         records: plan.records.count, bytes: plan.size,
         trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
-        members: Ledger.members(members) } };
+        rooms: Ledger.rooms(rooms) } };
     });
     const begun = await this.#door(() => {
       const before = this.#files.storedNow().stored;

@@ -38,7 +38,7 @@
  * wake, and a subscription's id, is `wake-kinds.ts`.
  */
 import { keyed, whole } from "./checks.ts";
-import { ZONE } from "./egress.ts";
+import { ZONE } from "./identity.ts";
 import { Refusal } from "./refusal.ts";
 import raw from "../wake-kinds.json" with { type: "json" };
 

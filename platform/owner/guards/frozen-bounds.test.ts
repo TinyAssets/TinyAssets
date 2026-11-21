@@ -94,8 +94,8 @@ const ID = (column: string) => (n: number) => `length(${column}) = ${n}`;
 const CAPTURE = /^CREATE TRIGGER \w+_logged_(?:insert|update|delete) /;
 const CAPTURE_UPDATE = /^CREATE TRIGGER \w+_logged_update /;
 /** The capture triggers the migrations make, and the updates among them. */
-const CAPTURES = 135;
-const UPDATES = 46;
+const CAPTURES = 147;
+const UPDATES = 50;
 /** The triggers that count a content's chunk list's rows from its size. */
 const CHUNK_LIST = new RegExp("^CREATE TRIGGER (?:file_contents_(?:added|removed)|" +
   "file_scope_contents_(?:added|removed)|file_content_chunks_planned) ");
@@ -441,7 +441,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(594);
+    expect(places).toBe(638);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

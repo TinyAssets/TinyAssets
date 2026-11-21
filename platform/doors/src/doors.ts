@@ -1,6 +1,6 @@
 /**
- * The doors' router: every path the doors Worker serves on `tinyassets.io`, and the egress
- * door on `egress.tinyassets.io` (`egress.ts`), whose host the deploy kit's mode `routes`
+ * The doors' router: every path the doors Worker serves on its public host (`HOST`), and the
+ * egress door on the egress host (`egress.ts`), which the deploy kit's mode `routes`
  * attaches. Nothing else is served on that origin, and the egress door is served on no other,
  * so a sandbox token reaches no other door. Any other origin or path is `404`.
  *
