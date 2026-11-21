@@ -304,10 +304,11 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   Each venue is packed on its own by a table refreshed from whole-surface runs only, so the
   slowest shard's tests take 569 to 621 s, about 15 minutes of job (`untangle/shard-2-time`;
   found by `untangle/required-checks`; `untangle-2026-11/shard-2-time.md`).
-- [ ] Whether the Python legs need cover for a runner five times slower before the cutover
+- [x] Whether the Python legs need cover for a runner five times slower before the cutover
   deletes them: no packing fits one (a 477 s case and the image build, 62 minutes at five
-  times), and #5646's calibration is Vitest's only; research first
-  (`untangle/python-slow-runner`; found by `untangle/shard-2-time`).
+  times), and #5646's calibration is Vitest's only. Decided: no cover and no research, since
+  nothing is built for the old suite that the cutover deletes (the founder, 2026-11-21;
+  `untangle-2026-11/passes-after-cutover.md`).
 - [ ] `main_red.py` `REQUIRED_JOB` and `queue_attempts.py` `AGGREGATE_JOB` name the Tests
   aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
@@ -643,7 +644,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
   owner area's pass also takes its two spies that watch a class's prototype, though neither
   makes a call refuse (`owner/test/bodies.test.ts` `Files.prototype.begin`,
-  `owner/test/proofs.test.ts` `Sessions.prototype.extend`).
+  `owner/test/proofs.test.ts` `Sessions.prototype.extend`). Only the parts already built
+  before 2026-11-21 land before the dark redeploy; every area or part not yet started runs
+  after the cutover ("After the cutover" below; `untangle-2026-11/passes-after-cutover.md`).
   - [x] The two owner regressions in list 6 item 9 now use the FILES service gate: a
     chunked agent definition changes during a run's admission, and the erasure's namespace
     delete fails before the wipe (`codex/owner-front-door-tests`;
@@ -684,8 +687,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `pass-doors.md` §3).
 - [ ] The re-check loop (d2 §E step 6): each item below and each one
   `python scripts/review_checks.py --owed` lists done (a PR's new owed items go in its decision
-  file, none here; `owed-in-decisions.md`), every `owed` list empty, the layer guard with no
-  exceptions, nothing worth fixing left, behaviour unchanged.
+  file, none here; `owed-in-decisions.md`), every `owed` list empty but the passes' items
+  "After the cutover" holds, the layer guard with no exceptions, nothing worth fixing left,
+  behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
   - [x] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
@@ -891,6 +895,11 @@ Measured on the stage as it runs:
 The fixes the untangle skill's cutover rule holds until after the cutover (founder,
 2026-11-15), each named with its branch.
 
+- [ ] The comments and tests passes' areas and parts not started by 2026-11-21 (Step 4's
+  pass item; the founder, 2026-11-21): today `untangle/pass-contract-2` and
+  `untangle/pass-owner-3`, and any part a pass in flight owes. They change no behaviour the
+  live stage tests, and after the cutover their CI skips the old suite
+  (`untangle-2026-11/passes-after-cutover.md`).
 - [ ] An owner a blob that no longer opens keeps owing (a refused data key, root,
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
   exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
