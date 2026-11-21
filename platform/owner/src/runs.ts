@@ -22,9 +22,10 @@
  * 7. the source is chosen (`choose`): `agent.json`'s engine, or `auto`'s strongest connected
  *    source that has an engine (Direction 4): the owner's connections and its signed-in
  *    engines (`engine_signins`, each as the runner reports its record's `status_argv`,
- *    each by its record's plan model, `cli.login.model`) ranked together, a subscription
- *    preferred to a key of the provider it covers and run on its plan's model, and a lapsed
- *    sign-in refused (`SIGNIN_LAPSED`), never a silent fall back to another source;
+ *    each by its record's plan model, `cli.login.model`) ranked together (`auto.ts`, by the
+ *    owner's ranking file, else the platform's), a subscription preferred to a key of the
+ *    provider it covers and run on its plan's model, and a lapsed sign-in refused
+ *    (`SIGNIN_LAPSED`), never a silent fall back to another source;
  *    for an unattended run (a schedule's, a mail's) only a credential its record allows
  *    unattended (ADR-033 decision 3, `UNATTENDED_REFUSED`);
  * 8. the owner's own limits hold (`OWNER_LIMIT`): an API-key run's source and the owner's
@@ -74,13 +75,16 @@ import {
 } from "../../contract/src/run-events";
 
 import { AGENT_DISABLED, type AgentFile, AUTO } from "./agent-file";
+import { RANKING } from "../../contract/src/paths";
 import type { RunCapability } from "../../contract/src/capabilities";
 import { AUTHORITY_CHANGED, may, OWNER, type StandingGrant, type Stamped } from "./authority";
 import {
   CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, LEASE_TTL_S, MAX_LIST, PLACE_BYTES, QUEUE_BYTES,
   QUEUE_ROWS, RESULT_BYTES,
 } from "../../contract/src/limits";
-import { type Candidate, ranked } from "./auto";
+import { type Candidate, type Plan, ranked } from "./auto";
+import type { Usable } from "./connections";
+import type { Ranking } from "../../sources/src/ranking";
 import { nextOccurrence, parseCron } from "./cron";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
@@ -123,6 +127,10 @@ export const SIGNIN_LAPSED = "signin_lapsed: sign in to this engine again";
 export const UNATTENDED_REFUSED = "unattended_refused: no source of this agent may run " +
   "unattended on its record";
 export const NO_SOURCE = "no_source: no connected source can run this agent's engine";
+/** The notice of an `auto` run on a model no entry of the ranking ranks. */
+export const MODEL_UNRANKED = "model_unranked";
+const UNRANKED_DETAIL = "no entry of the model ranking ranks it, so auto ranked it below " +
+  `every ranked model; rank it in ${RANKING}`;
 const OWNER_LIMIT = "owner_limit";
 export const NO_RUN = "no_run: no such run of the caller's";
 export const RUN_ENDED = "run_ended: the run is no longer live";
@@ -132,16 +140,6 @@ export const NO_REPLY = "NO_REPLY";
 
 export type RunState = "waiting" | "queued" | "running" | "succeeded" | "failed" | "unknown";
 type Initiator = "owner" | "client" | "schedule" | "mail";
-
-/** A connected source as the choice reads it: `Connections.usable`'s shape. */
-export interface UsableSource {
-  readonly connection: string;
-  readonly source: string;
-  readonly provider: string;
-  readonly display_name: string;
-  readonly created_at: number;
-  readonly models: readonly Candidate["model"][];
-}
 
 /** The owner's own spending caps, in µ$, as the model policy leaves them. */
 export interface SpendCaps {
@@ -184,7 +182,7 @@ export interface RunHost {
   /** The tier numbers last kept (`admission.ts`), or null when none were. */
   tiers(): Tiers | null;
   /** The owner's active connections the sandbox may reach (a stored egress scope), with their models. */
-  reachable(): readonly UsableSource[];
+  reachable(): readonly Usable[];
   /** A client's grant, standing at its stamp's generation; refused otherwise. */
   standing(stamp: Stamped): StandingGrant;
   /** The owner's own spending caps, as the model policy leaves them. */
@@ -222,6 +220,8 @@ export interface RunHost {
    * `vendor_limit`), as the owner's notice.
    */
   notice(type: string, detail: string): void;
+  /** In the unit: the owner's notice of a state that holds, kept once while it is kept. */
+  noticeOnce(type: string, detail: string): void;
   /** In the unit: a run settled lost or revoked, whose CLI the sandbox stops, once over. */
   stop(runs: readonly string[]): void;
 }
@@ -242,6 +242,8 @@ export interface Ask {
   readonly origin: { readonly client: string; readonly family: string } | null;
   readonly agent: string;
   readonly file: AgentFile;
+  /** What `auto` ranks the sources by: the owner's ranking file, else the platform's. */
+  readonly ranking: Ranking;
   /** The conversation continued, or null for a new one. */
   readonly conversation: string | null;
   /** The retry key (a hash of the client and its send id), or null. */
@@ -406,15 +408,6 @@ const GRANTS = "SELECT g.*, r.agent, r.conversation, r.lease_id, r.epoch FROM ru
   "JOIN runs r ON r.id = g.run";
 /** A run not settled: live, or waiting for its conversation. */
 const UNSETTLED = "settled_at IS NULL";
-/** The id a subscription takes among the connections it is ranked with. */
-const PLAN = "plan:";
-
-/** A plan's model (`cli.login.model`), as the ranking reads it: its id; no catalog price. */
-function planModel(model: string): Candidate["model"] {
-  return { id: model, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as
-    Candidate["model"];
-}
-
 function id(prefix: string): string {
   return `${prefix}${randomHex(16)}`;
 }
@@ -692,13 +685,13 @@ export class Runs {
         // Mail never refuses for the tier: its run waits its turn, in its thread's
         // conversation (made now when the thread has none), as a busy conversation's input.
         const chosen = conversation === null
-          ? this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now) : null;
+          ? this.choose(ask, now) : null;
         return this.#wait(ask, conversation?.id
           ?? this.#newConversation(ask, chosen!.engine, now), now);
       }
       throw new Refusal("tier_runs", `${TIER_RUNS} (${tier}: ${ask.tiers[tier].runs})`);
     }
-    const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
+    const chosen = this.choose(ask, now);
     if (chosen.credential === "api_key") {
       this.#limits(chosen.source!, now);
     }
@@ -770,7 +763,7 @@ export class Runs {
    * once, and chosen again when its turn comes.
    */
   #wait(ask: Ask, conversation: string, now: number): Retried {
-    const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
+    const chosen = this.choose(ask, now);
     // A mail's run keeps only its mail's reference (its `mail`): its input is read again
     // from the mail, held until the run settles, as it starts (ADR-035).
     const runId = this.#waiting({
@@ -902,7 +895,7 @@ export class Runs {
    * A waiting run's admission as it was asked, its input kept: the lane admits it again
    * whole (`admit` with its id) when its turn comes. Null when it no longer waits. A read.
    */
-  waitingAsk(runId: string): Omit<Ask, "file" | "tiers"> | null {
+  waitingAsk(runId: string): Omit<Ask, "file" | "ranking" | "tiers"> | null {
     const row = this.#sql.exec<RunRow & { prompt: string; origin: string | null }>(
       "SELECT r.*, i.prompt, i.origin FROM runs r JOIN run_inputs i ON i.run = r.id " +
         "WHERE r.id = ? AND r.state = 'waiting'", runId).toArray()[0];
@@ -1029,14 +1022,17 @@ export class Runs {
    * lease. A login is never copied: a client's `auto` run uses a plan only where that
    * client's sandbox is known signed in itself, else the owner's keys. An agent that names
    * the vendor's sign-in is admitted unless its sandbox is known signed out (the owner's
-   * own, `SIGNIN_LAPSED`); the sandbox's start checks it (`SIGNIN_REQUIRED`).
+   * own, `SIGNIN_LAPSED`); the sandbox's start checks it (`SIGNIN_REQUIRED`). Sources rank
+   * by `ask.ranking` (`auto.ts`).
    */
-  choose(file: AgentFile, unattended: boolean, authority = OWNER, now = 0):
+  choose(ask: Pick<Ask, "file" | "ranking" | "unattended" | "origin">, now: number):
       { engine: string; credential: CredentialKind; connection: string | null;
         source: string | null; model: string | null } {
+    const { file, unattended } = ask;
+    const authority = authorityOf(ask.origin);
     const sources = bundledSources();
     const keys = this.#host.reachable();
-    const candidates = ranked(keys);
+    const candidates = ranked(keys, [], ask.ranking);
     // Each engine its sandbox's runner reported a sign-in for: presence alone.
     const client = authority !== OWNER;
     const signins = new Map<string, SignIn>(client
@@ -1100,44 +1096,50 @@ export class Runs {
       // is preferred to the key (the plan is used). A model the agent names picks among the
       // sources that offer it (a key's connection lists it, a plan's record names it), so it
       // never reaches another vendor's CLI.
-      const plans = new Map<string, string>();  // provider -> engine
-      const planModels = new Map<string, string>();  // engine -> its plan's model
-      const planned: UsableSource[] = [];
+      const plans = new Map<string, Plan>();  // engine -> its plan
+      const covering = new Map<string, Plan>();  // provider -> the plan that covers it
       for (const signin of signins.values()) {
         const record = servedRecord(signin.engine);
         // A switched-off source's plan is no candidate (review H1).
-        if (!signsIn(record) || !this.#signinOn(signin.engine)) {
-          continue;
+        if (signsIn(record) && this.#signinOn(signin.engine)) {
+          const plan = { engine: signin.engine, provider: planProvider(record),
+                         model: record.cli.login.model.id, since: signin.changed_at };
+          plans.set(plan.engine, plan);
+          covering.set(plan.provider, plan);
         }
-        const provider = planProvider(record);
-        plans.set(provider, signin.engine);
-        planModels.set(signin.engine, record.cli.login.model.id);
-        planned.push({ connection: `${PLAN}${signin.engine}`, source: signin.engine, provider,
-                       display_name: signin.engine, created_at: signin.changed_at,
-                       models: [planModel(record.cli.login.model.id)] });
       }
-      for (const candidate of ranked([...keys, ...planned])) {
+      // A model the ranking does not rank is run only after every ranked one, and the owner
+      // is told, once while the notice is kept; one the agent names is its own choice.
+      const picked = (candidate: Candidate) => {
+        if (candidate.place === null && file.model === null) {
+          this.#host.noticeOnce(MODEL_UNRANKED, `${candidate.model} (${candidate.connection
+            ?? `${candidate.source}'s sign-in`}): ${UNRANKED_DETAIL}`);
+        }
+      };
+      for (const candidate of ranked(keys, [...plans.values()], ask.ranking)) {
         if ((file.connection !== null && candidate.connection !== file.connection)
-            || (file.model !== null && candidate.model.id !== file.model)) {
+            || (file.model !== null && candidate.model !== file.model)) {
           continue;
         }
-        const plan = candidate.connection.startsWith(PLAN) ? candidate.source
-          : file.connection === null ? plans.get(candidate.provider) : undefined;
-        if (plan !== undefined && allows(plan, "vendor_login_in_sandbox")) {
-          if (signins.get(plan)?.signed_in !== true) {
-            throw lapsed(plan);  // stops picking it, and never falls back silently
+        const plan = candidate.connection === null ? plans.get(candidate.source)
+          : file.connection === null ? covering.get(candidate.provider) : undefined;
+        if (plan !== undefined && allows(plan.engine, "vendor_login_in_sandbox")) {
+          if (signins.get(plan.engine)?.signed_in !== true) {
+            throw lapsed(plan.engine);  // stops picking it, and never falls back silently
           }
-          return { engine: plan, credential: "vendor_login_in_sandbox", connection: null,
-                   source: null, model: file.model ?? planModels.get(plan)! };
+          picked(candidate);
+          return { engine: plan.engine, credential: "vendor_login_in_sandbox", connection: null,
+                   source: null, model: file.model ?? plan.model };
         }
-        if (candidate.connection.startsWith(PLAN)) {
+        if (candidate.connection === null) {
           continue;  // a plan its record does not allow here (unattended)
         }
         const engine = (sources.get(candidate.source)?.engines ?? [])
           .find((name) => allows(name, "api_key"));
         if (engine !== undefined) {
+          picked(candidate);
           return { engine, credential: "api_key", connection: candidate.connection,
-                   source: candidate.source, model: file.model ?? candidate.model.id };
+                   source: candidate.source, model: file.model ?? candidate.model };
         }
       }
     }

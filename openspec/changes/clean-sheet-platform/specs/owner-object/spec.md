@@ -337,7 +337,7 @@ An agent's register, disable, delete or file change, a policy write, a wake-limi
 - **THEN** it is refused as having no session
 
 ### Requirement: Every agent may change the agent trees unless the owner narrowed it
-A change under `OWNER_TREES` (agents' `agent.json`, instructions and skills, the goals, and the owner's profile `/workspace/USER.md`, whose directives every agent follows) SHALL be taken from every agent of the owner by default (founder, 2026-11-03): an outside client under a full grant, a run, and a sandbox sync. A grant the owner narrowed (`scoped`), its runs and its sandbox's sync SHALL be refused there (`AGENTS_OWNER_ONLY`). The owner's own app token SHALL change them only in the live session, receipted when refused.
+A change under `OWNER_TREES` (agents' `agent.json`, instructions and skills, the goals, the owner's profile `/workspace/USER.md`, whose directives every agent follows, and the owner's model ranking `/workspace/model-ranking.json`) SHALL be taken from every agent of the owner by default (founder, 2026-11-03): an outside client under a full grant, a run, and a sandbox sync. A grant the owner narrowed (`scoped`), its runs and its sandbox's sync SHALL be refused there (`AGENTS_OWNER_ONLY`). The owner's own app token SHALL change them only in the live session, receipted when refused.
 
 #### Scenario: A default-grant agent edits another agent's agent.json
 - **WHEN** an outside client under its default full grant widens `/workspace/agents/other/agent.json`
@@ -925,11 +925,23 @@ A recurrence SHALL be the five classic cron fields in UTC, numbers only (no name
 - **THEN** it is refused, having no occurrence within eight years
 
 ### Requirement: `auto` is the owner's strongest connected model
-The owner's connected models SHALL be ranked by the data file `model-ranking.json`: the earliest entry a model matches ranks it, newer ids first within an entry; a model no entry matches comes after, by its catalog output price, highest first; then the older connection, then the id. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking.
+The owner's connected keys' models and its signed-in plans (each by the model its engine record says it runs) SHALL be ranked by one ranking: the owner's own file `/workspace/model-ranking.json` where it holds one, whole, else the platform's data file `sources/src/model-ranking.json`, both of one shape (tiers, strongest first, each a list of provider and model-pattern entries). The order SHALL be: by tier; within a tier, a plan before any key, so a plan in the top tier wins over every metered key; then the earliest entry a model matches, newer ids first within an entry. A model no entry matches SHALL be unknown, never placed by a guess: it ranks after every tier, ordered the same way, its keys by their catalog output price, highest first; and an `auto` run on one the agent did not name SHALL tell the owner once while that notice is kept (`model_unranked`). Then the older connection or sign-in, then the id. An owner's file that is no ranking SHALL refuse the run (`invalid`), never fall back silently to the platform's. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking.
 
 #### Scenario: Two connections of one model
 - **WHEN** two connections list the same ranked model
 - **THEN** the older connection's ranks first
+
+#### Scenario: A plan in the top tier and a key ranked above it
+- **WHEN** the owner is signed in to Claude Code (its plan's model in the top tier) and holds an OpenAI key on a model ranked above it in that tier
+- **THEN** `auto` runs on the plan
+
+#### Scenario: A plan lower down and a key a tier above
+- **WHEN** a plan's model is in the second tier and a key's in the first
+- **THEN** `auto` runs on the key; a key of the plan's own tier or below loses to the plan
+
+#### Scenario: The owner's own ranking
+- **WHEN** the owner writes `/workspace/model-ranking.json` ranking OpenAI's models a tier above Claude's
+- **THEN** `auto` ranks by it in place of the platform's, and runs on the OpenAI key
 
 #### Scenario: Nothing connected
 - **WHEN** the owner has no active connection, or one with no models
@@ -943,7 +955,7 @@ What the owner's work reports that no call fails with (a connection's setup chec
 - **THEN** only the newest 100 are kept, newest first
 
 ### Requirement: The agent trees are held by the grant, not by who wrote them
-A change under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills`, `/workspace/prompts` (its agents' files and skills, which every engine reads) or `/workspace/goals` (the owner's goals, whose Agreed section is what its agents may do toward each unasked) SHALL be held at every file door by the rule "Every agent may change the agent trees unless the owner narrowed it": refused only to a narrowed grant, and to the owner's app token outside its session.
+A change under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills`, `/workspace/prompts` (its agents' files and skills, which every engine reads), `/workspace/goals` (the owner's goals, whose Agreed section is what its agents may do toward each unasked), `/workspace/USER.md` or `/workspace/model-ranking.json` SHALL be held at every file door by the rule "Every agent may change the agent trees unless the owner narrowed it": refused only to a narrowed grant, and to the owner's app token outside its session.
 
 #### Scenario: A narrowed client renames a skill
 - **WHEN** a client whose grant the owner narrowed renames a file under `/workspace/skills`
@@ -1126,7 +1138,7 @@ When the sandbox Worker has no room to start a run's sandbox (`sandbox_waiting`:
 - **THEN** the sandbox Worker is told to release that lease
 
 ### Requirement: `auto` sees the owner's subscriptions, by presence only
-Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its record's `status_argv`) to the object, which SHALL keep them per sandbox, never a credential: the owner's own sandbox's one row an engine (signed in or not, when it was checked and changed), and an outside client's sandbox's on its own lease. A login SHALL never be copied between sandboxes (ADR-031 decision 2): a run SHALL use only its own sandbox's sign-ins, so a client's `auto` run takes a plan only where that client's sandbox is known signed in, else the owner's keys. An agent naming the vendor's sign-in SHALL be admitted unless its sandbox is known signed out (the owner's, `signin_lapsed`); the sandbox's start checks the sign-in there and answers `signin_required` when none is, and the run SHALL settle `failed` (`signin_required`) with a notice to sign in inside that sandbox. `auto` SHALL rank the signed-in engines with the owner's connections by the same ranking, each by the model its engine record says a run on its plan is given (`cli.login.model`), so no plan ranks as an unknown model, and a run on a plan SHALL be given that model unless the agent names one; where a subscription and a key cover one provider it SHALL pick the subscription. An `auto` agent that names a model SHALL pick only among the sources that offer it (a key whose connection lists it, a plan whose record names it), and SHALL be refused `no_source` where none does, never passing the model to another vendor's engine. A sign-in that lapses SHALL leave the owner a "sign in again" notice, and `auto` (and an agent naming that engine on its sign-in) SHALL be refused `signin_lapsed`, never falling back silently to another source.
+Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its record's `status_argv`) to the object, which SHALL keep them per sandbox, never a credential: the owner's own sandbox's one row an engine (signed in or not, when it was checked and changed), and an outside client's sandbox's on its own lease. A login SHALL never be copied between sandboxes (ADR-031 decision 2): a run SHALL use only its own sandbox's sign-ins, so a client's `auto` run takes a plan only where that client's sandbox is known signed in, else the owner's keys. An agent naming the vendor's sign-in SHALL be admitted unless its sandbox is known signed out (the owner's, `signin_lapsed`); the sandbox's start checks the sign-in there and answers `signin_required` when none is, and the run SHALL settle `failed` (`signin_required`) with a notice to sign in inside that sandbox. `auto` SHALL rank the signed-in engines with the owner's connections by the same ranking, each by the model its engine record says a run on its plan is given (`cli.login.model`), so no plan ranks as an unknown model on the platform's ranking, and a run on a plan SHALL be given that model unless the agent names one; within a tier a plan SHALL come before a key; where a subscription and a key cover one provider it SHALL pick the subscription. An `auto` agent that names a model SHALL pick only among the sources that offer it (a key whose connection lists it, a plan whose record names it), and SHALL be refused `no_source` where none does, never passing the model to another vendor's engine. A sign-in that lapses SHALL leave the owner a "sign in again" notice, and `auto` (and an agent naming that engine on its sign-in) SHALL be refused `signin_lapsed`, never falling back silently to another source.
 
 #### Scenario: Only a Claude subscription
 - **WHEN** the owner has no connection and its runner reported Claude Code signed in

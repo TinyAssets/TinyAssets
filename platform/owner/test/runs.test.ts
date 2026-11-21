@@ -26,8 +26,9 @@ import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
 import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
+import { ALL_SCOPES, defineAgent, hashed, later, ownerFile, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
+import { RANKING } from "../../contract/src/paths";
 import { secretOf } from "../../ci/workerd";
 import { drainDue, failure, gateFor, spaceOf } from "./support";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
@@ -640,27 +641,58 @@ describe("auto and the owner's sign-ins", () => {
       .toMatchObject({ credential: "vendor_login_in_sandbox", model: "claude-sonnet-5-5" });
   });
 
-  it("ranks a subscription against another provider's key by the plan's model, both ways",
-     async () => {
+  it("ranks a subscription against another provider's key by tier, on the owner's ranking " +
+     "file where it has one", async () => {
     const r = await gated();
     const [base] = await catalog(OPENAI);
-    const weaker = await r.connect("sk-good", OPENAI, "Weaker", [{ ...base!, id: "gpt-5.1-codex" }]);
+    await r.connect("sk-good", OPENAI, "Weaker", [{ ...base!, id: "gpt-5.1-codex" }]);
     await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    // A run of `helper`, settled at once, so the tier's simultaneous runs never refuse one.
+    const helper = async () => {
+      const { run, start } = await ownerRun(r.stub, r.bind(), undefined, "helper");
+      await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+      return run;
+    };
     const keyed = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(keyed.run).toMatchObject({ credential: "api_key", model: "gpt-5.1-codex" });
-    // Signed in: Claude's plan (`claude-opus-5*`) ranks above the other provider's key.
+    // Signed in: Claude's plan (`claude-opus-5*`, the top tier) ranks above the key.
     await claudeSignin(r, keyed.start, true);
-    expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
-      .toMatchObject({ engine: "claude-code", credential: "vendor_login_in_sandbox",
-                       model: PLAN_MODEL });
-    // That provider's key on a model ranked above the plan's: the key.
+    const plan = { engine: "claude-code", credential: "vendor_login_in_sandbox",
+                   model: PLAN_MODEL };
+    expect(await helper()).toMatchObject(plan);
+    // That provider's key on a model ranked above the plan's in the top tier: still the plan,
+    // which the owner pays for already.
     const stronger = await r.connect("sk-good", OPENAI, "Stronger",
                                      [{ ...base!, id: "gpt-6.1-sol" }]);
+    expect(await helper()).toMatchObject(plan);
+    // The owner's own ranking, whole in place of the platform's: OpenAI's a tier above.
+    const own = (tiers: unknown) => ownerFile(r.stub, r.bind(), RANKING,
+                                              JSON.stringify({ version: 2, tiers }));
+    await own([[{ provider: "*", model: "gpt-6*" }], [{ provider: "*", model: "claude-*" }]]);
     const strongest = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(strongest.run).toMatchObject({ credential: "api_key", model: "gpt-6.1-sol" });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?",
                        strongest.run.run_id)).toEqual([{ connection: stronger }]);
-    expect(stronger).not.toBe(weaker);
+    // One that ranks none of them: the plan first among the unknown, and the owner told
+    // once, not once a run.
+    await own([[{ provider: "*", model: "none-*" }]]);
+    expect(await helper()).toMatchObject(plan);
+    expect(await helper()).toMatchObject(plan);
+    expect((await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "model_unranked").map((notice) => notice.detail))
+      .toEqual([`${PLAN_MODEL} (claude-code's sign-in): no entry of the model ranking ranks ` +
+                `it, so auto ranked it below every ranked model; rank it in ${RANKING}`]);
+    // A file that is no ranking refuses the run, never a silent fall back to the platform's.
+    for (const [text, message] of [
+      ["{\"version\": 1}", `${RANKING}: a model ranking holds only version 2`],
+      ["not json", `${RANKING} is not JSON text`]] as const) {
+      await ownerFile(r.stub, r.bind(), RANKING, text);
+      expect(await failure(() => helper()))
+        .toMatchObject({ code: "invalid", message: expect.stringContaining(message) });
+    }
+    // Removed: the platform's ranking again.
+    await ownerFile(r.stub, r.bind(), RANKING, null);
+    expect(await helper()).toMatchObject(plan);
     // An `auto` agent that names a model runs on a source that offers it, whatever ranks
     // above, and one no source offers is refused, never passed to another vendor's CLI.
     await defineAgent(r.stub, r.bind(), "unoffered",
