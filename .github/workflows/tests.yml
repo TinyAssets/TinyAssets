@@ -207,16 +207,19 @@ jobs:
           fi
           npx --yes @fission-ai/openspec@1.15.0 validate clean-sheet-platform
 
-  # The process's own tests: the gates' scripts that outlast the old stack (the review
-  # check, the Bash guard, the queue-attempt ledger, the rule files'
-  # byte pins, the session sync gate, the platform's setup, main-red's decision). Plain
-  # pytest on the runner, on every event: no image, no old-stack package, and no conftest
-  # (`tests/conftest.py` loads the old stack). Required through `required-tests`' needs.
-  # Held by platform/ci/guards/legs.test.ts, where the pin outlasts the Python suite.
+  # The process's own tests, beside the gates' scripts that outlast the old stack
+  # (`scripts/tests/`). Plain pytest on the runner, on every event: no image, no old-stack
+  # package, and no conftest. Required through `required-tests`' needs. Held by
+  # platform/ci/guards/legs.test.ts, where the pin outlasts the Python suite.
+  #
+  # timeout-minutes is a watchdog, as the platform legs' are: about 6 x the slowest
+  # measured run, for a runner up to five times slower than usual. The leg took 1m14s of
+  # job in run 44872746964, the slowest of 100 Tests runs from 2026-11-18
+  # (docs/decisions/untangle-2026-11/p6-tests-beside.md).
   process:
     name: process
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -228,12 +231,6 @@ jobs:
       - run: >-
           python -m pytest --noconftest -q -p no:cacheprovider
           scripts/tests
-          tests/test_review_check.py
-          tests/test_bash_guard.py
-          tests/test_queue_attempts.py
-          tests/test_rulebook_ratchet.py
-          tests/test_session_sync_gate.py
-          tests/test_platform_setup.py
 
   # The TypeScript platform workspace (ADR-032): its Vitest tests, in the real workerd
   # runtime or in Node. Required through `required-tests`' needs; nothing here deploys.
