@@ -109,9 +109,10 @@ const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install
   ">/dev/null 2>&1; command -v strace >/dev/null";
 
 /**
- * The checks: each record's sign-in under the production egress allowlist widened by that engine's own hosts, as the sandbox Worker
- * widens a sign-in's network; every keyed engine on every provider it keys, on a
- * sandbox whose network denies everything once prepared; and the matcher's step.
+ * The checks: each record's sign-in under the production egress allowlist widened by that
+ * engine's own hosts, as the sandbox Worker widens a sign-in's network; every keyed engine
+ * on every provider it keys, on a sandbox whose network denies everything once prepared;
+ * and the matcher's step.
  */
 export function plan(runner: string): Plan {
   const logins: PlanStep[] = [];

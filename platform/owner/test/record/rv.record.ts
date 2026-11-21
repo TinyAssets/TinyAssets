@@ -73,7 +73,7 @@ const NAMED: Record<string, unknown> = {
   event_id: "e1", event_at: 1, headers: {}, intent_id: "0".repeat(32), chunks: [], size: 1,
   card_id: "x", digest: "x", reason: "x", kind: "x", subscription_id: "x", board: false,
   rooms: [], blob: "x", kid: "k", arguments: {}, expires_at: null, first: 0, count: 1,
-  frames: [], engine: "claude-code", authority: "owner", region: null, code: "x",
+  frames: [], engine: "claude-code", authority: "owner", code: "x",
   signins: [], lease_id: "x", epoch: 1, ops: [], writer: null, before_revision: 1,
 };
 

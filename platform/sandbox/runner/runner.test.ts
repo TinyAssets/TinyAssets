@@ -931,7 +931,8 @@ describe("the vendor's own sign-in", () => {
     box.runner("login-launch", id);
     await doors.ended_(25_000, id);
     expect(signinFrames(id).at(-1)).toMatchObject({ state: "signed_out" });
-    expect(() => lstatSync(box.path("/var/lib/ta/store/gemini/.gemini/oauth_creds.json"))).toThrow();
+    expect(() => lstatSync(box.path("/var/lib/ta/store/gemini/.gemini/oauth_creds.json")))
+      .toThrow();
     // Its sessions are kept: only its secrets go.
     expect(lstatSync(box.path("/var/lib/ta/store/gemini/.gemini/tmp/p/chats/s.json")).isFile())
       .toBe(true);

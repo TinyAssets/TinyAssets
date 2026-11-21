@@ -67,9 +67,10 @@ const UNRESERVED = /^[A-Za-z0-9._~-]{1,128}$/;
  * password, port or fragment, its path the record's `url.path` exactly, each of the
  * record's `url.params` present with exactly its value, the record's `url.free` parameters
  * each at most once with an unreserved value (a state, a PKCE challenge, a user code: never
- * a URL, so no redirect chain), and no other parameter (so no other OAuth client's page). The code: a device code's characters, at most `SIGNIN_CODE_MAX`. Neither
- * credential-shaped (`credentialLike`). Checked in the VM before a prompt leaves it, and
- * again by the owner's object before the owner sees it.
+ * a URL, so no redirect chain), and no other parameter (so no other OAuth client's page).
+ * The code: a device code's characters, at most `SIGNIN_CODE_MAX`. Neither credential-shaped
+ * (`credentialLike`). Checked in the VM before a prompt leaves it, and again by the owner's
+ * object before the owner sees it.
  */
 export function signinShape(rec: SourceRecord, url: string | null,
                             code: string | null): SigninRefusal | null {

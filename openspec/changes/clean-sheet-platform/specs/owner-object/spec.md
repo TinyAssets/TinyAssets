@@ -425,7 +425,7 @@ A run's hook SHALL take the door's address only from its root-owned file, and th
 
 #### Scenario: A rule nothing sees on one engine
 - **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }`
-- **THEN** its note holds it at every engine whose hook the agent can't alter, and names `codex`, `kimi`, `main_agent` and `sandbox_programs` among where it can't hold
+- **THEN** its note holds it at every engine whose hook the agent can't alter, and names `codex`, `main_agent` and `sandbox_programs` among where it can't hold
 
 ### Requirement: A yes to a run's held call resumes its conversation
 A run's held call SHALL be bound to the run's conversation: the owner's yes SHALL admit the call only in that conversation, and SHALL write a run waiting there, under the held run's own authority, on an input that names the card, which starts once the conversation is free. A no SHALL resume nothing. A run whose engine stopped at a tool call it deferred (its record's `deferred` matcher) SHALL settle with the code `tool_deferred`, and its result SHALL post no reply.

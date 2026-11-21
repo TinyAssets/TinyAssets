@@ -358,7 +358,8 @@ Every known-wrong data shape is fixed before the cutover imports real data: a fi
 4. **Route deletion.** Deleting `deploy-worker.yml`, in place of the old R1 route guard, is part of §J1's routes decision.
 
 **The founder's** (`founder_batch.md` item 7; none is needed before the cutover):
-- the Codex, Gemini and Kimi sign-in switches (vendor terms);
+- the Codex and Gemini sign-in switches (vendor terms; Kimi's record is dropped,
+  `untangle-2026-11/drop-kimi.md`);
 - capture always on: new recurring spend, about $62 a month for a heavy owner;
 - non-model credentials through a TLS proxy: needs a host, against Direction 8;
 - the directory listing's own MCP door: Direction 2, and the directory submission.

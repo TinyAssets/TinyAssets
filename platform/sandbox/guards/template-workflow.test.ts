@@ -62,7 +62,8 @@ const answered = (argv) => {
   if (command === "prepare") return [fail === "prepare" ? 1 : 0, ""];
   const failed = fail !== "" && [command, ...rest].join(" ").startsWith(fail);
   if (command === "login-probe") {
-    return [failed ? 3 : 0, JSON.stringify({ engine: rest[0], ok: !failed, reason: failed ? "no sign-in URL shown" : null, host: "vendor.example",
+    return [failed ? 3 : 0, JSON.stringify({ engine: rest[0], ok: !failed,
+      reason: failed ? "no sign-in URL shown" : null, host: "vendor.example",
       code_shown: false })];
   }
   if (command === "route-probe") {
