@@ -54,14 +54,13 @@ import {
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority,
   type SpendCaps, type UsableSource,
 } from "./runs";
-import { started, vendorHosts } from "./sandbox";
+import { startOutcome, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";
 import { type Signins, switchedOn } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
 import {
   type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
-  type Started,
 } from "../../contract/src/sandbox";
 
 /**
@@ -318,10 +317,10 @@ export class Launcher implements RunHost {
   /**
    * Admit a run in one unit (`ask`, which binds the call again, and the agent's file still
    * at the etag it was read at), then start it through the sandbox and record what came of
-   * it: `running`, `failed` with the sandbox's code, or `unknown` when its answer never came
-   * (the run is then cancelled too, in case it did start). Its id: a run that waits for
-   * its conversation's live run is written `waiting` and starts from the lane, its turn
-   * come (`waiting`, the run the lane starts).
+   * it (`StartOutcome`): `running`, `failed` with the sandbox's code or its refusal's, or
+   * `unknown` when no answer it can read came (the run is then cancelled too, in case it did
+   * start). Its id: a run that waits for its conversation's live run is written `waiting`
+   * and starts from the lane, its turn come (`waiting`, the run the lane starts).
    */
   async launch(read: { file: AgentFile; etag: string }, ask: () => Omit<Ask, "file">,
                waiting: string | null = null, taken: () => void = () => {}): Promise<string> {
@@ -342,25 +341,19 @@ export class Launcher implements RunHost {
     if (admitted.existing) {
       return admitted.run;
     }
-    let answer: Started | null = null;
-    try {
-      answer = started(await this.#o.sandbox.start({
-        run: admitted.run, agent, conversation: admitted.conversation,
-        engine: admitted.engine, credential: admitted.credential, model: admitted.model,
-        session_id: admitted.session_id, prompt: admitted.prompt, unattended,
-        authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
-        network: admitted.network, config: admitted.config,
-        hosts: vendorHosts(admitted.engine, admitted.credential, null),
-        route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
-                                                        authority: admitted.authority }),
-        urls: runUrls(admitted.run, admitted.secret) }));
-    } catch {
-      console.error("a run's start had no answer; it is settled unknown");
-      answer = null;
-    }
+    const answer = await startOutcome("a run", () => this.#o.sandbox.start({
+      run: admitted.run, agent, conversation: admitted.conversation,
+      engine: admitted.engine, credential: admitted.credential, model: admitted.model,
+      session_id: admitted.session_id, prompt: admitted.prompt, unattended,
+      authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
+      network: admitted.network, config: admitted.config,
+      hosts: vendorHosts(admitted.engine, admitted.credential, null),
+      route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
+                                                      authority: admitted.authority }),
+      urls: runUrls(admitted.run, admitted.secret) }));
     await this.#o.door(() => {
-      if (answer === null) {
-        this.runs.settle(admitted.run, "unknown", "start_lost", null, clock());
+      if (answer.started === null) {
+        this.runs.settle(admitted.run, "unknown", answer.code, null, clock());
       } else if (answer.started) {
         this.runs.started(admitted.run, clock());
       } else if (answer.code === SANDBOX_WAITING) {
@@ -381,7 +374,7 @@ export class Launcher implements RunHost {
         }
       }
     });
-    if (answer === null) {
+    if (answer.started === null) {
       await this.cancel(admitted.run);
     }
     await this.#o.sync();

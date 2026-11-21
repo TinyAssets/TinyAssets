@@ -6,7 +6,7 @@
  */
 import { createHash } from "node:crypto";
 
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -19,6 +19,7 @@ import { LIMITS } from "../src/collections";
 import { Files, PLACE_TTL_S } from "../src/files";
 import { BODY_BYTES_MAX, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { GRANT_LIMITS, scopes } from "../src/grants";
+import { LANE_CALL_MS } from "../src/schedule";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { TIER_UNREAD } from "../src/files";
@@ -26,8 +27,8 @@ import { eraseBegun, finished } from "./erasure-support";
 import { MUSE, rig, signedIn, dm } from "./ledger-support";
 import { at, readOn } from "./pages-support";
 import {
-  admittedOwner, failure, ownerObject, passEnd, setFiles, starterSeed, storesOn, text, TIERS,
-  tiersAt,
+  admittedOwner, failure, gateFor, ownerObject, passEnd, setFiles, spaceOf, starterSeed,
+  storesOn, text, TIERS, tiersAt,
 } from "./support";
 
 afterEach(() => {
@@ -417,7 +418,7 @@ describe("the placement rule, held to the owner's own limits", () => {
       .toEqual([["a", "b"], false, null]);
   });
 
-  it("a placed write past a chunk the sweep is deleting begins again once it is gone",
+  it("a placed write past a chunk the sweep is deleting begins again once that delete lands",
      async () => {
     const { stub, as, name } = await ownerObject();
     const put = (rowId: string, etag = "") => stub.collectionWrite(as(name), {
@@ -425,23 +426,55 @@ describe("the placement rule, held to the owner's own limits", () => {
     const made = await put("a") as { row: { etag: string } };
     await stub.collectionDelete(as(name), { collection: "board", row_id: "a",
                                             expected_etag: made.row.etag });
-    // Its chunk is garbage now; the sweep has begun deleting it.
+    // Its chunk is garbage now, its grace passed: the sweep deletes it, held at FILES.
     expect(await sqlIn(stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha(LARGE)))
       .toEqual([{ state: "garbage" }]);
-    await sqlIn(stub, "UPDATE file_chunks SET state = 'deleting' WHERE sha256 = ?", sha(LARGE));
+    await sqlIn(stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha(LARGE));
+    // A door's write points the files lane's job at the chunk, now due (`sync()`).
+    await stub.collectionWrite(as(name), { collection: "board", row_id: "due", body: "x",
+                                           expected_etag: "", private: false });
+    const files = gateFor(env.FILES_GATE, await spaceOf(stub));
+    await files.arm("deleteChunks", { hold: "before" });
+    const pass = runDurableObjectAlarm(stub);
+    await files.held("deleteChunks");
     // The object runs in this isolate: its uploads' begins are seen here, each refusal too.
     const begins = vi.spyOn(Files.prototype, "begin");
     onTestFinished(() => begins.mockRestore());
     const refused = () => begins.mock.results.filter((result) => result.type === "throw"
       && (result.value as { code?: string }).code === "chunk_deleting").length;
+    // Time passes on the fake clock while the delete is held, advanced inside the object
+    // (workerd resolves a timer it set only in its own context): no guessed wait ends it.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
     const again = put("b");
-    // The delete lands once the write was refused and waits; it then begins again and lands.
+    // The write met the chunk being deleted, and waits on that delete while it is held,
+    // never beginning again before it lands.
     await until(() => refused() > 0, "the write's refusal");
-    await sqlIn(stub, "DELETE FROM file_chunks WHERE state = 'deleting'");
-    // A new key goes on past the revision a's delete gave (`revision_floor`).
+    await runInDurableObject(stub, () => vi.advanceTimersByTimeAsync(LANE_CALL_MS));
+    vi.useRealTimers();
+    expect(await sqlIn(stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha(LARGE)))
+      .toEqual([{ state: "deleting" }]);
+    expect(refused()).toBe(1);
+    await files.release("deleteChunks");
+    await pass;
+    // It began again once the delete landed, and lands: a new key goes on past the revision
+    // a's delete gave (`revision_floor`).
     expect(await again).toMatchObject({ row: { revision: 3 } });
+    expect(refused()).toBe(1);
     expect((await stub.collectionGet(as(name), { collection: "board", row_id: "b" })).row!.body)
       .toBe(LARGE);
+  });
+
+  it("a placed write past a chunk a failed delete left is refused, with no delete to wait on",
+     async () => {
+    const { stub, as, name } = await ownerObject();
+    const put = (rowId: string, etag = "") => stub.collectionWrite(as(name), {
+      collection: "board", row_id: rowId, body: LARGE, expected_etag: etag, private: false });
+    const made = await put("a") as { row: { etag: string } };
+    await stub.collectionDelete(as(name), { collection: "board", row_id: "a",
+                                            expected_etag: made.row.etag });
+    // A delete that failed leaves its chunk `deleting`, tried again by a later pass.
+    await sqlIn(stub, "UPDATE file_chunks SET state = 'deleting' WHERE sha256 = ?", sha(LARGE));
+    expect((await failure(() => put("b"))).code).toBe("chunk_deleting");
   });
 
   it("checks a post's room and resend before its body goes to R2", async () => {

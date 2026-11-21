@@ -28,7 +28,6 @@ import { describe, expect, it } from "vitest";
 
 import * as CONTRACT from "../../contract/src/limits";
 import { PLATFORM } from "../../ci/paths";
-import { LOG_WIDE } from "../src/changelog";
 import {
   CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES, HISTORY_BYTES,
   SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
@@ -246,9 +245,11 @@ export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze
   ["CREATE TRIGGER file_temps_removed", 2, TEMP_BYTES("OLD")],
   ["CREATE TRIGGER file_scope_contents_added", 2, SCOPE_REF_BYTES("NEW")],
   ["CREATE TRIGGER file_scope_chunks_removed", 2, SCOPE_REF_BYTES("OLD")],
-  [CAPTURE, CAPTURES + UPDATES, `THEN image ELSE '${LOG_WIDE}' END`],
+  // The wide mark, in place of an image past `IMAGE_MAX`: the change log reads any line
+  // that is no row and no gone as one (`changelog.ts` `segment`).
+  [CAPTURE, CAPTURES + UPDATES, `THEN image ELSE '{"t":"wide"}' END`],
   [CAPTURE, CAPTURES, `(SELECT line FROM change_log WHERE seq = log_capture.last) = ` +
-    `'${LOG_WIDE}')`],
+    `'{"t":"wide"}')`],
 ]);
 
 /** How `head`'s statements fail to spell `text` `count` times, each at least once; or null. */
