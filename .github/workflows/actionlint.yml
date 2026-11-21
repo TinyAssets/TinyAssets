@@ -1,16 +1,8 @@
 name: actionlint
 
-# Fail-the-PR gate for GH Actions workflow changes. Complements the
-# scripts/git-hooks/pre-commit invariant #7 — local hook is fast-feedback,
-# this is the authoritative gate. Dev has flagged actionlint as missing
-# locally on 3 consecutive tasks; this closes that gap.
-#
-# Scope: only runs when a PR or push touches .github/workflows/*.yml
-# (including this file). Does NOT scan the whole repo on unrelated PRs.
-# Does NOT bulk-lint pre-existing issues outside touched files — the
-# `-filter` flag scopes findings to changed lines only via the reviewdog
-# integration. Without that, we'd block every PR on unrelated pre-
-# existing warnings.
+# Lint the complete set of changed workflow files. The local hook provides
+# earlier feedback when actionlint is installed. CI supplies the pinned binary.
+# Manual dispatch audits every workflow.
 
 on:
   pull_request:

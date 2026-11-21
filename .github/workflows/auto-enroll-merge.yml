@@ -1,22 +1,9 @@
 name: Auto-enroll merge
 
-# Why this exists
-# ---------------
-# Branch protection + repo auto-merge only get you so far: SOMEONE still has to
-# enroll each PR with `gh pr merge --auto`. That left a human (or an agent that
-# cannot merge) in the loop for every single PR, which defeats the point.
-#
-# This workflow does the enrolling. From here: open a PR, and when its required
-# checks go green GitHub merges it. No human step, no agent step.
-#
-# Safety is delegated to the merge queue's ruleset, which is the right place for it:
-#   - every required check (docs/ops/merge-queue-ruleset.json) must pass
-#   - a PR that fails ANY required check simply never merges; enrolment is not a
-#     bypass, it is a standing instruction to merge WHEN allowed
-#
-# The scope guard is what makes this safe to automate. Without it, auto-enrolment
-# would have merged PR #1491 — 386 files including deploy-prod.yml and Dockerfile,
-# presented as a two-file auth fix, with CI green on everything it looked at.
+# An eligible pull request needs someone to arm auto-merge even when all
+# required checks pass. This workflow arms it. The merge queue still applies
+# docs/ops/merge-queue-ruleset.json, including the scope guard's review of
+# the actual diff against main.
 
 on:
   # pull_request_target so this always runs the trusted copy from the default

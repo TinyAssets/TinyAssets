@@ -946,23 +946,6 @@ export function automatonStates(line: string): number {
     : statesOf(tokens);
 }
 
-/** Whether `text` matches `pattern` as git's `wildmatch` with `WM_PATHNAME` reads it. */
-export function wildcard(pattern: string, text: string): boolean {
-  const tokens = tokenize(utf8(pattern), true);
-  if (tokens === null) {
-    return false;
-  }
-  const automaton = new Automaton([{ tokens, rule: () => 0, dirOnly: false }],
-                                  statesOf(tokens));
-  const D = Uint32Array.from(automaton.init);
-  if (!automaton.run(D, new Uint32Array(automaton.W), utf8(text))) {
-    return false;
-  }
-  const best = { any: -1, all: -1 };
-  automaton.accepted(D, best);
-  return best.any === 0;
-}
-
 // -- Matching a path ---------------------------------------------------------------------------
 
 /**

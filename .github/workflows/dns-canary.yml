@@ -1,6 +1,6 @@
 name: DNS canary
 
-# Row N sub-gate: verify tinyassets.io + mcp.tinyassets.io resolve from
+# Verify tinyassets.io and mcp.tinyassets.io resolve from
 # an independent vantage point (GHA runner, not the host machine).
 #
 # On failure: opens a GitHub issue labeled `dns-red`.

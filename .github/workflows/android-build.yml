@@ -9,10 +9,10 @@ name: Android debug APK
 # Identity: this APK installs as io.tinyassets.app.debug, "TinyAssets (debug)"
 # (configure_android_release.py). It is signed with a development key, so if it
 # shared the Play package every Play update would fail with "Can't install" on
-# any phone that sideloaded it (2026-10-01). The badging step below fails the
+# any phone that sideloaded it. The badging step below fails the
 # build if the APK ever carries the Play package again.
 #
-# Shape (Codex review 2026-08-21): the build job is READ-ONLY - no git
+# The build job is READ-ONLY - no git
 # credentials persist into the checkout, dependencies come from the lockfile
 # via `npm ci`, and repository write authority exists only in the small publish
 # job that merely uploads the already-built artifact. Signing uses a STABLE

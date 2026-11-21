@@ -111,7 +111,7 @@ profile is traced from a photograph of the real skyline, so it carries Baker's
 signature: a flat summit plateau rather than a peak, the jagged Lincoln and
 Colfax group at about half height on the left, and a long south-east flank.
 
-The scene lives as the `EMBLEM` layer list in `tinyassets/desktop/icon_gen.py`.
+The scene lives as the `EMBLEM` layer list in `WebSite/brand/mark.py`.
 Two renderers read it -- one emits SVG, the other rasterises with Pillow -- and
 `WebSite/brand/render_marks.py` exports every raster AND generates the site's
 inline React component, so the web mark cannot drift from the app icons.

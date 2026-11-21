@@ -11,6 +11,8 @@
  *   (or `--dry-run`, which writes nothing): the bundles, the digests and billing ids in 0600
  *   files of the private folder, and counts alone on stdout;
  *   (`--rehearsal <run>`: each bundle under its rehearsal's name, `rehearsalName`);
+ * - `deletions <work> --jobs <folder> [--rehearsal <run>]`: compare current off-host jobs
+ *   with the bundled original owners. Print affected bundle ordinals and exit 3 on a match.
  * - `stage <out> --run <id> --facts <facts.json>` (or `--dry-run`, which sends nothing and
  *   needs no credential; `--rehearsal`, for a rehearsal's bundles): every bundle checked
  *   whole, uploaded to the staging bucket and its message put on the import queue
@@ -45,6 +47,7 @@ import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
 import { census } from "./census";
 import { copyMain } from "./copy";
+import { compareDeletions } from "./deletions";
 import { cloudflareOf, type Fetcher, type Inputs, namesOf, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
 import { admit, CLOCK, type Clock, close, deadLetters, unkey, verify, wipe } from "./window";
@@ -222,13 +225,21 @@ export function main(argv: readonly string[], mountinfo: () => string,
                      backing: Backing = loopBacking): number {
   const [command, given] = argv;
   if (given === undefined) {
-    throw new Error("usage: <copy|census|bundle|stage> <work> [options]");
+    throw new Error("usage: <copy|census|bundle|deletions|stage> <work> [options]");
   }
   if (command === "copy") {
     return copyMain(argv, (work) => copyAt(resolve(work), mountinfo(), backing),
                     (line) => process.stdout.write(`${line}\n`));
   }
   const work = resolve(given);
+  if (command === "deletions") {
+    const found = compareDeletions(work, required(argv, "--jobs"), option(argv, "--rehearsal"));
+    for (const ordinal of found.withhold) {
+      process.stdout.write(`bundle ${ordinal} of ${found.bundles}: deletion requested\n`);
+    }
+    process.stdout.write(`${found.withhold.length} of ${found.bundles} bundles match a deletion record\n`);
+    return found.withhold.length === 0 ? 0 : 3;
+  }
   const tiers = tiersIn(argv);
   const copy = copyAt(work, mountinfo(), backing);
   if (command === "census") {

@@ -2,11 +2,8 @@ name: real-browser-proof
 
 # Why this exists
 # ---------------
-# Some proofs only mean anything in a real browser. The custom-UI frame is the
-# first: a bundle's <form> must fire `submit` for its own script (the sandbox
-# grants allow-forms) while `form-action 'none'` keeps any real submission from
-# assert on the sandbox string cannot show that Chrome actually delivers the
-# event; only Chromium can.
+# Some proofs only mean anything in a real browser: a static assert on a page's
+# markup or CSP cannot show what Chromium actually does with it.
 #
 # The required shards install Chromium and assert these cases in their union.
 # This job provides the same proof before a PR enters the merge queue. It runs
@@ -17,10 +14,10 @@ name: real-browser-proof
 #
 # WHERE IT RUNS: the Linux oracle container, as uid 1001, exactly as
 # linux-jail-proof does (see that workflow's header for the venue and why).
-# The custom-UI preview proofs launch Chromium inside a real bubblewrap jail,
-# and the hosted VM refuses the runner user namespaces, so on the bare runner
-# every one of them SKIPPED (run 37187940339). The oracle image carries the
-# `browser` extra and Chromium (docker/linux-oracle.Dockerfile); the container
+# The custom-UI preview proofs launch Chromium inside a real bubblewrap jail.
+# The hosted VM refuses the runner user namespaces needed for those proofs.
+# The oracle image carries the `browser` extra and Chromium
+# (docker/linux-oracle.Dockerfile). The container
 # gets the same per-container exceptions as linux-jail-proof and nothing more:
 # seccomp and systempaths unconfined, plus the named `ta-jail-userns` AppArmor
 # profile. Those are broad exceptions for one throwaway container, not an
@@ -49,9 +46,10 @@ on:
       - ".github/workflows/real-browser-proof.yml"
       - "scripts/ci_assert_junit_case.py"
       - "scripts/generate_guard_inventories.py"
-      # The venue.
+      # The venue. The root Dockerfile holds the image's base.
       - "scripts/linux_oracle.py"
       - "docker/linux-oracle.Dockerfile"
+      - "Dockerfile"
       # The custom-UI frame: the sandbox attribute, the frame document and its
       # headers, and the page that hosts it.
       - "tinyassets/onboarding/app_ui.js"
@@ -84,6 +82,7 @@ on:
       - 'scripts/generate_guard_inventories.py'
       - 'scripts/linux_oracle.py'
       - 'docker/linux-oracle.Dockerfile'
+      - 'Dockerfile'
       - 'tinyassets/onboarding/app_ui.js'
       - 'tinyassets/onboarding/ui_frame.py'
       - 'tinyassets/ui_preview.py'

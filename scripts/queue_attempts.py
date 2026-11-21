@@ -19,7 +19,11 @@ It fails closed. All of these count, as every removal did before:
 - any error reading GitHub;
 - no failed Tests run of this PR's queue entry between its enqueue and this removal;
 - an unreadable log, selection or diff;
-- a failed job that names no test (typecheck, the browser job, a lost shard).
+- a failed job that names no test (typecheck, the browser job, a lost runner),
+  unless it shows it stopped before any test ran: its first failed step is
+  GitHub's own (`Set up job`, or an unnamed `actions/*` step such as checkout),
+  or its log holds the oracle's `NO_TEST_RAN` line (the image build, the
+  runtime fetch, the jail probe; run 44079286405's 429 from the registry).
 
 Everything is keyed by the head SHA, never by a timestamp:
 
@@ -51,6 +55,8 @@ import time
 import zipfile
 from datetime import datetime
 
+from linux_oracle import NO_TEST_RAN
+
 CAP = 2
 LABEL = "queue-handoff"
 CAPPED_EXIT = 3
@@ -76,6 +82,8 @@ _VITEST = re.compile(
     r"^\s*FAIL\s+(?:\S+\s+)??(?P<file>[\w./@-]+\.(?:test|spec)\.[cm]?[jt]sx?)"
     r"(?:\s+>\s+(?P<name>.+?))?(?:\s+\[.*\])?\s*$")
 _WORKSPACE = re.compile(r"\s-w\s+([\w-]+)")
+#: The API's names for GitHub's own steps: an unnamed `uses:` step is "Run <action>".
+_GITHUB_STEP = re.compile(r"^(?:Set up job|Run actions/\S+)$")
 
 
 # ---- the decision (pure) -----------------------------------------------------
@@ -152,6 +160,14 @@ def job_failures(job: str, log: str) -> list[str]:
                   | set(_vitest_ids(lines, ws[1] if ws else None)))
 
 
+def stopped_before_tests(failed_step: str | None, log: str) -> bool:
+    """Whether a failed job shows it stopped before any test ran."""
+    if failed_step and _GITHUB_STEP.match(failed_step):
+        return True
+    return any(_STAMP.sub("", _ANSI.sub("", raw)).startswith(NO_TEST_RAN)
+               for raw in log.splitlines())
+
+
 def is_selected(test_id: str, *, changed: list[str], selection: list[str] | None) -> bool:
     """Whether the entry's diff selected this test. `selection` None means ALL."""
     if test_id.startswith("platform/"):
@@ -159,21 +175,25 @@ def is_selected(test_id: str, *, changed: list[str], selection: list[str] | None
     return selection is None or test_id.split("::", 1)[0] in selection
 
 
-def attempt_counts(jobs: dict[str, list[str]] | None, *, changed: list[str] | None,
+def attempt_counts(jobs: dict[str, list[str]], *, stopped: set[str],
+                   changed: list[str] | None,
                    selection: list[str] | None) -> tuple[bool, list[str], str]:
-    """(counts against the head, the failing tests, why). Fails closed."""
-    if jobs is None:
-        return True, [], "the failed run or its log could not be read"
+    """(counts against the head, the failing tests, why). Fails closed.
+
+    `stopped` names the failed jobs that stopped before any test ran.
+    """
     if changed is None:
         return True, [], "the PR's diff could not be read"
     legs = {job: ids for job, ids in jobs.items() if job != AGGREGATE_JOB} or jobs
-    unnamed = sorted(job for job, ids in legs.items() if not ids)
+    unnamed = sorted(job for job, ids in legs.items() if not ids and job not in stopped)
     if unnamed:
         return True, [], f"a failed job names no test: {', '.join(unnamed)}"
     ids = sorted({test_id for found in legs.values() for test_id in found})
     selected = [t for t in ids if is_selected(t, changed=changed, selection=selection)]
     if selected:
         return True, selected, "it failed a test the diff selected"
+    if not ids:
+        return False, [], f"every failed job stopped before any test ran: {', '.join(legs)}"
     return False, ids, "every failing test lies outside the diff's selection"
 
 
@@ -293,14 +313,20 @@ def _changed(repo: str, number: int) -> list[str] | None:
     return changed_paths([json.loads(line) for line in raw.splitlines() if line.strip()])
 
 
-def _failed_jobs(repo: str, run_id: int) -> dict[str, list[str]]:
-    """{each job that did not pass: the test ids its log names}."""
+def _failed_jobs(repo: str, run_id: int) -> tuple[dict[str, list[str]], set[str]]:
+    """({each job that did not pass: the test ids its log names}, those that
+    stopped before any test ran)."""
     raw = _gh("api", "--paginate", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
               "--jq", '.jobs[] | select(.conclusion != "success" and .conclusion != '
-              '"skipped" and .conclusion != "neutral") | {id, name}')
-    jobs = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    return {job["name"]: job_failures(job["name"], _gh(
-        "api", f"repos/{repo}/actions/jobs/{job['id']}/logs")) for job in jobs}
+              '"skipped" and .conclusion != "neutral") | {id, name, failed_step: '
+              '([.steps[]? | select(.conclusion == "failure") | .name][0])}')
+    found, stopped = {}, set()
+    for job in (json.loads(line) for line in raw.splitlines() if line.strip()):
+        log = _gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs")
+        found[job["name"]] = job_failures(job["name"], log)
+        if stopped_before_tests(job["failed_step"], log):
+            stopped.add(job["name"])
+    return found, stopped
 
 
 def classify_removal(repo: str, number: int,
@@ -313,7 +339,8 @@ def classify_removal(repo: str, number: int,
         run = removal_run(_runs(repo, queued), number, queued, removal_at)
         if run is None:
             return True, None, [], "no failed Tests run of this queue entry was found"
-        counts, ids, why = attempt_counts(_failed_jobs(repo, run),
+        jobs, stopped = _failed_jobs(repo, run)
+        counts, ids, why = attempt_counts(jobs, stopped=stopped,
                                           changed=_changed(repo, number),
                                           selection=_selection(repo, run))
         return counts, run, ids, why

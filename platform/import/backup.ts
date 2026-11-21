@@ -52,9 +52,11 @@ const ARCHIVE = /^tinyassets-data-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.tar\.gz$
 
 /** The work folder's layout. */
 export function layout(work: string) {
+  const shared = join(work, "data", "_data");
   return Object.freeze({
     manifest: join(work, "manifest.json"),
-    shared: join(work, "data", "_data"),
+    shared,
+    identities: join(shared, ".broker", "state", "owner-identities.db"),
     image: (uid: number) => join(work, `${uid}.img`),
     mount: (uid: number) => join(work, "mnt", String(uid)),
     archive: (name: string) => join(work, name),

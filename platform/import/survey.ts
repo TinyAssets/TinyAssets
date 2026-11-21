@@ -42,7 +42,9 @@ export type Code =
   | "unfinished_erasure" | "erasure_unread"
   // the new platform's limits
   | "over_file_bytes" | "over_storage" | "no_tier"
-  | "over_tar_member";
+  | "over_tar_member"
+  // the old policy's mapping (`policy.ts`)
+  | "policy_unreadable" | "policy_spend";
 
 export interface Problem {
   readonly code: Code;

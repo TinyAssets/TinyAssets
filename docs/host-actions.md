@@ -21,11 +21,11 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Production secrets move into a main-only GitHub Environment (2026-10-13)
 
-**Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `tests/test_workflow_production_environment.py`); the environment itself must exist and own the secrets, which only the repo admin can do.
+**Why:** a `workflow_dispatch` on a branch runs that branch's YAML, so `if: github.ref == 'refs/heads/main'` guards protect nothing; repo-level secrets are reachable from any ref, and run 38484527257 scp'd branch code onto the production host as root. Every production job now declares `environment: production` (enforced by `platform/ci/guards/environment.test.ts`); the environment itself must exist and own the secrets, which only the repo admin can do.
 
 | Item | Smallest founder-only action |
 |---|---|
-| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Every workflow reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment. The repository-level copies were deleted 2026-11-21 after the one-time copy into `production` (run 44864445693); only the harmless `TINYASSETS_WIKI_CANARY_TOKEN` stays at repository level. A new secret goes into its environment, never at repository level. `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN` go with `python scripts/platform_setup.py workos`. |
+| GitHub Environment `production` | Main only, no required reviewer, confirmed 2026-11-05; `E2B_API_KEY` is set there and nowhere else. Every workflow reads each secret but the harmless ones (`HARMLESS_SECRETS` in `platform/ci/guards/environment.test.ts`) inside a main-only environment. The repository-level copies were deleted 2026-11-21 after the one-time copy into `production` (run 44864445693); only the harmless `TINYASSETS_WIKI_CANARY_TOKEN` stays at repository level. A new secret goes into its environment, never at repository level. For WorkOS, first check the main-only `production` environment for `WORKOS_API_KEY`. Keep an existing value. If absent, store the key from the WorkOS Production dashboard (an `sk_` key, never `sk_test_`) using the local prompt for `gh secret set WORKOS_API_KEY --env production`, then read back the environment secret's name and update time. Once the founder confirms the intended production key is in place and all remaining readers use that environment, remove only the repository copies of `WORKOS_API_KEY` and `WORKOS_AUTHKIT_DOMAIN`. |
 
 ---
 
@@ -581,6 +581,17 @@ A blocking review verdict is now a check (`.github/workflows/review.yml`), the a
 Actions app, so the `review` context must be pinned to an App of its own, which only an
 organization owner can make. Nothing requires `review` until the last row; until then the
 receipt still gates.
+
+The installed App can recover a lost key under the same identity, with only a browser and
+`gh`. First check, in the organization's settings (Developer settings → GitHub Apps), that it
+is installed on `TinyAssets/TinyAssets` alone, has no active webhook and grants only
+**checks: write** and **metadata: read**, and that `review` passes the main-only row below.
+Then generate a private key on the App's page and, on the founder's own machine, pipe the
+downloaded `.pem` into `gh secret set REVIEW_APP_PRIVATE_KEY --env review --repo TinyAssets/TinyAssets`
+(PowerShell: `Get-Content <file> -Raw | gh secret set ...`), and delete the file.
+Keep `REVIEW_APP_ID` and the ruleset pin. Delete the old key on the App's page only once a
+fresh `review` check on a reviewed head has succeeded under the pinned App. Replacing the
+App itself gives it a new ID and requires a reviewed ruleset change.
 
 | Item | Smallest founder-only action |
 |---|---|

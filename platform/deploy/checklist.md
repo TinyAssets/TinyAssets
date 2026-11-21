@@ -213,7 +213,8 @@ It never counts as "absent".
   `triggers deploy` sets the doors' Cron Trigger, the canary's clock. Every connector then
   signs in again once.
 
-  Before any change, `routes` keeps a **route record** in `tinyassets-control`. It holds
+  Before any change, `routes` keeps a **route record** in the KV namespace named by
+  `platform/deploy/platform.json` (`namespaces.titles.CONTROL`). It holds
   the before-state of everything `routes` changes that `dark` does not:
   - every route of the zone as it read them, and the handover's changes;
   - the egress custom domain's Worker, or none;
@@ -415,7 +416,7 @@ metadata service (it serves the host's `user_data`, which holds its private SSH 
 host's boot script drops it for Docker's containers).
 
 It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
-`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
+`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` and `deletions` need the Spaces pair too, `bundle` the
 exclusion list, `stage`, `verify`, `wipe`, `admit`, `dlq` and `close` the R2 pair, the API
 token and `IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one
 stops before any step and names it. The account id is no secret: the seven Cloudflare modes
@@ -423,6 +424,16 @@ read it from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held 
 digits. The real window's `close` alone also reads `IMPORT_DOORS_API_TOKEN`, on the runner,
 never on the host, to delete the doors' `IMPORT_KEY`; no token of the deploy kit's is read.
 **Make them before the rehearsal, keep them through the window, and revoke them after it.**
+Use the checkout for the window. From its root, install the platform dependencies with
+`npm ci --prefix platform` if needed (Node 22.18 or later). Running
+`node platform/deploy/facts.ts --import` prints the names from the Workers' `wrangler.jsonc`
+files and `platform/deploy/platform.json`.
+Use the values of the fields below when selecting resources in Cloudflare.
+
+After bundling, mode `deletions` compares current off-host erasure records with the original
+owners of this run's bundles. It reports bundle ordinals and exits 3 on a match. A clean
+comparison applies only at the time of the scan. Step 11 still requires the matching pending
+owners to be discarded and withheld before admission.
 
 | `production` secret | What it is | Scope |
 |---|---|---|
@@ -430,10 +441,10 @@ never on the host, to delete the doors' `IMPORT_KEY`; no token of the deploy kit
 | `IMPORT_DO_TOKEN` | A custom-scope DigitalOcean token (step 2). | Droplet create, read and delete; image read; SSH key read; tag create and read (the `tag_name` filter and a Droplet's `tags` need `tag:read`); reserved IP read and update. An expiry just after the window. It is not the DR drill's `DIGITALOCEAN_TOKEN`. |
 | `IMPORT_SPACES_ACCESS_KEY_ID` and `IMPORT_SPACES_SECRET_ACCESS_KEY` | A limited-access Spaces key (step 3). | **Read** on `workflow-backups-jonnyton-sfo3` alone, the bucket the nightly backup writes. |
 | `IMPORT_EXCLUSION_LIST` | Your principal and every canary owner's, one a line (`#` starts a comment). They start fresh: backed up, never imported. | none |
-| `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one Cloudflare API token, made through the API (step 4). | Workers R2 Storage Bucket Item Write on `tinyassets-import-staging` and on `tinyassets-final-backup` (the off-site copy), Workers R2 Storage Bucket Item Read on `tinyassets-files`: it can never write the live files bucket. The reserved IP only; an end date. |
-| `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token (step 5). | Account · Queues · Edit (send to `tinyassets-import`, add and use the HTTP pull consumer of `tinyassets-import-dlq`), Account · Workers KV Storage · Edit (list `tinyassets-directory` and delete a rehearsal's records). The reserved IP only; an end date. |
-| `IMPORT_KEY` | 32 random bytes, base64url (step 6). | The same value as the doors' Worker secret `IMPORT_KEY` |
-| `IMPORT_DOORS_API_TOKEN` | One account API token (step 8). | Workers · Editor on the doors' Worker `tinyassets-doors` alone (Specified Workers): deleting and listing its secrets. No IP filter (GitHub's runner uses it); an end date. |
+| `IMPORT_R2_ACCESS_KEY_ID` and `IMPORT_R2_SECRET_ACCESS_KEY` | The S3 key pair of one Cloudflare API token, made through the API (step 5). | Workers R2 Storage Bucket Item Write on `staging_bucket` and `final_backup_bucket` (the off-site copy), Workers R2 Storage Bucket Item Read on `files_bucket`: it can never write the live files bucket. The reserved IP only; an end date. |
+| `IMPORT_CLOUDFLARE_API_TOKEN` | One account API token (step 6). | Account · Queues · Edit (send to the producer bound as `IMPORTS` in `platform/doors/wrangler.jsonc`, add and use the HTTP pull consumer of `dead_letter_queue`), Account · Workers KV Storage · Edit (list `directory` and delete a rehearsal's records). The reserved IP only; an end date. |
+| `IMPORT_KEY` | 32 random bytes, base64url (step 7). | The same value as the doors' Worker secret `IMPORT_KEY` |
+| `IMPORT_DOORS_API_TOKEN` | One account API token (step 8). | Workers · Editor on the doors' Worker named by `doors` alone (Specified Workers): deleting and listing its secrets. No IP filter (GitHub's runner uses it); an end date. |
 
 **Never give one of them a name another job reads.** Every `production` job reads its
 secrets by name from the one environment, so an import token stored as
@@ -470,8 +481,8 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
    `docs/host-actions.md`, then `gh secret set IMPORT_EXCLUSION_LIST --env production`. An
    empty list stops `bundle`.
 5. **The R2 key, through Cloudflare's API.** The dashboard's R2 token form gives one
-   permission to every bucket it names, which would let the key write `tinyassets-files`, every
-   user's file chunks. One API token with bucket-level policies cannot. You need:
+   permission to every bucket it names, which would let the key write the live files bucket,
+   every user's file chunks. One API token with bucket-level policies cannot. You need:
    - **A short-lived token that may make tokens.** My Profile → API Tokens → Create Token →
      the "Create Additional Tokens" template (User · API Tokens · Edit), with a TTL ending
      today. Delete it after this step.
@@ -483,8 +494,8 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
        back on the live host;
      - an end date just after the window, for example `2026-12-31T00:00:00Z`.
 
-   In Git Bash, `read -rs` takes the bootstrap token without showing it, and curl reads its
-   header from a file descriptor, so the token is in no command line:
+   In Git Bash from the repository root, `read -rs` takes the bootstrap token without showing
+   it, and curl reads its header from a file descriptor, so the token is in no command line:
    ```sh
    read -rs BOOT
    acct='<account id>'; ip='<reserved IPv4>'; until='<end date>'
@@ -495,17 +506,18 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
    write="$(group 'Workers R2 Storage Bucket Item Write')"
    rd="$(group 'Workers R2 Storage Bucket Item Read')"
    resp="$(python -c 'import json,sys
-   w, r, a, ip, t = sys.argv[1:]
+   w, r, a, ip, t, facts = sys.argv[1:]
+   names = json.loads(facts)
    b = "com.cloudflare.edge.r2.bucket." + a + "_default_"
    print(json.dumps({"name": "tinyassets-import-window-r2", "expires_on": t,
                      "condition": {"request_ip": {"in": [ip + "/32"]}},
                      "policies": [
                        {"effect": "allow", "permission_groups": [{"id": w}],
-                        "resources": {b + "tinyassets-import-staging": "*",
-                                      b + "tinyassets-final-backup": "*"}},
+                        "resources": {b + names["staging_bucket"]: "*",
+                                      b + names["final_backup_bucket"]: "*"}},
                        {"effect": "allow", "permission_groups": [{"id": r}],
-                        "resources": {b + "tinyassets-files": "*"}}]}))' \
-     "$write" "$rd" "$acct" "$ip" "$until" \
+                        "resources": {b + names["files_bucket"]: "*"}}]}))' \
+     "$write" "$rd" "$acct" "$ip" "$until" "$(node platform/deploy/facts.ts --import)" \
      | curl -sS -X POST -H @<(auth) -H 'Content-Type: application/json' --data @- \
          "$api/user/tokens")"
    printf %s "$resp" | python -c "import json,sys; d=json.load(sys.stdin); sys.stdout.write(d['result']['id'] if d.get('success') else sys.exit('refused: ' + str(d.get('errors'))))" \
@@ -535,19 +547,20 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
    ```sh
    k="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
    printf %s "$k" | gh secret set IMPORT_KEY --env production
-   printf %s "$k" | npx wrangler secret put IMPORT_KEY --name tinyassets-doors
+   printf %s "$k" | npx wrangler secret put IMPORT_KEY --config doors/wrangler.jsonc
    unset k
    ```
    Without the doors' copy, the consumer drops every import message.
 8. **`IMPORT_DOORS_API_TOKEN`.** Manage Account → Account API Tokens → Create Token → Custom
    token, named `tinyassets-import-window-doors`: Workers · Editor, resources Specified Workers
-   → `tinyassets-doors` alone (Cloudflare's per-Worker roles, 2026-09-15; Editor manages a
-   Worker's secrets), with a TTL just after the window. Then
+   → the Worker named by `doors` alone (Cloudflare's per-Worker roles, 2026-09-15; Editor
+   manages a Worker's secrets), with a TTL just after the window. Then
    `gh secret set IMPORT_DOORS_API_TOKEN --env production`. Confirm, as you mint it, that the
    form scopes the token to that one Worker; if it cannot, stop and say so, rather than hand
    the window a token that edits every Worker.
 
-The R2 bucket `tinyassets-final-backup` is made by the deploy kit's `dark`, with the other
+The final backup bucket (`platform/deploy/platform.json`, `buckets.unbound.final_backup`)
+is made by the deploy kit's `dark`, with the other
 buckets. **In the window, after its census,** run `offsite`: it copies the final backup the
 window's copy was made from (its manifest, archive and every pinned snapshot) there, and reads
 each back against the manifest. Keep that bucket through the 14-day hold. **Run it before the
@@ -604,7 +617,7 @@ or a check that finds an object missing or different.
 | `OFFSITE_BUCKET` (repository variable) | The B2 bucket's name (step 2) | none |
 | `OFFSITE_B2_KEY_ID`, `OFFSITE_B2_APPLICATION_KEY` | The write key (step 4) | `listBuckets,listFiles,writeFiles` on the bucket alone: it adds and hides, and can't delete or read |
 | `OFFSITE_B2_READ_KEY_ID`, `OFFSITE_B2_READ_KEY` | The read key (step 4) | `listBuckets,listFiles,readBucketRetentions,readFiles` on the bucket alone: the nightly byte check, the bucket's lock, and a restore |
-| `OFFSITE_R2_ACCESS_KEY_ID`, `OFFSITE_R2_SECRET_ACCESS_KEY` | The S3 pair of one Cloudflare API token (step 5) | Workers R2 Storage Bucket Item Read on `tinyassets-files` alone. No IP condition: GitHub's runners have no fixed address |
+| `OFFSITE_R2_ACCESS_KEY_ID`, `OFFSITE_R2_SECRET_ACCESS_KEY` | The S3 pair of one Cloudflare API token (step 5) | Workers R2 Storage Bucket Item Read on the `BLOBS` bucket in `platform/files/wrangler.jsonc` alone. No IP condition: GitHub's runners have no fixed address |
 
 The account id is the repository variable `CLOUDFLARE_ACCOUNT_ID` (the import window's step 0).
 
@@ -643,8 +656,9 @@ The steps, on your own computer (about $0.50 a month at today's size):
    production` and `OFFSITE_B2_APPLICATION_KEY` (the write key), and `OFFSITE_B2_READ_KEY_ID`
    and `OFFSITE_B2_READ_KEY` (the read key), pasting each at the hidden prompt. Then sign the
    command line out (`b2 account clear`).
-5. **The R2 read key,** through Cloudflare's API, as the import window's step 5 makes its key,
-   with one policy and no condition or end date:
+5. **The R2 read key,** through Cloudflare's API, as the import window's step 5 makes its
+   key. Use the same checkout with its platform dependencies installed. From the repository root,
+   make one read policy with no condition or end date:
    ```sh
    read -rs BOOT
    acct='<account id>'
@@ -652,12 +666,12 @@ The steps, on your own computer (about $0.50 a month at today's size):
    auth() { printf 'Authorization: Bearer %s\n' "$BOOT"; }
    rd="$(curl -sS -H @<(auth) "$api/user/tokens/permission_groups" | python -c "import json,sys; print(next(g['id'] for g in json.load(sys.stdin)['result'] if g['name'] == 'Workers R2 Storage Bucket Item Read'))")"
    resp="$(python -c 'import json,sys
-   r, a = sys.argv[1:]
+   r, a, facts = sys.argv[1:]
    print(json.dumps({"name": "tinyassets-offsite-read",
                      "policies": [{"effect": "allow", "permission_groups": [{"id": r}],
                                    "resources": {"com.cloudflare.edge.r2.bucket." + a
-                                                 + "_default_tinyassets-files": "*"}}]}))' \
-     "$rd" "$acct" \
+                                                 + "_default_" + json.loads(facts)["files_bucket"]: "*"}}]}))' \
+     "$rd" "$acct" "$(node platform/deploy/facts.ts --import)" \
      | curl -sS -X POST -H @<(auth) -H 'Content-Type: application/json' --data @- \
          "$api/user/tokens")"
    printf %s "$resp" | python -c "import json,sys; d=json.load(sys.stdin); sys.stdout.write(d['result']['id'] if d.get('success') else sys.exit('refused: ' + str(d.get('errors'))))" \
@@ -682,8 +696,8 @@ failed drill fails that night's copy job, as a red night does. Dispatch **Off-ac
 
 ## A restore from the copy
 
-Mode `copyback` of **Platform deploy** writes back into `tinyassets-files` the objects of one
-owner's namespace that R2 lacks, as the copy holds them now or held them at `at`, a time in the
+Mode `copyback` of **Platform deploy** writes back into the files Worker's `BLOBS` bucket the
+objects of one owner's namespace that R2 lacks, as the copy holds them now or held them at `at`, a time in the
 last 21 days, and never replaces one R2 holds (`deploy/offsite.ts` `copyBack`). Use it when R2
 lost an owner's objects: a mistaken deletion, or a restore whose chunks step names chunks
 missing.
