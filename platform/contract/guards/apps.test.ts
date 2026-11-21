@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import raw from "../apps.json" with { type: "json" };
 import { appList, checkedApps, connectUrl, refusedRegistrationLine, registrationRefusal,
          vendorOf } from "../src/apps";
-import { MCP_RESOURCE } from "../src/identity";
+import { MCP_RESOURCE, ZONE } from "../src/identity";
 
 describe("apps.json", () => {
   it("holds each app to its shape: an id, its registration, match data, a connect step " +
@@ -143,6 +143,7 @@ describe("apps.json", () => {
     const claude = appList().find((app) => app.id === "claude")!;
     expect(new URL(claude.connect.link!).searchParams.get("connectorUrl")).toBe(MCP_RESOURCE);
     expect(JSON.stringify(appList())).not.toContain("{mcp}");
+    expect(JSON.stringify(raw)).not.toContain(`${ZONE}/mcp`);
     expect(appList().find((app) => app.id === "cursor")!.connect.code).toContain(MCP_RESOURCE);
   });
 

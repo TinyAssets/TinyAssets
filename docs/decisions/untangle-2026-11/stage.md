@@ -47,7 +47,7 @@ PR 1 is built now. PRs 1 and 2 are sequential, not parallel: PR 2's host-under-t
 ## Owed
 
 - [x] PR 2, `untangle/stage-kit`: `routes` makes and hands back the host's DNS record, finds E2B's hook by name and moves its URL, and the canary reads the old side at the zone and the doors at the host, with the handles record's issuer guard to match (item 2 above).
-- [ ] PR 3, `untangle/stage-host`: `host` is `stage.tinyassets.io`, the plugins and the binder's two known answers regenerated, the stage's end on the manifest; then live: the `routes` run that opens the stage, on the founder's go.
+- [x] PR 3, `untangle/stage-host`: `host` is `stage.tinyassets.io`, the plugins and the binder's two known answers regenerated, the stage's end on the manifest; then live: the `routes` run that opens the stage, on the founder's go.
 - [ ] PR 4, `untangle/stage-end`: `host` is `tinyassets.io` again, the plugins and the known answers with it, once the stage ends; merged before the window opens.
 - [ ] live: Step 6's pair check and pin PR take the runner and probes bundles this PR moved (they no longer inline `identity.json`); no template build has run since, so it is the check Step 6 already owes.
 - [ ] live: the owner app's socket on the stage host under the CSP's `wss://` host, first seen at the stage's first signed-in page.

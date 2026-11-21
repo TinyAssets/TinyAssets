@@ -65,7 +65,7 @@ guard pass with `host` the zone and, uncommitted, with `stage.tinyassets.io`.
 
 ## Owed
 
-- [ ] PR 3, `untangle/stage-host`: `host` is `stage.tinyassets.io`; then live: the stage's
+- [x] PR 3, `untangle/stage-host`: `host` is `stage.tinyassets.io`; then live: the stage's
   `routes` run, the token's first DNS write (the host's record).
 - [ ] PR 4, `untangle/stage-end`: `host` is the zone again, and the checklist's stage
   section goes with the stage.
