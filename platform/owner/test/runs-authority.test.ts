@@ -306,7 +306,7 @@ describe("the runner's events post", () => {
   });
 });
 
-describe("a sandbox's own sign-ins (ADR-031 decision 2)", () => {
+describe("a sandbox's own sign-ins (ADR-039 decision 2.20)", () => {
   it("never run a client's run on the owner's sign-in: auto takes the owner's key, and an " +
      "agent naming the sign-in is started only where its own sandbox signed in", async () => {
     const r = await gated();

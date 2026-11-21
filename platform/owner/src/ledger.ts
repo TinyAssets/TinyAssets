@@ -1,6 +1,6 @@
 /**
- * The trusted message ledger (ADR-025), in the owner's own object (ADR-032): who sent what
- * to whom, and who read it.
+ * The trusted message ledger (ADR-039 decision 2.15), in the owner's own object (ADR-032):
+ * who sent what to whom, and who read it.
  *
  * - The agent registry (`outside_agents`): one outside identity is at most one enabled
  *   agent. It registers only from the verified origin the binder passes, as an `api_key`

@@ -4,6 +4,8 @@
 
 Accepted
 
+Superseded by ADR-032 (founder, 2026-11-21), except: private by default (ADR-039 decision 2.6).
+
 ## Date
 
 2026-09-26

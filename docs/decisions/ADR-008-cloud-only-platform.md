@@ -4,6 +4,8 @@
 
 Accepted. Amended by ADR-024 (a paired device runs only its owner's work).
 
+Superseded by ADR-032 (founder, 2026-11-21), except: no host of ours, now Direction 8 and ADR-032 (ADR-039 decision 2.4).
+
 ## Date
 
 2026-09-21

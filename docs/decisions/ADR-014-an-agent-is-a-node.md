@@ -4,6 +4,8 @@
 
 Accepted
 
+Superseded by ADR-032 (founder, 2026-11-21).
+
 ## Date
 
 2026-09-27
