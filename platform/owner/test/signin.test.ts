@@ -234,6 +234,26 @@ describe("a sign-in", () => {
     // Each ended, its lease given back.
     expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
     expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+    // The two with no answer it can read stopped in the sandbox, in case their CLI launched;
+    // the refused one launched nothing.
+    const { signins, signinCancels } = await recorder(r.stub);
+    expect(signinCancels).toEqual(signins.map(({ id }) => ({ authority: "owner", id })));
+    expect(signinCancels).toHaveLength(2);
+  });
+
+  it("sends a start refused for the moment again, the same start, and begins", async () => {
+    const r = await gated();
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signin", { refuse: { code: "object_overloaded",
+                                         message: "this account is busy", retryAfterS: 0 } });
+    const begun = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
+    const sent = (await gate.calls()).filter((call) => call.method === "signin")
+      .map((call) => (call.args as [string, SandboxSignin])[1]);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(sent[0]!.id).toBe(begun.id);
+    expect((await recorder(r.stub)).signins.map(({ id }) => id)).toEqual([begun.id]);
+    expect((await r.stub.signinList(r.bind())).signins.map(({ id }) => id)).toEqual([begun.id]);
   });
 
   it("signs a client's sandbox in only inside itself", async () => {
