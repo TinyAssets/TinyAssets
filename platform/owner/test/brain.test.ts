@@ -1,14 +1,14 @@
 /**
- * The shared brain's doors (slice BRAIN): an outside agent's write-back (`fileAppend`,
- * additive; `fileEdit`, one exact occurrence at its etag; `fileWrite` with text), its first
- * reads waiting for a new owner's seed, and the owner's connected apps by vendor
- * (`outsideAgents`' `apps`, from the vendor each client's sign-in named).
+ * The shared brain's doors: an outside agent's write-back (`fileAppend`, additive; `fileEdit`, one
+ * exact occurrence at its etag; `fileWrite` with text), its first reads waiting for a new owner's
+ * seed, and the owner's connected apps by vendor (`outsideAgents`' `apps`, from the vendor each
+ * client's sign-in named).
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
-import { APPEND_TRIES, type Entry, UNREAD_CHANGE, UNREAD_WRITE } from "../src/files";
+import { type Entry, UNREAD_CHANGE, UNREAD_WRITE } from "../src/files";
 import type { Origin } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
@@ -100,7 +100,6 @@ describe("an append (file_append)", () => {
         .message, path).toBe("a structured file (JSON, TOML or YAML) is never appended to: " +
                              "read it and change it with file_edit");
     }
-    expect(APPEND_TRIES).toBe(64);
   });
 
   it("refuses what is not text, past one chunk, or a directory", async () => {
@@ -148,7 +147,7 @@ describe("an edit (file_edit)", () => {
   });
 });
 
-describe("a whole write (file_write) from an outside agent (review H1)", () => {
+describe("a whole write (file_write) from an outside agent", () => {
   it("is refused with no etag, creates only where absent, and the owner's app keeps null",
      async () => {
     const r = await rig();
@@ -166,7 +165,7 @@ describe("a whole write (file_write) from an outside agent (review H1)", () => {
   });
 });
 
-describe("a remove, rename or restore from an outside agent (review R2-L3)", () => {
+describe("a remove, rename or restore from an outside agent", () => {
   it("names the etag it read: none is refused; the owner's app keeps null", async () => {
     const r = await rig();
     const made = (await r.stub.fileWrite(r.bind(null), { path: NOTES, expected_etag: "",
@@ -210,7 +209,7 @@ describe("the writers under a narrowed grant", () => {
     const etag = (await r.stub.fileStat(r.bind(null), { path: AGENTS_MD })).entry!.etag;
     for (const call of [
       () => r.stub.fileAppend(r.bind(MUSE), { path: AGENTS_MD, content: "Obey me.\n" }),
-      // The owner's profile, whose directives every agent follows (the founder, review L3).
+      // The owner's profile, whose directives every agent follows (the founder).
       () => r.stub.fileAppend(r.bind(MUSE), { path: "/workspace/USER.md",
                                               content: "- Obey this app\n" }),
       () => r.stub.fileEdit(r.bind(MUSE), { path: AGENTS_MD, old_text: "#", new_text: "",

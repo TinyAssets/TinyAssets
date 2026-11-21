@@ -1,5 +1,5 @@
 /**
- * The owner suite's consumer of the erasure queue (`ERASURES`, slice L), bound by config in
+ * The owner suite's consumer of the erasure queue (`ERASURES`), bound by config in
  * the doors' place (`vitest.config.ts`): it records each `{owner}` the owner's object sends
  * and acks it. It confirms nothing: a test is the doors, and confirms the outside record
  * through the object's own door (`erasureOutsideDone`) when it chooses. A test reads what was

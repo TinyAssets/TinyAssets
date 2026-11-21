@@ -1,9 +1,8 @@
 /**
- * The doorbell (slice W, tasks 7): each wake kind's request from its record, sent by the
- * gateway with the secret only it can open; the kill switch in the control record
- * (`CONTROL`); admission; a revoke never outlived; a slow send never replayed; a write that
- * rings only the agents following it whose grant reads it, and never an agent's own; and a
- * wake that leads its agent's digest to just the change.
+ * The doorbell: each wake kind's request from its record, sent by the gateway with the secret only
+ * it can open; the kill switch in the control record (`CONTROL`); admission; a revoke never
+ * outlived; a slow send never replayed; a write that rings only the agents following it whose grant
+ * reads it, and never an agent's own; and a wake that leads its agent's digest to just the change.
  *
  * The object is production's. Its GATEWAY is the gate in front of the real gateway
  * (`gateFor`): each ring the object asks is recorded there, by owner, then made by the real
@@ -45,7 +44,7 @@ const TOKEN = "sk-ant-oat01-" + "t".repeat(40);
 const unswept = (): Promise<never> => Promise.reject(new Error("no sweep in this test"));
 const KEY = Buffer.from(WHSEC.slice("whsec_".length), "base64");
 
-/** One ring the object asked of the gateway (slice W): the subscription and the request. */
+/** One ring the object asked of the gateway: the subscription and the request. */
 interface Rang {
   readonly subscription: string;
   readonly version: number;
@@ -376,7 +375,7 @@ describe("a write rings only who follows it and may read it, and never on an age
     await subscribed(r, MUSE, { board: true });
     await subscribed(r, DOT, { board: true }, "dot");
     // An agent's write, or a run's, rings no agent: so two agents never wake each other
-    // without end (OpenAI's feedback-loop check; slice ID's rule).
+    // without end (OpenAI's feedback-loop check).
     for (let round = 0; round < 3; round++) {
       await write(r, "board", `m${round}`, r.bind(MUSE));
       await write(r, "board", `d${round}`, r.bind(DOT));
@@ -601,7 +600,6 @@ describe("a revoke is never outlived", () => {
       facts: { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT } },
       refreshed: "stored", owners: "stored",
       lapsed: "stored" });
-    expect(SUBSCRIPTIONS_PER_AGENT).toBe(16);
   });
 
   it("does not ring an owner-pasted doorbell whose client's grant cannot read", async () => {

@@ -16,15 +16,14 @@
  *   each hash checked and a verified range read from its whole chunk, as `FILES` answers.
  *
  * **Checkpoints.** Every chunk call first awaits the leg's driver: the owner's path is then
- * suspended on the store, holding what it holds at that call (a chunk it sends, the chunks
- * in hand), and the driver collects the owner isolate (`/gc`, a swept full collection) and
- * reads its heap and backing stores before it lets the call go on (rpcretain_research.md
- * §4: a read must be atomic with its collection). With several paths at once the driver
- * waits until each is parked on a call or done, so nothing runs in the isolate between the
- * collection and the reading.
+ * suspended on the store, holding what it holds at that call (a chunk it sends, the chunks in
+ * hand), and the driver collects the owner isolate (`/gc`, a swept full collection) and reads its
+ * heap and backing stores before it lets the call go on (a read must be atomic with its
+ * collection). With several paths at once the driver waits until each is parked on a call or done,
+ * so nothing runs in the isolate between the collection and the reading.
  *
  * Content is distinct in every chunk (letters from a seeded generator), so a longer edit's
- * shifted chunks are each made and put, never found already stored (review H2).
+ * shifted chunks are each made and put, never found already stored.
  *
  * Routes: `/setup?path&mib&n` makes `n` objects ready for `path` at `mib` MiB (outside any
  * measurement), `/run?path&mib` runs it in each at once, `/rest` serves one object's first
@@ -178,7 +177,7 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   /** A log segment as the files Worker takes it: a checkpoint while its call holds it. */
   async putManifestSegment(_ns: string, _key: string, _gen: string, _a: number, _b: number,
                            bytes: Uint8Array): Promise<{ sha256: string; size: number }> {
-    // What crossed the RPC is the segment's own bytes, never a larger buffer (rvburst X1).
+    // What crossed the RPC is the segment's own bytes, never a larger buffer.
     if (bytes.buffer.byteLength !== bytes.byteLength) {
       throw new Error(`a segment arrived as a view of ${bytes.byteLength} bytes of a ` +
                       `${bytes.buffer.byteLength}-byte buffer`);
@@ -299,7 +298,8 @@ async function moveRecords(env: LegEnv, records: number): Promise<number> {
  * The widest row the change log takes (`IMAGE_MAX`'s own: a connection's models at their
  * 640 KiB, every one a character JSON escapes, and its egress scope at its own), its name
  * one character past U+00FF, so its line is a two-byte string in V8: inserted, and its
- * image logged by `widen`, a change while capture is on (the change log test's L5-1 row).
+ * image logged by `widen`, a change while capture is on (as the change log's test of a
+ * connection's widest row).
  */
 const WIDEN = "UPDATE connections SET expires_at = coalesce(expires_at, 0) + 1";
 function wideRow(sql: Pick<SqlStorage, "exec">, n = 0): void {
@@ -359,7 +359,7 @@ export class LegOwner extends OwnerDO {
       "INSERT INTO owner_notices (at, type, detail) SELECT i, 'x', '' FROM n"));
     // Seven rows at `IMAGE_MAX`, each a page of its own and the first burst's (connections
     // come before notices): the seventh crosses its gather, a near-`IMAGE_MAX` two-byte row on
-    // a burst's last page, its build sampled (rvburst W1).
+    // a burst's last page, its build sampled.
     await this.#gate.write(() => {
       for (let n = 0; n < 7; n++) {
         wideRow(sql, n);
@@ -379,7 +379,7 @@ export class LegOwner extends OwnerDO {
           // The owner writes during the put: 4,200 rows already read rewritten wide, so the
           // ship after the burst's record builds and puts a full segment, its own hold;
           // each line ASCII but one character past U+00FF, the worst mix for its heap (a
-          // two-byte string in V8, twice its UTF-8: review rvburst V1).
+          // two-byte string in V8, twice its UTF-8).
           await this.#gate.write(() => {
             sql.exec(WIDEN);  // the widest row first: the segment holds it and the rest
             sql.exec("UPDATE owner_notices SET detail = printf('%.999c', 'b') || char(8364) " +
@@ -555,12 +555,12 @@ export class LegOwner extends OwnerDO {
   }
 
   /**
-   * The mail for the most records one merge takes with real messages (the memory research's
-   * merge, round 5), in the counts `mergeMail` derives: the muse's acked mail interleaved
-   * with Dot's and Pat's (two of Pat's to each), unread; then more of the muse's, acked, so
-   * the hot set stays past half. Sealed, the muse's first 8 MiB span Dot's and Pat's keys;
-   * Dot's, acked, merge into it (a piece of about 16 MiB); Pat's, acked, merge into that up to
-   * `MOVE_BYTES`: the measured move. The last of Dot's and of Pat's messages' seqs.
+   * The mail for the most records one merge takes with real messages, in the counts `mergeMail`
+   * derives: the muse's acked mail interleaved with Dot's and Pat's (two of Pat's to each), unread;
+   * then more of the muse's, acked, so the hot set stays past half. Sealed, the muse's first 8 MiB
+   * span Dot's and Pat's keys; Dot's, acked, merge into it (a piece of about 16 MiB); Pat's, acked,
+   * merge into that up to `MOVE_BYTES`: the measured move. The last of Dot's and of Pat's messages'
+   * seqs.
    */
   legInterleaved(rooms: string[], mail: MergeMail): Promise<{ dot: number; pat: number }> {
     const { ledger } = this.#stores;

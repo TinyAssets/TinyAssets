@@ -653,10 +653,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] `platform/owner/`, part 1: the comments pass on `src/` and its config, and the tests
     pass's items decided, its two prototype spies kept with their reasons
     (`untangle/pass-owner`; `untangle-2026-11/pass-owner.md`).
-  - [ ] `platform/owner/`, part 2: the comments of `test/`, `guards/` and `memory/`, and of the
-    four sources R5's hooks change once they land; the constant pins and `write-gate`'s pinned
-    helper text; the spec's `CODE_ANSWER_MAX`; the swallowed errors and retries
-    (`untangle/pass-owner-2`; `pass-owner.md` §4).
+  - [x] `platform/owner/`, part 2: the comments of `test/`, `guards/` and `memory/`; the
+    constant pins, each retired or kept with its reason, and `write-gate`'s helper text read as
+    code; a refusal bound no test reached made to; the spec's `CODE_ANSWER_MAX`; the swallowed
+    errors and retries, each kept with its reason (`untangle/pass-owner-2`; `pass-owner.md` §6).
+  - [ ] `platform/owner/`, part 3, once #5707 (`untangle/r5-hooks`) merges: the comments of the
+    files it changes (`actions.ts`, `policy.ts`'s 16 old-stack pointers, `runs.ts`, their two
+    tests and `guards/doors.test.ts`'s door reasons), and `policy.test.ts`'s pins
+    (`untangle/pass-owner-3`; `pass-owner.md` §6.5).
   - [x] `platform/ci/` and `platform/deploy/`, both passes in one PR for the two areas (one CI
     run), with the two ci checks that could never fail removed (the memory legs'
     `--expose-gc` text, which their header comments held) (`untangle/pass-ci-deploy`;
@@ -678,6 +682,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     and never past `endAt` less the longest pause (#5680; `untangle-2026-11/renew-deadline.md`).
   - [ ] `runner.ts` `RunState.renewing`, written for the tests alone, dropped with the next
     state format (`renew-deadline.md` §4).
+  - [ ] `owner/src/bodies.ts` `placing` waits on the sweep's delete it met, not a sleep of
+    `100 * tries` ms, bounded by `LANE_CALL_MS`; and `changelog.ts` `LOG_WIDE`, read only by its
+    test, goes (`untangle/place-wait`; `pass-owner.md` §6.4).
   - [ ] With the next change to the probes bundle: `sources/src/catalog.ts` `bundledRecords`,
     a pass-through of `RECORDS`, deleted, and `check.ts`'s `HOSTED_USE` made the one list
     `schema.ts`'s `HostedUse` is typed from (`pass-small.md` §2).

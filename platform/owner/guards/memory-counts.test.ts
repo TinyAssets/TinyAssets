@@ -33,8 +33,8 @@ const MIB = 1024 * 1024;
 
 /**
  * What the counts leave out, and where each is owed: never summed, never fitted. The garbage
- * figures are workerd's (`rpcretain_research.md` §2, review H1): the high-water RSS over the
- * resting RSS, with no forced collection, in MiB.
+ * figures are workerd's, measured: the high-water RSS over the resting RSS, with no forced
+ * collection, in MiB.
  */
 export const UNCOUNTED = Object.freeze({
   garbage: Object.freeze({

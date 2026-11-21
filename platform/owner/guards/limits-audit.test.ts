@@ -30,9 +30,8 @@ import { TIER_STORAGE_MAX } from "../../contract/src/control";
 
 const HALF = SHARE * DATABASE_BYTES;
 /**
- * The room under half when `LOG_BYTES` was derived (2026-11-03: main at `8161540c1`, slices
- * L, APP and SIGNIN, with slice P's tables, a connection counted in bytes since review L5-1),
- * every term but the change log's at its worst.
+ * The room under half when `LOG_BYTES` was derived (2026-11-03, main at `8161540c1`), every
+ * term but the change log's at its worst.
  */
 const DERIVED_ROOM = 665_127_185.5;
 /**
@@ -74,7 +73,7 @@ describe("the change log's bound", () => {
       * 2 ** 20;
     expect(LOG_BYTES).toBe(largest);
     expect(LOG_BYTES).toBeGreaterThanOrEqual(2 ** 20);
-    // The share fits the room as it stands: a later slice whose terms take more fails the
+    // The share fits the room as it stands: a later change whose terms take more fails the
     // half below, loudly, and the log's share is decided again then.
     const { change_log: _log, ...others } = TERMS;
     expect(termBytes("change_log", TERMS["change_log"]!))
@@ -82,7 +81,7 @@ describe("the change log's bound", () => {
   });
 });
 
-describe("slice STORE's archive (item 2)", () => {
+describe("the archive", () => {
   it("takes at most STORE's quarter of the room LOG_BYTES was derived from", () => {
     const { change_log: _log, ...others } = TERMS;
     expect(HALF - total(others)).toBeGreaterThanOrEqual(DERIVED_ROOM * (1 - LOG_SHARE));
@@ -107,8 +106,8 @@ describe("slice STORE's archive (item 2)", () => {
     expect(HALF - total(TERMS)).toBeLessThan(DERIVED_ROOM * 2 * LOG_SHARE + 309.6e6 + 50e6);
   });
 
-  it("cuts segments only where both sides hold the least, so ARCHIVE_SEGMENTS_MAX holds " +
-     "(review N2, the reviewer's rvsh2_pack case)", () => {
+  it("cuts segments only where both sides hold the least, so ARCHIVE_SEGMENTS_MAX holds",
+     () => {
     const message = (key: number, body: string): SegmentRecord => ({
       key, chain: `msg_${String(key).padStart(32, "0")}`,
       rows: [["ledger_messages", { seq: key, body }]] });
@@ -151,7 +150,7 @@ describe("slice STORE's archive (item 2)", () => {
     // The most records a move can hold: `pack`'s largest piece of records at their least
     // (twice the least of them and the record past it), and the stragglers one pick takes
     // at most (`LEDGER_LIMITS.archiveRecords`); a rewrite pass is held to it as it takes in
-    // neighbours, and the move's table refuses past it (review N7).
+    // neighbours, and the move's table refuses past it.
     const most = Math.floor(2 * SEGMENT_LEAST_BYTES / MIN_RECORD_BYTES) + 1
       + LEDGER_LIMITS.archiveRecords;
     expect(MOVE_RECORDS).toBe(most);
@@ -202,7 +201,7 @@ describe("the limits that ship", () => {
     for (const [change, without] of Object.entries(WITHOUT)) {
       expect(total(without()), change).toBeGreaterThan(HALF);
     }
-    // The unread ceiling leaves the hot ceiling a segment to move (slice STORE item 2).
+    // The unread ceiling leaves the hot ceiling a segment to move.
     const L = LEDGER_LIMITS;
     expect(L.maxUnacked + L.archiveRecords).toBeLessThanOrEqual(L.maxMessages);
   });

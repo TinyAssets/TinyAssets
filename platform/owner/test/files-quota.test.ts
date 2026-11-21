@@ -1,8 +1,8 @@
 /**
- * The files plane's bounds (plan §6, untangle F1): the owner's storage and the file index's
- * one ceiling, each refused loudly with nothing left behind, never making room by dropping
- * anything, and never a dead end: what only frees is never refused, and housekeeping is
- * never wedged. Retention is the owner's, off by default, and prunes only as the owner set it.
+ * The files plane's bounds (plan §6): the owner's storage and the file index's one ceiling, each
+ * refused loudly with nothing left behind, never making room by dropping anything, and never a dead
+ * end: what only frees is never refused, and housekeeping is never wedged. Retention is the
+ * owner's, off by default, and prunes only as the owner set it.
  */
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -448,7 +448,7 @@ describe("file history", () => {
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history " +
                                  "WHERE prune_after IS NULL"))
       .toEqual([{ n: SEED.entries + 600 }]);
-  });  // 600 versions written: past the default timeout under load (slice D)
+  });  // 600 versions written: past the default timeout under load
 
   it("never wedges housekeeping: a pass at every bound still expires, prunes and collects",
      async () => {
@@ -489,7 +489,7 @@ describe("file history", () => {
   });
 });
 
-describe("the retention marks' migration (untangle F1, owner migration 8)", () => {
+describe("the retention marks' migration (owner migration 8)", () => {
   /** An object of the migrations through H1's 7, `act` run on it, then migrated whole. */
   const migrated = async (act: (sql: SqlStorage) => void, r: Rig | null = null) => {
     return runInDurableObject((r ?? await rig()).stub, (_instance: OwnerDO, state) => {
@@ -605,7 +605,6 @@ describe("the files policy", () => {
                          retention_days: 3650 });
     expect(FILE_SETTINGS.keep_versions[1]).toBe(KEEP_CEILING);
     expect(FILE_SETTINGS.max_file_bytes[1]).toBe(MAX_INTENT_CHUNKS * CHUNK_BYTES);
-    expect(INDEX_BYTES).toBe(512 * 1024 ** 2);
   });
 
   it.each([

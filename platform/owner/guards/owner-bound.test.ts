@@ -1,5 +1,5 @@
 /**
- * The owner's own database stays well inside its 10 GB (ADR-032 §5; tasks 5 and 6).
+ * The owner's own database stays well inside its 10 GB (ADR-032 §5).
  *
  * Past 10 GB every write fails `SQLITE_FULL`, grants, revokes and policy writes with the
  * rest, and the owner's object stops; so no owner table may grow but by a bound the code
@@ -10,12 +10,11 @@
  *
  * The file manifest is bounded in bytes, not rows: every row of its tables is charged what
  * SQLite lays it out in, path bytes and overflow pages included (`manifest.ts`), by triggers
- * this guard finds in the schema, against the index's ceiling (`manifest.ts` `INDEX_BYTES`), every
- * index on them charged too (`MANIFEST_INDEXES`). The charge counts a page at three quarters
- * full; a thinned page may stay a third full, so the guard counts the manifest at its ceiling
- * times
- * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
- * (`files-share.test.ts`). The collection history is bounded the same way, in the bytes
+ * this guard finds in the schema, against the index's ceiling (`manifest.ts` `INDEX_BYTES`),
+ * every index on them charged too (`MANIFEST_INDEXES`). The charge counts a page at three
+ * quarters full; a thinned page may stay a third full, so the guard counts the manifest at
+ * its ceiling times `WORST_FILL`, and a workerd test fills, thins and refills a database
+ * against it (`files-share.test.ts`). The collection history is bounded the same way, in the bytes
  * its entries take (their triggers' charge, `maxHistoryCharge`). Every other table's rows are
  * laid out as SQLite lays them, their share of a b-tree page at that worst fill too (at most
  * the whole page: a record is on its page however thinned), their overflow pages whole
@@ -24,23 +23,10 @@
  * in the owner's database: agents run on unmodified engines, their sessions in the owner's
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
- * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * what this guard prints, under half the limit; the starter slice's
- * receipts (`STARTER_FILES_MAX` paths) and its one state row take 361,189 of it. Slice S's columns
- * (a run's `sandbox_wait`, one byte in `runs`, in place of a recheck time) move no term
- * at its page share, and it adds no table: the sandbox Worker keeps its own. Slice W added
- * `wake_callbacks` (`SUBSCRIPTIONS_PER_AGENT` doorbells for each of `maxAgents` enabled
- * agents, each its sealed blobs and arguments at their widest, and its index) and took out
- * `ledger_rings` and the revoke tombstones' rows. Slice ID added `native_agents` (the
- * owner's own agents in the registry's rows), a mail's authority and attendance, and a
- * run's mail; it adds no index (an identity and a mail thread's conversation are found by
- * their keys, digests). Slice M added each collection row's owner-wide change and its
- * `collection_changes` entry, an erase entry's change, private writer and
- * `collection_erasures` entry (all in the collections' charges), and the one-row
- * `collection_clock`. Untangle H1 keyed the history by its change, so its age index and its
- * erase entries' index went, and moved the deletions to their own table, `collection_erasures`,
- * in the history's charge with no index. A new table, or a raised bound, must stay under half
- * the limit, or the guard fails.
+ * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is what
+ * this guard prints, under half the limit; the starter's receipts (`STARTER_FILES_MAX` paths) and
+ * its one state row take 361,189 of it. A new table, or a raised bound, must stay under half the
+ * limit, or the guard fails.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -187,11 +173,11 @@ const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOw
 const POLICY_LIMITS = declared(POLICY_DOCUMENT, "POLICY_LIMITS", "maxDocument", "maxChange",
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
-/** The calls the action rules hold (R5 P-decide). */
+/** The calls the action rules hold. */
 const ACTION_LIMITS = declared("actions", "ACTION_LIMITS", "held");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
-/** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
+/** The runs' bounds: live runs, settled receipts kept, and their rows' widths. */
 const RUNS_KEPT = constant("runs", "RUNS_KEPT");
 const EXPORTS_OPEN = constant("export", "EXPORTS_OPEN");
 const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
@@ -199,18 +185,18 @@ const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
 const BILLED_KEPT = constant("sandbox-time", "BILLED_KEPT");
 const LIVE_KEPT = constant("sandbox-time", "LIVE_KEPT");
 const INLINE_FILE = constant("files", "INLINE_BYTES");
-/** The doors' records in the object (slice L): the key store and the inbound bindings. */
+/** The doors' records in the object: the key store and the inbound bindings. */
 const MAX_KEYS = constant("keys", "MAX_KEYS");
 const MAX_BINDINGS = constant("inbound", "MAX_BINDINGS");
-/** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
+/** Mail that starts runs: a message's id, an own agent's id, a mail's authority. */
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
 const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(length\(origin\) <= ([0-9]+) /);
 /**
- * A connection's models, in bytes (review L5-1), its sealed blob, in characters, and its
- * egress scope (migration 11), in bytes: frozen bounds, which the schema's checks spell
- * (the frozen-bounds guard holds the two equal).
+ * A connection's models, in bytes, its sealed blob, in characters, and its egress scope (migration
+ * 11), in bytes: frozen bounds, which the schema's checks spell (the frozen-bounds guard holds the
+ * two equal).
  */
 const MODELS_BYTES = MODELS_JSON_MAX;
 const BLOB_CHARS = CONNECTION_BLOB_MAX;
@@ -380,8 +366,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     file_intents: { rows: MAX_OPEN_INTENTS,
                     bytes: ROW + 64 + 2 * MAX_INTENT_CHUNKS * 64,
                     by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
-                      "ids, and as many still to send, and a sync's lease (slice STORE, 32 " +
-                      "hex characters, a column's 64 at most)",
+                      "ids, and as many still to send, and a sync's lease (32 hex " +
+                      "characters, a column's 64 at most)",
                     indexes: { file_intents_due: key(NUMBER, 32) } },
     owner_policy: { rows: 1, bytes: ROW + P.maxDocument * 4,
                     by: "one document of maxDocument code points" },
@@ -403,9 +389,9 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                          * G.maxOwnerClients / (G.maxFreeClients + 2 * G.maxOwnerClients),
                        by: "free clients (no scopes, no name), live owner-set ones (their " +
                          "scopes' JSON at the schema's byte ceiling, and a name) and as many " +
-                         "revoked ones (no scopes, a name; slice L), each with its revision " +
+                         "revoked ones (no scopes, a name), each with its revision " +
                          "(migration 9) and its vendor, an id of at most VENDOR bytes, and " +
-                         "whether it was verified (migration 4, slice BRAIN)",
+                         "whether it was verified (migration 4)",
                        indexes: { sqlite_autoindex_outside_clients_1: key(64),
                                   outside_clients_listed: key(NUMBER, 64),
                                   outside_clients_free: key(NUMBER) } },
@@ -418,14 +404,14 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                         + 4 * AGENT_NAME_CHARS + 4 * RECIPE_CHARS + 64 + NUMBER,
                       by: "maxAgentRows, every row: a disabled agent's too; each its id, " +
                         "universe, client, family, source, name, recipe, reason and wake " +
-                        "counter (slice W's `wake_tat`) at the validators' widest",
+                        "counter (`wake_tat`) at the validators' widest",
                       indexes: { sqlite_autoindex_outside_agents_1: key(AGENT_ID),
                                  sqlite_autoindex_outside_agents_2: key(4 * UNIVERSE_CHARS,
                                                                         64, 64),
                                  outside_identities: key(64, 64),
-                                 // Slice W: the enabled agents by delivery method.
+                                 // The enabled agents by delivery method.
                                  outside_ringing: key(12) } },
-    // The owner's own agents (slice ID): counted with the outside agents in the registry's
+    // The owner's own agents: counted with the outside agents in the registry's
     // rows, so the two terms together count it twice over. `WITHOUT ROWID`, keyed by its id.
     native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
                      by: "maxAgentRows, live or retired, each its name (ASCII), id and " +
@@ -468,10 +454,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                wakes_open: key(NUMBER), wakes_sending: key(NUMBER),
                                wakes_settled: key(NUMBER) } },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    // The archive (slice STORE item 2): one fence row a segment, every sealed segment at least
-    // `SEGMENT_LEAST_BYTES` of the owner's counted storage, so the rows are at most a tier's
-    // storage over it, plus the one small segment a rewrite may leave; the tier record's
-    // storage is held to `TIER_STORAGE_MAX` so that this many fit.
+    // The archive: one fence row a segment, every sealed segment at least `SEGMENT_LEAST_BYTES` of
+    // the owner's counted storage, so the rows are at most a tier's storage over it, plus the one
+    // small segment a rewrite may leave; the tier record's storage is held to `TIER_STORAGE_MAX` so
+    // that this many fit.
     archive_segments: { rows: ARCHIVE_SEGMENTS_MAX,
                         bytes: ROW + 10 * NUMBER + 8 + CONTENT_ID + FILER + 2 * BLOOM_BYTES,
                         by: "ARCHIVE_SEGMENTS_MAX: TIER_STORAGE_MAX over SEGMENT_LEAST_BYTES, " +
@@ -490,7 +476,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                         "maxAgentRows waiting (a deletion past them is refused)",
                       indexes: { sqlite_autoindex_archive_purges_1: key(AGENT_ID) } },
     ledger_ids: { rows: 1, bytes: ROW + 64, by: "one row: the key ids carry their seq under" },
-    // Slice W's doorbell subscriptions: `WITHOUT ROWID`, keyed by the server's id, each its
+    // The doorbell subscriptions: `WITHOUT ROWID`, keyed by the server's id, each its
     // fields at the schema's widest (its sealed blobs visible ASCII, a byte a character; its
     // arguments any text, four bytes a character), and its by-agent index entry.
     wake_callbacks: { rows: L.maxAgents * SUBSCRIPTIONS_PER_AGENT,
@@ -519,20 +505,20 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                           tables: ["collection_history", "collection_erasures"],
                           indexes: { sqlite_autoindex_collection_history_1: 0 } },
     collection_space: { rows: 1, bytes: ROW, by: "one row" },
-    collection_clock: { rows: 1, bytes: ROW, by: "one row (slice M)" },
+    collection_clock: { rows: 1, bytes: ROW, by: "one row" },
     agent_cards: { rows: K.maxPending, bytes: ROW + 37 + 64 + 64 + 64 + K.maxRequest + 64,
                    by: "maxPending cards of maxRequest",
                    indexes: { sqlite_autoindex_agent_cards_1: key(37),
                               sqlite_autoindex_agent_cards_2: key(64, 64),
                               agent_cards_by_age: key(NUMBER) } },
-    // R5 P-decide: the calls held for the owner, pending or approved, and their decisions'
-    // receipts, a bucket of the policy's kept apart (`actions.ts`).
+    // The calls held for the owner, pending or approved, and their decisions' receipts, a bucket of
+    // the policy's kept apart (`actions.ts`).
     action_requests: { rows: A.held,
                        bytes: ROW + 36 + 2 * 71 + ACTION_CARD_BYTES + 64 + 3 * NUMBER
                          + RUN_ID_CHARS + 64,
                        by: "held calls, each its card at the schema's byte ceiling, its two " +
                          "digests, its client, its times, and a run's id and its origin's " +
-                         "family (P-resume)",
+                         "family",
                        indexes: { sqlite_autoindex_action_requests_1: key(36),
                                   sqlite_autoindex_action_requests_2: key(71),
                                   action_requests_by_client: key(64) } },
@@ -558,7 +544,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                           indexes: { sqlite_autoindex_model_reservations_1: key(33),
                                      model_reservations_open: key(10) } },
     model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
-    // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
+    // The sandbox's egress: its lease is `file_space`'s one row; each request a row.
     egress_reservations: { rows: E.receiptsKept + E.refusalsKept
                                   + E.openPerRun * RUNS_CEILING,
                            bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
@@ -570,28 +556,28 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                            indexes: { sqlite_autoindex_egress_reservations_1: key(32),
                                       egress_reservations_by_state: key(8, NUMBER),
                                       egress_reservations_by_time: key(NUMBER) } },
-    // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
+    // Runs: settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
             bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
               + 1 + MESSAGE_ID_CHARS + 9,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
               "its result, error, stamp, model, ids, counters, lease, heartbeat, whether it " +
-              "waits for a sandbox (slice S), mail and sandbox time at their widest",
+              "waits for a sandbox, mail and sandbox time at their widest",
             indexes: { sqlite_autoindex_runs_1: key(RUN_ID_CHARS), runs_by_request: key(64),
                        runs_live: key(9), runs_by_conversation: key(CONVERSATION_ID_CHARS,
                                                                    NUMBER),
                        runs_waiting: key(NUMBER), runs_settled: key(NUMBER, NUMBER) } },
-    // The sandbox leases (review H-1): one an authority, opened only for a live run.
+    // The sandbox leases: one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,
                       bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
                         + 16,
                       by: "RUNS_CEILING, each its authority, lease id, epoch, holder, " +
                         "times, three token hashes, network generation, its sandbox's " +
                         "own signed-in engines (visible ASCII) and its readable set's digest" },
-    // The vendor's own sign-ins in progress (slice SIGNIN): one a sandbox, each holding that
-    // sandbox's lease, so at most RUNS_CEILING; each its prompt, a URL and a code (visible
-    // ASCII, at most SIGNIN_URL_MAX and SIGNIN_CODE_MAX).
+    // The vendor's own sign-ins in progress: one a sandbox, each holding that sandbox's lease, so
+    // at most RUNS_CEILING; each its prompt, a URL and a code (visible ASCII, at most
+    // SIGNIN_URL_MAX and SIGNIN_CODE_MAX).
     sandbox_signins: { rows: RUNS_CEILING,
                        bytes: ROW + 64 + 35 + 64 + 3 + 64 + 32 + NUMBER + 32
                          + SIGNIN_URL_MAX + SIGNIN_CODE_MAX + 1 + 2 * NUMBER,
@@ -631,7 +617,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Each applied migration's digest (`migrate`): one row a migration of the code's list.
     schema_digests: { rows: 1024, bytes: ROW + 8 + 64,
                       by: "one a migration; 1,024 past any list the code will hold" },
-    // Slice P: the generations (`backup.ts`): the one being written, its cursor and its lists
+    // The generations (`backup.ts`): the one being written, its cursor and its lists
     // of at most MANIFEST_PARTS base parts and log segments together; and the newest finished
     // and each one an open export pins, their lists cleared (their roots hold them).
     owner_backups: { rows: 1, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * SEGMENT_ENTRY + 18 * 8,
@@ -654,13 +640,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Its sweep's filter of its chunk rows' names (`names-filter.ts`), one row until `clear`.
     restore_filter: { rows: 1, bytes: ROW + FILTER_BYTES(),
                       by: "one row: FILTER_BYTES, the filter sized for CHUNK_ROWS_MAX" },
-    // Slice P: the sandbox meter (`sandbox-time.ts`).
+    // The sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
     owner_backup_state: { rows: 1, bytes: ROW + 3 * 8,
                           by: "one row: when the last generation began, told, and lost" },
     owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 16 + 2 * 8,
                      by: "EXPORTS_OPEN, each its id, opening, end and generation" },
-    // The change log (`changelog.ts`, review R4): its capture's one row, and its unshipped
+    // The change log (`changelog.ts`): its capture's one row, and its unshipped
     // images, charged as its trigger counts them (each its text and LOG_ROW_BYTES), held under
     // LOG_BYTES, and one image past it at its widest.
     log_capture: { rows: 1, bytes: ROW + 16 + 11 * 8, by: "one row" },
@@ -676,7 +662,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                      bytes: ROW + 64 + 2 * 8,
                      by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +
                        "and each client's)" },
-    // Keyed by an 8-byte digest (review N5): a record of its key, its time and their header.
+    // Keyed by an 8-byte digest: a record of its key, its time and their header.
     sandbox_billed: { rows: BILLED_KEPT, bytes: 8 + NUMBER + 8,
                       by: "BILLED_KEPT E2B executions inside the window, each 8 bytes of " +
                         "its id's digest and the event's time",
@@ -689,14 +675,14 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
     owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
-    // The key store (slice L): a row only while its key's owner-set grant row stands.
+    // The key store: a row only while its key's owner-set grant row stands.
     owner_keys: { rows: Math.max(MAX_KEYS, G.maxOwnerClients),
                 bytes: ROW + 16 + 64 + 4 * KEY_NAME_MAX + 3 * 9,
                 by: "maxOwnerClients (a key's grant is an owner-set client), each its id, " +
                   "client, name and times",
                 indexes: { sqlite_autoindex_owner_keys_1: key(16),
                            sqlite_autoindex_owner_keys_2: key(64) } },
-    // The inbound bindings (slice L): each its route, agent, owner-held proof and secret.
+    // The inbound bindings: each its route, agent, owner-held proof and secret.
     inbound_bindings: { rows: MAX_BINDINGS,
                         bytes: ROW + 32 + 10 + 64 + 9 + INBOUND_ROUTE_MAX + 1024
                           + 4 * INBOUND_SECRET_MAX + 64
@@ -845,12 +831,12 @@ const JSON_VALUE = 24;
 const CHUNK_LINE = 128;
 
 /**
- * The nightly manifest's stream at its worst (`backup.ts`, review L7): every exported
- * table's rows at their bound, each line its frame (`frameBytes`) plus its values' bytes
- * escaped at JSON's worst (`JSON_POINT`, a control character's `\u00XX`; base64's 4/3 is
- * less); a term charged in bytes (the file manifest, the collections) as its charge in rows
- * of `RECORD_FIXED` each, the least any charged row costs, each at its tables' widest
- * frame, and a chunk's line for each of the file manifest's.
+ * The nightly manifest's stream at its worst (`backup.ts`): every exported table's rows at their
+ * bound, each line its frame (`frameBytes`) plus its values' bytes escaped at JSON's worst
+ * (`JSON_POINT`, a control character's `\u00XX`; base64's 4/3 is less); a term charged in bytes
+ * (the file manifest, the collections) as its charge in rows of `RECORD_FIXED` each, the least any
+ * charged row costs, each at its tables' widest frame, and a chunk's line for each of the file
+ * manifest's.
  */
 export function worstStream(terms: Readonly<Record<string, Term>> = TERMS): number {
   const tables = exported();
@@ -924,8 +910,8 @@ export function widestImage(terms: Readonly<Record<string, Term>> = TERMS): numb
 }
 
 describe("the change log's images", () => {
-  it("are each at most IMAGE_MAX, derived from the widest real row, under a row's 2 MB " +
-     "(review L5-1)", () => {
+  it("are each at most IMAGE_MAX, derived from the widest real row, under a row's 2 MB",
+     () => {
     const widest = widestImage();
     expect(widest).toBeGreaterThan(100_000);
     // Every exported table's widest row, a connection's models at their ceiling among them:
@@ -992,8 +978,6 @@ describe("the owner's database bound", () => {
     const bytes = worstCase();
     expect(bytes).toBeLessThan(SHARE * DATABASE_BYTES);
     // The manifest at its high bound and its worst fill, the largest term, is counted whole.
-    expect(INDEX_BYTES).toBe(512 * 1024 ** 2);
-    expect(WORST_FILL).toBe(2.25);
     expect(termBytes("file_manifest", MANIFEST))
       .toBe(INDEX_BYTES * WORST_FILL);
     expect(Object.entries(TERMS).every(([name, term]) => termBytes(name, term)
@@ -1051,12 +1035,11 @@ describe("the owner's database bound", () => {
     expect(TERMS["model_spend"]!.rows).toBe(4300);
     expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
-    expect(TERMS["connections"]!.bytes).toBe(256 + 655_360 + 16_384);  // in bytes (review L5-1)
+    expect(TERMS["connections"]!.bytes).toBe(256 + 655_360 + 16_384);  // in bytes
     expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 16 * 1_000);
-    expect(EGRESS_PATH_MAX).toBe(2048);
     // The path is visible ASCII, so a character is a byte (the schema's CHECK).
-    expect(SCHEMA).toContain("path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 2048 AND " +
-                             "path NOT GLOB '*[^ -~]*'), ");
+    expect(SCHEMA).toContain("path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND " +
+                             `${EGRESS_PATH_MAX} AND path NOT GLOB '*[^ -~]*'), `);
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
       .toBe(3000 * (256 + 8 + 32 + 8) + 1000 * (65_536 + 80 * 4) + 1000 * 80 * 4);
     // The structural bounds (ADR-035): one recipient a message; history in bytes.
@@ -1067,8 +1050,8 @@ describe("the owner's database bound", () => {
                              "seq INTEGER NOT NULL, ");
   });
 
-  it("charges every index of slice ID's tables: the identities and the mail threads add none",
-     () => {
+  it("charges every index of the own agents' tables: the identities and the mail threads " +
+     "add none", () => {
     // An identity is found by its key (its name's digest), a mail thread's conversation by
     // its key (the thread's digest), and an agent's due mail by `recipients_by_state`: no
     // index past the row's own `ROW` is made for them, so none goes uncharged.
@@ -1082,9 +1065,9 @@ describe("the owner's database bound", () => {
 
   it("charges the change orders: the rows' index, and the history's and deletions' keys",
      () => {
-    // `collection_changes` is charged by the rows' triggers; the history and the deletions
-    // are keyed by their change (untangle H1), so neither has a change index, and a dropped
-    // index is no longer counted.
+    // `collection_changes` is charged by the rows' triggers; the history and the deletions are
+    // keyed by their change, so neither has a change index, and a dropped index is no longer
+    // counted.
     expect(indexesOn("collection_rows"))
       .toEqual(["collection_changes", "collection_creators", "collection_writers"]);
     expect([indexesOn("collection_history"), indexesOn("collection_erasures")]).toEqual([[], []]);

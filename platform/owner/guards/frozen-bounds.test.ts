@@ -1,5 +1,5 @@
 /**
- * The owner's frozen bounds held to the frozen SQL that spells them (decisions A7).
+ * The owner's frozen bounds held to the frozen SQL that spells them.
  *
  * The owner's migrations are literal SQL text, frozen from the first deploy and pinned by
  * digest (`schema.ts`, `migrations.json`). The bounds that text enforces are the code's
@@ -90,7 +90,7 @@ const PLACED = (table: string, body: string, times = 1) => MADE(table, times,
   (n) => `${body} = '' AND body_bytes > ${n} AND length(content_id) = 64`);
 /** An id's fixed length. */
 const ID = (column: string) => (n: number) => `length(${column}) = ${n}`;
-/** Every capture trigger (`<table>_logged_<event>`, slice P's change log), and the updates'. */
+/** Every capture trigger (`<table>_logged_<event>`, the change log's), and the updates'. */
 const CAPTURE = /^CREATE TRIGGER \w+_logged_(?:insert|update|delete) /;
 const CAPTURE_UPDATE = /^CREATE TRIGGER \w+_logged_update /;
 /** The capture triggers the migrations make, and the updates among them. */

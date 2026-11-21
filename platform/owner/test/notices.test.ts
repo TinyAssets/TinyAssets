@@ -1,6 +1,6 @@
 /**
  * The owner's notices (`notices.ts`): what the owner's work reports that no call fails with,
- * kept bounded, newest first, and read by the owner alone (slice D review M3).
+ * kept bounded, newest first, and read by the owner alone.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -23,7 +23,6 @@ describe("the owner's notices", () => {
       }
       return notices.list();
     });
-    expect(NOTICES_KEPT).toBe(1000);
     expect(kept).toHaveLength(NOTICES_KEPT);
     expect(kept[0]!.detail.startsWith(`${NOTICES_KEPT + 4} `)).toBe(true);
     expect(kept.at(-1)!.detail.startsWith("5 ")).toBe(true);

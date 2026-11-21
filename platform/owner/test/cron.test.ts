@@ -1,8 +1,6 @@
 /**
- * Cron recurrence (`cron.ts`; tasks 5, F1), carried over from the deleted scheduled-launch
- * tests (slice D review H1): the parse and its bounds, and `nextOccurrence`, strictly after
- * the time, by property tests against a minute-by-minute scan. The runs slice (R) schedules
- * a run by it.
+ * Cron recurrence (`cron.ts`), by which the runs schedule a run: the parse and its bounds, and
+ * `nextOccurrence`, strictly after the time, by property tests against a minute-by-minute scan.
  */
 import { describe, expect, it } from "vitest";
 

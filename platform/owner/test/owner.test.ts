@@ -3,8 +3,7 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { DurableObject, env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { LIMITS } from "../src/collections";
-import { CHUNK_BYTES, PLACE_BYTES } from "../../contract/src/limits";
+import { PLACE_BYTES } from "../../contract/src/limits";
 import { doorTable, rpcReserved } from "../../contract/src/doors";
 import { OwnerDO } from "../src/owner-do";
 import { MIGRATION_CHANGED, MIGRATION_UNPINNED, migrate, migrationDigest } from "../../contract/src/migrate";
@@ -42,7 +41,7 @@ describe("schema migration on wake", () => {
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(version(state)).toBe(MIGRATIONS.length);
     });
-    // The write answered its row without its body (review H3); the read, with it.
+    // The write answered its row without its body; the read, with it.
     const { body_bytes: _bytes, ...row } = "row" in written ? written.row : { body_bytes: 0 };
     expect((await stub.collectionGet(as(name), { collection: "board", row_id: "t" })).row)
       .toEqual({ ...row, body: "1" });
@@ -122,8 +121,8 @@ describe("schema migration on wake", () => {
     });
   });
 
-  it("refuses to start once an applied migration's digest is gone, never passing by default " +
-     "(review M3)", async () => {
+  it("refuses to start once an applied migration's digest is gone, never passing by default",
+     async () => {
     const { stub, as, name } = await ownerObject();
     await stub.collectionPull(as(name), PULL);
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
@@ -153,8 +152,6 @@ describe("schema migration on wake", () => {
     const ceiling = Number(/length\(CAST\(body AS BLOB\)\) <= (\d+)/
       .exec(MIGRATIONS.flat().join(" "))?.[1]);
     expect(ceiling).toBe(PLACE_BYTES);
-    // A placed body is any size up to what one call moves whole, cut into chunks.
-    expect(LIMITS.maxRowBytes).toBe(2 * CHUNK_BYTES);
     const { stub } = await ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const insert = (body: string, bytes: number, content: string | null) =>

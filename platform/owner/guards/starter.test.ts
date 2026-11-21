@@ -44,7 +44,7 @@ function frontOf(text: string): Map<string, string> {
 }
 
 describe("the starter package", () => {
-  it("refuses to bundle a path dropped without being retired (review R2-L4)", () => {
+  it("refuses to bundle a path dropped without being retired", () => {
     const copy = mkdtempSync(join(tmpdir(), "starter-"));
     try {
       cpSync(STARTER, copy, { recursive: true });

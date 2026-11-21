@@ -1,11 +1,10 @@
 /**
- * The search's worst case, measured (review M3): one call's CPU at every bound it allows,
- * `SEARCH_SCAN` entries of inline files at `INLINE_BYTES` each and a query of
- * `SEARCH_QUERY_BYTES` of distinct words, in two shapes: pages of distinct words, and OKF
- * indexes of as many lines as fit, each naming a file of the page. The figures go in
- * `limits-audit.md`; the test holds each well inside the owner Worker's CPU limit an
- * invocation (`cpu.ts` `CPU_LIMIT_MS`), at a tenth of it on the budgets' runners
- * (`onThisRunner`), so a slower host still has room. It also measures what a query's words
+ * The search's worst case, measured: one call's CPU at every bound it allows, `SEARCH_SCAN` entries
+ * of inline files at `INLINE_BYTES` each and a query of `SEARCH_QUERY_BYTES` of distinct words, in
+ * two shapes: pages of distinct words, and OKF indexes of as many lines as fit, each naming a file
+ * of the page. The figures go in `limits-audit.md`; the test holds each well inside the owner
+ * Worker's CPU limit an invocation (`cpu.ts` `CPU_LIMIT_MS`), at a tenth of it on the budgets'
+ * runners (`onThisRunner`), so a slower host still has room. It also measures what a query's words
  * take.
  */
 import { describe, expect, it } from "vitest";
