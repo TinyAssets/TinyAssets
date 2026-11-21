@@ -877,6 +877,14 @@ async function ring(stub: DurableObjectStub<LegOwner>, who: Binding, agent: stri
  */
 const TIMES_SLACK = 3 * ".123".length;
 
+/**
+ * The most the merge case's seqs widen a record past the measured one's (its object's first,
+ * one digit): the case posts under `10 ** MAIL_SEQ_DIGITS` messages, and two of a record's
+ * rows (the message, its recipient) carry its seq.
+ */
+const MAIL_SEQ_DIGITS = 5;
+const SEQ_SLACK = 2 * (MAIL_SEQ_DIGITS - 1);
+
 /** The merge case's muse acks its mail each this many of its messages, so as many wait unread. */
 const MUSE_ACKS = 50;
 
@@ -894,12 +902,12 @@ interface MergeMail {
 /**
  * The merge case's counts, from one record of its mail's shape (`own`, the bytes a seal
  * counts it at) and the ledger's ceilings, so a change to a record's size or a ceiling moves
- * them with it. A seal holds `fewest` to `most` such records (each post's times, and a client
- * message id up to three characters shorter or longer than the measured one's). The rings are the
- * muse's three unread messages, the run's among them.
+ * them with it. A seal holds `fewest` to `most` such records (each post's times, a client
+ * message id up to three characters shorter or longer than the measured one's, and a seq up
+ * to `SEQ_SLACK` wider). The rings are the muse's three unread messages, the run's among them.
  */
 function mergeMail(own: number): MergeMail {
-  const widest = own + TIMES_SLACK + 3;
+  const widest = own + TIMES_SLACK + 3 + SEQ_SLACK;
   const fewest = Math.floor(SEGMENT_MIN_BYTES / widest);
   const most = Math.ceil(SEGMENT_MIN_BYTES / (own - TIMES_SLACK - 3));
   const rings = 3;
@@ -912,14 +920,16 @@ function mergeMail(own: number): MergeMail {
   const dot = LEDGER_LIMITS.maxUnacked - pat - MUSE_ACKS - rings;
   // Every one of Dot's and Pat's interleaved, and the seal taken from the interleaved mail.
   const interleaved = Math.max(most, Math.ceil(pat / 2), dot);
-  if (muse - interleaved < 0 || muse - most + dot < most) {
+  if (muse - interleaved < 0 || muse - most + dot < most
+      || muse + dot + pat + rings >= 10 ** MAIL_SEQ_DIGITS) {
     throw new Error(`the merge case's counts do not hold at ${own} bytes a record: ${
       JSON.stringify({ fewest, most, muse, pat, dot, interleaved })}`);
   }
-  // The run's merge takes Pat's records within the segment's keys (the first `fewest` of the
-  // muse's, two of Pat's to each) while they fit `MOVE_BYTES` beside the segment's bytes.
+  // The run's merge takes Pat's records within the segment's keys (the muse's first `fewest`
+  // at least, two of Pat's after each but the last) while they fit `MOVE_BYTES` beside the
+  // segment's bytes.
   return { interleaved, more: muse - interleaved, dot, pat,
-           take: (bytes) => Math.min(pat, 2 * fewest,
+           take: (bytes) => Math.min(pat, 2 * (fewest - 1),
                                      Math.floor((MOVE_BYTES - bytes) / widest)) };
 }
 
