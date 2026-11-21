@@ -13,7 +13,7 @@ The mark, its exporters, and the design skill.
 | `SKILL.md` | The design skill: identity, palette, type, motif, copy rules. |
 
 **One source of truth, three optical drawings.** The geometry and palette live
-in `tinyassets/desktop/icon_gen.py` (`draw_mark`, `mark_svg`). `full` carries
+in `WebSite/brand/mark.py` (`draw_mark`, `mark_svg`). `full` carries
 the complete Wolf Moon Seal for large brand/marketing artwork, `compact`
 widens the important shapes for app and header icons, and `micro` reduces the
 scene to moon, Baker, and the howling wolf head for 16--32 px favicon frames.

@@ -110,8 +110,8 @@ class BrandParityInvariant(Invariant):
         receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
         generated = receipt.get("generated", {})
         problems: list[str] = []
-        if receipt.get("canonical_source") != "tinyassets/desktop/icon_gen.py":
-            problems.append("canonical_source is not tinyassets/desktop/icon_gen.py")
+        if receipt.get("canonical_source") != "WebSite/brand/mark.py":
+            problems.append("canonical_source is not WebSite/brand/mark.py")
         if not re.fullmatch(r"[0-9a-f]{12}", str(receipt.get("mark_version", ""))):
             problems.append("mark_version is not a 12-hex content fingerprint")
         omitted = sorted(REQUIRED_SURFACES - set(generated))

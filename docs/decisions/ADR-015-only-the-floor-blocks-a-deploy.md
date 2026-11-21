@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. Its review line ("Adversarial review ... covers floor-class changes
+and gate files only") is superseded by ADR-038: every PR is reviewed.
 
 ## Date
 

@@ -24,9 +24,10 @@ import {
   bundlePages, type Entry, IMPORT_BATCH_BYTES, IMPORT_ROWS, type Row,
 } from "../../contract/src/import-message";
 import {
-  buildBundles, DIGESTS, erasureGuard, exclusionList, NOTICE, type Options, PRIVATE_RECORD,
+  buildBundles, DIGESTS, erasureGuard, exclusionList, type Options, PRIVATE_RECORD,
 } from "../bundle";
 import { census } from "../census";
+import { noticeOf } from "../policy";
 import { survey } from "../survey";
 import { TarWriter, TAR_MEMBER_MAX } from "../tar";
 import {
@@ -108,7 +109,7 @@ describe("the bundle builder", () => {
       `file ${I}/novel/workspace/run.sh`,
       `dir ${I}/old`,
       `file ${I}/old/soul.md`,
-      `file ${I}/policy.refused.json`,
+      `file ${I}/policy.json`,
       `file ${I}/refused.tar`,
       `dir ${I}/wiki`,
       `file ${I}/wiki/home.md`,
@@ -139,41 +140,66 @@ describe("the bundle builder", () => {
     const { f, out, options } = setup();
     buildBundles(f.copy, options);
     const bundle = join(out, keyOf(ALICE));
-    // The old stack's policy has its rule tables and spend caps, which the platform's validator
-    // no longer takes (d3 §N6), so it is archived, never a row.
+    // Alice's old policy, mapped (d3 §N7): she never set a rule, so the old defaults are
+    // written; her egress `ask` is the list it always was.
+    const defaults = [{ act: "people.message", do: "ask" }, { act: "share", do: "ask" },
+                      { act: "security.change", do: "never" },
+                      { act: "access.grant", do: "never" }];
     expect(rows(bundle)).toEqual([
+      { kind: "policy", document: { egress: { mode: "allowlist", destinations: [] },
+                                    actions: defaults } },
       { kind: "collection", collection: "board", row_id: "b1", private: 1, body: '{"t":"first"}' },
       { kind: "collection", collection: "board", row_id: "b2", private: 0, body: '{"t":"second"}' },
     ]);
     expect(json(join(bundle, "owner.json"))).toEqual({
       format: 1, owner: ALICE, key: keyOf(ALICE), uid: 300_001,
-      admission: { state: "admitted", reasons: [] }, tier: "paid", notice: NOTICE,
+      admission: { state: "admitted", reasons: [] }, tier: "paid", notice: noticeOf(true),
       centers: [{ name: "novel", retired: false }, { name: "old", retired: true }],
     });
+    // Bob had no policy at all: the old defaults all the same, and no archive to name.
     expect(json(join(out, keyOf(BOB), "owner.json"))).toMatchObject({
-      admission: { state: "suspended", reasons: ["billing"] }, tier: "free" });
-    expect(rows(join(out, keyOf(BOB)))).toEqual([]);
+      admission: { state: "suspended", reasons: ["billing"] }, tier: "free",
+      notice: noticeOf(false) });
+    expect(rows(join(out, keyOf(BOB)))).toEqual([
+      { kind: "policy", document: { egress: { mode: "open", destinations: [] },
+                                    actions: defaults } }]);
   });
 
-  it("archives a policy the platform's validator refuses, verbatim, and keeps the default, " +
-     "found by the census first", () => {
+  it("keeps the old policy verbatim beside its mapping, and says in the README what came " +
+     "across", () => {
     const { f, out, options } = setup();
-    const at = join(f.account(ALICE), "policy.db");
-    const refused = JSON.stringify({ entries: [], egress: { mode: "everywhere",
-                                                            destinations: [] } });
-    const db = new DatabaseSync(at);
-    db.prepare("UPDATE policy SET document = ?").run(refused);
+    const db = new DatabaseSync(join(f.account(ALICE), "policy.db"), { readOnly: true });
+    const stored = String(db.prepare("SELECT document FROM policy").get()!["document"]);
     db.close();
-    // Alice's, and the founder's old-shape one beside it.
-    expect((census(f.copy, TIERS).report["rows"] as Record<string, number>)["policies_archived"])
-      .toBe(2);
     buildBundles(f.copy, options);
     const bundle = join(out, keyOf(ALICE));
-    expect(rows(bundle).filter((row) => row.kind === "policy")).toEqual([]);
-    const archived = manifest(bundle).find((entry) => entry.path === `${I}/policy.refused.json`)!;
-    expect(bytesOf(bundle, archived).toString("utf8")).toBe(refused);
-    expect(bytesOf(bundle, manifest(bundle).find((entry) => entry.path === `${I}/README.md`)!)
-      .toString("utf8")).toContain("`policy.refused.json` is your old policy, unchanged");
+    const archived = manifest(bundle).find((entry) => entry.path === `${I}/policy.json`)!;
+    expect(bytesOf(bundle, archived).toString("utf8")).toBe(stored);
+    const readme = bytesOf(bundle, manifest(bundle)
+      .find((entry) => entry.path === `${I}/README.md`)!).toString("utf8");
+    expect(readme).toContain("## Your rules\n\n`policy.json` is your old rule list, unchanged.");
+    expect(readme).toContain("- Ask you first: A message to another person or party.");
+    expect(readme).toContain("- `spend`: nothing in the new platform sees this action");
+  });
+
+  it("refuses an owner whose old policy does not map, found by the census first, while the " +
+     "others go on", () => {
+    const { f, out, options } = setup();
+    for (const [document, code] of [
+      [{ entries: [], egress: { mode: "everywhere", destinations: [] } }, "policy_unreadable"],
+      [{ entries: [], egress: { mode: "open", destinations: [] },
+         spend: { daily: 500, monthly: null, transaction: null, ask_above: null,
+                  source_ceilings: {} } }, "policy_spend"],
+    ] as const) {
+      const db = new DatabaseSync(join(f.account(ALICE), "policy.db"));
+      db.prepare("UPDATE policy SET document = ?").run(JSON.stringify(document));
+      db.close();
+      const { report, ready } = census(f.copy, TIERS);
+      expect([ready, report["problems"]]).toEqual([false, { [code]: 1 }]);
+    }
+    const summary = buildBundles(f.copy, options);
+    expect(summary).toMatchObject({ bundled: 2, excluded: 1, refused: { policy_spend: 1 } });
+    expect(readdirSync(out)).not.toContain(keyOf(ALICE));
   });
 
   it("archives each store by rule 0: kept tables only, a whole store byte for byte", () => {
