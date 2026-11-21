@@ -22,7 +22,9 @@
  *   credential in its environment (`DECIDE_ENV`), and, when the owner's rules name tools it
  *   matches (`hook.tools`), its file filled from the record's template (`{matcher}` those
  *   tools; the door's address, its header and the credential's variable; the helper's command
- *   line and its argv, the door their argument) and what loads it. A file every run of the engine
+ *   line and its argv, the door their argument), what the record adds to its argv, and its
+ *   pinned settings files in the home (`pins`, root's like every run config file). A file
+ *   every run of the engine
  *   shares (under `/etc`) is the runner's to write, as `shared`: null text when no tool is
  *   matched, so the latest run's start leaves the owner's latest rules there; null for a call
  *   given no hook.
@@ -279,6 +281,9 @@ export function invocation(record: Served, start: StartDoc,
   const own = decide?.file.startsWith("{system}/") === true;
   if (hooked && own) {
     write(decide!.file, decide!.template);
+  }
+  for (const [path, template] of Object.entries(hooked ? decide!.pins ?? {} : {})) {
+    write(path, template);
   }
   const shared = decide === null || own || options.hook === undefined ? null : {
     path: decide.file, text: hooked ? fill(decide.template, hookValues, true) : null };

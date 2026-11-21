@@ -227,11 +227,18 @@
     },
     "decide": {
       "file": "/etc/claude-code/managed-settings.json",
-      "template": "{\"allowedHttpHookUrls\": [\"{decide_url}\"], \"httpHookAllowedEnvVars\": [\"{decide_env}\"], \"hooks\": {\"PreToolUse\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"type\": \"http\", \"url\": \"{decide_url}\", \"headers\": {\"{decide_header}\": \"${decide_env}\"}, \"allowedEnvVars\": [\"{decide_env}\"], \"timeout\": 60, \"onFailure\": \"block\"}]}]}}",
+      "template": "{\"allowManagedHooksOnly\": true, \"strictPluginOnlyCustomization\": [\"hooks\"], \"allowedHttpHookUrls\": [\"{decide_url}\"], \"httpHookAllowedEnvVars\": [\"{decide_env}\"], \"hooks\": {\"PreToolUse\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"type\": \"http\", \"url\": \"{decide_url}\", \"headers\": {\"{decide_header}\": \"${decide_env}\"}, \"allowedEnvVars\": [\"{decide_env}\"], \"timeout\": 60, \"onFailure\": \"block\"}]}]}}",
+      "argv": [
+        "--setting-sources",
+        "user"
+      ],
       "runs": {
         "http": {
           "deny": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"{reason}\"}}"
         }
+      },
+      "pins": {
+        "{home}/.claude/settings.json": "{\"cleanupPeriodDays\": 30}"
       },
       "kinds": {
         "shell": [

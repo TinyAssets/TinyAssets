@@ -168,9 +168,13 @@
       "runs": {
         "exec": true
       },
+      "refuses": [
+        ".pi/settings.json"
+      ],
       "kinds": {
         "shell": [
-          "bash"
+          "bash",
+          "powershell"
         ],
         "file_write": [
           "write",

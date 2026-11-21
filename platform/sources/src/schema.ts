@@ -234,7 +234,12 @@ export interface LoginSpec {
  *   `{decide_url}`, `{decide_header}` and `{decide_env}` the door, its credential's header and
  *   the variable it is in (`http`); `{decide}` the helper's command line, `{decide_argv}` its
  *   argv as JSON. Each is filled as its quoted value.
- * - `argv`: what loads the file, where the CLI takes it from its command line.
+ * - `argv`: what a hooked run adds to the CLI's command line: what loads a file of the run's
+ *   own, and what keeps the CLI from loading a settings layer the agent can write.
+ * - `pins`: the CLI's own settings files in the run's home a hooked run writes, root-owned and
+ *   not replaceable by the run's user, so the layer they are is never the agent's.
+ * - `refuses`: the files, from the agent's directory, that the CLI loads beside the hook and
+ *   the agent can write: a hooked run is refused while one is there.
  * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
  *   it lacks, no rule holds at its hook.
  * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
@@ -252,6 +257,8 @@ export type HookRuns =
 export type Decide =
   | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
       readonly runs: HookRuns;
+      readonly pins?: Readonly<Record<string, string>>;
+      readonly refuses?: readonly string[];
       readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
       readonly mcp: { readonly prefix: string; readonly join: string };
       readonly fails: "open" | "closed"; readonly alterable?: string;

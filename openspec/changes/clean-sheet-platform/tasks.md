@@ -614,7 +614,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `policyRead` gives each rule where it holds and where it can't (`holds_at`,
     `not_enforced`), from `acts.json` and the engines' records. No engine defers: a held call
     is refused with its card on every CLI. The hook's address is only its root-owned file's,
-    and nothing the agent writes reaches its process (`r5-hooks.md` item 13). After the
+    nothing the agent writes reaches its process, and no settings layer the agent writes is
+    loaded beside it (`r5-hooks.md` items 13 and 14). After the
     protocol's expand (`untangle/r5-hooks-speaks`) (`untangle/r5-hooks`; `r5-hooks.md`).
   - [ ] Codex's hook holding against its agent: one that starts no login shell, its
     `mcp_tool` type researched first; until then its record is `alterable` and the note says
@@ -773,7 +774,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,
     spend caps and egress `ask` in the import (the census's `policy` counts and its
-    `policy_spend` problem, `r5-import.md`).
+    `policy_spend` problem, `r5-import.md`). From P-hooks (`r5-hooks.md` items 12 to 14): a
+    user `allowedHttpHookUrls` or `httpHookAllowedEnvVars` narrowing the managed hook;
+    Claude's `--setting-sources user` keeping the project and local layers out, live too; a
+    skill's ``!`command` `` context and a subagent's frontmatter hooks under
+    `allowManagedHooksOnly` and `strictPluginOnlyCustomization`; Gemini's system
+    `ignoreLocalEnv` over a project's, and `hooksConfig.enabled`; pi's `-e` beside
+    `--no-extensions`, and `builtin:mcp`; an approval meeting a repeat call whose free text
+    (`Bash`'s `description`) changed.
 
 ### Step 8. The live stage (d3 §F1, §H), in order
 

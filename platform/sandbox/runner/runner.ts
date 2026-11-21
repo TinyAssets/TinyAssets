@@ -66,8 +66,8 @@
  */
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, lchownSync, mkdirSync, openSync, readdirSync, readFileSync,
-         renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readdirSync,
+         readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
@@ -1222,6 +1222,14 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         if (refusal !== null) {
           outbox.push({ type: "ta.refused", ...refusal });
           throw new RunRefused(refusal.code);
+        }
+        // A settings file the CLI would load beside the hook, which the agent can write:
+        // never while a rule needs the hook (the record's `refuses`).
+        const beside = (hooked ? decide!.refuses ?? [] : []).find((rel) =>
+          lstatSync(join(call.cwd, rel), { throwIfNoEntry: false }) !== undefined);
+        if (beside !== undefined) {
+          outbox.push({ type: "ta.refused", code: "hook_settings_refused", path: beside });
+          throw new RunRefused("hook_settings_refused");
         }
         if (hooked) {
           await startCheck(as, call, decide!, door!.url);

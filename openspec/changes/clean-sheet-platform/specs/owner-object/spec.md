@@ -406,11 +406,15 @@ Where a run's engine record names a pre-tool hook (`decide`), the run's decide d
 - **THEN** the call is refused `held_for_owner` with a card naming `Bash`, and a `Read` is let be
 
 ### Requirement: Nothing the agent writes changes what its hook answers
-A run's hook SHALL take the door's address only from its root-owned file, and the run's environment SHALL carry only the run's credential, which the door SHALL refuse when forged. No process the hook runs SHALL start in an environment a file the agent writes reaches; where a CLI lets one, its record SHALL say so, and its note SHALL say no rule holds there.
+A run's hook SHALL take the door's address only from its root-owned file, and the run's environment SHALL carry only the run's credential, which the door SHALL refuse when forged. A hooked run's CLI SHALL load no settings layer, hook or variable a file the agent writes reaches, at its start or live, or the run SHALL be refused; where a CLI allows neither, its record SHALL say so, and its note SHALL say no rule holds there.
 
 #### Scenario: A spoofed credential
 - **WHEN** the agent's settings set the decide credential to an answer that allows
 - **THEN** the run is refused before its CLI starts, and a hook asked with that credential refuses the call
+
+#### Scenario: The agent's own settings beside the hook
+- **WHEN** the agent's directory holds a Gemini `.gemini/settings.json` that disables the hook by name
+- **THEN** a hooked Gemini run is refused before its CLI starts, and a hooked Claude Code run loads neither its project's nor its local settings, and its home's settings file is root's
 
 #### Scenario: The helper cannot reach the door
 - **WHEN** a run's hook is written and its start check is refused

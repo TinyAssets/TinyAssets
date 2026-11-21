@@ -207,13 +207,16 @@
     },
     "decide": {
       "file": "{system}/gemini-settings.json",
-      "template": "{\"advanced\": {\"ignoreLocalEnv\": true}, \"hooks\": {\"BeforeTool\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"name\": \"tinyassets-decide\", \"type\": \"command\", \"command\": \"{decide}\", \"timeout\": 60000}]}]}}",
+      "template": "{\"advanced\": {\"ignoreLocalEnv\": true}, \"hooks\": {\"BeforeTool\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"name\": \"tinyassets-decide\", \"type\": \"command\", \"command\": \"{decide}\", \"timeout\": 60000}]}]}, \"hooksConfig\": {\"enabled\": true}}",
       "runs": {
         "shell": [
           "bash",
           "-c"
         ]
       },
+      "refuses": [
+        ".gemini/settings.json"
+      ],
       "kinds": {
         "shell": [
           "run_shell_command"
