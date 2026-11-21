@@ -7,14 +7,15 @@
  * place: the argument of the one `boundSandbox(env.SANDBOX, ctx.id)`, in the object's
  * constructor, which binds every call to the name the runtime gave the object. Every part
  * takes that handle (`ObjectReads.sandbox`), whose methods take no owner. This guard holds
- * that no source names the binding anywhere else, however it is written (a property, an
- * index, a string, a destructuring), and that the one binding is made from the object's own
- * id.
+ * that no Worker's source, the shared modules the owner Worker imports included, names the
+ * binding anywhere else, however it is written as a name (a property, an index, a string, a
+ * destructuring, a class's `extends`), and that the one binding is made from the object's own
+ * id. A key computed at run time is not a name and is not seen.
  */
 import { describe, expect, it } from "vitest";
 import ts from "typescript";
 
-import { parse, reporter, sourcesOf } from "../../ci/kit/sources";
+import { parse, reporter, workerSources } from "../../ci/kit/sources";
 
 const BINDING = "SANDBOX";
 const BINDER = "boundSandbox";
@@ -33,9 +34,16 @@ function theBinding(node: ts.Node): boolean {
     && access(node.arguments[0]!, "env", BINDING) && access(node.arguments[1]!, "ctx", "id");
 }
 
-/** Inside a type: a type names the binding but reaches nothing. */
+/**
+ * Inside a type: a type names the binding but reaches nothing. A class's `extends` and an
+ * instantiation expression (`f<T>`) are parsed as types but run.
+ */
 function inType(node: ts.Node): boolean {
   for (let at: ts.Node | undefined = node; at !== undefined; at = at.parent) {
+    if (ts.isExpressionWithTypeArguments(at)) {
+      return ts.isHeritageClause(at.parent) && (at.parent.token === ts.SyntaxKind.ImplementsKeyword
+        || ts.isInterfaceDeclaration(at.parent.parent));
+    }
     if (ts.isTypeNode(at) || ts.isPropertySignature(at)) {
       return true;
     }
@@ -78,8 +86,8 @@ export function sandboxReach(fileName: string, source: string):
 
 describe("sandbox-bound guard", () => {
   it("finds the binding read once, bound to the object's own id, and nowhere else", () => {
-    const sources = sourcesOf("owner");
-    expect([...sources.keys()]).toContain(HOME);
+    const sources = workerSources();
+    expect([...sources.keys()]).toEqual(expect.arrayContaining([HOME, "contract/src/sandbox.ts"]));
     const found = [...sources].map(([path, source]) => sandboxReach(path, source));
     expect(found.flatMap(({ problems }) => problems)).toEqual([]);
     expect(found.reduce((sum, { bindings }) => sum + bindings, 0)).toBe(1);
@@ -94,6 +102,8 @@ describe("sandbox-bound guard", () => {
     "boundSandbox(env.SANDBOX, other);",
     "boundSandbox(env.SANDBOX, { name: 'user_b' } as DurableObjectId);",
     "boundSandbox(service, ctx.id);",
+    "class Reach extends bound(env.SANDBOX) {}",
+    "const s = env.SANDBOX<never>;",
   ])("sees %s", (source) => {
     expect(sandboxReach(HOME, source).problems).not.toEqual([]);
   });
@@ -107,6 +117,8 @@ describe("sandbox-bound guard", () => {
     "const sandbox = boundSandbox(env.SANDBOX, ctx.id);",
     "type E = Omit<OwnerEnv, 'SANDBOX'>;",
     "interface E { readonly SANDBOX: SandboxService }",
+    "interface F extends Pick<OwnerEnv, 'SANDBOX'> {}",
+    "class G implements Pick<OwnerEnv, 'SANDBOX'> {}",
     "if (answer.code === SANDBOX_WAITING) {}",
   ])("allows %s", (source) => {
     expect(sandboxReach(HOME, source).problems).toEqual([]);

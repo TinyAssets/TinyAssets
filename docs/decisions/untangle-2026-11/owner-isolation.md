@@ -111,9 +111,11 @@ the namespace already hands out is a check with no effect.
      hold is its own object's.
    - Every part takes `sandbox: OwnerSandbox` (`ObjectReads.sandbox`), and the env that
      parts see has no `SANDBOX` (`ObjectReads.env` is `Omit<OwnerEnv, "SANDBOX">`).
-   - The guard `owner/guards/sandbox-bound.test.ts` holds that `SANDBOX` is read in
-     `owner/src` only as the argument of that one `boundSandbox(…, ctx.id)` call. A cast
-     around the type is caught too.
+   - The guard `owner/guards/sandbox-bound.test.ts` holds that no Worker's source, the
+     shared modules the owner Worker imports included, names `SANDBOX` but as the argument
+     of that one `boundSandbox(…, ctx.id)` call. A cast around the type, a class's `extends`
+     and an instantiation expression are caught too. A key computed at run time is not a
+     name, and no source check sees it.
 2. **The sandbox side.** `SandboxControl` serves only the owner it is named by
    (`ctx.id.name`), as `OwnerDO` does (ADR-032.2). Its methods take no owner: `start`,
    `signin`, `erase` and the new `unwait` read the object's own name. Before, `start` and
