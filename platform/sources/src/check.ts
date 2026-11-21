@@ -171,9 +171,9 @@ const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze([
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}"]);
 /** What each way a CLI runs its hook carries in its template, beside `{matcher}`. */
 const RUNS_CARRY = Object.freeze({
-  http: ["{decide_url}", "{decide_header}", "{decide_env}"],
-  shell: ["{decide}"],
-  exec: ["{decide_argv}", "{decide_env}"],
+  http: Object.freeze(["{decide_url}", "{decide_header}", "{decide_env}"]),
+  shell: Object.freeze(["{decide}"]),
+  exec: Object.freeze(["{decide_argv}", "{decide_env}"]),
 });
 /**
  * The one shape `{prompt}` may take in an argv: joined to its option (`--prompt={prompt}`),
