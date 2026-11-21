@@ -668,8 +668,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`d2:N57`) and `s2:N51` (d3 §A11).
   - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
     `pass-doors.md` §3).
-- [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
-  exceptions, nothing worth fixing left, behaviour unchanged.
+- [ ] The re-check loop (d2 §E step 6): every `owed` list empty but the passes' items "After
+  the cutover" holds, the layer guard with no exceptions, nothing worth fixing left, behaviour
+  unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
   - [x] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
@@ -874,8 +875,7 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
 - [ ] The comments and tests passes' areas and parts not started by 2026-11-21 (Step 4's
   pass item; the founder, 2026-11-21): today `untangle/pass-contract-2` and
   `untangle/pass-owner-3`, and any part a pass in flight owes. They change no behaviour the
-  live stage tests, and after the cutover their CI skips the old suite. The re-check loop's
-  "every owed list empty" counts their owed items here, not before the dark redeploy
+  live stage tests, and after the cutover their CI skips the old suite
   (`untangle-2026-11/passes-after-cutover.md`).
 - [ ] An owner a blob that no longer opens keeps owing (a refused data key, root,
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
