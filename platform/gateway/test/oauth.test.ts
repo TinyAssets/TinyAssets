@@ -147,7 +147,7 @@ describe("the token endpoint's answer", () => {
     const env = ring("k1");
     expect(await code(() => exchange(env, ALICE, { ...GRANT, code: "redirect-code" }, oauthSource())))
       .toBe("oauth_rejected");
-    expect(JSON.stringify(await evil())).not.toContain("redirect-code");
+    expect(JSON.stringify(await evil())).not.toContain("evil.test/token");
   });
 
   it("refuses a token that is not a bearer token", async () => {
@@ -249,7 +249,7 @@ describe("revokeAtProvider", () => {
     const env = ring("k1");
     const blob = await sealedGrant(env, { refresh: "rt-redirect" });
     expect(await code(() => revokeAtProvider(env, ALICE, blob))).toBe("oauth_rejected");
-    expect(JSON.stringify(await evil())).not.toContain("rt-redirect");
+    expect(JSON.stringify(await evil())).not.toContain("evil.test/revoke");
   });
 
   it("answers a revocation endpoint that is down with a fixed code", async () => {

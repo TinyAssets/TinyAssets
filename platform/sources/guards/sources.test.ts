@@ -1,5 +1,5 @@
 /**
- * The model source records (`platform/sources/`) are data that fits (tasks 4 G3).
+ * The model source records (`platform/sources/`) are data that fits.
  *
  * - Every file is in the catalog (`sources/src/records.ts`), and every record passes the schema
  *   (`sourceRecord`), whose gateway part is the gateway's own check: so a record naming an
@@ -265,7 +265,7 @@ describe("the engine records", () => {
                `${record.id} → ${engine}`).toBeDefined();
       }
     }
-    for (const engine of ["kimi", "nope", "groq"]) {
+    for (const engine of ["kimi", "codex", "nope", "groq"]) {
       expect(() => catalogOf([...bundledRecords().filter((record) =>
         (record as Json)["id"] !== "anthropic"), { ...anthropic, engines: [engine] }])
         .get("anthropic")).toThrow(/^source record "anthropic": engine /);
@@ -363,7 +363,7 @@ describe("the engine records", () => {
     expect(forbids(["OPENAI_*"], "XOPENAI_KEY")).toBe(false);
   });
 
-  it("list every credential file each CLI writes among its secret paths (M1)", () => {
+  it("list every credential file each CLI writes among its secret paths", () => {
     const secrets = (id: string) => sourceRecord(records.get(id)).cli!.secret_paths;
     expect(secrets("claude-code")).toEqual(expect.arrayContaining([
       "{home}/.claude/.credentials.json", "{home}/.claude/.claude.json"]));
@@ -376,7 +376,7 @@ describe("the engine records", () => {
       "{home}/.pi/agent/auth.json", "{home}/.pi/agent/mcp-auth.json"]));
   });
 
-  it("give pi its MCP door and its agent's own skills in JSON mode (H2)", () => {
+  it("give pi its MCP door and its agent's own skills in JSON mode", () => {
     const spec = sourceRecord(pi).cli!;
     // Its tools declared to the model directly, so a `--tools` filter of plain names keeps
     // them (pi's default exposure reaches them through codemode only).
@@ -388,18 +388,17 @@ describe("the engine records", () => {
     expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
   });
 
-  it("hold {base_url} to an API-key run's own declared channel (codex base URL rules 1-4)",
-     () => {
+  it("hold {base_url} to an API-key run's own declared channel", () => {
     const codex = records.get("codex") as Json;
     const keyArgv = (s: Json) => at(s, "per_credential.api_key")["argv"] as string[];
-    // Rule 1: no base-URL variable, the channel in the API-key argv: taken.
+    // No base-URL variable, the channel in the API-key argv: taken.
     expect(() => sourceRecord(codex)).not.toThrow();
     // ...and with no channel anywhere: refused.
     expect(refused(cli((s) => {
       at(s, "per_credential.api_key")["argv"] = keyArgv(s).filter((arg) =>
         !arg.includes("{base_url}"));
     }, codex))).toMatch(/carries \{base_url\}/);
-    // Rule 2: in a sign-in's argv, or a shared argv of a record with two credentials.
+    // Refused in a sign-in's argv, or a shared argv of a record with two credentials.
     expect(refused(cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["argv"] = [
         "-c", "model_providers.x.base_url=\"{base_url}\""];
@@ -408,13 +407,13 @@ describe("the engine records", () => {
       at(s, "engine")["argv"] = [...(at(s, "engine")["argv"] as string[]), "-c",
                                  "model_providers.x.base_url=\"{base_url}\""];
     }, codex))).toMatch(/only an API-key run reads/);
-    // Rule 3: a bare {base_url}, or one not joined to its key.
+    // Refused bare, or not joined to its key.
     for (const bare of ["{base_url}", "x {base_url}", "--base-url {base_url}", "{base_url}/v1"]) {
       expect(refused(cli((s) => {
         at(s, "per_credential.api_key")["argv"] = [...keyArgv(s), bare];
       }, codex)), bare).toMatch(/\{base_url\}/);
     }
-    // Rule 4: an endpoint or provider setting in an argv a signed-in run gets.
+    // An endpoint or provider setting in an argv a signed-in run gets: refused.
     for (const [path, arg] of [["engine", "openai_base_url=\"https://e.example/v1\""],
                                ["per_credential.vendor_login_in_sandbox", "model_provider=\"x\""],
                                ["engine", "chatgpt_base_url=\"https://e.example\""]] as const) {
@@ -436,7 +435,7 @@ describe("the engine records", () => {
     }
   });
 
-  it("let a Kimi member sign in from either region, its hosts by the choice (M2)", () => {
+  it("let a Kimi member sign in from either region, its hosts by the choice", () => {
     const spec = sourceRecord(records.get("kimi")).cli!;
     expect(spec.login!.argv).toEqual(["{bin}", "login", "--region", "{region}"]);
     expect(Object.keys(spec.regions!).sort()).toEqual(["global", "mainland-cn"]);
@@ -449,7 +448,7 @@ describe("the engine records", () => {
     expect(spec.no_update).toEqual({ env: { KIMI_CODE_NO_AUTO_UPDATE: "1" } });
   });
 
-  it("never pass a prompt as a bare argument (M3)", () => {
+  it("never pass a prompt as a bare argument", () => {
     for (const record of engines) {
       const { engine } = record.cli!;
       const carried = [...engine.argv, ...engine.resume_argv].filter((item) =>
@@ -592,7 +591,7 @@ describe("an engine record that does not fit", () => {
       at(s, "login")["state_checks"] = [{ path: "{home}/state.json", present: ["token"] }]; })],
     ["a login pattern that is not a regular expression", cli((s) => {
       at(s, "login")["url_pattern"] = "(unclosed"; })],
-    // Review M2 and M4: every sign-in's page pinned, and its code's lifetime cited.
+    // Every sign-in's page pinned, and its code's lifetime cited.
     ["a login with no pinned page", cli((s) => { delete at(s, "login")["url"]; })],
     ["a pinned page whose path holds a query", cli((s) => {
       at(s, "login.url")["path"] = "/cai/oauth/authorize?x=1"; })],
@@ -615,7 +614,7 @@ describe("an engine record that does not fit", () => {
     ["a binary with no digest", cli((s) => { s["install"] = { manager: "binary",
       url: "https://example.com/grok", version: "1.0.0", bin: "grok",
       verify_argv: ["{bin}", "--version"] }; })],
-    // H1: every secret and session path is under {home}, compared in one namespace.
+    // Every secret and session path is under {home}, compared in one namespace.
     ["an absolute session path holding every top-level directory", cli((s) => {
       s["session_paths"] = ["/*/"]; })],
     ["an absolute session path holding the home", cli((s) => { s["session_paths"] = ["/root/"]; })],
@@ -635,7 +634,7 @@ describe("an engine record that does not fit", () => {
       s["files"] = { "{home}/run/*": "model = \"m\"" }; })],
     ["a home variable outside {home}", cli((s) => {
       at(s, "home_env")["CLAUDE_CONFIG_DIR"] = "/proc/self/cwd"; })],
-    // M3: the prompt is never a bare argument.
+    // The prompt is never a bare argument.
     ["a bare positional prompt", cli((s) => {
       delete at(s, "engine")["stdin"];
       (at(s, "engine")["argv"] as string[]).push("{prompt}");
@@ -655,7 +654,7 @@ describe("an engine record that does not fit", () => {
     ["a prompt in an env value", cli((s) => { at(s, "env")["PROMPT"] = "{prompt}"; })],
     ["a prompt in the unattended argv", cli((s) => {
       (s["unattended_argv"] as string[]).push("--prompt={prompt}"); })],
-    // M4: never configured to nothing.
+    // Never configured to nothing.
     ["an empty argument", cli((s) => { (s["unattended_argv"] as string[]).push("--tools", ""); })],
     ["an argument of bare quotes", cli((s) => {
       (s["unattended_argv"] as string[]).push("--tools", "\"\""); })],
@@ -670,7 +669,7 @@ describe("an engine record that does not fit", () => {
       at(s, "mcp")["template"] = "{\"mcpServers\": {\"t\": {\"url\": \"{mcp_url}\"}}, " +
         "\"tools\": {\"core\": []}}"; })],
     ["an empty map in an env value", cli((s) => { at(s, "env")["SETTINGS"] = "{ }"; })],
-    // M5: a signed-in run carries none of its key's variables.
+    // A signed-in run carries none of its key's variables.
     ["a sign-in with no forbidden variables", cli((s) => {
       delete at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"]; })],
     ["a sign-in whose forbidden variables miss its key variable", cli((s) => {
@@ -685,7 +684,7 @@ describe("an engine record that does not fit", () => {
       at(s, "per_credential.vendor_login_in_sandbox")["env"] = { ANTHROPIC_API_KEY: "x" }; })],
     ["a Kimi sign-in with no forbidden variables", cli((s) => { delete s["per_credential"]; },
                                                       records.get("kimi") as Json)],
-    // M2: regions as data.
+    // Regions as data.
     ["regions on a record that does not sign in", cli((s) => {
       s["regions"] = { global: { display_name: "G", hosts: { login: [], provider: [] } } }; }, pi)],
     ["a region with an id outside the grammar", cli((s) => {
@@ -704,12 +703,16 @@ describe("an engine record that does not fit", () => {
     ["a region placeholder outside the sign-in", cli((s) => {
       (s["unattended_argv"] as string[]).push("--region={region}"); },
     records.get("kimi") as Json)],
-    // Round 2: the run's environment is an allow-list, and no settings file carries a
-    // credential, an environment block or a forbidden variable.
+    // The run's environment is an allow-list, and no settings file carries a credential,
+    // an environment block or a forbidden variable.
     ["a record variable shaped like a key", cli((s) => { at(s, "env")["MY_API_KEY"] = "x"; })],
     ["a record variable shaped like a token", cli((s) => { at(s, "env")["SOME_TOKEN"] = "x"; })],
     ["a record variable shaped like an endpoint", cli((s) => {
       at(s, "env")["UPSTREAM_BASE_URL"] = "https://example.com"; })],
+    // One name for each of the credential pattern's words the plants above do not hold.
+    ...["MY_APIKEY", "SIGNING_KEY", "CLIENT_SECRET", "DB_PASSWORD", "DB_PASSWD",
+        "MY_CREDENTIALS", "MY_AUTH", "MY_ENDPOINT"].map((name): [string, Json] => [
+      `a record variable named ${name}`, cli((s) => { at(s, "env")[name] = "x"; })]),
     ["a record that sets HOME", cli((s) => { at(s, "env")["HOME"] = "{home}"; })],
     ["a record that sets PATH", cli((s) => { at(s, "env")["PATH"] = "/usr/bin"; })],
     ["a credential part that sets a token", cli((s) => {
@@ -725,6 +728,14 @@ describe("an engine record that does not fit", () => {
     ["a settings file with a credential helper", cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
         "{home}/.claude/settings.json": "{\"apiKeyHelper\": \"echo k\"}" }; })],
+    // One key for each of the settings-key pattern's words the plants here do not hold.
+    ...["otelHeadersHelper", "environment", "apiKey", "clientSecret", "password",
+        "credentialStore"].map((key): [string, Json] => [`a settings file with a ${key} key`,
+      cli((s) => {
+        at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+          "{home}/.claude/settings.json": JSON.stringify({ [key]: "x" }) }; })]),
+    ["an endpoint argument in a signed-in run's argv", cli((s) => {
+      (at(s, "engine")["argv"] as string[]).push("--api-endpoint=https://e.example/v1"); })],
     ["a settings file holding a token", cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
         "{home}/.claude/settings.json": "{\"oauth\": {\"token\": \"t\"}}" }; })],
@@ -746,7 +757,6 @@ describe("an engine record that does not fit", () => {
       at(s, "mcp")["template"] = String(at(s, "mcp")["template"])
         .replace("\"transport\"", "\"note\": \"KIMI_MODEL_NAME\", \"transport\""); },
     records.get("kimi") as Json)],
-    // The survivors of this round's own mutation run.
     ["a wildcard session path that covers a secret below the first segment", cli((s) => {
       s["session_paths"] = ["{home}/.claude/*/"]; })],
     ["a prompt with something after it", cli((s) => {
@@ -758,7 +768,6 @@ describe("an engine record that does not fit", () => {
                                               "{\"permissions\": {\"allow\": []}}"); })],
     ["an MCP template with no file, its door URL in the argv", cli((s) => {
       delete at(s, "mcp")["file"]; at(s, "mcp")["argv"] = ["--mcp-url={mcp_url}"]; }, pi)],
-    // The three mutants the reviewer's run left alive.
     ["an MCP template with no file", cli((s) => { delete at(s, "mcp")["file"]; }, pi)],
     ["an npm lock digest that is not one", cli((s) => { at(s, "install")["lock_sha256"] = "xyz"; })],
     ["a login state check on a secret path's parent", cli((s) => {

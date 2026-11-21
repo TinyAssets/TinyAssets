@@ -1,17 +1,16 @@
-// The OKF watcher (okf_update_research.md §5; `.github/workflows/okf-watch.yml`): the starter's
-// `knowledge` skill vendors the Open Knowledge Format spec pinned to one commit of its
-// canonical repository, and this compares that pin with the repository as it stands. It
-// keys on content, never on a version number: OKF has changed its rules under an unchanged
-// version and broken them under a "minor" one (§1.4), so no upstream version moves anything
-// here by itself.
+// The OKF watcher (`.github/workflows/okf-watch.yml`): the starter's `knowledge` skill vendors
+// the Open Knowledge Format spec pinned to one commit of its canonical repository, and this
+// compares that pin with the repository as it stands. It keys on content, never on a version
+// number: OKF has changed its rules under an unchanged version and broken them under a
+// "minor" one, so no upstream version moves anything here by itself.
 //
 //   node platform/starter/okf-watch.ts check --upstream <clone> [--out report.json]
 //   node platform/starter/okf-watch.ts apply --upstream <clone> --body <pr-body.md>
 //
 // `check` reports: whether `SPEC.md` changed (by its git blob id), whether the README moved
-// or carries a relocation banner (the spec moved once already, §1.1), tags the pin has not
-// seen, the spec's own version line, and every hidden or control character in the new text
-// (the "rules file backdoor": text a reviewer cannot see, §3). `apply` writes the new spec
+// or carries a relocation banner (the spec moved once already), tags the pin has not seen,
+// the spec's own version line, and every hidden or control character in the new text (the
+// "rules file backdoor": text a reviewer cannot see). `apply` writes the new spec
 // into the vendored file under its provenance line, moves the pin, raises the starter's
 // version, runs `npm run generate` (so `starter.json` and the plugins, which carry the same
 // skills, follow), and writes the pull request's body. Merging that pull request, after its
@@ -136,7 +135,6 @@ export function quoted(texts: readonly string[]): string {
   if (texts.length === 0) {
     return "none";
   }
-  // Every character but printable ASCII as its escape, so nothing hidden reaches the page.
   const safe = texts.map((text) => JSON.stringify(text).replace(/[^ -}]|[`~]/gu, (char) =>
     char.split("").map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")));
   return `\n\n\`\`\`text\n${safe.join("\n")}\n\`\`\`\n`;

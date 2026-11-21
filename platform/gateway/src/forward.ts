@@ -15,7 +15,7 @@
  *
  * User CLIs speak their provider's wire format. An unmetered call (a read, a cited free
  * call) only moves bytes: its body streams through. A metered one is the one request the
- * gateway holds whole (egress shape research, A′): under the pool's slots, and only while it
+ * gateway holds whole (egress shape research): under the pool's slots, and only while it
  * reads, rewrites and uploads it, it parses it once and asks the owner's object, through the
  * door's `reserve`, to reserve the call for the model and tier that parse read. The gateway
  * measures nothing it would keep: the binder counts the bytes it streams and settles the
@@ -61,14 +61,13 @@ const FORWARD_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
  * then the answer is errored and the provider's request ended, so a stalled stream lets go
  * of its run's slot. The engines' own idle cut (Claude Code's byte-level and body idle
  * timeouts, Codex's `DEFAULT_STREAM_IDLE_TIMEOUT_MS`, each 300 s): a stream their own
- * clients would already have given up on (the untangle's decision on S1). A provider's
- * keep-alive (an SSE ping) is a byte; the wait for the answer's headers is not counted.
+ * clients would already have given up on. A provider's keep-alive (an SSE ping) is a byte;
+ * the wait for the answer's headers is not counted.
  */
 export const IDLE_CUT_MS = 300 * 1000;
 
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
-
 
 /** The bytes each write of a metered call's upload carries. */
 const UPLOAD_SLICE = 64 * 1024;
@@ -154,7 +153,6 @@ function spellings(secrets: readonly string[]): string[] {
   return [...new Set(all)].sort((a, b) => b.length - a.length);
 }
 
-/** `value` with every spelling of each of `secrets` replaced by `[redacted]`. */
 function redactText(value: string, secrets: readonly string[]): string {
   let out = value;
   for (const spelling of spellings(secrets)) {
@@ -238,7 +236,7 @@ function refusal(code: GatewayCode, resealed?: Resealed): Response {
 }
 
 /**
- * A sandbox's model call, metered (G4), once the owner's object admitted it: held to pi-ai's
+ * A sandbox's model call, metered, once the owner's object admitted it: held to pi-ai's
  * own model call for the sealed API (the call's `Meters`); its slots taken as it arrives
  * (`held.ts`), its body read to its `Content-Length` and parsed once; refused for what no
  * reservation bounds; its model and tier read from that parse and reserved through
@@ -351,7 +349,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   // The reserve, to the caller's stop and the pool's wait: an object that does not answer
   // within it leaves the call `busy`, its units let go. A reserve already in flight when the
   // caller stops may still commit at the owner's object, which then keeps the charge (the
-  // door settles a stopped call `unknown`), as before A′.
+  // door settles a stopped call `unknown`).
   const reserving = new AbortController();
   const late = setTimeout(() => reserving.abort(new Refusal("busy")), SLOT_WAIT_MS);
   let reserved: Reservation;
@@ -439,7 +437,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   if (metered !== null) {
     const { reserve, catalog } = metered;
     // Only pi-ai's own model call for the sealed API is metered; nothing else is read. A throw
-    // here sent nothing, so it is `failed` (M3), as every end before the fetch is.
+    // here sent nothing, so it is `failed`, as every end before the fetch is.
     const meters = new Meters(catalog, credential.upstream, bearer(credential));
     const any = await meters.any().catch(() => undefined);
     if (any === undefined) {
@@ -465,7 +463,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                              () => hold.release());
     } catch (error) {
       hold.release();
-      // Nothing was sent: the call is `failed`, whatever stopped it (M3).
+      // Nothing was sent: the call is `failed`, whatever stopped it.
       return refused(cancelled.signal.aborted ? "aborted" : codeOf(error, "internal"),
                      resealed);
     }
@@ -502,11 +500,11 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     deadline = timeout(FORWARD_DEADLINE_MS);
     signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
   } catch {
-    // Nothing was sent: the upload's slots go with it (L2), and the call is `failed` (M3).
+    // Nothing was sent: the upload's slots go with it, and the call is `failed`.
     upload?.stop();
     return refused("internal", resealed);
   }
-  // A call its caller stopped before it was sent is never sent (L3).
+  // A call its caller stopped before it was sent is never sent.
   if (cancelled.signal.aborted) {
     upload?.stop();
     return refused("aborted", resealed);
@@ -540,7 +538,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   let source = upstream.body;
   if (metered !== null && model !== null) {
     if (upstream.status < 200 || upstream.status >= 300) {
-      // A refusal before any output: the provider produced nothing, as the loop settles it.
+      // A refusal before any output: the provider produced nothing.
       outcome = Promise.resolve(FAILED);
     } else if (source !== null) {
       const [toCaller, toMeters] = source.tee();
@@ -631,8 +629,8 @@ function scopeOf(credential: Credential, meter: Meter | null = null): EgressScop
  * endpoints, sent like `forward` sends): a 2xx answer is a working credential, and the
  * models are pi-ai's catalog for its provider (or its declared models), with their
  * metadata, and its egress scope, which the binder hands the owner object's
- * `connectionCommit`. Anything else is
- * the upstream outcome's fixed code; the answer's body is never read.
+ * `connectionCommit`. Anything else is the upstream outcome's fixed code; the answer's body
+ * is never read.
  */
 export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
                              catalog: Catalog): Promise<Verified> {

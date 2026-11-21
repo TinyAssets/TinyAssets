@@ -40,7 +40,7 @@ not cite 4.2 or 3.1.1. Release is set to go out automatically once approved.
 
 Rechecked 2026-09-29 on `origin/main` `4ad5deb5`, after the move to the `TinyAssets`
 org. `ios-build` and `android-build` were green on 2026-09-27. The four
-`ANDROID_UPLOAD_*` repository secrets and the eight `app-store` environment secrets
+`ANDROID_UPLOAD_*` secrets (in the `production` environment since 2026-11-21) and the eight `app-store` environment secrets
 are present. `/app` serves the in-app **Delete my account** flow. The Upgrade (Stripe)
 button stays hidden in both native shells (`NATIVE` guard in `renderPlan`), so 3.1.1
 needs no in-app purchase.

@@ -351,7 +351,7 @@ describe("the import layers", () => {
       "on: push", "jobs:", "  probe:", "    runs-on: ubuntu-latest", "    steps:",
       "      - uses: actions/github-script@v7", "        with:", "          script: |",
       "            const root = process.env.GITHUB_WORKSPACE;",
-      "            const { x } = require(`${root}/scripts/incident_issue.js`);",
+      "            const { x } = require(`${root}/scripts/probes/storeprobe/door.js`);",
       "      - run: |", "          node -e \"import('yaml')\"",
       "          security import \"$dir/distribution.p12\" -k \"$keychain\"",
     ].join("\n") })).toEqual([]);

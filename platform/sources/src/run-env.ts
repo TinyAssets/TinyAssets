@@ -10,9 +10,9 @@ import type { CredentialKind } from "../../contract/src/sandbox";
 /**
  * The process basics a run keeps from the sandbox template's own environment, beside
  * `HOME`, which the runner sets to the run's engine home (`{home}`): nothing else of the
- * sandbox's environment reaches a run. `NODE_EXTRA_CA_CERTS` is E2B's egress CA (slice S's
- * probe: E2B's proxy re-signs the HTTPS it sets the egress token on, and Node trusts only
- * its own bundle), so a Node engine's calls to the egress door verify.
+ * sandbox's environment reaches a run. `NODE_EXTRA_CA_CERTS` is E2B's egress CA (E2B's
+ * proxy re-signs the HTTPS it sets the egress token on, and Node trusts only its own
+ * bundle), so a Node engine's calls to the egress door verify.
  */
 export const RUN_BASICS: readonly string[] = Object.freeze([
   "PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER", "SHELL", "NODE_EXTRA_CA_CERTS",

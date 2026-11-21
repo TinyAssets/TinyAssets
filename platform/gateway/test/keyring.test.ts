@@ -9,7 +9,7 @@ import { credential } from "../src/credential";
 import { Refusal } from "../../contract/src/refusal";
 import { doorbellSecret } from "../src/doorbell";
 import {
-  binding, type KeyringEnv, open, openValue, reseal, seal, wakeBinding,
+  binding, type KeyringEnv, open, openValue, reseal, seal, sealValue, wakeBinding,
 } from "../src/keyring";
 import { ALICE, ANTHROPIC, apiKey, C1, ring, rotate, sealed } from "./support";
 
@@ -119,8 +119,9 @@ describe("seal and open", () => {
   it("refuses a blob whose plaintext no longer fits the credential shape", async () => {
     // Sealed by hand around the checks, as an older or buggy writer would.
     const env = ring("k1");
-    const good = await sealed(env, ALICE, "sk-alice", ANTHROPIC);
-    expect((await open(env, ALICE, good)).credential.kind).toBe("api_key");
+    const misfit = await sealValue(env, ALICE, { ...apiKey("sk", ANTHROPIC), kind: "other" },
+                                   (value) => value);
+    await refused(() => open(env, ALICE, misfit.blob));
     await refused(() => seal(env, ALICE, { ...apiKey("sk", ANTHROPIC), kind: "other" } as never));
   });
 

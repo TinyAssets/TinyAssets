@@ -62,7 +62,7 @@
     },
     "gateway/workerd": {
       "slowest_ms": 4139,
-      "test": "gateway/test/held.test.ts > a key past ASCII, or a body model where the path names it (M1, M2) never sends the long-s cap: the call is refused before any reserve",
+      "test": "gateway/test/held.test.ts > a key past ASCII, or a body model where the path names it never sends the long-s cap: the call is refused before any reserve",
       "measured": "CI runs 43736045737, 43749136142 and 43751240226 (merge groups of #5635, #5636 and #5637, after #5628's files sizes leg), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-7 (platform-sizes), with owner.test.ts's every-earlier-version migration test read as large (budgets-ci-3 tags it so), the slowest across the three, 2026-11-15"
     },
     "import/guards": {

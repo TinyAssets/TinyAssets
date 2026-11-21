@@ -75,7 +75,6 @@ export function credential(value: unknown): Credential {
   throw new Refusal("credential_refused");
 }
 
-/** The secret a credential sends upstream: the API key, or the OAuth access token. */
 export function bearer(credential: Credential): string {
   return credential.kind === "api_key" ? credential.secret : credential.oauth.access;
 }

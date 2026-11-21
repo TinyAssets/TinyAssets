@@ -966,36 +966,6 @@ def gate_selection(
     ]
 
 
-#: The old stack's code, deleted at the cutover (openspec/changes/clean-sheet-platform/
-#: tasks.md section 9). A test that reaches only this retires with it.
-RETIRING = ("tinyassets/",)
-
-
-def retiring_tests(graph: Graph) -> list[str]:
-    """Test files whose reached repo modules all lie in RETIRING, or load it at import.
-
-    A package ``__init__.py`` holding at most a docstring has no code, so it decides nothing.
-    """
-    def no_code(rel: str) -> bool:
-        try:
-            body = ast.parse(graph.files[rel]).body
-        except (SyntaxError, ValueError):
-            return False
-        return all(isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) for n in body)
-
-    gone = {rel for rel in graph.files if rel.startswith(RETIRING)}
-    gone |= {rel for rel in graph.files
-             if not rel.startswith("tests/") and (
-                 graph.closure(rel) & gone or (rel.endswith("__init__.py") and no_code(rel)))}
-    out = []
-    for rel, src in graph.files.items():
-        if is_test_file(rel) and defines_tests(src):
-            reached = {dep for dep in graph.closure(rel) if not dep.startswith("tests/")}
-            if reached and reached <= gone:
-                out.append(rel)
-    return sorted(out)
-
-
 def changed_files(base: str, root: Path = REPO_ROOT) -> list[str]:
     # --no-renames: a move lists its old path too, so a file moved into a tree
     # from anywhere else (or a .py moved to platform/*.ts) is not a tree-only diff.
@@ -1046,12 +1016,7 @@ def main() -> int:
             "defers a failure to the queue."
         ),
     )
-    ap.add_argument("--retiring", action="store_true",
-                    help="list the test files that retire with RETIRING at the cutover")
     args = ap.parse_args()
-    if args.retiring:
-        sys.stdout.write("".join(f"{rel}\n" for rel in retiring_tests(Graph(REPO_ROOT))))
-        return 0
     if (args.base is None) == (args.changed is None):
         raise SystemExit("pass exactly one of --base or --changed")
     if args.pr and args.gate:
