@@ -649,6 +649,26 @@
       }
     },
     {
+      "door": "actionRequest", "class": "read", "capability": null,
+      "args": {
+        "refused": "invalid action request", "required": { "card_id": {} }, "optional": {}
+      }
+    },
+    {
+      "door": "actionApprove", "class": "work", "capability": null,
+      "args": {
+        "refused": "invalid action request", "required": { "card_id": {}, "digest": {} },
+        "optional": {}
+      }
+    },
+    {
+      "door": "actionRefuse", "class": "reduce", "capability": null,
+      "args": {
+        "refused": "invalid action request", "required": { "card_id": {}, "digest": {} },
+        "optional": {}
+      }
+    },
+    {
       "door": "grantList", "class": "read", "capability": null, "args": "none"
     },
     {
@@ -991,7 +1011,10 @@
     },
     {
       "door": "restorePin", "class": "admission", "capability": null,
-      "args": { "refused": "invalid restore request", "required": { "gen": {} }, "optional": {} }
+      "args": {
+        "refused": "invalid restore request",
+        "required": { "namespace": {}, "gen": {} }, "optional": {}
+      }
     },
     {
       "door": "restoreWipe", "class": "admission", "capability": null,
@@ -1005,6 +1028,13 @@
     {
       "door": "restoreNames", "class": "admission", "capability": null,
       "args": { "refused": "invalid restore request", "required": { "from": {} }, "optional": {} }
+    },
+    {
+      "door": "restoreHold", "class": "admission", "capability": null,
+      "args": {
+        "refused": "invalid restore request",
+        "required": { "namespace": {}, "gen": {} }, "optional": {}
+      }
     },
     {
       "door": "egressOpen", "class": "work", "capability": null, "args": "loose"

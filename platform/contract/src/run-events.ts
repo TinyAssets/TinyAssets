@@ -12,7 +12,9 @@
  *
  * What an event changes durably is read here too, once, by the same matchers: the
  * conversation's session id (`init`), the run's result text (`final_text`, the last match,
- * or every match joined where the matcher says `accumulate`) and its first error.
+ * or every match joined where the matcher says `accumulate`), its first error, and whether
+ * the engine stopped at a tool call it deferred (`deferred`: Claude Code's `defer`, the turn
+ * ended `tool_deferred`), which a resume of its session answers (R5 P-resume).
  */
 import { Refusal } from "./refusal.ts";
 
@@ -36,6 +38,11 @@ export interface EngineEvents {
   readonly error: readonly EventMatcher[];
   readonly usage: readonly EventMatcher[];
   readonly tool_call: readonly EventMatcher[];
+  /**
+   * The engine's stop at a tool call its pre-tool hook deferred, the call left pending in its
+   * session for a resume (none for an engine that cannot defer).
+   */
+  readonly deferred: readonly EventMatcher[];
 }
 
 export const FRAME_VERSION = 1;
@@ -166,6 +173,8 @@ export interface Read {
   readonly text: { readonly value: string; readonly accumulate: boolean } | null;
   /** The error it reports. */
   readonly error: string | null;
+  /** Whether it is the engine's stop at a deferred tool call. */
+  readonly deferred: boolean;
 }
 
 /** `event`, read by `events`. */
@@ -185,5 +194,6 @@ export function readEvent(events: EngineEvents, event: unknown): Read {
     text: text === null ? null : { value: text, accumulate: result?.accumulate === true },
     error: error === undefined ? null
       : textOf(valueAt(event, error.path)) ?? "the engine reported an error",
+    deferred: first(events.deferred, event) !== undefined,
   };
 }

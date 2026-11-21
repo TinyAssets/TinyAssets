@@ -51,6 +51,9 @@ export interface DoorRequests {
   readonly policyProposal: DoorFields<"request_id">;
   readonly policyWakeLimits:
     DoorFields<"agent_id" | "max_wakes_per_hour" | "batch_window_s" | "expected_generation">;
+  readonly actionRequest: DoorFields<"card_id">;
+  readonly actionApprove: DoorFields<"card_id" | "digest">;
+  readonly actionRefuse: DoorFields<"card_id" | "digest">;
   readonly grantSet:
     DoorFields<"client" | "source" | "mode" | "scopes" | "expected_revision" | "name", "profile">;
   readonly grantRevoke: DoorFields<"client">;
@@ -95,9 +98,10 @@ export interface DoorRequests {
   readonly signinReport: DoorFields<"signins">;
   readonly socketTicket: DoorFields<"conversation_id">;
   readonly restoreBegin: DoorFields<"namespace" | "gen">;
-  readonly restorePin: DoorFields<"gen">;
+  readonly restorePin: DoorFields<"namespace" | "gen">;
   readonly restoreWipe: DoorFields<"confirm">;
   readonly restoreNames: DoorFields<"from">;
+  readonly restoreHold: DoorFields<"namespace" | "gen">;
   readonly fileSyncCommit: DoorFields<"lease_id" | "epoch" | "ops">;
   readonly fileSyncUploadBegin: DoorFields<"lease_id" | "epoch" | "size" | "chunks">;
   readonly fileSyncUploadChunks: DoorFields<"lease_id" | "epoch" | "intent_id" | "chunks">;

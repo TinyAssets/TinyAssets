@@ -380,6 +380,35 @@ The owner's action rules SHALL be one `actions` table, empty until the owner wri
 - **WHEN** an object holding the old default document migrates
 - **THEN** it holds the new default at the same generation, and an object holding any other old document stops loudly rather than keep a document its validator refuses
 
+### Requirement: An agent's call of an act is decided by the owner's rules
+At a door whose row names an act, the object SHALL hold an agent's call (a run's, or an outside client's) to the owner's rules on that act before the door acts: `never` SHALL refuse it (`action_never`), `ask` SHALL hold it for the owner (`held_for_owner`, naming a card) unless the owner said yes to that very call, and no rule SHALL let it be. A rule naming an `agent` SHALL hold for that agent's runs alone. The owner's own calls SHALL NOT be decided.
+
+#### Scenario: A rule on one agent
+- **WHEN** the owner's rule is `{ act: "workspace.files", do: "never", agent: "main" }`
+- **THEN** a run of `main` is refused `action_never` at a file door, and an outside client's call and the owner's own are not
+
+### Requirement: The owner answers a held call once
+The owner SHALL answer a held call only in its session, by the card's id and the digest it was shown: a yes SHALL admit that one call once, within a day, and a no SHALL delete the card. A held call SHALL be bound to the policy generation it was asked under, bounded, and swept past its life. Every decision a rule made SHALL be receipted, and a call no rule decides SHALL write nothing.
+
+#### Scenario: A call held and answered yes
+- **WHEN** the owner's rule is `{ act: "workspace.files", do: "ask" }` and an outside client makes a directory
+- **THEN** the call is refused `held_for_owner` with a card, the same call again names the same card, the owner's yes in session admits the call once, and the call after it is held anew
+
+#### Scenario: The rules changed while a call is held
+- **WHEN** the owner writes its policy while a card is pending
+- **THEN** the card is neither shown nor answered, and the call asked again is decided under the new rules
+
+### Requirement: A yes to a run's held call resumes its conversation
+A run's held call SHALL be bound to the run's conversation: the owner's yes SHALL admit the call only in that conversation, and SHALL write a run waiting there, under the held run's own authority, on an input that names the card, which starts once the conversation is free. A no SHALL resume nothing. A run whose engine stopped at a tool call it deferred (its record's `deferred` matcher) SHALL settle with the code `tool_deferred`, and its result SHALL post no reply.
+
+#### Scenario: A run's call answered yes
+- **WHEN** a run of `main` is held making a directory, ends, and the owner says yes
+- **THEN** a run of `main` starts in the same conversation, resuming its engine's session, its input naming the card, and its directory call is admitted once, while the same call from another of `main`'s conversations is held anew
+
+#### Scenario: A run stopped at a deferred call
+- **WHEN** a scheduled run's Claude Code ends its turn `tool_deferred`
+- **THEN** the run settles `succeeded` with the code `tool_deferred`, and nothing is posted to the owner's room
+
 ### Requirement: Every outside call is admitted against its client's grant
 The object SHALL admit each call from an outside client against that client's grant before any door acts: an MCP client's first verified call records it `full`, an API key with no grant is refused, a revoked client is refused, and after a revoke only a sign-in made after it is admitted. Only the owner in its session SHALL change a grant; the owner's account MAY revoke one without a session.
 

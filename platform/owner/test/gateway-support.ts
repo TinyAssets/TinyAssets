@@ -49,14 +49,17 @@ export async function catalog(record: Source): Promise<ModelRecord[]> {
   return (await checked(record)).models;
 }
 
+/** The throwaway check's connection: an id as the owner's object mints one (`ids.ts`). */
+const PROBE = `c${"0".repeat(24)}`;
+
 async function checked(record: Source): Promise<{ models: ModelRecord[]; egress: EgressScope }> {
   const probe: Source = {
     upstream: { ...record.upstream, auth: ANTHROPIC.upstream.auth,
                 verify_url: ANTHROPIC.upstream.verify_url! },
     endpoints: [...record.endpoints, ...ANTHROPIC.endpoints],
   };
-  const { blob } = await env.CONNECT.seal("catalog", "c-catalog", 1, "sk-good", probe);
-  return await env.CONNECT.verify("catalog", "c-catalog", 1, blob) as unknown as
+  const { blob } = await env.CONNECT.seal("catalog", PROBE, 1, "sk-good", probe);
+  return await env.CONNECT.verify("catalog", PROBE, 1, blob) as unknown as
     { models: ModelRecord[]; egress: EgressScope };
 }
 

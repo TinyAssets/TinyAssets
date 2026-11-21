@@ -44,8 +44,10 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,576,962,579.25 bytes, 45.77% of the 10 GB: 423.0 MB under
+**The worst case that ships is 4,602,931,879.25 bytes, 46.03% of the 10 GB: 397.1 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
+R5 P-decide's held calls and their decisions' receipts (`action_requests`, `action_receipts`)
+take 26.0 MB of it.
 Untangle 3b deleted the ledger's receipts (`ledger_receipts`, 309.6 MB), each fact on the row
 it describes; a recipient row's read time and failure reason take 6.4 MB more, and the room
 freed is held for the files index (d3 §P item 5).
@@ -116,9 +118,8 @@ Flagged for the founder:
 
 ## Chosen retentions
 
-These expiries are not ceilings: each queue or area is bounded by its count or charge in the
-10 GB, and needs no expiry to fit. Each is a retention chosen for what it serves, with its
-reason; none refuses a write.
+Each expiry has a purpose of its own. Where a count also limits the space used in the
+owner's object, the table below gives the storage budget.
 
 - `owner/src/files.ts` `TEMP_TTL_S`, 7 days: a temporary directory under `/.ta/tmp` unused
   for a week has its files deleted. The area is the sandbox's for spills, charged to the
@@ -129,9 +130,29 @@ reason; none refuses a write.
 - the control record's `scratch_retention_days` (30 to start; `sandbox/runner/scratch.ts`): an agent's sandbox scratch unused that long is deleted at its sandbox's next run. Scratch is a cache on the sandbox's own disk, never counted in the owner's storage; 30 days matches Codespaces' default idle deletion and Claude Code's transcript default. It refuses nothing; with none in the record only the disk's own pressure lets scratch go.
 - `sandbox/runner/runner.ts` `SLOW_MATCH_MS`, 5 s: past it, a sync's report says how long matching the sync-ignore list took (`ta.sync_ignore_slow`), so the owner sees why a sync was slow. It refuses nothing. The matcher's own ceilings are `AUTOMATON_STATES` and `LIST_BYTES` (above); each folder and each repeated name is matched once a sync (`contract/src/sync-ignore.ts` `REMEMBERED_NAME_BYTES`): of folders the matcher keeps only the path's own, since the walk and the sorted removal pass each ask a folder's paths in one run, so that memory grows with a path's depth and never with the tree; names it keeps to 256 KiB, each counted at the heap it takes (`NAME_ENTRY_BYTES`), starting again past it.
 - `sandbox/runner/scratch.ts` `LOW_WATER_SHARE`, a chosen threshold, a tenth of the sandbox disk (about 1.4 GB): below that much free before a run, the least recently used agent's scratch is let go first. Room for a run's working files (a large clone and its build) before it starts. It refuses nothing; scratch is a cache, so letting it go costs a rebuild, never data. Each agent's use is its own stamp file, so two runs stamping at once never lose one.
+- `owner/src/actions.ts` `ACTION_LIMITS.cardTtlS`, 30 days, and `approvalTtlS`, a day: an
+  agent's call held for the owner waits 30 days, as long as Claude Code keeps a session
+  (`cleanupPeriodDays`), which bounds the resume an answer starts; a yes admits its call for a
+  day, as a main agent retries when its user says so. Swept at each decision and answer.
 - `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
   waits a quarter for the owner's answer, then expires unanswered, so a stale proposal never
   applies against a policy long since changed.
+- A settled run's status is recent history (`RUNS_KEPT`). Pruning it leaves the engine's
+  transcript and any delivered mail reply in place. One reader needs the receipt to act:
+  `Runs.resume` reads the held run's authority and conversation when the owner approves
+  its call. If the receipt has expired, the approval still admits one retry, but the
+  conversation does not resume automatically (R5, `r5-resume-hooks.md` item 3).
+- Policy receipts (`POLICY_LIMITS.receiptsPerBucket`) explain recent changes and decisions.
+  Owner changes, agent proposals, refusals and action decisions each keep their own window.
+  A burst of refusals therefore cannot displace the owner's change history. The current
+  policy and outstanding approval cards have their own records. The action decisions
+  (`action_receipts`, `owner/src/actions.ts`) are not exported, so neither an export nor a
+  generation carries them, and a restored owner starts with none: the table stays apart
+  until a migration may change an exported table (`owner/src/export.ts` `NOT_EXPORTED`).
+- Egress receipts (`EGRESS_LIMITS.receiptsKept` and `refusalsKept`) explain recent sandbox
+  requests and refusals. Once a call settles, its charge is accounted for on the run and in
+  the spending counters. Discarding its receipt does not refund the call. Refusals have
+  their own window, so they cannot displace settled calls. Pruning excludes open calls.
 - `owner/src/ledger.ts` `LEDGER_LIMITS.settledWakeRetentionS` and `maxSettledWakes`, a week
   and the newest 1,000 (d3 §P item 6): a settled wake's row (`receipt_json`) is the only
   record of how its doorbell answered, kept long enough to debug a doorbell. It is delivery
@@ -206,11 +227,12 @@ reason; none refuses a write.
 | `contract/wake-kinds.json` `events` | 10 s verification, a day's default lifetime, 300 s dual-signing | an MCP Events subscription | a callback silent past 10 s refused (`timeout`); a subscription unrefreshed past its grant lets go | vendor limit | OpenAI's MCP Events page (its verification example's 10 s) and the MCP Events design sketch (grants up to about a day; receivers reject a timestamp over 5 minutes old). |
 | `gateway/src/doorbell.ts` `ECHO_MAX_BYTES` | 1 KiB | a callback's answer to its verification challenge | a longer answer fails verification (`challenge_failed`) | technical ceiling | The answer is read only for the echoed 43-character challenge; at most 1 KiB keeps a hostile endpoint from making the gateway's isolate (128 MB) buffer its body. |
 | `owner/src/registrations.ts` `CARD_LIMITS` | 200 pending, 10 a client, 4,096-byte card | registration cards waiting | a client's 11th card refused | technical ceiling | The 10 GB: guard term `agent_cards`. |
+| `owner/src/actions.ts` `ACTION_LIMITS`; `contract/src/limits.ts` `ACTION_CARD_BYTES` | 200 held (50 a client), 8,000 code points of a request shown, a 64 KiB card | agents' calls held for the owner's answer, pending or approved | a client's 51st held call, or the 201st, refused | technical ceiling | The 10 GB: guard term `action_requests`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.maxDocument` | 65,536 characters | the owner policy document | a larger policy refused | technical ceiling | The 10 GB, one row read on every door. |
 | `owner/src/policy.ts` `POLICY_LIMITS.maxChange` | 16,000 characters | one agent's proposal | a larger proposal refused | technical ceiling | The 10 GB: guard term `policy_proposals`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.pendingProposals` | 200 (50 a client) | proposals waiting for the owner | a proposal refused past it | technical ceiling | The 10 GB, inside `policy_proposals`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.appliedProposals` | 200 | applied proposals kept | the oldest let go | technical ceiling | As above. |
-| `owner/src/policy.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `policy_receipts`, 65.0 MB. |
+| `contract/src/policy-document.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept, and the action rules' decisions, a bucket of their own (`actions.ts`) | the oldest let go | technical ceiling | The 10 GB: guard terms `policy_receipts`, 65.0 MB, and `action_receipts`. |
 | `owner/src/policy.ts` `MODEL_SOURCES_MAX` | 64 | sources a `models.sources` table names | a larger table refused | technical ceiling | Inside `maxDocument`, the one row every door reads. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxFreeClients` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | The 10 GB: guard terms `outside_clients`, `proposal_shares`. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxOwnerClients` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | As above. |
@@ -233,7 +255,7 @@ reason; none refuses a write.
 | `owner/src/usage.ts` `USAGE_LIMITS.receiptsKept` | 5,000 | model-call receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `model_reservations`. |
 | `contract/src/limits.ts` `CALLS_OPEN` | 1,000 | model reservations open at once | refused `model_calls_full` | technical ceiling | Inside `model_reservations`; far above any tier's runs. |
 | `contract/src/limits.ts` `SPEND_KEPT` | 4,300 | day and month spend counters | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. |
-| `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 admitted, 500 refused | egress receipts kept | the oldest let go | technical ceiling | Inside `egress_reservations`. |
+| `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 settled, 500 refused | egress receipts kept | the oldest let go | technical ceiling | Inside `egress_reservations`. |
 | `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
 | `contract/src/limits.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
 | `owner/src/network.ts` host | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound (RFC 1035). |

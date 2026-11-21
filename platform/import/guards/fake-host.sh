@@ -40,6 +40,13 @@ case "$tool" in
     case "$command" in
       lsf)
         dir="$(at "${*: -1}")"
+        if [[ "$1" == --recursive ]]; then
+          [[ "$2" == --files-only && "$3" == --include && "$4" == '/deletion-jobs/*.json' && -d "$dir" ]] || exit 3
+          for path in "$dir"/deletion-jobs/*.json; do
+            if [[ -f "$path" ]]; then printf 'deletion-jobs/%s\n' "${path##*/}"; fi
+          done
+          exit 0
+        fi
         for path in "$dir"/*; do
           if [[ -f "$path" ]]; then
             basename "$path"

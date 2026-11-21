@@ -1,24 +1,8 @@
 name: Tests
 
-# Why this exists
-# ---------------
-# Until this workflow landed, NEITHER required status check on `main` tested code
-# behaviour:
-#
-#   * `policy` (daemon-request-policy.yml) only reads writer:/checker: labels. A
-#     PR carrying none of them passes it trivially.
-#   * `Diff scope declared` (pr-scope-guard.yml) is a scope-DECLARATION gate and
-#     says so in its own honesty note.
-#
-# Since the repo auto-merges any non-draft PR once required checks pass, and
-# merges flow on to production, code could reach live users without a single
-# behavioural gate. This workflow is that gate.
-#
-# MUST run unconditionally — no `paths:` filter, no job-level `if:`.
-# A REQUIRED status check that is path-filtered never reports at all on PRs
-# outside those paths, and the PR then hangs forever on "Expected — waiting for
-# status". That is why `lint`/actionlint is path-filtered and must NEVER be made
-# required. Every `exit` path below produces a conclusion for the same check name.
+# The required-tests aggregate reports a verdict for every pull request and
+# merge group. A path filter would leave unrelated changes waiting indefinitely
+# for that required check. Test selection belongs inside the workflow.
 
 on:
   pull_request:
@@ -255,12 +239,12 @@ jobs:
   # runtime or in Node. Required through `required-tests`' needs; nothing here deploys.
   # One leg a workspace, in parallel. A matrix job's result is every leg's, so one red leg
   # fails `required-tests`. Every workspace in `platform/package.json` has its leg, the
-  # sandbox's `test` split in two (workerd and guards; the runner as root) and the owner's
-  # (its suite here, its memory leg in `platform-checks`). Each test's budget is its size
-  # class's, one a project (platform/ci/classes.ts); the legs leave the large class out
-  # (`--tags-filter=!large`), which `platform-sizes` runs. Each leg names its shard, `1/1`
-  # when whole, as the sizes legs do: the owner's suite runs in two, so no leg is twice as
-  # long as the next. Pinned by platform/ci/guards.
+  # sandbox's `test` split in two (workerd and guards; the runner as root), and the owner's
+  # and the gateway's (each suite here, each memory leg in `platform-checks`). Each test's
+  # budget is its size class's, one a project (platform/ci/classes.ts); the legs leave the
+  # large class out (`--tags-filter=!large`), which `platform-sizes` runs. Each leg names
+  # its shard, `1/1` when whole, as the sizes legs do: the owner's suite runs in two, so no
+  # leg is twice as long as the next. Pinned by platform/ci/guards.
   # Full history: the owner's migration lock is held against the event's base.
   #
   # timeout-minutes is a watchdog, never a design figure: about 6 x the slowest leg's
@@ -287,7 +271,7 @@ jobs:
           - leg: files
             command: npm run test -w files -- --shard=1/1
           - leg: gateway
-            command: npm run test -w gateway -- --shard=1/1
+            command: npm run test:workerd -w gateway -- --shard=1/1
           - leg: codemode
             command: npm run test -w codemode -- --shard=1/1
           - leg: sandbox
@@ -331,13 +315,14 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-  # The platform's legs that are not Vitest runs, so measure no budget: the typecheck, and
-  # the owner's workerd memory leg (each chunk-wise path O(1) in its data's size, by
-  # differences at checkpoints, ADR-037). Required through `required-tests`' needs.
+  # The platform's legs that are not Vitest runs, so measure no budget: the typecheck, the
+  # owner's workerd memory leg (each chunk-wise path O(1) in its data's size, by differences
+  # at checkpoints, ADR-037), and the gateway's (the egress door and the gateway, their real
+  # bundles, the same way). Required through `required-tests`' needs.
   #
   # timeout-minutes is a watchdog: about 6 x the slowest leg's measured time, as
-  # `platform-tests`' (memory, 4m11s of job in merge-group run 43759511841, the slowest in
-  # runs 43759409585, 43759511841, 43761103673 and 43762132768).
+  # `platform-tests`' (the owner's memory, 4m11s of job in merge-group run 43759511841, the
+  # slowest in runs 43759409585, 43759511841, 43761103673 and 43762132768).
   platform-checks:
     name: platform-checks
     runs-on: ubuntu-latest
@@ -348,8 +333,10 @@ jobs:
         include:
           - leg: typecheck
             command: npm run typecheck
-          - leg: memory
+          - leg: owner memory
             command: npm run test:memory -w owner
+          - leg: gateway memory
+            command: npm run test:memory -w gateway
     defaults:
       run:
         working-directory: platform

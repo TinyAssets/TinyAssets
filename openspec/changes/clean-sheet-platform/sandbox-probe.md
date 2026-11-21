@@ -210,5 +210,7 @@ Measured by the scratch probe (the sandbox Worker's own E2B client; its `probe.m
 Every sign-in (`auth login` with a pasted code, `login --device-auth`, Gemini's `NO_BROWSER`,
 Kimi's regions); the event shapes of real turns (final text, usage, tool calls, Kimi's and
 pi's matchers); a resume of a real conversation (`resume_argv`, and Kimi's `--continue`), and
-a renewal whose CLI's model call is cut by the pause; MCP reaching the run's door; an API-key
-run's model calls through the egress door; CLI memory at real turns.
+a renewal whose CLI's model call is cut by the pause, and one whose runner's own post is (its
+doors too slow to answer `renewing` within the bound: does the post fail at once, or hang past
+the lease's TTL?); MCP reaching the run's door; an API-key run's model calls through the egress
+door; CLI memory at real turns.

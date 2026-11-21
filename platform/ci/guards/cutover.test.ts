@@ -12,7 +12,6 @@
  *   and nothing that stays imports it but an import an edit names (held over the tree by
  *   `isolation.test.ts`, its cases here).
  */
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -22,6 +21,7 @@ import { type CutoverLayer, cutoverLayer, type Entry, isGone, LIVE, type Manifes
          PHASES } from "../kit/cutover";
 import { keyed, object } from "../../contract/src/checks";
 import { layerProblems, repoScripts } from "../kit/imports";
+import { treeFiles } from "../kit/sources";
 import { REPO } from "../paths";
 import { workerFolders } from "../wrangler";
 
@@ -30,9 +30,6 @@ const MARKER = /deleted(?:[\s*#/]|<!--)+at(?:[\s*#/])+the(?:[\s*#/])+cutover/i;
 /** The cutover's vocabulary: no file that stays may speak it. */
 const VOCABULARY: readonly RegExp[] = Object.freeze([
   /\/workspace\/imported/, /old TinyAssets/i, /["'](?:import|discard)["']/, /\bIMPORT_[A-Z0-9_]+/]);
-/** Where the markers and the vocabulary are read: the platform and the workflows. */
-const SCOPE = Object.freeze(["platform", ".github"]);
-
 /** A tree the manifest is held to: whether a path is there, and a file's text. */
 interface Tree {
   readonly exists: (path: string) => boolean;
@@ -165,19 +162,6 @@ function scopeProblems(manifest: Manifest, files: ReadonlyMap<string, string>): 
   });
 }
 
-/** Every text file in the scope: what git tracks, and any new file it does not ignore. */
-function scopeFiles(): Map<string, string> {
-  const paths = execFileSync("git", ["ls-files", "-z", "--cached", "--others",
-                                     "--exclude-standard", "--", ...SCOPE],
-                             { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
-    .split("\0").filter((path) => path !== "");
-  return new Map([...new Set(paths)].flatMap((path) => {
-    const bytes = REPO_TREE.exists(path) && statSync(join(REPO, path)).isFile()
-      ? readFileSync(join(REPO, path)) : null;
-    return bytes === null || bytes.includes(0) ? [] : [[path, bytes.toString("utf8")] as const];
-  }));
-}
-
 /** The imports into what the cutover deletes that files which stay make: `<from> imports <to>`. */
 function cutoverImports(files: ReadonlyMap<string, string>, layer: CutoverLayer): string[] {
   const { violations } = layerProblems({ files, workers: workerFolders(),
@@ -245,7 +229,7 @@ describe("the cutover's manifest", () => {
 
   it("lists every file under platform/ and .github/ that marks a deletion or speaks the cutover",
      () => {
-    expect(scopeProblems(MANIFEST, scopeFiles())).toEqual([]);
+    expect(scopeProblems(MANIFEST, treeFiles())).toEqual([]);
     const what = "a probe";
     expect(scopeProblems(manifestOf({ delete: "platform/import", what },
                                     { edit: "platform/kept.ts", names: ["IMPORT_X"], what }),

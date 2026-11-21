@@ -4,25 +4,28 @@
 import { keyring } from "../../ci/fixtures";
 import type { Credential } from "../src/credential";
 import type { Source } from "../../contract/src/egress-scope";
-import { type Binding, seal } from "../src/keyring";
+import { type Binding, type KeyringEnv, seal } from "../src/keyring";
 
 export { ANTHROPIC, OPENAI } from "../../ci/fixtures";
 
-export type Env = { GATEWAY_KEYRING: string };
-
 /** A keyring env holding `kids` (each a fresh random key) with `active` active. */
 export function ring(active: string, kids: readonly string[] = [active],
-                     keys: Record<string, string> = {}): Env {
+                     keys: Record<string, string> = {}): KeyringEnv {
   return { GATEWAY_KEYRING: keyring(active, kids, keys) };
 }
 
 /** The same keys as `env`, with `active` active. */
-export function rotate(env: Env, active: string, extra: readonly string[] = []): Env {
+export function rotate(env: KeyringEnv, active: string,
+                       extra: readonly string[] = []): KeyringEnv {
   const parsed = JSON.parse(env.GATEWAY_KEYRING) as { keys: Record<string, string> };
   return ring(active, [...Object.keys(parsed.keys), ...extra], parsed.keys);
 }
 
-export const ALICE: Binding = Object.freeze({ owner: "alice", connection: "c1", version: 1 });
+/** Two model connections' ids, as the owner's object mints them (`contract/src/ids.ts`). */
+export const C1 = `c${"1".repeat(24)}`;
+export const C2 = `c${"2".repeat(24)}`;
+
+export const ALICE: Binding = Object.freeze({ owner: "alice", connection: C1, version: 1 });
 
 export const GOOGLE: Source = Object.freeze({
   upstream: { provider: "google", api: "google-generative-ai",
@@ -38,7 +41,7 @@ export function apiKey(secret: string, record: Source): Credential {
            sealed_at: Date.now() };
 }
 
-export async function sealed(env: Env, bound: Binding, secret: string,
+export async function sealed(env: KeyringEnv, bound: Binding, secret: string,
                              record: Source): Promise<string> {
   return (await seal(env, bound, apiKey(secret, record))).blob;
 }

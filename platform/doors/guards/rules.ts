@@ -88,12 +88,11 @@ export const SERVICES = Object.freeze({
   FILES: Object.freeze({ worker: "files", entrypoint: "FilesUpload",
                          serves: Object.freeze(["putChunks"]) }),
   FILES_LOCATE: Object.freeze({ worker: "files", entrypoint: "FilesLocate",
-                                serves: Object.freeze(["locate"]) }),
+                                serves: Object.freeze(["erase", "locate", "namespaces"]) }),
 });
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "doors",
-  name: "tinyassets-doors",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "vars", "durable_objects", "services",

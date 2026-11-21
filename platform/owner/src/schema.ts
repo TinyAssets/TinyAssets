@@ -2374,6 +2374,54 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "UPDATE owner_restore SET schema = 15 WHERE step IN ('index', 'log', 'apply', 'check', " +
       "'chunks', 'names', 'sweep', 'clear')",
   ]),
+  // 17 (R5 P-decide, `actions.ts`; `untangle-2026-11/r5-decide.md`): the calls the owner's action
+  // rules hold, each its card, its digest and its call's, the client whose share it takes
+  // (indexed) and the policy generation it was asked under, and, once the owner said yes, when;
+  // and the decisions' receipts, a bucket of their own, kept to the newest `receiptsPerBucket`
+  // by a count on `policy_usage` their triggers keep. Neither is exported (`export.ts`), so no
+  // capture, and no generation's line changes.
+  Object.freeze([
+    "CREATE TABLE action_requests (card_id TEXT PRIMARY KEY CHECK (length(card_id) = 36), " +
+      "digest TEXT NOT NULL CHECK (length(digest) = 71), call_digest TEXT NOT NULL UNIQUE " +
+      "CHECK (length(call_digest) = 71), card TEXT NOT NULL CHECK " +
+      "(length(CAST(card AS BLOB)) <= 65536), client TEXT CHECK (client IS NULL OR " +
+      "length(client) = 64), generation INTEGER NOT NULL CHECK (generation >= 1), " +
+      "filed_at REAL NOT NULL, approved_at REAL)",
+    "CREATE INDEX action_requests_by_client ON action_requests (client) " +
+      "WHERE client IS NOT NULL",
+    "CREATE TRIGGER action_requests_kept BEFORE UPDATE OF card_id, digest, call_digest, card, " +
+      "client, generation, filed_at ON action_requests " +
+      "BEGIN SELECT RAISE(ABORT, 'a held call changes only by its answer'); END",
+    "CREATE TABLE action_receipts (seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, " +
+      "act TEXT NOT NULL CHECK (length(act) <= 64), decision TEXT NOT NULL CHECK " +
+      "(decision IN ('ask', 'never')), outcome TEXT NOT NULL CHECK (outcome IN ('denied', " +
+      "'held', 'admitted', 'approved', 'refused')), call_digest TEXT NOT NULL CHECK " +
+      "(length(call_digest) = 71), card_id TEXT CHECK (card_id IS NULL OR " +
+      "length(card_id) = 36), agent TEXT CHECK (agent IS NULL OR length(agent) <= 128), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
+      "generation INTEGER NOT NULL)",
+    "CREATE TRIGGER action_receipts_kept BEFORE UPDATE ON action_receipts " +
+      "BEGIN SELECT RAISE(ABORT, 'an action receipt is never changed'); END",
+    "ALTER TABLE policy_usage ADD COLUMN action_receipts INTEGER NOT NULL DEFAULT 0",
+    "CREATE TRIGGER action_receipts_added AFTER INSERT ON action_receipts BEGIN " +
+      "UPDATE policy_usage SET action_receipts = action_receipts + 1; END",
+    "CREATE TRIGGER action_receipts_removed AFTER DELETE ON action_receipts BEGIN " +
+      "UPDATE policy_usage SET action_receipts = action_receipts - 1; END",
+  ]),
+  // 18 (R5 P-resume, `actions.ts`; `untangle-2026-11/r5-resume-hooks.md`): a run's held call
+  // keeps the run it was held in, whose receipt (and conversation) a yes resumes under, and
+  // that run's origin's family, which the receipt does not keep. Set when the call is held and
+  // never changed, so the held call's trigger names them too. Not exported, so no
+  // generation's line changes.
+  Object.freeze([
+    "ALTER TABLE action_requests ADD COLUMN run TEXT CHECK (run IS NULL OR length(run) = 36)",
+    "ALTER TABLE action_requests ADD COLUMN family TEXT CHECK (family IS NULL OR " +
+      "length(family) = 64)",
+    "DROP TRIGGER action_requests_kept",
+    "CREATE TRIGGER action_requests_kept BEFORE UPDATE OF card_id, digest, call_digest, card, " +
+      "client, generation, filed_at, run, family ON action_requests " +
+      "BEGIN SELECT RAISE(ABORT, 'a held call changes only by its answer'); END",
+  ]),
 ]);
 
 /**
@@ -2412,6 +2460,8 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 14
   null,  // 15
   null,  // 16
+  null,  // 17
+  null,  // 18
 ]);
 
 /**

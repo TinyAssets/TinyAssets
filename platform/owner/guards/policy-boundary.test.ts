@@ -9,7 +9,8 @@
  * session themselves, can call a widening), and each policy table is named only by the
  * module that keeps it and the schema. The held agent registrations and the owner's
  * admission are held to the same: only the object imports them, and the admission row is
- * its module's and the schema's alone. So are the model connections and their spend: only the
+ * its module's and the schema's alone; so are the action rules' held calls and receipts,
+ * whose module the object and the policy's receipts door (a type) alone import. So are the model connections and their spend: only the
  * object builds them, `auto` reads their types, and their tables (the connections, their
  * blobs and flows, the reservations and the spend counters) are their modules' alone, and
  * so are the sandbox's egress rows and the owner's erasure mark, and the runs' rows (slice R:
@@ -47,6 +48,7 @@ const WRITES = /\b(?:INSERT|UPDATE|DELETE|REPLACE|UPSERT|CREATE|DROP|ALTER|PRAGM
 const SCHEMA = "owner/src/schema.ts";
 const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   policy: Object.freeze([OWNER_DO, "owner/src/grants.ts"]),
+  actions: Object.freeze([OWNER_DO, "owner/src/policy.ts"]),
   grants: Object.freeze([OWNER_DO]),
   sessions: Object.freeze([OWNER_DO]),
   registrations: Object.freeze([OWNER_DO]),
@@ -62,8 +64,11 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   proposal_shares: Object.freeze(["owner/src/policy.ts", SCHEMA]),
   outside_clients: Object.freeze(["owner/src/grants.ts", SCHEMA]),
   grant_fences: Object.freeze(["owner/src/grants.ts", SCHEMA]),
-  policy_usage: Object.freeze(["owner/src/grants.ts", "owner/src/policy.ts",
-                               "owner/src/registrations.ts", "owner/src/sessions.ts", SCHEMA]),
+  policy_usage: Object.freeze(["owner/src/actions.ts", "owner/src/grants.ts",
+                               "owner/src/policy.ts", "owner/src/registrations.ts",
+                               "owner/src/sessions.ts", SCHEMA]),
+  action_requests: Object.freeze(["owner/src/actions.ts", SCHEMA]),
+  action_receipts: Object.freeze(["owner/src/actions.ts", SCHEMA]),
   owner_admission: Object.freeze(["owner/src/admission.ts", SCHEMA]),
   owner_keys: Object.freeze(["owner/src/keys.ts", SCHEMA]),
   inbound_bindings: Object.freeze(["owner/src/inbound.ts", SCHEMA]),

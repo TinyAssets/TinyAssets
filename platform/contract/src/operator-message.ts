@@ -35,7 +35,7 @@ import { PLATFORM_CALLER } from "./binding.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { base64url, fromBase64url, hex, KID, type Ring } from "./envelope.ts";
-import { type LocatedOwner, namespace } from "./files.ts";
+import { type NamespaceFound, namespace } from "./files.ts";
 import { HEX32 } from "./ids.ts";
 import { Refusal, REFUSALS, type RefusalCode } from "./refusal.ts";
 import { principal } from "./text.ts";
@@ -68,19 +68,24 @@ export const OPERATOR_OPS = Object.freeze({
   "restore.source": Object.freeze([] as const),
   "restore.begin": Object.freeze(["namespace", "gen"] as const),
   "restore.step": Object.freeze([] as const),
-  "restore.pin": Object.freeze(["gen"] as const),
+  "restore.pin": Object.freeze(["namespace", "gen"] as const),
   "restore.wipe": Object.freeze(["confirm"] as const),
   "restore.release": Object.freeze([] as const),
   "restore.names": Object.freeze(["from"] as const),
+  "restore.hold": Object.freeze(["namespace", "gen"] as const),
   "restore.locate": Object.freeze(["namespaces"] as const),
+  "restore.namespaces": Object.freeze(["cursor"] as const),
 } satisfies Record<string, readonly string[]>);
 export type OperatorOp = keyof typeof OPERATOR_OPS;
 
 /**
  * The ops addressed to the platform itself, not to an owner: a namespace's owner read from its
- * generation (`restore.locate`, a restore after an account's loss, when no object names one).
+ * generation (`restore.locate`), and the namespaces the files bucket holds
+ * (`restore.namespaces`), for a restore when no object names one (an account's loss, a lost
+ * object).
  */
-export const PLATFORM_OPS: readonly OperatorOp[] = Object.freeze(["restore.locate"]);
+export const PLATFORM_OPS: readonly OperatorOp[] = Object.freeze(["restore.locate",
+                                                                  "restore.namespaces"]);
 
 /**
  * Whether `owner` is whom `op` is addressed to: the platform's reserved principal for an op of
@@ -103,11 +108,27 @@ export function locateArgs(namespaces: readonly string[]): OperatorArgs {
 }
 
 /**
- * `restore.locate`'s result: each namespace its args name, its owner and newest generation, or
- * null for one the files bucket holds no root of.
+ * `restore.locate`'s result: each namespace its args name as it is found (`NamespaceFound`): its
+ * owner and newest generation; `erased`, marked, or found naming an owner the doors' directory
+ * records erased and so deleted whole, its mark first; or null for one the files bucket holds
+ * no root of.
  */
 export interface LocatedPage {
-  readonly located: Readonly<Record<string, LocatedOwner | null>>;
+  readonly located: Readonly<Record<string, NamespaceFound>>;
+}
+
+/** `restore.namespaces`'s args for the page from `cursor` (null: the first). */
+export function namespacesArgs(cursor: string | null): OperatorArgs {
+  return Object.freeze({ cursor: cursor ?? "" });
+}
+
+/** The cursor `restore.namespaces`'s args name: null for the first page. */
+export function namespacesCursor(args: OperatorArgs): string | null {
+  const cursor = args["cursor"];
+  if (typeof cursor !== "string") {
+    throw new Refusal("invalid", "restore.namespaces names a cursor, empty for the first page");
+  }
+  return cursor === "" ? null : cursor;
 }
 
 /** The namespaces `restore.locate`'s args name: 1 to `LOCATE_PAGE`, distinct, or refused. */

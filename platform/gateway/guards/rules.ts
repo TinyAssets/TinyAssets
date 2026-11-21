@@ -42,7 +42,6 @@ export const MODULE_STATE: readonly Exemption[] = Object.freeze([
  */
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "gateway",
-  name: "tinyassets-gateway",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "secrets"]),

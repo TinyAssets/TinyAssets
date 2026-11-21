@@ -3,8 +3,7 @@ name: Queue freshness
 # When main moves, find queued or armed PRs that no longer merge with it --
 # textually, or in a test both sides can affect -- and take them out BEFORE
 # their merge group fails and every group behind it rebuilds
-# (scripts/queue_freshness.py). Measured 24 h to 2026-10-02: 241 merge-group
-# Tests runs for 76 merges, 99 failed.
+# (scripts/queue_freshness.py).
 #
 # Three jobs, three trust levels:
 # - list:  default-branch code only; picks up to 6 PRs in queue order whose

@@ -2,17 +2,10 @@ name: linux-jail-proof
 
 # Why this exists
 # ---------------
-# Some proofs only mean anything on Linux against the real box core: the
-# file-delivery RPC through a code node, the remote ``ta`` transport and the
-# extension mounts inside an owner box, driven by the shipping engine handlers.
-# The hosted image records those cases as SKIPPED, and a skip is invisible in a
+# Some proofs only mean anything on Linux inside a real owner-box jail. The
+# hosted image records those cases as SKIPPED, and a skip is invisible in a
 # green run and is not evidence in either direction. The guarded cases carry
-# ``@pytest.mark.real_jail``:
-#
-#     runs the file-delivery RPC through a code node in the owner box;
-#   * tests/test_owner_box_process_boundary.py keeps one owner daemon inside a
-#     real Linux jail across local tool and ta calls; owner identity, filesystem
-#     and environment isolation survive both calls.
+# ``@pytest.mark.real_jail``.
 #
 # This job supplies the jail on a disposable GitHub-hosted Ubuntu VM and FAILS
 # unless EVERY case marked `@pytest.mark.real_jail` is present in JUnit with no
@@ -22,28 +15,25 @@ name: linux-jail-proof
 # no account secrets, no self-hosted runner, never the founder's desktop.
 #
 # It is deliberately NOT a branch-protection context. `required-tests` in
-# tests.yml remains the merge gate; this is the independent Linux proof for the
-# file-delivery, codex coding-turn and provider-universe jail slices, read by
-# a human before a "proven live" claim.
+# tests.yml remains the merge gate; this is the independent Linux proof, read
+# by a human before a "proven live" claim.
 #
 # WHERE THE JAIL RUNS: a container as uid 1001, because that is production,
 # through scripts/linux_oracle.py -- the same invocation developers use
 # locally, so CI and the local oracle cannot drift apart.
 # The live daemon runs as uid=1001(tinyassets) inside its container with
-# unprivileged user namespaces enabled and /usr/bin/bwrap (checked 2026-10-01).
-# The hosted Ubuntu VM refuses unprivileged user namespaces to the runner, and
-# the old fallback ran pytest under `sudo -n`: as root inside bwrap's user
-# namespace, binds of runner-owned paths and /proc/self/fd/N are denied, so 18
-# workspace-provisioning proofs failed for a reason production never has. The
-# proof therefore runs in the oracle image (docker/linux-oracle.Dockerfile:
-# python:3.11-slim + bubblewrap, the same base as production) at --user
+# unprivileged user namespaces enabled and /usr/bin/bwrap. The hosted Ubuntu VM
+# restricts unprivileged user namespaces. Running pytest directly as root in
+# bwrap's user namespace also denies binds of runner-owned paths and /proc/self/fd/N.
+# Use the oracle image (docker/linux-oracle.Dockerfile, python:3.11-slim +
+# bubblewrap, the same base as production) at --user
 # 1001:1001, with seccomp and systempaths unconfined for that one container
 # (Docker's defaults block bubblewrap's clone flags and /proc mounts).
 # The hosted kernel restricts unprivileged user namespaces through AppArmor
 # (kernel.apparmor_restrict_unprivileged_userns=1): with plain
 # `apparmor=unconfined` the namespace is created but its capabilities are
-# denied (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`,
-# measured 2026-10-01). So the container gets ONE named profile,
+# denied (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`).
+# The container therefore gets one named profile,
 # `ta-jail-userns` (unconfined plus `userns,`), loaded for this run only. No
 # host sysctl is changed, no privileged container, no daemon edits, and no
 # other process gains user namespaces. If the jail cannot be created, the job

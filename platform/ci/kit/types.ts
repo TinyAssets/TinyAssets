@@ -38,6 +38,7 @@ export interface Services {
     readonly default?: string;
     readonly classes: Readonly<Record<string, ServiceClass>>;
   }>>;
+  /** Each queue's message, by its producers' binding. */
   readonly queues: Readonly<Record<string, string>>;
 }
 
@@ -158,10 +159,10 @@ function envSource(worker: string, table: Services): string {
   }
   const producers = (config["queues"] as { producers?: Bound[] } | undefined)?.producers ?? [];
   for (const bound of producers) {
-    const message = table.queues[bound.queue!];
+    const message = table.queues[bound.binding!];
     if (message === undefined) {
       throw new Error(`platform/${worker}'s ${bound.binding} sends to ${bound.queue}, whose ` +
-                      "message contract/services.json does not type");
+                      "message contract/services.json does not type by that binding");
     }
     typed.set(bound.binding!, `Queue<${imports.ref(message, contract)}>`);
   }
@@ -183,12 +184,12 @@ function envSource(worker: string, table: Services): string {
   ].join("\n");
 }
 
-/** The queues `table` types that no Worker's config sends to. */
+/** The producer bindings `table` types a queue by that no Worker's config holds. */
 function unsentQueues(table: Services): string[] {
   const sent = new Set(workerFolders().flatMap((folder) =>
     ((readWrangler(join(PLATFORM, folder))["queues"] as { producers?: Bound[] } | undefined)
-      ?.producers ?? []).map((bound) => bound.queue)));
-  return Object.keys(table.queues).filter((queue) => !sent.has(queue));
+      ?.producers ?? []).map((bound) => bound.binding)));
+  return Object.keys(table.queues).filter((binding) => !sent.has(binding));
 }
 
 /** The contract module the queues' names are written to, from `platform/`. */
@@ -228,7 +229,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const table = services();
   const unsent = unsentQueues(table);
   if (unsent.length > 0) {
-    throw new Error(`contract/services.json types queues no Worker sends to: ${unsent.join(", ")}`);
+    throw new Error("contract/services.json types queues by bindings no Worker sends with: " +
+                    unsent.join(", "));
   }
   for (const worker of workerFolders()) {
     writeFileSync(join(PLATFORM, envFile(worker)), envSource(worker, table));

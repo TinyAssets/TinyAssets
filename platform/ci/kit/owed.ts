@@ -27,7 +27,8 @@ export interface Found {
 }
 
 /** The guards a workspace may owe: each one's test holds `ratchet` over what it finds. */
-export const GUARDS: readonly string[] = Object.freeze(["kernels", "layers", "refusals"]);
+export const GUARDS: readonly string[] = Object.freeze(["kernels", "layers", "literals",
+                                                         "refusals"]);
 
 /** Each entry owed to a guard no test holds, which would never be found stale. */
 export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
@@ -35,14 +36,6 @@ export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
     .filter((each) => !GUARDS.includes(each.guard))
     .map((each) => `${rulesOf(workspace)} owes "${each.what}" to "${each.guard}", ` +
                    "a guard no one holds"));
-}
-
-/**
- * What `from` owes the layer table (`layers.ts`) for each of its imports `to` lands on, until
- * `fix` removes them: paths from the repository root, as the table's guard names them.
- */
-export function imports(fix: string, from: string, to: readonly string[]): Owed[] {
-  return to.map((each) => Object.freeze({ guard: "layers", what: `${from} imports ${each}`, fix }));
 }
 
 /**
@@ -61,6 +54,14 @@ export function kernels(fix: string, kernel: string,
   return Object.entries(counts).map(([from, count]) =>
     Object.freeze({ guard: "kernels", what: kernelBreak(from, kernel, count), fix }));
 }
+
+/**
+ * The literal guard's finding (`deploy/guards/literals.test.ts`, untangle B10): the file
+ * `from`, by its path from the repository root, spells live names `count` times outside the
+ * configs and `deploy/platform.json`. It names none, so the entry that owes it spells none.
+ */
+export const literalBreak = (from: string, count: number): string =>
+  `${from}: live names ×${count}`;
 
 /** The file that holds a workspace's `OWED`. */
 export const rulesOf = (workspace: string): string => `platform/${workspace}/guards/rules.ts`;

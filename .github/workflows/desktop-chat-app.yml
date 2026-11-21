@@ -1,13 +1,8 @@
 name: Desktop chat app (Windows, macOS, Linux)
 
-# Builds the Electron chat app in desktop-app/ - the Tier-1 client that wraps
-# https://tinyassets.io/app. Before this workflow
-# nothing built desktop-app/, so installed copies kept whatever URL they were
-# built with and broke when /mcp/app retired (docs/concerns, 2026-10-01).
-#
-# Unsigned CI artifact only: no release, no auto-update feed, no repository
-# write authority. Signing and electron-updater are the remaining items in
-# docs/concerns/2026-10-01-desktop-chat-app-has-no-build.md.
+# Build the unsigned Electron client for https://tinyassets.io/app as a CI
+# artifact. This job has read-only repository access. desktop-chat-release.yml
+# handles signed Windows releases.
 
 on:
   push:

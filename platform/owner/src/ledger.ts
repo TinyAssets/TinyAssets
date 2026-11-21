@@ -94,14 +94,14 @@
 import { apiKeyOrigin, nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
 import type { Origin, Source } from "../../contract/src/binding";
-import { codePoints, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { AGENT_ID, codePoints, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { sha256Hex } from "../../contract/src/digest";
 import { canonical } from "../../contract/src/canonical";
 import { keyed, whole } from "../../contract/src/checks";
 import { HEX16, HEX64, randomHex, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 
-import { AGENT_DIR, filerOf, may, NOT_GRANTED, OWNER, scopeOf } from "./authority";
+import { filerOf, may, NOT_GRANTED, OWNER, scopeOf } from "./authority";
 import {
   type Adopt, adopted, bodyOffset, inlineWindow, PAGE_BYTES, type Placed,
   READ_TRIES, type Window,
@@ -1137,7 +1137,7 @@ export class Ledger {
    * retired one first (its mail stays). A name that is no agent id is no identity.
    */
   appear(agent: string, now: number = clock()): void {
-    if (!AGENT_DIR.test(agent)) {
+    if (!AGENT_ID.test(agent)) {
       return;
     }
     const sql = this.#sql;
@@ -1510,13 +1510,16 @@ export class Ledger {
 
   /**
    * Who a post by `actor` in `room` would go to, as the post itself resolves it: the
-   * recipient's id, and its agent's name when it is one of the owner's own. A read.
+   * recipient's id, its agent's name when it is one of the owner's own, and whether it is an
+   * outside agent (neither the owner nor one of its own). A read.
    */
-  recipient(actor: Actor, roomId: unknown): { id: string; native: string | null } {
+  recipient(actor: Actor, roomId: unknown):
+      { id: string; native: string | null; outside: boolean } {
     const members = this.#room(printable(roomId, 128, "room_id"));
     const sender = this.#sender(actor, members);
     const to = members.find((m) => m !== sender)!;
-    return { id: to.id, native: to.kind === "native" ? to.native.agent : null };
+    return { id: to.id, native: to.kind === "native" ? to.native.agent : null,
+             outside: to.kind === "outside" };
   }
 
   /** The message the owner posted under `clientMessageId`, if any: an inbound replay's. */
@@ -3297,7 +3300,7 @@ function poster(o: LedgerDoorNeeds, call: Call):
 }
 
 /** Who a caller is in the ledger: a run, its agent; else the owner or the outside client. */
-function actorOf(account: Account): Actor {
+export function actorOf(account: Account): Actor {
   return account.run !== null ? { native: account.run.agent } : account.origin;
 }
 

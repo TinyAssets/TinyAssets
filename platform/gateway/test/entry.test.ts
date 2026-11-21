@@ -19,7 +19,7 @@ import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { doorbellSecret, sealDoorbell } from "../src/doorbell";
 import { open, openValue } from "../src/keyring";
 import { until } from "../../ci/workerd";
-import { ALICE, ANTHROPIC, OPENAI, sealed } from "./support";
+import { ALICE, ANTHROPIC, C1, C2, OPENAI, sealed } from "./support";
 import type { Metering, Reserve } from "../../contract/src/gateway";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
@@ -96,7 +96,7 @@ describe("guarded", () => {
 
 describe("the gateway Worker", () => {
   it("seals a pasted key over RPC, bound to the owner, connection and version", async () => {
-    const { blob, kid } = await connect.seal("alice", "c1", 1, "sk-rpc", ANTHROPIC);
+    const { blob, kid } = await connect.seal("alice", C1, 1, "sk-rpc", ANTHROPIC);
     expect(kid).toBe("k2");
     const opened = await open(env, ALICE, blob);
     expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-rpc");
@@ -104,11 +104,11 @@ describe("the gateway Worker", () => {
   });
 
   it("refuses a malformed binding, key or source with only a fixed code", async () => {
-    expect(await rejected(() => connect.seal("", "c1", 1, "sk", ANTHROPIC))).toBe("invalid_binding");
-    expect(await rejected(() => connect.seal("alice", "c1", 0, "sk", ANTHROPIC))).toBe("invalid_binding");
-    expect(await rejected(() => connect.seal("alice", "c1", 1, "sk\r\nx-evil: 1", ANTHROPIC)))
+    expect(await rejected(() => connect.seal("", C1, 1, "sk", ANTHROPIC))).toBe("invalid_binding");
+    expect(await rejected(() => connect.seal("alice", C1, 0, "sk", ANTHROPIC))).toBe("invalid_binding");
+    expect(await rejected(() => connect.seal("alice", C1, 1, "sk\r\nx-evil: 1", ANTHROPIC)))
       .toBe("invalid_source");
-    expect(await rejected(() => connect.seal("alice", "c1", 1, "sk",
+    expect(await rejected(() => connect.seal("alice", C1, 1, "sk",
       { ...ANTHROPIC, upstream: { ...ANTHROPIC.upstream, base_url: "https://api.openai.com" } })))
       .toBe("invalid_source");
   });
@@ -117,7 +117,7 @@ describe("the gateway Worker", () => {
     const old = JSON.parse(env.GATEWAY_KEYRING) as { keys: Record<string, string> };
     const k1 = { GATEWAY_KEYRING: JSON.stringify({ active: "k1", keys: old.keys }) };
     const blob = await sealed(k1, ALICE, "sk-old", ANTHROPIC);
-    const resealed = await gateway.reseal("alice", "c1", 1, blob);
+    const resealed = await gateway.reseal("alice", C1, 1, blob);
     expect(resealed).toMatchObject({ kid: "k2", version: 2 });
     const opened = await open(env, { ...ALICE, version: 2 }, resealed.blob);
     expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-old");
@@ -146,20 +146,20 @@ describe("the gateway Worker", () => {
   });
 
   it("verifies, refreshes and revokes over RPC with fixed codes", async () => {
-    const blob = (await connect.seal("alice", "c1", 1, "sk-good", ANTHROPIC)).blob;
-    expect((await connect.verify("alice", "c1", 1, blob)).models.length).toBeGreaterThan(0);
-    expect(await rejected(() => gateway.refresh("alice", "c1", 1, blob))).toBe("not_refreshable");
-    expect(await gateway.revokeAtProvider("alice", "c1", 1, blob)).toEqual({ revoked: false });
-    expect(await rejected(() => connect.verify("bob", "c1", 1, blob))).toBe("credential_refused");
+    const blob = (await connect.seal("alice", C1, 1, "sk-good", ANTHROPIC)).blob;
+    expect((await connect.verify("alice", C1, 1, blob)).models.length).toBeGreaterThan(0);
+    expect(await rejected(() => gateway.refresh("alice", C1, 1, blob))).toBe("not_refreshable");
+    expect(await gateway.revokeAtProvider("alice", C1, 1, blob)).toEqual({ revoked: false });
+    expect(await rejected(() => connect.verify("bob", C1, 1, blob))).toBe("credential_refused");
   });
 
   it("exchanges an OAuth code over RPC", async () => {
-    const exchanged = await connect.exchange("alice", "c1", 1, {
+    const exchanged = await connect.exchange("alice", C1, 1, {
       code: "good-code", verifier: "v".repeat(43), redirect_uri: "https://tinyassets.io/cb",
     }, { ...OPENAI, oauth: { client_id: "client-1", client_auth: { method: "none" },
                              token_endpoint: "https://auth.test/token" } });
     expect(exchanged.kid).toBe("k2");
-    expect(await rejected(() => connect.exchange("alice", "c1", 1, {
+    expect(await rejected(() => connect.exchange("alice", C1, 1, {
       code: "bad", verifier: "v".repeat(43), redirect_uri: "https://tinyassets.io/cb",
     }, { ...OPENAI, oauth: { client_id: "client-1", client_auth: { method: "none" },
                              token_endpoint: "https://auth.test/token" } })))
@@ -171,9 +171,9 @@ describe("the gateway Worker", () => {
     const counted = { ...ANTHROPIC, endpoints: [...ANTHROPIC.endpoints, {
       origin: "https://api.anthropic.com", paths: ["/v1/messages/count_tokens"],
       methods: ["POST"] }] };
-    const blob = (await connect.seal("alice", "c1", 1, "sk-count", counted)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-count", counted)).blob;
     // Claude Code's token count, which Anthropic does not bill: sent with the sealed key.
-    const count = await egress.forward("alice", "c1", 1, blob, new Request(
+    const count = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/messages/count_tokens", { method: "POST", body: "{}",
                                                    headers: { "x-fake-mode": "hdr" } }),
       null, new ReadableStream());
@@ -182,24 +182,24 @@ describe("the gateway Worker", () => {
     expect(count.response.headers.get("x-echo-key")).toBe("[redacted]");
     await count.response.body?.cancel();
     // A model call is never free, nor is a token count on a source that does not seal it.
-    const message = await egress.forward("alice", "c1", 1, blob, new Request(
+    const message = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/messages", { method: "POST", body: "{}",
                                       headers: { "x-fake-mode": "hdr" } }),
       null, new ReadableStream());
     expect(await message.response.json()).toMatchObject({ error: { code: "unmetered" } });
-    const unsealed = (await connect.seal("alice", "c1", 1, "sk-count", ANTHROPIC)).blob;
-    const elsewhere = await egress.forward("alice", "c1", 1, unsealed, new Request(
+    const unsealed = (await connect.seal("alice", C1, 1, "sk-count", ANTHROPIC)).blob;
+    const elsewhere = await egress.forward("alice", C1, 1, unsealed, new Request(
       "https://egress/v1/messages/count_tokens", { method: "POST", body: "{}" }),
       null, new ReadableStream());
     expect(await elsewhere.response.json()).toMatchObject({ error: { code: "endpoint_refused" } });
     // Another provider on the same API, sealing the same path: Anthropic's page is not its.
-    const other = (await connect.seal("alice", "c1", 1, "sk-count", {
+    const other = (await connect.seal("alice", C1, 1, "sk-count", {
       upstream: { provider: "vercel-ai-gateway", api: "anthropic-messages",
                   base_url: "https://ai-gateway.vercel.sh",
                   auth: { header: "x-api-key", scheme: "" } },
       endpoints: [{ origin: "https://ai-gateway.vercel.sh",
                     paths: ["/v1/messages", "/v1/messages/count_tokens"], methods: ["POST"] }] })).blob;
-    const theirs = await egress.forward("alice", "c1", 1, other, new Request(
+    const theirs = await egress.forward("alice", C1, 1, other, new Request(
       "https://egress/v1/messages/count_tokens", { method: "POST", body: "{}",
                                                    headers: { "x-fake-mode": "hdr" } }),
       null, new ReadableStream());
@@ -210,29 +210,29 @@ describe("the gateway Worker", () => {
      async () => {
     // The doors' egress door reaches it over their real `EGRESS` binding; here, its surface.
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const outcome = async (answer: { outcome: ReadableStream<Uint8Array> }) =>
       JSON.parse(await new Response(answer.outcome).text()) as { state: string };
     // A sealed endpoint that is not pi-ai's model call is never metered, so never sent.
-    const listing = await egress.forward("alice", "c1", 1, blob, new Request(
+    const listing = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }), granting(),
       new ReadableStream());
     expect(listing.response.status).toBe(403);
     expect(await outcome(listing)).toEqual({ state: "failed" });
     // With no reserve, a read of a sealed endpoint goes, and nothing else does.
-    const read = await egress.forward("alice", "c1", 1, blob, new Request(
+    const read = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }), null,
       new ReadableStream());
     expect(read.response.status).toBe(200);
     await read.response.body?.cancel();
-    const unmetered = await egress.forward("alice", "c1", 1, blob, new Request(
+    const unmetered = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/responses", { method: "POST", body: "{}" }), null, new ReadableStream());
     expect(unmetered.response.status).toBe(403);
     expect(await unmetered.response.json()).toMatchObject({ error: { code: "unmetered" } });
     // The caller's stop aborts a provider request that has not answered yet.
     const started = Date.now();
     const stop = new IdentityTransformStream();
-    const held = egress.forward("alice", "c1", 1, blob, new Request("https://egress/v1/models", {
+    const held = egress.forward("alice", C1, 1, blob, new Request("https://egress/v1/models", {
       headers: { "x-fake-mode": "hang" } }), null, stop.readable);
     await stop.writable.getWriter().close();
     const stopped = await held;
@@ -241,14 +241,14 @@ describe("the gateway Worker", () => {
     // A metered call cut before any answer may have reached the provider: never free.
     const model = await responsesModel();
     const cutStop = new IdentityTransformStream();
-    const cut = egress.forward("alice", "c1", 1, blob, posted("/v1/responses", JSON.stringify({
+    const cut = egress.forward("alice", C1, 1, blob, posted("/v1/responses", JSON.stringify({
       model: model.id, input: "hi", stream: true }),
       { "x-fake-mode": "hang", "x-fake-id": "cut-metered" }), granting(), cutStop.readable);
     await arrived("cut-metered");
     await cutStop.writable.getWriter().close();
     expect(await outcome(await cut)).toEqual({ state: "unknown" });
     // A priority call is priced as pi-ai prices it, above the standard call's price.
-    const sent = (fields: Record<string, unknown>) => egress.forward("alice", "c1", 1, blob,
+    const sent = (fields: Record<string, unknown>) => egress.forward("alice", C1, 1, blob,
       posted("/v1/responses", JSON.stringify({ model: model.id, input: "hi", stream: true,
                                                 ...fields })), granting(),
       new ReadableStream());
@@ -272,7 +272,7 @@ describe("the gateway Worker", () => {
     expect(auto.state).toBe("succeeded");
     expect(auto.cost).toBeCloseTo(standard.cost, 12);
     // Provider beta headers, which can widen a call past its reservation, are stripped.
-    const beta = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
+    const beta = await egress.forward("alice", C1, 1, blob, posted("/v1/responses",
       JSON.stringify({ model: model.id, input: "hi" }), {
         "x-fake-mode": "echo", "anthropic-beta": "context-1m", "openai-beta": "assistants=v2",
         "x-vendor-beta": "on", "x-kept": "yes" }), granting(), new ReadableStream());
@@ -283,7 +283,7 @@ describe("the gateway Worker", () => {
     }
     // Anthropic: a call naming no tier is sent at the one pi-ai prices, and an answer served
     // at another is unknown.
-    const anthropic = (await connect.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const anthropic = (await connect.seal("alice", C2, 1, "sk-good", ANTHROPIC)).blob;
     const claude = builtinCatalog();
     let named: { id: string } | undefined;
     for (const record of claude.provider("anthropic")!.getModels()
@@ -295,7 +295,7 @@ describe("the gateway Worker", () => {
       }
     }
     const message = async (served: string | null) => {
-      const answer = await egress.forward("alice", "c2", 1, anthropic, posted("/v1/messages",
+      const answer = await egress.forward("alice", C2, 1, anthropic, posted("/v1/messages",
         JSON.stringify({ model: named!.id, max_tokens: 50, stream: true,
                          messages: [{ role: "user", content: "cmd:echo" }] }),
         served === null ? {} : { "x-fake-served-tier": served }), granting(),
@@ -309,7 +309,7 @@ describe("the gateway Worker", () => {
     expect(plain.outcome.state).toBe("succeeded");
     expect((await message("standard")).outcome.state).toBe("succeeded");
     expect((await message("priority")).outcome).toEqual({ state: "unknown" });
-    const refused = await egress.forward("", "c1", 1, blob, new Request("https://egress/v1/models"),
+    const refused = await egress.forward("", C1, 1, blob, new Request("https://egress/v1/models"),
                                          granting(), new ReadableStream());
     expect(refused.response.status).toBe(400);
     // The owner's entrypoint forwards nothing: egress is the egress door's, metered or a read.
@@ -319,7 +319,7 @@ describe("the gateway Worker", () => {
   it("reserves a model call for the model and tier its one parse read, wherever the keys lie",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const asked: unknown[] = [];
     const refusing: Reserve = async (call) => {
@@ -327,7 +327,7 @@ describe("the gateway Worker", () => {
       return { refused: "egress_spend_refused" };
     };
     const call = async (text: string, reserve: Reserve = refusing) => egress.forward(
-      "alice", "c1", 1, blob, posted("/v1/responses", text, { "x-fake-mode": "echo" }),
+      "alice", C1, 1, blob, posted("/v1/responses", text, { "x-fake-mode": "echo" }),
       reserve, new ReadableStream());
     // A tier the body names, or none (null); the last of duplicate keys, as JSON.parse reads
     // them and as the provider receives the gateway's own parse; a model after a field of
@@ -371,7 +371,7 @@ describe("the gateway Worker", () => {
     // as it is read; so is one past the length the object reserved it at.
     const text = JSON.stringify({ model: model.id, input: "hi" });
     const declared = (length: string | null, body: string = text) => egress.forward(
-      "alice", "c1", 1, blob, new Request("https://egress/v1/responses", {
+      "alice", C1, 1, blob, new Request("https://egress/v1/responses", {
         method: "POST", body: new Blob([body]).stream(),
         headers: length === null ? {} : { "content-length": length } }),
       granting(asked), new ReadableStream());
@@ -394,11 +394,11 @@ describe("the gateway Worker", () => {
   it("cuts a metered answer its provider goes silent on, the provider's request ended",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const blob = (await connect.seal("alice", C2, 1, "sk-good", ANTHROPIC)).blob;
     const model = await anthropicModel();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const answer = await egress.forward("alice", "c2", 1, blob, posted("/v1/messages",
+      const answer = await egress.forward("alice", C2, 1, blob, posted("/v1/messages",
         JSON.stringify({ model: model.id, max_tokens: 50, stream: true,
                          messages: [{ role: "user", content: "hi" }] }),
         { "x-fake-mode": "stall", "x-fake-id": "idle-metered" }), granting(),
@@ -425,12 +425,12 @@ describe("the gateway Worker", () => {
 
   it("never cuts a metered answer whose every byte comes inside the idle cut", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const blob = (await connect.seal("alice", C2, 1, "sk-good", ANTHROPIC)).blob;
     const model = await anthropicModel();
     const stop = new IdentityTransformStream();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const answer = await egress.forward("alice", "c2", 1, blob, posted("/v1/messages",
+      const answer = await egress.forward("alice", C2, 1, blob, posted("/v1/messages",
         JSON.stringify({ model: model.id, max_tokens: 50, stream: true,
                          messages: [{ role: "user", content: "cmd:slow-steady" }] })),
         granting(), stop.readable);
@@ -452,7 +452,7 @@ describe("the gateway Worker", () => {
   it("ends an answer its caller stopped mid-stream cleanly, the provider's request cut",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const blob = (await connect.seal("alice", C2, 1, "sk-good", ANTHROPIC)).blob;
     const claude = builtinCatalog();
     let named: { id: string } | undefined;
     for (const record of claude.provider("anthropic")!.getModels()
@@ -464,7 +464,7 @@ describe("the gateway Worker", () => {
       }
     }
     const stop = new IdentityTransformStream();
-    const answer = await egress.forward("alice", "c2", 1, blob, posted("/v1/messages",
+    const answer = await egress.forward("alice", C2, 1, blob, posted("/v1/messages",
       JSON.stringify({ model: named!.id, max_tokens: 50, stream: true,
                        messages: [{ role: "user", content: "cmd:slow-stopped" }] })),
       granting(), stop.readable);
@@ -491,11 +491,11 @@ describe("the gateway Worker", () => {
 
   it("sends the provider the clamped parse as bytes, with its Content-Length", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const asked = { model: model.id, input: [{ role: "user", content: "— every 😀" }],
                     max_output_tokens: 900_000_000, temperature: 0.5 };
-    const answer = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses",
+    const answer = await egress.forward("alice", C1, 1, blob, posted("/v1/responses",
       JSON.stringify(asked), { "x-fake-mode": "echo" }), granting([], { max_output_tokens: 77 }),
       new ReadableStream());
     const echoed = await answer.response.json() as { body: string;
@@ -510,7 +510,7 @@ describe("the gateway Worker", () => {
   it("holds its slots while it reads, rewrites and uploads, never across the provider's wait",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
+    const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
     const model = await responsesModel();
     const pool = gatewaySlots();
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
@@ -520,7 +520,7 @@ describe("the gateway Worker", () => {
     const pending = new Promise<void>((resolve) => { grant = resolve; });
     const whole = JSON.stringify({ model: model.id,
                                    input: `${"x".repeat(15 * 1024 * 1024 - 300)}é` });
-    const first = egress.forward("alice", "c1", 1, blob, posted("/v1/responses", whole,
+    const first = egress.forward("alice", C1, 1, blob, posted("/v1/responses", whole,
       { "x-fake-mode": "held", "x-fake-id": "held-whole" }), async (call) => {
       await pending;
       return granting()(call);
@@ -530,10 +530,10 @@ describe("the gateway Worker", () => {
     const small = JSON.stringify({ model: model.id, input: "hi" });
     const refusing: Reserve = async () => ({ refused: "egress_spend_refused" });
     const waiting = Array.from({ length: 4 * GATEWAY_POOL_SLOTS }, () => egress.forward(
-      "alice", "c1", 1, blob, posted("/v1/responses", small), refusing,
+      "alice", C1, 1, blob, posted("/v1/responses", small), refusing,
       new ReadableStream()));
     await until(() => pool.state().waiting === 4 * GATEWAY_POOL_SLOTS, "the waiters");
-    const busy = await egress.forward("alice", "c1", 1, blob, posted("/v1/responses", small),
+    const busy = await egress.forward("alice", C1, 1, blob, posted("/v1/responses", small),
                                       refusing, new ReadableStream());
     expect([busy.response.status, busy.response.headers.get("retry-after"),
             await busy.response.json()])
@@ -567,10 +567,10 @@ describe("the gateway Worker", () => {
     expect(Object.getOwnPropertyNames(Gateway.prototype).sort())
       .toEqual(["constructor", "fetch", "refresh", "reseal", "resealDoorbell",
                 "revokeAtProvider", "ringDoorbell"]);
-    const { blob } = await connect.seal("alice", "c1", 1, "sk-good", ANTHROPIC);
-    expect((await connect.verify("alice", "c1", 1, blob)).models.length).toBeGreaterThan(0);
-    expect(await rejected(() => connect.verify("bob", "c1", 1, blob))).toBe("credential_refused");
-    expect(await rejected(() => connect.exchange("alice", "c1", 1, {
+    const { blob } = await connect.seal("alice", C1, 1, "sk-good", ANTHROPIC);
+    expect((await connect.verify("alice", C1, 1, blob)).models.length).toBeGreaterThan(0);
+    expect(await rejected(() => connect.verify("bob", C1, 1, blob))).toBe("credential_refused");
+    expect(await rejected(() => connect.exchange("alice", C1, 1, {
       code: "bad", verifier: "v".repeat(43), redirect_uri: "https://tinyassets.io/cb",
     }, ANTHROPIC))).toBe("invalid_source");
   });

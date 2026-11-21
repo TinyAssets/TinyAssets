@@ -80,11 +80,13 @@ describe("a sign-in", () => {
   it("is refused for an engine with no vendor sign-in, a region it does not take, or one " +
      "it needs and lacks", async () => {
     const r = await gated();
-    for (const request of [{ engine: "pi" }, { engine: "nope" },
+    // A sign-out sits behind no switch, so only the record refuses an engine that cannot sign in.
+    for (const request of [{ engine: "pi" }, { engine: "pi", mode: "out" }, { engine: "nope" },
                            { engine: "claude-code", region: "global" },
                            { engine: "kimi" }, { engine: "kimi", region: "moon" },
                            { engine: "claude-code", mode: "sideways" }]) {
-      expect((await failure(() => r.stub.signinStart(r.bind(), request as never))).message).toBeTruthy();
+      expect((await failure(() => r.stub.signinStart(r.bind(), request as never))).code,
+             JSON.stringify(request)).toBe("invalid");
     }
     expect((await recorder(r.stub)).signins).toEqual([]);
     expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);

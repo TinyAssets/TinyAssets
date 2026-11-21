@@ -53,7 +53,7 @@ import { LEDGER_LIMITS } from "../src/ledger";
 import { REFUSALS } from "../../contract/src/refusal";
 import { ARCHIVE_SEGMENTS_MAX, BLOOM_BYTES, SEGMENT_LEAST_BYTES } from "../src/segments";
 import {
-  ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, COMMAND_CENTER_MAX,
+  ACTION_CARD_BYTES, ARGUMENTS_CHARS, AUTHORITY_CHARS, CALLS_OPEN, CHUNK_BYTES, COMMAND_CENTER_MAX,
   CONNECTION_BLOB_MAX, CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, CURSOR_CHARS,
   DOORBELL_BLOB_CHARS, EGRESS_JSON_MAX,
   EGRESS_PATH_MAX, ENGINE_SIGNINS, ERROR_BYTES, IMAGE_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
@@ -187,6 +187,8 @@ const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOw
 const POLICY_LIMITS = declared(POLICY_DOCUMENT, "POLICY_LIMITS", "maxDocument", "maxChange",
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
+/** The calls the action rules hold (R5 P-decide). */
+const ACTION_LIMITS = declared("actions", "ACTION_LIMITS", "held");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 /** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
@@ -338,6 +340,7 @@ export interface Bounds {
   readonly egress?: Partial<typeof EGRESS_LIMITS>;
   readonly policy?: Partial<typeof POLICY_LIMITS>;
   readonly cards?: Partial<typeof CARD_LIMITS>;
+  readonly actions?: Partial<typeof ACTION_LIMITS>;
   readonly usage?: Partial<typeof USAGE_LIMITS>;
   readonly connections?: Partial<typeof CONNECTION_LIMITS>;
 }
@@ -355,6 +358,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
   const E = { ...EGRESS_LIMITS, ...bounds.egress };
   const P = { ...POLICY_LIMITS, ...bounds.policy };
   const K = { ...CARD_LIMITS, ...bounds.cards };
+  const A = { ...ACTION_LIMITS, ...bounds.actions };
   const U = { ...USAGE_LIMITS, ...bounds.usage };
   const CN = { ...CONNECTION_LIMITS, ...bounds.connections };
   /** The file manifest's tables, together: the index's ceiling, at worst fill. */
@@ -521,6 +525,20 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                    indexes: { sqlite_autoindex_agent_cards_1: key(37),
                               sqlite_autoindex_agent_cards_2: key(64, 64),
                               agent_cards_by_age: key(NUMBER) } },
+    // R5 P-decide: the calls held for the owner, pending or approved, and their decisions'
+    // receipts, a bucket of the policy's kept apart (`actions.ts`).
+    action_requests: { rows: A.held,
+                       bytes: ROW + 36 + 2 * 71 + ACTION_CARD_BYTES + 64 + 3 * NUMBER
+                         + RUN_ID_CHARS + 64,
+                       by: "held calls, each its card at the schema's byte ceiling, its two " +
+                         "digests, its client, its times, and a run's id and its origin's " +
+                         "family (P-resume)",
+                       indexes: { sqlite_autoindex_action_requests_1: key(36),
+                                  sqlite_autoindex_action_requests_2: key(71),
+                                  action_requests_by_client: key(64) } },
+    action_receipts: { rows: P.receiptsPerBucket, bytes: ROW + 64 + 8 + 8 + 71 + 36 + 128 + 64
+                         + 2 * NUMBER,
+                       by: "receiptsPerBucket decisions, each at its checks' widest" },
     owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
     connections: { rows: CN.maxConnections + CN.maxRevokedKept,
                    bytes: ROW + MODELS_BYTES + EGRESS_BYTES,

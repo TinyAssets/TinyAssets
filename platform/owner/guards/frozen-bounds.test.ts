@@ -147,6 +147,7 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
     ...TABLE("egress_reservations", ID("run")), ...TABLE("runs", ID("id")),
     ...TABLE("run_inputs", ID("run")), ...TABLE("run_grants", ID("run")),
     ...TABLE("conversations", ID("last_run")), ...TABLE("run_schedules", ID("last_run")),
+    ["ALTER TABLE action_requests ADD COLUMN run", 1, ID("run")],
   ],
   CONVERSATION_ID_CHARS: [...TABLE("runs", ID("conversation")), ...TABLE("conversations", ID("id")),
                           ...TABLE("socket_tickets", ID("conversation"))],
@@ -182,11 +183,13 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
   EGRESS_PATH_MAX: TABLE("egress_reservations", (n) => `length(path) BETWEEN 1 AND ${n} AND`),
   KEY_NAME_MAX: TABLE("owner_keys", (n) => `length(name) BETWEEN 1 AND ${n})`),
   INBOUND_SECRET_MAX: TABLE("inbound_bindings", (n) => `length(secret) <= ${n})`),
+  INBOUND_AGENT_MAX: TABLE("inbound_bindings", (n) => `length(agent) BETWEEN 1 AND ${n})`),
   INBOUND_ROUTE_MAX: TABLE("inbound_bindings", (n) => `length(route) <= ${n})`),
   NOTICE_DETAIL: TABLE("owner_notices", (n) => `length(detail) <= ${n})`),
   MAX_PATH_BYTES: TABLE("starter_receipts", (n) => `length(CAST(path AS BLOB)) <= ${n})`),
   SCOPES_JSON_MAX: TABLE("outside_clients", (n) => `length(CAST(scopes AS BLOB)) <= ${n})`),
   CARD_REQUEST_MAX: TABLE("agent_cards", (n) => `length(request) <= ${n})`),
+  ACTION_CARD_BYTES: TABLE("action_requests", (n) => `length(CAST(card AS BLOB)) <= ${n})`),
   SEGMENT_LEAST_BYTES: [["CREATE INDEX archive_segments_small", 1, (n) => `WHERE bytes < ${n}`]],
   SHARE_BYTES: [
     ["INSERT INTO file_shares", 2, (n) => `0, 0, 0, 0, ${n}, 0)`],
@@ -211,7 +214,7 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold;
  *   36 also a collection deletion's four numbers in its charge (`collection_erasures`).
  */
-const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 11, 64: 282, 256: 8, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1024: 5,
                                        4096: 252 });
 
 /**
@@ -438,7 +441,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(591);
+    expect(places).toBe(594);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

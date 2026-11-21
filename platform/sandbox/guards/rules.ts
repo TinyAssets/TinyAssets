@@ -1,5 +1,5 @@
 /**
- * The sandbox Worker's config allow-list (slice S), checked by the platform's guard kit
+ * The sandbox Worker's config allow-list, checked by the platform's guard kit
  * (`ci/kit/config.ts`); the owner's config guard holds what it binds to the owner's own
  * allowance for `SANDBOX` (`owner/guards/rules.ts`).
  *
@@ -16,7 +16,6 @@ import { kernels, type Owed } from "../../ci/kit/owed";
 
 export const CONFIG: ConfigRules = Object.freeze({
   worker: "sandbox",
-  name: "tinyassets-sandbox",
   main: "src/index.ts",
   keys: Object.freeze(["$schema", "build", "compatibility_date", "compatibility_flags",
                        "durable_objects", "kv_namespaces", "main", "migrations", "name",

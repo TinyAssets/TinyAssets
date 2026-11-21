@@ -1,18 +1,12 @@
 name: PR scope guard
 
-# Why this exists
-# ---------------
-# Green checks are not sufficient to auto-merge safely. PR #1491 presented as a
-# two-file auth fix and CI was happy — but its diff against main carried seven
-# workflow files plus deploy-prod.yml and Dockerfile, because the branch sat on
-# an unmerged 217-commit lineage. Nothing in CI objected; only inspecting the
-# DIFF SCOPE caught it.
-#
-# So every PR's diff against main is reviewed before it merges, and the review is
-# the required `review` check (review.yml, ADR-038). This guard writes the count of
-# release-critical files a PR touches into its step summary, for that reviewer; it
-# holds a removed or loosened test to a stated reason (test hygiene); and it asks a
-# change to more than prose for the body's Untangle check.
+# Required tests can pass on a branch carrying unrelated changes from an
+# unmerged ancestor. The actual diff against main is reviewed before it merges,
+# and the review is the required `review` check (review.yml, ADR-038). The step
+# summary counts the release-critical files so the reviewer can spot a carried
+# lineage. This guard also holds a removed or loosened test to a stated reason
+# (test hygiene) and asks a change to more than prose for the body's Untangle
+# check.
 #
 # MUST run unconditionally (no `paths:` filter). A required status check that is
 # path-filtered never reports on PRs outside those paths, and the PR then hangs
@@ -205,7 +199,7 @@ jobs:
               echo "the endpoint caps at ${API_FILE_CAP} and does not report truncation, so"
               echo "release-critical files could be present and invisible to this check."
               echo ""
-              echo "Split the PR, or rebase it if it is carrying an unmerged lineage."
+              echo "Split the PR, or rebuild it on main if it is carrying an unmerged lineage."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi

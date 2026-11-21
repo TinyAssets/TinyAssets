@@ -1,5 +1,5 @@
 /**
- * The model gateway's RPC contract (`tinyassets-gateway`,
+ * The model gateway's RPC contract (`platform/gateway`,
  * `docs/decisions/untangle-2026-11-wave-1.md` A1): each of its entrypoints' methods, as their
  * callers bind them, and the values that cross them. The gateway implements each entrypoint
  * against it (`gateway/src/index.ts`), and the owner's object and the doors bind it from here, so

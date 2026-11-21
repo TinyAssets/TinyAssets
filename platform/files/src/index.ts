@@ -1,30 +1,32 @@
 /**
- * The files Worker (`tinyassets-files`): a stateless blob pipe for owner file bytes
+ * The files Worker (`platform/files`): a stateless blob pipe for owner file bytes
  * (ADR-032, plan §6).
  *
- * It holds the platform's only R2 binding, `BLOBS`, one bucket of immutable chunks of at
- * most 4 MiB, each under its owner's random namespace and named by an HMAC of its SHA-256
- * under the owner's data key (`o/<ns>/c/<name>`, `keys.ts`, `datakey.ts` `chunkName`), so a
- * listing of the bucket confirms no known file. It takes only hex values and bytes: it never sees a
- * path, never learns or chooses an owner, and keeps nothing between calls. Which owner's
- * namespace a call names, and whether a chunk is wanted at all, is the owner object's
- * manifest's to know (`owner/src/files.ts`); the namespace is held only there, so no
- * caller can name another owner's chunks without first being that owner's object.
+ * This Worker alone binds the owner-files bucket, `BLOBS`. It holds immutable chunks of at
+ * most `CHUNK_BYTES`, each under its owner's random namespace and named by an HMAC of its
+ * SHA-256 under the owner's data key (`o/<ns>/c/<name>`, `keys.ts`, `datakey.ts`
+ * `chunkName`), so a listing of the bucket confirms no known file. It takes only hex values
+ * and bytes: it never sees a path and keeps nothing between calls. Which owner's namespace a
+ * call names, and whether a chunk is wanted at all, is the owner object's manifest's to know
+ * (`owner/src/files.ts`): a call's namespace and wrapped key are that object's (a manifest
+ * root carries the key too, below), and the doors' `FilesUpload` puts with the pair the
+ * object hands one upload. Only `FilesLocate`'s `locate` learns an owner, from the bucket,
+ * for the operator channel.
  *
  * Each method takes a batch, so a large read or write is few calls: each call is a
  * subrequest of its caller's invocation, of which Workers Paid allows 10,000 by default
  * ("Subrequests to internal services: matches configured limit", default 10,000; up to
  * 10M with `limits.subrequests`, which the owner's config sets: Workers limits, updated
- * 2026-10-29). One call moves up to `BATCH_BYTES` (two chunks), well under the 32 MiB a
- * serialized RPC may carry.
+ * 2026-10-29). One call moves up to `BATCH_BYTES`, well under the 32 MiB a serialized RPC
+ * may carry.
  *
  * - `putChunks` checks each chunk's bytes against its hash, seals them, and puts the sealed
  *   bytes create-once (`etagDoesNotMatch: "*"`) with their own hash as R2's `put` `sha256`
  *   option, which verifies them in transit (a mismatch is R2's `BadDigest`, a transfer fault
- *   left loud as R2 raised it, never refused as the caller's bytes). It relies on the binding's check, never on S3 checksum headers (R2's S3 API
- *   lists SHA-256 as a composite checksum only). An existing key is a no-op only when it
- *   opens to exactly these bytes; anything else under a hash key fails loudly instead of
- *   counting as a deduplicated hit.
+ *   left loud as R2 raised it, never refused as the caller's bytes). It relies on the
+ *   binding's check, never on S3 checksum headers (R2's S3 API lists SHA-256 as a composite
+ *   checksum only). An existing key is a no-op only when it opens to exactly these bytes;
+ *   anything else under a hash key fails loudly instead of counting as a deduplicated hit.
  * - `getChunks` reads chunks whole or byte ranges of them. Every read fetches and opens its
  *   whole chunk (GCM authenticates the whole) and rechecks its hash, then answers the range
  *   alone, so the caller holds only the range and still reads verified bytes. Each read is
@@ -36,13 +38,21 @@
  *   hashes under the owner's key; the owner object's garbage collection is its only caller,
  *   for keys in its own chunk table.
  * - `deleteNamespace` deletes every object under one owner's namespace prefix, listing it
- *   1,000 keys at a time: the owner's erasure and the cutover's discard alone, so a chunk
- *   whose row was lost, or whose put landed late, goes with the rest. First, in the same
- *   call, it makes the namespace's mark (`e/<ns>`, `contract/src/files.ts` `MARKS`), once and
- *   never deleted: the record of the erasure that the nightly copy carries off the account,
- *   so no copy back ever writes the namespace again (`deploy/offsite.ts`). A failure after
- *   the mark leaves it standing, and the delete is repeated. An erasure marks it at its start
- *   too (`markNamespace`), a day before its delete.
+ *   1,000 keys at a time: the owner's erasure, the cutover's discard and `FilesLocate`'s
+ *   `erase` alone, so a chunk whose row was lost, or whose put landed late, goes with the
+ *   rest. First, in the same call, it makes the namespace's mark (`e/<ns>`,
+ *   `contract/src/files.ts` `MARKS`), once and never deleted: the record of the erasure that
+ *   the nightly copy carries off the account, so no copy back ever writes the namespace again
+ *   (`deploy/offsite.ts`). A failure after the mark leaves it standing, and the delete is
+ *   repeated. An erasure marks it at its start too (`markNamespace`), a day before its
+ *   delete. Each namespace it holds (`o/<ns>/h/<held>`, `HOLDS`: another of the same owner,
+ *   which no object adopted) is marked after it and deleted before its own objects, and its
+ *   holds go last, so an owner's erasure takes every namespace of it the bucket records
+ *   (`r8-erased-orphans.md`).
+ * - `holdNamespace` records one namespace as held by another, once, and `rootNamespace`
+ *   deletes every hold of a namespace by one it holds, so no cycle runs through it: a
+ *   restore's `restoreHold` alone, once the owner's object has held the namespace's generation
+ *   to its own owner.
  * - `sweepManifests` lists one page of one namespace's generations and deletes every object
  *   of a generation the owner's object no longer names, each root before its objects: the
  *   manifest lane's sweep alone.
@@ -53,17 +63,21 @@
  *   page of the namespace's chunk names after a name; `deleteListed` deletes up to 1,000 of
  *   them by name, under no key, as the erasure's prefix delete takes none.
  *
- * - `FilesLocate.locate`: a namespace's owner, read from its newest generation's part 0 header,
- *   for the operator channel's `restore.locate` alone (a restore after an account's loss, when no
- *   object names a namespace: `deploy/offsite.ts` `recover`).
+ * - `FilesLocate`, for the operator channel alone, when no object names a namespace (a restore
+ *   after an account's loss, `deploy/offsite.ts` `recover`, or of a lost object): `locate`, a
+ *   namespace's owner read from its newest generation's part 0 header; `namespaces`, the
+ *   namespaces the bucket holds, a page at a time; and `erase`, one deleted whole for an owner
+ *   the doors record erased (`r8-lost-object.md`).
  *
- * `deleteNamespace`, `sweepManifests`, `listChunks` and `locate` are the only lists of the
- * bucket, each only ever of one namespace's prefix.
+ * `deleteNamespace`, `markNamespace` and `rootNamespace` (of a namespace's holds),
+ * `sweepManifests`, `listChunks` and `locate` are the only lists of the bucket but one, each
+ * only ever of one namespace's prefix; `namespaces` lists the namespaces themselves, no object
+ * of any.
  *
  * Every object of a namespace is sealed in this Worker under its owner's data key
  * (`datakey.ts`), by the envelope's per-object seal (`contract/src/envelope.ts` `sealObject`:
  * AES-256-GCM, the object's own R2 key as additional data), so the bucket holds only
- * ciphertext but the marks, which hold nothing but what they are, and bytes
+ * ciphertext but the marks and the holds, which hold nothing but what they are, and bytes
  * moved under another key or namespace fail to open. Each call presents the owner's wrapped
  * key, which this Worker opens with its own keyring (`FILES_KEYRING`) for that call alone and
  * never keeps. A put or get with no key, or a key that does not open for the namespace, is
@@ -73,15 +87,14 @@
  * say nothing. And a copy of the bucket is a byte copy: it needs no key and sees no
  * plaintext, which is what lets an off-account copy exist (d3 §G).
  *
- * The nightly manifest (`owner/src/backup.ts`) is the only other kind of object: its parts
- * (`o/<ns>/m/<gen>/<n>`) and log segments (`o/<ns>/m/<gen>/l/<a>-<b>`), under the same data
- * key, and its root (`o/<ns>/m/<gen>`), a small
- * JSON carrying the owner's wrapped key, always under the ring's active kid, and the parts'
- * hashes and sizes sealed under the data key (the same seal, at the root's own R2 key), so
- * a recovery needs no object state but the keyring, and the bucket
- * alone says nothing of the parts. The root is written last, after every part. A key's
- * rotation re-wraps it in place (`rewrapManifestRoot`): the data key is the same, so no part
- * and no sealed list changes.
+ * The nightly manifest (`owner/src/backup.ts`) is the only other kind of sealed object: its
+ * parts (`o/<ns>/m/<gen>/<n>`) and log segments (`o/<ns>/m/<gen>/l/<a>-<b>`), under the same
+ * data key, and its root (`o/<ns>/m/<gen>`), a small JSON carrying the owner's wrapped key,
+ * always under the ring's active kid, and the parts' hashes and sizes sealed under the data
+ * key (the same seal, at the root's own R2 key), so a recovery needs no object state but the
+ * keyring, and the bucket alone says nothing of the parts. The root is written last, after
+ * every part. A key's rotation re-wraps it in place (`rewrapManifestRoot`): the data key is
+ * the same, so no part and no sealed list changes.
  *
  * It serves no HTTP: no fetch handler, no `workers.dev` or preview URL, no route. Owner
  * objects reach it by the `FILES` service binding alone, which adds no request fee.
@@ -96,13 +109,14 @@ import { exportHeader } from "../../contract/src/export-header";
 import { BATCH_BYTES, CHUNK_BYTES, DELETE_BATCH, MANIFEST_PARTS } from "../../contract/src/limits";
 import {
   chunkHash, chunkKey, chunkPrefix, generation, listedChunk, listedGeneration, listedManifest,
-  type ManifestAt, manifestKey, manifestObjectKey, manifestPrefix, markKey, segmentKey,
+  holdKey, holdPrefix, listedHold, listedNamespace, type ManifestAt, manifestKey,
+  manifestObjectKey, manifestPrefix, markKey, namespacesPrefix, segmentKey,
 } from "./keys";
 import { Refusal } from "../../contract/src/refusal";
 import {
   type ChunkCheck, type ChunkGet, type ChunkLocate, type ChunkPut, type ChunkStore,
-  type ChunkUpload, GET_READS, type LocatedOwner, type ManifestLists, manifestLists, MARK_BODY,
-  type ManifestObject, type ManifestRoot, type ManifestSegment, namespace,
+  type ChunkUpload, GET_READS, type NamespaceFound, type ManifestLists, manifestLists, MARK_BODY,
+  type ManifestObject, type ManifestRoot, type ManifestSegment, namespace, type NamespacePage,
 } from "../../contract/src/files";
 
 /** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
@@ -217,22 +231,18 @@ function range(read: ChunkGet): { offset: number; length: number } | undefined {
 }
 
 export default class FilesService extends WorkerEntrypoint<FilesEnv> implements ChunkStore {
-  /** A new data key for the namespace `ns`, wrapped: what its owner's object keeps. */
   async mintKey(ns: string): Promise<{ key: string }> {
     return { key: await mint(this.env.FILES_KEYRING, ns) };
   }
 
-  /** The data key `key` wrapped again under the active kid, refused as a read is. */
   async rewrapKey(ns: string, key: string): Promise<{ key: string }> {
     return { key: await rewrap(this.env.FILES_KEYRING, ns, key) };
   }
 
-  /** The data key `key` holds for `ns`, refused unless it opens for that namespace. */
   #key(ns: string, key: unknown): Promise<ArrayBuffer> {
     return unwrap(this.env.FILES_KEYRING, namespace(ns), key);
   }
 
-  /** Store chunks under their hashes, each checked here; `created` counts the new ones. */
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     namespace(ns);
     const puts = list<ChunkPut>(chunks, "a put").map((chunk) => {
@@ -299,7 +309,6 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     }));
   }
 
-  /** Chunks read whole as `getChunks` reads them, each answered, in order, by what it found. */
   async checkChunks(ns: string, key: string, sha256s: string[]): Promise<ChunkCheck[]> {
     namespace(ns);
     const hashes = list<unknown>(sha256s, "a check").map((sha256) => chunkHash(sha256));
@@ -336,18 +345,80 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
       : { check: "broken", why: "a chunk's bytes no longer match its hash" };
   }
 
-  /** Mark `ns` deleted on purpose, once: a mark again finds it and leaves its one version. */
+  /**
+   * Mark `ns` deleted on purpose, once, before anything else, then each namespace it holds (and
+   * each those hold): a mark again finds it and leaves its one version. A copy back leaves out
+   * a namespace a marked one holds, so one cut short between the two is left out too.
+   */
   async markNamespace(ns: string): Promise<void> {
+    await this.#mark(ns, new Set());
+  }
+
+  async #mark(ns: string, seen: Set<string>): Promise<void> {
+    seen.add(ns);
     await this.env.BLOBS.put(markKey(ns), MARK_BODY, { onlyIf: { etagDoesNotMatch: "*" } });
+    for (const held of await this.#holds(ns)) {
+      if (!seen.has(held)) {
+        await this.#mark(held, seen);
+      }
+    }
+  }
+
+  /** Record `held` as held by `ns`, once (`HOLDS`): the owner's object checked it is its own. */
+  async holdNamespace(ns: string, held: string): Promise<void> {
+    await this.env.BLOBS.put(holdKey(ns, held), "", { onlyIf: { etagDoesNotMatch: "*" } });
   }
 
   /**
-   * Mark `ns` deleted on purpose, then delete every chunk and then every manifest object under
-   * its prefixes, listed 1,000 at a time; repeatable.
+   * Every hold of `ns` by a namespace it holds, or one those hold, deleted, so `ns` holds all it
+   * did and no cycle of holds runs through it: the namespace an owner's object adopts holds the
+   * rest, and none holds it (`restoreHold`). Repeatable.
+   */
+  async rootNamespace(ns: string): Promise<void> {
+    const seen = new Set([ns]);
+    for (const queue = await this.#holds(ns); queue.length > 0;) {
+      const held = queue.pop()!;
+      if (!seen.has(held)) {
+        seen.add(held);
+        const holds = await this.#holds(held);
+        if (holds.includes(ns)) {
+          await this.env.BLOBS.delete(holdKey(held, ns));
+        }
+        queue.push(...holds);
+      }
+    }
+  }
+
+  /** Every namespace `ns` holds, listed under its holds' prefix page by page. */
+  async #holds(ns: string): Promise<string[]> {
+    const held: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.env.BLOBS.list({ prefix: holdPrefix(ns),
+                                               ...(cursor === undefined ? {} : { cursor }) });
+      held.push(...page.objects.map((object) => listedHold(ns, object.key)));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor !== undefined);
+    return held;
+  }
+
+  /**
+   * Mark `ns` deleted on purpose (`markNamespace`), then delete each namespace it holds as it
+   * is, then every chunk and every manifest object under its prefixes, listed 1,000 at a time,
+   * and its holds last, so a delete cut short finds them again; repeatable.
    */
   async deleteNamespace(ns: string): Promise<{ deleted: number }> {
     await this.markNamespace(ns);
+    return this.#delete(ns, new Set());
+  }
+
+  async #delete(ns: string, seen: Set<string>): Promise<{ deleted: number }> {
+    seen.add(ns);
     let deleted = 0;
+    const holds = await this.#holds(ns);
+    for (const held of holds.filter((each) => !seen.has(each))) {
+      deleted += (await this.#delete(held, seen)).deleted;
+    }
     for (;;) {
       const listed = await this.env.BLOBS.list({ prefix: chunkPrefix(ns), limit: DELETE_BATCH });
       const shas = listed.objects.map((object) => listedChunk(ns, object.key));
@@ -362,11 +433,16 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
                                                  limit: DELETE_BATCH });
       const keys = listed.objects.map((object) => object.key);
       if (keys.length === 0) {
-        return { deleted };
+        break;
       }
       await this.env.BLOBS.delete(keys.map((key) => listedManifest(ns, key)));
       deleted += keys.length;
     }
+    for (let at = 0; at < holds.length; at += DELETE_BATCH) {
+      await this.env.BLOBS.delete(holds.slice(at, at + DELETE_BATCH)
+        .map((held) => holdKey(ns, held)));
+    }
+    return { deleted: deleted + holds.length };
   }
 
   /**
@@ -379,7 +455,6 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return { deleted: names.length };
   }
 
-  /** The names of chunks (at most 1,000), by hash under the owner's key, in order; no R2 call. */
   async chunkNames(ns: string, key: string, sha256s: string[]): Promise<string[]> {
     return this.#names(ns, key, distinct(sha256s, "a lookup"));
   }
@@ -411,7 +486,6 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return { deleted: listed.length };
   }
 
-  /** A generation's object's bytes sealed under the owner's key at `at`, verified by R2. */
   async #putObject(ns: string, key: string, gen: string, at: ManifestAt, bytes: Uint8Array):
       Promise<ManifestObject> {
     const body = chunkBytes(bytes);
@@ -422,7 +496,6 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return { sha256: await sha256Hex(body), size: body.byteLength };
   }
 
-  /** A generation's object's bytes read under the key `key` (the object's, or the root's). */
   async #getObject(ns: string, key: string, gen: string, at: ManifestAt, sha256: string):
       Promise<Uint8Array> {
     const dataKey = await this.#key(ns, key);
@@ -480,7 +553,6 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify(root));
   }
 
-  /** A generation's root, its lists opened under the key it carries, or null for none. */
   async getManifestRoot(ns: string, gen: string): Promise<ManifestRoot | null> {
     const object = await this.env.BLOBS.get(manifestKey(ns, gen));
     if (object === null) {
@@ -529,7 +601,6 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
     return this.#getObject(ns, key, gen, { a, b }, sha256);
   }
 
-  /** A generation's log segments deleted: a finished one's tail past E, which no root names. */
   async deleteSegments(ns: string, gen: string,
                        segments: readonly { a: number; b: number }[]): Promise<void> {
     for (let at = 0; at < segments.length; at += DELETE_BATCH) {
@@ -566,35 +637,38 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> implements 
 }
 
 /**
- * The upload door's entrypoint (review M5-1): the doors bind only this, so the internet-
- * facing Worker, which carries an uploading owner's wrapped data key, can put that owner's
- * chunks and read nothing: no chunk, no generation, no key call. It serves `putChunks`
- * alone, as `FilesService` does it.
+ * The upload door binds `FilesUpload` as `FILES` so it can put chunks with the uploading
+ * owner's wrapped data key. Reads and key management are outside this binding.
  */
 export class FilesUpload extends WorkerEntrypoint<FilesEnv> implements ChunkUpload {
-  /** Store chunks under their hashes, each verified by R2 (`FilesService.putChunks`). */
   async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     return new FilesService(this.ctx, this.env).putChunks(ns, key, chunks);
   }
 }
 
 /**
- * The operator channel's entrypoint (`restore.locate`, `doors/src/operator.ts`): the doors bind
- * it for the platform's own op alone, so they read a namespace's owner and nothing else of its
- * objects, and hold no key. It serves `locate` alone, through `FilesService`'s own manifest
- * reads, as `FilesUpload` serves its put.
+ * The operator channel's entrypoint (`restore.locate`, `restore.namespaces`,
+ * `doors/src/operator.ts`): the doors bind it for the platform's own ops alone, so they read a
+ * namespace's owner and nothing else of its objects, and hold no key. It serves `locate`,
+ * `namespaces` and `erase`, through `FilesService`'s own reads and delete, as `FilesUpload`
+ * serves its put.
  */
 export class FilesLocate extends WorkerEntrypoint<FilesEnv> implements ChunkLocate {
   /**
-   * The owner of `ns`, as its newest finished generation names it, and that generation; null
-   * when the bucket holds no root of it. Its roots are listed (the keys directly under its
-   * manifest prefix) and each opened under the wrapped key it carries; the newest's part 0 is
-   * read under that key and held to the root's hash, and its first line to the export
-   * header's shape, naming that generation. Nothing of the part but the header's owner is
-   * answered. A root or a part that does not open, or a part 0 with no header of its own
-   * generation, fails loudly: every generation names its owner.
+   * The owner of `ns`, as its newest finished generation names it, that generation and when its
+   * root was written; `erased` when the bucket marks it deleted on purpose (`markKey`), read
+   * first, so nothing of an erased owner is opened; null when the bucket holds no root of it.
+   * Its roots are listed (the keys directly under its manifest prefix) and each opened under
+   * the wrapped key it carries; the newest's part 0 is read under that key and held to the
+   * root's hash, and its first line to the export header's shape, naming that generation.
+   * Nothing of the part but the header's owner is answered. A root or a part that does not
+   * open, or a part 0 with no header of its own generation, fails loudly: every generation
+   * names its owner.
    */
-  async locate(ns: string): Promise<LocatedOwner | null> {
+  async locate(ns: string): Promise<NamespaceFound> {
+    if (await this.env.BLOBS.head(markKey(ns)) !== null) {
+      return "erased";
+    }
     const files = new FilesService(this.ctx, this.env);
     const roots: ManifestRoot[] = [];
     let cursor: string | undefined;
@@ -627,6 +701,27 @@ export class FilesLocate extends WorkerEntrypoint<FilesEnv> implements ChunkLoca
     if (header === null || header.gen !== newest.gen) {
       throw new Error(`generation ${newest.gen}'s first part holds no export header of it`);
     }
-    return { owner: header.owner, gen: newest.gen };
+    return { owner: header.owner, gen: newest.gen, at: newest.at };
+  }
+
+  /**
+   * One page of the namespaces the bucket holds any object of (the prefixes directly under
+   * `namespacesPrefix()`), from `cursor` (null: the first), and the next page's cursor: a lost
+   * object's restore finds its owner's among them (`deploy/deploy.ts` mode `restore`).
+   */
+  async namespaces(cursor: string | null): Promise<NamespacePage> {
+    const page = await this.env.BLOBS.list({ prefix: namespacesPrefix(), delimiter: "/",
+                                             ...(cursor === null ? {} : { cursor }) });
+    return { namespaces: page.delimitedPrefixes.map(listedNamespace),
+             cursor: page.truncated ? page.cursor : null };
+  }
+
+  /**
+   * `ns` deleted whole, its mark first (`FilesService.deleteNamespace`): a namespace the doors
+   * found naming an owner their directory records erased, which that owner's erasure did not
+   * reach (`restore.locate`). Repeatable.
+   */
+  async erase(ns: string): Promise<{ deleted: number }> {
+    return new FilesService(this.ctx, this.env).deleteNamespace(ns);
   }
 }

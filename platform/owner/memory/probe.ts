@@ -172,6 +172,8 @@ export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements Chun
   async rewrapManifestRoot(): Promise<never> { throw new Error("not in the leg"); }
   async markNamespace(): Promise<never> { throw new Error("not in the leg"); }
   async deleteNamespace(): Promise<never> { throw new Error("not in the leg"); }
+  async holdNamespace(): Promise<never> { throw new Error("not in the leg"); }
+  async rootNamespace(): Promise<never> { throw new Error("not in the leg"); }
   async putManifestPart(): Promise<never> { throw new Error("not in the leg"); }
   /** A log segment as the files Worker takes it: a checkpoint while its call holds it. */
   async putManifestSegment(_ns: string, _key: string, _gen: string, _a: number, _b: number,
@@ -224,6 +226,8 @@ function received(env: LegEnv): ChunkStore {
     rewrapManifestRoot: (ns, gen) => store.rewrapManifestRoot(ns, gen),
     markNamespace: (ns) => store.markNamespace(ns),
     deleteNamespace: (ns) => store.deleteNamespace(ns),
+    holdNamespace: (ns, held) => store.holdNamespace(ns, held),
+    rootNamespace: (ns) => store.rootNamespace(ns),
     putManifestPart: (ns, key, gen, part, bytes) =>
       store.putManifestPart(ns, key, gen, part, bytes),
     putManifestSegment: (ns, key, gen, a, b, bytes) =>

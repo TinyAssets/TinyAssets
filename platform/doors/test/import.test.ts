@@ -24,6 +24,7 @@ import type { DoorsEnv } from "../src/env";
 import { putOwner, readOwner } from "../src/directory";
 import { IMPORT_HOLD_BYTES, importQueue, type SliceBounds } from "../src/import";
 import { CHUNK_BYTES } from "../../contract/src/limits";
+import { DEFAULT_POLICY_DIGEST } from "../../contract/src/policy-document";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { ImportBundle } from "./import-setup";
 import { admitOwner, doorsEnv, OPEN, ownDoor, setControl, TIERS } from "./support";
@@ -200,8 +201,8 @@ describe("the import consumer", () => {
     expect(w.puts).toEqual([]);
     // Every entry, chunk, row and the policy as they were: nothing written again.
     expect(await held(message)).toEqual(before);
-    // The old stack's policy is archived, not carried (d3 §N6), so the default's.
-    expect(before.policy).toBe((await held(await staged(fresh()))).policy);
+    // The old policy carried, mapped to the new rules (d3 §N7): never the default.
+    expect(before.policy).not.toBe(DEFAULT_POLICY_DIGEST);
   });
 
   it("goes on from its own continuation, one slice at a time, to the same owner state", async () => {

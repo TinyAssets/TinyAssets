@@ -1,5 +1,5 @@
 /**
- * The files Worker's RPC contract (`tinyassets-files`, `docs/decisions/untangle-2026-11-wave-1.md`
+ * The files Worker's RPC contract (`platform/files`, `docs/decisions/untangle-2026-11-wave-1.md`
  * A1): its three entrypoints, as their callers bind them, and the values that cross them. The files
  * Worker implements each against it (`files/src/index.ts`), and the owner's object and the doors
  * bind it from here, so no caller copies a files type.
@@ -8,7 +8,7 @@
  *   always that owner's wrapped data key, which only the files Worker can open.
  * - `ChunkUpload`: `FilesUpload`, the upload door's, which puts chunks and reads nothing.
  * - `ChunkLocate`: `FilesLocate`, the operator channel's, which answers a namespace's owner and
- *   nothing else of its objects.
+ *   nothing else of its objects, lists the namespaces, and deletes an erased owner's.
  *
  * Every chunk is at most `CHUNK_BYTES`, and one call moves at most `BATCH_BYTES` (`limits.ts`).
  *
@@ -28,9 +28,12 @@ export function namespace(ns: unknown): string {
   return ns;
 }
 
+/** What every namespace's prefix is under in the bucket: the listing of the namespaces. */
+export const OBJECTS = "o/";
+
 /** The prefix every object of one owner's namespace is under in the bucket: `o/<ns>/`. */
 export function objectPrefix(ns: unknown): string {
-  return `o/${namespace(ns)}/`;
+  return `${OBJECTS}${namespace(ns)}/`;
 }
 
 /** The namespace whose prefix the bucket key `key` is under (`o/<ns>/…`), or null. */
@@ -56,6 +59,25 @@ export const MARK_BODY = '{"kind":"tinyassets-erased-namespace"}';
 export function markedNamespace(key: string): string | null {
   const ns = key.startsWith(MARKS) ? key.slice(MARKS.length) : "";
   return HEX32.test(ns) ? ns : null;
+}
+
+/**
+ * Where, under a namespace's prefix, the bucket records each other namespace its owner holds
+ * and has not adopted (`o/<ns>/h/<held>`, empty): one whose generations name the same owner,
+ * found once the owner's object held this one (`owner/src/restore.ts` `restoreHold`), or
+ * left by a restore from one of the owner's namespaces to another (`r8-lost-object.md`). The
+ * namespace's erasure, its mark and its delete, takes each it holds first, so every namespace
+ * of the owner goes with it; and a restore of the whole bucket begins none another holds
+ * (`docs/decisions/untangle-2026-11/r8-erased-orphans.md`). Its name is two random
+ * namespaces, so it holds no person's identifier.
+ */
+export const HOLDS = "h/";
+
+/** The holder and the held namespace of the bucket key `key` (`o/<ns>/h/<held>`), or null. */
+export function heldNamespace(key: string): { holder: string; held: string } | null {
+  const [o, holder, kind, held, ...rest] = key.split("/");
+  return o === "o" && HEX32.test(holder ?? "") && `${kind}/` === HOLDS && HEX32.test(held ?? "")
+    && rest.length === 0 && held !== holder ? { holder: holder!, held: held! } : null;
 }
 
 /** One chunk to store: its hash and its bytes. */
@@ -188,15 +210,27 @@ export interface ChunkStore {
    */
   rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string | null } | null>;
   /**
-   * The namespace's mark (`MARKS`) made, once, and kept: the erasure's, at its start, so the
-   * nightly copy carries it off the account before the delete is due.
+   * The namespace's mark (`MARKS`) made, once, and kept, then each namespace it holds
+   * (`HOLDS`) marked: the erasure's, at its start, so the nightly copy carries them off the
+   * account before the delete is due.
    */
   markNamespace(ns: string): Promise<void>;
   /**
-   * Every object under the namespace's prefix deleted, its mark (`markNamespace`) made first
-   * and kept: the erasure's and the discard's alone.
+   * Its mark (`markNamespace`) made first and kept, then each namespace it holds deleted as it
+   * is, then every object under its prefix: the erasure's and the discard's alone.
    */
   deleteNamespace(ns: string): Promise<{ deleted: number }>;
+  /**
+   * `held` recorded as held by `ns` (`HOLDS`), once: another namespace whose generations name
+   * the owner of `ns`, as that owner's object checked (`restoreHold`, `restorePin`), or the one
+   * a restore's object leaves for the one it takes (its wipe, its begin).
+   */
+  holdNamespace(ns: string, held: string): Promise<void>;
+  /**
+   * Every hold of `ns` by a namespace it holds deleted (`HOLDS`), so no cycle of holds runs
+   * through it: the namespace the owner's object adopts holds the rest, and none holds it.
+   */
+  rootNamespace(ns: string): Promise<void>;
   putManifestPart(ns: string, key: string, gen: string, part: number, bytes: Uint8Array):
     Promise<{ sha256: string; size: number }>;
   putManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
@@ -233,19 +267,37 @@ export interface ChunkUpload {
 }
 
 /**
- * What `locate` answers of a namespace: the owner its newest finished generation names (part 0's
- * export header, `export-header.ts`), and that generation. Every generation of a namespace names
- * its one owner.
+ * What `locate` finds of a namespace's owner: the owner its newest finished generation names
+ * (part 0's export header, `export-header.ts`), that generation, and when its root was written
+ * (ms). Every generation of a namespace names its one owner.
  */
 export interface LocatedOwner {
   readonly owner: string;
   readonly gen: string;
+  readonly at: number;
 }
 
 /**
- * `FilesLocate`, as the doors bind it for the operator channel (`restore.locate`): a namespace's
- * owner, null when the bucket holds no root of it, and nothing else read.
+ * What a namespace is found as: its owner (`LocatedOwner`); `erased`, deleted on purpose (its
+ * mark, `MARKS`, or its owner's erasure, `restore.locate`), so nothing of it is read; or null,
+ * when the bucket holds no root of it.
+ */
+export type NamespaceFound = LocatedOwner | "erased" | null;
+
+/** A page of the namespaces the bucket holds (`FilesLocate.namespaces`), and the next's cursor. */
+export interface NamespacePage {
+  readonly namespaces: readonly string[];
+  readonly cursor: string | null;
+}
+
+/**
+ * `FilesLocate`, as the doors bind it for the operator channel (`restore.locate`,
+ * `restore.namespaces`): a namespace's owner and nothing else of its objects; the namespaces
+ * the bucket holds, a page at a time; and a namespace deleted whole, its mark first, for an
+ * owner the doors' directory records erased.
  */
 export interface ChunkLocate {
-  locate(ns: string): Promise<LocatedOwner | null>;
+  locate(ns: string): Promise<NamespaceFound>;
+  namespaces(cursor: string | null): Promise<NamespacePage>;
+  erase(ns: string): Promise<{ deleted: number }>;
 }

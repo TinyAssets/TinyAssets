@@ -39,13 +39,17 @@
  * passed at 1,000,000. Edge Workers bind `OWNER` from their own configs.
  *
  * Its one store, at top level only, is `CONTROL` (slice M review M1): the namespace of the
- * platform's control record alone, the doors' own `CONTROL` by the same id, so the object
- * reads the gates again at code mode's calls and reaches no directory entry or other
+ * platform's control record alone, the doors' own `CONTROL` by binding name (the deploy kit
+ * fills every namespace's id by its binding, `deploy/deploy.ts` `deployedConfig`), so the
+ * object reads the gates again at code mode's calls and reaches no directory entry or other
  * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
+ *
+ * Its top level is held by the platform's config checker (`CONFIG`), as every Worker's is;
+ * its environments and the Workers it binds are its own guard's (`config.test.ts`).
  */
-import { EVERY_WORKER } from "../../ci/kit/config";
+import { type ConfigRules, EVERY_WORKER, NO_EXPORTS } from "../../ci/kit/config";
 import type { Exemption } from "../../ci/kit/module-state";
-import { imports, type Owed } from "../../ci/kit/owed";
+import type { Owed } from "../../ci/kit/owed";
 
 /**
  * The module state the owner Worker keeps by design (`ci/kit/module-state.ts`): its isolate's
@@ -64,31 +68,39 @@ export const MODULE_STATE: readonly Exemption[] = Object.freeze([
                   reason: "the door table's methods, defined on the prototype at load" }),
 ]);
 
-/** The classes the Worker's migrations make, each SQLite-backed. */
-export const CLASSES = Object.freeze(["OwnerDO"]);
 /** The keys an environment may set besides `services`: none of them binds anything. */
-export const ENV_KEYS: ReadonlySet<string> = new Set([
+export const ENV_KEYS: readonly string[] = Object.freeze([
   "name", "main", "compatibility_date", "compatibility_flags", "workers_dev", "preview_urls",
   "migrations", "limits",
 ]);
 /** The owner Worker's limits, wherever they are set: subrequests, as live probe P1 set them. */
 export const LIMITS = Object.freeze({ subrequests: 10_000_000 });
-/** The keys the top level may set: an environment's, the schema, the environments, its secret. */
-export const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets",
-                                                      "kv_namespaces", "queues",
-                                                      ...Object.keys(EVERY_WORKER)]);
+
 /**
- * The owner Worker's one queue (slice L): the producer of the erasure queue, whose one
- * consumer, the doors Worker, makes an erasure's outside record and confirms it to that
- * owner's object (`doors/src/erase.ts`); a message is `{owner}`, granting nothing.
+ * The owner Worker's top level: an environment's keys, the schema, the environments, the
+ * services `SERVICES` allows, and
+ * - one secret, declared by name (it binds nothing): the routing key the sandbox tokens are
+ *   MAC'd under (`contract/src/routing-mac.ts`), the doors Worker's too;
+ * - one class, `OwnerDO`, SQLite-backed;
+ * - one KV namespace, `CONTROL`;
+ * - one queue, the erasure queue's producer (slice L), whose one consumer, the doors Worker,
+ *   makes an erasure's outside record and confirms it to that owner's object
+ *   (`doors/src/erase.ts`); a message is `{owner}`, granting nothing;
+ * - its `limits`, exactly `LIMITS`.
  */
-export const OWNER_QUEUES = Object.freeze({ producers: Object.freeze([
-  Object.freeze({ binding: "ERASURES", queue: "tinyassets-erasure" })]) });
-/**
- * The owner Worker's one secret, declared by name (it binds nothing): the routing key the
- * sandbox tokens are MAC'd under (`contract/src/routing-mac.ts`), the doors Worker's too.
- */
-export const SECRETS = Object.freeze(["ROUTING_MAC_KEY"]);
+export const CONFIG = Object.freeze({
+  worker: "owner",
+  main: "src/index.ts",
+  keys: Object.freeze([...ENV_KEYS, "$schema", "env", "services", "secrets", "kv_namespaces",
+                       "queues"]),
+  flags: Object.freeze({ carries: Object.freeze([NO_EXPORTS]) }),
+  secrets: Object.freeze(["ROUTING_MAC_KEY"]),
+  classes: Object.freeze(["OwnerDO"]),
+  kv: Object.freeze(["CONTROL"]),
+  queues: Object.freeze({ producers: Object.freeze(["ERASURES"]), consumes: false }),
+  exact: Object.freeze({ limits: LIMITS }),
+}) satisfies ConfigRules;
+
 /**
  * The keys a bound Worker may set that bind nothing: its name, entry and runtime, its build
  * step and its modules' types (`build`, `rules`: the sandbox Worker's runner, built and
@@ -129,13 +141,7 @@ export const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
 });
 
 /**
- * What the owner's tests and memory legs still owe the platform's guards (`ci/kit/owed.ts`):
- * another workspace's internals, each until the fix named removes it.
+ * What the owner's tests and memory legs still owe the platform's guards (`ci/kit/owed.ts`).
+ * Nothing, now.
  */
-export const OWED: readonly Owed[] = Object.freeze([
-  // The egress memory leg, the doors' and the gateway's, in the owner's tree: B23.
-  ...imports("B23", "platform/owner/memory/egress-probe.ts", [
-    "platform/doors/src/egress.ts", "platform/gateway/src/catalog.ts",
-    "platform/gateway/src/held.ts", "platform/gateway/src/keyring.ts",
-    "platform/gateway/src/meter.ts", "platform/gateway/src/index.ts"]),
-]);
+export const OWED: readonly Owed[] = Object.freeze([]);

@@ -173,7 +173,8 @@ def test_the_proofs_run_in_the_jail_proofs_venue_and_nowhere_weaker():
     assert "secrets." not in _WORKFLOW.read_text(encoding="utf-8")
     assert code.count("sudo") == 1 and "sudo apparmor_parser -r" in code  # the profile load
     paths = _triggers(wf)["pull_request"]["paths"]
-    assert "scripts/linux_oracle.py" in paths and "docker/linux-oracle.Dockerfile" in paths
+    for path in ("scripts/linux_oracle.py", "docker/linux-oracle.Dockerfile", "Dockerfile"):
+        assert path in paths, f"{path} must retrigger the proof"
 
 
 def test_browser_proof_runs_on_path_selected_prs_and_after_merge():

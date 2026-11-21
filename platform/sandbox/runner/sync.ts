@@ -1,6 +1,6 @@
 /**
  * The runner's sync agent (`engines-replan.md` §2.1 steps 4 and 7), run as its own
- * unprivileged user (`ta-sync`, in group `ta`), never root (slice S review H-2): the owner's
+ * unprivileged user (`ta-sync`, in group `ta`), never root: the owner's
  * files into the sandbox's `/workspace` before a run, and the run's changes back out after
  * it, through the sync doors on the egress host by the lease's sync token (`x-ta-sync`,
  * beside the egress token E2B's transform sets, so the token is good from inside the VM
@@ -16,7 +16,7 @@
  *   no link followed (`fsafe.ts`), a file's chunks streamed into a temporary file and renamed
  *   into place (`safeStream`); a reset reads the whole tree again by listing, page by page.
  *   The engines' sessions (`/workspace/.sessions/<authority>/<engine>/...`) are never written
- *   into the shared workspace, where every engine's user could reach them (review H-3): only
+ *   into the shared workspace, where every engine's user could reach them: only
  *   a path under that engine's own `session_paths` is taken, into the sync agent's own
  *   directory, for the root runner to put in that engine's store.
  * - **Out:** each engine's sessions the root runner staged first (`stageSessions`, from the

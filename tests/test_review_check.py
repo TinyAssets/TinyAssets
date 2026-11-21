@@ -562,7 +562,8 @@ def test_host_actions_names_what_review_yml_reads():
 # - A POST makes a run with the next id (700, 701, ...), owned by whichever token made it.
 #   data["fail_posts"] = n makes the next n POSTs exit 1.
 # - Any other write exits 1: a decision writes no run that exists.
-# - data["fail"] names a path fragment whose call exits 1, as a 502 would.
+# - data["fail"] names a path fragment whose call exits 1, as a 404 would.
+# - data["fail_5xx"] = {fragment: n} makes that path's next n calls answer HTTP 502.
 _FAKE_GH = '''\
 import json, os, subprocess, sys
 args = sys.argv[1:]
@@ -581,6 +582,13 @@ with open(os.path.join(state, "calls.jsonl"), "a", encoding="utf-8") as f:
 path = next(a for a in args if a.startswith("repos/"))
 if data.get("fail") and data["fail"] in path:
     sys.exit(1)
+for fragment, left in (data.get("fail_5xx") or {}).items():
+    if left and fragment in path:
+        data["fail_5xx"][fragment] = left - 1
+        with open(store, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        print("gh: Server Error (HTTP 502)", file=sys.stderr)
+        sys.exit(1)
 runs = data["check_runs"]
 method = args[args.index("-X") + 1] if "-X" in args else "GET"
 if "/collaborators/" in path and path.split("/")[4] not in data["permissions"]:
@@ -781,9 +789,33 @@ def test_the_decision_waits_when_the_base_changed_after_the_verdict(pr_checkout)
         f"waiting for review of {data['head']} (the base changed at 2026-11-04T11:00:00Z)")
 
 
+@pytest.mark.parametrize("path", ["/pulls/12", "/reviews", "/timeline", "/collaborators/"])
+def test_a_read_github_answers_with_a_502_is_asked_again(pr_checkout, path):
+    """A 502 passes: each of the decision's reads, the shell's and the permission read
+    alike, is asked again, and the decision posts its verdict as if none came."""
+    tmp_path, path_, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    _, plain, _ = _decide(tmp_path, path_, data)
+    data["fail_5xx"] = {path: 1}
+    done, calls, after = _decide(tmp_path, path_, data)
+    assert done.returncode == 0, done.stderr
+    assert len(calls) == len(plain) + 1
+    assert _passes(after, data["head"])
+
+
+def test_a_read_that_keeps_answering_502_stops_the_decision(pr_checkout):
+    tmp_path, path, data = pr_checkout
+    data["reviews"] = [_review("APPROVE", data["head"])]
+    data["fail_5xx"] = {"/reviews": 3}
+    done, calls, after = _decide(tmp_path, path, data)
+    assert done.returncode != 0
+    assert sum(any("/reviews" in a for a in c["args"]) for c in calls) == 3
+    assert not _passes(after, data["head"])
+
+
 @pytest.mark.parametrize("fail", ["not a review", "/reviews", "/timeline", "verdict post"])
 def test_a_decision_that_stops_before_its_verdict_posts_a_failure(pr_checkout, fail):
-    """An unreadable review list, a read that dies (a 502), or the verdict's own POST
+    """An unreadable review list, a read that fails (a 404), or the verdict's own POST
     failing: the trap posts one failed run on the head, so no earlier pass shows."""
     tmp_path, path, data = pr_checkout
     data["check_runs"] = [{"id": 41, "app": {"id": 777}, "name": "review",

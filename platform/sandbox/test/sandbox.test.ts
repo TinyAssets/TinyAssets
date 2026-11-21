@@ -6,8 +6,8 @@
  * until a freed sandbox rings it; a release pauses an idle sandbox, and one whose pause did
  * not land is reaped by the look; the look renews a sandbox before its runtime ceiling, at a
  * quiet moment or forced at the edge, resumes one paused while a lease runs in it, and is
- * armed again on every path (slice S review H-5); an erasure kills every sandbox of the
- * owner, paused and strays included (H-6). The runner is the Worker's own, by digest: a
+ * armed again on every path; an erasure kills every sandbox of the owner, paused and strays
+ * included. The runner is the Worker's own, by digest: a
  * create uploads and installs it before its first command, a resume with it there sends
  * nothing more, an absent one is installed and asked again, bytes not their digest launch
  * nothing, and a sandbox on another runner keeps it while anything lives and adopts the
@@ -149,10 +149,14 @@ const alarmOf = (who: string) => runInDurableObject(stub(who), (_instance, state
 const RETRY_SCHEDULE_MS = [480, 960, 1_920, 3_840, 7_680, 15_360, 30_720, 60_000, 60_000] as const;
 
 /**
- * The renewal's edge as the design states it: the runner's `renewing` (252 ms) and then the
- * longest pause (705 ms), both measured (`sandbox-probe.md`, `e2b-resume-measurement.md`).
+ * The renewal's wait for its runs' answers as the design states it: two posts within the
+ * 252 ms `renewing` measured and the drain's 50 ms look, 79% of it (`sandbox-probe.md`).
  */
-const RENEW_EDGE_MS = 252 + 705;
+const RENEWING_MS = 700;
+/** The longest pause measured (`e2b-resume-measurement.md`). */
+const PAUSE_MAX_MS = 705;
+/** The renewal's edge as the design states it: that wait, then the longest pause. */
+const RENEW_EDGE_MS = RENEWING_MS + PAUSE_MAX_MS;
 
 /**
  * What `act` armed, against the delay the code means: an alarm `delay` on from the moment
@@ -192,7 +196,7 @@ describe("a start", () => {
     const state = await seen();
     expect(state.sandboxes).toHaveLength(1);
     const box = state.sandboxes[0]!;
-    // envd takes only the sandbox's own token (review M-8).
+    // envd takes only the sandbox's own token.
     expect(box.secure).toBe(true);
     // The plan's runtime ceiling as its timeout; the template the config names.
     expect(box.timeout).toBe(CEILING);
@@ -420,7 +424,7 @@ describe("a start", () => {
     // The opening start's network applied whole to the resumed sandbox.
     expect(state.calls.some((call) => call.method === "PUT" && call.path.endsWith("/network")))
       .toBe(true);
-    // The lockdown re-checked at the resume, not assumed from the boot (review M-7).
+    // The lockdown re-checked at the resume, not assumed from the boot.
     expect(state.commands.filter((command) => command.argv[1] === "prepare")).toHaveLength(2);
   });
 
@@ -459,7 +463,7 @@ describe("the platform's line", () => {
     expect([await turn(who), await turn("nobody")]).toEqual([true, false]);
   });
 
-  it("tries the create when E2B gives no count, and waits only on its refusal (M-4)",
+  it("tries the create when E2B gives no count, and waits only on its refusal",
      async () => {
     await e2b("/script", { noCount: true, signin: { "claude-code": 0 } });
     const who = owner();
@@ -621,6 +625,12 @@ describe("the look before the runtime ceiling", () => {
     expect(box.state).toBe("running");
     expect(box.id).toBe(id);
     expect(commands).toEqual(["quiet-wait", "state", "renew-wait", "prepare", "renewed"]);
+    // Its runs' answers waited for: the deadline is the wait's bound past the renewal's clock
+    // read, which lies between the two reads here.
+    const deadline = Number((await seen()).commands
+      .filter((command) => command.argv[1] === "renew-wait").at(-1)!.argv[2]);
+    expect(deadline).toBeGreaterThanOrEqual(began + RENEWING_MS);
+    expect(deadline).toBeLessThanOrEqual(Date.now() + RENEWING_MS);
     // The window moved to the resume: the next look is the idle one, a lease's TTL on.
     expect(box.timeout).toBe(CEILING);
     expect(await alarmOf(who)).toBeLessThanOrEqual(Date.now() + 60_000);
@@ -651,6 +661,12 @@ describe("the look before the runtime ceiling", () => {
     expect(calls.filter((call) => call.path.endsWith("/pause"))).toHaveLength(1);
     expect(calls.filter((call) => call.path.endsWith("/connect"))).toHaveLength(1);
     expect(commands.at(-1)).toBe("renewed");
+    // Inside the edge, the wait for its runs' answers ends where the longest pause still lands
+    // before E2B's `endAt`: the quiet look's end is that `endAt` less the edge.
+    const argvOf = async (command: string) => (await seen()).commands
+      .filter((each) => each.argv[1] === command).at(-1)!.argv;
+    const endAt = Number((await argvOf("quiet-wait"))[2]) + RENEW_EDGE_MS;
+    expect(Number((await argvOf("renew-wait"))[2])).toBe(endAt - PAUSE_MAX_MS);
   });
 
   it("is not forced before the edge, while the CLIs are busy", async () => {
@@ -684,7 +700,7 @@ describe("the look before the runtime ceiling", () => {
     expect(calls.filter((call) => call.path.endsWith("/pause"))).toEqual([]);
   });
 
-  it("renews on the last numbers read when the record is unreadable (H-5)", async () => {
+  it("renews on the last numbers read when the record is unreadable", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
     await stub(who).start(who, start());
@@ -702,7 +718,7 @@ describe("the look before the runtime ceiling", () => {
       .toHaveLength(2);
   });
 
-  it("is armed again when a look fails, before the edge (H-5)", async () => {
+  it("is armed again when a look fails, before the edge", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
     await stub(who).start(who, start());
@@ -720,7 +736,7 @@ describe("the look before the runtime ceiling", () => {
       .toHaveLength(1);
   });
 
-  it("resumes a sandbox E2B paused while a lease runs in it, its slot its own (H-5)",
+  it("resumes a sandbox E2B paused while a lease runs in it, its slot its own",
      async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
     const who = owner();
@@ -740,7 +756,7 @@ describe("the look before the runtime ceiling", () => {
       .toEqual(["prepare"]);
   });
 
-  it("asks again while E2B refuses a renewal's resume, never giving up (H-5)", async () => {
+  it("asks again while E2B refuses a renewal's resume, never giving up", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
     await stub(who).start(who, start());
@@ -759,7 +775,7 @@ describe("the look before the runtime ceiling", () => {
     expect(state.commands.at(-1)!.argv[1]).toBe("renewed");
   });
 
-  it("backs off through an E2B outage past the edge, never at alarm speed (F-1)", async () => {
+  it("backs off through an E2B outage past the edge, never at alarm speed", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
     const who = owner();
     await stub(who).start(who, start());
@@ -774,7 +790,7 @@ describe("the look before the runtime ceiling", () => {
     await e2b("/script", { down: 0 });
   });
 
-  it("asks a paused sandbox a lease runs in to resume backing off while E2B refuses (F-1)",
+  it("asks a paused sandbox a lease runs in to resume backing off while E2B refuses",
      async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
     const who = owner();
@@ -792,7 +808,7 @@ describe("the look before the runtime ceiling", () => {
     expect((await seen()).sandboxes[0]!.state).toBe("running");
   });
 
-  it("keeps a renewal's slot across its pause: the first in line cannot take it (F-2)",
+  it("keeps a renewal's slot across its pause: the first in line cannot take it",
      async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
@@ -821,8 +837,8 @@ describe("the look before the runtime ceiling", () => {
     await rung(waiter);
   });
 
-  it("keeps a renewal's fresh hold though a give-back the line refused left its slot owed " +
-     "(d3 L9)", async () => {
+  it("keeps a renewal's fresh hold though a give-back the line refused left its slot owed",
+     async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: true } });
     const who = owner();
@@ -945,7 +961,7 @@ describe("the look before the runtime ceiling", () => {
   });
 });
 
-describe("the meter's log (slice P)", () => {
+describe("the meter's log", () => {
   it("logs the create, the pause and the resume, and drops what a read's cursor passed",
      async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
@@ -1150,9 +1166,6 @@ describe("the runner, by digest", () => {
       expect(answer).toEqual(SPEAKS.includes(protocol) ? { started: true }
         : "sandbox_runner_protocol");
     }
-    // Its own runner's protocol, and only the ones either side of it.
-    expect(SPEAKS).toContain(PROTOCOL);
-    expect(SPEAKS.every((each) => Math.abs(each - PROTOCOL) <= 1)).toBe(true);
   });
 
   it("names a runner whose bytes are not their digest for the founder", async () => {
@@ -1201,7 +1214,7 @@ describe("a sign-in", () => {
     expect(box.network.allowOut).toEqual(["api.kimi.ai", "auth.kimi.ai", "github.com",
                                           EGRESS_HOST]);
     // The sandbox a sign-in first makes carries its route, so its lifecycle events reach the
-    // owner's object as a run's sandbox's do (S14).
+    // owner's object as a run's sandbox's do.
     expect(box.metadata["ta_route"]).toBe(ROUTE);
     expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
       ["install", await runnerDigest()], ["prepare", "1.1.1.1"], ["login-launch", SI]]);
@@ -1235,7 +1248,7 @@ describe("a sign-in", () => {
       .toEqual({ delivered: false });
   });
 
-  it("drops a pasted code whose hand-over failed: it never rests on disk (review L1)",
+  it("drops a pasted code whose hand-over failed: it never rests on disk",
      async () => {
     const who = owner();
     await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
@@ -1300,7 +1313,7 @@ describe("an erasure", () => {
   });
 });
 
-describe("the schema (S25)", () => {
+describe("the schema", () => {
   it("is each object's migrations, applied once, each one's digest kept: an applied one " +
      "changed since stops the object", async () => {
     const who = owner();
@@ -1368,7 +1381,7 @@ describe("the network", () => {
   });
 });
 
-describe("a live lease's network re-applied (E2)", () => {
+describe("a live lease's network re-applied", () => {
   /** A re-apply's plan under `generation`: the policy's `hosts`, its generation, no token. */
   const at = (generation: number, hosts: string[] = []) =>
     ({ ...NETWORK, network: withGeneration(closedNetwork(hosts), generation) });

@@ -107,6 +107,12 @@ export interface DoorRows {
     { readonly module: "policy"; readonly caller: "owner"; readonly gate: "door" };
   readonly policyWakeLimits:
     { readonly module: "ledger"; readonly caller: "session"; readonly gate: "door" };
+  readonly actionRequest:
+    { readonly module: "actions"; readonly caller: "owner"; readonly gate: "door" };
+  readonly actionApprove:
+    { readonly module: "actions"; readonly caller: "session"; readonly gate: "synced" };
+  readonly actionRefuse:
+    { readonly module: "actions"; readonly caller: "session"; readonly gate: "door" };
   readonly grantList:
     { readonly module: "grants"; readonly caller: "owner"; readonly gate: "door" };
   readonly grantSet:
@@ -242,6 +248,8 @@ export interface DoorRows {
   readonly restoreRelease:
     { readonly module: "restore"; readonly caller: "reserved"; readonly gate: "units" };
   readonly restoreNames:
+    { readonly module: "restore"; readonly caller: "reserved"; readonly gate: "units" };
+  readonly restoreHold:
     { readonly module: "restore"; readonly caller: "reserved"; readonly gate: "units" };
   readonly egressOpen:
     { readonly module: "egress"; readonly caller: "egress"; readonly gate: "units" };
@@ -527,6 +535,12 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "policyProposal">>;
   policyWakeLimits(binding: Binding, request: RequestIn<H, "policyWakeLimits">):
     Promise<AnswerIn<H, "policyWakeLimits">>;
+  actionRequest(binding: Binding, request: RequestIn<H, "actionRequest">):
+    Promise<AnswerIn<H, "actionRequest">>;
+  actionApprove(binding: Binding, request: RequestIn<H, "actionApprove">):
+    Promise<AnswerIn<H, "actionApprove">>;
+  actionRefuse(binding: Binding, request: RequestIn<H, "actionRefuse">):
+    Promise<AnswerIn<H, "actionRefuse">>;
   grantList(binding: Binding): Promise<AnswerIn<H, "grantList">>;
   grantSet(binding: Binding, request: RequestIn<H, "grantSet">): Promise<AnswerIn<H, "grantSet">>;
   grantRevoke(binding: Binding, request: RequestIn<H, "grantRevoke">):
@@ -640,6 +654,8 @@ export interface DoorMethods<H> {
   restoreRelease(binding: Binding): Promise<AnswerIn<H, "restoreRelease">>;
   restoreNames(binding: Binding, request: RequestIn<H, "restoreNames">):
     Promise<AnswerIn<H, "restoreNames">>;
+  restoreHold(binding: Binding, request: RequestIn<H, "restoreHold">):
+    Promise<AnswerIn<H, "restoreHold">>;
   egressOpen(binding: Binding, request: RequestIn<H, "egressOpen">):
     Promise<AnswerIn<H, "egressOpen">>;
   egressReserve(binding: Binding, request: RequestIn<H, "egressReserve">):

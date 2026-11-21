@@ -247,8 +247,7 @@ def test_the_marker_is_registered_and_guards_every_jail_module():
     pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert '"real_jail:' in pyproject, "register the marker so a typo is not silent"
     files = {n.split("::")[0] for n in _marked()}
-    # The four slices this job exists for (see the workflow header). Losing a
-    # whole file's marker would drop its cases without any red.
+    # Losing a whole file's marker would drop its cases without any red.
     assert files >= {
         "tests/test_owner_box_process_boundary.py",
     }, files
@@ -368,7 +367,7 @@ def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():
     assert (_step_index(wf, "Allow user namespaces for the jail container only")
             < _step_index(wf, _RUN_STEP))
     paths = _triggers(wf)["pull_request"]["paths"]
-    for path in ("docker/linux-oracle.Dockerfile", "scripts/linux_oracle.py"):
+    for path in ("docker/linux-oracle.Dockerfile", "scripts/linux_oracle.py", "Dockerfile"):
         assert path in paths, f"{path} must retrigger the proof"
 
 

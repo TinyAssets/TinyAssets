@@ -30,12 +30,12 @@
  */
 import {
   acceptance, acceptanceKey, acceptanceOf, addressed, answerKey, answerOf, locatedNamespaces,
-  type LocatedPage, macHolds, type OperatorArgs, type OperatorMessage, operatorMessage,
-  type OperatorOp, OPERATOR_OPS, OPERATOR_WINDOW_S, PLATFORM_OPS, type Refused,
+  type LocatedPage, macHolds, namespacesCursor, type OperatorArgs, type OperatorMessage,
+  operatorMessage, type OperatorOp, OPERATOR_OPS, OPERATOR_WINDOW_S, PLATFORM_OPS, type Refused,
 } from "../../contract/src/operator-message";
 import { keyed } from "../../contract/src/checks";
 import { parseRing } from "../../contract/src/envelope";
-import type { LocatedOwner } from "../../contract/src/files";
+import type { NamespaceFound } from "../../contract/src/files";
 import type {
   EraseRequest, RestoreBeginRequest, RestoreNamesRequest, RestorePinRequest,
   RestoreWipeRequest, TierRequest,
@@ -140,18 +140,44 @@ const OPS: Readonly<Record<OperatorOp, Op>> = Object.freeze({
     const { binding, stub } = bindPlatformFor(env, owner);
     return stub.restoreNames(binding, args as unknown as RestoreNamesRequest);
   },
-  // A restore after an account's loss, when no object names a namespace (`deploy/offsite.ts`
-  // `recover`): each namespace's owner, as its newest generation names it, read in the files
-  // Worker one namespace at a time (each opens a part of up to a chunk); null for one the
-  // bucket holds no root of.
-  "restore.locate": async (env, _platform, args): Promise<LocatedPage> => {
-    const located: Record<string, LocatedOwner | null> = {};
-    for (const ns of locatedNamespaces(args)) {
-      located[ns] = await env.FILES_LOCATE.locate(ns);
-    }
-    return { located };
+  // A namespace of the owner's that its object does not adopt, held by its own, so its erasure
+  // takes that one too (`deploy/offsite.ts` `recover`, when a begin finds the owner live).
+  "restore.hold": (env, owner, args) => {
+    const { binding, stub } = bindPlatformFor(env, owner);
+    return stub.restoreHold(binding, args as unknown as RestoreBeginRequest);
   },
+  // A restore when no object names a namespace (after an account's loss, `deploy/offsite.ts`
+  // `recover`, or of a lost object, `deploy/deploy.ts` mode `restore`): each namespace as it is
+  // found (`located`), read in the files Worker one namespace at a time (each opens a part of
+  // up to a chunk).
+  "restore.locate": async (env, _platform, args): Promise<LocatedPage> => {
+    const found: Record<string, NamespaceFound> = {};
+    for (const ns of locatedNamespaces(args)) {
+      found[ns] = await located(env, ns);
+    }
+    return { located: found };
+  },
+  // A lost object's restore: the namespaces the files bucket holds, a page at a time, which it
+  // locates to find its owner's.
+  "restore.namespaces": (env, _platform, args) =>
+    env.FILES_LOCATE.namespaces(namespacesCursor(args)),
 });
+
+/**
+ * `ns` as the files Worker finds it (`FilesLocate.locate`), and, when it names an owner the
+ * directory records erased, deleted whole first, its mark first (`FilesLocate.erase`), and
+ * answered `erased`: no object of that owner named it, so its erasure did not reach it (an
+ * owner erased between a recover cut short and its run again, or one whose object was lost),
+ * and nothing ever brings it back (`docs/decisions/untangle-2026-11/r8-lost-object.md`).
+ */
+async function located(env: DoorsEnv, ns: string): Promise<NamespaceFound> {
+  const found = await env.FILES_LOCATE.locate(ns);
+  if (found === null || found === "erased" || (await readOwner(env, found.owner))?.s !== "erased") {
+    return found;
+  }
+  await env.FILES_LOCATE.erase(ns);
+  return "erased";
+}
 
 /** A put that only makes: null when the key is already there. */
 const ONLY_NEW = Object.freeze({ onlyIf: Object.freeze({ etagDoesNotMatch: "*" }) });

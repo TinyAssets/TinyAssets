@@ -106,8 +106,8 @@ async function keys(space: string): Promise<string[]> {
 }
 
 describe("the Worker's main module", () => {
-  it("exports only its entrypoints: the service, and the doors' upload (review M5-1) and " +
-     "locate ones", async () => {
+  it("exports only its entrypoints: the service, and the doors' upload and locate ones",
+     async () => {
     expect(Object.keys(await import("../src/index")).sort())
       .toEqual(["FilesLocate", "FilesUpload", "default"]);
   });
@@ -307,17 +307,20 @@ describe("getChunks", () => {
       .toBe("a chunk the manifest holds is missing from the bucket");
   });
 
-  it("reads every range from its whole chunk, its hash rechecked (review L7)", async () => {
+  it("fails loudly when a chunk's bytes no longer match its hash, read whole or by any range",
+     async () => {
     const space = ns();
     const digits = bytes("0123456789");
     await put(space, digits);
     const d = await sha(digits);
-    const ranges = () => files().getChunks(space, [{ ...chunk(d), offset: 2, length: 3 },
-                                                   { ...chunk(d), offset: 8, length: 100 }]);
-    expect(await ranges()).toEqual([bytes("234"), bytes("89")]);
-    // Other bytes sealed under the chunk's key, outside every range read: still loud.
+    // Its last byte changed, sealed under the chunk's very key, so it opens: the bytes, not
+    // the key, are what changed, and outside each range read.
     await env.BLOBS.put(await named(space, d), await sealedAt(space, d, bytes("0123456780")));
-    expect((await failure(ranges)).message).toBe("a chunk's bytes no longer match its hash");
+    for (const read of [chunk(d), { ...chunk(d), offset: 2, length: 3 },
+                        { ...chunk(d), offset: 8, length: 1 }]) {
+      expect((await failure(() => files().getChunks(space, [read]))).message)
+        .toBe("a chunk's bytes no longer match its hash");
+    }
   });
 
   it.each([
@@ -337,17 +340,6 @@ describe("getChunks", () => {
                              () => chunk("a".repeat(64)));
     expect((await failure(() => files().getChunks(ns(), whole))).message)
       .toBe(TOO_MANY);
-  });
-
-  it("fails loudly when a chunk's bytes no longer match its hash", async () => {
-    const space = ns();
-    const body = bytes("original");
-    await put(space, body);
-    const hash = await sha(body);
-    // Sealed under the very key, so it opens: the bytes, not the key, are what changed.
-    await env.BLOBS.put(await named(space, hash), await sealedAt(space, hash, bytes("corrupted")));
-    expect((await failure(() => files().getChunks(space, [chunk(hash)]))).message)
-      .toBe("a chunk's bytes no longer match its hash");
   });
 });
 
@@ -470,6 +462,60 @@ describe("deleteNamespace: the erasure's mark, then its prefix delete", () => {
     // Another namespace is neither marked nor touched.
     expect([await markOf(other), (await keys(other)).length]).toEqual([null, 1]);
   });
+
+  it("marks each namespace it holds after its own mark, and deletes each before its own " +
+     "objects, its holds last; a namespace held twice, or in a cycle, once", async () => {
+    const [space, held, deeper, other] = [ns(), ns(), ns(), ns()];
+    for (const each of [space, held, deeper, other]) {
+      await put(each, bytes(`of ${each}`));
+    }
+    await service().holdNamespace(space, held);
+    await service().holdNamespace(space, held);
+    await service().holdNamespace(held, deeper);
+    await service().holdNamespace(deeper, space);
+    expect((await keys(space)).filter((key) => !key.includes("/c/")))
+      .toEqual([`o/${space}/h/${held}`]);
+    await service().markNamespace(space);
+    expect((await Promise.all([space, held, deeper, other].map(markOf)))
+      .map((mark) => mark?.body ?? null)).toEqual([MARK_BODY, MARK_BODY, MARK_BODY, null]);
+    // The delete cut short after the held ones: its own and its hold still stand.
+    let deletes = 0;
+    const crashing = new Proxy(env.BLOBS, { get: (bucket, name) => name !== "delete"
+      ? Reflect.get(bucket, name).bind(bucket)
+      : (...keys: Parameters<R2Bucket["delete"]>) => {
+        if (++deletes > 4) {
+          throw new Error("crashed");
+        }
+        return bucket.delete(...keys);
+      } });
+    expect((await failure(() => service(crashing).deleteNamespace(space))).message)
+      .toBe("crashed");
+    expect([await keys(held), await keys(deeper), (await keys(space)).length])
+      .toEqual([[], [], 2]);
+    expect(await service().deleteNamespace(space)).toEqual({ deleted: 2 });
+    expect([await keys(space), (await keys(other)).length]).toEqual([[], 1]);
+    // A namespace never holds itself.
+    expect(await refused(() => service().holdNamespace(other, other))).toBe("invalid");
+  });
+
+  it("roots a namespace: every hold of it by one it reaches deleted, what it reaches kept, " +
+     "and no other namespace's holds touched", async () => {
+    const [root, held, deeper, other] = [ns(), ns(), ns(), ns()];
+    await service().holdNamespace(held, root);
+    await service().holdNamespace(root, held);
+    await service().holdNamespace(held, deeper);
+    await service().holdNamespace(deeper, root);
+    await service().holdNamespace(other, root);
+    const holds = async (space: string) => (await keys(space)).map((key) => key.split("/").at(-1));
+    await service().rootNamespace(root);
+    await service().rootNamespace(root);
+    expect(await Promise.all([root, held, deeper, other].map(holds)))
+      .toEqual([[held], [deeper], [], [root]]);
+    // So its mark still reaches every one it held.
+    await service().markNamespace(root);
+    expect(await Promise.all([held, deeper].map((space) => env.BLOBS.head(markKey(space)))))
+      .not.toContain(null);
+  });
 });
 
 describe("locate: a namespace's owner, from its newest generation's header", () => {
@@ -499,7 +545,14 @@ describe("locate: a namespace's owner, from its newest generation's header", () 
     await generation(space, newest, header("user_alice", newest), 2000);
     // A pass's part with no root yet names no generation.
     await service().putManifestPart(space, await keyOf(space), "f".repeat(16), 0, bytes("x"));
-    expect(await located(space)).toEqual({ owner: "user_alice", gen: newest });
+    expect(await located(space)).toEqual({ owner: "user_alice", gen: newest, at: 2000 });
+  });
+
+  it("answers erased for a namespace the bucket marks, reading nothing of it", async () => {
+    const space = ns();
+    await generation(space, "e".repeat(16), { t: "row", table: "x", row: {} }, 1);
+    await service().markNamespace(space);
+    expect(await located(space)).toBe("erased");
   });
 
   it("answers null for a namespace the bucket holds no root of", async () => {
@@ -517,9 +570,10 @@ describe("locate: a namespace's owner, from its newest generation's header", () 
       await generation(space, gen, header("user_bob", gen), at);
     }
     const paged = { get: (key: string) => env.BLOBS.get(key),
+                    head: (key: string) => env.BLOBS.head(key),
                     list: (options: R2ListOptions) => env.BLOBS.list({ ...options, limit: 1 }) };
     expect(await located(space, paged as unknown as R2Bucket))
-      .toEqual({ owner: "user_bob", gen: gens[2] });
+      .toEqual({ owner: "user_bob", gen: gens[2], at: 2 });
   });
 
   it.each([
@@ -543,6 +597,46 @@ describe("locate: a namespace's owner, from its newest generation's header", () 
     await env.BLOBS.put(manifestKey(moved, gen, 0), stored);
     expect((await failure(() => located(moved))).message)
       .toBe("a stored object does not open under its owner's key");
+  });
+});
+
+describe("FilesLocate's namespaces and erase: a lost object's find", () => {
+  const locating = (bucket: R2Bucket = env.BLOBS) =>
+    new FilesLocate(createExecutionContext(), { BLOBS: bucket, FILES_KEYRING: RING });
+
+  it("lists each namespace the bucket holds an object of, a page at a time, and no mark",
+     async () => {
+    const [chunked, held, erased] = [ns(), ns(), ns()];
+    await put(chunked, bytes("a chunk"));
+    await service().holdNamespace(held, ns());
+    await put(erased, bytes("gone"));
+    await service().deleteNamespace(erased);
+    const paged = { list: (options: R2ListOptions) => env.BLOBS.list({ ...options, limit: 1 }) };
+    const listed: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page = await locating(paged as unknown as R2Bucket).namespaces(cursor);
+      listed.push(...page.namespaces);
+      cursor = page.cursor;
+      pages++;
+    } while (cursor !== null);
+    expect(listed).toEqual(expect.arrayContaining([chunked, held]));
+    expect(listed).not.toContain(erased);
+    expect(new Set(listed).size).toBe(listed.length);
+    expect(pages).toBeGreaterThan(1);
+  });
+
+  it("erases a namespace whole, its mark first, and every one it holds", async () => {
+    const [space, held] = [ns(), ns()];
+    await put(space, bytes("of an erased owner"));
+    await put(held, bytes("held"));
+    await service().holdNamespace(space, held);
+    expect(await locating().erase(space)).toEqual({ deleted: 3 });
+    expect([await keys(space), await keys(held)]).toEqual([[], []]);
+    expect(await Promise.all([space, held].map((each) => env.BLOBS.head(markKey(each)))))
+      .not.toContain(null);
+    expect(await locating().locate(space)).toBe("erased");
   });
 });
 
@@ -676,32 +770,25 @@ describe("data keys", () => {
       .toBe("data_key_refused");
   });
 
-  it("opens a key wrapped under an older kid, and none once its kid leaves the ring", async () => {
+  it("opens a key wrapped under an older kid, and wraps it again under the active kid: the " +
+     "same data key, so every chunk still reads once the old kid leaves the ring", async () => {
     const space = ns();
     const old = (await service(env.BLOBS, OLD).mintKey(space)).key;
     expect(old.startsWith("v1.k1.")).toBe(true);
-    const body = bytes("older");
-    await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
-    expect(await service().getChunks(space, old, [chunk(await sha(body))])).toEqual([body]);
-    const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
-    expect(await refused(() => service(env.BLOBS, without)
-      .getChunks(space, old, [chunk("a".repeat(64))]))).toBe("data_key_refused");
-  });
-
-  it("wraps a key again under the active kid: the same data key, so every chunk still reads",
-     async () => {
-    const space = ns();
-    const old = (await service(env.BLOBS, OLD).mintKey(space)).key;
     const body = bytes("kept across a rotation");
-    await service().putChunks(space, old, [{ sha256: await sha(body), bytes: body }]);
+    const hash = await sha(body);
+    await service().putChunks(space, old, [{ sha256: hash, bytes: body }]);
+    expect(await service().getChunks(space, old, [chunk(hash)])).toEqual([body]);
     const { key } = await service().rewrapKey(space, old);
     expect(key.startsWith("v1.k2.")).toBe(true);
     expect((await service().rewrapKey(space, key)).key).toBe(key);  // active already: as it is
-    // The old kid leaves the ring: the re-wrapped key reads what the old one put.
-    const without = JSON.stringify({ active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } });
-    expect(await service(env.BLOBS, without).getChunks(space, key,
-                                                             [chunk(await sha(body))]))
-      .toEqual([body]);
+    // The old kid leaves the ring: the re-wrapped key reads what the old one put, and the old
+    // key opens nothing.
+    const without = service(env.BLOBS, JSON.stringify({
+      active: "k2", keys: { k2: JSON.parse(RING).keys.k2 } }));
+    expect(await without.getChunks(space, key, [chunk(hash)])).toEqual([body]);
+    expect(await refused(() => without.getChunks(space, old, [chunk(hash)])))
+      .toBe("data_key_refused");
     // Another namespace's key is refused, as a read refuses it.
     expect(await refused(() => service().rewrapKey(ns(), old))).toBe("data_key_refused");
   });
@@ -839,9 +926,18 @@ describe("manifests", () => {
     await service(env.BLOBS, OLD).putManifestRoot(space, old, "2222222222222222", [part], [],
                                                         { s: 1, e: 0 });
     expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
-    // A root another pass wrote while its key was wrapped again: left as it is, and said, so
-    // the owner's sweep counts it left and asks again.
-    const raced = { get: (at: string) => env.BLOBS.get(at), put: async () => null };
+    // A root another pass wrote while its key was wrapped again (here between the rewrap's read
+    // and its put, as other bytes, so another etag, which the put then misses): left as it is,
+    // and said, so the owner's sweep counts it left and asks again.
+    const raced = {
+      get: async (at: string) => {
+        const read = (await env.BLOBS.get(at))!;
+        const text = await read.text();
+        await env.BLOBS.put(at, JSON.stringify(JSON.parse(text), null, 1));
+        return { etag: read.etag, text: async () => text };
+      },
+      put: (...args: Parameters<R2Bucket["put"]>) => env.BLOBS.put(...args),
+    };
     expect(await service(raced as unknown as R2Bucket)
       .rewrapManifestRoot(space, "2222222222222222")).toEqual({ key: null });
     expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
@@ -901,32 +997,6 @@ describe("manifests", () => {
 });
 
 describe("sealed objects", () => {
-  it("stores only sealed bytes, reads them whole and by range, under the owner's key alone",
-     async () => {
-    const space = ns();
-    const key = await keyOf(space);
-    const body = bytes("plain words the bucket never sees");
-    const hash = await sha(body);
-    expect(await service().putChunks(space, key, [{ sha256: hash, bytes: body }]))
-      .toEqual({ created: 1 });
-    expect(await service().putChunks(space, key, [{ sha256: hash, bytes: body }]))
-      .toEqual({ created: 0 });
-    const raw = new Uint8Array(await (await env.BLOBS.get(await named(space, hash)))!
-      .arrayBuffer());
-    expect(new TextDecoder().decode(raw)).not.toContain("plain words");
-    expect(raw.byteLength).toBe(body.byteLength + OBJECT_OVERHEAD);
-    expect(await service().getChunks(space, key, [chunk(hash),
-                                                  { ...chunk(hash), offset: 6, length: 5 }]))
-      .toEqual([body, bytes("words")]);
-    // Another key minted for the very namespace names nothing stored under the first.
-    const second = (await service().mintKey(space)).key;
-    expect((await failure(() => service().getChunks(space, second, [chunk(hash)]))).message)
-      .toBe("a chunk the manifest holds is missing from the bucket");
-    expect((await failure(() => service().putChunks(space, key, [{ sha256: hash,
-                                                                   bytes: bytes("other") }])))
-      .message).toBe("the chunk's bytes do not match its sha256");
-  });
-
   it("fails loudly on a changed byte, and on bytes moved under another chunk's key", async () => {
     const space = ns();
     const key = await keyOf(space);

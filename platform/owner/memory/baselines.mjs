@@ -7,17 +7,13 @@
 // `OWNER_BASELINE_BYTES`; the doors' and files' pools (PR 3b, PR 4) measure theirs the same
 // way. Run by hand: `node memory/baselines.mjs`.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { PLATFORM } from "../../ci/paths.ts";
+import { capnpModules, freePorts, ownWorkerd, WORKERD } from "../../ci/own-workerd.mjs";
 import { bundle, workerConfig } from "../../ci/workers.ts";
-import { freePorts } from "./ports.mjs";
-import { ownWorkerd } from "./workerd.mjs";
 
-const require = createRequire(join(PLATFORM, "owner", "package.json"));
-const workerd = join(dirname(require.resolve("workerd/package.json")), "bin", "workerd");
 const MIB = 1024 * 1024;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -26,7 +22,7 @@ for (const name of ["doors", "files"]) {
   const [port, inspector] = await freePorts(2);
   const out = mkdtempSync(join(tmpdir(), `baseline-${name}-`));
   try {
-    const modules = (await bundle(join(PLATFORM, name), out)).map(({ file }) => file);
+    const built = await bundle(join(PLATFORM, name), out);
     writeFileSync(join(out, "rest.js"), `import * as bundle from "./index.js";
 void bundle;
 export default {
@@ -38,9 +34,6 @@ export default {
   },
 };
 `);
-    const embed = ["rest.js", ...modules].map((file) => file.endsWith(".wasm")
-      ? `(name = "${file}", wasm = embed "${file}")`
-      : `(name = "${file}", esModule = embed "${file}")`).join(", ");
     writeFileSync(join(out, "config.capnp"), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   v8Flags = ["--expose-gc"],
@@ -48,12 +41,12 @@ const config :Workerd.Config = (
   sockets = [ (name = "http", address = "127.0.0.1:${port}", http = (), service = "main") ],
 );
 const w :Workerd.Worker = (
-  modules = [ ${embed} ],
+  modules = [ ${capnpModules(".", [{ file: "rest.js", type: "ESModule" }, ...built])} ],
   compatibilityDate = "${workerConfig(join(PLATFORM, name)).compatibility_date}",
   compatibilityFlags = ["nodejs_compat"],
 );
 `);
-    const own = ownWorkerd(workerd, ["serve", join(out, "config.capnp"),
+    const own = ownWorkerd(WORKERD, ["serve", join(out, "config.capnp"),
                                      `--inspector-addr=127.0.0.1:${inspector}`],
                            { onEarlyExit: () => rmSync(out, { recursive: true, force: true }) });
     try {

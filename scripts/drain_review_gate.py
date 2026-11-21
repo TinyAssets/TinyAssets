@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -628,17 +629,31 @@ def review_app_id(env: dict[str, str] | None = None) -> int:
     return int(value)
 
 
+def _gh_read(args: list[str], timeout: int) -> str:
+    """`gh api` with `args`, a read, and its whole answer. GitHub's 5xx answers pass (a
+    502 stopped #5689's decision), so one is asked again, 5 s then 10 s later; any
+    other failure raises at once. review.yml's reads come here through `--gh-read`."""
+    for attempt in (1, 2):
+        try:
+            return subprocess.run(["gh", "api", *args], capture_output=True, text=True,
+                                  check=True, timeout=timeout).stdout
+        except subprocess.CalledProcessError as exc:
+            if not re.search(r"HTTP 5\d\d", exc.stderr or ""):
+                raise
+            sys.stderr.write(exc.stderr)
+            time.sleep(5 * attempt)
+    return subprocess.run(["gh", "api", *args], capture_output=True, text=True,
+                          check=True, timeout=timeout).stdout
+
+
 def _gh_json(path: str) -> object:
-    out = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=True,
-                         timeout=60)
-    return json.loads(out.stdout)
+    return json.loads(_gh_read([path], 60))
 
 
 def _gh_check_runs(path: str) -> list[object]:
     """Every check run a `check-runs` listing holds, across all its pages."""
-    out = subprocess.run(["gh", "api", "--paginate", path, "--jq", ".check_runs[]"],
-                         capture_output=True, text=True, check=True, timeout=120)
-    return [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+    out = _gh_read(["--paginate", path, "--jq", ".check_runs[]"], 120)
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
 def review_passed_at(repo: str, head: str, number: int, *, app_id: int | None = None) -> bool:
@@ -682,7 +697,18 @@ def _untangle_check(argv: list[str]) -> int:
     return 2 if problems else 0
 
 
+def _gh_read_command(argv: list[str]) -> int:
+    """`--gh-read`: `gh api` with `argv`, through `_gh_read`, its answer on stdout."""
+    try:
+        sys.stdout.write(_gh_read(argv, 120))
+    except subprocess.CalledProcessError as exc:
+        sys.stderr.write(exc.stderr or "")
+        return 1
+    return 0
+
+
 _COMMANDS = {
+    "--gh-read": _gh_read_command,
     "--review-check": _review_check,
     "--signal-pr": _signal_pr,
     "--untangle-check": _untangle_check,

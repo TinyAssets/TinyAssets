@@ -209,7 +209,8 @@
             },
             "path": "item"
           }
-        ]
+        ],
+        "deferred": []
       }
     },
     "instructions": {

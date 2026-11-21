@@ -18,8 +18,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HELD_WAIT_MS, keyring } from "../../ci/fixtures";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { parseRing, type Ring } from "../../contract/src/envelope";
+import type { NamespacePage } from "../../contract/src/files";
 import {
-  acceptanceKey, acceptanceOf, answerKey, argsText, LOCATE_PAGE, locateArgs,
+  acceptanceKey, acceptanceOf, answerKey, argsText, LOCATE_PAGE, locateArgs, namespacesArgs,
   type OperatorAnswer, operatorAnswer, type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S,
   type Refused, signOperator,
 } from "../../contract/src/operator-message";
@@ -292,6 +293,16 @@ describe("the operator's owner ops, on a real owner object", () => {
     expect(await readOwner(doorsEnv, owner)).toBeNull();
   });
 
+  it("refuses to admit afresh an owner the platform admitted before whose object is pending: " +
+     "its state was lost, and a fresh admit would give it a second namespace", async () => {
+    const owner = fresh();
+    await putOwner(doorsEnv, owner, { s: "admitted", t: now() });
+    expect(refusedOf(await asked(owner, "owner.admit"))).toEqual({ code: "refused", message:
+      "the platform admitted this owner before and its object is pending: its state was lost, " +
+      "so it is restored (mode restore), never admitted afresh" });
+    expect(await admissionOf(owner)).toEqual({ state: "pending", reasons: [], tier: "free" });
+  });
+
   it("changes nothing more on a redelivery of a message it acted on but did not answer",
      async () => {
     const owner = fresh();
@@ -450,6 +461,21 @@ describe("the operator's restore ops, on a real owner object", () => {
     expect(await doorsCalled(owner)).toEqual([]);
   });
 
+  it("refuses a hold into an object that takes a restore, and an erased owner's, holding " +
+     "nothing", async () => {
+    const owner = fresh();
+    expect(refusedOf(await asked(owner, "restore.hold", GEN))).toEqual({
+      code: "refused", message: "this object takes a restore: begin it from the namespace, " +
+                                "which it then adopts" });
+    await untouched(owner);
+    const erased = fresh();
+    await putOwner(doorsEnv, erased, { s: "erased", t: now() });
+    expect(refusedOf(await asked(erased, "restore.hold", GEN)).code).toBe("owner_erased");
+    expect(await doorsCalled(erased)).toEqual([]);
+    expect(refusedOf(await asked(owner, "restore.hold", { namespace: GEN.namespace })))
+      .toEqual({ code: "invalid", message: "restore.hold takes exactly namespace, gen" });
+  });
+
   it("takes a begin's namespace and generation exactly", async () => {
     const owner = fresh();
     expect(refusedOf(await asked(owner, "restore.begin", { namespace: GEN.namespace })))
@@ -504,7 +530,7 @@ describe("an owner a restore holds, on a real owner object", () => {
   it("refuses a pin of a pending owner and a wipe with none pinned, and releases none as " +
      "released; an erased owner's pin, wipe and release are refused", async () => {
     const owner = fresh();
-    expect(refusedOf(await asked(owner, "restore.pin", { gen: GEN.gen }))).toEqual({
+    expect(refusedOf(await asked(owner, "restore.pin", GEN))).toEqual({
       code: "refused", message: "the owner is pending: a pin holds a live owner, and a " +
                                 "pending one is restored into with none" });
     expect(refusedOf(await asked(owner, "restore.wipe", { confirm: "x" }))).toEqual({
@@ -513,7 +539,7 @@ describe("an owner a restore holds, on a real owner object", () => {
       result: { released: true } });
     const erased = fresh();
     await putOwner(doorsEnv, erased, { s: "erased", t: now() });
-    for (const [op, args] of [["restore.pin", { gen: GEN.gen }], ["restore.wipe",
+    for (const [op, args] of [["restore.pin", GEN], ["restore.wipe",
                               { confirm: "x" }], ["restore.release", {}]] as const) {
       expect(refusedOf(await asked(erased, op, args))).toEqual({
         code: "owner_erased", message: "the owner is erased" });
@@ -543,11 +569,24 @@ describe("an owner a restore holds, on a real owner object", () => {
   });
 });
 
-describe("the platform's restore.locate, through the files Worker", () => {
+describe("the platform's restore.locate and restore.namespaces, through the files Worker", () => {
   const space = () => crypto.randomUUID().replaceAll("-", "");
+  /** Every namespace the bucket holds, as `restore.namespaces` pages them. */
+  async function listed(): Promise<string[]> {
+    const namespaces: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: NamespacePage = (await asked(PLATFORM_CALLER, "restore.namespaces",
+                                namespacesArgs(cursor)) as { result: NamespacePage }).result;
+      namespaces.push(...page.namespaces);
+      cursor = page.cursor;
+    } while (cursor !== null);
+    return namespaces;
+  }
 
-  it("answers each namespace's owner and newest generation as the bucket holds it, and null " +
-     "for one it holds no root of", async () => {
+  it("answers each namespace's owner and newest generation as the bucket holds it, null for " +
+     "one it holds no root of, and lists it; once the directory records its owner erased, " +
+     "erases it whole, its mark first", async () => {
     // An owner's export writes its generation, as its nightly does.
     const restore = serveFirstPartyDocument();
     await setControl(OPEN);
@@ -569,14 +608,27 @@ describe("the platform's restore.locate, through the files Worker", () => {
     const none = space();
     expect(await asked(PLATFORM_CALLER, "restore.locate",
                        locateArgs([source.namespace, none]))).toMatchObject({
-      result: { located: { [source.namespace]: { owner, gen: source.generations.at(-1)!.gen },
+      result: { located: { [source.namespace]: { owner, gen: source.generations.at(-1)!.gen,
+                                                 at: expect.any(Number) },
                            [none]: null } } });
+    expect(await listed()).toContain(source.namespace);
+    // Erased with no object naming the namespace: its erasure never reached it.
+    await putOwner(doorsEnv, owner, { s: "erased", t: now() });
+    expect(await asked(PLATFORM_CALLER, "restore.locate", locateArgs([source.namespace])))
+      .toMatchObject({ result: { located: { [source.namespace]: "erased" } } });
+    expect(await listed()).not.toContain(source.namespace);
+    expect(await asked(PLATFORM_CALLER, "restore.locate", locateArgs([source.namespace])))
+      .toMatchObject({ result: { located: { [source.namespace]: "erased" } } });
   });
 
   it("is the platform's alone, and an owner's op is no platform's", async () => {
     expect(refusedOf(await asked(fresh(), "restore.locate", locateArgs([space()])))).toEqual({
       code: "invalid", message: "restore.locate is the platform's own: it is addressed to the " +
                                 "platform's reserved principal" });
+    expect(refusedOf(await asked(fresh(), "restore.namespaces", namespacesArgs(null))).code)
+      .toBe("invalid");
+    expect(refusedOf(await asked(PLATFORM_CALLER, "restore.namespaces", { cursor: 1 })).code)
+      .toBe("invalid");
     expect(refusedOf(await asked(PLATFORM_CALLER, "owner.state"))).toEqual({
       code: "invalid", message: "owner.state is addressed to an owner, not the platform's " +
                                 "reserved principal" });

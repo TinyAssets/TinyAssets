@@ -1,5 +1,5 @@
 /**
- * The codemode Worker (`tinyassets-codemode`; ADR-032 §4, pi audit F8, narrowed to code mode by
+ * The codemode Worker (`platform/codemode`; ADR-032 §4, pi audit F8, narrowed to code mode by
  * ADR-034 decision 12): code mode's VMs, out of the owner's object. Not deployed: no
  * workflow deploys platform/.
  *

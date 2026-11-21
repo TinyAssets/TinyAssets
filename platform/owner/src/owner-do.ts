@@ -126,9 +126,10 @@ import {
   IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, OwnerAdmission, PLATFORM_ONLY,
   PLATFORM_RESERVED, PLATFORM_TIER_ONLY, tombstoned, writeTombstone,
 } from "./admission";
-import {
-  agentId, AUTHORITY_CHANGED, type Grant, MAIN_AGENT, may, NOT_GRANTED, OWNER,
-} from "./authority";
+import { AUTHORITY_CHANGED, type Grant, MAIN_AGENT, may, NOT_GRANTED, OWNER } from "./authority";
+import { Actions, actionsDoors, decidedActor } from "./actions";
+import type { Condition } from "../../contract/src/acts";
+import { agentId } from "../../contract/src/text";
 import { type CloseKind, OWNERS_SOCKET, Relay, relayDoors, type SocketState } from "./relay";
 import { agentsAt, RUN_ENDED, Runs, runsDoors } from "./runs";
 import { PostGate } from "../../contract/src/run-events";
@@ -149,7 +150,7 @@ import { type OwnerStorage, WriteGate } from "./gate";
 import { Grants, grantsDoors } from "./grants";
 import { codemodeDoors } from "./codemode";
 import {
-  Ledger, ledgerDoors, registrant, RUN_NO_MAILBOX,
+  actorOf, Ledger, ledgerDoors, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock } from "./clock";
 import type { OwnerEnv } from "./env";
@@ -172,7 +173,7 @@ import { Egress, egressDoors } from "./egress";
 import { exportDoors } from "./export";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
-import { pinned, refuseRestoring, restoreDoors, restoring } from "./restore";
+import { pinned, refuseRestoring, restoreDoors, restoreNamespace, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors, switchedOn } from "./signins";
 import { Starter, starterDoors } from "./starter";
@@ -310,8 +311,9 @@ export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail
  * The object's stores, as it wires them over its gate's units, from its env and its id: the
  * owner's admission and tier, policy, notices, files, placed bodies, collections, grants,
  * sessions, keys, held registrations, ledger, nightly manifest (`backup.ts`, which alone holds
- * the change log) and archive (`archive.ts`). The object builds its own with this, once; a test builds the same
- * over an object's own storage to reach a store directly. A file change tells the owner's
+ * the change log), archive (`archive.ts`) and the action rules' held calls (`actions.ts`). The
+ * object builds its own with this, once; a test builds the same over an object's own storage
+ * to reach a store directly. A file change tells the owner's
  * other modules through these stores (`FileReaction`), so every builder's tells them.
  */
 export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
@@ -356,7 +358,8 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   ]);
   return { admission, policy, notices, files, bodies, collections, grants,
            sessions: new Sessions(storage), keys: new Keys(storage),
-           registrations: new Registrations(storage, grants), ledger, backups, archive };
+           registrations: new Registrations(storage, grants), ledger, backups, archive,
+           actions: new Actions(storage, () => policy.read(), notices) };
 }
 
 /** The object's stores (`ownerStores`). */
@@ -398,8 +401,9 @@ type Parts = Readonly<Stores & Built & DoorUnits & ObjectReads>;
  * (`handlerOf`).
  */
 const HANDLERS = Object.freeze({
-  admission: admissionDoors, codemode: codemodeDoors, collections: collectionsDoors,
-  connections: connectionsDoors, egress: egressDoors, erasure: erasureDoors,
+  actions: actionsDoors, admission: admissionDoors, codemode: codemodeDoors,
+  collections: collectionsDoors, connections: connectionsDoors, egress: egressDoors,
+  erasure: erasureDoors,
   export: exportDoors, files: filesDoors, grants: grantsDoors, import: importDoors,
   inbound: inboundDoors, keys: keysDoors, ledger: ledgerDoors, notices: noticesDoors,
   policy: policyDoors, registrations: registrationsDoors, relay: relayDoors,
@@ -449,6 +453,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
   readonly #bodies: Bodies;
   readonly #registrations: Registrations;
+  /** The owner's action rules decided, and the calls they hold (`actions.ts`). */
+  readonly #actions: Actions;
   readonly #notices: Notices;
   /** The starter package: the default agent's files, seeded and kept current (`starter.ts`). */
   readonly #starter: Starter;
@@ -520,6 +526,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#sessions = stores.sessions;
     this.#keys = stores.keys;
     this.#registrations = stores.registrations;
+    this.#actions = stores.actions;
     this.#exports = new OpenExports(storage);
     this.#starter = new Starter({
       storage, files: this.#files, write, admitted,
@@ -634,12 +641,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       ended: () => {
         this.#egress.drop();
         this.#relay.closeAll("erased");
-        this.#launcher.stop(this.#runs.liveRuns().map(({ run }) => run));
+        this.#launcher.stop(this.#runs.liveRuns());
       },
       // The namespace's mark, at the erasure's start: the copy back's record of it (no put
       // begins under the owner's mark, so the namespace it reads is the one the delete takes).
+      // A wipe for a restore empties the object, and its record names the namespace then.
       mark: async () => {
-        const ns = this.#files.storedNamespace();
+        const ns = this.#files.storedNamespace() ?? restoreNamespace(storage);
         if (ns !== null) {
           await this.#files.markNamespace(ns);
         }
@@ -661,7 +669,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // chunks (ADR-035), deleted by the namespace's prefix once every put this instance
       // began has landed (no new one begins under the mark), and again after the wipe.
       blobs: async () => {
-        const ns = this.#files.storedNamespace();
+        const ns = this.#files.storedNamespace() ?? restoreNamespace(storage);
         await this.#files.settled();
         if (ns !== null) {
           await this.#files.eraseNamespace(ns);
@@ -861,7 +869,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     return { owner, caller, origin: grant.origin, grant: held,
              run: { id: grant.run, scopes: grant.scopes, agent: grant.agent,
-                    stamp: grant.stamp } };
+                    stamp: grant.stamp, conversation: grant.conversation } };
   }
 
   /** The owner itself, on its own account, never an outside client nor a run. */
@@ -933,12 +941,55 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
   }
 
-  /** The door's call itself, its proofs live for `lease` (`#leased`). */
+  /**
+   * The door's call itself, its proofs live for `lease` (`#leased`). The decide step first: an
+   * agent's call of a row's act is held to the owner's rules on that act in a unit of its own
+   * before the handler (`#decide`), so a call is decided once, however many units its handler
+   * makes. Only a rule on the act costs the unit. A session door's caller is the owner alone,
+   * and the sync's commit lands a run's files, whose hold is a later slice's (tasks.md R5).
+   */
   #call(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
         lease: Lease): Promise<unknown> {
     // The request's type is its handler's, held to the row's fields by the runner's fields
     // step at run time, as `tsc` holds the handler to its row at `HANDLERS`.
     const asked = (takesRequest(row) ? request : undefined) as never;
+    const act = row.act;
+    if (act === undefined || (row.caller !== "account" && row.caller !== "visitors")
+        || !this.#actions.ruled(act.name)) {
+      return this.#handled(row, binding, asked, handler, lease);
+    }
+    return this.#door(() => this.#decide(row, act, binding, asked, lease))
+      .then(() => this.#handled(row, binding, asked, handler, lease));
+  }
+
+  /**
+   * The decide step: every step of the row but the handler, then, for an agent's call that is
+   * the row's act (its condition held), the owner's rules on it (`actions.ts`): it returns
+   * when the call may go on, and throws when a rule never lets it or holds it for the owner.
+   */
+  #decide(row: OwnerRow, act: NonNullable<OwnerRow["act"]>, binding: unknown, request: unknown,
+          lease: Lease): void {
+    const call = this.#checked(row, request, this.#bound(row, binding, request),
+                               provedBy(row.caller, lease));
+    const actor = decidedActor(call.account);
+    if (actor !== null && (act.when === undefined || this.#when(act.when, call))) {
+      this.#actions.decide(act.name, actor, { door: row.door, request }, clock());
+    }
+  }
+
+  /** Whether `call` is its row's act under `condition` (`acts.json` `conditions`). */
+  #when(condition: Condition, call: Call<unknown, CallerKind>): boolean {
+    switch (condition) {
+      case "outside_member":
+        return this.#ledger.recipient(actorOf(call.account), call.r["room_id"]).outside;
+      case "public_row":
+        return call.r["private"] === false;
+    }
+  }
+
+  /** The door's handler on its call, by its row's gate. */
+  #handled(row: OwnerRow, binding: unknown, asked: never, handler: Handled,
+           lease: Lease): Promise<unknown> {
     if (row.gate === "units") {
       const door: Door<never> = {
         request: asked,

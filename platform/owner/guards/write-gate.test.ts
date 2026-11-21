@@ -276,6 +276,7 @@ const UNIT_ARGUMENTS: Readonly<Record<string, readonly number[]>> = Object.freez
 const OWN_UNITS: ReadonlySet<string> = new Set([
   // Each writes in units of its own around its R2, sandbox or gateway calls.
   "files.write", "files.writeChunks", "files.upload", "files.rewrap", "files.space",
+  "files.holdNamespace", "files.holdUnder", "files.rootNamespace",
   "connections.fresh", "connections.reseal", "doorbell.reseal", "erasure.begin",
   "launcher.seeded", "launcher.launch", "launcher.cancel",
   // The manifest lane's pass, which a restore's pin drives for its fresh generation.
@@ -413,7 +414,7 @@ function helpers(source: string): Record<string, string> {
   const found: Record<string, string> = {};
   const visit = (node: ts.Node): void => {
     if (ts.isMethodDeclaration(node)
-        && ["#door", "#synced", "#filing", "#quiet", "#call",
+        && ["#door", "#synced", "#filing", "#quiet", "#call", "#handled",
             ...PLACEMENT].includes(node.name.getText(file))) {
       found[node.name.getText(file)] = node.body?.getText(file) ?? "";
     }
@@ -476,17 +477,19 @@ describe("write-gate guard", () => {
     expect(ungatedHandlers(doorHandlers(sources), rows)).toEqual([]);
     expect(rows.filter((row) => row.gate === "units").length).toBeGreaterThan(40);
     const bodies = helpers(sources.get(OWNER_DO)!);
-    // The runner's every other gate is a unit of the gate.
+    // The runner's every other gate is a unit of the gate, and so is its decide step.
     for (const gate of ["#door", "#quiet", "#synced", "#filing"]) {
-      expect(bodies["#call"]).toContain(`return this.${gate}(unit);`);
+      expect(bodies["#handled"]).toContain(`return this.${gate}(unit);`);
     }
+    expect(bodies["#call"]).toContain(
+      "return this.#door(() => this.#decide(row, act, binding, asked, lease))");
     expect(bodies["#door"]).toBe("{\n    return this.#gate.write(act);\n  }");
     // A quiet unit is a unit of the same gate, which marks nothing changed (`gate.ts`).
     expect(bodies["#quiet"]).toBe("{\n    return this.#gate.quiet(act);\n  }");
     expect(bodies["#synced"]).toContain("await this.#door(act)");
     expect(bodies["#filing"]).toContain("await this.#door(act)");
     // A seeded row's caller is checked in a unit before its door waits for the seed.
-    expect(bodies["#call"]).toContain(
+    expect(bodies["#handled"]).toContain(
       "return this.#door(() => door.authorized()).then(() => this.#launcher.seeded())");
     // The doors with a body (ADR-035): each begins in a unit, and every step that writes is
     // one, the R2 calls between them.

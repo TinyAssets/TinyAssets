@@ -11,7 +11,7 @@
     "cutover": {
       "why": "The cutover's change, in the window's last step (tasks.md §9 step 15), and the window's objects revoked or deleted as it closes.",
       "entries": [
-        { "delete": "platform/import", "what": "the importer: the census, the bundle builder, the stage, the window's steps, the host's runner (window.sh, host.py) and their guards" },
+        { "delete": "platform/import", "what": "the importer: the census, the bundle builder, the old policy's mapping and what the owner is told of it (policy.ts, notice.json), the stage, the window's steps, the host's runner (window.sh, host.py) and their guards" },
         { "delete": ".github/workflows/import-window.yml", "what": "the window's runner, Import window (manual)" },
         { "delete": "platform/contract/src/import-message.ts", "what": "the import's messages, its bundle's format and check, its bounds and its rehearsal names" },
         { "delete": "platform/contract/src/import-names.ts", "what": "the live names the job reaches" },
@@ -23,10 +23,19 @@
         { "delete": "platform/cutover.json", "what": "this manifest, once the rest of it is done" },
         { "delete": "platform/ci/kit/cutover.ts", "what": "the manifest's reader" },
         { "delete": "platform/ci/guards/cutover.test.ts", "what": "the manifest's guard" },
+        { "delete": "scripts/platform_setup.py", "what": "the founder's one-time setup, done (deploy/checklist.md): its keyring maker is a copy of keyring-new's, which the kit keeps (o-keyrings.md)" },
+        { "delete": "tests/test_platform_setup.py", "what": "the setup's tests" },
+        { "delete": "tinyassets/desktop/icon_gen.py", "what": "the old desktop tray's frozen copy of the mark, kept unedited for tinyassets/desktop until the old stack goes; WebSite/brand/mark.py is the source" },
 
+        { "edit": "WebSite/brand/render_marks.py", "names": ["TRAY_ICO", "APP_HTML", "_write_app_html", "app_badge_data_uri"], "what": "remove the retired tray export and onboarding badge writer, including its invariant import; regenerate the receipt for the surviving outputs" },
+        { "edit": "WebSite/brand/generated-assets.json", "names": ["tinyassets/desktop/app.ico"], "what": "regenerate after the tray export and onboarding badge writer go" },
+        { "edit": "WebSite/site-react/scripts/brand-parity.test.mjs", "names": ["tinyassets/desktop/app.ico"], "what": "retire the tray from the required surfaces; the desktop app and site checks stay" },
+        { "edit": "scripts/invariants/brand_parity.py", "names": ["tinyassets/desktop/app.ico", "APP_HTML", "app_badge_data_uri", "app_badge_problems"], "what": "retire the tray receipt requirement and the onboarding HTML badge check with their targets" },
+        { "edit": "openspec/specs/public-website-surface/spec.md", "names": ["the Windows tray icon", "The served web app SHALL carry the same mark as its favicon and brand glyph."], "what": "retire the tray and old onboarding badge requirements when both targets go" },
+        { "edit": "WebSite/brand/README.md", "names": ["tinyassets/onboarding/app.html"], "what": "retire the tray and onboarding instructions with their exports" },
         { "edit": "platform/package.json", "names": ["\"import\""], "what": "the import workspace" },
         { "edit": "platform/package-lock.json", "names": ["\"import\""], "what": "the import workspace, by npm install" },
-        { "edit": ".github/workflows/tests.yml", "names": ["npm run test -w import"], "what": "the import leg" },
+        { "edit": ".github/workflows/tests.yml", "names": ["npm run test -w import", "tests/test_platform_setup.py"], "what": "the import leg, and the setup's tests in the process leg" },
         { "edit": "platform/ci/budgets.json", "names": ["import/guards"], "what": "the import guards' budget" },
         { "edit": "platform/ci/kit/layers.ts", "names": ["the importer", "platform/cutover.json"], "what": "the importer's layer, and the cutover layer's note and reach" },
         { "edit": "platform/ci/kit/imports.ts", "names": ["cutoverLayer", "isGone"], "imports": ["platform/ci/kit/cutover.ts"], "what": "the cutover layer" },
@@ -39,7 +48,7 @@
         { "edit": "platform/contract/src/owner.ts", "names": ["importRows", "importDiscard", "CheckPart"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import doors' types" },
         { "edit": "platform/contract/src/paths.ts", "names": ["IMPORTED"], "what": "the imported tree's path" },
         { "edit": "platform/contract/src/files.ts", "names": ["the importer's wipe"], "what": "the importer's wipe, in the object prefix's note" },
-        { "edit": "platform/contract/services.json", "names": ["tinyassets-import"], "what": "the import queue's message" },
+        { "edit": "platform/contract/services.json", "names": ["IMPORTS"], "what": "the import queue's message, by its producer's binding" },
         { "edit": "platform/contract/src/queue-names.ts", "names": ["IMPORTS"], "what": "the import queue's name, by npm run generate once doors/wrangler.jsonc loses it" },
 
         { "edit": "platform/owner/src/admission.ts", "names": ["IMPORT_PLATFORM_ONLY", "IMPORT_DOORS_ONLY", "IMPORT_PENDING_ONLY", "DISCARDED", "\"import\""], "what": "the import doors' refusals and class" },
@@ -71,7 +80,7 @@
 
         { "edit": "platform/deploy/facts.ts", "names": ["IMPORT_NAMES", "--import"], "imports": ["platform/contract/src/import-names.ts"], "what": "facts.ts --import, the job's live names" },
         { "edit": "platform/deploy/deploy.ts", "names": ["IMPORT_KEY"], "imports": ["platform/contract/src/import-message.ts"], "what": "mode rotation's refusal while the doors hold the window's key" },
-        { "edit": "platform/deploy/guards/deploy.test.ts", "names": ["IMPORT_NAMES", "IMPORT_KEY", "windowOpen"], "imports": ["platform/contract/src/import-message.ts"], "what": "the job's live names' case, and the rotation's refusal in the window" },
+        { "edit": "platform/deploy/guards/deploy.test.ts", "names": ["IMPORT_NAMES", "IMPORT_KEY", "windowOpen", "takes the keyring the founder's setup makes"], "imports": ["platform/contract/src/import-message.ts"], "what": "the job's live names' case, the rotation's refusal in the window, and the case that runs the founder's setup's keyring maker (keyring-new's own cases stay)" },
         { "edit": "platform/deploy/checklist.md", "names": ["## The import window's credentials"], "what": "the import window's credentials" },
         { "edit": "docs/architecture.md", "names": ["`platform/import/`"], "what": "the importer's row" },
         { "edit": "openspec/changes/clean-sheet-platform/specs/doors/spec.md", "names": ["say nothing of the cutover's import"], "what": "the MCP instructions' silence on the import, which the importer's README explains" },

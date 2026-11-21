@@ -135,7 +135,8 @@
             },
             "path": ""
           }
-        ]
+        ],
+        "deferred": []
       }
     },
     "instructions": {

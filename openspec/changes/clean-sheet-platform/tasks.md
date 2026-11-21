@@ -178,11 +178,12 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   - Mode `offsite` copies the final backup to `tinyassets-final-backup` and reads each object
     back against its manifest (the founder, 2026-11-09).
 - [ ] **Step 11. `bundle`, `stage`, `verify`, the deletion jobs compared, `admit`.**
-  - The deletion jobs compared (d3 §C4, list3 P28): the old stack's unfinished deletion jobs
-    (`tinyassets/broker/deletion_jobs.py` `load_unfinished_jobs`, read from the off-host
-    authority, never a backup copy) against the census. An owner whose job was made after the
-    copy is discarded (still `pending`) and withheld before any owner is admitted. No runner
-    mode does this yet (§10 step 5).
+  - The deletion jobs compared (d3 §C4, list3 P28): the old stack's deletion jobs, finished or
+    not (`tinyassets/broker/deletion_records.py`, read from the off-host authority, never a
+    backup copy), against the run's bundles: mode `deletions` (`i-deletion-compare.md`). An
+    owner whose job was made after the copy is discarded (still `pending`) and withheld before
+    any owner is admitted. The discard, the withholding and their hold on `admit` remain open
+    (§10 step 5).
   - `verify`, which holds every imported owner's check to its bundle, runs here, while
     `IMPORT_KEY` is still set (list3 P27).
   - `admit` admits each verified owner (`tierSet`, `admissionSet`, each suspension, the `o:`
@@ -264,8 +265,7 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
-- [ ] P7's rest: the workflow headers lose their dated history, which git holds (list3 T12;
-  `untangle/p7-headers`).
+- [x] P7's workflow headers, list3 T12 (`untangle-2026-11/p7-headers.md`).
 - [x] P8's rest and P9's "can go now" list: the always-red watchers, the callerless scripts,
   the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
   changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;
@@ -296,6 +296,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
   one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
+- [x] The oracle image builds on the root `Dockerfile`'s digest-pinned base, read from there,
+  and retries a busy registry (a 429, 5xx or stall: merge group run 44079286405) up to four
+  times. `queue_attempts.py` no longer counts a job that stopped before any test ran
+  (GitHub's own step, or the venue's `NO_TEST_RAN` line), which had cost #5678 a counted
+  removal and #5471 its handoff (`fix/oracle-pull-retry`;
+  `untangle-2026-11/oracle-pull-retry.md`).
 
 ### Step 1. Now: B25, T0b, E2
 
@@ -323,7 +329,14 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   - Due: on or after 2026-11-26 20:55 UTC, `check` with `ids: ib3ngrmhs5jv82f0mzj9j` only, so
     `small` stays paused unbroken; on or after 2026-12-12 20:55 UTC, `check` with no ids, then
     `cleanup`, and the result into `sandbox-probe.md`.
-- [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
+- [x] Durable Object regional availability reviewed against Cloudflare's status history
+  (d3 §C8; ADR-032; `durable-object-regions.md`). The regional incidents confirm errors in
+  Western Europe and North America; the owner measurements it still needs are the next line.
+- [ ] Per-region owner availability (`durable-object-regions.md`, its review): the canary checks
+  one owner in one location, so an incident where other owners live raises no alarm, and
+  ADR-032's two-region trigger has no per-region series. Research first (canary owners placed
+  by location hint, or Cloudflare's per-location analytics for the owner namespace), then
+  build it with the canary's keyed checks, which wait for `routes`.
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
   they differ (d3 §C8, list3 P16).
@@ -361,36 +374,54 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] `untangle/o2c`: `contract/doors.json` split from `owner/doors.json` (the runner's
       steps), the door map written by the owner (`untangle-2026-11/o2c.md`).
   - Owed to lane O by merged PRs, one line each:
-    - S8: the owner adopts `served()` (`s8.md`).
-    - S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`).
+    - [x] S8: the owner adopts `served()` (`s8.md`). Built in `untangle/o-owed`: every owner read
+      of a CLI record is `servedRecord`, and of one that signs in, `signsIn` (`o-owed.md`).
+    - [x] S9: `LiveRun`'s `lease_id` and `epoch` through `RunHost.stop` (`s9.md`). The ids were
+      O1d's; `untangle/o-owed` deletes `LiveRun`: `liveRuns` answers ids, `Runs.holds` the
+      lease check (`o-owed.md`).
     - [x] C4: the object parses `#bind` and `egress.ts:330` `sandboxBinding` with `BINDING_PARSERS` (O3).
       Built in `untangle/o3`: each door's binding parsed by its kind's parser, by the kinds its
       caller takes (`CALLER_BINDINGS`), and the egress copy gone (`untangle-2026-11/o3.md`).
     - [x] O2c: `caller` `none` (`owner/doors.json`) beside `UNBOUND_DOORS`, held equal by
       `stepProblems`, goes with B5's `none` binding kind, `untangle/o3` (`o2c.md` item 7). Built:
       the two steps name no caller, and the runner's `none` is `UNBOUND_DOORS`' (`o3.md`).
-    - C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`).
-    - X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6).
+    - [x] C5b: `owner/guards/config.test.ts` `controlOnly` (`c5b.md`). Built in
+      `untangle/o-owed`: the owner's top level is a kit `CONFIG`, `CONTROL` held by binding
+      name (`o-owed.md`).
+    - [x] X1: B10's literal guard over every folder, `untangle/o4c` (`o4b.md` item 6). Built:
+      `deploy/guards/literals.test.ts` reads the live names from `facts.ts`; its permanent
+      exceptions are its own `KEPT`, each with its reason (`untangle-2026-11/o4c.md`).
+    - [x] X1b: the deploy tests and founder checklist use the configured resource names
+      (`untangle-2026-11/x1b.md`).
   - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
     manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
-  - V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`).
-  - B14's keyring half, owed (`x5.md` item 10): `scripts/platform_setup.py` calling the kit's
-    `keyring-new` in place of its own `make_keyring`. X5 left it, since it would make the
-    founder's local setup need Node 22 and the platform's `npm ci` for one keyring. The
-    cutover does not wait on it (the keyrings are stored, and the kit only reads them), but the
-    deletion PR must not delete `platform_setup.py` while `deploy.test.ts` "takes the keyring
-    the founder's setup makes" runs it: either this is built, or both go on the manifest.
-  - B22's sweep doorbell half (O5; d3 §I).
+  - [x] V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`). Built in
+    `untangle/o-keyrings`: the goldens sealed again by their own commit's code for a connection
+    id, and the gateway's binding takes the owner's connection ids, a doorbell's its own
+    `wake.<SUBSCRIPTION_ID>` (`o-keyrings.md`).
+  - [x] B14's keyring half, decided (`x5.md` item 10): not built. `scripts/platform_setup.py`,
+    its tests and `deploy.test.ts` "takes the keyring the founder's setup makes" are on the
+    manifest's cutover list, so the deletion PR takes them together (`o-keyrings.md`).
+  - [x] B22's sweep doorbell half (O5; d3 §I). Built by R7 (`r7-rotation.md` item 4), the
+    comment by #5509 and the deadline test in `gateway/test/forward.test.ts`; proved in
+    `untangle/o4c` by a mutation (`o4c.md`).
   - B24: the whole cutover's manifest, in three phases, with its dry-run job (d3 §A10). Its
     platform Workers are entries in the deploy kit's `retired` list (`deploy/platform.json`),
     the one remover of a platform Worker (d3 §O2).
+    - `untangle/b24-manifest`: `scripts/platform_setup.py` is on the cutover list
+      (`o-keyrings.md`). Its inventory of `scripts/` takes what still names it: `platform.json`
+      `made`'s `why`, `deploy.ts`'s kit note, `checklist.md`'s setup line,
+      `platform-deploy.yml`'s header, `docs/host-actions.md`, `.github/test-durations.json`,
+      `deploy/review-app.html` (it runs the setup's `review-app` step, and only the setup's tests
+      read it) and `tests/test_workflow_production_environment.py`'s note. It also decides where
+      the setup's `workos` and `review-app` steps go, since the deletion takes them too.
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
     depth (Fact 15; the coordinator, 2026-11-12, below).
   - [x] Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`,
     with G-H11 and G-SP5 (d3 §O5): one per-API table (`g1.md`).
-- [ ] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
+- [x] Lane T: T1 on the owner before B3, T2 on the doors after D3, T3 the egress memory leg
   (d3 §K1, §K2).
   - [x] T1, the owner's tests at production's numbers through the object's one wiring, twelve
     PRs, T1a to T1e (#5515 to #5588; `t1c.md`).
@@ -413,8 +444,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       `ownDoor<D>` answer `DoorAnswer<D>`, the 13 answers the doors' tests read are `DoorTypes`
       entries that `OwnerDO implements OwnerDoors` holds to the owner's, and the two #5657 left
       (`sandboxRung`, `restoreRelease`), which nothing reads, are gone.
-  - T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
-    (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i).
+  - [x] T3, with the egress memory leg's move: `GATEWAY_KEYRING` required
+    (`gateway/src/keyring.ts`), as T0b left it (list 6, item 6i). The leg runs the real doors
+    and gateway bundles (`gateway/memory/`, `npm run test:memory -w gateway`), and the
+    metered path's tree is gone before its encode, which the leg found held (`t3.md`).
   - [x] A CI runner 4.5 to 5 times slower than usual fails tests at their budgets, past the
     budgets' factor of 4 and the watchdogs' 3, and `search-cpu`'s host CPU bound with them: the
     runner-variance rule (`untangle/budgets-variance`, #5640's review; `budgets-variance.md`).
@@ -466,9 +499,22 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     begun in the same run; and a night refuses to copy a bucket lacking a mark the copy holds,
     so no night before `recover` hides the marks (`r8-account-loss.md` item 7;
     `untangle/r8-locate`, `r8-locate.md`).
-  - [ ] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
-    located, the one naming `--owner` taken, then mode `restore` from it
-    (`r8-account-loss.md` item 7, `r8-locate.md` item 7; `untangle/r8-lost-object`).
+  - [x] No erasure misses an owner's namespace its object does not adopt: the files Worker's
+    mark and delete take each namespace one holds (`o/<ns>/h/<held>`), `recover` holds a
+    namespace whose owner is live by that owner's own (`restore.hold`) and begins none another
+    holds, and `owner.admit` refuses an owner the directory records whose object is pending
+    (`untangle/r8-erased-orphans`, `r8-erased-orphans.md`).
+  - [x] A lost object, the account intact: the unmarked namespaces whose roots R2 holds
+    located, the one naming `--owner` taken, then mode `restore` from it, every other one
+    naming it held by the restored one; a live owner restored from a namespace it holds; and a
+    located namespace whose owner is erased erased (`r8-account-loss.md` item 7, `r8-locate.md`
+    item 7, `r8-erased-orphans.md` item 8; `untangle/r8-lost-object`, `r8-lost-object.md`).
+  - [x] An erasure of a lost object marks nothing (its object and no restore record name a
+    namespace): mode `erase` finds its namespaces first, and refuses while R2 holds one naming
+    it, until it is restored (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
+  - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
+    it, since `copyback` needs an object naming the namespace and `recover` begins every owner
+    (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
@@ -539,36 +585,64 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     their act, a rule nothing could see refused at write; the old rule tables, `spend` and
     egress `ask` deleted; the default document and its digest anew, with owner migration 6
     (#5531; its pin, #5537).
-  - [ ] P-decide: the decide function and its receipts bucket; `action_request` cards and the
+  - [x] P-decide: the decide function and its receipts bucket; `action_request` cards and the
     once-approvals (bounded, generation-bound, swept); the owner's approve and refuse doors;
     the decide step in the runner, from the rows' `act`; a rule's `agent`, with the agent id's
-    rule moved to the contract.
-  - [ ] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
-    stop matcher in its record's `events`; a run settles `waiting` on a card.
+    rule moved to the contract (`untangle/r5-decide`; `r5-decide.md`).
+  - [x] Owner migration 17's pin, after P-decide merges: rode `untangle/r5-resume-hooks`.
+  - [ ] P-decide's receipts in the export: `action_receipts` joins it with the first migration
+    that builds a forward form (`schema.ts` `FORWARD`; `r5-decide.md` item 5,
+    `untangle/r5-receipts-export`).
+  - [x] P-resume: an approval starts the conversation's resume run; Claude's `tool_deferred`
+    stop matcher in its record's `events`; a held call's digest bound to its run's
+    conversation; owner migration 18 (`untangle/r5-resume-hooks`; `r5-resume-hooks.md`).
+  - [x] Owner migration 18's pin, after P-resume merges (`untangle/r5-resume-pin18`).
   - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
     `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
     when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
     rule where it holds and where it can't (`holds_at`, `not_enforced`), from `acts.json` and
-    the agent's engine record.
-  - [ ] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
-    the mapping, the old defaults written explicitly (d3 §N7), and the archive file; the
-    notice. Until it lands, an old document is archived whole (`policy.refused.json`).
+    the agent's engine record; a held call the hook deferred resumes on no input, and its
+    conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
+    pass lands, since the runner writes the files (`untangle/r5-hooks`).
+  - [x] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
+    the mapping, the old defaults written explicitly (d3 §N7), and the archive file
+    (`policy.json`); the notice's words as data (`import/notice.json`). A spend cap refuses
+    its owner (`policy_spend`) until its mapping is built from the census's numbers, if it finds
+    any (`untangle/r5-import`; `r5-import.md`).
+  - [ ] The notice's words approved, or rewritten, by the founder, before the real window
+    (`live:` founder_batch item 6; `platform/import/notice.json`, nothing sent).
   - [ ] Later, only if an owner's rule needs it: hold-on-sync for `paths`, and asking for a
     host through web-fetch hooks.
 - [ ] The comments pass and then the tests pass, one PR an area (d2 §E steps 4 and 5). The
-  tests pass takes the two older tests that make a call refuse by patching a class's prototype
-  (`owner/test/runs-authority.test.ts:864` `Files.prototype.open`,
-  `owner/test/erasure.test.ts:92` `Lifecycle.prototype.disableAlarms`; list 6, item 9). The
-  two patched calls are in-process (the owner's own SQLite; the agents library's
-  `Lifecycle`), but each test's fault has a front door through `FILES`, so both move to a
-  gate in front of it in the owner suite (`methodsOf` `ChunkStore`, as the ci suite's
-  `files-gate`; B23): an `agent.json` over `INLINE_BYTES` read while its `getChunks` is held
-  and the file is rewritten through the doors; the erasure's `deleteNamespace` refused once,
-  for an owner with files, so it stops at step 2 before the wipe.
+  owner area's pass also takes its two spies that watch a class's prototype, though neither
+  makes a call refuse (`owner/test/bodies.test.ts` `Files.prototype.begin`,
+  `owner/test/proofs.test.ts` `Sessions.prototype.extend`).
+  - [x] The two owner regressions in list 6 item 9 now use the FILES service gate: a
+    chunked agent definition changes during a run's admission, and the erasure's namespace
+    delete fails before the wipe (`codex/owner-front-door-tests`;
+    `untangle-2026-11/owner-front-door-tests.md`).
+  - [x] `platform/sandbox/`, both passes in one PR, with `s2:N51` and the sandbox's own
+    swallowed errors and retries decided (`untangle/pass-sandbox`;
+    `untangle-2026-11/pass-sandbox.md`).
+  - [x] `platform/files/`, both passes in one PR, with the area's list2 items and its own
+    swallowed errors decided, and four checks that could never fail made to (the r2-keys
+    guard's builder, prefix and exemption rules; the root rewrap's etag) (#5679;
+    `untangle-2026-11/pass-files.md`).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
 - [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
+  - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
+    (`pass-sandbox.md` §4).
+  - [x] `contract/src/sync-ignore.ts` `wildcard`, with no reader since `s2:S95`, deleted
+    (`pass-sandbox.md` §2).
+  - [x] A renewal waits for its runs' answers: the Worker gives `renew-wait` its own now as the
+    deadline (`control.ts` `#renew`), and `tell` waits for an answer only to it, so no run's
+    posts are drained before the pause, as `runner.ts`'s `Job` intends. Research the answer's
+    bound first (`pass-sandbox.md` §2). Done: `RENEWING_MS` past the Worker's now, 700 ms,
+    and never past `endAt` less the longest pause (#5680; `untangle-2026-11/renew-deadline.md`).
+  - [ ] `runner.ts` `RunState.renewing`, written for the tests alone, dropped with the next
+    state format (`renew-deadline.md` §4).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
@@ -582,12 +656,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
   read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
   and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
-- [ ] The deletion-jobs step, a runner mode before `admit` (§9 step 11; d3 §C4).
+- [ ] The deletion-jobs step before `admit` (§9 step 11; d3 §C4).
+  - [x] `deletions` checks current off-host requests against the original owners of the
+    run's bundles (`i-deletion-compare.md`).
+  - [ ] Withhold and discard the matching pending owners before admitting any. Establish
+    when the old service stops accepting new deletion requests or hands them onward.
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
   account-deletion pages corrected, in the founder's copy.
-- [ ] The mark's source, `tinyassets/desktop/icon_gen.py`, moved out before the old stack is
-  deleted, or the site stops deploying (d3 §C6 F4).
+- [x] The mark's source is `WebSite/brand/mark.py`; the cutover manifest lists the old copy
+  and the retired tray and onboarding exports and checks (d3 §C6 F4, `site-mark.md`).
 - [ ] The live stage's four PRs, after B13, B14's canary and `control` (d3 §H).
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
@@ -604,8 +682,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     (file versions to segments, with mark-and-sweep) after R1 and §P item 3; F3 (the live
     index's R2 level) later, and whether it comes before the cutover is an open founder
     question;
-  - `RUNS_KEPT`, the policy and egress receipts, and the settled wakes' week and 1,000
-    recorded in `limits-audit.md` as deliberate retentions, each with its reason (§P item 6).
+  - [x] Run, policy, egress and settled wake receipt retentions and their readers
+    documented in `limits-audit.md`, “Chosen retentions” (§P item 6).
 
 ### Step 6. The engines' locks, the one paid template build, the pin PR
 
@@ -636,7 +714,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - R5's (d3 §N9): Claude's `defer` with several tool calls in one turn; managed settings
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,
-    spend caps and egress `ask` in the import.
+    spend caps and egress `ask` in the import (the census's `policy` counts and its
+    `policy_spend` problem, `r5-import.md`).
 
 ### Step 8. The live stage (d3 §F1, §H), in order
 
