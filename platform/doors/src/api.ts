@@ -6,17 +6,17 @@
  * the object checks every field. A tool outside the key's profile is `404`, as one that
  * does not exist.
  *
- * A key that does not verify is `401` and no object is reached; then the kill switch,
- * fail-closed. The request's `Cookie` header is gone before this sees it (`doors.ts`).
+ * A key that does not verify (`presentedKey`, the `/mcp` door's key check too) is `401` and
+ * no object is reached; then the kill switch, fail-closed. The request's `Cookie` header is
+ * gone before this sees it (`doors.ts`).
  */
 import { answerJson } from "./answers";
-import { verifyKey } from "./api-keys";
+import { presentedKey } from "./api-keys";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 
 import type { DoorsEnv } from "./env";
-import { outsideRead } from "./control";
-import { withAccount } from "./binder";
-import { bearer, failure, jsonObject, mediaType } from "./kit";
+import { outsideAccount } from "./control";
+import { failure, jsonObject, mediaType } from "./kit";
 import { profileOf } from "./mcp";
 import { answered, asJson } from "./refused";
 import { callDoor } from "./tools";
@@ -26,14 +26,13 @@ const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
 
 export async function serveApi(request: Request, env: DoorsEnv, sources: Sources):
     Promise<Response> {
-  const token = bearer(request);
-  const bound = token === null ? null : await verifyKey(env, token);
+  const bound = await presentedKey(env, request);
   if (bound === null) {
     return failure(401, "a valid API key is required",
                    { "WWW-Authenticate": "Bearer realm=\"tinyassets-api\"" });
   }
   return answered(asJson, async () => {
-    const held = withAccount(bound, await outsideRead(env, bound.binding.owner), sources);
+    const held = await outsideAccount(env, bound, sources);
     const { tools } = await profileOf(held);
     const match = TOOL_PATH.exec(new URL(request.url).pathname);
     const tool = match === null ? undefined : tools.find((row) => row.name === match[1]);

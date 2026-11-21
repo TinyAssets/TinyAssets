@@ -104,7 +104,8 @@
       "id": "muse",
       "name": "Meta Muse",
       "surfaces": [
-        "Muse"
+        "Muse",
+        "Muse Code"
       ],
       "registration": "dcr",
       "match": {
@@ -117,12 +118,13 @@
       "connect": {
         "say": "Connect to the MCP server at {mcp} as a custom integration named TinyAssets, and save the TinyAssets skill: it's my shared memory with my other assistants, so check it before asking me and save what I tell you there.",
         "steps": [
-          "In a chat with Muse, send the sentence below.",
-          "Sign in to TinyAssets when Muse asks you to."
+          "In the TinyAssets app, open API keys and make a key for Muse. Copy it: it is shown once.",
+          "In a chat with Muse, send the sentence below. When Muse asks whether the server needs an API key or a header, give it the key as an Authorization: Bearer header in its secure credential prompt, never in the chat.",
+          "In Muse Code, add the server address https://tinyassets.io/mcp and run muse mcp login to sign in to TinyAssets instead."
         ]
       },
-      "source": "https://platform.muse.ai/docs; https://parallel.ai/articles/meta-muse-custom-integrations (a third party's first-hand test, 2026-10-29)",
-      "checked": "2026-11-03"
+      "source": "https://platform.muse.ai/docs; https://dev.meta.ai/docs/muse-code/extending.md; https://parallel.ai/articles/meta-muse-custom-integrations (a third party's first-hand test, 2026-10-29)",
+      "checked": "2026-11-21"
     },
     {
       "id": "gemini",

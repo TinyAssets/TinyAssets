@@ -99,7 +99,7 @@
       "agents": "Meta Muse",
       "delivery_method": null,
       "push": null,
-      "catch_up": "Muse's own recurring scheduled task (daily, weekly or a custom interval), connected by the owner's ADR-028 key in Muse's Secrets tab, reads inbox_digest and board_digest; its agent registers with delivery pull. Meta documents no push for third-party connectors, so TinyAssets sends none and polls nothing.",
+      "catch_up": "Muse's own recurring scheduled task (daily, weekly or a custom interval), connected by either of Muse's two ways in (apps.json's muse: the owner's key, or a sign-in), reads inbox_digest and board_digest; its agent registers with delivery pull. Meta documents no push for third-party connectors, so TinyAssets sends none and polls nothing.",
       "vendor_limits": [
         "The minimum recurring interval is not documented."
       ],
