@@ -103,9 +103,11 @@ MIN_RAN_FLOOR = 2200
 MIN_RAN_FLOORS = {
     "full": MIN_RAN_FLOOR,   # every test under tests/
     "heavy": 15,             # 18 retained heavy cases after the shape-only prune
-    # ONE of six required shards. The smallest ran 322 cases in the first merge
-    # queue run after the C6 cutover; the aggregate also checks the union.
-    "shard": 260,
+    # ONE of six required shards: none of its own. Packed by seconds, a shard's
+    # case count follows the packing (one added file took shard 1 from 401 to
+    # 255, merge group 44881570063). The aggregate judges the union: the `full`
+    # floor, and every measured file reporting a case (whole_surface_cover).
+    "shard": 0,
     # The PR-time run of scripts/affected_tests.py's selection. Zero on
     # purpose: a selection can honestly be one test or none (a docs-only
     # change), and this run is advisory -- the merge-group shards above carry
@@ -248,9 +250,8 @@ def pack(files: list[str], durations: dict[str, float], total: int) -> dict[str,
     return owner
 
 
-@functools.lru_cache(maxsize=None)
-def _packed(total: int) -> dict[str, int]:
-    """The packing over TRACKED test files.
+def tracked_test_files() -> list[str]:
+    """Every tracked test_*.py under tests/: what the shards split between them.
 
     Tracked, not whatever is on disk: one generated test_*.py present in one
     shard job and not another would reshuffle hundreds of owners between them
@@ -271,8 +272,26 @@ def _packed(total: int) -> dict[str, int]:
             path.relative_to(REPO_ROOT).as_posix()
             for path in (REPO_ROOT / "tests").rglob("test_*.py")
         ]
+    return sorted(files)
+
+
+def whole_surface_cover(exclude_from: str | None) -> list[str]:
+    """Every tracked file the table measured: each must report a case, whatever shard owns it.
+
+    The refresher writes only files a whole-surface junit reported, so a helper
+    with no test function is absent, and a new file waits for the next refresh.
+    """
+    measured = load_durations()
+    if not measured:
+        raise SystemExit(f"{DURATIONS} is unusable; the whole-surface coverage check reads it.")
+    return gating_selection([rel for rel in tracked_test_files() if rel in measured], exclude_from)
+
+
+@functools.lru_cache(maxsize=None)
+def _packed(total: int) -> dict[str, int]:
+    """The packing over the tracked test files."""
+    files = tracked_test_files()
     durations = load_durations()
-    files = sorted(files)
     root = [f for f in files if f in ROOT_TEST_FILES]
     user = [f for f in files if f not in ROOT_TEST_FILES]
     return {**pack(user, durations, total), **pack(root, durations, total)}
@@ -1081,8 +1100,8 @@ def aggregate(
 
     * ``expect_selection`` -- every shard must report the digest the `select`
       job published, so shards cannot each run a different selection;
-    * ``must_cover`` -- every selected file must appear in the union with at
-      least one case. This REPLACES a numeric floor rather than lowering one: a
+    * ``must_cover`` -- every selected file (on the whole surface, every measured
+      file) must appear in the union with at least one case. This REPLACES a numeric floor rather than lowering one: a
       selection can honestly be a single test, so no count is meaningful, but
       "the files we chose all reported" is exact. Any outcome counts, skip
       included, so a platform-guarded file is not a failure; a file that
@@ -1172,8 +1191,8 @@ def aggregate(
             shown = ", ".join(absent[:10])
             more = f" (+{len(absent) - 10} more)" if len(absent) > 10 else ""
             problems.append(
-                f"{len(absent)} of {len(must_cover)} selected test file(s) reported no "
-                f"case at all: {shown}{more}"
+                f"{len(absent)} of {len(must_cover)} test file(s) this run must cover "
+                f"reported no case at all: {shown}{more}"
             )
 
     if problems:
@@ -1683,7 +1702,7 @@ def main() -> int:
         # shards did, and refuses if the digest it was told does not match what
         # it can actually read -- otherwise "every shard reported the expected
         # digest" would be a statement about a file nobody here verified.
-        covered: list[str] | None = None
+        covered = [] if args.affected else whole_surface_cover(args.exclude_from)
         if args.affected:
             entries = selection_entries(Path(args.affected))
             if entries is None:
