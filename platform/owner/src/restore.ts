@@ -997,8 +997,7 @@ function finish(o: RestoreDoorNeeds, held: Held, root: ManifestRoot): void {
   sql.exec("UPDATE owner_restore SET step = 'done', after = NULL");
 }
 
-// -- THE DOORS: the `restore` rows' handlers (`owner/doors.json`)
-// ----------------------------------
+// -- THE DOORS: the `restore` rows' handlers (`owner/doors.json`) ----------------------------------
 
 /**
  * What the `restore` doors reach: the generations (`Backups`) and the bucket they are read

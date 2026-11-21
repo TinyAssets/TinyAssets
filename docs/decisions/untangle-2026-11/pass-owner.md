@@ -68,7 +68,7 @@ or a wait is what it is.
     contract slice L's door answers with (tasks.md)".
   - `network.ts` "the sandbox slice (8b) sends the network document". The sandbox Worker does.
   - `owner-do.ts` "whose hold is a later slice's (tasks.md R5)" names the plan's line,
-    R5's P-hooks, which is open (`untangle/r5-hooks`).
+    R5's later hold-on-sync for `paths`, as `r5-decide.md` item 3 says.
   - `schema.ts`'s part 6 "Since untangle F1 nothing marks or reads it; F2 reshapes the table".
     Nothing does; F2 is no plan's.
   - Every pointer to a working file never in the repo: `backup_shape_research.md`,

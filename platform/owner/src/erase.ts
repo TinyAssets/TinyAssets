@@ -165,7 +165,7 @@ export class Erasure extends LifecycleCapability {
         runsEnded(storage);
       });
     }
-    // 3. Every R2 copy deleted by the namespace's prefix, once a put any instance began
+    // 4. Every R2 copy deleted by the namespace's prefix, once a put any instance began
     // before the mark has had its time to land (`PUT_GRACE_MS`) (a failure rejects, and the
     // retry deletes again); then the owner wiped whole, Lifecycle's alarm disabled first so nothing
     // is written after; then the prefix deleted once more.

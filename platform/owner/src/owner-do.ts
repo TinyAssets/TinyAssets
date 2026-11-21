@@ -947,7 +947,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * agent's call of a row's act is held to the owner's rules on that act in a unit of its own
    * before the handler (`#decide`), so a call is decided once, however many units its handler
    * makes. Only a rule on the act costs the unit. A session door's caller is the owner alone,
-   * and the sync's commit lands a run's files, whose hold is owed (`tasks.md`, R5's P-hooks).
+   * and the sync's commit lands a run's files, whose hold is R5's later hold-on-sync
+   * (`tasks.md`; `r5-decide.md` item 3).
    */
   #call(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
         lease: Lease): Promise<unknown> {

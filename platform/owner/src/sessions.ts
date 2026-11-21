@@ -18,6 +18,7 @@
  * door cancels every one in the unit that signs the sessions out, and `sessionClose` the
  * flows its session began (`connections.ts`).
  *
+ * What a session is:
  * - The proof is the cookie only: a stored hash is never a proof, so reading the store
  *   yields none.
  * - The object mints the cookie, so a session proof is always 32 random bytes.
