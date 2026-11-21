@@ -113,8 +113,7 @@ export function serveDefinition(mcp: McpServer, bound: Bound): void {
 
   mcp.registerResource("definition", new ResourceTemplate(`${FILES_URI}{agent}/{file}`, {
     list: async () => ({ resources: (await definition()).files.map((file) => file.resource) }),
-  }), { description: "The agent's definition: its AGENTS.md and SOUL.md." },
-  async (uri) => {
+  }), {}, async (uri) => {
     const file = (await definition()).files.find((each) =>
       canonical(each.resource.uri) === uri.href);
     if (file === undefined) {
