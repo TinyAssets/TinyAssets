@@ -149,6 +149,12 @@ def test_a_change_keeps_every_open_owed_item_until_it_is_ticked(tmp_path: Path) 
     assert "`b.ts` `g`" in dropped.stderr
     assert decided({log: OWED.replace("- [ ] `b.ts`", "- [x] `b.ts`")}).stdout.strip() \
         == "allow"
+    # A tick may say what did it, after the item's text; an open item may not change.
+    noted = OWED.replace("- [ ] `b.ts`", "- [x] `b.ts`").replace(
+        "dark deploy).", "dark deploy). Done (#5730).")
+    assert decided({log: noted}).stdout.strip() == "allow"
+    reworded = decided({log: OWED.replace("dark deploy).", "dark deploy). Soon.")})
+    assert reworded.stdout.strip() == "deny" and "reworded" in reworded.stderr
     moved = OWED.split("## Owed\n\n")[1]
     assert decided({log: "# x as built\n", "docs/decisions/log/y.md": moved}).stdout.strip() \
         == "allow"

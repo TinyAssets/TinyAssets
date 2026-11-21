@@ -357,7 +357,8 @@ def untangle_check_problems(body: str, paths: list[str]) -> list[str]:
 #
 # What a PR leaves owed is a checkbox line (`- [ ] ...`) in its own decision file under
 # `docs/decisions/`, naming its fix as the body's owed items do. The PR that does it
-# ticks it (`- [x]`); an open one is never deleted or reworded. No shared list holds
+# ticks it (`- [x]`), and may add after its text what did it (`Done (#5680).`, as
+# `tasks.md`'s ticks do); an open one is never deleted or reworded. No shared list holds
 # them, so no shared line grows with each PR: on 2026-11-21 six passes each appended to
 # the same two `tasks.md` lists, and each merge made the next PR conflict and rerun CI.
 # `--owed` lists the open ones for the re-check loop; the Untangle check refuses a
@@ -405,8 +406,10 @@ def owed_problems(base: str, head: str, *, cwd: Path | None = None) -> list[str]
         before += [(path, text) for _, ticked, text in items(old) if not ticked]
         after += [(path, *item) for item in items(new)]
     kept = {text for *_, text in after}
-    return [f"{path}: an open owed item is gone without being ticked done: {text[:200]}"
-            for path, text in before if text not in kept] + [
+    done = [text for _, _, ticked, text in after if ticked]
+    return [f"{path}: an open owed item is gone without being ticked done (or was reworded): "
+            f"{text[:200]}" for path, text in before
+            if text not in kept and not any(tick.startswith(text) for tick in done)] + [
         f"{path}:{line}: an owed item names no PR (#123), branch (untangle/, fix/, process/, "
         f"land/) or live: wait: {text[:200]}"
         for path, line, ticked, text in after if not ticked and not _NAMES_FIX_RE.search(text)]

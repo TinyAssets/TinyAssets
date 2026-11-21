@@ -36,7 +36,8 @@ The candidates:
 
 - Anything a PR finds and leaves is fixed in place or owed in its decision file: a `- [ ]`
   line naming the PR, branch or `live:` wait that fixes it, wrapped lines indented under it.
-- The PR that does an owed item ticks it (`- [x]`) where it stands; an open item is never
+- The PR that does an owed item ticks it (`- [x]`) where it stands, and may add after its
+  text what did it (`Done (#5680).`, as `tasks.md`'s ticks do); an open item is never
   deleted or reworded. Ticking a line of another PR's decision file is the one edit to it
   besides a correction.
 - A PR ticks its own `tasks.md` line and adds none. The passes list's remaining area
@@ -55,8 +56,9 @@ ones included, since decision files are prose. From the change's `git diff --raw
 every changed `.md` under `docs/decisions/` at the merge base and at the head, as blobs (no PR
 code runs), and refuses the change when:
 
-- an item open at the merge base is at the head neither open nor ticked, in any changed
-  decision file (so an item moved between files in one change is kept); or
+- an item open at the merge base is at the head neither open nor ticked (a tick may add a
+  note after the text), in any changed decision file (so an item moved between files in one
+  change is kept); or
 - an open item at the head names no PR, branch or `live:` wait (the body check's own pattern,
   `_NAMES_FIX_RE`).
 
