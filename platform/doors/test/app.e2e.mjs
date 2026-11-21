@@ -52,7 +52,7 @@ const HAND_OFF = `
 export default {
   fetch(request, env) {
     const url = new URL(request.url);
-    const back = new URL(url.searchParams.get("redirect_uri") ?? `${ORIGIN}/`);
+    const back = new URL(url.searchParams.get("redirect_uri") ?? "${ORIGIN}/");
     const state = url.searchParams.get("state") ?? "";
     if (url.hostname === "upstream.test" && url.pathname === "/authorize") {
       const signIn = JSON.stringify({ subject: env.WHO,
