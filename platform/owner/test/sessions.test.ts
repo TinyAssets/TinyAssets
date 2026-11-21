@@ -1,11 +1,7 @@
 /**
- * The owner's protected sessions: the object checks the live session row itself.
- *
- * Ported from `tests/test_owner_policy.py`'s
- * `test_session_hash_proof_requires_a_live_router_row` and the session parts of
- * `test_broker_refuses_agent_injection_api_key_and_other_owner` (origin/main 1fd430857),
- * with `owner_sessions.py`'s `extend`, `revoke` and `revoke_owner`. The sign-in flow
- * itself (PKCE, the callback, the cookie's attributes) is the binder's (tasks 2).
+ * The owner's protected sessions: the object checks the live session row itself, and
+ * extends and revokes it. The sign-in flow itself (PKCE, the callback, the cookie's
+ * attributes) is the binder's.
  */
 import { createHash } from "node:crypto";
 

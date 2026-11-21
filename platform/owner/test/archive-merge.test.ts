@@ -1,8 +1,7 @@
 /**
- * Stragglers merged into the archive (slice STORE item 2, phase 1): mail acked after the mail
- * around it moved is merged into the segment its key falls in, a byte budget at a pass, even
- * at the worst merge, and no two segments ever overlap in key range. Each owner runs
- * production's ceilings (`archive-support.ts`).
+ * Stragglers merged into the archive: mail acked after the mail around it moved is merged into the
+ * segment its key falls in, a byte budget at a pass, even at the worst merge, and no two segments
+ * ever overlap in key range. Each owner runs production's ceilings (`archive-support.ts`).
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -19,7 +18,7 @@ import {
 import { DOT, MUSE, dm } from "./ledger-support";
 import { drainDue, failure } from "./support";
 
-describe("segments never overlap in key range (review H1)", () => {
+describe("segments never overlap in key range", () => {
   it("are refused by the schema when two would", { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
@@ -84,7 +83,7 @@ describe("segments never overlap in key range (review H1)", () => {
   });
 });
 
-describe("a merge's byte budget (reviews N1 and N3)", () => {
+describe("a merge's byte budget", () => {
   it("merges large late-acked mail a budget at a pass, never all at once, every message kept",
      { tags: ["large"] }, async () => {
     const r = await seeded(8);
@@ -138,7 +137,7 @@ describe("a merge's byte budget (reviews N1 and N3)", () => {
   });
 });
 
-describe("the worst merge (review N3)", () => {
+describe("the worst merge", () => {
   it("merges a straggler into pack's largest piece, every body control characters, intact",
      { tags: ["large"] }, async () => {
     const r = await seeded(8);

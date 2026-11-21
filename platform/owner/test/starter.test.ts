@@ -1,9 +1,9 @@
 /**
- * The starter package (`starter.ts`; the starter slice): every new owner seeded with the
- * default agent's files as the owner's own writes, one receipt a file and `agent.json` last;
- * a seed that fails part way leaves no agent and is tried again; a file the owner made before
- * its seed is kept; and updates by the conffile rule (an unedited file replaced, an edited one
- * given a `.ta-new` and one notice, a deleted one never restored, a widening a proposal).
+ * The starter package (`starter.ts`): every new owner seeded with the default agent's files as the
+ * owner's own writes, one receipt a file and `agent.json` last; a seed that fails part way leaves
+ * no agent and is tried again; a file the owner made before its seed is kept; and updates by the
+ * conffile rule (an unedited file replaced, an edited one given a `.ta-new` and one notice, a
+ * deleted one never restored, a widening a proposal).
  *
  * The seed is the object's own, of the package this code carries (`starter-support.ts`); an
  * update is a pass of a package of the test's own, at a version past the seed.

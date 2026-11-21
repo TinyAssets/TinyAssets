@@ -1,11 +1,7 @@
 /**
- * P0-3 outside-client grants (decision A1), admitted by the object that holds them.
- *
- * Ported from `tests/test_outside_grants.py` and the M3 tests of
- * `tests/test_outside_wakes.py` on `p0-3-outside-grants` (be88c9116), where they are not
- * about the Python router's identity stamp, the box's recheck of it, open streams or the
- * API-key mint (the binder's, tasks 2): here every outside call is admitted in the
- * object, against its grant, before any door acts.
+ * Outside-client grants, admitted by the object that holds them: every outside call is
+ * admitted in the object, against its grant, before any door acts. The API-key mint is the
+ * binder's.
  */
 import { describe, expect, it } from "vitest";
 
@@ -210,7 +206,7 @@ describe("an outside client's grant", () => {
       .toEqual([[null, "revoked", 2]]);
   });
 
-  it("never refuses a new client at the cap: the least recently seen free row goes (P4)",
+  it("never refuses a new client at the cap: the least recently seen free row goes",
      async () => {
     const r = await rig();
     const id = filler;
@@ -358,7 +354,7 @@ describe("an outside client's grant", () => {
   });
 });
 
-describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => {
+describe("a changed or revoked grant ends its agents' wakes", () => {
   it("suppresses the wake and erases the client's subscription in the change's own " +
      "transaction", async () => {
     const r = await rig();
@@ -408,7 +404,7 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
   });
 });
 
-describe("every door admits an outside client against its grant (review L1, L4)", () => {
+describe("every door admits an outside client against its grant", () => {
   const BOARD = Object.freeze({ collection: "board", row_id: "t" });
 
   /** Each collection door, as `binding` calls it, and what it answered. */
@@ -469,7 +465,7 @@ describe("every door admits an outside client against its grant (review L1, L4)"
     await r.register(CHATGPT);
     const propose = (request_id: string) => r.stub.policyPropose(r.bind(CHATGPT), {
       change: { type: "policy_proposal" }, request_id });
-    await grant(r, CHATGPT, "scoped", [{ ...READ, universe: "u" }]);  // P6
+    await grant(r, CHATGPT, "scoped", [{ ...READ, universe: "u" }]);
     expect((await failure(() => propose("card-x"))).message)
       .toBe("outside client capability not granted");
     await grant(r, CHATGPT, "scoped", [{ ...READ, capability: "propose_policy" }]);
@@ -521,7 +517,7 @@ describe("every door admits an outside client against its grant (review L1, L4)"
   });
 });
 
-describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's review M1)", () => {
+describe("only the owner's own act lifts a revoke", () => {
   const DAY = 86_400;
   const MONTH = 30 * DAY;
   /** Revoke `origin` at `at` around the doors, as an old revoke would stand. */
@@ -635,7 +631,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
       await set(filler(n), 0);
     }
     await revokedAt(r, CHATGPT, t - 31 * DAY);
-    // A revoked row never holds a live client's place (slice L).
+    // A revoked row never holds a live client's place.
     expect(await set(CLAUDE.client, 1)).toMatchObject({ client: CLAUDE.client, mode: "full" });
     expect((await clients(r)).find((c) => c.client === CHATGPT.client)!.mode).toBe("revoked");
     expect((await failure(() => r.stub.outsideAgents(
@@ -643,7 +639,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect(await fence(r)).toBe(0);
   });
 
-  it("forgets the oldest revoked row past the revoked bound, moving the fence (slice L)",
+  it("forgets the oldest revoked row past the revoked bound, moving the fence",
      async () => {
     const r = await rig();
     const t = clock();
@@ -665,7 +661,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect(await fence(r)).toBeGreaterThan(0);
   });
 
-  it("keeps the fence at the newest revoke forgotten, and never lowers it (review L1)",
+  it("keeps the fence at the newest revoke forgotten, and never lowers it",
      async () => {
     const r = await rig();
     const t = Math.floor(clock());
@@ -689,7 +685,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect((await clients(r)).map((c) => c.client)).toEqual([DOT.client]);
   });
 
-  it("forgets at most 100 distinct clients at once (review L3)", async () => {
+  it("forgets at most 100 distinct clients at once", async () => {
     const r = await rig();
     const many = Array.from({ length: 101 }, (_, i) => i.toString(16).padStart(64, "0"));
     const refusal = "forget names 1 to 100 distinct outside clients";
@@ -715,7 +711,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
   });
 });
 
-describe("a scoped grant's capabilities (slice 5's review N9)", () => {
+describe("a scoped grant's capabilities", () => {
   it("names only the capabilities a door checks", async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
@@ -731,7 +727,7 @@ describe("a scoped grant's capabilities (slice 5's review N9)", () => {
   });
 });
 
-describe("the grant row's own rule (slice 3's review N4)", () => {
+describe("the grant row's own rule", () => {
   it("refuses a row the owner never set that is anything but a fresh full grant", async () => {
     const r = await rig();
     for (const values of [
@@ -751,7 +747,7 @@ describe("the grant row's own rule (slice 3's review N4)", () => {
   });
 });
 
-describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)", () => {
+describe("a grant's revision apart from its authority", () => {
   it("moves the revision on every set and revoke, the generation only with the mode or " +
      "scopes", async () => {
     const r = await rig();
@@ -878,7 +874,7 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
   });
 });
 
-describe("a grant's tool profile (slice M)", () => {
+describe("a grant's tool profile", () => {
   it("names custom until the owner names another, and moves the generation",
      async () => {
     const r = await rig();
@@ -915,7 +911,7 @@ describe("a grant's tool profile (slice M)", () => {
   });
 });
 
-describe("a grant's tool profile (slice M)", () => {
+describe("a grant's tool profile", () => {
   it("names custom until the owner names another, and moves the generation",
      async () => {
     const r = await rig();

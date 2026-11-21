@@ -53,7 +53,7 @@ describe("the exact count", () => {
 });
 
 describe("a read's pages", () => {
-  it("answers the reviewer's 8 MiB control-character body in pages under the cap, " +
+  it("answers an 8 MiB control-character body in pages under the cap, " +
      "reassembled byte-exact by range", { tags: ["large"] }, async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
@@ -169,7 +169,7 @@ describe("a read's pages", () => {
     expect(fetched.metadata).toMatchObject({ truncated: true });
   });
 
-  it("counts a cut body's fields at their widest, so its last part never passes (L1)", () => {
+  it("counts a cut body's fields at their widest, so its last part never passes", () => {
     // A body of four-digit size whose rest fills the room exactly.
     const size = 5000;
     const window: Window = { text: "y".repeat(size), offset: 0, end: size, size };
@@ -181,7 +181,7 @@ describe("a read's pages", () => {
     }
   });
 
-  it("reads a message on only by its message_id, and a row only by its etag (L2, L3)",
+  it("reads a message on only by its message_id, and a row only by its etag",
      async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
@@ -204,7 +204,7 @@ describe("a read's pages", () => {
       .toMatch(/name its etag/);
   });
 
-  it("pages agents_list: a thousand agents in answers under the cap, none lost (M3)",
+  it("pages agents_list: a thousand agents in answers under the cap, none lost",
      async () => {
     const { stub, as, name } = await ownerObject();
     await stub.outsideAgents(as(name));

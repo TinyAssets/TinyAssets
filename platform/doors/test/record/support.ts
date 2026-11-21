@@ -1,5 +1,5 @@
 /**
- * What the doors' recorders share (`*.record.ts`, run by `npm run record`, `ci/record.ts`):
+ * What the doors' recorders share (`*.record.ts`, run by `ci/record.ts`):
  * an owner signed in to its app with its agent defined, and one answer's text with the ids a
  * run mints at random taken out, so base and head print the same lines for the same answer.
  */

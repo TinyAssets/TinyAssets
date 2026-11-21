@@ -1,20 +1,20 @@
 /**
  * A run's events (ADR-034 decision 10; `engines-replan.md` §2.2): the engine's own JSON
- * stream, read by its source record's matchers (`engine.events`, slice E), as data.
+ * stream, read by its source record's matchers (`engine.events`), as data.
  *
- * The in-VM runner (slice S) posts each event it reads as `{seq, at, event}`, `event` the
+ * The in-VM runner posts each event it reads as `{seq, at, event}`, `event` the
  * CLI's raw JSON. The VM is untrusted, so the object classifies each event itself, by the
  * run's record, and frames it for the owner's app sockets as `{v, run, seq, at, kind,
  * event}`. `kind` is the first of the record's matchers the event meets, in this order:
  * `error`, `result` (its `final_text`), `init` (its `session_id`), `tool_call`, `usage`;
- * else `event`. The record's matchers name no text deltas or tool results (slice E's
- * shape), so those arrive as `event` until a record matches them.
+ * else `event`. The record's matchers name no text deltas or tool results, so those arrive
+ * as `event` until a record matches them.
  *
  * What an event changes durably is read here too, once, by the same matchers: the
  * conversation's session id (`init`), the run's result text (`final_text`, the last match,
  * or every match joined where the matcher says `accumulate`), its first error, and whether
  * the engine stopped at a tool call it deferred (`deferred`: Claude Code's `defer`, the turn
- * ended `tool_deferred`), which a resume of its session answers (R5 P-resume).
+ * ended `tool_deferred`), which a resume of its session answers.
  */
 import { Refusal } from "./refusal.ts";
 
@@ -49,12 +49,12 @@ export const FRAME_VERSION = 1;
 
 /**
  * The runner's events post, bounded so the relay's memory guard counts every post the
- * object may hold at once (slice R's review M-4 and round 2; `memory-bound.test.ts`): each
+ * object may hold at once (`memory-bound.test.ts`): each
  * run's runner posts on its own, one post at a time, so as many posts as the tier's top
  * runs may be in flight. Each post's body at most `EVENTS_BODY_MAX` bytes, at most
  * `EVENT_FRAMES_MAX` frames, each frame's JSON at most `FRAME_UNITS_MAX` UTF-16 code units.
  * Technical ceilings of the isolate's memory; a CLI event longer than a frame may be is the
- * runner's to cut, marked, before it posts it (slice S), the engine's own transcript keeping
+ * runner's to cut, marked, before it posts it, the engine's own transcript keeping
  * the whole, and a busy CLI's events go in more posts, not bigger ones.
  */
 export const EVENTS_BODY_MAX = 65_536;
@@ -62,7 +62,7 @@ export const EVENT_FRAMES_MAX = 64;
 export const FRAME_UNITS_MAX = 32_768;
 
 /**
- * The runners' events posts the object holds at once, whatever the tier (review round 3):
+ * The runners' events posts the object holds at once, whatever the tier:
  * one more is answered `events_busy` (503, `Retry-After`) and its runner posts it again. A
  * technical ceiling of the isolate's memory, sized so the memory guard fits its budget; no
  * run is refused, a post only waits.

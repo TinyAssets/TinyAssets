@@ -1,5 +1,5 @@
 /**
- * Sandbox time, metered per owner (slice P, `sandbox-time.ts`): the sandbox Worker's log of
+ * Sandbox time, metered per owner (`sandbox-time.ts`): the sandbox Worker's log of
  * starts, pauses, resumes and kills summed per run and per UTC day, read by the object's own
  * `sandbox` lane. It limits nothing.
  */
@@ -185,8 +185,8 @@ describe("E2B's billed executions", () => {
   const billed = async (r: Awaited<ReturnType<typeof rig>>) =>
     (await r.stub.sandboxDays(r.bind(null), {})).days;
 
-  it("counts a paused sandbox's execution once, though its kill comes days later " +
-     "(review N4)", async () => {
+  it("counts a paused sandbox's execution once, though its kill comes days later",
+     async () => {
     const r = await rig();
     expect(await r.stub.sandboxBilled(event({}) as never)).toEqual({ counted: true });
     // A day and an hour pass: the window's ids are gone, the live sandbox's last is kept.
@@ -202,7 +202,7 @@ describe("E2B's billed executions", () => {
   });
 
   it("counts an event only inside its window by its own time: never older, nor ahead of the " +
-     "clock (review L2)", async () => {
+     "clock", async () => {
     const r = await rig();
     for (const at of [Date.now() - BILLED_WINDOW_S * S - 60_000, Date.now() + 3600 * S]) {
       expect(await r.stub.sandboxBilled(event({ execution_id: `exec-${at}`, at }) as never))
@@ -213,7 +213,7 @@ describe("E2B's billed executions", () => {
     expect((await billed(r)).reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
   });
 
-  it("counts an execution past BILLED_KEPT anyway, and shows it unverified (review N5)",
+  it("counts an execution past BILLED_KEPT anyway, and shows it unverified",
      async () => {
     const r = await rig();
     await sqlIn(r.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +

@@ -966,7 +966,7 @@ The `tinyassets-codemode` Worker SHALL bind the namespace of its own `CodemodeSa
 - **THEN** the owner config guard refuses the owner's `CODEMODE_VM` binding
 
 ### Requirement: Code mode's VM runs in the codemode Worker
-Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `CODEMODE_VM` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner's SHA-256 digest and a random id, so no principal's length reaches the bound; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no codemode Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) once the owner's policy turns `codemode.on` off (on by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile, the switch, and the control record's gates the door read (the kill switch for an outside client, the maintenance gate for a run or the owner; one read serving at most a second of calls) as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the codemode Worker's interrupt budget of compute; its answer counts its calls by outcome and lists the calls of tools that change something in order (`landed`, a run of one tool and outcome as one entry), and an answer past `CODE_ANSWER_MAX` (31 MiB as V8 serializes it: a string two bytes a unit when any unit is past Latin-1; within Workers RPC's 32 MiB) SHALL be refused `answer_too_large`, its value and output dropped, its calls kept.
+Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `CODEMODE_VM` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner's SHA-256 digest and a random id, so no principal's length reaches the bound; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no codemode Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) once the owner's policy turns `codemode.on` off (on by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile, the switch, and the control record's gates the door read (the kill switch for an outside client, the maintenance gate for a run or the owner; one read serving at most a second of calls) as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the codemode Worker's interrupt budget of compute; its answer counts its calls by outcome and lists the calls of tools that change something in order (`landed`, a run of one tool and outcome as one entry), and its answer SHALL fit one answer, as every read does: output past it cut at a character and said so (`output_cut`), and a value that alone passes it refused `answer_too_large`, its value and output dropped, its calls and what landed kept.
 
 #### Scenario: Code mode off
 - **WHEN** an outside client whose profile holds `code` calls `codeRun` after the owner's policy turns code mode off
@@ -976,9 +976,13 @@ Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox`
 - **WHEN** the control record turns outside access off while an outside client's script runs
 - **THEN** the script's next call is refused "outside access is switched off", and what landed before it is listed
 
-#### Scenario: An answer past the RPC's ceiling
-- **WHEN** a script's value and output come to more than `CODE_ANSWER_MAX` as V8 serializes them, mostly ASCII strings each with one wide character among them
+#### Scenario: An answer past one answer
+- **WHEN** a script's value alone is past one answer
 - **THEN** it is answered `answer_too_large`, with its calls and what landed
+
+#### Scenario: Output past one answer
+- **WHEN** a script's output is past one answer and its value is not
+- **THEN** it is answered its value whole and its output cut at a character, with `output_cut` saying how many items were kept
 
 #### Scenario: A tool outside the profile
 - **WHEN** a script reads `tools.file_usage` and the caller's profile does not hold it

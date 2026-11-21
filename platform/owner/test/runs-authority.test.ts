@@ -1,9 +1,9 @@
 /**
- * Runs' authority and liveness (slice R's review, round 1), in workerd: one sandbox an
- * authority, each run's own secret and the runner's, a client's revoke settling its runs at
- * once, a client's schedules, the runs' rows' bound under churn, a cancel's revoke, each
- * run's own heartbeat, the tier numbers' hand-off, and the cases the reviewer's mutants
- * found untested. The rest of the runs' tests are `runs.test.ts`.
+ * Runs' authority and liveness, in workerd: one sandbox an authority, each run's own secret
+ * and the runner's, a client's revoke settling its runs at once, a client's schedules, the
+ * runs' rows' bound under churn, a cancel's revoke, each run's own heartbeat, the tier
+ * numbers' hand-off, and cases no other test holds. The rest of the runs' tests are
+ * `runs.test.ts`.
  */
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,7 +70,7 @@ async function laneRuns(r: Gated): Promise<void> {
 const notices = async (r: Gated) =>
   (await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail);
 
-describe("one sandbox an authority (review H-1)", () => {
+describe("one sandbox an authority", () => {
   it("never puts a client's run in the owner's sandbox, nor lets it act as the owner's run",
      async () => {
     const r = await gated();
@@ -290,7 +290,7 @@ describe("one sandbox an authority (review H-1)", () => {
   });
 });
 
-describe("the runner's events post (review M-4)", () => {
+describe("the runner's events post", () => {
   it("is held to its frame bounds at the object too", async () => {
     const r = await gated();
     const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
@@ -306,7 +306,7 @@ describe("the runner's events post (review M-4)", () => {
   });
 });
 
-describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () => {
+describe("a sandbox's own sign-ins (ADR-031 decision 2)", () => {
   it("never run a client's run on the owner's sign-in: auto takes the owner's key, and an " +
      "agent naming the sign-in is started only where its own sandbox signed in", async () => {
     const r = await gated();
@@ -384,7 +384,7 @@ describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () 
   });
 });
 
-describe("a client's sandbox's files (review round 2, M2)", () => {
+describe("a client's sandbox's files", () => {
   it("always hold its runs' agents' own definitions, and the rest only as the client reads",
      async () => {
     const r = await gated();
@@ -425,7 +425,7 @@ describe("a client's sandbox's files (review round 2, M2)", () => {
   });
 });
 
-describe("a client's sandbox's readable set (review round 3, M1)", () => {
+describe("a client's sandbox's readable set", () => {
   it("sends its sync agent back to the feed's start when it grows", async () => {
     const r = await gated();
     const file = await keyed(r);
@@ -470,7 +470,7 @@ describe("a client's sandbox's readable set (review round 3, M1)", () => {
   });
 });
 
-describe("the runners' events posts (review round 3, M2)", () => {
+describe("the runners' events posts", () => {
   it("are held at most EVENTS_IN_FLIGHT at once; one more is refused to post again",
      () => {
     const gate = new PostGate();
@@ -539,7 +539,7 @@ describe("the runners' events posts (review round 3, M2)", () => {
   });
 });
 
-describe("a client's revoke (review H-2)", () => {
+describe("a client's revoke", () => {
   it("settles its runs at once, frees the tier, drops its schedules and disarms the lane",
      async () => {
     const r = await gated();
@@ -571,7 +571,7 @@ describe("a client's revoke (review H-2)", () => {
   });
 });
 
-describe("a client's schedule (review H-3)", () => {
+describe("a client's schedule", () => {
   it("starts its run at its time and on its cron, as that client", async () => {
     const r = await gated();
     const file = await keyed(r);
@@ -604,7 +604,7 @@ describe("a client's schedule (review H-3)", () => {
   });
 });
 
-describe("the runs' rows (review M-1)", () => {
+describe("the runs' rows", () => {
   it("stay within RUNS_KEPT and the live ones however inputs are queued and cancelled",
      { tags: ["large"] }, async () => {
     const r = await gated();
@@ -628,7 +628,7 @@ describe("the runs' rows (review M-1)", () => {
   });
 });
 
-describe("a long run's receipt (review round 2, M1)", () => {
+describe("a long run's receipt", () => {
   it("outlives its settle however many other runs settled meanwhile", { tags: ["large"] }, async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
@@ -659,7 +659,7 @@ describe("a long run's receipt (review round 2, M1)", () => {
   });
 });
 
-describe("a run's cancel and its heartbeat (review M-2, M-3)", () => {
+describe("a run's cancel and its heartbeat", () => {
   it("revokes its grant at once: its calls fail, and its runner's end still settles it",
      async () => {
     const r = await gated();
@@ -709,7 +709,7 @@ describe("a run's cancel and its heartbeat (review M-2, M-3)", () => {
   });
 });
 
-describe("the tier numbers (review L-1)", () => {
+describe("the tier numbers", () => {
   it("are refused once the record drops them, the kept ones forgotten", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
@@ -784,7 +784,7 @@ describe("the tier numbers (review L-1)", () => {
   });
 });
 
-describe("a run door's wait (untangle A2, review F5)", () => {
+describe("a run door's wait", () => {
   it("is woken by its run's settle, never left to its wait's end", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
@@ -803,7 +803,7 @@ describe("a run door's wait (untangle A2, review F5)", () => {
   });
 });
 
-describe("the runs lane (untangle A2, review F5)", () => {
+describe("the runs lane", () => {
   it("has no work for mail while the owner is suspended, and has it again once lifted",
      async () => {
     const r = await gated();
@@ -832,7 +832,7 @@ describe("the runs lane (untangle A2, review F5)", () => {
   });
 });
 
-describe("the reviewer's untested cases (review M-6)", () => {
+describe("cases no other test holds", () => {
   it("refuses a run past the owner's own spend caps, its source's apart from another's",
      async () => {
     const r = await gated();

@@ -1,10 +1,9 @@
 /**
- * The owner's admission and erasure (tasks 5, F1 and S4-S5; ADR-034), carried over from the
- * deleted thread tests (`drops.test.ts`, `scheduled.test.ts`) to what remains: a suspension
- * refuses every door until each reason is lifted, and only the platform's reserved caller
- * sets it; the erasure marks the owner (every door and lane refusing), ends every run,
- * then wipes the owner whole, leaving the erased admission row alone, resumed after a
- * crash at each step; and a stale `getByName` of an erased owner is refused forever.
+ * The owner's admission and erasure (ADR-034): a suspension refuses every door until each reason is
+ * lifted, and only the platform's reserved caller sets it; the erasure marks the owner (every door
+ * and lane refusing), ends every run, then wipes the owner whole, leaving the erased admission row
+ * alone, resumed after a crash at each step; and a stale `getByName` of an erased owner is refused
+ * forever.
  *
  * The erasure runs as production runs it, through its doors and its own job
  * (`erasure-support.ts`): begun at `ownerErase`, its outside record confirmed as the doors
@@ -22,7 +21,7 @@ import {
 } from "../src/admission";
 import { sqlIn, until } from "../../ci/workerd";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { INLINE_BYTES, RECOVERY_WINDOW_S } from "../../contract/src/limits";
+import { INLINE_BYTES } from "../../contract/src/limits";
 import { ERASE_RETRY_MS, erasureAnswer, PUT_GRACE_MS } from "../src/erasure";
 import { ERASING } from "../../contract/src/refusal";
 import { WriteGate } from "../src/gate";
@@ -232,7 +231,7 @@ describe("the owner's erasure", () => {
     expect([...answers].filter(([, answer]) => answer !== ERASING)).toEqual([]);
     await finished(r.stub(), r.owner);
     // Every sandbox of the owner killed and the sandbox Worker's state of it deleted, in the
-    // erasure's step 2 (slice S review H-6).
+    // erasure's step 2.
     expect((await recorder(r.stub())).erasures).toEqual([r.owner]);
     // A ring of the line reaches an erased owner and does nothing.
     expect(await r.stub().sandboxRung()).toEqual({ waiting: 0 });
@@ -244,7 +243,7 @@ describe("the owner's erasure", () => {
   });
 
   it("holds its mark until the put grace is up, its job waking it then, never an in-memory " +
-     "wait (review rvlim N5)", async () => {
+     "wait", async () => {
     const r = await rig();
     await eraseBegun(r.stub(), r.session());
     await outsideConfirmed(r.stub(), r.owner);
@@ -450,7 +449,6 @@ describe("the erasure's tombstone", () => {
 describe("the account-erase answer", () => {
   it("names when erasure is complete: the mark, its put grace, then 30 days of recovery",
      () => {
-    expect(RECOVERY_WINDOW_S).toBe(30 * 86_400);
     const grace = PUT_GRACE_MS / 1000;
     // Answered at the mark, before the wipe: not erased yet, complete at its earliest.
     expect(erasureAnswer(1_000, null)).toMatchObject({

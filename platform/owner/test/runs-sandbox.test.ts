@@ -1,5 +1,5 @@
 /**
- * What slice S's sandbox Worker answers changes in the owner's object, in workerd with the
+ * What the sandbox Worker answers changes in the owner's object, in workerd with the
  * fake sandbox Worker behind `SANDBOX` (`ci/fake-sandbox.ts`):
  *
  * - a start the sandbox has no room for (`sandbox_waiting`: E2B runs as many sandboxes as

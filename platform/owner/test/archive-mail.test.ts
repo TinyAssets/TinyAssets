@@ -1,15 +1,13 @@
 /**
- * Slice STORE item 2, phase 1 (`history_research.md` §4): acked mail moved out of the owner's
- * object to archive segments, files-plane content in the export's own line grammar with a
- * trailer, one fence row a segment. This file holds the segment's record format: its
- * encoding, its ids, a message's counted bytes, the tail's seal at production's limits and
- * the tier bound the fence rows set. The archive at production's ceilings (`LEDGER_LIMITS`,
- * `archive-support.ts` `seeded`) is tested by subject beside it: the lane's moves
+ * The archive: acked mail moved out of the owner's object to archive segments, files-plane content
+ * in the export's own line grammar with a trailer, one fence row a segment. This file holds the
+ * segment's record format: its encoding, its ids, a message's counted bytes, the tail's seal at
+ * production's limits and the tier bound the fence rows set. The archive at production's ceilings
+ * (`LEDGER_LIMITS`, `archive-support.ts` `seeded`) is tested by subject beside it: the lane's moves
  * (`archive-move.test.ts`), archived mail read back by the chain read and the export
  * (`archive-read.test.ts`), stragglers merged into segments (`archive-merge.test.ts`), and a
- * deleted agent's archived mail dropped and rewritten out (`archive-erasure.test.ts`). A
- * segment seals at 8 MiB of records, which one body at the cap reaches alone and two of
- * 4 MiB together.
+ * deleted agent's archived mail dropped and rewritten out (`archive-erasure.test.ts`). A segment
+ * seals at 8 MiB of records, which one body at the cap reaches alone and two of 4 MiB together.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -51,7 +49,7 @@ describe("segments", () => {
       .toThrow(/key order/);
   });
 
-  it("are streamed a chunk at a time to exactly the reference's bytes (review N5)", async () => {
+  it("are streamed a chunk at a time to exactly the reference's bytes", async () => {
     // A mix the moves make: small held records; a body at the cap of control characters
     // read from its stored content (its chunk boundaries inside the record); records kept
     // from an old segment as ranges of its content, one crossing a chunk; enough small
@@ -115,7 +113,7 @@ describe("segments", () => {
       .rejects.toThrow(/not the length its plan placed/);
   });
 
-  it("are planned in a table that refuses a move past MOVE_RECORDS, loudly (review N7)", () => {
+  it("are planned in a table that refuses a move past MOVE_RECORDS, loudly", () => {
     const table = new MoveTable();
     for (let n = 0; n < MOVE_RECORDS; n++) {
       table.push(n + 1, null, "dm:x", n, MIN_RECORD_BYTES, MoveTable.INLINE, -1, 0);
@@ -125,8 +123,8 @@ describe("segments", () => {
                             MoveTable.INLINE, -1, 0)).toThrow(/past MOVE_RECORDS/);
   });
 
-  it("hold a body raw, never escaped: a record is its body's bytes and its lines' (N3)", () => {
-    // The reviewer's body: 8 MiB of control characters, which JSON escapes six times over.
+  it("hold a body raw, never escaped: a record is its body's bytes and its lines'", () => {
+    // A body of 8 MiB of control characters, which JSON escapes six times over.
     const body = "\u0001".repeat(8 * 1024 * 1024);
     const raw = new TextEncoder().encode(body);
     const id = `msg_${"0".repeat(32)}`;
@@ -228,7 +226,7 @@ describe("a message's counted bytes", () => {
   });
 });
 
-describe("the tail's seal at the production limits (review N4)", () => {
+describe("the tail's seal at the production limits", () => {
   it("counts records' own bytes, never their trailer shares: a sealed segment holds the least",
      { tags: ["large"] }, async () => {
     const r = await rig();
@@ -244,7 +242,7 @@ describe("the tail's seal at the production limits (review N4)", () => {
         ledger.read(MUSE, 1);
         ledger.ack(MUSE, to);
       };
-      // The reviewer's case: 11,999 small messages acked, then the real pick and batch.
+      // 11,999 small messages acked, then the real pick and batch.
       const { pick, table } = await gate.write(() => {
         post(0, 11_999);
         const picked = ledger.archivePick()!;

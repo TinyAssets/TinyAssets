@@ -1,12 +1,9 @@
 /**
- * S3b wakes and the W3 limits: one open wake per ringing recipient, sent once.
- *
- * Ported from the ledger parts of `tests/test_outside_wakes.py` (origin/main 8b415f569).
- * The Python's broker tick becomes one alarm pass (`runWakes`) on the owner's own object
- * with a scripted doorbell (`FakeSender`); its op journal becomes the wake row's
- * may-have-sent mark. The cross-owner fairness test has no counterpart: each object is
- * its own owner. The doorbell itself, the kill switch and admission are
- * `doorbell.test.ts`'s (slice W).
+ * Wakes and their limits: one open wake per ringing recipient, sent once, by one alarm
+ * pass (`runWakes`) on the owner's own object with a scripted doorbell (`FakeSender`); the
+ * wake row's may-have-sent mark keeps a send from repeating. Each object is its own owner,
+ * so no fairness across owners is tested. The doorbell itself, the kill switch and
+ * admission are `doorbell.test.ts`'s.
  */
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -86,7 +83,7 @@ describe("one open wake per ringing recipient", () => {
     await r.post(null, dm(muse), { cmid: "c1" });  // a resend is the same message
     const [wake] = await wakes(r);
     expect([wake!["state"], wake!["agent_id"], wake!["attempts"]]).toEqual(["pending", muse, 0]);
-    // W3: a new wake waits out the agent's batch window, so the burst rings once.
+    // A new wake waits out the agent's batch window, so the burst rings once.
     expect(wake!["due"] as number - (wake!["created_at"] as number)).toBe(60);
     expect(await r.tick()).toBe(0);
     expect(r.sender.sent).toEqual([]);
@@ -463,7 +460,7 @@ describe("a claim settles only by its holder", () => {
   });
 });
 
-describe("W3 limits", () => {
+describe("the wake limits", () => {
   it("holds the owner's cap with one counter: one ring each hour over the cap", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event",
@@ -559,7 +556,7 @@ describe("the wakes lane of the object's one schedule", () => {
     expect(due).toBe(t + WAKE_LEASE_S);
   });
 
-  it("takes no wake past its pass's budget (review N2)", async () => {
+  it("takes no wake past its pass's budget", async () => {
     const r = await rig();
     const t = clock();
     const open = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
@@ -574,8 +571,8 @@ describe("the wakes lane of the object's one schedule", () => {
     expect(open).toBe(1);
   });
 
-  it("bounds each send itself: a late one is marked, left to its lease, never sent again " +
-     "(slice 5 N2)", async () => {
+  it("bounds each send itself: a late one is marked, left to its lease, never sent again",
+     async () => {
     const r = await rig();
     const t = clock();
     const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
@@ -605,7 +602,7 @@ describe("the wakes lane of the object's one schedule", () => {
     expect([out.after, out.sent]).toEqual([{ state: "unknown", marked: 1 }, 1]);
   });
 
-  it("backs a row whose step fails off in its own row, never in a loop (review N8)",
+  it("backs a row whose step fails off in its own row, never in a loop",
      async () => {
     const r = await rig();
     const t = clock();
@@ -745,8 +742,7 @@ describe("the wakes lane of the object's one schedule", () => {
 });
 
 /**
- * Slice 2's review item L1: five rules the code kept and no test held. Each test fails
- * if its rule is dropped.
+ * Five rules of the registry's, each failing its test if it is dropped.
  */
 describe("the registry's quieter rules", () => {
   it("refuses a subscribe for its own agent once that agent is disabled", async () => {

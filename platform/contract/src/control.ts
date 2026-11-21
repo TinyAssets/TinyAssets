@@ -1,17 +1,17 @@
 /**
- * The platform's control record (research §7, checklist 11): one record, `c:control`, in a
- * KV namespace of its own (`CONTROL`), which the founder edits with no deploy. The doors read
- * it on every outside and owner call, and hand its tier numbers and switched-on sign-ins in
- * the binding (`doors/src/binder.ts`, `withAccount`); the owner's object at a code-mode script's
- * tool calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start and once per look
- * (`sandbox/src/control.ts`); and a first deploy writes it closed (`deploy/deploy.ts`). Each
- * reads it here, by this module's key, parse and gates, and nowhere else.
+ * The platform's control record: one record, `c:control`, in a KV namespace of its own
+ * (`CONTROL`), which the founder edits with no deploy. The doors read it on every outside and
+ * owner call, and hand its tier numbers and switched-on sign-ins in the binding
+ * (`doors/src/binder.ts`, `withAccount`); the owner's object at a code-mode script's tool
+ * calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start
+ * and once per look (`sandbox/src/control.ts`); and a first deploy writes it closed
+ * (`deploy/deploy.ts`). Each reads it here, by this module's key, parse and gates, and
+ * nowhere else.
  *
  * It holds:
- * - **the gates:** `outside`, the outside kill switch (the Python's `TINYASSETS_OUTSIDE_DENY`
- *   and durable switch); `ordinary`, the maintenance gate (all owners, the `canary` owners
- *   only, or none); `inbound`, the hooks gate (`/hooks/inbound` serves nothing unless it is
- *   on);
+ * - **the gates:** `outside`, the outside kill switch; `ordinary`, the maintenance gate (all
+ *   owners, the `canary` owners only, or none); `inbound`, the hooks gate (`/hooks/inbound`
+ *   serves nothing unless it is on);
  * - **the tier numbers** (`tiers`, ADR-034 decision 8);
  * - **each source's vendor sign-in switch** (`signins`);
  * - **the sandbox's platform numbers** and **its scratch retention**.
@@ -94,7 +94,7 @@ export interface Control {
   /** The tier numbers; null when the record holds none, and every run is then refused. */
   readonly tiers: Tiers | null;
   /**
-   * The sandbox's numbers (slice S; the founder's rule of 2026-11-03), which the sandbox
+   * The sandbox's numbers (the founder's rule of 2026-11-03), which the sandbox
    * Worker reads at each start: null when the record holds none, and it then starts nothing.
    */
   readonly sandbox: SandboxCeilings | null;
@@ -106,7 +106,7 @@ export interface Control {
    */
   readonly scratch_retention_days: number | null;
   /**
-   * Each source's vendor sign-in, on or off (slice SIGNIN), by source id: a source the record
+   * Each source's vendor sign-in, on or off, by source id: a source the record
    * does not name takes its record's verdict on the vendor's terms for hosted use
    * (`sources/src/signin.ts`, `signinsOn`). Null when the record names none.
    */
@@ -239,9 +239,8 @@ export function outsideOpen(read: ControlRead, owner: string): boolean {
 /**
  * Whether the record admits the owner's own call (`/app/api/*`, the owner's sign-in, a run's
  * or the owner's code-mode call): held by the maintenance gate alone. With no record at all it
- * is open, so a fresh deployment's owner can reach their account (research checklist 11); a
- * record that is malformed or unreadable closes it, as the Python's `router_traffic.admits`
- * did, since a gate that cannot be read is never taken as open.
+ * is open, so a fresh deployment's owner can reach their account; a record that is malformed
+ * or unreadable closes it, since a gate that cannot be read is never taken as open.
  */
 export function ownerOpen(read: ControlRead, owner: string): boolean {
   return read.kind === "missing" || (read.kind === "read" && ordinaryAdmits(read.control, owner));

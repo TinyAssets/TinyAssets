@@ -139,11 +139,12 @@ through unchanged and makes no call refuse. Both are kept, each with its reason:
 
 - `specs/owner-object/spec.md`'s code mode requirement names `CODE_ANSWER_MAX` (31 MiB as V8
   serializes it), which no code defines: `codemode.ts` fits an answer to `PAGE_BYTES` and
-  refuses one past it (`CODE_ANSWER_TOO_LARGE`). Part 2, with the spec's other owner names.
+  refuses one past it (`CODE_ANSWER_TOO_LARGE`). Part 2, with the spec's other owner names
+  (done, §6.3).
 - The owner's swallowed errors and retries, each to be re-read and decided as the other areas'
-  were (`bodies.ts`'s `PLACE_TRIES` wait on `chunk_deleting` among them). Part 2.
+  were (`bodies.ts`'s `PLACE_TRIES` wait on `chunk_deleting` among them). Part 2 (done, §6.4).
 
-## 4. Owed: `untangle/pass-owner-2`
+## 4. Owed: `untangle/pass-owner-2` (built, §6; what R5's hooks hold back is part 3's, §6.5)
 
 - The comments pass on `test/`, `guards/` and `memory/` (about 350 provenance tags, the test
   titles that are a tag, `L5:` or `A6:`, and the Python pointers of
@@ -161,3 +162,206 @@ through unchanged and makes no call refuse. Both are kept, each with its reason:
   base `70a45fc49` and head.
 - The recorders: `rpc` and `rv` (the owner's) and `wire` and `tools` are the same.
 - No mutation: the PR changes no code and no test.
+
+## 6. Part 2 as built (`untangle/pass-owner-2`, 2026-11-21)
+
+The comments of `test/` and of the two guards whose checks it changes (`owner-bound`,
+`write-gate`), the tests pass's changes, the spec's name and the swallowed errors and retries,
+on `origin/main` `88e74e1cd`. Behaviour is unchanged: no line of product code changed (§6.6).
+The comments of the other guards and of `memory/` were done here too, but with them the diff
+passed 1,500 changed lines, so they move to part 3 (§6.5).
+
+### 6.1 Comments
+
+**Removed or rewritten**, across 64 files:
+- **Provenance tags,** about 270: the slice names (`slice P`, `M`, `L`, `R`, `S`, `W`, `ID`,
+  `SIGNIN`, `BRAIN`, `STORE item 2, phase 1`, `slice 3`, `slice 5`, `slice D`), `lane R`,
+  `untangle A2`, `B4`, `F1`, `H1`, `R5 P-decide`, `P-resume`, the old plan's ids (`tasks 2` to
+  `tasks 7`, `S30`, `S34`, `S3b`, `W3`, `N10`, `P0-3`, `G2`, `G4`, `E1`, `E2`, `D2`, `B23`,
+  `B25`, `P4`, `P6`, `P11`, `H0`, `decisions A1`, `A7`), `pi audit F8`, and the review ids
+  (`review H1` to `N10`, `R2-L3`, `R4-1` to `R4-L2`, `L5-1`, `L5-2`, `L6-2`, `M-1` to `M-6`,
+  `rvlim`, `rvburst`, `rvbackup 1`, `rvsi`, `rvmem4`, `rvsh2_pack`, `rvsh7_starve`, `round 2`
+  to `round 11`, `Lows A and B`). The sentence each hung on stays where it says why.
+- **Test titles that were a tag:** the `A1:` to `A6:`, `L5:`, `R1:` and `F3-seed-wait:`
+  prefixes, and the describes named for a review, each renamed for what it holds: `review
+  round 3` (a retired path and a seed that cannot land), `starter updates, review round 2`
+  (starter proposals), `the reviewer's untested cases` (cases no other test holds), `W3 limits`
+  (the wake limits). A test's name is no record: `ci/budgets.json`'s slowest-test names are a
+  past run's measurement and stay as measured.
+- **The old stack:** the "Ported from `tests/test_*.py`" headers of `ledger.test.ts`,
+  `collections.test.ts`, `sessions.test.ts`, `wakes.test.ts` and `grants.test.ts`,
+  `usage.test.ts`'s `tinyassets/request_budget.py` and `broker/policy.py` (its transition
+  rules stay, as the object's), `ledger-bounds.test.ts`'s "the Python's owed L5", and "As in
+  the Python test" and "as the Python door refused None". What each said that holds of the
+  object stays, as a fact of the object (the object is the account, so no test erases one).
+- **Working files never in the repo:** `history_research.md` and `operator_research.md`.
+- **Stale:** `owner-bound.test.ts`'s header kept a changelog of which slice added which table
+  (S, W, ID, M, H1); the guard computes every term, and git holds the history.
+  `codemode.test.ts`'s "is slice M's" (the `code` door is `code-door.test.ts`'s) and "owed to
+  H2's live probe" (no such probe is owed; workerd shows neither CPU limits nor isolation).
+  `erasure.test.ts`'s and `cron.test.ts`'s "carried over from the deleted ... tests".
+- **Run-on and short lines** a removed tag left: about 35 paragraphs reflowed to 100 columns.
+
+**Kept:** the ADR, spec, d3 and plan pointers (`d3 §N6`, `plan §6`), measured figures with the
+run they came from, `network.test.ts`'s
+"the old stack's `ask` mode", which names the policy shape the validator refuses, and
+`rv.record.ts`'s "the reviewer's RPC recorder", the tool's name. `test/import.test.ts` goes at
+the cutover, as `src/import.ts` does, and is skipped.
+
+### 6.2 Tests
+
+**The constant pins** (`pass-gateway.md` `G-T3`'s rule: a pin that restates its source is
+retired; a check of what the figure is for stays):
+
+| Pin | Decision |
+|---|---|
+| `network` `DNS_SERVERS`, `KEY_MIN_BYTES` | **Retired.** The open plan's expected document names `1.1.1.1`; the key test mints with 32 bytes and refuses 1, 16 and 31. |
+| `network` `ALL_TRAFFIC` | **Rewritten:** the open plan expects `denyOut: ["0.0.0.0/0"]`, what "denies all else" means, so the document is held to it, not the constant. |
+| `erasure` `RECOVERY_WINDOW_S` | **Retired.** The answer's `complete_at` is checked at 30 days, as a literal. |
+| `bodies` `PLACE_TTL_S`, `LIMITS.maxRowBytes`; `owner` `maxRowBytes` | **Retired.** The sweep test runs past the TTL; the row of `maxRowBytes` is placed in two chunks and one byte more is refused. |
+| `files-quota` and `owner-bound` `INDEX_BYTES`, `owner-bound` and `files-share` `WORST_FILL` | **Retired.** `owner-bound` checks the manifest term is `INDEX_BYTES` times `WORST_FILL`, and `files-share`'s large test measures the fill against `WORST_FILL`. `files-share`'s `PAGE_ROOM` stays: it derives the source's literal 3,066 from the page's usable bytes. |
+| `brain` `APPEND_TRIES`, `collections` `maxRowsCharge`, `codemode` `CODEMODE_TIMEOUT_MS` and `CODEMODE_DEFAULTS`, `notices` `NOTICES_KEPT`, `doorbell` `SUBSCRIPTIONS_PER_AGENT`, `file-readers` `SEARCH_SCAN`, `changelog` `LOG_WIDE` | **Retired.** Each restated its source; the test beside it shows the figure at work (`LOG_WIDE` against the schema's frozen trigger text). No test reached `APPEND_TRIES`: `brain`'s "loses no append when two land at once" appended to a file under `INLINE_BYTES`, one unit each, so the review made it a file past one unit, as many appends as the isolate's pool runs and queues; with `APPEND_TRIES` at 1 it fails `file_busy`. |
+| `schedule` `LANE_HUNG_S` | **Rewritten:** the job's `hung_timeout_seconds` is read against `LANE_HUNG_S`, the lane's own, not 60. |
+| `usage` `MODEL_DEFAULTS` | **Rewritten:** the default settings are checked as the literal they are (every cap `null`, no sources), the title's "every cap off". |
+| `owner-bound` `EGRESS_PATH_MAX` | **Rewritten:** the schema's `CHECK` must hold `EGRESS_PATH_MAX` itself, so the constant and the frozen SQL are tied, not each pinned to 2048. |
+| `admit` `MAX_KEYS` equal to `GRANT_LIMITS.maxOwnerClients` | **Kept:** two figures that must move together, the link `limits.ts` names ("which a test holds equal"). |
+| `files-share` `SHARE_BYTES`, `owner-bound` `IMAGE_MAX`, `limits-audit`'s five | **Kept:** each is derived from what it bounds (a record's layout, the widest row, the move's pieces), not restated. |
+| `file-readers` `SEARCH_ANSWER_BYTES` | **Kept:** it holds the private 5,462 of `SEARCH_ENVELOPE_BYTES` to `MAX_PATH_BYTES`' base64, as `file-search.ts` says. |
+| `agent-doors` `OWNER_TREES`, `config` `OWNER_CONTROL` | **Kept,** security statements: the trees only the owner's full grant writes, and the reads of `CONTROL`. A test over the constant could not see a tree dropped. |
+| `memory-bound` `MEMORY` | **Kept:** the regex reader's one check against the sources (`relay-memory.ts`, kept in §2). |
+
+**A check that could never fail, made to:** `egress.test.ts` "receipts every refusal, keeping
+the newest refusalsKept" made nine refusals and pinned `refusalsKept` to 500, so no bound was
+ever reached. It now fills a full bucket of older refusals, and the nine new ones let the
+oldest nine go.
+
+**`write-gate.test.ts`'s pinned helper text:** the helpers' bodies are compared as code, not
+text (`canonical`: no space beside a bracket, a dot, a comma or a semicolon, no trailing
+comma), and the parts' members by their name and arrow at any indent. A reformat of `#door`
+(its argument on a line of its own, a trailing comma) failed the old check and passes this
+one; `#door` running its act outside the gate fails both. What it holds is unchanged: which
+gate each helper reaches, the source-shape guard `pass-owner` §2 keeps.
+
+### 6.3 The spec's `CODE_ANSWER_MAX`
+
+`owner-object/spec.md`'s code mode requirement now says what the code does: a script's answer
+fits one answer, as every read does (the spec's paging requirement names `RESULT_CHARS`); output
+past it is cut at a character and said so (`output_cut`), and a value that alone passes it is
+refused `answer_too_large`, its calls and what landed kept. Its scenario is two:
+`code-door.test.ts` "cuts output past one answer, saying so, and refuses only a value past it"
+holds both. No other name in the owner spec is missing from the code.
+
+### 6.4 The owner's swallowed errors and retries
+
+Each `catch` of `owner/src` (about 90) and each retry and wait was re-read. All are kept, and
+behaviour is unchanged.
+
+**Not swallowed: a refusal translated, or a cleanup before the rethrow.** Parse-or-refuse
+readers (`agent-file.ts`, `launch.ts`'s agent file, `connections.ts`' model, scope and redirect
+URI, `relay.ts`'s binding header, `export.ts`'s cursors, `restore.ts`'s first part), each a
+fixed refusal; a grant gone read as `authority_changed` or `sync_fenced` (`authority.ts`,
+`owner-do.ts`, `runs.ts`); a conflict turned into its answer (`collections.ts` `conflicted`,
+`files.ts` `fileConflicted`); `codemode.ts`'s tool call, its refusal's text or `internal error`
+past the VM; and the cleanups that rethrow (`bodies.ts`'s release, `files.ts`'s abort,
+`connections.ts`' refresh settle, `owner-do.ts`'s runner end, `runs.ts`'s post leave,
+`gate.ts`'s unit, which commits what it wrote and rethrows).
+
+**Swallowed, kept, each with its reason beside it:**
+- **Logged, then tried again by its own lane:** `backup.ts`'s manifest sweep
+  (`MANIFEST_RETRY_S`), `files.ts`'s chunk delete (`GC_RETRY_S`; no hash in the log),
+  `sandbox-time.ts`'s meter read, `connections.ts`' provider revoke, `wakes.ts`'s recovery and
+  send (each deferred `WAKE_LEASE_S`; no id, URL or body in the log), `launch.ts`'s network
+  re-apply (`NETWORK_RETRY_S`), `erase.ts`'s erasure, resumed from its recorded step, and
+  `owner-do.ts`'s schedule sync after a first change, which the next door or pass that syncs
+  makes again.
+- **Logged, the call's end settled anyway:** a run's start with no answer settles `unknown`
+  (`launch.ts`; an answer out of shape is caught as none, owed §6.7); a sign-in's start with no answer ends it `start_lost`, its lease freed
+  (`signins.ts`); a run's cancel, a lease's release (its idle reap pauses it), and a refused
+  sign-in's stop.
+- **Read as an answer:** the kill switch unreadable is closed (`wakes.ts` `open`); a ring that
+  crossed as a refusal is `failed`, anything else `unknown` (a byte may have left); a ring whose
+  request is refused as invalid is `failed`, `not_sent`; a malformed reseal from the gateway is logged and the call
+  settles (`egress.ts`); a refresh refused leaves the credential to the open's own check; an
+  upload intent gone is no owner (`files.ts`); an unreadable `agent.json` held no scope
+  (`starter.ts`), and a lost swap is the owner's change, left to them; a starter pass that fails
+  is noticed and retried in its row; a socket that could not attach is closed `lost`, a bad
+  frame closes it `frame`, and a send or close to a peer gone is nothing to do (`relay.ts`).
+- **Not text:** `edit.ts`, `file-search.ts` and `files.ts`' UTF-8 decodes answer `not_utf8` or
+  `null`, never a fallback.
+- **A refusal receipt that cannot be written** (`owner-do.ts`, `files.ts`): logged, and the
+  refusal stands regardless.
+- **The archive** (`archive.ts`): a read whose mark moved is `null`, read again; a parent not
+  the object's is no parent; `archive_changed` mid-pass is the next pass's; `archive_full` and
+  `storage_full` hold the lane and tell the owner once.
+
+**Retries and waits, kept:**
+- `bodies.ts` `PLACE_TRIES`: a placed write that meets a chunk the sweep is deleting begins
+  again, waiting 100 ms more each try, five tries, then `chunk_deleting` stands ("begin
+  again"). A placed write is one door call, so the object, not its caller, is the one that can
+  begin it again; the sweep's delete is one R2 call between two units. **Found and left:** the
+  wait is a sleep, not the event: the sweep's delete could hand the object a promise that ends
+  when its unit lands, and the write would wait on that, bounded by `LANE_CALL_MS`. That changes
+  when a write answers, so it is not this pass: owed, §6.7.
+- `bodies.ts` `READ_TRIES` and `ledger.ts`'s `archive_changed` retry: a read raced by mail
+  between its units is read again a few times, then `storage_busy` with its `Retry-After`.
+- `files.ts` `APPEND_TRIES`: an append that loses its swap is tried again, at most as many
+  times as uploads may be open, then `file_busy`.
+- The lanes' back-offs (`ARCHIVE_RETRY_S`, `ARCHIVE_BUSY_RETRY_S`, `MANIFEST_RETRY_S`,
+  `MANIFEST_BUSY_RETRY_S`, `GC_RETRY_S`, `NETWORK_RETRY_S`, `LANE_RETRY_S`): each a row's own
+  time, never a loop in one pass; the busy ones are the pool's wait (`SLOT_WAIT_MS`).
+- `launch.ts` `settledWithin`: a run door's wait ends at the run's settle (`#wake`), bounded by
+  the caller's `waitMs`. `gate.ts` `unitsNow`: a lane takes the pool's units now or is `busy`.
+
+**Found and left:** `changelog.ts` `LOG_WIDE` has no reader in product code; its one reader is
+`changelog.test.ts`, which holds it to the frozen trigger text. A product export only a test
+reads is a code change: owed, §6.7.
+
+### 6.5 Part 3's: `untangle/pass-owner-3`, after the cutover (the founder, 2026-11-21; #5715)
+
+The files R5's hooks change, so the two merge cleanly, untouched here:
+- `src/actions.ts`: `R5 slice 2`, `R5 P-resume` and `r5_research.md` (a working file never in
+  the repo) in its header.
+- `src/policy.ts`: 16 pointers to the old stack, and `slice M` twice.
+- `src/runs.ts`: `slice ID`, `slice S`, `R5 P-resume`, `review H1` twice and `review M1`; its two
+  catches are an `authority_changed` translation and a post's leave before the rethrow (kept,
+  §6.4).
+- `src/door-map.ts` and `doors.json`: no tag; nothing found.
+- `test/actions.test.ts`: `R5 P-decide`, `R5 P-resume`. `test/policy.test.ts`: `N4`, its pins
+  to be read with §6.2's rule.
+- `guards/doors.test.ts`: ten door reasons, strings the guard prints, carry `slice L`, `slice
+  W`, `tasks 6` and "slice SIGNIN, owed: an MCP tool for the past runs".
+
+And the comments of the other 13 guards and of `memory/`, moved here from part 2 for its size
+(about 300 changed lines; none of them in a file #5707 changes): their tags (`slice R`, `L`,
+`S`, `M`, `untangle A2`, `B4`, `review L5-2`, `L6-2`, `M3`, `M4`, `M-a`, `rvburst`, `rvbackup 1`,
+`round 5`, `H0`, `decisions A7`, `tasks 2`, `3.6`), the "Ported from" headers of
+`policy-boundary.test.ts`, `ledger-boundary.test.ts` and `revision-primitive.test.ts`,
+`rpcretain_research.md` (a working file never in the repo, four places),
+`admission-caller.test.ts`'s "nothing is deployed, so no tombstone exists yet", `alarm.test.ts`'s
+"salvaged from A6", and the paragraphs they leave short.
+
+### 6.6 Proof
+
+- Every source of the workspace (`src/`, `guards/`, `test/`, `memory/`, `wrangler.jsonc`
+  without its comments, the JSON records), minified with esbuild after blanking each test's
+  titles, and the Worker's entry bundled with all it imports: the same digest on base
+  `88e74e1cd` and head, but for the 18 test files of §6.2.
+- The recorders: `wire`, `tools`, `rpc` and `rv` are the same.
+- Mutations, each killed by the changed test: `ALL_TRAFFIC` as `0.0.0.0/1`; the lane's job given
+  `LANE_PASS_S` as its hung timeout; the refused receipts kept one past `refusalsKept`;
+  `MODEL_DEFAULTS.turn_cost` set to 1; `EGRESS_PATH_MAX` as 4096; `#door` running its act
+  outside the gate. A reformat of `#door` across lines with a trailing comma passes the
+  write-gate guard and fails its old check.
+
+### 6.7 Owed
+
+- [ ] `platform/owner/`, part 3, after the cutover (the founder, 2026-11-21; #5715): the
+  comments of the files #5707 changes and `policy.test.ts`'s pins, and the comments of
+  `memory/` and the other 13 guards (§6.5) (`untangle/pass-owner-3`).
+- [ ] `launch.ts` `launch`'s start catch takes the sandbox's answer out of shape (`started`
+  throws) as no answer: the run settles `unknown` `start_lost`, logged "had no answer" with no
+  cause, so a sandbox Worker bug reads as lost starts. Research first (`untangle/start-answer`;
+  found by the review of #5719).
+- [ ] `bodies.ts` `placing` waits on the sweep's delete it met, not a sleep of `100 * tries`
+  ms, bounded by `LANE_CALL_MS`; and `changelog.ts` `LOG_WIDE`, read only by its test, goes
+  (§6.4) (`untangle/place-wait`).

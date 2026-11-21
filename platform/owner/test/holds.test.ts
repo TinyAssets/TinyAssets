@@ -1,8 +1,8 @@
 /**
  * The owner's holds of large data (`holds.ts`, ADR-037): a hold takes the isolate's units
  * only while its bytes are in hand, weighted by what it holds, so a co-tenant's small read
- * never waits behind edits (review M1); and a ranged read of a chunk the files Worker refuses
- * fails loudly (review L3).
+ * never waits behind edits; and a ranged read of a chunk the files Worker refuses
+ * fails loudly.
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -106,7 +106,7 @@ describe("the owner's holds", () => {
     expect((await o.stub.fileText(o.bind(), { path, offset: 5000, max_bytes: 10 })).text)
       .toBe("0123456789");
     // The files Worker reads a range's whole chunk and rechecks its hash, refusing one whose
-    // bytes changed in R2 (`files/test/chunks.test.ts`, review L7): its refusal, at the gate.
+    // bytes changed in R2 (`files/test/chunks.test.ts`): its refusal, at the gate.
     await gateFor(env.FILES_GATE, await spaceOf(o.stub)).arm("getChunks", { refuse: {
       name: "Error", code: "internal", message: "a chunk's bytes no longer match its hash" } });
     expect((await failure(() => o.stub.fileText(o.bind(), { path, offset: 5000,

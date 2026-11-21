@@ -1,14 +1,13 @@
 /**
- * Owner-wide bounds on the ledger's growth (the Python's owed L5), new in this port.
+ * Owner-wide bounds on the ledger's growth.
  *
- * The ledger's decisions are pure functions of its counters and its ceilings, tested here
- * with small numbers. The object's own tests run the ledger at production's ceilings
- * (`LEDGER_LIMITS`), on its own storage (`inLedger`), and check that the counters the bounds
- * read agree with the rows they count. Mail is bounded by two technical ceilings and no
- * mailbox's count (slice STORE item 2): too much unread mail owner-wide is `ledger_full`,
- * and the hot ceiling `storage_busy` while the archive lane moves acked mail out; nothing is
- * ever evicted (`archive-move.test.ts` covers the lane; "the ledger at its production
- * limits", below, both ceilings in the object).
+ * The ledger's decisions are pure functions of its counters and its ceilings, tested here with
+ * small numbers. The object's own tests run the ledger at production's ceilings (`LEDGER_LIMITS`),
+ * on its own storage (`inLedger`), and check that the counters the bounds read agree with the rows
+ * they count. Mail is bounded by two technical ceilings and no mailbox's count: too much unread
+ * mail owner-wide is `ledger_full`, and the hot ceiling `storage_busy` while the archive lane moves
+ * acked mail out; nothing is ever evicted (`archive-move.test.ts` covers the lane; "the ledger at
+ * its production limits", below, both ceilings in the object).
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";

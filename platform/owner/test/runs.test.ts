@@ -1,5 +1,5 @@
 /**
- * Runs in the owner's object (slice R; ADR-034 decision 4), in workerd, with a recording
+ * Runs in the owner's object (ADR-034 decision 4), in workerd, with a recording
  * fake sandbox Worker behind `SANDBOX` (`ci/fake-sandbox.ts`): admission in one unit (each of its
  * refusals with its code), the run row, its grant and the sandbox's lease, the start with the
  * run's whole environment, the settle from the runner's end, the cancel through the sandbox,
@@ -286,7 +286,7 @@ describe("a run's sandbox report", () => {
   });
 
   it("words the notice itself: an event's text, and a path not as the sync escapes one, " +
-     "never reach it (R8-1)", async () => {
+     "never reach it", async () => {
     const r = await gated();
     const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     const forged = { type: "ta.sync_unnamed", count: 7,
@@ -423,7 +423,7 @@ describe("simultaneous runs", () => {
       r.stub.egressOpen(egress(as), {
         run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
     // A run id alone authorizes nothing: one run's process naming the other's id, with its
-    // own secret, spends on neither (slice R's review H-1).
+    // own secret, spends on neither.
     expect(await call(onB.run.run_id, b, onA.start))
       .toMatchObject({ ok: false, code: "egress_run_closed" });
     expect(await call(onA.run.run_id, b)).toMatchObject({ ok: false,
@@ -852,8 +852,8 @@ describe("the runs lane", () => {
       .toMatchObject({ initiator: "schedule" });
   });
 
-  it("leaves a schedule due when its launch is refused for the moment, and fires it once " +
-     "(review D-1)", async () => {
+  it("leaves a schedule due when its launch is refused for the moment, and fires it once",
+     async () => {
     const r = await gated();
     // An agent's file past an inline one, so the launch reads it from the files plane.
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);

@@ -11,15 +11,18 @@
  *   (or `--dry-run`, which writes nothing): the bundles, the digests and billing ids in 0600
  *   files of the private folder, and counts alone on stdout;
  *   (`--rehearsal <run>`: each bundle under its rehearsal's name, `rehearsalName`);
- * - `deletions <work> --jobs <folder> [--rehearsal <run>]`: compare current off-host jobs
- *   with the bundled original owners. Print affected bundle ordinals and exit 3 on a match.
+ * - `deletions <work> --jobs <folder> --run <id> --check <file> [--rehearsal]`, run by
+ *   window.sh's `admit` alone, right before its admit: the current off-host jobs compared
+ *   with the bundled original owners, the check written for that admit (`deletions.ts`), and
+ *   each withheld bundle's ordinal on stdout;
  * - `stage <out> --run <id> --facts <facts.json>` (or `--dry-run`, which sends nothing and
  *   needs no credential; `--rehearsal`, for a rehearsal's bundles): every bundle checked
  *   whole, uploaded to the staging bucket and its message put on the import queue
  *   (`stage.ts`), the window's credentials read once from the job's stdin, one a line in
  *   `STAGE_INPUTS`' order, never from a file, an argument or the environment; counts and
  *   ordinals on stdout;
- * - `verify <out> --run <id> --record <file>`, `admit <out> --run <id> --record <file>`,
+ * - `verify <out> --run <id> --record <file>`,
+ *   `admit <out> --run <id> --record <file> --deletions <file>` (its check, taken once),
  *   `wipe <out> --run <id> --record <file>`, `dlq <out> --run <id> [--delete]` and `close`,
  *   each with `--facts <facts.json>`: the window's steps after staging (`window.ts`), with the
  *   same credentials; exit 0 when the step holds (every owner clean, every listing empty, no
@@ -47,7 +50,7 @@ import { layout, loopBacking, manifestOf, mountProblem } from "./backup";
 import { buildBundles, exclusionList } from "./bundle";
 import { census } from "./census";
 import { copyMain } from "./copy";
-import { compareDeletions } from "./deletions";
+import { compareDeletions, writeCheck } from "./deletions";
 import { cloudflareOf, type Fetcher, type Inputs, namesOf, NETWORK, stage } from "./stage";
 import type { Copy } from "./survey";
 import { admit, CLOCK, type Clock, close, deadLetters, unkey, verify, wipe } from "./window";
@@ -135,7 +138,7 @@ export async function windowMain(argv: readonly string[],
     return summary.clean === summary.bundles ? 0 : 3;
   }
   if (step === "admit") {
-    await admit(out, run, window, record, print);
+    await admit(out, run, window, record, resolve(required(argv, "--deletions")), print);
     return 0;
   }
   if (step === "wipe") {
@@ -233,12 +236,16 @@ export function main(argv: readonly string[], mountinfo: () => string,
   }
   const work = resolve(given);
   if (command === "deletions") {
-    const found = compareDeletions(work, required(argv, "--jobs"), option(argv, "--rehearsal"));
+    const found = compareDeletions(work, required(argv, "--jobs"), required(argv, "--run"),
+                                   argv.includes("--rehearsal"));
+    writeCheck(resolve(required(argv, "--check")), found.check);
+    const bundles = Object.keys(found.check.bundles).length;
     for (const ordinal of found.withhold) {
-      process.stdout.write(`bundle ${ordinal} of ${found.bundles}: deletion requested\n`);
+      process.stdout.write(`bundle ${ordinal} of ${bundles}: deletion requested, withheld\n`);
     }
-    process.stdout.write(`${found.withhold.length} of ${found.bundles} bundles match a deletion record\n`);
-    return found.withhold.length === 0 ? 0 : 3;
+    process.stdout.write(`${found.withhold.length} of ${bundles} bundles match a deletion ` +
+                         "record: each is discarded, never admitted\n");
+    return 0;
   }
   const tiers = tiersIn(argv);
   const copy = copyAt(work, mountinfo(), backing);

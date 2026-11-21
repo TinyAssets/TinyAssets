@@ -1,9 +1,9 @@
 /**
- * A main agent's digests (slice M): `inboxDigest` gives its unacknowledged mail and the
- * owner's rooms' rows written past its cursor, `boardDigest` the board's, each row as its
- * head, in one call; only since the cursor, which never goes back; each delete and clear
- * reported too, to whoever could see the row; and only what its grant holds: `read_graph`, a
- * private row only to its writer, no revoked client.
+ * A main agent's digests: `inboxDigest` gives its unacknowledged mail and the owner's rooms' rows
+ * written past its cursor, `boardDigest` the board's, each row as its head, in one call; only since
+ * the cursor, which never goes back; each delete and clear reported too, to whoever could see the
+ * row; and only what its grant holds: `read_graph`, a private row only to its writer, no revoked
+ * client.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -97,8 +97,8 @@ describe("the inbox digest", () => {
   });
 });
 
-describe("a digest past a pruned deletion (review rvlim N1)", () => {
-  it("R1: tells a reader behind a pruned tombstone to read again, never hides the delete",
+describe("a digest past a pruned deletion", () => {
+  it("tells a reader behind a pruned tombstone to read again, never hides the delete",
      { tags: ["large"] }, async () => {
     const { stub, name } = await ownerObject();
     await inFilled(stub, (store, state) => {

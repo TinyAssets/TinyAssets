@@ -1,7 +1,7 @@
 /**
- * The archive segment's format, encoded whole by a reference encoder (round 3's, as the
- * records' parts joined with the trailer), so the streamed move (`planSegment`, `makeChunk`)
- * is held to the same bytes; and the helpers that stream a plan in a test.
+ * The archive segment's format, encoded whole by a reference encoder (the records' parts joined
+ * with the trailer), so the streamed move (`planSegment`, `makeChunk`) is held to the same bytes;
+ * and the helpers that stream a plan in a test.
  */
 import { createHash } from "node:crypto";
 

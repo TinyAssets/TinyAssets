@@ -126,7 +126,7 @@ describe("a scheduled run's result", () => {
   });
 
   it("posts nothing when its engine stopped at a deferred call, the run settled tool_deferred " +
-     "though the end came in a later batch (R5 P-resume)", async () => {
+     "though the end came in a later batch", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
@@ -148,7 +148,7 @@ describe("a scheduled run's result", () => {
   });
 
   it("is kept when its post is refused for the moment: the runner's batch is refused " +
-     "storage_busy, the run stays live, and its next post posts it once (review D-2)",
+     "storage_busy, the run stays live, and its next post posts it once",
      async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
@@ -186,7 +186,7 @@ describe("a scheduled run's result", () => {
   });
 
   it("is refused at the wall, its run settled with a notice, when the ceiling cannot clear: " +
-     "the archive blocked by a full storage (review E-1)", async () => {
+     "the archive blocked by a full storage", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
@@ -219,7 +219,7 @@ describe("a scheduled run's result", () => {
   });
 });
 
-describe("scheduled results (review M1)", () => {
+describe("scheduled results", () => {
   it("post nothing into the owner's rooms for a client's schedule; the client reads it",
      async () => {
     const r = await gated();
@@ -257,7 +257,7 @@ describe("scheduled results (review M1)", () => {
   });
 });
 
-describe("a run's run tools (review H1)", () => {
+describe("a run's run tools", () => {
   it("read and cancel only as its agent's run_graph allows", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);

@@ -1,9 +1,8 @@
 /**
- * A deleted agent's archived mail (slice STORE item 2, phase 1): dropped at once, then
- * rewritten out of its segments by the lane, a bounded rewrite a pass, keeping the rest
- * byte-exact and disjoint; a deleted agent's rooms counted among the rooms until then; and mail
- * still moved during a long purge. Each owner runs production's ceilings
- * (`archive-support.ts`).
+ * A deleted agent's archived mail: dropped at once, then rewritten out of its segments by the lane,
+ * a bounded rewrite a pass, keeping the rest byte-exact and disjoint; a deleted agent's rooms
+ * counted among the rooms until then; and mail still moved during a long purge. Each owner
+ * runs production's ceilings (`archive-support.ts`).
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -210,15 +209,15 @@ describe("an agent's deletion", () => {
   });
 });
 
-describe("segments never overlap in key range (review H1)", () => {
-  it("stay disjoint, and every message readable by its chain, through two deletions " +
-     "(the reviewer's case)", { tags: ["large"] }, async () => {
+describe("segments never overlap in key range", () => {
+  it("stay disjoint, and every message readable by its chain, through two deletions",
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const x = await r.register(MUSE, "Muse");
     const y = await r.register(DOT, "Dot");
     const a = await r.register(EVE, "Eve");
-    // The reviewer's run: its first message to Muse, its 23rd to Dot, the rest to Eve; each
-    // body 4 MiB, so two seal a segment, and its last four stay hot.
+    // Its first message to Muse, its 23rd to Dot, the rest to Eve; each body 4 MiB, so two seal a
+    // segment, and its last four stay hot.
     const who = (n: number) => n === 1 ? [MUSE, x] as const
       : n === 23 ? [DOT, y] as const : [EVE, a] as const;
     const body = (n: number) => `m${n} `.padEnd(4 * MIB, "x");
@@ -258,7 +257,7 @@ describe("segments never overlap in key range (review H1)", () => {
   });
 });
 
-describe("a purge's rewrite, bounded a pass (review N7)", () => {
+describe("a purge's rewrite, bounded a pass", () => {
   /** The lane's job made due now, then run: one pass. */
   const pass = async (r: Rig) => {
     await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
@@ -356,7 +355,7 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
   });
 });
 
-describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve)", () => {
+describe("mail moves during a long purge", () => {
   it("keeps pace: a pass moves mail whenever it is due, a rewrite or not", { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);

@@ -51,10 +51,9 @@ Untangle the code a change touches, or a whole area, and finish the job.
   open looks for drift between PRs; unopened branches wait for it.
 - CI is the one full run; a coordinator's prompt adds or drops no check this
   section names. Push a draft once it compiles, having run once only what the
-  diff can break (the done-check: `docs/reference/executable-gates.md`), never
-  a whole workspace's suite, one mutation per declared change; the
-  recorders (step 5) whenever it touches `platform/*/src`, meant to change an
-  answer or not; read only what applies. A reviewer reruns two or three of the
+  diff can break (the done-check: `docs/reference/executable-gates.md`), one
+  mutation per declared change; a whole workspace's suite and the recorders
+  are CI's. Read only what applies. A reviewer reruns two or three of the
   builder's mutations and one of each new guard's, and runs the rest for its
   own fixes only. One review a PR, a second only after a security block.
   Merge `origin/main` in; never rebase.
@@ -63,8 +62,8 @@ Untangle the code a change touches, or a whole area, and finish the job.
   them, naming its part 2.
 - An agent runs git only in worktrees it made; a reviewer checks the PR out
   in its own detached one. On a shared host, heavy runs (`test:root`,
-  `test:sizes`, `test:memory`, the deploy harness, the recorders) take the
-  host's run lock; a timeout under load
+  `test:sizes`, `test:memory`, the deploy harness) take the host's run lock;
+  a timeout under load
   is rerun under it, never a finding. When done, delete only what you wrote
   outside the repo, and your `node_modules`.
 - A change bringing a measured time or size (a watchdog, budget, quota)
@@ -157,7 +156,7 @@ You're done when:
 - A typical change lands in one place.
 - Every import is reasonable, and nothing imports anything more volatile than itself.
 - Subagents have no issues left that are worth fixing.
-- Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end: in `platform/`, `npm run record -- <dir>` on base and head, then `npm run record:diff -- <base> <head>`.
+- Intended behavior is the same as when you started, apart from bugs the refactor fixed. CI's recorders test this (`ci/record.ts`).
 
 **Tips**
 

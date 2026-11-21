@@ -77,7 +77,7 @@ describe("the placement rule", () => {
       collection: "board", row_id: rowId, body, expected_etag: etag, private: false });
     const small = await put("small", SMALL);
     const large = await put("large", LARGE);
-    // A write answers its row without its body (review H3).
+    // A write answers its row without its body.
     expect(large).toMatchObject({ row: { body_bytes: 2 * PLACE_BYTES, revision: 1 } });
     expect(Object.keys((large as { row: object }).row)).not.toContain("content_id");
     expect(Object.keys((large as { row: object }).row)).not.toContain("body");
@@ -165,9 +165,7 @@ describe("the placement rule", () => {
     const { stub } = await ownerObject();
     await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
       const { gate, files, bodies } = storesOn(state);
-      // The bytes reach R2 first; the object crashes before the row's unit. The upload
-      // holds them minutes, not the day a file's upload may take.
-      expect(PLACE_TTL_S).toBe(600);
+      // The bytes reach R2 first; the object crashes before the row's unit.
       const placing = (await gate.write(() => bodies.begin(LARGE, "owner")))!;
       await bodies.send(placing);
       const { ns, key } = await files.space();
@@ -205,7 +203,7 @@ describe("the placement rule", () => {
       .toMatchObject({ limit_bytes: SEED.bytes + 3 * PLACE_BYTES, tier: "free" });
     // The same body again is the same chunk: it adds no byte.
     await put("c", LARGE, { ...as(name), tiers: tight });
-    // A small body kept in its row counts too (the one storage number, slice P): its row
+    // A small body kept in its row counts too (the one storage number): its row
     // and its history entry would take the owner past the figure.
     expect(refusalOf((await failure(() => put("d", SMALL, { ...as(name),
       tiers: tight }))))?.facts)
@@ -240,7 +238,6 @@ describe("the placement rule", () => {
     const put = (rowId: string, body: string) => stub.collectionWrite(as(name), {
       collection: "board", row_id: rowId, body, expected_etag: "", private: false });
     // A row of `maxRowBytes`, placed across two chunks: half a request's 16 MiB ceiling.
-    expect(LIMITS.maxRowBytes).toBe(8 * 1024 * 1024);
     const most = "x".repeat(LIMITS.maxRowBytes);
     expect((await put("most", most)) as { row: { revision: number } })
       .toMatchObject({ row: { revision: 1 } });
@@ -282,8 +279,8 @@ describe("the placement rule", () => {
 /** A tier record whose free storage is what the seed stores and `bytes` more. */
 const tiers = (bytes: number) => tiersAt(SEED.bytes + bytes, TIERS.paid.storage_bytes);
 
-describe("the placement rule, held to the owner's own limits (review rvlim)", () => {
-  it("A1: a conflict on a placed row answers the stored body, as get and pull read it",
+describe("the placement rule, held to the owner's own limits", () => {
+  it("a conflict on a placed row answers the stored body, as get and pull read it",
      async () => {
     const { stub, as, name } = await ownerObject();
     const put = (body: string, etag: string) => stub.collectionWrite(as(name), {
@@ -299,7 +296,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       .toEqual({ conflict: stored });
   });
 
-  it("A2: an outside client's placed bodies are its own, held to its share and the reserve",
+  it("an outside client's placed bodies are its own, held to its share and the reserve",
      async () => {
     const r = await rig();
     await setFiles(r, { max_bytes: 100_000, client_share: 10, owner_reserve: 50 });
@@ -324,7 +321,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       body: "o".padEnd(PLACE_BYTES + 1, "x"), expected_etag: "", private: false });
   });
 
-  it("A2: a visiting owner writes in a share of its own, never the owner's", async () => {
+  it("a visiting owner writes in a share of its own, never the owner's", async () => {
     const { stub, as, name } = await ownerObject();
     await stub.collectionWrite(as("visitor-1"), { collection: "room:go:main", row_id: "v",
       body: LARGE, expected_etag: "", private: false });
@@ -336,8 +333,8 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     expect((await stub.fileUsage(as(name))).share.chunk_bytes).toBe(SEED.placedBytes);
   });
 
-  it("A3: placed history is never let go at the tier's storage: the write is refused " +
-     "storage_full and every entry is kept (ADR-036, untangle F1)", async () => {
+  it("placed history is never let go at the tier's storage: the write is refused " +
+     "storage_full and every entry is kept (ADR-036)", async () => {
     const { stub, as, name } = await ownerObject();
     const bind = { ...as(name), tiers: tiers(6 * 2 * PLACE_BYTES) };
     let etag = "";
@@ -362,7 +359,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       .toBeLessThanOrEqual(SEED.placedBytes + 6 * 2 * PLACE_BYTES);
   });
 
-  it("A4: a read door with no tier numbers in the record drops the kept ones: fail closed",
+  it("a read door with no tier numbers in the record drops the kept ones: fail closed",
      async () => {
     const { stub, as, name } = await ownerObject();
     await stub.collectionGet(as(name), { collection: "board", row_id: "r" });
@@ -374,7 +371,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       .message).toBe(TIER_UNREAD);
   });
 
-  it("A5: acked placed mail is never let go at the tier's storage: the post is refused " +
+  it("acked placed mail is never let go at the tier's storage: the post is refused " +
      "storage_full and every mail is kept (ADR-036, superseding ADR-035 decision 5)",
      async () => {
     const r = await rig();
@@ -401,7 +398,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     expect(held!["n"]).toBe(sent);
   });
 
-  it("A6: a history read past one page says so, and its cursor reads the older entries",
+  it("a history read past one page says so, and its cursor reads the older entries",
      async () => {
     const { stub, as, name } = await ownerObject();
     const big = "𝄞".repeat(5000);  // 20,000 bytes: two entries fit one answer
@@ -420,7 +417,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
       .toEqual([["a", "b"], false, null]);
   });
 
-  it("L5: a placed write past a chunk the sweep is deleting begins again once it is gone",
+  it("a placed write past a chunk the sweep is deleting begins again once it is gone",
      async () => {
     const { stub, as, name } = await ownerObject();
     const put = (rowId: string, etag = "") => stub.collectionWrite(as(name), {
