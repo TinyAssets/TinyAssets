@@ -60,7 +60,7 @@ import { MIGRATIONS } from "../src/schema";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "../../ci/paths";
-import { RUNS_CEILING } from "../../contract/src/control";
+import { CONTROL_TEXT_MAX, RUNS_CEILING } from "../../contract/src/control";
 
 const SRC = join(PLATFORM, "owner", "src");
 
@@ -609,6 +609,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                      by: "SCHEDULES_KEPT, each its input, stamp, origin and last error",
                      indexes: { run_schedules_due: key(NUMBER, SCHEDULE_ID_CHARS) } },
     platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
+    control_kept: { rows: 1, bytes: ROW + CONTROL_TEXT_MAX + NUMBER,
+                    by: "one row: the record's text, at most CONTROL_TEXT_MAX bytes" },
     platform_signins: { rows: 1, bytes: ROW + SIGNIN_LIST_CHARS + NUMBER,
                         by: "one row: the switched-on records' ids, joined" },
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,

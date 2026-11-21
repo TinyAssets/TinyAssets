@@ -44,7 +44,7 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,602,931,879.25 bytes, 46.03% of the 10 GB: 397.1 MB under
+**The worst case that ships is 4,602,998,949.75 bytes, 46.03% of the 10 GB: 397.0 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 R5 P-decide's held calls and their decisions' receipts (`action_requests`, `action_receipts`)
 take 26.0 MB of it.

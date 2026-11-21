@@ -2420,6 +2420,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "client, generation, filed_at, run, family ON action_requests " +
       "BEGIN SELECT RAISE(ABORT, 'a held call changes only by its answer'); END",
   ]),
+  // 19 (`untangle-2026-11/control-last-good.md`): the control record's last good copy, which
+  // the object's own gate serves when KV can't be read (`contract/src/control.ts`
+  // `SqlKeeper`). The platform's, not the owner's: not exported.
+  Object.freeze([
+    "CREATE TABLE control_kept (only INTEGER PRIMARY KEY CHECK (only = 1), text TEXT NOT NULL, " +
+      "read_at INTEGER NOT NULL)",
+  ]),
 ]);
 
 /**
@@ -2460,6 +2467,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 16
   null,  // 17
   null,  // 18
+  null,  // 19
 ]);
 
 /**

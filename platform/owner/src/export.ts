@@ -236,6 +236,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   wake_callbacks: "sealed doorbell tokens (ADR-018: credentials are never exported)",
   grant_fences: "the grants' revoke fence, an internal mark",
   platform_tiers: "the platform's tier numbers as last read, not the owner's",
+  control_kept: "the platform's control record as last read, not the owner's",
   owner_erasure: "an erasure in progress",
   schema_digests: "the applied migrations' digests, the start's own check",
   owner_backups: "the generations: the nightly manifest's and the exports' own bookkeeping",

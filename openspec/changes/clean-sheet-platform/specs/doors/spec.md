@@ -187,15 +187,19 @@ The session cookie SHALL be `__Host-ta-owner`, Secure, HttpOnly, Path=/, SameSit
 - **THEN** no session is forwarded and the object refuses the widening
 
 ### Requirement: The outside kill switch fails closed
-Every outside call (an MCP call, an `/api` call, an outside client's authorization), and each tool call of a `code` script in the object, SHALL pass only when the `control` record (its own `CONTROL` namespace) reads, well formed, with `outside` on and the maintenance gate admitting its owner; a missing, malformed or unreadable record SHALL refuse it. The owner's own surfaces and sign-in SHALL be held by the maintenance gate, and SHALL stay open only when the record is missing.
+Every outside call (an MCP call, an `/api` call, an outside client's authorization), and each tool call of a `code` script in the object, SHALL pass only when the `control` record (its own `CONTROL` namespace) reads, well formed, with `outside` on and the maintenance gate admitting its owner; a missing or malformed record SHALL refuse it. The owner's own surfaces and sign-in SHALL be held by the maintenance gate, and SHALL stay open only when the record is missing. When the namespace can't be read, each reader SHALL serve the copy it last read well formed (the doors: the isolate's memory, then the location's cache; the owner's and the sandbox's objects: their own SQLite), of any age, and SHALL refuse only the acts that need the record fresh, each a `503` to retry: an outside client's new authorization, a new owner's first sign-in, a new API key and a vendor sign-in; a read served so SHALL hand the owner's object no tier numbers and no sign-in switches to keep. A reader with no copy SHALL refuse as for a malformed record.
 
 #### Scenario: The control record is missing
 - **WHEN** the directory holds no `control` record
 - **THEN** outside calls are refused `503` before any object, and the owner's own surface stays open
 
+#### Scenario: The control record is malformed
+- **WHEN** the record reads but is not JSON, is longer than its ceiling, or is out of shape (a typo in a kill flip)
+- **THEN** outside calls and the owner's own surface and sign-in are all refused, the last good copy never used
+
 #### Scenario: The control record cannot be read
-- **WHEN** the record is malformed, or the directory read fails
-- **THEN** outside calls and the owner's own surface and sign-in are all refused
+- **WHEN** the namespace read fails and the reader keeps a copy
+- **THEN** the copy's gates hold (a kill flipped before the outage stays flipped), its calls are served, and a new authorization, a first sign-in, a new API key and a vendor sign-in are refused `503` for a while
 
 ### Requirement: Nothing but the owner surface is served on our origin
 No published app, user content or third-party page SHALL ever be served on `https://tinyassets.io`: the session cookie, the exact-`Origin` rule and the first-party redirect all rest on every page of that origin being ours. No outside client SHALL be sent access on `tinyassets.io` or any of its subdomains.

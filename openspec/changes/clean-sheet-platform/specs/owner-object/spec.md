@@ -247,7 +247,7 @@ Wakes SHALL be rows on the object's one schedule, the `wakes` lane. No RPC metho
 - **THEN** one pass recovers it, as `unknown` if it was marked, claims none of the rest, and holds the lane's job a retry out
 
 #### Scenario: The kill switch is closed
-- **WHEN** the control record in `CONTROL` is missing, malformed, unreadable, `outside` off, or its maintenance gate leaves the owner out
+- **WHEN** the control record in `CONTROL` is missing, malformed, unreadable with no copy kept, `outside` off, or its maintenance gate leaves the owner out
 - **THEN** the switch reads closed, no wake is claimed, and the lane's job waits `WAKE_RETRY_S`, never a busy loop
 
 ### Requirement: Each vendor's wake is a record, sent by one doorbell
