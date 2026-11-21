@@ -118,9 +118,8 @@ Flagged for the founder:
 
 ## Chosen retentions
 
-These expiries are not ceilings: each queue or area is bounded by its count or charge in the
-10 GB, and needs no expiry to fit. Each is a retention chosen for what it serves, with its
-reason; none refuses a write.
+Each expiry has a purpose of its own. Where a count also limits the space used in the
+owner's object, the table below gives the storage budget.
 
 - `owner/src/files.ts` `TEMP_TTL_S`, 7 days: a temporary directory under `/.ta/tmp` unused
   for a week has its files deleted. The area is the sandbox's for spills, charged to the
@@ -138,6 +137,22 @@ reason; none refuses a write.
 - `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
   waits a quarter for the owner's answer, then expires unanswered, so a stale proposal never
   applies against a policy long since changed.
+- A settled run's status is recent history (`RUNS_KEPT`). Pruning it leaves the engine's
+  transcript and any delivered mail reply in place. One reader needs the receipt to act:
+  `Runs.resume` reads the held run's authority and conversation when the owner approves
+  its call. If the receipt has expired, the approval still admits one retry, but the
+  conversation does not resume automatically (R5, `r5-resume-hooks.md` item 3).
+- Policy receipts (`POLICY_LIMITS.receiptsPerBucket`) explain recent changes and decisions.
+  Owner changes, agent proposals, refusals and action decisions each keep their own window.
+  A burst of refusals therefore cannot displace the owner's change history. The current
+  policy and outstanding approval cards have their own records. The action decisions
+  (`action_receipts`, `owner/src/actions.ts`) are not exported, so neither an export nor a
+  generation carries them, and a restored owner starts with none: the table stays apart
+  until a migration may change an exported table (`owner/src/export.ts` `NOT_EXPORTED`).
+- Egress receipts (`EGRESS_LIMITS.receiptsKept` and `refusalsKept`) explain recent sandbox
+  requests and refusals. Once a call settles, its charge is accounted for on the run and in
+  the spending counters. Discarding its receipt does not refund the call. Refusals have
+  their own window, so they cannot displace settled calls. Pruning excludes open calls.
 - `owner/src/ledger.ts` `LEDGER_LIMITS.settledWakeRetentionS` and `maxSettledWakes`, a week
   and the newest 1,000 (d3 §P item 6): a settled wake's row (`receipt_json`) is the only
   record of how its doorbell answered, kept long enough to debug a doorbell. It is delivery
@@ -217,7 +232,7 @@ reason; none refuses a write.
 | `owner/src/policy.ts` `POLICY_LIMITS.maxChange` | 16,000 characters | one agent's proposal | a larger proposal refused | technical ceiling | The 10 GB: guard term `policy_proposals`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.pendingProposals` | 200 (50 a client) | proposals waiting for the owner | a proposal refused past it | technical ceiling | The 10 GB, inside `policy_proposals`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.appliedProposals` | 200 | applied proposals kept | the oldest let go | technical ceiling | As above. |
-| `owner/src/policy.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept, and the action rules' decisions, a bucket of their own (`actions.ts`) | the oldest let go | technical ceiling | The 10 GB: guard terms `policy_receipts`, 65.0 MB, and `action_receipts`. |
+| `contract/src/policy-document.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept, and the action rules' decisions, a bucket of their own (`actions.ts`) | the oldest let go | technical ceiling | The 10 GB: guard terms `policy_receipts`, 65.0 MB, and `action_receipts`. |
 | `owner/src/policy.ts` `MODEL_SOURCES_MAX` | 64 | sources a `models.sources` table names | a larger table refused | technical ceiling | Inside `maxDocument`, the one row every door reads. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxFreeClients` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | The 10 GB: guard terms `outside_clients`, `proposal_shares`. |
 | `owner/src/grants.ts` `GRANT_LIMITS.maxOwnerClients` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | As above. |
@@ -240,7 +255,7 @@ reason; none refuses a write.
 | `owner/src/usage.ts` `USAGE_LIMITS.receiptsKept` | 5,000 | model-call receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `model_reservations`. |
 | `contract/src/limits.ts` `CALLS_OPEN` | 1,000 | model reservations open at once | refused `model_calls_full` | technical ceiling | Inside `model_reservations`; far above any tier's runs. |
 | `contract/src/limits.ts` `SPEND_KEPT` | 4,300 | day and month spend counters | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. |
-| `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 admitted, 500 refused | egress receipts kept | the oldest let go | technical ceiling | Inside `egress_reservations`. |
+| `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 settled, 500 refused | egress receipts kept | the oldest let go | technical ceiling | Inside `egress_reservations`. |
 | `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
 | `contract/src/limits.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
 | `owner/src/network.ts` host | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound (RFC 1035). |
