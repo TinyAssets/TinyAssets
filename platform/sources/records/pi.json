@@ -155,6 +155,30 @@
         "note": "A user-level server in the agent directory's mcp.json loads without project trust; only a project's .pi/mcp.json needs it (pi docs/mcp.md)."
       }
     },
+    "decide": {
+      "file": "{system}/decide.mjs",
+      "template": "import { spawn } from \"node:child_process\";\nconst MATCHER = new RegExp(\"{matcher}\");\nexport default function (pi) {\n  pi.on(\"tool_call\", (event) => MATCHER.test(event.toolName) ? new Promise((done) => {\n    const helper = spawn(\"/bin/sh\", [\"-c\", \"{decide}\"], { stdio: [\"pipe\", \"ignore\", \"pipe\"] });\n    let reason = \"\";\n    helper.stderr.on(\"data\", (chunk) => { reason += chunk; });\n    helper.on(\"error\", (error) => done({ block: true, reason: String(error) }));\n    helper.on(\"close\", (code) => done(code === 0 ? undefined\n      : { block: true, reason: reason.trim() || \"the owner's rules could not be checked\" }));\n    helper.stdin.end(JSON.stringify({ tool_name: event.toolName, tool_input: event.input }));\n  }) : undefined);\n}\n",
+      "argv": [
+        "-e",
+        "{system}/decide.mjs"
+      ],
+      "kinds": {
+        "shell": [
+          "bash"
+        ],
+        "file_write": [
+          "write",
+          "edit"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp__",
+        "join": "__"
+      },
+      "fails": "closed",
+      "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/extensions.md",
+      "read": "2026-11-21"
+    },
     "tools": {
       "allow": {
         "argv": [

@@ -36,7 +36,8 @@ import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./test/s
  */
 const FROZEN = Object.freeze({
   formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263" },
-  protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2" },
+  protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2",
+               "2": "c38091d43b77abc01243f22e52285771355d6680a9d0ae3cce9ac438c5440fc0" },
 });
 
 const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
@@ -195,13 +196,12 @@ describe("the Worker's protocol with the runner", () => {
     expect(new Set(named).size).toBe(named.length);
     // Each the runner takes is the Worker's or the runner's own: one of them alone.
     expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS].sort()).toEqual([...named].sort());
-    // Protocol 1 records those and the retired ones (`RETIRED_IN_1`: the probe commands,
-    // which `probes.ts` runs, and `status`), which the runner takes none of: every other is in
-    // its record.
+    // Its protocol's record names those alone; protocol 1's named the retired ones too
+    // (`RETIRED_IN_1`: the probe commands, which `probes.ts` runs, and `status`), which the
+    // runner takes none of.
     expect(RETIRED_IN_1.filter((command) => (named as readonly string[]).includes(command)))
       .toEqual([]);
-    expect([...named, ...(PROTOCOL === 1 ? RETIRED_IN_1 : [])].sort())
-      .toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
+    expect([...named].sort()).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
   });
 
   it("has the Worker send only commands every protocol it speaks records", () => {

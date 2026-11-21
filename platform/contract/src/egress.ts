@@ -184,13 +184,15 @@ const RUN_SEGMENT = "r";
 /**
  * A door on the egress host, as its path names it (`egressDoor`): a run's model call (its
  * run, its secret or none when its header carries it, a connection, the provider's own
- * path), a run's MCP door (by its own secret), a run's event door (the runner's), the
- * sandbox's sign-in report, a sign-in's events (the runner's), or a sync agent's door.
+ * path), a run's MCP door and its decide door (each by its own secret), a run's event door
+ * (the runner's), the sandbox's sign-in report, a sign-in's events (the runner's), or a sync
+ * agent's door.
  */
 export type EgressDoor =
   | { readonly door: "model"; readonly run: string; readonly secret: string | undefined;
       readonly connection: string; readonly path: string }
-  | { readonly door: "mcp"; readonly run: string; readonly secret: string | undefined }
+  | { readonly door: "mcp" | "decide"; readonly run: string;
+      readonly secret: string | undefined }
   | { readonly door: "events"; readonly run: string }
   | { readonly door: "signin" }
   | { readonly door: "signin_events"; readonly signin: string }
@@ -227,8 +229,8 @@ export function egressDoor(path: string): EgressDoor | null {
   }
   const secret = HEX64.test(parts[3] ?? "") ? parts[3] : undefined;
   const rest = parts.slice(secret === undefined ? 3 : 4);
-  if (rest.length === 1 && rest[0] === "mcp") {
-    return { door: "mcp", run, secret };
+  if (rest.length === 1 && (rest[0] === "mcp" || rest[0] === "decide")) {
+    return { door: rest[0], run, secret };
   }
   const connection = rest[1] ?? "";
   return rest.length >= 3 && rest[0] === CONNECTION_SEGMENT && CONNECTION_ID.test(connection)
@@ -262,6 +264,20 @@ export function runUrls(run: string, secret: string):
                          mcp_bare: `${EGRESS_ORIGIN}${runPath(run)}/mcp`,
                          events: `${EGRESS_ORIGIN}${runPath(run)}/events`,
                          signin: `${EGRESS_ORIGIN}${SIGNIN_DOOR}` });
+}
+
+/**
+ * The run's decide door, which its hook helper asks of each tool call its CLI's pre-tool hook
+ * sees (R5 P-hooks): beside its MCP door (the start's `urls.mcp`), on the run's own path, so
+ * the start document names no other URL.
+ */
+export function decideUrl(mcpUrl: string): string {
+  const url = new URL(mcpUrl);
+  const door = egressDoor(url.pathname);
+  if (door?.door !== "mcp" || door.secret === undefined) {
+    throw new Refusal("invalid", "a run's MCP URL carries its run and secret");
+  }
+  return `${url.origin}${runPath(door.run, door.secret)}/decide`;
 }
 
 /** A sign-in's event door, and the sandbox's sign-in report door, on the egress host. */

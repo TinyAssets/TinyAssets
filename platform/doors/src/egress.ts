@@ -4,10 +4,11 @@
  * their providers' own APIs with placeholder keys (the contract's `sandboxEnv`). The run in
  * the path is what the object holds the call to (that run's own connection, slice R), and
  * the run's own secret beside it is what lets a call act as that run: only the run's CLI
- * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), and
- * the runner's own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a
- * run's event door (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by
- * the same egress token.
+ * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`) and its
+ * decide door (`/r/<run>/<secret>/decide`, its hook helper's), and the runner's own doors,
+ * by the runner's secret (`x-ta-runner`), which no CLI holds: a run's event door
+ * (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by the same egress
+ * token.
  *
  * 1. **The identity.** E2B's transform sets the sandbox's egress token (`x-ta-sandbox`)
  *    and the egress generation its network was made under (`x-ta-network-generation`)
@@ -228,6 +229,20 @@ async function serveRunMcp(request: Request, env: DoorsEnv, run: string, secret:
 }
 
 /**
+ * A run's decide door (R5 P-hooks; `runDecide`): its hook helper's question of a tool call its
+ * CLI's pre-tool hook saw, or of the tools that hook matches, by the run's own secret. Only
+ * the helper in the sandbox calls it, so an `Origin` is refused; a refusal is answered with its
+ * message, which the helper hands the CLI as the reason.
+ */
+function serveDecide(request: Request, env: DoorsEnv, run: string, secret: string):
+    Promise<Response> {
+  return sandboxDoor(request, EGRESS_BODY_MAX, async () => {
+    const sandbox = await sandboxToken(request, env);
+    return bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, run, { secret });
+  }, ({ binding, stub }, body) => stub.runDecide(binding, body));
+}
+
+/**
  * A run's event door (ADR-034 decision 10), the runner's `POST` of its frames and its end
  * (`runEvents`), and a sign-in's (slice SIGNIN), the runner's `ta.signin` frames of the
  * vendor's own sign-in it drives (`signinEvents`): each by the runner's secret, each frame
@@ -368,12 +383,14 @@ async function egress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
     throw refused("not_found");
   }
   switch (door?.door) {
-    case "mcp": {
+    case "mcp":
+    case "decide": {
       const secret = secretOf(request, door.secret);
       if (secret === undefined) {
         throw refused("run_secret_missing");
       }
-      return serveRunMcp(request, env, door.run, secret);
+      return door.door === "mcp" ? serveRunMcp(request, env, door.run, secret)
+        : serveDecide(request, env, door.run, secret);
     }
     case "events":
       return serveEvents(request, env, { run: door.run });

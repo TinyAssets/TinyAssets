@@ -600,6 +600,7 @@ export interface DoorTypes {
   readonly egressBeat: { readonly loose: [request: BeatRequest] };
   readonly egressSettle: { readonly loose: [request: SettleSent] };
   readonly runEvents: { readonly handed: true };
+  readonly runDecide: { readonly handed: true };
   readonly signinEvents: { readonly loose: [request: SigninEventsRequest] };
   readonly signinReport: { readonly handed: true };
   readonly fileChanges: { readonly handed: true };
@@ -637,7 +638,9 @@ export interface DoorTypes {
         readonly vcpu_seconds: number; readonly gb_seconds: number }[] };
   };
   readonly policyRead: {
-    readonly answer: { readonly generation: number; readonly policy: PolicyDocument };
+    readonly answer: { readonly generation: number; readonly policy: PolicyDocument;
+                       readonly notes: readonly { readonly holds_at: readonly string[];
+                                                  readonly not_enforced: readonly string[] }[] };
   };
   readonly policyProposal: { readonly answer: { readonly digest: string } };
   readonly grantList: {

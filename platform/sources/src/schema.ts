@@ -27,6 +27,10 @@
  *   among them; and a sign-in with regions takes the owner's choice as `{region}`. The
  *   checker holds shape only: no vendor is named there.
  *
+ * A CLI's own pre-tool hook (`decide`, R5 P-hooks; d3 §N3) is data too: where its root-owned
+ * config goes, its template, the CLI's own names for each tool kind and for an MCP tool, and
+ * whether a hook that cannot start lets the call through; or why none holds.
+ *
  * A gateway source (`api_key`, `oauth`) names the pi-ai provider (`custom` for a declared
  * endpoint), the API its models speak, the base URL, how the secret is sent (`auth`), the
  * setup check (`verify_url`), the only endpoints the secret may reach, and its `engines`:
@@ -40,6 +44,7 @@
  * A record from outside the platform's own (an MCP server's authorization server, a source
  * from an owner's package) is marked `curated: false`; none exists yet.
  */
+import type { HookKind } from "../../contract/src/acts";
 import type { Endpoint, Upstream } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -209,6 +214,31 @@ export interface LoginSpec {
   readonly logout_argv?: readonly string[];
 }
 
+/**
+ * The CLI's own pre-tool hook, which runs the hook helper (`sandbox/runner/decide.ts`) on each
+ * tool call it matches, written only for a run whose owner has a rule it can hold. The helper
+ * reads the call as every CLI here hands it (`tool_name`, `tool_input`) and answers in the one
+ * shape each reads: allow, exit 0 and `{}`; refuse, exit 2 and the reason on stderr.
+ * - `file`: where the config goes. Under `{system}`, the run's own (merged into the record's
+ *   file of that path, if any); else a root path under `/etc` every run of the engine shares
+ *   (a managed settings file), which the latest run's start writes for the owner's rules.
+ * - `template`: the file, `{matcher}` the anchored pattern of the CLI's tool names to match
+ *   and `{decide}` the helper's command line, each filled as its quoted value.
+ * - `argv`: what loads the file, where the CLI takes it from its command line.
+ * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
+ *   it lacks, no rule holds at its hook.
+ * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
+ * - `fails`: whether a hook that cannot start lets the call through (`open`, closed by the
+ *   runner's start check alone) or blocks it.
+ * - `cite`, `read`: the vendor's page for all of it, and when it was read.
+ */
+export type Decide =
+  | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
+      readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
+      readonly mcp: { readonly prefix: string; readonly join: string };
+      readonly fails: "open" | "closed"; readonly cite: string; readonly read: string }
+  | { readonly unsupported: string };
+
 /** An engine (`connect: ["cli"]`): a provider's own CLI, run whole in the sandbox. */
 export interface CliSpec {
   readonly install: Install;
@@ -223,6 +253,7 @@ export interface CliSpec {
   readonly instructions: Instructions;
   readonly skills_paths: readonly string[];
   readonly mcp: Mcp;
+  readonly decide: Decide;
   /**
    * Where the CLI's model calls carry the run's own secret as a header (`x-ta-run`) rather
    * than in their base URL's path: the variable it reads extra headers from, and the

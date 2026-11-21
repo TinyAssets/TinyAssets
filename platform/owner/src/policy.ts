@@ -88,7 +88,7 @@ import { codePoints } from "../../contract/src/text";
 import {
   type Call, type Door, type DoorUnits, type ImportLine, type LiveSession, proven,
 } from "./door";
-import type { ActionReceipt, Actions } from "./actions";
+import { type ActionReceipt, type Actions, type RuleNote, ruleNotes } from "./actions";
 import type { Egress } from "./egress";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
@@ -566,8 +566,11 @@ export const policyDoors = Object.freeze({
     return o.policy.propose(r["change"], r["request_id"] ?? null,
                               account.origin?.client ?? OWNER, clock());
   },
-  policyRead(o: PolicyDoorNeeds, { account: { owner } }: Call<undefined>): Projection {
-    return o.policy.projection(owner);
+  /** The policy, and where each of its action rules holds and can't (`ruleNotes`). */
+  policyRead(o: PolicyDoorNeeds, { account: { owner } }: Call<undefined>):
+      Projection & { notes: RuleNote[] } {
+    const projection = o.policy.projection(owner);
+    return { ...projection, notes: ruleNotes(projection.policy) };
   },
   /** The policy's receipts, each bucket's last `receiptsListed`, and the action rules'. */
   policyReceipts(o: PolicyDoorNeeds, _call: Call<undefined>):

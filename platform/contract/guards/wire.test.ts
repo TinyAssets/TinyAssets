@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { egressBaseUrl, egressDoor, runUrls, signinUrls, SYNC_DOORS } from "../src/egress";
+import { decideUrl, egressBaseUrl, egressDoor, runUrls, signinUrls, SYNC_DOORS }
+  from "../src/egress";
 import { FOREIGN_OWNER, REHEARSAL_OWNER, reservedOwner } from "../src/ids";
 import { ownerMessage } from "../src/queues";
 import { refusalOf } from "../src/refusal";
@@ -48,6 +49,11 @@ describe("the egress host's doors", () => {
         path: "/v1/chat/completions" });
     expect(SYNC_DOORS.map((sync) => egressDoor(`/sync/${sync}`)))
       .toEqual(SYNC_DOORS.map((sync) => ({ door: "sync", sync })));
+    // The decide door beside the MCP door, on its origin: only from a URL with the secret.
+    expect(decideUrl(urls.mcp)).toBe(urls.mcp.replace(/\/mcp$/, "/decide"));
+    expect(egressDoor(path(decideUrl(urls.mcp))))
+      .toEqual({ door: "decide", run: RUN, secret: SECRET });
+    expect(refused(() => decideUrl(urls.mcp_bare))).toBe("invalid");
   });
 
   it.each([

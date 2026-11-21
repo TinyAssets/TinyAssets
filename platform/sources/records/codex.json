@@ -233,6 +233,25 @@
         "note": "A server given by -c is the run's own config, read without a project-trust prompt in exec mode."
       }
     },
+    "decide": {
+      "file": "/etc/codex/requirements.toml",
+      "template": "[features]\nhooks = true\n\n[[hooks.PreToolUse]]\nmatcher = \"{matcher}\"\n\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"{decide}\"\ntimeout = 60\n",
+      "kinds": {
+        "shell": [
+          "Bash"
+        ],
+        "file_write": [
+          "apply_patch"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp__",
+        "join": "__"
+      },
+      "fails": "open",
+      "cite": "https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/hooks/src/engine/discovery.rs",
+      "read": "2026-11-21"
+    },
     "tools": {
       "deny": {
         "argv": [

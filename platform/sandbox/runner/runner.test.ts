@@ -295,6 +295,83 @@ describe("the invocation", () => {
   });
 });
 
+describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
+  const MANAGED = "/etc/claude-code/managed-settings.json";
+  /** The decide door's checks the run's start asked, the runner's and its helper's. */
+  const checks = () => doors.posts.filter((post) => post.path.endsWith("/decide")
+    && post.body["check"] === true);
+  /** The door's check answered with `tools`, then each later check with `then`. */
+  function answering(tools: string[],
+                     then: { status: number; value: unknown } = { status: 200, value: { tools } }) {
+    let asked = 0;
+    doors.decide = (body) => body["check"] !== true ? { status: 200, value: { allow: true } }
+      : (asked += 1) === 1 ? { status: 200, value: { tools } } : then;
+  }
+
+  it("is written for the tools the owner's rules name, after the helper's start check",
+     async () => {
+    answering(["Bash", "mcp__gmail__send_.*"]);
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [MANAGED] });
+    const { start } = await run("claude-code");
+    const seen = box.ran("claude-code").at(-1)!;
+    expect(seen.env["TA_DECIDE"]).toBe(start.urls.mcp.replace(/\/mcp$/, "/decide"));
+    const hook = JSON.parse(seen.dumps[MANAGED]!).hooks.PreToolUse;
+    expect(hook).toEqual([{ matcher: "^(?:Bash|mcp__gmail__send_.*)$", hooks: [{
+      type: "command", timeout: 60, onFailure: "block",
+      command: `/usr/local/bin/node --no-warnings ${RUNNERS}/${box.digest}/runner.mjs decide` }]
+    }]);
+    expect(checks()).toHaveLength(2);
+  });
+
+  it("is none, and its shared file gone, when no rule names a tool it matches", async () => {
+    answering(["Bash"]);
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [MANAGED] });
+    await run("claude-code");
+    answering([]);
+    doors.posts.length = 0;
+    const { start } = await run("claude-code");
+    const seen = box.ran("claude-code").at(-1)!;
+    expect([seen.dumps[MANAGED], seen.env["TA_DECIDE"]])
+      .toEqual([null, start.urls.mcp.replace(/\/mcp$/, "/decide")]);
+    expect(checks()).toHaveLength(1);
+  });
+
+  it("fails the run loudly when its helper cannot reach the owner's rules", async () => {
+    answering(["Bash"], { status: 403, value: { error: { message: "owner_suspended" } } });
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    const before = box.ran("claude-code").length;
+    const { end } = await run("claude-code");
+    expect(end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.runner_error")!["message"])
+      .toMatch(/the CLI's hook could not reach the owner's rules \(exit 2\): owner_suspended/);
+    expect(box.ran("claude-code")).toHaveLength(before);
+  });
+
+  it("is the run's own file where the CLI loads it from its argv or its system settings",
+     async () => {
+    answering(["bash"]);
+    const piStart = startDoc(doors, "pi", { config: config("pi") });
+    const piFile = `/etc/ta/runs/${piStart.run}/decide.mjs`;
+    box.cli("pi", { lines: SHAPES["pi"]!.lines, dumps: [piFile] });
+    box.start(piStart);
+    box.runner("launch", piStart.run);
+    await doors.ended_(25_000, piStart.run);
+    const pi = box.ran("pi").at(-1)!;
+    expect(pi.argv.join(" ")).toContain(`-e ${piFile}`);
+    expect(pi.dumps[piFile]).toContain('new RegExp("^(?:bash)$")');
+    answering(["run_shell_command"]);
+    const geminiStart = startDoc(doors, "gemini", { config: config("gemini") });
+    const settings = `/etc/ta/runs/${geminiStart.run}/gemini-settings.json`;
+    box.cli("gemini", { lines: SHAPES["gemini"]!.lines, dumps: [settings] });
+    box.start(geminiStart);
+    box.runner("launch", geminiStart.run);
+    await doors.ended_(25_000, geminiStart.run);
+    const gemini = JSON.parse(box.ran("gemini").at(-1)!.dumps[settings]!);
+    expect([gemini.hooks.BeforeTool[0].matcher, gemini.mcpServers.tinyassets.httpUrl])
+      .toEqual(["^(?:run_shell_command)$", geminiStart.urls.mcp]);
+  });
+});
+
 describe("the env files a CLI would load", () => {
   it.each([
     ["the agent's .env", "/workspace/agents/main/.env", "ANTHROPIC_API_KEY=sk-x\n"],

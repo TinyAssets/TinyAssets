@@ -820,6 +820,11 @@ export class Runs {
     return this.#waiting({ ...held, request: null, mail: null }, prompt, origin, now);
   }
 
+  /** The engine `runId` runs on (its source), or null for a run this object has no row of. */
+  engineOf(runId: string): string | null {
+    return this.#run(runId)?.source ?? null;
+  }
+
   /**
    * The waiting run whose turn it is, oldest first: the first waiting in a conversation with
    * no live run, while the tier has room, and not one waiting for a sandbox until the

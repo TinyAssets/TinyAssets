@@ -18,9 +18,9 @@
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
-export const PROTOCOL = 1;
+export const PROTOCOL = 2;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([1]);
+export const SPEAKS: readonly number[] = Object.freeze([1, 2]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({
@@ -41,6 +41,7 @@ export const COMMAND = Object.freeze({
   run: "run",
   loginRun: "login-run",
   sync: "sync",
+  decide: "decide",
 } as const);
 
 export type Command = (typeof COMMAND)[keyof typeof COMMAND];
@@ -53,9 +54,12 @@ export const WORKER_COMMANDS = Object.freeze([
 ] as const);
 export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
 
-/** What the runner runs of its own: a job's detached runner, and the sync agent. */
+/**
+ * What the runner runs of its own: a job's detached runner, the sync agent, and the hook
+ * helper a run's CLI runs.
+ */
 export const INTERNAL_COMMANDS = Object.freeze([COMMAND.run, COMMAND.loginRun,
-                                                COMMAND.sync] as const);
+                                                COMMAND.sync, COMMAND.decide] as const);
 
 /**
  * Retired: commands protocol 1 records that the runner no longer takes. The template's

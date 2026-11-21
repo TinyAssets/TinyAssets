@@ -225,6 +225,28 @@
         "note": "A non-bare -p run loads its --mcp-config without folder trust; --strict-mcp-config ignores every other server. Neither is restored on resume, so both go on every run."
       }
     },
+    "decide": {
+      "file": "/etc/claude-code/managed-settings.json",
+      "template": "{\"hooks\": {\"PreToolUse\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"type\": \"command\", \"command\": \"{decide}\", \"timeout\": 60, \"onFailure\": \"block\"}]}]}}",
+      "kinds": {
+        "shell": [
+          "Bash",
+          "Monitor"
+        ],
+        "file_write": [
+          "Write",
+          "Edit",
+          "NotebookEdit"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp__",
+        "join": "__"
+      },
+      "fails": "closed",
+      "cite": "https://code.claude.com/docs/en/hooks",
+      "read": "2026-11-21"
+    },
     "run_secret_env": {
       "env": "ANTHROPIC_CUSTOM_HEADERS",
       "value": "x-ta-run: {run_secret}"

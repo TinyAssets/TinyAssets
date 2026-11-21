@@ -251,6 +251,82 @@ describe("a run's call", () => {
   });
 });
 
+describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", () => {
+  /** The owner's run of `main` on `engine`, and its decide door's binding. */
+  async function hooked(engine = "claude-code") {
+    const r = await gated();
+    const o = { stub: r.stub, owner: r.bind(), session: r.session() };
+    const { start } = await ownerRun(r.stub, r.bind(), {
+      engine, credential: "vendor_login_in_sandbox", scopes: ALL_SCOPES });
+    return { r, o, run: runBinding(r, start) };
+  }
+
+  it("names the tools the hook matches for the owner's rules, as its CLI names them", async () => {
+    const { r, o, run } = await hooked();
+    expect(await r.stub.runDecide(run, { check: true })).toEqual({ tools: [] });
+    await ruled(o, [{ act: "workspace.shell", do: "ask" },
+                    { act: "people.message", do: "never", agent: "other",
+                      tools: ["mcp:gmail:send_*", "mcp:my-mail:post.v2"] }]);
+    // Every rule's tools, any agent's: the decision holds each rule to its own agent.
+    expect(await r.stub.runDecide(run, { check: true })).toEqual({ tools: [
+      "Bash", "Monitor", "mcp__gmail__send_.*", "mcp__my.mail__post.v2"].sort() });
+    const gemini = await hooked("gemini");
+    await ruled(gemini.o, [{ act: "people.message", do: "ask", tools: ["mcp:gmail:send_*"] }]);
+    expect(await gemini.r.stub.runDecide(gemini.run, { check: true }))
+      .toEqual({ tools: ["mcp_gmail_send_.*"] });
+  });
+
+  it("decides the call as each act it is, the strictest first, at the tool as its door",
+     async () => {
+    const { r, o, run } = await hooked();
+    const call = (tool_name: string, tool_input: unknown) =>
+      r.stub.runDecide(run, { tool_name, tool_input });
+    expect(await call("Bash", { command: "ls" })).toEqual({ allow: true });
+    await ruled(o, [{ act: "workspace.shell", do: "ask" },
+                    { act: "people.message", do: "never", tools: ["mcp:gmail:send_*"] }]);
+    const card = await heldCard(() => call("Bash", { command: "curl example.com" }));
+    expect((await r.stub.actionRequest(o.owner, { card_id: card })).card).toMatchObject({
+      act: "workspace.shell", door: "Bash", agent: "main",
+      request: JSON.stringify({ command: "curl example.com" }) });
+    expect((await failure(() => call("mcp__gmail__send_mail", { to: "a@b.c" }))).code)
+      .toBe("action_never");
+    expect(await call("Read", { file_path: "/workspace/a" })).toEqual({ allow: true });
+    expect(await call("mcp__gmail__read", {})).toEqual({ allow: true });
+    // A run on an engine with no hook is let be: its rules hold at the doors alone.
+    const kimi = await hooked("kimi");
+    await ruled(kimi.o, [{ act: "workspace.shell", do: "never" }]);
+    expect(await kimi.r.stub.runDecide(kimi.run, { check: true })).toEqual({ tools: [] });
+    expect(await kimi.r.stub.runDecide(kimi.run, { tool_name: "Shell", tool_input: {} }))
+      .toEqual({ allow: true });
+  });
+
+  it("is a run's alone, and a call with a tool's name", async () => {
+    const { r, run } = await hooked();
+    expect((await failure(() => r.stub.runDecide(r.bind(), { check: true }))).message)
+      .toBe("only a run's own hook asks its decide door");
+    for (const asked of [{}, { tool_name: "" }, { tool_name: 7 }, { tool_name: "a b" }]) {
+      expect((await failure(() => r.stub.runDecide(run, asked as never))).code)
+        .toBe("invalid");
+    }
+  });
+});
+
+describe("the honest note (d3 §N5)", () => {
+  it("says beside each rule where it holds and where it can't", async () => {
+    const { o } = await ledgerOwner();
+    await ruled(o, [{ act: "workspace.shell", do: "ask" },
+                    { act: "people.message", do: "never", tools: ["mcp:gmail:send_*"] },
+                    { act: "workspace.workflows", do: "ask" }]);
+    const unheld = ["main_agent", "sandbox_programs", "codex.fails_open", "gemini.fails_open",
+                    "kimi"];
+    expect((await o.stub.policyRead(o.owner)).notes).toEqual([
+      { holds_at: ["claude-code", "codex", "gemini", "pi"], not_enforced: unheld },
+      { holds_at: ["doors", "claude-code", "codex", "gemini", "pi"], not_enforced: unheld },
+      { holds_at: ["doors"], not_enforced: [] },
+    ]);
+  });
+});
+
 describe("a run's held call (R5 P-resume)", () => {
   /** The owner's run of `main` on Claude Code, its file changes asked first, held and ended. */
   async function asking() {

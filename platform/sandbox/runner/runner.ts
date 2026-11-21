@@ -28,7 +28,10 @@
  *   taken and its home made from the engine's store (its `secret_paths` and
  *   `session_paths`, nothing else: a CLI's other home files never outlive a run), the
  *   refusal of env files the CLI would load (its home's, the agent's, and every ancestor's
- *   of its cwd), the CLI as that user from the record, its events framed and posted (a batch
+ *   of its cwd), the CLI's own pre-tool hook where the owner's rules name tools it matches
+ *   (asked of the run's decide door first, its file written, then the helper's start check
+ *   as that user: one that fails fails the run, so a hook that fails open never starts
+ *   broken), the CLI as that user from the record, its events framed and posted (a batch
  *   at least every `HEARTBEAT_MS`); at its end every process of the user killed, the kept
  *   paths back into the store, the files synced out, the user given back, then the end.
  * - `cancel <run>`: SIGTERM to the CLI, a kill after `KILL_GRACE_MS`; 3 when not live.
@@ -43,6 +46,7 @@
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
+ * - `decide` (internal, as a run's user, by its CLI's hook): the hook helper (`decide.ts`).
  * - `login-launch <id>`: the vendor's own sign-in (`login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
@@ -70,12 +74,13 @@ import { createInterface } from "node:readline";
 import { RUN_BASICS } from "../../sources/src/run-env";
 import { type Served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
-import { RUNNER_HEADER } from "../../contract/src/egress";
+import { decideUrl, RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
-import { binPath, HOMES, invocation, isKept, keptPaths } from "./engine";
+import { binPath, HOMES, type Invocation, invocation, isKept, keptPaths } from "./engine";
+import { DECIDE_MS, decideCommand, helperArgv, helperCommand, hookTools } from "./decide";
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
@@ -1036,6 +1041,38 @@ function scratchFor(start: StartDoc, run: string):
   return { dir, notice: scratchCleared(pruned) };
 }
 
+/**
+ * The hook file every run of an engine shares (`Invocation.shared`): written root's, readable
+ * by every user, or removed when the owner's rules name no tool it matches.
+ */
+function writeShared(shared: Invocation["shared"]): void {
+  if (shared === null) {
+    return;
+  }
+  if (shared.text === null) {
+    remove(shared.path);
+    return;
+  }
+  safeWrite("/", shared.path, new TextEncoder().encode(shared.text), 0o644, undefined, 0o755);
+}
+
+/**
+ * The hook's start check: the helper as the run's user, in the CLI's own environment, asks
+ * the decide door as the hook will; any failure fails the run loudly.
+ */
+async function startCheck(as: { uid: number; gid: number }, call: Invocation): Promise<void> {
+  const check = spawnBounded(asUser(as, [shared()], [...helperArgv(ownDigest()), "check"]), {
+    cwd: call.cwd, env: { ...call.env }, stdio: ["ignore", "ignore", "pipe"] }, DECIDE_MS * 2);
+  let stderr = "";
+  check.child.stderr!.on("data", (data: Buffer) => {
+    stderr = (stderr + data.toString("utf8")).slice(-FRAME_UNITS_MAX);
+  });
+  const code = await check.exit;
+  if (code !== 0) {
+    throw new Error(`the CLI's hook could not reach the owner's rules (exit ${code}): ${stderr}`);
+  }
+}
+
 async function runCommand(run: string, recovering: boolean): Promise<number> {
   const dir = jobDir("run", run);
   const start = readJson<StartDoc>(`${dir}/${JOB_FILES.start}`);
@@ -1112,10 +1149,16 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       continued = existsSync(conversationDir);
       safeDirs("/", conversationDir, 0o700);
     }
+    // The tools the owner's rules name that the CLI's own hook matches, asked first: its
+    // file is written only for those.
+    const hook = "unsupported" in cli.decide ? {}
+      : { hook: { tools: await hookTools(decideUrl(start.urls.mcp)),
+                  command: helperCommand(ownDigest()) } };
     let call = invocation(rec, start, process.env, {
-      continued, home, system,
+      continued, home, system, ...hook,
       ...(conversationDir === undefined ? {} : { conversationDir }),
       ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
+    writeShared(call.shared);
     if (recovering && !call.resumed) {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
                            "rebooted sandbox cannot continue it");
@@ -1136,6 +1179,9 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         if (refusal !== null) {
           outbox.push({ type: "ta.refused", ...refusal });
           throw new RunRefused(refusal.code);
+        }
+        if ((hook.hook?.tools.length ?? 0) > 0) {
+          await startCheck(as, call);
         }
         const events = cli.engine.events;
         for (let attempt = 0; ; attempt += 1) {
@@ -1189,7 +1235,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           }
           await killAll(as);
           call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-            continued: true, home, system, prompt: CONTINUE_PROMPT,
+            continued: true, home, system, prompt: CONTINUE_PROMPT, ...hook,
             ...(conversationDir === undefined ? {} : { conversationDir }) });
           if (!call.resumed) {
             break;
@@ -1498,6 +1544,8 @@ const HANDLERS: { readonly [C in Command]: Handler } = {
   [COMMAND.run]: (args) => runCommand(args[0] ?? "", args[1] === RECOVERING),
   [COMMAND.loginRun]: (args) => loginRun(args[0] ?? ""),
   [COMMAND.sync]: () => syncCommand(),
+  [COMMAND.decide]: (args) => decideCommand(args, process.env, process.stdin, process.stdout,
+                                            process.stderr),
 };
 
 export async function main(argv: readonly string[]): Promise<number> {

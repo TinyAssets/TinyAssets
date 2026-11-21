@@ -91,6 +91,7 @@ export interface DoorRequests {
   readonly fileHistoryPurge: DoorFields<"path">;
   readonly fileChanges: DoorFields<"after" | "limit">;
   readonly runEvents: DoorFields<"frames", "end">;
+  readonly runDecide: DoorFields<never, "check" | "tool_name" | "tool_input">;
   readonly signinStart: DoorFields<"engine", "authority" | "region" | "mode">;
   readonly signinCode: DoorFields<"id" | "code">;
   readonly signinCancel: DoorFields<"id">;

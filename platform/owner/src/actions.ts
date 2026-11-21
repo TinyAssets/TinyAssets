@@ -16,6 +16,15 @@
  *   and, for a run's call, its conversation. The same call held again answers the same card.
  *   A yes keeps the row as the call's once-approval for `approvalTtlS`, which its one use
  *   deletes; a no deletes it.
+ * - **A run's CLI's own tool calls are decided too** (R5 P-hooks): its pre-tool hook, where its
+ *   engine's record has one (`schema.ts` `Decide`), asks the run's decide door of each call it
+ *   matches (`runDecide`). A call is each act whose hook kinds name the tool (`acts.json`) or
+ *   one of whose rules names it (`tools`), decided as a door's call of that act is, the strictest
+ *   first, its door the tool's name and its request the tool's input. Which tools the hook
+ *   matches is the owner's rules' (`hookTools`), for every agent: the decision holds each rule
+ *   to its own agent.
+ * - **The honest note** (d3 §N5, `ruleNotes`): each rule's places it holds and can't, which
+ *   `policyRead` answers beside the rules.
  * - **A yes to a run's call resumes its conversation** (R5 P-resume): the approval writes a
  *   run waiting there (`Runs.resume`) under the held run's authority, on an input naming the
  *   card, so the agent makes the call again and the approval admits it. A main agent's
@@ -33,14 +42,17 @@
  * Every change runs in one `transactionSync`; a refusal is thrown once what it receipts is
  * written, in the caller's unit, so the card and its receipt stand.
  */
-import { actNamed } from "../../contract/src/acts";
+import { actNamed, type HookKind } from "../../contract/src/acts";
 import { canonical } from "../../contract/src/canonical";
+import { actDoors } from "../../contract/src/doors";
 import { sha256Hex } from "../../contract/src/digest";
 import { randomHex } from "../../contract/src/ids";
 import {
   type ActionRule, policyDigest, type PolicyDocument, POLICY_LIMITS,
 } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
+import { served, servedRecord } from "../../sources/src/served";
+import type { Decide } from "../../sources/src/schema";
 import { clock } from "./clock";
 import { type Account, type Call, type LiveSession, proven } from "./door";
 import type { OwnerStorage } from "./gate";
@@ -105,6 +117,76 @@ export function ruleOn(document: PolicyDocument, act: string, actor: Actor):
     && (rule.agent === undefined || rule.agent === actor.agent));
   return holding.some((rule) => rule.do === "never") ? "never"
     : holding.length > 0 ? "ask" : null;
+}
+
+/** A CLI's own pre-tool hook, as its engine's record has it. */
+type Hook = Exclude<Decide, { readonly unsupported: string }>;
+
+/** The hook of `engine`'s record, or null for one that has none. */
+export function hookOf(engine: string | null): Hook | null {
+  const decide = engine === null ? undefined : servedRecord(engine)?.cli.decide;
+  return decide === undefined || "unsupported" in decide ? null : decide;
+}
+
+/**
+ * A pattern of a name part a rule's `tools` matcher writes (`mcp:<server>:<tool>`): each `*`
+ * any run of characters, each character but a letter, a digit or `_` any one (a CLI rewrites
+ * those in its own names, each its own way), the rest itself. So the pattern holds every name
+ * a CLI may give the tool, never fewer.
+ */
+function partPattern(glob: string): string {
+  return [...glob].map((char) => char === "*" ? ".*" : /[A-Za-z0-9_]/.test(char) ? char : ".")
+    .join("");
+}
+
+/** The patterns of the CLI's tool names that are `act`, as `document`'s rules write it. */
+function actTools(document: PolicyDocument, act: string, hook: Hook): string[] {
+  const kinds = actNamed(act)?.hook ?? [];
+  const named = (document.actions ?? []).filter((rule) => rule.act === act)
+    .flatMap((rule) => rule.tools ?? []).map((matcher) => {
+      const [, server, tool] = matcher.split(":") as [string, string, string];
+      return `${hook.mcp.prefix}${partPattern(server)}${hook.mcp.join}${partPattern(tool)}`;
+    });
+  return [...kinds.flatMap((kind: HookKind) => (hook.kinds[kind] ?? [])
+    .map((name) => name.replaceAll(".", "\\."))), ...named];
+}
+
+/** Where a rule holds, and where it can't (`ruleNotes`). */
+export interface RuleNote {
+  readonly holds_at: readonly string[];
+  readonly not_enforced: readonly string[];
+}
+
+/**
+ * The honest note (d3 §N5) of each of `document`'s rules, in order, from `acts.json` and the
+ * engines' records. It holds at `doors` (the platform's own tools and doors that do its act)
+ * and at each engine whose CLI's own hook sees it (by its kinds, or the rule's tools). It
+ * can't hold where `acts.json` says nothing of ours sees the act (`unseen`), at an engine
+ * whose CLI holds no hook for it, nor, mid-run, at a hook whose failure lets the call through
+ * (`<engine>.fails_open`). Every engine is named: an agent's engine is `auto`, or its own to
+ * change, so no rule is held to one.
+ */
+export function ruleNotes(document: PolicyDocument): RuleNote[] {
+  return (document.actions ?? []).map((rule) => {
+    const act = actNamed(rule.act)!;
+    const holds: string[] = actDoors(rule.act).length > 0 ? ["doors"] : [];
+    const not: string[] = [...act.unseen];
+    if (act.hook.length > 0 || rule.tools !== undefined) {
+      for (const engine of [...served().keys()].sort()) {
+        const hook = hookOf(engine);
+        if (hook === null || (rule.tools === undefined
+                              && !act.hook.some((kind) => hook.kinds[kind] !== undefined))) {
+          not.push(engine);
+          continue;
+        }
+        holds.push(engine);
+        if (hook.fails === "open") {
+          not.push(`${engine}.fails_open`);
+        }
+      }
+    }
+    return { holds_at: holds, not_enforced: not };
+  });
 }
 
 /** What a call asks: the door it came to, and its request as asked. */
@@ -197,6 +279,32 @@ export class Actions {
   /** Whether any rule names `act`: only then is a call of it decided at all. */
   ruled(act: string): boolean {
     return (this.#policy().document.actions ?? []).some((rule) => rule.act === act);
+  }
+
+  /**
+   * The patterns of the CLI's tool names `hook` matches for the owner's rules, every act a
+   * rule names: none when no rule is on an act its hook sees.
+   */
+  hookTools(hook: Hook): string[] {
+    const { document } = this.#policy();
+    const acts = new Set((document.actions ?? []).map((rule) => rule.act));
+    return [...new Set([...acts].flatMap((act) => actTools(document, act, hook)))].sort();
+  }
+
+  /**
+   * In the caller's unit: a run's tool call at its CLI's hook decided, as each act it is
+   * (`actTools`), the strictest rule's first; it returns when every one lets it be.
+   */
+  decideTool(actor: Actor, hook: Hook, tool: string, input: unknown, now: number): void {
+    const { document } = this.#policy();
+    const acts = [...new Set((document.actions ?? []).map((rule) => rule.act))]
+      .filter((act) => actTools(document, act, hook).some((pattern) =>
+        new RegExp(`^(?:${pattern})$`).test(tool)))
+      .sort((a, b) => Number(ruleOn(document, b, actor) === "never")
+        - Number(ruleOn(document, a, actor) === "never"));
+    for (const act of acts) {
+      this.decide(act, actor, { door: tool, request: input }, now);
+    }
   }
 
   /** Rows past their life, and rows asked under another generation, deleted. */
@@ -390,11 +498,22 @@ export interface ActionAnswerRequest {
 // doors reach (`ActionsDoorNeeds`) once the row's steps held: the bind, the account, the
 // scope and the fields.
 
+/** What a run's hook helper asks: the tools its hook matches, or one call it saw. */
+export interface DecideRequest {
+  readonly check?: true;
+  readonly tool_name?: string;
+  readonly tool_input?: unknown;
+}
+
+/** A tool's name, as a CLI hands its hook one. */
+const TOOL = /^[A-Za-z0-9_.:-]{1,256}$/;
+
 /** What the `actions` doors reach: the held calls, and the runs a yes resumes. */
 export interface ActionsDoorNeeds {
   readonly actions: Actions;
   readonly runs: { resume(run: string, family: string | null, prompt: string, now: number):
-                     string | null };
+                     string | null;
+                   engineOf(run: string): string | null };
 }
 
 /** The `actions` doors' handlers, by door. */
@@ -417,6 +536,31 @@ export const actionsDoors = Object.freeze({
     const now = clock();
     return o.actions.approve(session, r["card_id"], r["digest"], now,
                              (run, family, prompt) => o.runs.resume(run, family, prompt, now));
+  },
+  /**
+   * A run's decide door, which its hook helper asks (`sandbox/runner/decide.ts`): with `check`,
+   * the patterns of the tool names its CLI's hook matches for the owner's rules (none for an
+   * engine with no hook); else the tool call its hook saw, decided (`decideTool`), refused as
+   * a door's call of its act is.
+   */
+  runDecide(o: ActionsDoorNeeds, { account, r }: Call<DecideRequest>):
+      { tools: string[] } | { allow: true } {
+    const actor = decidedActor(account);
+    if (account.run === null || actor === null) {
+      throw new Refusal("refused", "only a run's own hook asks its decide door");
+    }
+    const hook = hookOf(o.runs.engineOf(account.run.id));
+    if (r["check"] === true) {
+      return { tools: hook === null ? [] : o.actions.hookTools(hook) };
+    }
+    const tool = r["tool_name"];
+    if (typeof tool !== "string" || !TOOL.test(tool)) {
+      throw new Refusal("invalid", "invalid decide request");
+    }
+    if (hook !== null) {
+      o.actions.decideTool(actor, hook, tool, r["tool_input"] ?? null, clock());
+    }
+    return { allow: true };
   },
   /** The owner's no, in its session: the held call's card gone. */
   actionRefuse(o: ActionsDoorNeeds, { session, r }: Call<ActionAnswerRequest, "session">):

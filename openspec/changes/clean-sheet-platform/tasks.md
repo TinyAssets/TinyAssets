@@ -592,13 +592,17 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     stop matcher in its record's `events`; a held call's digest bound to its run's
     conversation; owner migration 18 (`untangle/r5-resume-hooks`; `r5-resume-hooks.md`).
   - [x] Owner migration 18's pin, after P-resume merges (`untangle/r5-resume-pin18`).
-  - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
-    `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
-    when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
-    rule where it holds and where it can't (`holds_at`, `not_enforced`), from `acts.json` and
-    the agent's engine record; a held call the hook deferred resumes on no input, and its
-    conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
-    pass lands, since the runner writes the files (`untangle/r5-hooks`).
+  - [x] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
+    `sources/src/schema.ts` and the five records (Kimi's holding none); the runner writes the
+    root-owned files only when needed, and runs the start check; the honest note (d3 §N5):
+    `policyRead` gives each rule where it holds and where it can't (`holds_at`,
+    `not_enforced`), from `acts.json` and the engines' records. No engine defers: a held call
+    is refused with its card on every CLI (`untangle/r5-hooks`; `r5-hooks.md`), after the
+    protocol's expand deploy (`untangle/r5-hooks-speaks`).
+  - [ ] P-defer, only if d3 §N9's first live check shows Claude's turn of several tool calls
+    denies a deferred call: `defer` in the hook's data and Claude's record; a held call the
+    hook deferred resumes on no input, and its conversation waits on its card
+    (`r5-resume-hooks.md` items 6 and 7; `r5-hooks.md` item 1; `untangle/r5-defer`).
   - [x] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file
     (`policy.json`); the notice's words as data (`import/notice.json`). A spend cap refuses

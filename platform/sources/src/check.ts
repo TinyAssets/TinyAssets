@@ -5,6 +5,7 @@
  * (`catalog.ts`). Its gateway part is the gateway's own check (`contract/src/egress-scope.ts`),
  * and `sealedSource` is what the doors hand the gateway to seal.
  */
+import { isHookKind } from "../../contract/src/acts";
 import { object, whole } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
 import {
@@ -16,9 +17,9 @@ import { forbids, SOURCE_ID } from "../../contract/src/text";
 
 import { RUN_BASICS } from "./run-env";
 import {
-  type ApiKeyEnv, type CliSpec, type ConnectMethod, type Engine, type HostedUse, type Install,
-  type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential, type Region,
-  type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
+  type ApiKeyEnv, type CliSpec, type ConnectMethod, type Decide, type Engine, type HostedUse,
+  type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
+  type Region, type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
 } from "./schema";
 import type { CredentialKind } from "../../contract/src/sandbox";
 
@@ -163,7 +164,10 @@ const ARG = /^.{0,4096}$/su;
 const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
   "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}", "{system}",
+  "{matcher}", "{decide}",
 ]);
+/** The placeholders only the hook's template takes (`cli.decide.template`), both of them. */
+const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze(["{matcher}", "{decide}"]);
 /**
  * The one shape `{prompt}` may take in an argv: joined to its option (`--prompt={prompt}`),
  * so no prompt is ever read as an option or a file include (`-x`, `@file`). Where the CLI
@@ -330,7 +334,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   }
   const fields = check.keys(value, "cli", [
     "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
-    "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
+    "decide", "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
     "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files",
                "run_secret_env", "compaction"]);
   const argvs: [string, string[]][] = [];
@@ -475,6 +479,8 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
 
   // The MCP door's way in.
   const mcp = mcpSpec(check, fields["mcp"], argv, template, sandboxPath, declared);
+  // The CLI's own pre-tool hook.
+  const decide = decideSpec(check, fields["decide"], argv, template, declared);
 
   // The engine itself.
   const engine = engineSpec(check, fields["engine"], argv);
@@ -691,6 +697,9 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       if (found === "{run_secret}" && what !== "cli.mcp.template") {
         check.fail(`${what} uses {run_secret}, which only cli.mcp.template's header carries`);
       }
+      if (HOOK_PLACEHOLDERS.includes(found) && what !== "cli.decide.template") {
+        check.fail(`${what} uses ${found}, which only cli.decide.template carries`);
+      }
       if (found === "{mcp_config}" && !("file" in mcp)) {
         check.fail(`${what} uses {mcp_config}, which names cli.mcp.file, and there is none`);
       }
@@ -755,6 +764,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     instructions,
     skills_paths: Object.freeze(skills),
     mcp,
+    decide,
     ...(runSecretEnv === undefined ? {} : { run_secret_env: Object.freeze(runSecretEnv) }),
     ...(compaction === undefined ? {} : { compaction: Object.freeze(compaction) }),
     tools: Object.freeze(tools),
@@ -988,6 +998,77 @@ function mcpSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
     trust: Object.freeze({ argv: Object.freeze(argv(trust["argv"], "cli.mcp.trust.argv", 16)),
                            note: check.text(trust["note"], REASON, "cli.mcp.trust.note") }),
   });
+}
+
+/** A tool's name as a CLI calls it, and an MCP name's prefix and join. */
+const TOOL_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+const NAME_PART = /^[A-Za-z0-9_]{1,16}$/;
+/** A shared hook file's path: under `/etc`, no `.` or `..` segment. */
+const SHARED_PATH = /^\/etc(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,128}){1,4}$/;
+
+/**
+ * The CLI's own pre-tool hook (`Decide`): its file under `{system}` (merged into the record's
+ * JSON file of that path, if it writes one) or a shared root path under `/etc`, a `.json`,
+ * `.toml` or `.mjs` file whose template carries `{matcher}` and `{decide}` (each filled as its
+ * quoted value) and no credential key; its argv, only for a file of the run's own; its kinds'
+ * tool names; its MCP names; whether it fails open; and the page it was read from. Or why no
+ * hook holds.
+ */
+function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                    template: (item: unknown, what: string) => string,
+                    declared: readonly string[]): Decide {
+  if (object(value) && "unsupported" in value) {
+    const fields = check.keys(value, "cli.decide", ["unsupported"]);
+    return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
+                                                   "cli.decide.unsupported") });
+  }
+  const fields = check.keys(value, "cli.decide", ["file", "template", "kinds", "mcp", "fails",
+                                                  "cite", "read"], ["argv"]);
+  const file = fields["file"];
+  const own = typeof file === "string" && file.startsWith("{system}/")
+    && runFilePath(file) !== null;
+  if (typeof file !== "string" || (!own && !SHARED_PATH.test(file))
+      || !/\.(?:json|toml|mjs)$/.test(file)
+      || (declared.includes(file) && !file.endsWith(".json"))) {
+    check.fail("cli.decide.file is a .json, .toml or .mjs path under {system}, or under /etc " +
+               "shared by every run, and only a .json file the record writes besides");
+  }
+  const text = template(fields["template"], "cli.decide.template");
+  if (!HOOK_PLACEHOLDERS.every((placeholder) => text.includes(placeholder))) {
+    check.fail("cli.decide.template carries {matcher} and {decide}");
+  }
+  if (!String(file).endsWith(".mjs")) {
+    const read = settingsOf(String(file), text);
+    if (read === null || read.keys.some((key) => CREDENTIAL_KEY.test(key))) {
+      check.fail("cli.decide.template is a settings file read whole, with no credential key");
+    }
+  }
+  const loads = fields["argv"] === undefined ? undefined
+    : argv(fields["argv"], "cli.decide.argv", 8);
+  if (loads !== undefined && (!own || !loads.includes(file as string))) {
+    check.fail("cli.decide.argv loads the run's own hook file, under {system}");
+  }
+  const kinds = fields["kinds"];
+  if (!object(kinds) || Object.keys(kinds).length === 0 || !Object.entries(kinds).every(
+    ([kind, names]) => isHookKind(kind) && Array.isArray(names) && names.length > 0
+      && names.length <= 8 && names.every((name) => typeof name === "string"
+        && TOOL_NAME.test(name)))) {
+    check.fail("cli.decide.kinds maps tool kinds (acts.json) to the CLI's names of their tools");
+  }
+  const mcp = check.keys(fields["mcp"], "cli.decide.mcp", ["prefix", "join"]);
+  check.text(mcp["prefix"], NAME_PART, "cli.decide.mcp.prefix");
+  check.text(mcp["join"], NAME_PART, "cli.decide.mcp.join");
+  if (fields["fails"] !== "open" && fields["fails"] !== "closed") {
+    check.fail("cli.decide.fails is open or closed");
+  }
+  check.https(fields["cite"], "cli.decide.cite");
+  check.text(fields["read"], DATE, "cli.decide.read");
+  return Object.freeze({
+    ...fields, ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
+    kinds: Object.freeze(Object.fromEntries(Object.entries(kinds as Record<string, string[]>)
+      .map(([kind, names]) => [kind, Object.freeze([...names])]))),
+    mcp: Object.freeze(mcp),
+  }) as unknown as Decide;
 }
 
 function toolFilter(check: ReturnType<typeof checker>, value: unknown, what: string,
