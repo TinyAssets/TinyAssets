@@ -10,11 +10,12 @@
  * calls landed; output past one answer cut and said so, a value past it refused `answer_too_large`.
  * A script past its compute is the codemode Worker's to stop (`codemode/test/`).
  */
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
-import { MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
+import { type ControlStore, MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
 
 import { profileNames } from "../../contract/src/doors";
 import type { Origin } from "../../contract/src/binding";
@@ -23,7 +24,9 @@ import { PLACE_BYTES } from "../../contract/src/limits";
 import {
   CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS,
 } from "../src/codemode";
-import { CONTROL_FRESH_MS } from "../src/control-gate";
+import { CONTROL_FRESH_MS, ControlGate, objectKeeper } from "../src/control-gate";
+import { WriteGate } from "../src/gate";
+import type { OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/bodies";
 import { DEFAULT_POLICY_JSON, validate } from "../../contract/src/policy-document";
 import { customTools } from "../src/policy";
@@ -257,6 +260,35 @@ describe("the code door", () => {
     await writeControl(env.CONTROL, JSON.stringify({ ...OPEN, ordinary: "none" }));
     expect((await failure(() => r.stub.codeRun(r.bind(null), { script }))).message)
       .toBe(MAINTENANCE);
+  });
+
+  it("serves the object's gates from its own kept copy while KV can't be read", async () => {
+    // The object's keeper as the object composes it: its own SQLite row, written in a quiet
+    // unit of a write gate over its storage.
+    const down: ControlStore = { get: (() => Promise.reject(new Error("KV down"))) as never };
+    const gates = (stub: DurableObjectStub<OwnerDO>, owner: string) => runInDurableObject(stub,
+      async (_instance, state) => {
+        const write = new WriteGate(state.storage);
+        const keeper = objectKeeper(write.storage, write.quiet);
+        return [await new ControlGate(down, keeper).refusal("outside", owner),
+                await new ControlGate(down, keeper).refusal("owner", owner),
+                await new ControlGate(down, keeper).signins()];
+      });
+    // An object that never read the record keeps no copy: every gate closed.
+    const unread = `owner-${crypto.randomUUID()}`;
+    expect(await gates(env.OWNER.getByName(unread), unread))
+      .toEqual([OUTSIDE_OFF, MAINTENANCE, undefined]);
+    const r = await rig();
+    expect(await r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }))
+      .toMatchObject({ ok: true, value: 1 });
+    // The door's read kept: the copy admits as the record did, and hands no switches to keep.
+    expect(await gates(r.stub, r.owner)).toEqual([null, null, undefined]);
+    // A kill flipped before the outage holds through it.
+    await writeControl(env.CONTROL, { ...OPEN, outside: "off" });
+    later(CONTROL_FRESH_MS / 1000 + 1);
+    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+      .message).toBe(OUTSIDE_OFF);
+    expect(await gates(r.stub, r.owner)).toEqual([OUTSIDE_OFF, null, undefined]);
   });
 
   it("serves a script's calls from one read of the control record within a second",

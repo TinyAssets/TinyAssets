@@ -149,12 +149,14 @@ export function signinsOn(sources: Sources,
 }
 
 /**
- * The served records whose sign-in the control record, as read, switches on: its `signins`
- * when it reads well formed, each record's verdict when there is none, and none at all when it
- * is malformed or unreadable (fail-closed: a switch is never taken as on unless the record
- * says so).
+ * The served records whose sign-in the control record, as read, switches on, for the owner's
+ * object to keep: its `signins` when it reads well formed, each record's verdict when there is
+ * none, and none at all when it is malformed (fail-closed: a switch is never taken as on
+ * unless the record says so); no list (`undefined`) when it was not read fresh, so the object
+ * keeps its own and starts no sign-in (`FRESH_ONLY`).
  */
-export function signinsRead(sources: Sources, read: ControlRead): string[] {
-  return read.kind === "read" ? signinsOn(sources, read.control.signins)
-    : read.kind === "missing" ? signinsOn(sources, null) : [];
+export function signinsRead(sources: Sources, read: ControlRead): string[] | undefined {
+  return read.kind === "kept" || read.kind === "unreadable" ? undefined
+    : read.kind === "read" ? signinsOn(sources, read.control.signins)
+      : read.kind === "missing" ? signinsOn(sources, null) : [];
 }

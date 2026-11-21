@@ -7,6 +7,8 @@ superseded by ADR-032: the trusted per-owner stores, broker-held SQLite here
 (founder, 2026-10-26), live in each owner's SQLite-backed Durable Object; the
 placement principle stands.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: its placement: the ledger, bodies, board and rooms on the trusted side, status from receipts, wakes as doorbells (ADR-039 decision 2.15).
+
 ## Date
 
 2026-10-26

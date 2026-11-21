@@ -4,6 +4,8 @@
 
 Accepted
 
+Superseded by ADR-032 (founder, 2026-11-21), except: identity follows the account (ADR-032 decision 2, ADR-039 decision 2.10).
+
 ## Date
 
 2026-09-08 (WorkOS AuthKit chosen 2026-09-03)

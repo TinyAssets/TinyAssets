@@ -4,6 +4,8 @@
 
 Accepted. Supersedes ADR-001 and ADR-002.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the ADR rule and one home per kind of fact (ADR-039 decision 1, ADR-039 decision 2.1).
+
 ## Date
 
 2026-10-06

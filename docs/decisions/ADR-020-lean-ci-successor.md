@@ -4,6 +4,8 @@
 
 Accepted. Supersedes the pipeline design in ADR-003; ADR-003 remains the history of the first required test gate.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: a skip is not a pass (ADR-039 decision 2.21).
+
 ## Date
 
 2026-10-11

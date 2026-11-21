@@ -70,7 +70,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { AUTHORITY, HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { DurableObject } from "cloudflare:workers";
 
-import { readControl, type SandboxCeilings } from "../../contract/src/control";
+import { readControl, type SandboxCeilings, SqlKeeper } from "../../contract/src/control";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import {
   allowList, doorHeaders, EGRESS_HOST, egressTokenOf, generationOf, SANDBOX_HEADER,
@@ -161,8 +161,6 @@ interface SandboxPart {
   readonly ceilings: SandboxCeilings | null;
   /** Its scratch retention, in days: null when it names none. */
   readonly retention: number | null;
-  /** Whether the retention is the record's own, read now (a start keeps it as it hands it). */
-  readonly fresh: boolean;
 }
 
 interface Row {
@@ -379,11 +377,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   #chain: Promise<unknown> = Promise.resolve();
   readonly #e2b: () => E2b;
   readonly #digest: string;
+  /** The control record's last good copy, in this object's own SQLite. */
+  readonly #kept: SqlKeeper;
 
   constructor(ctx: DurableObjectState, env: SandboxEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     migrate(ctx.storage, CONTROL_MIGRATIONS);
+    this.#kept = new SqlKeeper(ctx.storage.sql);
     this.#e2b = () => runtimeE2b(env.E2B_API_KEY);
     this.#digest = runnerDigest();
   }
@@ -403,32 +404,26 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /**
    * The control record's sandbox part (`contract/src/control.ts`), read once for a start, a
-   * sign-in or a look: as read, its numbers kept; or, when the record is missing, malformed
-   * or unreadable, the part last kept, and said so loudly, never a silent none (none ever
-   * kept: nothing starts, and no run deletes scratch by age). The numbers are kept through a
-   * read that holds none, so the sandboxes already running are renewed on them (`#look`):
-   * only new starts stop. Only a start keeps the retention, as it hands it to the runner
-   * (`fresh`), so the fallback is the retention the last run was given.
+   * sign-in or a look: as read, its numbers kept in `known`; as the copy this object last read
+   * well formed (`#kept`) when KV can't be read, `known` left as it is (`FRESH_ONLY`); and
+   * none when the record is missing, malformed or unreadable with no copy, so nothing new
+   * starts. The numbers in `known` outlast a read that holds none, so the sandboxes already
+   * running are renewed on them (`#look`): only new starts stop.
    */
   async #control(): Promise<SandboxPart> {
-    const read = await readControl(this.env.CONTROL);
-    if (read.kind === "read") {
-      const { sandbox: ceilings, scratch_retention_days: retention } = read.control;
-      if (ceilings !== null) {
-        this.#sql.exec("INSERT INTO known (only, runtime_s, concurrency, window_s) VALUES " +
-                         "(1, ?, ?, ?) ON CONFLICT (only) DO UPDATE SET runtime_s = " +
-                         "excluded.runtime_s, concurrency = excluded.concurrency, window_s = " +
-                         "excluded.window_s", ceilings.runtime_ceiling_s,
-                       ceilings.concurrency_ceiling, ceilings.renewal_window_s);
-      }
-      return { ceilings, retention, fresh: true };
+    const read = await readControl(this.env.CONTROL, this.#kept);
+    if (read.kind !== "read" && read.kind !== "kept") {
+      return { ceilings: null, retention: null };
     }
-    const kept = { ceilings: this.#known(), retention: this.#sql.exec<{ days: number | null }>(
-      "SELECT days FROM known_retention").toArray()[0]?.days ?? null, fresh: false };
-    console.error(`the control record is ${read.kind}: the sandbox runs on the part last read ` +
-                  `(numbers ${kept.ceilings === null ? "none" : "kept"}, scratch retention ${
-                    kept.retention === null ? "none" : `${kept.retention} days`})`);
-    return kept;
+    const { sandbox: ceilings, scratch_retention_days: retention } = read.control;
+    if (read.kind === "read" && ceilings !== null) {
+      this.#sql.exec("INSERT INTO known (only, runtime_s, concurrency, window_s) VALUES " +
+                       "(1, ?, ?, ?) ON CONFLICT (only) DO UPDATE SET runtime_s = " +
+                       "excluded.runtime_s, concurrency = excluded.concurrency, window_s = " +
+                       "excluded.window_s", ceilings.runtime_ceiling_s,
+                     ceilings.concurrency_ceiling, ceilings.renewal_window_s);
+    }
+    return { ceilings, retention };
   }
 
   /** `act`, after every change before it: one at a time, whatever awaits inside. */
@@ -783,7 +778,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       throw new Error("a sandbox start names its run, its authority, its lease, its vendor " +
                       "hosts and its https doors on the egress host");
     }
-    const { ceilings, retention, fresh } = await this.#control();
+    const { ceilings, retention } = await this.#control();
     if (ceilings === null) {
       return { started: false, code: "sandbox_unconfigured" };
     }
@@ -795,10 +790,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
           if (signedIn.code === EXIT.no) {
             return { started: false, code: "signin_required" };
           }
-        }
-        if (fresh) {
-          this.#sql.exec("INSERT INTO known_retention (only, days) VALUES (1, ?) ON CONFLICT " +
-                           "(only) DO UPDATE SET days = excluded.days", retention);
         }
         return null;
       },

@@ -32,7 +32,7 @@ import {
 import { FIRST_PARTY_CLIENTS } from "./config";
 import type { DoorsEnv } from "./env";
 import { APP_RESOURCE, MCP_RESOURCE } from "../../contract/src/identity";
-import type { ControlRead } from "../../contract/src/control";
+import { type ControlRead, gating, requireFresh } from "../../contract/src/control";
 import type { JsonBody } from "../../contract/src/owner";
 import { ownerRead } from "./control";
 import { deleteOwnKey, looksLikeKey, mintKey, registeringEntry, revokeKey } from "./api-keys";
@@ -144,9 +144,9 @@ const NO_FIELDS = "this route takes an empty object";
  * admission row), every tier's numbers as the control record holds them (simultaneous runs
  * and storage, nothing else), and the files it holds now.
  */
-const account: Route = async ({ owner: { binding, stub } }) => {
+const account: Route = async ({ owner: { binding, stub }, gate }) => {
   const { tier } = await stub.tierRead(binding);
-  return answer(200, { tier, tiers: binding.tiers ?? null,
+  return answer(200, { tier, tiers: gating(gate)?.tiers ?? null,
                        usage: await stub.fileUsage(binding) });
 };
 
@@ -373,7 +373,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "agent/socket-ticket": { serve: socketTicket },
     "sources": { body: "empty",
                  serve: async ({ sources, gate }) =>
-                   answer(200, sourceList(sources, signinsRead(sources, gate))) },
+                   answer(200, sourceList(sources, signinsRead(sources, gate) ?? [])) },
     "export": { serve: exportStream },
     "export/chunks": { door: "exportChunks" },
     "export/end": { door: "exportEnd" },
@@ -397,7 +397,10 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
       tools: toolTable().map(({ name, title }) => ({ name, title })) })) },
     "files/read": { serve: fileRead },
     "files/write": { serve: fileWrite },
-    "keys": valued(({ env, owner, body }) => mintKey(env, owner, body)),
+    "keys": valued(async ({ env, owner, body, gate }) => {
+      requireFresh(gate, "key");
+      return mintKey(env, owner, body);
+    }),
     "keys/list": { door: "keyList" },
     "account/erase": valued(({ owner, body }) => eraseOwner(owner, body),
                            { "Set-Cookie": clearedCookie() }),

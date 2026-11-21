@@ -1,5 +1,5 @@
 /**
- * The vendor's own sign-in, as data (ADR-031 decision 2, ADR-034): each record's
+ * The vendor's own sign-in, as data (ADR-039 decision 2.20, ADR-034): each record's
  * `cli.login` names the command (`argv`, `{bin}` filled), what of its output
  * the owner sees (`url_pattern`, `code_pattern`: each pattern's first group, and nothing else
  * of the output, then held to the record's pinned page, `signinShape`), whether it takes a

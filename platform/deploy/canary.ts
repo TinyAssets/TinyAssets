@@ -9,23 +9,25 @@
  *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--unkeyed]
  *        [--clock] [--full] [--result <file>]
  *
- * It first reads which side serves `tinyassets.io/mcp`: the authorization server the public
- * resource document names, each side's in `scripts/canary_handles.json`.
+ * It first reads which side serves: the doors, when the resource document on their host (the
+ * identity's) names their own issuer, their origin; else the old stack, when the one on the
+ * zone, where it serves until the cutover, names its authorization server
+ * (`scripts/canary_handles.json`). The two are one document while the host is the zone.
  * - **The old stack** (before `routes`, and after a `handback`): the platform is dark. It
- *   checks that the old stack still answers `/mcp` (its anonymous `401` carries a body, the
- *   doors' none, so a `routes` stopped partway is seen) and that E2B holds the pinned template
- *   and the doors' lifecycle hook, disabled. The doors' own checks wait for `routes`, each
- *   named, never passed.
+ *   checks that the old stack still answers the zone's `/mcp` (its anonymous `401` carries a
+ *   body, the doors' none, so a `routes` stopped partway is seen) and that E2B holds the
+ *   pinned template and the doors' lifecycle hook, disabled. The doors' own checks wait for
+ *   `routes`, each named, never passed.
  * - **The doors:** the anonymous challenge and the resource document; the app page (`/app`,
  *   `/app?upgrade=1`) with its CSP; the first-party client document; the egress host's
  *   refusal; the sign-in's start (the doors' `/authorize` to WorkOS, WorkOS to AuthKit's
- *   page, the issuer's discovery and JWKS); E2B's template and the hook, enabled; the
- *   off-account copy, a night of which must have passed inside two nights once it is
- *   configured (`offsite.ts` `watch`: an erased owner's hide there is owed within a week; it
- *   says so while unconfigured). Then, with the canary owner's API key (`TA_PROBE_KEY`): the
- *   handle set (one read-only `GET /api/tools/<name>` a name: each doors tool `405`, each
- *   old-only one and an unknown name `404`); a file written, read and removed in the owner's
- *   workspace; and the full run.
+ *   page, the issuer's discovery and JWKS); E2B's template and the hook, enabled at the
+ *   doors' hook; the off-account copy, a night of which must have passed inside two nights
+ *   once it is configured (`offsite.ts` `watch`: an erased owner's hide there is owed within
+ *   a week; it says so while unconfigured). Then, with the canary owner's API key
+ *   (`TA_PROBE_KEY`): the handle set (one read-only `GET /api/tools/<name>` a name: each
+ *   doors tool `405`, each old-only one and an unknown name `404`); a file written, read and
+ *   removed in the owner's workspace; and the full run.
  * - **The full run:** one short turn of the canary owner's main agent (`converse`), on the
  *   model source the founder connected to that owner (a free tier's), which boots a sandbox,
  *   runs the engine and calls the model through the egress host. It runs once a day: its
@@ -61,7 +63,7 @@ import { github, type Reach, TOKEN } from "./actions.ts";
 import { authorizeCheck, firstPartyLink, heldHook, upstreamFrom } from "./deploy.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import {
-  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, ZONE,
 } from "../contract/src/identity.ts";
 import { AUTHORIZE, E2B_HOOK_URL } from "./facts.ts";
 import { watch } from "./offsite.ts";
@@ -120,8 +122,11 @@ export const INPUTS = Object.freeze({
   key: "TA_PROBE_KEY", e2b: "E2B_API_KEY", issuer: "OWNER_ISSUER", client: "WORKOS_CLIENT_ID",
   github: TOKEN });
 
-/** The resource document `/mcp` names (RFC 9728's path form). */
+/** The resource document `/mcp` names (RFC 9728's path form), on the doors' host. */
 const RESOURCE_DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource${identity.mcp}`;
+/** The old stack's MCP door and its resource document: on the zone, until the cutover. */
+const OLD_MCP = `https://${ZONE}${identity.mcp}`;
+const OLD_DOCUMENT = `https://${ZONE}/.well-known/oauth-protected-resource${identity.mcp}`;
 /** A name no side serves: the `404` a profile answers for a tool outside it. */
 const UNKNOWN_TOOL = "no_such_tool";
 /** Each request's limit: GitHub's runners reach some answers slowly. */
@@ -144,12 +149,15 @@ const INITIALIZE = JSON.stringify({
   params: { protocolVersion: "2025-06-18", capabilities: {},
             clientInfo: { name: "tinyassets-canary", version: "1" } } });
 
-/** Each side's handle set and authorization server (`scripts/canary_handles.json`). */
-interface SideRecord {
-  readonly authorization_server: string;
-  readonly handles: readonly string[];
+/**
+ * Each side's handle set (`scripts/canary_handles.json`), and the old stack's authorization
+ * server: the doors' is their own origin (`doors/src/config.ts` `ISSUER`).
+ */
+interface SideRecords {
+  readonly old: { readonly authorization_server: string; readonly handles: readonly string[] };
+  readonly new: { readonly handles: readonly string[] };
 }
-function records(): Readonly<Record<"old" | "new", SideRecord>> {
+function records(): SideRecords {
   return JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.json"), "utf8"));
 }
 
@@ -189,34 +197,52 @@ async function json(response: Response, what: string, code: number): Promise<Jso
   throw new Failure(code, `${what} answered no JSON object (HTTP ${response.status})`);
 }
 
-/** The side whose authorization server the public resource document names. */
-async function sideOf(world: World): Promise<Side> {
-  const answer = await send(world, RESOURCE_DOCUMENT);
+/** The authorization servers the resource document `document` names, as JSON. */
+async function serversAt(world: World, document: string): Promise<string> {
+  const answer = await send(world, document);
   if (answer.status !== 200) {
-    throw new Failure(9, `${RESOURCE_DOCUMENT} answered ${answer.status}`);
+    throw new Failure(9, `${document} answered ${answer.status}`);
   }
-  const servers = JSON.stringify(
-    (await json(answer, RESOURCE_DOCUMENT, 9))["authorization_servers"]);
-  const sides = records();
-  if (servers === JSON.stringify([sides.new.authorization_server])) {
+  return JSON.stringify((await json(answer, document, 9))["authorization_servers"]);
+}
+
+/**
+ * The side that serves: the doors, when their host's resource document names their issuer,
+ * their origin; else the old stack, when the zone's names its authorization server.
+ */
+async function sideOf(world: World): Promise<Side> {
+  let doors: string | null;
+  try {
+    doors = await serversAt(world, RESOURCE_DOCUMENT);
+  } catch (error) {
+    // A host under the zone with no route has no DNS record, so it answers nothing: the doors
+    // serve nowhere, and the zone's document says the rest. On the zone this read and the
+    // next are one.
+    if (!(error instanceof Failure && error.code === 2)) {
+      throw error;
+    }
+    doors = null;
+  }
+  if (doors === JSON.stringify([ORIGIN])) {
     return "doors";
   }
-  if (servers === JSON.stringify([sides.old.authorization_server])) {
+  const servers = await serversAt(world, OLD_DOCUMENT);
+  if (servers === JSON.stringify([records().old.authorization_server])) {
     return "old";
   }
   throw new Failure(9, `the resource document names ${servers}, neither side's authorization ` +
                        "server");
 }
 
-/** An anonymous `initialize` of `/mcp`. */
-function anonymous(world: World): Promise<Response> {
-  return send(world, MCP_RESOURCE, { method: "POST", body: INITIALIZE, headers: {
+/** An anonymous `initialize` of the MCP door `url`. */
+function anonymous(world: World, url: string): Promise<Response> {
+  return send(world, url, { method: "POST", body: INITIALIZE, headers: {
     "Content-Type": "application/json", Accept: "application/json, text/event-stream" } });
 }
 
 /** The old stack's `401` carries its body; the doors' none. */
 async function oldAnswers(world: World): Promise<string> {
-  const answer = await anonymous(world);
+  const answer = await anonymous(world, OLD_MCP);
   const body = await answer.text();
   if (answer.status !== 401 || body.trim() === "") {
     throw new Failure(10, `split: the resource document is the old stack's, but /mcp answered ${
@@ -227,7 +253,7 @@ async function oldAnswers(world: World): Promise<string> {
 }
 
 async function challenge(world: World): Promise<string> {
-  const answer = await anonymous(world);
+  const answer = await anonymous(world, MCP_RESOURCE);
   const header = answer.headers.get("WWW-Authenticate") ?? "";
   if (answer.status !== 401 || !header.startsWith("Bearer ")
       || !header.includes(`resource_metadata="${RESOURCE_DOCUMENT}"`)
@@ -294,7 +320,10 @@ async function signIn(world: World): Promise<string> {
     await failingAs(5, () => authorizeCheck(upstream, false, fetcher))}`;
 }
 
-/** E2B holds the pinned template, and the doors' lifecycle hook, enabled only once routed. */
+/**
+ * E2B holds the pinned template, and the doors' lifecycle hook, enabled only once routed, and
+ * then sent to the doors' hook (`heldHook` finds it by its name).
+ */
 function sandbox(world: World, side: Side): Promise<string> {
   return failingAs(11, async () => {
     const e2b = new E2bAdmin(world.env[INPUTS.e2b] ?? "", bounded(world).fetch);
@@ -304,7 +333,8 @@ function sandbox(world: World, side: Side): Promise<string> {
     }
     const hook = await heldHook(e2b);
     const enabled = side === "doors";
-    if (hook === null || (hook["enabled"] === true) !== enabled) {
+    if (hook === null || (hook["enabled"] === true) !== enabled
+        || (enabled && hook["url"] !== E2B_HOOK_URL)) {
       throw new Failure(11, `E2B holds no ${enabled ? "enabled" : "disabled"} lifecycle hook ` +
                             `for ${E2B_HOOK_URL}`);
     }

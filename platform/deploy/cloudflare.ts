@@ -171,7 +171,10 @@ export interface DnsRecord {
   readonly content: string;
 }
 
-/** The DNS record types a Workers custom domain's own record takes the host's place of. */
+/**
+ * The address record types: what a Workers custom domain's own record takes the host's place
+ * of, and what a name under the zone holds for a Worker route on it to take anything.
+ */
 export const ADDRESS: readonly string[] = Object.freeze(["A", "AAAA", "CNAME"]);
 
 /** A route as a record keeps it: its pattern, and the Worker it points to (null: none). */
@@ -674,6 +677,22 @@ export class Cloudflare {
       .filter((row) => row["name"] === name && ADDRESS.includes(String(row["type"])))
       .map((row) => ({ id: String(row["id"]), type: String(row["type"]),
                        content: String(row["content"]) }));
+  }
+
+  /**
+   * The DNS record `record` made on `name`, proxied, so a Worker route on `name` takes its
+   * requests: its id, type and content as the API answers them. A refusal throws.
+   */
+  async makeDns(zone: string, name: string, record: Omit<DnsRecord, "id">): Promise<DnsRecord> {
+    const what = `making the DNS record ${record.type} ${name} (${record.content})`;
+    const { result } = await this.#send(what, "POST", `/zones/${zone}/dns_records`,
+                                        { ...record, name, proxied: true });
+    const made = (result ?? {}) as Partial<Record<keyof DnsRecord, unknown>>;
+    if (typeof made.id !== "string" || made.type !== record.type
+        || made.content !== record.content) {
+      throw new Error(`${what} answered no such record`);
+    }
+    return { id: made.id, type: record.type, content: record.content };
   }
 
   /** Deletes the DNS record `record`; a refusal throws. */

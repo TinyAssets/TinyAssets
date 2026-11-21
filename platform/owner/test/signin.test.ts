@@ -10,6 +10,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { staleRefusal } from "../../contract/src/control";
 import { until } from "../../ci/workerd";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import { WriteGate } from "../src/gate";
@@ -440,16 +441,27 @@ describe("the per-source switch, in the owner's object", () => {
                                                    { engine: "gemini" }))).message)
       .toBe(SIGNIN_OFF);
     expect((await recorder(r.stub)).signins).toEqual([]);
-    // A door that hands none reads the list last handed: still off.
-    expect((await failure(() => r.stub.signinStart(r.bind({ signins: undefined }),
-                                                   { engine: "gemini" }))).message)
-      .toBe(SIGNIN_OFF);
   });
 
-  it("always lets a source switched off be signed out", async () => {
+  it("starts no sign-in on switches not read fresh, the doors' kept copy, for a while",
+     async () => {
     const r = await gated();
-    expect(await r.stub.signinStart(r.bind({ signins: [] }), { engine: "codex", mode: "out" }))
-      .toMatchObject({ engine: "codex", mode: "out", state: "starting" });
+    // A door that hands none was served from a kept copy: on or off, the sign-in waits.
+    for (const engine of ["claude-code", "gemini"]) {
+      const failed = await failure(() => r.stub.signinStart(r.bind({ signins: undefined }),
+                                                           { engine }));
+      expect([failed.code, failed.message])
+        .toEqual(["unavailable", staleRefusal("signin").message]);
+    }
+    expect((await recorder(r.stub)).signins).toEqual([]);
+  });
+
+  it("always lets a source switched off be signed out, the switches fresh or not", async () => {
+    for (const signins of [[], undefined]) {
+      const r = await gated();
+      expect(await r.stub.signinStart(r.bind({ signins }), { engine: "codex", mode: "out" }))
+        .toMatchObject({ engine: "codex", mode: "out", state: "starting" });
+    }
   });
 
   it("takes no pasted code once the source is switched off", async () => {
