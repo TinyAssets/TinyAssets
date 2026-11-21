@@ -127,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-untangle.md"
-          if ! python scripts/drain_review_gate.py --untangle-check \
+          if ! python scripts/review_checks.py --untangle-check \
               --base "${BASE_OID}" --head "${HEAD_OID}" \
               --body-file "$RUNNER_TEMP/pr-body-untangle.md" \
               2> "$RUNNER_TEMP/untangle-why.txt"; then
@@ -171,7 +171,7 @@ jobs:
           # Workflow files were already covered; without these two entries the
           # same neutering could be done one directory over, undeclared.
           # platform/deploy/ is the kit that deploys the platform's production.
-          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/check_shapes\.py$|scripts/drain_review_gate\.py$|tests/test_shape_registry\.py$|deploy/|platform/deploy/|Dockerfile$|\.dockerignore$)'
+          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/check_shapes\.py$|scripts/review_checks\.py$|tests/test_shape_registry\.py$|deploy/|platform/deploy/|Dockerfile$|\.dockerignore$)'
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.

@@ -23,7 +23,7 @@ Three commands, three trust levels (.github/workflows/queue-freshness.yml):
 
     list   trusted: picks the candidates; its output is the matrix. Only a
            head whose required `review` check passes NOW (reviewed: the decision
-           review.yml posts, read by drain_review_gate.review_passed_at) is a
+           review.yml posts, read by hotfix.review_passed_at) is a
            candidate, i.e. a reviewer approved this change. Codex (#4293 round 2)
            showed a probe job cannot be a hard boundary: PR code runs as the
            runner user and can rewrite the upload action that follows it. So
@@ -216,7 +216,7 @@ def reviewed(repo: str, number: int, head: str) -> bool:
     Read from GitHub's check runs by default-branch code; any failure to read is "not
     reviewed".
     """
-    from drain_review_gate import review_passed_at
+    from hotfix import review_passed_at
 
     try:
         return review_passed_at(repo, head, number)

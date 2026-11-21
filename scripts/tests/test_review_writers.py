@@ -10,7 +10,7 @@ import pytest
 
 _SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SCRIPTS))
-import drain_review_gate as gate  # noqa: E402
+import review_checks as gate  # noqa: E402
 
 pytestmark = pytest.mark.verifies(
     "development-coordination-runtime:"

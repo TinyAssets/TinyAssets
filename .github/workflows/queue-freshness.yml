@@ -8,7 +8,7 @@ name: Queue freshness
 # Three jobs, three trust levels:
 # - list:  default-branch code only; picks up to 6 PRs in queue order whose
 #   required `review` check passes at their current head (review.yml's
-#   decision, read by drain_review_gate.review_passed_at). Only reviewed code is
+#   decision, read by hotfix.review_passed_at). Only reviewed code is
 #   ever probed: a probe job cannot be a hard boundary (PR code could rewrite
 #   the upload action that runs after it), so this is the real one.
 # - probe: one matrix job PER PR; runs that PR's code with NO GitHub token
