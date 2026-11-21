@@ -220,7 +220,7 @@ retired; a check of what the figure is for stays):
 | `erasure` `RECOVERY_WINDOW_S` | **Retired.** The answer's `complete_at` is checked at 30 days, as a literal. |
 | `bodies` `PLACE_TTL_S`, `LIMITS.maxRowBytes`; `owner` `maxRowBytes` | **Retired.** The sweep test runs past the TTL; the row of `maxRowBytes` is placed in two chunks and one byte more is refused. |
 | `files-quota` and `owner-bound` `INDEX_BYTES`, `owner-bound` and `files-share` `WORST_FILL` | **Retired.** `owner-bound` checks the manifest term is `INDEX_BYTES` times `WORST_FILL`, and `files-share`'s large test measures the fill against `WORST_FILL`. `files-share`'s `PAGE_ROOM` stays: it derives the source's literal 3,066 from the page's usable bytes. |
-| `brain` `APPEND_TRIES`, `collections` `maxRowsCharge`, `codemode` `CODEMODE_TIMEOUT_MS` and `CODEMODE_DEFAULTS`, `notices` `NOTICES_KEPT`, `doorbell` `SUBSCRIPTIONS_PER_AGENT`, `file-readers` `SEARCH_SCAN`, `changelog` `LOG_WIDE` | **Retired.** Each restated its source; the test beside it shows the figure at work (`LOG_WIDE` against the schema's frozen trigger text). |
+| `brain` `APPEND_TRIES`, `collections` `maxRowsCharge`, `codemode` `CODEMODE_TIMEOUT_MS` and `CODEMODE_DEFAULTS`, `notices` `NOTICES_KEPT`, `doorbell` `SUBSCRIPTIONS_PER_AGENT`, `file-readers` `SEARCH_SCAN`, `changelog` `LOG_WIDE` | **Retired.** Each restated its source; the test beside it shows the figure at work (`LOG_WIDE` against the schema's frozen trigger text). No test reached `APPEND_TRIES`: `brain`'s "loses no append when two land at once" appended to a file under `INLINE_BYTES`, one unit each, so the review made it a file past one unit, as many appends as the isolate's pool runs and queues; with `APPEND_TRIES` at 1 it fails `file_busy`. |
 | `schedule` `LANE_HUNG_S` | **Rewritten:** the job's `hung_timeout_seconds` is read against `LANE_HUNG_S`, the lane's own, not 60. |
 | `usage` `MODEL_DEFAULTS` | **Rewritten:** the default settings are checked as the literal they are (every cap `null`, no sources), the title's "every cap off". |
 | `owner-bound` `EGRESS_PATH_MAX` | **Rewritten:** the schema's `CHECK` must hold `EGRESS_PATH_MAX` itself, so the constant and the frozen SQL are tied, not each pinned to 2048. |
@@ -275,7 +275,7 @@ past the VM; and the cleanups that rethrow (`bodies.ts`'s release, `files.ts`'s 
   `owner-do.ts`'s schedule sync after a first change, which the next door or pass that syncs
   makes again.
 - **Logged, the call's end settled anyway:** a run's start with no answer settles `unknown`
-  (`launch.ts`); a sign-in's start with no answer ends it `start_lost`, its lease freed
+  (`launch.ts`; an answer out of shape is caught as none, owed §6.7); a sign-in's start with no answer ends it `start_lost`, its lease freed
   (`signins.ts`); a run's cancel, a lease's release (its idle reap pauses it), and a refused
   sign-in's stop.
 - **Read as an answer:** the kill switch unreadable is closed (`wakes.ts` `open`); a ring that
@@ -316,7 +316,7 @@ past the VM; and the cleanups that rethrow (`bodies.ts`'s release, `files.ts`'s 
 `changelog.test.ts`, which holds it to the frozen trigger text. A product export only a test
 reads is a code change: owed, §6.7.
 
-### 6.5 Part 3's: `untangle/pass-owner-3`, once #5707 (`untangle/r5-hooks`) merges
+### 6.5 Part 3's: `untangle/pass-owner-3`, after the cutover (the founder, 2026-11-21; #5715)
 
 The files R5's hooks change, so the two merge cleanly, untouched here:
 - `src/actions.ts`: `R5 slice 2`, `R5 P-resume` and `r5_research.md` (a working file never in
@@ -355,9 +355,13 @@ And the comments of the other 13 guards and of `memory/`, moved here from part 2
 
 ### 6.7 Owed
 
-- [ ] `platform/owner/`, part 3, once #5707 merges: the comments of the files it changes and
-  `policy.test.ts`'s pins, and the comments of `memory/` and the other 13 guards (§6.5)
-  (`untangle/pass-owner-3`).
+- [ ] `platform/owner/`, part 3, after the cutover (the founder, 2026-11-21; #5715): the
+  comments of the files #5707 changes and `policy.test.ts`'s pins, and the comments of
+  `memory/` and the other 13 guards (§6.5) (`untangle/pass-owner-3`).
+- [ ] `launch.ts` `launch`'s start catch takes the sandbox's answer out of shape (`started`
+  throws) as no answer: the run settles `unknown` `start_lost`, logged "had no answer" with no
+  cause, so a sandbox Worker bug reads as lost starts. Research first (`untangle/start-answer`;
+  found by the review of #5719).
 - [ ] `bodies.ts` `placing` waits on the sweep's delete it met, not a sleep of `100 * tries`
   ms, bounded by `LANE_CALL_MS`; and `changelog.ts` `LOG_WIDE`, read only by its test, goes
   (§6.4) (`untangle/place-wait`).

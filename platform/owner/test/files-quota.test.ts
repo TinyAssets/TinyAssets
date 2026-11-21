@@ -490,7 +490,7 @@ describe("file history", () => {
 });
 
 describe("the retention marks' migration (owner migration 8)", () => {
-  /** An object of the migrations through H1's 7, `act` run on it, then migrated whole. */
+  /** An object of the migrations through migration 7, `act` run on it, then migrated whole. */
   const migrated = async (act: (sql: SqlStorage) => void, r: Rig | null = null) => {
     return runInDurableObject((r ?? await rig()).stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
