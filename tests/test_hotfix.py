@@ -17,8 +17,6 @@ spec = importlib.util.spec_from_file_location("hotfix", SCRIPT)
 hotfix = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hotfix)
 
-from scripts import drain_review_gate as gate  # noqa: E402
-
 
 def packed(before, after):
     path = "tinyassets/example.py"
@@ -186,7 +184,7 @@ def test_floor_review_bound_to_exact_head(monkeypatch, approved, head_matches):
         assert args[1:3] == ("repo", "view"), args
         return b'{"nameWithOwner":"org/repo"}'
 
-    monkeypatch.setattr(gate, "review_passed_at", passed)
+    monkeypatch.setattr(hotfix, "review_passed_at", passed)
     monkeypatch.setattr(hotfix, "run", fake_run)
     if approved and head_matches:
         hotfix.require_review("fix/signin", head, ["tinyassets/auth/provider.py"])
@@ -194,6 +192,70 @@ def test_floor_review_bound_to_exact_head(monkeypatch, approved, head_matches):
     else:
         with pytest.raises(ValueError, match="passing `review` check"):
             hotfix.require_review("fix/signin", head, ["tinyassets/auth/provider.py"])
+
+
+def test_the_review_app_is_required_and_is_not_actions(monkeypatch):
+    monkeypatch.setenv("REVIEW_APP_ID", "777")
+    assert hotfix.review_app_id() == 777
+    monkeypatch.delenv("REVIEW_APP_ID")
+    with pytest.raises(ValueError):
+        hotfix.review_app_id()
+    for value in ("x", "15368"):
+        monkeypatch.setenv("REVIEW_APP_ID", value)
+        with pytest.raises(ValueError):
+            hotfix.review_app_id()
+
+
+def test_only_the_latest_successful_run_made_for_this_pr_passes():
+    done = {"id": 1, "name": "review", "status": "completed", "conclusion": "success",
+            "external_id": "pr-12"}
+    waiting = {**done, "id": 2, "status": "in_progress", "conclusion": None}
+    failed = {**done, "id": 3, "conclusion": "failure"}
+    assert hotfix.review_run_passed([done], 12)
+    assert not hotfix.review_run_passed([done], 13), "another PR on the same head"
+    assert not hotfix.review_run_passed([{**done, "external_id": None}], 12)
+    assert not hotfix.review_run_passed([], 12)
+    assert not hotfix.review_run_passed(None, 12)
+    assert not hotfix.review_run_passed([done, waiting], 12)
+    assert not hotfix.review_run_passed([failed, done], 12)
+    assert not hotfix.review_run_passed([{**done, "name": "required-tests"}], 12)
+    # A stale run left in progress does not hold back a newer pass.
+    assert hotfix.review_run_passed([{**done, "id": 4}, waiting], 12)
+
+
+def test_a_reader_lists_every_page_of_check_runs(monkeypatch):
+    """`gh api` returns one page unless told to page; the newest run may be on any."""
+    seen = []
+
+    def run(*args):
+        seen.append(args)
+        return b'{"id": 1}\n{"id": 2}\n'
+    monkeypatch.setattr(hotfix, "run", run)
+    assert hotfix._gh_check_runs("repos/o/r/commits/x/check-runs") == [{"id": 1}, {"id": 2}]
+    assert seen == [("gh", "api", "--paginate", "repos/o/r/commits/x/check-runs",
+                     "--jq", ".check_runs[]")]
+
+
+def test_only_the_review_apps_run_passes_a_reader(monkeypatch):
+    """An Actions-app run named review for the PR (any PR's own job can post one) is not a
+    pass: the App filter is what makes the check the review App's alone."""
+    head = "c" * 40
+    actions = {"id": 9, "name": "review", "status": "completed", "conclusion": "success",
+               "external_id": "pr-12", "app": {"id": 15368}}
+    ours = {**actions, "id": 3, "app": {"id": 777}}
+
+    def api(runs):
+        def check_runs(path):
+            assert path == (f"repos/o/r/commits/{head}/check-runs"
+                            "?check_name=review&filter=all&per_page=100")
+            return runs
+        monkeypatch.setattr(hotfix, "_gh_check_runs", check_runs)
+
+    monkeypatch.setenv("REVIEW_APP_ID", "777")
+    api([actions])
+    assert not hotfix.review_passed_at("o/r", head, 12)
+    api([actions, ours])
+    assert hotfix.review_passed_at("o/r", head, 12)
 
 
 def test_selected_file_cannot_hide_dependency_change(monkeypatch):
@@ -562,7 +624,7 @@ def test_merged_pr_without_hotfix_bytes_cannot_archive(legacy, monkeypatch):
     ],
 )
 def test_canonical_gate_requires_review_without_private_path_exemptions(monkeypatch, path):
-    monkeypatch.setattr(gate, "review_passed_at", lambda repo, commit, number: False)
+    monkeypatch.setattr(hotfix, "review_passed_at", lambda repo, commit, number: False)
     monkeypatch.setattr(
         hotfix,
         "run",

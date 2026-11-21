@@ -20,3 +20,8 @@ def test_platform_deploy_is_release_critical() -> None:
         assert pattern.search(path), path
     for path in ("platform/doors/src/doors.ts", "docs/platform/deploy/x.md"):
         assert not pattern.search(path), path
+
+
+def test_the_review_checks_are_release_critical() -> None:
+    """The required `review` check and the body's Untangle check run from this file."""
+    assert _release_critical().search("scripts/review_checks.py")

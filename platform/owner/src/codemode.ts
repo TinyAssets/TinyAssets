@@ -1,5 +1,5 @@
 /**
- * Code mode's executor (pi audit F8; tasks 5, H1; ADR-034 decision 12): one script whose
+ * Code mode's executor (ADR-034 decision 12): one script whose
  * JavaScript calls tools as `await tools.<name>(args)`, its VM in the codemode Worker.
  *
  * - **Where it runs:** pi-codemode's `RemoteCodemodeSandbox`, whose `remote()` reaches the
@@ -8,7 +8,7 @@
  *   owner config still binds only services. The tools, the deadline and the abort stay with the
  *   caller; every tool call comes back over RPC through `exchange`.
  * - **What a script reaches:** the tools its caller hands it, each held by the caller to its
- *   own grant. The MCP door's `code` tool (slice M, the object's `codeRun`) hands it the
+ *   own grant. The MCP door's `code` tool (the object's `codeRun`) hands it the
  *   caller's profile's other tools, each call the door's own, admitted again against the
  *   caller's grant, its profile and the owner's switch.
  * - **No stub is held:** each execution's `remote()` calls `CODEMODE_VM.codemodeExecute` with a
@@ -94,7 +94,7 @@ export type CodeResult =
       readonly output_cut?: OutputCut };
 
 /**
- * A script's output cut to fit one answer (review M6), said so: how many items it had, and
+ * A script's output cut to fit one answer, said so: how many items it had, and
  * how many the answer keeps whole (the next one, a text, cut at a character after them).
  */
 interface OutputCut {
@@ -135,7 +135,7 @@ export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profi
 const CODE_TIMED_OUT = "the script is past its time";
 
 /**
- * A script's answer fitted to one tool answer (`pages.ts`, review M6): its value and calls
+ * A script's answer fitted to one tool answer (`pages.ts`): its value and calls
  * whole, its output's items while they fit and the next text cut at a character, said so
  * (`output_cut`). A value that alone passes one answer is refused `answer_too_large`, its
  * calls and what landed kept, so nothing is lost silently.
@@ -240,10 +240,6 @@ async function runScript(parts: ScriptParts): Promise<CodeResult> {
 }
 
 // -- THE DOORS: the `codemode` rows' handlers (`owner/doors.json`) --------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`CodemodeDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `codemode` doors reach: the owner's policy's code mode and custom tools
@@ -298,7 +294,6 @@ async function scripted(o: CodemodeDoorNeeds, binding: Binding, tool: Tool, args
   }
 }
 
-/** The `codemode` doors' handlers, by door. */
 export const codemodeDoors = Object.freeze({
   /**
    * Code mode at the MCP door: one script calling the caller's profile's other tools as

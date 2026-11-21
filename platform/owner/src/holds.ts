@@ -25,7 +25,7 @@ export const OWNER_POOL_UNITS = 12;
 
 /**
  * Units only one-unit holds take (`SlotPool`'s reserve): a body window, a co-tenant's
- * small read, never waits behind an edit's steps (review M1).
+ * small read, never waits behind an edit's steps.
  */
 export const OWNER_RESERVE_UNITS = 1;
 
@@ -57,8 +57,8 @@ export const EDIT_READ_UNITS = 2;
 
 /**
  * A chunk-wise edit's making step: the chunk made, the source chunk in hand as it is copied
- * (each let go as its pieces are taken, `edit.ts`'s `letGo`, so none outlives its part:
- * review M-a read 12.07 MiB with two source chunks still alive), and the put's copy of what
+ * (each let go as its pieces are taken, `edit.ts`'s `letGo`, so none outlives its part: a
+ * read measured 12.07 MiB with two source chunks still alive), and the put's copy of what
  * it sends.
  */
 export const EDIT_MAKE_UNITS = 3;
@@ -112,7 +112,7 @@ export const MOVE_PASS_UNITS = 3;
  * A log segment's one buffer at most (`ChangeLog.segment`): exactly its bytes as written,
  * allocated once and never grown, never past a part (`CHUNK_BYTES`): `pending` sizes it by
  * its lines as written, so it always fits one. It is returned as an exact copy (a view would
- * carry the whole part over RPC: rvburst X1), beside the buffer once its rows are let go,
+ * carry the whole part over RPC), beside the buffer once its rows are let go,
  * so twice it at most, within `SHIP_BYTES`. Its acknowledgement sizes the kept rows again, one
  * at a time beside that copy (`ChangeLog.acknowledge`), within it too.
  */
@@ -122,7 +122,7 @@ const SEGMENT_BUFFER_BYTES = CHUNK_BYTES;
  * One row's text while a segment encodes it, at its worst: the widest row image the log takes
  * (`IMAGE_MAX` of UTF-8, so at most that many characters), held three times at once (its
  * stored text, its parsed value, its JSON written again), each a two-byte string in V8 once
- * one character is past U+00FF (review rvburst V1).
+ * one character is past U+00FF.
  */
 const SEGMENT_ROW_BYTES = 3 * 2 * IMAGE_MAX;
 
@@ -158,7 +158,7 @@ const BURST_BYTES = BURST_GATHER_BYTES + EXPORT_PAGE_BYTES + IMAGE_MAX
  * line that reached it, `IMAGE_MAX`), and then its one buffer beside them, encoded once and
  * exactly (`EXPORT_PAGE_BYTES`, `IMAGE_MAX` and its chunk lines); or, as a row is read, its
  * values (`IMAGE_MAX`, two bytes a character) beside the text so far. Its rows come a row at
- * a time from the cursor, never a batch held whole (rvburst W1).
+ * a time from the cursor, never a batch held whole.
  */
 const PAGE_BUILD_BYTES = 2 * (EXPORT_PAGE_BYTES + IMAGE_MAX)
   + (EXPORT_PAGE_BYTES + IMAGE_MAX + EXPORT_READ_BATCH * CHUNK_LINE_BYTES) + 2 * IMAGE_MAX;

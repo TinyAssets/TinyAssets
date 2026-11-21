@@ -40,11 +40,10 @@
  * defines them on its prototype when the class loads, one a row, none a name RPC reserves.
  * The object is their router and holds their state: each door's method hands its row's
  * runner (`#call`: the bind, the account, the scope and the fields, `door.ts`) the handler in
- * the module its steps name
- * (`<module>Doors.<door>`), which the runner hands the object's parts (`Parts`), as what
- * the module declares its doors reach (`<Module>DoorNeeds`), where it declares it. Its
- * runs are launched and delivered by `launch.ts`. Its timed work is the one
- * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
+ * the module its steps name (`<module>Doors.<door>`), which the runner hands the object's
+ * parts (`Parts`), as what the module declares its doors reach (`<Module>DoorNeeds`), where
+ * it declares it. Its runs are launched and delivered by `launch.ts`. Its timed work is the
+ * one schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
  * object's single physical alarm, beside the erasure's job. The object is a plain Durable
  * Object that holds a Lifecycle, never the SDK's `Agent`, and installs none of Lifecycle's
  * runtime handlers: `alarm` hands the runtime's alarm to it, and the owner app's sockets
@@ -54,11 +53,13 @@
  * method of the same name. No agent loop runs here: agents run on unmodified engines
  * (ADR-034), in the owner's sandbox or on their vendor's platform, and no package's code
  * runs in this object.
+ *
  * Claiming and settling wakes is the `wakes` lane's own, in process, with the doorbell's
- * {@link WakeSender} (`Doorbell`, slice W: each vendor's wake from its `wake-kinds.json`
- * record, after the kill switch in `CONTROL`), to the callback an agent's client stores
- * at `wakeSubscribe` or the owner at `agentDoorbell`; file housekeeping (expired uploads and temporary directories,
- * history prunes, garbage chunk deletes) is the `files` lane's. No door reaches either.
+ * {@link WakeSender} (`Doorbell`: each vendor's wake from its `wake-kinds.json` record, after
+ * the kill switch in `CONTROL`), to the callback an agent's client stores at
+ * `wakeSubscribe` or the owner at `agentDoorbell`; file housekeeping (expired uploads and
+ * temporary directories, history prunes, garbage chunk deletes) is the `files` lane's. No door
+ * reaches either.
  *
  * The owner's model connections (`connections.ts`) hold only blobs the gateway sealed;
  * their doors are the owner's, in its live session. The sandbox's model calls reach a
@@ -72,7 +73,7 @@
  * writes a row at a time. The modules see the storage only through the gate's view, which
  * refuses a write outside a unit. Reads are direct.
  *
- * The run doors (`agentSubmit`, `agentRun`, `agentStatus`, `agentCancel`; slice R) start,
+ * The run doors (`agentSubmit`, `agentRun`, `agentStatus`, `agentCancel`) start,
  * read and cancel runs (`runs.ts`): an engine's run in the owner's sandbox, admitted here in
  * one unit against the owner's admission, the agent, the tier's simultaneous runs, the
  * owner's own limits and the initiator's stamp, its source chosen, its row, grant and lease
@@ -82,7 +83,7 @@
  * reads by the engine's record and relays to the owner's app sockets subscribed to that
  * conversation.
  *
- * A main agent spends few calls (slice M): `inboxDigest` and `boardDigest` answer what
+ * A main agent spends few calls: `inboxDigest` and `boardDigest` answer what
  * changed for it since its cursor in one read, held to its grant; `codeRun` is code mode at
  * the MCP door, one script calling the caller's other tools (`codemode.ts`), refused unless
  * the owner's policy has `codemode.on` and the caller's profile holds `code`; and
@@ -93,9 +94,9 @@
  * platform's `erasureBegin`): once it marks the owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs) and no lane runs; it ends
  * every run, then wipes the owner whole, leaving only the erased admission row
- * (`admission.ts`). An object that finds that tombstone as it
- * starts migrates nothing and starts no Lifecycle, and every door refuses it
- * (`OWNER_ERASED`), so a stale `getByName` never makes owner state again.
+ * (`admission.ts`). An object that finds that tombstone as it starts migrates nothing and starts no
+ * Lifecycle, and every door refuses it (`OWNER_ERASED`), so a stale `getByName` never makes owner
+ * state again.
  *
  * The owner's admission (`admission.ts`) is checked in the same binding check: a suspended
  * owner's every door refuses, and so do the lanes with `require_work` semantics (the
@@ -653,7 +654,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
         }
       },
       // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
-      // state of them deleted (slice S review H-6).
+      // state of them deleted.
       sandboxes: async () => {
         await this.env.SANDBOX.erase(this.#ownerName());
       },
@@ -797,7 +798,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /**
    * An account call's owner, origin and grant. The account is its owner's own: the
    * caller must be the owner's account, acting itself (`origin` null) or through a
-   * verified outside client, which is admitted here against its grant (P0-3) before any
+   * verified outside client, which is admitted here against its grant before any
    * door acts. A refusal here leaves no receipt: the call never reached the account.
    */
   #account(held: HeldBy<"account">, serves: Serves = {}): Account {
@@ -816,7 +817,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (origin === null) {
       return { owner, caller, origin, grant: null, run: null };
     }
-    // The owner's cookie rides only the owner's own browser requests (tasks 2); an
+    // The owner's cookie rides only the owner's own browser requests; an
     // outside client's call carrying it is a binder bug or a replay, refused before any
     // grant is recorded. Only an API key's registration carries both: the binder checked
     // the owner holds the key, and the object re-derives its origin from the key id.
@@ -946,7 +947,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * agent's call of a row's act is held to the owner's rules on that act in a unit of its own
    * before the handler (`#decide`), so a call is decided once, however many units its handler
    * makes. Only a rule on the act costs the unit. A session door's caller is the owner alone,
-   * and the sync's commit lands a run's files, whose hold is a later slice's (tasks.md R5).
+   * and the sync's commit lands a run's files, whose hold is R5's later hold-on-sync
+   * (`tasks.md`; `r5-decide.md` item 3).
    */
   #call(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
         lease: Lease): Promise<unknown> {
@@ -1009,7 +1011,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       // agents, after the caller's authority is checked in a unit: an outside agent's first
       // `fetch` of `/workspace/USER.md` or `agents_list` finds the seeded profile and `main`
       // however soon after sign-up it comes, and its first write lands beside the seeded
-      // files, never before them (autoconnect_research.md §2.1).
+      // files, never before them.
       return this.#door(() => door.authorized()).then(() => this.#launcher.seeded())
         .then(() => handler(this.#parts, door as never));
     }
@@ -1029,7 +1031,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /**
    * `act` on the call its row checks. A session door is a widening: the owner's live
-   * session, checked against the object's own session row (S30, N10), and, when the row
+   * session, checked against the object's own session row, and, when the row
    * names what only the owner itself may do in it, never an outside client's call. A
    * refusal after its account is bound leaves a refusal receipt of what was asked (the
    * row's stand-in for it, where it names one), written once the refused change rolled back.
@@ -1286,9 +1288,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * R2 object by the namespace's prefix (its files' and placed bodies' chunks and its
    * generations), Lifecycle's alarm disabled so nothing writes after, then the whole database
    * deleted, and the prefix deleted once more; no tombstone. A rehearsal's owner is never
-   * signed into (`rehearsalName`), so it has no source connected and no run. From then on this instance answers every door `busy` (`DISCARDED`) and a
-   * discard again with the namespace it deleted; the runtime's next instance of the name is a
-   * fresh, `pending` object. Repeatable; the namespace, read before the wipe.
+   * signed into (`rehearsalName`), so it has no source connected and no run. From then on this
+   * instance answers every door `busy` (`DISCARDED`) and a discard again with the namespace it
+   * deleted; the runtime's next instance of the name is a fresh, `pending` object. Repeatable; the
+   * namespace, read before the wipe.
    */
   async #discard(): Promise<string | null> {
     if (this.#discarded !== null) {
@@ -1398,7 +1401,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     const { sandbox } = binding;
     const lease = this.#files.leaseByToken("sync", sandbox.token, clock());
     // The call came from inside the lease's own sandbox: E2B's transform set that lease's
-    // egress token beside the sync token (review M-5).
+    // egress token beside the sync token.
     const inside = this.#files.leaseByToken("egress", sandbox.egress, clock());
     if (lease === null || inside?.lease_id !== lease.lease_id
         || (request !== null && (request.lease_id !== lease.lease_id
@@ -1465,8 +1468,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
 
   /**
    * In a unit: a run door's caller held: a run's own call never converses, and reads or
-   * cancels only holding `run_graph`; for a door that starts work, `need` held where it acts (a scoped client's agent; a run's grant, and
-   * a client's run's stamped grant as well, for the agent it launches); its universe.
+   * cancels only holding `run_graph`; for a door that starts work, `need` held where it acts (a
+   * scoped client's agent; a run's grant, and a client's run's stamped grant as well, for the agent
+   * it launches); its universe.
    */
   #runDoor(account: Account, need: RunNeed, agent: string | null): string | null {
     if (account.run !== null && need === "converse") {
@@ -1474,7 +1478,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     if (account.run !== null && need === null) {
       // A run reads and cancels runs and schedules only as its agent may make them: an
-      // agent the owner narrowed is held to it (review H1).
+      // agent the owner narrowed is held to it.
       this.#scope(account, "run_graph");
     }
     if (need === null || agent === null) {
@@ -1493,7 +1497,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     return universe;
   }
 
-  // -- SOCKETS: the owner app's live view of its runs (A6, salvaged; `relay.ts`) ----------
+  // -- SOCKETS: the owner app's live view of its runs (`relay.ts`) -------------------------
 
   /**
    * In a unit: a socket's attach, as a `read` door: the binding's account, the owner's own

@@ -258,9 +258,17 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     (`untangle-2026-11/p2-receipt-delete.md`).
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
-  measured, and `drain_review_gate.py` named for what it holds now, the review check and the
-  Untangle check, with the host's landing script told (`untangle/p6-process-code`;
-  `untangle-2026-11/p2-receipt-delete.md`).
+  measured, and the review module named for what it holds now, the review check and the
+  Untangle check, with the host's landing script told (`untangle-2026-11/p2-receipt-delete.md`):
+  - [x] the module is `scripts/review_checks.py`, the hotfix holds its own read of the
+    check, every script a workflow names is held to exist, a lost duration stops
+    `budgets.mjs`, and §B8 is decided (`untangle/p6-process-code`;
+    `untangle-2026-11/p6-process-code.md`);
+  - [ ] the process tests beside their scripts, held by the tamper rule
+    (`untangle/p6-tests-beside`);
+  - [ ] queue-freshness and rerun-cancelled-checks deleted (`untangle/p6-queue-deletes`);
+  - [ ] main-red and queue-attempts reading the ruleset and the jobs, not the old suite
+    (`untangle/p6-queue-helpers`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
@@ -294,7 +302,7 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
 - [x] An owed item may name a `process/` or `land/` branch as well as an `untangle/` or `fix/`
-  one: `drain_review_gate.py` `_NAMES_FIX_RE` (P7's review).
+  one: `review_checks.py` `_NAMES_FIX_RE` (P7's review).
 - [x] The oracle image builds on the root `Dockerfile`'s digest-pinned base, read from there,
   and retries a busy registry (a 429, 5xx or stall: merge group run 44079286405) up to four
   times. `queue_attempts.py` no longer counts a job that stopped before any test ran
@@ -650,6 +658,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] `platform/doors/`, both passes in one PR, with `d2:N56` and `d2:N57` decided and the
     app-files guard held to what the doors serve (`untangle/pass-doors`;
     `untangle-2026-11/pass-doors.md`).
+  - [x] `platform/owner/`, part 1: the comments pass on `src/` and its config, and the tests
+    pass's items decided, its two prototype spies kept with their reasons
+    (`untangle/pass-owner`; `untangle-2026-11/pass-owner.md`).
+  - [ ] `platform/owner/`, part 2: the comments of `test/`, `guards/` and `memory/`, and of the
+    four sources R5's hooks change once they land; the constant pins and `write-gate`'s pinned
+    helper text; the spec's `CODE_ANSWER_MAX`; the swallowed errors and retries
+    (`untangle/pass-owner-2`; `pass-owner.md` §4).
   - [x] `platform/ci/` and `platform/deploy/`, both passes in one PR for the two areas (one CI
     run), with the two ci checks that could never fail removed (the memory legs'
     `--expose-gc` text, which their header comments held) (`untangle/pass-ci-deploy`;

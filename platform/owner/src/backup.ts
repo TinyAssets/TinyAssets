@@ -1,5 +1,5 @@
 /**
- * Generations (slice P; `backup_shape_research.md` (d)): the owner export and the nightly
+ * Generations: the owner export and the nightly
  * manifest are one artifact, a generation. Each is a fuzzy base copy of every exported row
  * (`export.ts` `readPage`) and the change log captured while the base was read
  * (`changelog.ts`), shipped to R2 as it goes, and consistent at its end E: read last line
@@ -128,8 +128,8 @@ export const MANIFEST_CEILING = "manifest_ceiling";
 /** The notice an owner is given, once, when its unshipped log passed `LOG_BYTES`. */
 export const MANIFEST_LOG_OVERFLOW = "manifest_log_overflow";
 /**
- * The notice an owner is given, once, when a migration ran while a generation was under way
- * (review L5-2): its base and log are of the old schema, so it is given up, never mixed, and
+ * The notice an owner is given, once, when a migration ran while a generation was under way:
+ * its base and log are of the old schema, so it is given up, never mixed, and
  * a fresh one is begun under the new.
  */
 const MANIFEST_SCHEMA = "manifest_schema";
@@ -834,8 +834,8 @@ export class Backups {
 
   /**
    * One segment of the log shipped (`#ship`), in a frame of its own, so its bytes are let go
-   * before the next is built (rvburst X2: held in `#ship`'s frame, segment N's bytes stood
-   * beside segment N+1's build): its units taken now or refused `busy` (before `pending`
+   * before the next is built (held in `#ship`'s frame, segment N's bytes stood beside
+   * segment N+1's build): its units taken now or refused `busy` (before `pending`
    * sizes it, which writes each candidate line once), then sized, built, put and
    * acknowledged with its list's entry. Whether one was shipped (false: none was pending).
    */
@@ -886,7 +886,7 @@ export class Backups {
    * One base page from `cursor`, read in a unit of its own (the unit that reads the last
    * fixes E, the log's last seq then) and encoded outside it (`encodeLines`), in a frame of
    * its own so its text is let go once encoded; the memory leg samples it encoded, its text
-   * and its bytes both in hand (rvburst W1).
+   * and its bytes both in hand.
    */
   async #page(at: GenerationRow, cursor: string | null):
       Promise<{ lines: Lines[]; next: Cursor | null; last: number | null; at: number }> {
@@ -920,7 +920,7 @@ export class Backups {
     const log = this.#parts.log;
     if (row.schema !== MIGRATIONS.length) {
       // A migration ran while it was under way: its base and log are the old schema's, so it
-      // is given up, loudly, and a fresh one begun under the new (review L5-2).
+      // is given up, loudly, and a fresh one begun under the new.
       await this.#abandon(row, MANIFEST_SCHEMA);
       const gen = await this.#write(() => this.#open(clock()));
       return this.#carry(this.#rows().find((each) => each.gen === gen)!, until);
@@ -970,7 +970,7 @@ export class Backups {
         return true;  // an erasure begun while the log shipped: no burst begins
       }
       // A burst of whole base pages, its parts put and recorded (`#burst`), in a frame of
-      // its own, so nothing of it is live once its log ships (rvburst X2).
+      // its own, so nothing of it is live once its log ships.
       const burst = await this.#burst(ns, key, at);
       if (burst === "ended") {
         return true;
@@ -1042,7 +1042,7 @@ export class Backups {
           return "ended";
         }
         // No segment is built between them: the log a burst's puts leave is shipped once
-        // its parts are recorded and let go, under its own hold (rvburst W1), so a burst
+        // its parts are recorded and let go, under its own hold, so a burst
         // never holds its parts and a segment's build at once.
         written.push(await this.#parts.store.putManifestPart(ns, key, at.gen,
                                                              at.parts + written.length, bytes));
