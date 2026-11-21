@@ -181,7 +181,7 @@ It never counts as "absent".
     (`doors/guards/identity.test.ts`).
   - A refused change stops the run and says which steps are done.
 
-  It then adds the egress custom domain (`EGRESS_HOST` in `platform/contract/src/egress.ts`;
+  It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
   `wrangler triggers deploy`),
   enables E2B's lifecycle webhook now that the doors serve its path, and runs the
   platform's canary's unkeyed checks (`--side doors --unkeyed`, below). The same
