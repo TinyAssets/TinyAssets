@@ -1,6 +1,6 @@
 /**
- * The codemode Worker's allow-lists (agent research §6.4; pi audit F8; narrowed to code mode by
- * ADR-034 decision 12), checked by the platform's guard kit (`ci/kit/`).
+ * The codemode Worker's allow-lists (narrowed to code mode by ADR-034 decision 12), checked by
+ * the platform's guard kit (`ci/kit/`).
  *
  * Every code mode script runs in this Worker, so it must reach no owner's object, store,
  * ledger or policy, and nothing but the owner Worker's `CODEMODE_VM` service binding may reach it.

@@ -188,7 +188,7 @@ export const CREDENTIAL_NAME =
  * A variable that loads code into a process or changes what its runtime loads (Node's
  * options and module path, the dynamic linker's preloads and paths, Bun's, Python's, Perl's,
  * Ruby's and the JVM's, a shell's startup file): never a record's own, so nothing a record
- * sets runs code inside a CLI (review round 4, R4-1).
+ * sets runs code inside a CLI.
  */
 const CODE_LOADING = /^(?:NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|LD_[A-Z0-9_]+|DYLD_[A-Z0-9_]+|BUN_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|PERL5?LIB|PERL5OPT|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|BASH_ENV|ENV|GCONV_PATH|MALLOC_[A-Z0-9_]+)$/;
 /** A settings key shaped like a credential, a credential helper or an environment block. */
@@ -302,8 +302,8 @@ function homePath(value: unknown, wildcards: boolean): string[] | null {
  * A file the runner writes for one run: under `{home}`, or under `{system}`, the run's own
  * directory outside the home that root owns at every level (`/etc/ta/runs/<run>`, readable
  * by the run's user alone), for a file a CLI takes only from a root-owned path (Gemini
- * CLI's system settings: it skips one any of whose ancestors another user owns, slice S's
- * probe). Never a secret or session path, which live in the home.
+ * CLI's system settings: it skips one any of whose ancestors another user owns). Never a
+ * secret or session path, which live in the home.
  */
 function runFilePath(value: unknown): string[] | null {
   if (typeof value === "string" && value.startsWith("{system}/")) {
@@ -324,7 +324,6 @@ function overlaps(a: readonly string[], b: readonly string[]): boolean {
 }
 
 function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
-  // `invoke`, a single inference, is not an engine: a CLI is never a backend (ADR-033 D2).
   if (object(value) && "invoke" in value) {
     check.fail("cli has no invoke: a CLI is an engine, never a backend (ADR-033 decision 2)");
   }
@@ -395,7 +394,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     return item as Record<string, string>;
   };
 
-  // The install, pinned.
   const install = installSpec(check, fields["install"], argv);
 
   // The credentials it runs on, and each one's unattended verdict (ADR-033 decision 3).
@@ -417,7 +415,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   if ((fields["api_key_env"] !== undefined) !== keyed) {
     check.fail("cli.api_key_env is present exactly when the record runs on an API key");
   }
-  // The run secret as a header on the model calls, where the CLI takes extra headers.
   let runSecretEnv: { env: string; value: string } | undefined;
   if (fields["run_secret_env"] !== undefined) {
     const header = check.keys(fields["run_secret_env"], "cli.run_secret_env", ["env", "value"]);
@@ -428,7 +425,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     runSecretEnv = { env: header["env"] as string, value: header["value"] as string };
   }
-  // How the route probe makes it compact at its next turn.
   let compaction: { argv: readonly string[]; marker: string } | undefined;
   if (fields["compaction"] !== undefined) {
     const spec = check.keys(fields["compaction"], "cli.compaction", ["argv", "marker"]);
@@ -437,7 +433,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                                       "cli.compaction.marker") };
   }
 
-  // Its home, environment and files.
   const homeEnv = check.stringMap(fields["home_env"], "cli.home_env", ENV_NAME, 8);
   if (Object.keys(homeEnv).length === 0 || Object.values(homeEnv).some((path) =>
     path !== "{home}" && homePath(path, false) === null)) {
@@ -473,10 +468,8 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
   }
 
-  // The MCP door's way in.
   const mcp = mcpSpec(check, fields["mcp"], argv, template, sandboxPath, declared);
 
-  // The engine itself.
   const engine = engineSpec(check, fields["engine"], argv);
   const instructions = instructionsSpec(check, fields["instructions"]);
   const skills = check.strings(fields["skills_paths"], "cli.skills_paths", /^.{1,256}$/su, 16);
@@ -527,7 +520,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
       apiKeyEnv[provider] = Object.freeze(vars as unknown as ApiKeyEnv);
     }
-    // A declared channel (rule 1): no base-URL variable, so a file template or the API-key
+    // A declared channel: no base-URL variable, so a file template or the API-key
     // run's own argv carries `{base_url}`.
     const keyArgv = argvs.find(([what]) => what === "cli.per_credential.api_key.argv")?.[1] ?? [];
     if (Object.values(apiKeyEnv).some((vars) => vars.base_url === null)
@@ -639,7 +632,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
   }
 
-  // The sign-in's regions: the owner's choice fills `{region}` and adds its hosts.
   let regions: Record<string, Region> | undefined;
   if (fields["regions"] !== undefined) {
     const map = fields["regions"];
@@ -696,9 +688,9 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
     }
   }
-  // `{base_url}` only where only an API-key run reads it (rule 2): the API-key run's own
+  // `{base_url}` only where only an API-key run reads it: the API-key run's own
   // argv, env or files, or anywhere in a record that runs on nothing but a key; and in an
-  // argv joined to its key, never bare (rule 3).
+  // argv joined to its key, never bare.
   const keyOnly = credential.length === 1 && credential[0] === "api_key";
   for (const [what, text] of [...argvs.flatMap(([what, list]) =>
     list.map((item): [string, string] => [what, item])), ...templates]) {
@@ -714,7 +706,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                  "(--option={base_url}, key=\"{base_url}\"), never bare");
     }
   }
-  // No argument a signed-in run gets moves where its calls go (rule 4): every argv of a
+  // No argument a signed-in run gets moves where its calls go: every argv of a
   // record that signs in but the API-key run's own and the install's check.
   if (signsIn) {
     for (const [what, list] of argvs) {
@@ -881,7 +873,6 @@ function matchers(check: ReturnType<typeof checker>, value: unknown, what: strin
 }
 
 function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv): Engine {
-  // `invoke`, a single inference, is not an engine: a CLI is never a backend (ADR-033 D2).
   if (object(value) && "invoke" in value) {
     check.fail("cli.engine has no invoke: a CLI is an engine, never a backend (ADR-033 " +
                "decision 2)");
@@ -1033,7 +1024,6 @@ function noUpdateSpec(check: ReturnType<typeof checker>, value: unknown, argv: A
     ...(fields["file"] === undefined ? {} : { file: String(fields["file"]) }),
   });
 }
-/** The verdicts on the vendor's terms for a platform hosting its CLI's sign-in. */
 const HOSTED_USE: readonly HostedUse[] = Object.freeze(["allowed", "unclear", "forbidden"]);
 
 /** A URL parameter's name, as a record pins it. */

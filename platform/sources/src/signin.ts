@@ -19,16 +19,16 @@ export function signinHosts(rec: SourceRecord, region: string | null): string[] 
 }
 
 /**
- * A sign-in's states, the only ones a frame from the VM may carry (review M1): no text the
- * VM chose leaves it but the record's own URL and code.
+ * A sign-in's states, the only ones a frame from the VM may carry: no text the VM chose
+ * leaves it but the record's own URL and code.
  */
 export const SIGNIN_STATES = Object.freeze(["starting", "open", "code_sent", "signed_in",
                                             "signed_out", "failed", "cancelled", "refused",
                                             "expired"] as const);
 
 /**
- * Why a sign-in was refused, each in plain words (review L6): the reason a refusal carries,
- * one of these keys, never a text the VM chose.
+ * Why a sign-in was refused, each in plain words: the reason a refusal carries, one of these
+ * keys, never a text the VM chose.
  */
 export const SIGNIN_REFUSALS = Object.freeze({
   url: "it showed a link that is not the vendor's own sign-in page",
@@ -73,13 +73,13 @@ const UNRESERVED = /^[A-Za-z0-9._~-]{1,128}$/;
  * Why a sign-in's prompt is not the record's own shape (a `SigninRefusal`), or null. The URL:
  * visible ASCII at most `SIGNIN_URL_MAX`, matching the record's `url_pattern` whole,
  * `https` on one of the record's `url.hosts` that is among its login hosts (and the chosen
- * region's), no user, password, port or fragment, its path the record's `url.path` exactly, each of the record's `url.params`
- * present with exactly its value, the record's `url.free` parameters each at most once with
- * an unreserved value (a state, a PKCE challenge, a user code: never a URL, so no redirect
- * chain), and no other parameter (so no other OAuth client's page). The code: a device
- * code's characters, at most `SIGNIN_CODE_MAX`. Neither credential-shaped
- * (`credentialLike`). Checked in the VM before a prompt leaves it, and again by the owner's
- * object before the owner sees it.
+ * region's), no user, password, port or fragment, its path the record's `url.path` exactly,
+ * each of the record's `url.params` present with exactly its value, the record's `url.free`
+ * parameters each at most once with an unreserved value (a state, a PKCE challenge, a user
+ * code: never a URL, so no redirect chain), and no other parameter (so no other OAuth
+ * client's page). The code: a device code's characters, at most `SIGNIN_CODE_MAX`. Neither
+ * credential-shaped (`credentialLike`). Checked in the VM before a prompt leaves it, and
+ * again by the owner's object before the owner sees it.
  */
 export function signinShape(rec: SourceRecord, region: string | null, url: string | null,
                             code: string | null): SigninRefusal | null {

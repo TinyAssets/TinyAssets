@@ -7,9 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** The records' folder. */
 export const RECORDS_DIR = join(HERE, "records");
-/** The list the catalog reads. */
 const RECORDS_FILE = join(HERE, "src", "records.ts");
 
 /** A record file's binding: its name in camel case (`claude-code.json` is `claudeCode`). */
@@ -19,7 +17,6 @@ function binding(file: string): string {
   return /^[0-9]/.test(name) ? `_${name}` : name;
 }
 
-/** The record files in `dir`, in name order. */
 export function recordFiles(dir: string = RECORDS_DIR): string[] {
   return readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
 }

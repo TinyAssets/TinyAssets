@@ -1,6 +1,6 @@
 name: okf-watch
 
-# The OKF watcher (platform/starter/okf-watch.ts; okf_update_research.md section 5).
+# The OKF watcher (platform/starter/okf-watch.ts).
 #
 # The starter's `knowledge` skill vendors the Open Knowledge Format spec, pinned to one
 # commit of its canonical repository. Daily, `watch` compares that pin with the repository

@@ -1,7 +1,6 @@
 /**
- * The codemode Worker (`platform/codemode`; ADR-032 §4, pi audit F8, narrowed to code mode by
- * ADR-034 decision 12): code mode's VMs, out of the owner's object. Not deployed: no
- * workflow deploys platform/.
+ * The codemode Worker (`platform/codemode`; ADR-032 §4, narrowed to code mode by ADR-034
+ * decision 12): code mode's VMs, out of the owner's object.
  *
  * The owner Worker binds its default entrypoint as `CODEMODE_VM`, and nothing else reaches it:
  * no route, no `workers.dev` or preview URL. It binds only the namespace of its own class,
@@ -28,10 +27,6 @@ export { CodemodeSandbox } from "./codemode";
 
 export default class Codemode extends WorkerEntrypoint<CodemodeEnv>
     implements CodemodeWorker<CodemodeRemoteRequest, CodemodeRemoteExchange> {
-  /**
-   * One code mode execution, named by the owner: the VM runs in that sandbox object and
-   * every tool call goes back through `exchange`. Resolves once the VM has stopped.
-   */
   async codemodeExecute(name: string, request: CodemodeRemoteRequest,
                         exchange: CodemodeRemoteExchange): Promise<void> {
     if (!executionName(name)) {

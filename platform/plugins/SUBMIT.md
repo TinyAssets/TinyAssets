@@ -78,5 +78,5 @@ from the starter's skills and `platform/contract/identity.json`. Don't edit them
 
 - Add its listing URL to that app's `connect.link` in `apps.json`, then rebuild. The public
   connect page and `agents_list` pick it up.
-- Raise the plugin's version with every starter version (`build.mjs` takes it from
-  `manifest.json`), and resubmit if the directory doesn't follow updates on its own.
+- The plugin's version is the starter's (`build.mjs` takes it from `manifest.json`).
+  Resubmit at each new version if the directory doesn't follow updates on its own.
