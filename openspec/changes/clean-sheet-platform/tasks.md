@@ -318,7 +318,14 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   - Due: on or after 2026-11-26 20:55 UTC, `check` with `ids: ib3ngrmhs5jv82f0mzj9j` only, so
     `small` stays paused unbroken; on or after 2026-12-12 20:55 UTC, `check` with no ids, then
     `cleanup`, and the result into `sandbox-probe.md`.
-- [ ] Durable Object regional availability, from Cloudflare's status history (d3 §C8; ADR-032).
+- [x] Durable Object regional availability reviewed against Cloudflare's status history
+  (d3 §C8; ADR-032; `durable-object-regions.md`). The regional incidents confirm errors in
+  Western Europe and North America; the owner measurements it still needs are the next line.
+- [ ] Per-region owner availability (`durable-object-regions.md`, its review): the canary checks
+  one owner in one location, so an incident where other owners live raises no alarm, and
+  ADR-032's two-region trigger has no per-region series. Research first (canary owners placed
+  by location hint, or Cloudflare's per-location analytics for the owner namespace), then
+  build it with the canary's keyed checks, which wait for `routes`.
 - [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
   plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
   they differ (d3 §C8, list3 P16).
