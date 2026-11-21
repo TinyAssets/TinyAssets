@@ -2,9 +2,10 @@
  * pi's code mode sandbox, in the codemode Worker (pi-codemode's "Usage on Cloudflare
  * Workers"): the VM of an owner's code mode script runs here, in a Durable Object of a
  * separately deployed Worker, so a script that computes never holds the owner's object (pi
- * measured 10 s in the session object or a Dynamic Worker it loads, about 50 ms here). The owner's `RemoteCodemodeSandbox` keeps the tools, the journal, the
- * deadline and the abort; this object only runs the VM, with pi's `serveCodemodeRemote`,
- * calling back into the owner through `exchange` for every tool call.
+ * measured 10 s in the session object or a Dynamic Worker it loads, about 50 ms here). The
+ * owner's `RemoteCodemodeSandbox` keeps the tools, the journal, the deadline and the abort;
+ * this object only runs the VM, with pi's `serveCodemodeRemote`, calling back into the owner
+ * through `exchange` for every tool call.
  *
  * Its limits apply to every request, whatever the owner asks: an interrupt budget well
  * below the Worker's `cpu_ms` (`wrangler.jsonc`), since hitting that resets the object
