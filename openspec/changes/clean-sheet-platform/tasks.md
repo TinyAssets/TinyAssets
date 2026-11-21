@@ -309,6 +309,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   (GitHub's own step, or the venue's `NO_TEST_RAN` line), which had cost #5678 a counted
   removal and #5471 its handoff (`fix/oracle-pull-retry`;
   `untangle-2026-11/oracle-pull-retry.md`).
+- [x] The recorders are CI's, so a PR's build stops waiting on local recorder and suite runs:
+  `platform-recorders`, a leg of `tests.yml` under `required-tests`, compares base and head in
+  four shards on every pull request and merge group whose diff touches `platform/*/src`, and
+  fails a recorder that differs unless the body's `Recorders-Differ:` line names it. Builders
+  and reviewers run typecheck, the touched tests, the guards the change can break and their
+  mutations, and push a draft early (`process/ci-recorders`; `untangle-2026-11/ci-recorders.md`).
 
 ### Step 1. Now: B25, T0b, E2
 

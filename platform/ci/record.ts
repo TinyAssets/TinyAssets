@@ -117,7 +117,8 @@ async function recordWorkspace(platform: string, workspace: string, out: string,
                                shard: Shard, label: string): Promise<boolean> {
   const recorders = TABLE.filter((recorder) => recorder.workspace === workspace);
   const cwd = join(platform, workspace);
-  const config = ["--config", `${RECORDS}/record.config.ts`];
+  // A recorder file the base does not have yet records no line there, so its lines differ.
+  const config = ["--config", `${RECORDS}/record.config.ts`, "--passWithNoTests"];
   const files = recorders.flatMap((recorder) =>
     recorder.files.map((file) => `${RECORDS}/${file}.record.ts`));
   const log = createWriteStream(join(out, `${workspace}.log`));
