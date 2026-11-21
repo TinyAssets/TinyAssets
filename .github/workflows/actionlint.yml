@@ -68,8 +68,11 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="${{ github.event.pull_request.base.sha }}"
             head="${{ github.event.pull_request.head.sha }}"
+            # From the merge base (three dots): what the PR itself changed. A
+            # two-dot diff from main's tip names a file main deleted after the
+            # branch began as "added", and the checkout (the merge) lacks it.
             changed=$(git diff --name-only --diff-filter=ACMR \
-                "${base}" "${head}" \
+                "${base}...${head}" \
                 | grep -E '^\.github/workflows/.+\.ya?ml$' || true)
           elif [ "${{ github.event_name }}" = "push" ]; then
             base="${{ github.event.before }}"
