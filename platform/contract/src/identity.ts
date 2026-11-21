@@ -2,10 +2,11 @@
  * The doors' public identity, the facts more than one Worker serves by (`identity.json`, its
  * one copy, which the doors' config, the deploy kit and the plugins read too): the public
  * origin; the MCP door's resource; where the upstream sign-in returns the browser; the
- * first-party app's client document and redirect, which the doors serve and the deploy kit's probe signs in with; the
- * first-party resource, where the owner's own app is, whose tokens the doors take for
- * `/app/api/*` and whose pages the owner's object cites a file by (`owner/src/files.ts`); the
- * events E2B's lifecycle hook takes; and how a route of its `routes` takes a URL.
+ * first-party app's client document and redirect, which the doors serve and the deploy kit's
+ * probe signs in with; the first-party resource, where the owner's own app is, whose tokens
+ * the doors take for `/app/api/*` and whose pages the owner's object cites a file by
+ * (`owner/src/files.ts`); the events E2B's lifecycle hook takes; and how a route of its
+ * `routes` takes a URL.
  */
 import identity from "../identity.json" with { type: "json" };
 

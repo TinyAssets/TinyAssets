@@ -466,7 +466,7 @@ export interface Owner {
 
 /**
  * `name`'s object, admitted by the platform's door, as the doors' sign-in callback admits a
- * new owner at sign-up (`admission.ts`, slice L): a fresh object is `pending` and refuses
+ * new owner at sign-up (`admission.ts`): a fresh object is `pending` and refuses
  * every door until then. Its seed has not landed yet (`seeded`).
  */
 export async function admitted(name: string): Promise<Stub> {

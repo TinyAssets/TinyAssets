@@ -69,4 +69,4 @@ or provider implementation was changed for this recurrence.
 Raw evidence is under `C:/Users/Jonathan/k1-verification` (initial
 `required-2.xml`, `rerun/required-2.xml`, `main-prefix.xml`), with commands and
 complete K1 counts in
-`openspec/changes/one-extension-unit/review-k1-merge-queue.md`.
+[`one-extension-unit`'s `review-k1-merge-queue.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/one-extension-unit/review-k1-merge-queue.md).

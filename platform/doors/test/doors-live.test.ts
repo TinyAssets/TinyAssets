@@ -668,11 +668,14 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     await signInApp({ owner: who });
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
     await slackInstall(who, team);
-    const retried = slackEvent(team, "EvR");  // a retry carries the same envelope
+    // A retry carries the same envelope and the same signed timestamp: one clock read, or the
+    // two sends straddle a second and their signature headers differ.
+    const retried = slackEvent(team, "EvR");
+    const at = now();
     await accepts(who, ADMITTED);
-    expect((await call(slackRequest(retried))).status).toBe(202);
+    expect((await call(slackRequest(retried, at))).status).toBe(202);
     await accepts(who, { ...ADMITTED, deduped: true });
-    const replay = await call(slackRequest(retried));
+    const replay = await call(slackRequest(retried, at));
     expect(await replay.json()).toMatchObject({ state: "admitted", deduped: true });
     const [first, again] = await crossed(who, "inboundAccept");
     expect(again!.request).toEqual(first!.request);

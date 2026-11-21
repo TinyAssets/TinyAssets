@@ -1,5 +1,5 @@
 /**
- * What the owner's recorders share (`*.record.ts`, run by `npm run record`, `ci/record.ts`).
+ * What the owner's recorders share (`*.record.ts`, run by `ci/record.ts`).
  */
 import { until } from "../../../ci/workerd";
 import type { OwnerDO } from "../../src/owner-do";

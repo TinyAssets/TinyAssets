@@ -1,13 +1,12 @@
 /**
- * The owner's model spend (`usage.ts`; tasks 4 G2): reservations held against the owner's
- * model policy, their states, the ceilings under concurrency, a dead instance's calls, and
- * the policy's `models` table. The runs slice (R) keys the reservations to runs.
+ * The owner's model spend (`usage.ts`): reservations held against the owner's model policy,
+ * their states, the ceilings under concurrency, a dead instance's calls, and the policy's
+ * `models` table. The reservations are keyed to runs.
  *
- * Acceptance cases ported from `tinyassets/request_budget.py` (`_RequestLedger`:
- * `dispatched` only from `reserved`; `not_sent` only from `reserved`,
- * `succeeded`, `failed` or `unknown` only from `dispatched`; a `not_sent` attempt never
- * counts) and from `PolicyStore.decide`'s spend reservations (`tinyassets/broker/policy.py`:
- * the day's and month's reservations summed against their caps, a source's ceiling).
+ * A reservation is `dispatched` only from `reserved`; `not_sent` only from `reserved`;
+ * `succeeded`, `failed` or `unknown` only from `dispatched`; and a `not_sent` attempt never
+ * counts. The day's and month's reservations are summed against their caps, and a source's
+ * against its ceiling.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -483,9 +482,9 @@ describe("the models table of owner policy", () => {
   const base = JSON.parse(DEFAULT_POLICY_JSON) as object;
 
   it("is optional, every cap off until the owner sets it (ADR-034 decision 7)", () => {
-    expect(modelSettings(validate(base))).toEqual({ ...MODEL_DEFAULTS, sources: {} });
-    expect(MODEL_DEFAULTS).toEqual({ turn_requests: null, turn_tokens: null, turn_cost: null,
-                                     daily_cost: null, monthly_cost: null });
+    expect(modelSettings(validate(base))).toEqual({
+      turn_requests: null, turn_tokens: null, turn_cost: null, daily_cost: null,
+      monthly_cost: null, sources: {} });
     // A cap the owner turns off again, and the highest each takes.
     expect(modelSettings(validate({ ...base, models: { turn_tokens: null } })).turn_tokens)
       .toBeNull();

@@ -1,7 +1,7 @@
 # Owner-split cutover runbook
 
 One maintenance window moves production from one daemon uid to per-owner
-isolation (`openspec/changes/per-role-uid-split/design.md`). It is forward
+isolation ([`per-role-uid-split`'s `design.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-10-10-per-role-uid-split/design.md)). It is forward
 only. Rollback means restoring the snapshot taken in step 3.
 
 Budget about 60 minutes. The founder schedules the window.

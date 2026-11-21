@@ -1,5 +1,5 @@
 /**
- * The AI apps an owner may connect (`apps.json`, slice BRAIN): the data's shape, how a
+ * The AI apps an owner may connect (`apps.json`): the data's shape, how a
  * signed-in client is known from it, and the dynamic-registration rule it carries. What the
  * doors serve an outside agent, the apps' connect sentences and the plugins among it, is the
  * doors' own guard (`doors/guards/served.test.ts`).
@@ -53,8 +53,8 @@ describe("apps.json", () => {
     expect(vendorOf("https://auth.chatgpt.com/cimd.json", "anything",
                     ["https://chatgpt.com/connector/oauth/abc123"]))
       .toEqual({ id: "chatgpt", verified: true });
-    // A document on the vendor's host that sends access elsewhere is not the vendor's (M2):
-    // the app it claims, unverified.
+    // A document on the vendor's host that sends access elsewhere is not the vendor's: the
+    // app it claims, unverified.
     for (const redirects of [["https://attacker.example/cb"],
                              ["https://chatgpt.com/connector/oauth/x", "https://evil.test/cb"],
                              ["https://chatgpt.com.evil.test/connector/oauth/x"],
@@ -92,7 +92,7 @@ describe("apps.json", () => {
                         ["grokapp://oauth/callback", "https://grok.example/oauth/x/y"]]) {
       expect(registrationRefusal({ client_name: "Grok", redirect_uris: uris }, apps)).toBeNull();
     }
-    // The review's phishing registrations (M3): the vendor's word in the name, a stranger's
+    // Phishing registrations: the vendor's word in the name, a stranger's
     // redirect, or none at all.
     for (const [name, uris] of [
       ["Grok official TinyAssets support", ["https://phish.example/cb"]],
@@ -107,8 +107,8 @@ describe("apps.json", () => {
     }
   });
 
-  it("logs a refused registration naming a dcr vendor, bounded and escaped, and no other " +
-     "(review R2-M1)", () => {
+  it("logs a refused registration naming a dcr vendor, bounded and escaped, and no other",
+     () => {
     const line = refusedRegistrationLine({ client_name: "Grok Bot", token_endpoint_auth_method:
       "none", redirect_uris: ["https://grok.example/cb\n\"forged\": 1", 7,
                               ...Array.from({ length: 10 }, (_, i) => `https://x.test/${i}`)] });

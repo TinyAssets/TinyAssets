@@ -77,7 +77,7 @@ context. It is superseded. No reporting runtime change, peer review, PR, deploym
 or app write was made. The active goal's high-level stage table and requirements
 are in `openspec/changes/consolidate-platform-resource-policy/goal-completion-contract.md`.
 
-Implementation proposal: `openspec/changes/connect-cross-user-nodes/` (September 9).
+Implementation proposal: [the `connect-cross-user-nodes` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/connect-cross-user-nodes) (September 9).
 It includes selected-node execution, explicit artifact copies and durable
 occurrence/attempt identity. First independent shape review returned ADAPT;
 the revised design no longer assumes queued rows are a durable worker queue or

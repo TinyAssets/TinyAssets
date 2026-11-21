@@ -37,6 +37,7 @@ transitive.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -1348,8 +1349,8 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
 def test_every_shard_runs_its_user_venue_and_plans_within_half_its_watchdog() -> None:
     """The measured table's packing, as the six shard jobs compute it.
 
-    A shard whose user venue owns no measured file runs an empty pytest (exit 5)
-    or falls under its case floor; an eight-minute root proof packed with the
+    A shard whose user venue owns no measured file runs an empty pytest (exit 5);
+    an eight-minute root proof packed with the
     whole surface's longest-first order leaves its shard nothing else. Half the
     watchdog leaves the shard's image build (about five minutes) and a fifth.
     """
@@ -1364,6 +1365,78 @@ def test_every_shard_runs_its_user_venue_and_plans_within_half_its_watchdog() ->
         users[index] += rel not in _ci.ROOT_TEST_FILES and seconds > 0
     assert all(users), users
     assert max(planned) <= job["timeout-minutes"] * 60 / 2, planned
+
+
+def _aggregate_whole_surface(tmp_path, owner, cases, *, skipped=False, drop=(),
+                             heavy=_REPO / ".github" / "heavy-test-files.txt"):
+    """The workflow's whole-surface aggregate over shard results built from `owner`."""
+    shards = tmp_path / "shards"
+    shards.mkdir(parents=True)
+    for index in range(1, 7):
+        suite = ET.Element("testsuite")
+        for rel in sorted(r for r, s in owner.items() if s == index and r not in drop):
+            for n in range(cases):
+                case = ET.SubElement(suite, "testcase", file=rel, name=f"test_{n}",
+                                     classname=rel[:-3].replace("/", "."))
+                if skipped:
+                    ET.SubElement(case, "skipped")
+        ET.ElementTree(suite).write(shards / f"junit-shard-{index}.xml")
+        (shards / f"junit-shard-{index}.json").write_text(json.dumps(
+            {"shard": index, "total": 6, "pytest_exit": 0, "selection": ""}))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GITHUB_STEP_SUMMARY", "GITHUB_ACTIONS")}
+    return subprocess.run(
+        [sys.executable, str(_SCRIPT), "--aggregate", str(shards), "--expect-shards", "6",
+         "--shard-job-result", "success", "--junit", str(tmp_path / "junit.xml"),
+         "--min-ran", str(_ci.MIN_RAN_FLOOR), "--exclude-from", str(heavy)],
+        cwd=_REPO, env=env, capture_output=True, text=True)
+
+
+def test_a_whole_surface_run_passes_however_its_files_pack(tmp_path, monkeypatch) -> None:
+    """One added file reshuffles the packing (#5709); no test lost must stay green."""
+    measured = _ci.whole_surface_cover(None)
+    packed = {rel: _ci.shard_of(rel, 6) for rel in measured}
+    table = _ci.load_durations()
+    user = [rel for rel in measured if rel not in _ci.ROOT_TEST_FILES]
+    root = [rel for rel in measured if rel in _ci.ROOT_TEST_FILES]
+    reshuffled = {**_ci.pack(user + ["tests/test_added_unmeasured.py"], table, 6),
+                  **_ci.pack(root, table, 6)}
+    reshuffled.pop("tests/test_added_unmeasured.py")
+    assert any(packed[rel] != reshuffled[rel] for rel in measured)
+    for index, owner in enumerate((packed, reshuffled)):
+        result = _aggregate_whole_surface(tmp_path / str(index), owner, 20)
+        assert result.returncode == 0, result.stdout + result.stderr
+    # A measured file moved to the heavy list leaves the shards, and the gate with it.
+    (tmp_path / "heavy.txt").write_text(measured[0] + "\n")
+    result = _aggregate_whole_surface(tmp_path / "heavy", packed, 20, drop={measured[0]},
+                                      heavy=tmp_path / "heavy.txt")
+    assert result.returncode == 0, result.stdout + result.stderr
+    # A shard left with a root proof's two cases passes its own verdict.
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    two = {"tests/test_owner_volumes_proof.py::test_a", "tests/test_owner_volumes_proof.py::test_b"}
+    assert _ci.evaluate(set(), two, _ci.MIN_RAN_FLOORS["shard"], [0], "### shard") == 0
+
+
+@pytest.mark.parametrize("case", ["collapse", "skip", "deselect"])
+def test_a_vacuous_whole_surface_run_fails_and_names_why(tmp_path, case) -> None:
+    """A shard that drops its files, a mass skip, a mass deselect: each fails by name."""
+    measured = _ci.whole_surface_cover(None)
+    owner = {rel: _ci.shard_of(rel, 6) for rel in measured}
+    biggest = max(range(1, 7), key=lambda i: sum(s == i for s in owner.values()))
+    lost = [rel for rel, s in owner.items() if s == biggest][1:]
+    if case == "collapse":
+        # The union still clears the floor: only the coverage check sees it.
+        result = _aggregate_whole_surface(tmp_path, owner, 20, drop=set(lost))
+        assert (len(measured) - len(lost)) * 20 >= _ci.MIN_RAN_FLOOR
+        assert "reported no case at all" in result.stdout and lost[0] in result.stdout
+    elif case == "skip":
+        result = _aggregate_whole_surface(tmp_path, owner, 20, skipped=True)
+        assert "only 0 tests ran" in result.stdout
+    else:
+        result = _aggregate_whole_surface(tmp_path, owner, 2)
+        assert f"only {len(measured) * 2} tests ran" in result.stdout
+    assert result.returncode == 1, result.stdout
 
 
 def test_the_durations_refresh_reads_only_whole_surface_runs(tmp_path, monkeypatch) -> None:

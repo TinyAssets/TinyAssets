@@ -224,7 +224,7 @@ export const REFUSALS = Object.freeze({
   credential_refused: REFUSED,
   endpoint_refused: REFUSED,
   unmetered: REFUSED,
-  // A sandbox call the reservation cannot bound (G4): several choices, or a server-side
+  // A sandbox call the reservation cannot bound: several choices, or a server-side
   // tool the provider bills beyond tokens.
   egress_multiple_choices: Object.freeze({ status: 400 }),
   egress_unmetered_tool: REFUSED,

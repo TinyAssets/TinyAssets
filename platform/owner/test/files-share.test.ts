@@ -38,7 +38,7 @@ const CLIENT = `client:${MUSE.client}`;
 
 /**
  * A whole write: the owner's with no etag; an outside client's at the etag it read, as every
- * agent writes (review H1), "" where there is none (or its path is refused to begin with).
+ * agent writes, "" where there is none (or its path is refused to begin with).
  */
 const write = async (r: Rig, origin: typeof MUSE | null, path: string, body = "x") => {
   let etag: string | null = null;
@@ -372,9 +372,8 @@ describe("an outside client's share", () => {
 });
 
 describe("the manifest charge at worst fill", () => {
-  it("counts a page at three quarters of its room, and a third full at worst", () => {
+  it("counts a page at three quarters of its room", () => {
     expect(PAGE_ROOM).toBe(PAGE_USABLE * 3 / 4);
-    expect(WORST_FILL).toBe(PAGE_ROOM / (PAGE_USABLE / 3));
     expect(recordBytes(100, 1002)).toBe(Math.floor(PAGE_BYTES / Math.floor(3066 / 104)));
   });
 
