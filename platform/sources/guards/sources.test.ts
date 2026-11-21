@@ -841,6 +841,20 @@ describe("an engine's own pre-tool hook", () => {
       at(s, "env")["TA_X"] = "{matcher}"; })],
     ["an argv that loads another file", cli((s) => {
       at(s, "decide")["argv"] = ["-e", "{system}/other.mjs"]; }, pi)],
+    ["no way it runs", cli((s) => { delete at(s, "decide")["runs"]; })],
+    ["two ways it runs", cli((s) => { at(s, "decide.runs")["exec"] = true; })],
+    ["an http refusal that is not JSON", cli((s) => {
+      at(s, "decide.runs.http")["deny"] = "no: {reason}"; })],
+    ["an http refusal with no reason", cli((s) => {
+      at(s, "decide.runs.http")["deny"] = "{\"decision\": \"deny\"}"; })],
+    ["an http hook whose template names a command", cli((s) => {
+      at(s, "decide")["template"] = String(at(s, "decide")["template"])
+        .replace("{decide_url}\"]", "{decide}\"]"); })],
+    ["a shell hook whose template names the door's address", cli((s) => {
+      at(s, "decide")["template"] = String(at(s, "decide")["template"])
+        .replace("{decide}", "{decide_url}"); }, codex)],
+    ["a shell given as one line", cli((s) => { at(s, "decide.runs")["shell"] = "sh -c"; }, codex)],
+    ["an alterable hook with no words", cli((s) => { at(s, "decide")["alterable"] = ""; }, codex)],
   ])("refuses %s", (_what, record) => {
     expect(refused(record))
       .toMatch(/cli\.decide|missing \["decide"\]|which only cli\.decide\.template carries/);

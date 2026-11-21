@@ -18,21 +18,22 @@
  * - Files: the record's own templates, the credential's, and the MCP template, each filled
  *   (a `.json`, `.toml` or `.mjs` file's values escaped as a quoted string's), several
  *   templates of one JSON file merged.
- * - The CLI's own pre-tool hook (R5 P-hooks), where its record has one: the run's decide door
- *   in its environment (`DECIDE_ENV`), and, when the owner's rules name tools it matches
- *   (`hook.tools`), its file filled from the record's template (`{matcher}` those tools,
- *   `{decide}` the helper's command line) and what loads it. A file every run of the engine
+ * - The CLI's own pre-tool hook (R5 P-hooks), where its record has one: the run's decide
+ *   credential in its environment (`DECIDE_ENV`), and, when the owner's rules name tools it
+ *   matches (`hook.tools`), its file filled from the record's template (`{matcher}` those
+ *   tools; the door's address, its header and the credential's variable; the helper's command
+ *   line and its argv, the door their argument) and what loads it. A file every run of the engine
  *   shares (under `/etc`) is the runner's to write, as `shared`: null text when no tool is
  *   matched, so the latest run's start leaves the owner's latest rules there; null for a call
  *   given no hook.
  */
 import type { CliSpec } from "../../sources/src/schema";
 import type { Served } from "../../sources/src/served";
-import { decideUrl, egressDoor, envStem } from "../../contract/src/egress";
+import { DECIDE_HEADER, decideDoor, egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
 
-import { DECIDE_ENV, matcherOf } from "./decide";
+import { DECIDE_ENV, helperArgv, helperCommand, matcherOf } from "./decide";
 import type { StartDoc } from "./protocol";
 
 export const ENGINE_ROOT = "/opt/ta/engines";
@@ -165,10 +166,11 @@ export function invocation(record: Served, start: StartDoc,
                                       /**
                                        * A run's hook, where its record has one: the patterns
                                        * of the tools it matches (none: no hook) and the
-                                       * helper's command line. Absent, none is written.
+                                       * helper's runner, by its digest. Absent, none is
+                                       * written.
                                        */
                                       readonly hook?: { readonly tools: readonly string[];
-                                                        readonly command: string } }):
+                                                        readonly digest: string } }):
     Invocation {
   const cli = record.cli;
   const decide = "unsupported" in cli.decide ? null : cli.decide;
@@ -212,8 +214,9 @@ export function invocation(record: Served, start: StartDoc,
   for (const [name, value] of Object.entries(start.config.env)) {
     env[name] = fill(value, values);
   }
-  if (decide !== null) {
-    env[DECIDE_ENV] = decideUrl(start.urls.mcp);
+  const door = decide === null ? null : decideDoor(start.urls.mcp);
+  if (door !== null) {
+    env[DECIDE_ENV] = door.credential;
   }
   const banned = Object.keys(env).find((name) => forbids(forbidden, name));
   if (banned !== undefined) {
@@ -246,8 +249,11 @@ export function invocation(record: Served, start: StartDoc,
   if (bad !== undefined) {
     throw new Error(`the run's credential forbids ${bad}`);
   }
-  const hookValues = options.hook === undefined ? values
-    : { ...values, matcher: matcherOf(options.hook.tools), decide: options.hook.command };
+  const hookValues = options.hook === undefined || door === null ? values : {
+    ...values, matcher: matcherOf(options.hook.tools), decide_url: door.url,
+    decide_header: DECIDE_HEADER, decide_env: DECIDE_ENV,
+    decide: helperCommand(options.hook.digest, door.url),
+    decide_argv: JSON.stringify(helperArgv(options.hook.digest, door.url)) };
   // The files: the record's, the credential's, the MCP template, then the run's own hook;
   // one JSON file's templates merged in that order.
   const files = new Map<string, string>();

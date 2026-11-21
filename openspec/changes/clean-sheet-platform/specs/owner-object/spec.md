@@ -405,6 +405,13 @@ Where a run's engine record names a pre-tool hook (`decide`), the run's decide d
 - **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }` and a run's Claude Code calls `Bash`
 - **THEN** the call is refused `held_for_owner` with a card naming `Bash`, and a `Read` is let be
 
+### Requirement: Nothing the agent writes changes what its hook answers
+A run's hook SHALL take the door's address only from its root-owned file, and the run's environment SHALL carry only the run's credential, which the door SHALL refuse when forged. No process the hook runs SHALL start in an environment a file the agent writes reaches; where a CLI lets one, its record SHALL say so, and its note SHALL say no rule holds there.
+
+#### Scenario: A spoofed credential
+- **WHEN** the agent's settings set the decide credential to an answer that allows
+- **THEN** the run is refused before its CLI starts, and a hook asked with that credential refuses the call
+
 #### Scenario: The helper cannot reach the door
 - **WHEN** a run's hook is written and its start check is refused
 - **THEN** the run fails before its CLI starts
@@ -414,7 +421,7 @@ Where a run's engine record names a pre-tool hook (`decide`), the run's decide d
 
 #### Scenario: A rule nothing sees on one engine
 - **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }`
-- **THEN** its note holds it at every engine with a hook and names `kimi`, `main_agent` and `sandbox_programs` among where it can't hold
+- **THEN** its note holds it at every engine whose hook the agent can't alter, and names `codex`, `kimi`, `main_agent` and `sandbox_programs` among where it can't hold
 
 ### Requirement: A yes to a run's held call resumes its conversation
 A run's held call SHALL be bound to the run's conversation: the owner's yes SHALL admit the call only in that conversation, and SHALL write a run waiting there, under the held run's own authority, on an input that names the card, which starts once the conversation is free. A no SHALL resume nothing. A run whose engine stopped at a tool call it deferred (its record's `deferred` matcher) SHALL settle with the code `tool_deferred`, and its result SHALL post no reply.

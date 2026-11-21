@@ -4,9 +4,9 @@
  * their providers' own APIs with placeholder keys (the contract's `sandboxEnv`). The run in
  * the path is what the object holds the call to (that run's own connection), and
  * the run's own secret beside it is what lets a call act as that run: only the run's CLI
- * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`) and its
- * decide door (`/r/<run>/<secret>/decide`, its hook helper's), and the runner's own doors,
- * by the runner's secret (`x-ta-runner`), which no CLI holds: a run's event door
+ * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), the
+ * runs' decide door (`/decide`, a run's CLI's hook's, by its credential), and the runner's
+ * own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a run's event door
  * (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by the same egress
  * token.
  *
@@ -49,8 +49,9 @@ import {
   type MeterOutcome, outcomeOf, type Reservation,
 } from "../../contract/src/gateway";
 import {
-  EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER, generationIn, type Outcome,
-  RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER, SYNC_HEADER, type SyncDoor,
+  DECIDE_HEADER, decideCredential, EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER,
+  generationIn, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+  SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
 import type { JsonBody, SettleSent } from "../../contract/src/owner";
@@ -232,17 +233,26 @@ async function serveRunMcp(request: Request, env: DoorsEnv, run: string, secret:
 }
 
 /**
- * A run's decide door (R5 P-hooks; `runDecide`): its hook helper's question of a tool call its
- * CLI's pre-tool hook saw, or of the tools that hook matches, by the run's own secret. Only
- * the helper in the sandbox calls it, so an `Origin` is refused; a refusal is answered with its
- * message, which the helper hands the CLI as the reason.
+ * The runs' decide door (R5 P-hooks; `runDecide`): a run's CLI's pre-tool hook's question of a
+ * tool call it saw, or the runner's of the tools that hook matches, the run named by its
+ * credential (`DECIDE_HEADER`, `<run>:<secret>`), which binds it as the run's own secret
+ * does. Only the sandbox calls it, so an `Origin` is refused. A hook the CLI sends itself
+ * (an `http` hook) is answered in the CLI's own words (`hook`, its body as the object made
+ * it); a refusal is answered with its message, which the helper hands the CLI.
  */
-function serveDecide(request: Request, env: DoorsEnv, run: string, secret: string):
-    Promise<Response> {
+function serveDecide(request: Request, env: DoorsEnv): Promise<Response> {
+  const named = decideCredential(request.headers.get(DECIDE_HEADER));
+  if (named === null) {
+    throw refused("run_secret_missing");
+  }
   return sandboxDoor(request, EGRESS_BODY_MAX, async () => {
     const sandbox = await sandboxToken(request, env);
-    return bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, run, { secret });
-  }, ({ binding, stub }, body) => stub.runDecide(binding, body));
+    return bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, named.run,
+                   { secret: named.secret });
+  }, async ({ binding, stub }, body) => {
+    const answer = await stub.runDecide(binding, body);
+    return "hook" in answer ? answer.hook : answer;
+  });
 }
 
 /**
@@ -385,15 +395,15 @@ async function egress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
     throw refused("not_found");
   }
   switch (door?.door) {
-    case "mcp":
-    case "decide": {
+    case "mcp": {
       const secret = secretOf(request, door.secret);
       if (secret === undefined) {
         throw refused("run_secret_missing");
       }
-      return door.door === "mcp" ? serveRunMcp(request, env, door.run, secret)
-        : serveDecide(request, env, door.run, secret);
+      return serveRunMcp(request, env, door.run, secret);
     }
+    case "decide":
+      return serveDecide(request, env);
     case "events":
       return serveEvents(request, env, { run: door.run });
     case "signin":

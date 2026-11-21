@@ -17,12 +17,13 @@
  *   A yes keeps the row as the call's once-approval for `approvalTtlS`, which its one use
  *   deletes; a no deletes it.
  * - **A run's CLI's own tool calls are decided too** (R5 P-hooks): its pre-tool hook, where its
- *   engine's record has one (`schema.ts` `Decide`), asks the run's decide door of each call it
+ *   engine's record has one (`schema.ts` `Decide`), asks the decide door of each call it
  *   matches (`runDecide`). A call is each act whose hook kinds name the tool (`acts.json`) or
- *   one of whose rules names it (`tools`), decided as a door's call of that act is, the strictest
- *   first, its door the tool's name and its request the tool's input. Which tools the hook
- *   matches is the owner's rules' (`hookTools`), for every agent: the decision holds each rule
- *   to its own agent.
+ *   one of whose rules names it (`tools`), decided as a door's call of that act is, its door
+ *   the tool's name and its request the tool's input: every act a rule never lets be first,
+ *   then one act asked, so one card and its one yes admit the call however many acts ask.
+ *   Which tools the hook matches is the owner's rules' (`hookTools`), for every agent: the
+ *   decision holds each rule to its own agent.
  * - **The honest note** (d3 §N5, `ruleNotes`): each rule's places it holds and can't, which
  *   `policyRead` answers beside the rules.
  * - **A yes to a run's call resumes its conversation** (R5 P-resume): the approval writes a
@@ -50,7 +51,7 @@ import { randomHex } from "../../contract/src/ids";
 import {
   type ActionRule, policyDigest, type PolicyDocument, POLICY_LIMITS,
 } from "../../contract/src/policy-document";
-import { Refusal } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { served, servedRecord } from "../../sources/src/served";
 import type { Decide } from "../../sources/src/schema";
 import { clock } from "./clock";
@@ -162,9 +163,9 @@ export interface RuleNote {
  * engines' records. It holds at `doors` (the platform's own tools and doors that do its act)
  * and at each engine whose CLI's own hook sees it (by its kinds, or the rule's tools). It
  * can't hold where `acts.json` says nothing of ours sees the act (`unseen`), at an engine
- * whose CLI holds no hook for it, nor, mid-run, at a hook whose failure lets the call through
- * (`<engine>.fails_open`). Every engine is named: an agent's engine is `auto`, or its own to
- * change, so no rule is held to one.
+ * whose CLI holds no hook for it or one the agent can alter (`alterable`), nor, mid-run, at a
+ * hook whose failure lets the call through (`<engine>.fails_open`). Every engine is named: an
+ * agent's engine is `auto`, or its own to change, so no rule is held to one.
  */
 export function ruleNotes(document: PolicyDocument): RuleNote[] {
   return (document.actions ?? []).map((rule) => {
@@ -174,8 +175,8 @@ export function ruleNotes(document: PolicyDocument): RuleNote[] {
     if (act.hook.length > 0 || rule.tools !== undefined) {
       for (const engine of [...served().keys()].sort()) {
         const hook = hookOf(engine);
-        if (hook === null || (rule.tools === undefined
-                              && !act.hook.some((kind) => hook.kinds[kind] !== undefined))) {
+        if (hook === null || hook.alterable !== undefined || (rule.tools === undefined
+            && !act.hook.some((kind) => hook.kinds[kind] !== undefined))) {
           not.push(engine);
           continue;
         }
@@ -285,24 +286,26 @@ export class Actions {
    * The patterns of the CLI's tool names `hook` matches for the owner's rules, every act a
    * rule names: none when no rule is on an act its hook sees.
    */
-  hookTools(hook: Hook): string[] {
-    const { document } = this.#policy();
+  hookTools(hook: Hook): { tools: string[]; generation: number } {
+    const { document, generation } = this.#policy();
     const acts = new Set((document.actions ?? []).map((rule) => rule.act));
-    return [...new Set([...acts].flatMap((act) => actTools(document, act, hook)))].sort();
+    return { tools: [...new Set([...acts].flatMap((act) => actTools(document, act, hook)))].sort(),
+             generation };
   }
 
   /**
    * In the caller's unit: a run's tool call at its CLI's hook decided, as each act it is
-   * (`actTools`), the strictest rule's first; it returns when every one lets it be.
+   * (`actTools`): every act a rule never lets be first, then the first act asked alone, so a
+   * call two asked acts name files one card, whose one yes admits it.
    */
   decideTool(actor: Actor, hook: Hook, tool: string, input: unknown, now: number): void {
     const { document } = this.#policy();
     const acts = [...new Set((document.actions ?? []).map((rule) => rule.act))]
       .filter((act) => actTools(document, act, hook).some((pattern) =>
-        new RegExp(`^(?:${pattern})$`).test(tool)))
-      .sort((a, b) => Number(ruleOn(document, b, actor) === "never")
-        - Number(ruleOn(document, a, actor) === "never"));
-    for (const act of acts) {
+        new RegExp(`^(?:${pattern})$`).test(tool)));
+    const nevers = acts.filter((act) => ruleOn(document, act, actor) === "never");
+    const asked = acts.find((act) => ruleOn(document, act, actor) === "ask");
+    for (const act of [...nevers, ...(asked === undefined ? [] : [asked])]) {
       this.decide(act, actor, { door: tool, request: input }, now);
     }
   }
@@ -538,29 +541,42 @@ export const actionsDoors = Object.freeze({
                              (run, family, prompt) => o.runs.resume(run, family, prompt, now));
   },
   /**
-   * A run's decide door, which its hook helper asks (`sandbox/runner/decide.ts`): with `check`,
-   * the patterns of the tool names its CLI's hook matches for the owner's rules (none for an
-   * engine with no hook); else the tool call its hook saw, decided (`decideTool`), refused as
-   * a door's call of its act is.
+   * The decide door, which a run's CLI's hook asks (`sandbox/runner/decide.ts`, or the CLI
+   * itself for an `http` hook): with `check`, the patterns of the tool names its CLI's hook
+   * matches for the owner's rules (none for an engine with no hook) and their generation; else
+   * the tool call its hook saw, decided (`decideTool`). The helper reads a refusal as a door's;
+   * an `http` hook is answered in its CLI's own words (`hook`): an empty object lets the call
+   * be, and the record's `deny`, its `{reason}` the refusal's message, refuses it.
    */
   runDecide(o: ActionsDoorNeeds, { account, r }: Call<DecideRequest>):
-      { tools: string[] } | { allow: true } {
+      { tools: string[]; generation: number } | { allow: true } | { hook: object } {
     const actor = decidedActor(account);
     if (account.run === null || actor === null) {
       throw new Refusal("refused", "only a run's own hook asks its decide door");
     }
     const hook = hookOf(o.runs.engineOf(account.run.id));
     if (r["check"] === true) {
-      return { tools: hook === null ? [] : o.actions.hookTools(hook) };
+      return hook === null ? { tools: [], generation: 0 } : o.actions.hookTools(hook);
     }
     const tool = r["tool_name"];
     if (typeof tool !== "string" || !TOOL.test(tool)) {
       throw new Refusal("invalid", "invalid decide request");
     }
-    if (hook !== null) {
-      o.actions.decideTool(actor, hook, tool, r["tool_input"] ?? null, clock());
+    const deny = hook !== null && "http" in hook.runs ? hook.runs.http.deny : null;
+    try {
+      if (hook !== null) {
+        o.actions.decideTool(actor, hook, tool, r["tool_input"] ?? null, clock());
+      }
+    } catch (error) {
+      const refusal = refusalOf(error);
+      if (deny === null || (refusal?.code !== "action_never"
+                            && refusal?.code !== "held_for_owner")) {
+        throw error;
+      }
+      return { hook: JSON.parse(deny.replace("{reason}",
+        JSON.stringify(refusal.message).slice(1, -1))) as object };
     }
-    return { allow: true };
+    return deny === null ? { allow: true } : { hook: {} };
   },
   /** The owner's no, in its session: the held call's card gone. */
   actionRefuse(o: ActionsDoorNeeds, { session, r }: Call<ActionAnswerRequest, "session">):

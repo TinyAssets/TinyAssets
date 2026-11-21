@@ -214,28 +214,48 @@ export interface LoginSpec {
 }
 
 /**
- * The CLI's own pre-tool hook, which runs the hook helper (`sandbox/runner/decide.ts`) on each
- * tool call it matches, written only for a run whose owner has a rule it can hold. The helper
- * reads the call as every CLI here hands it (`tool_name`, `tool_input`) and answers in the one
- * shape each reads: allow, exit 0 and `{}`; refuse, exit 2 and the reason on stderr.
+ * The CLI's own pre-tool hook, written only for a run whose owner has a rule it can hold. It
+ * asks the runs' decide door (`contract/src/egress.ts` `decideDoor`) of each tool call it
+ * matches: the door's address is the hook file's, which root owns, and the run's credential
+ * the run's environment's (`DECIDE_ENV`), so all an agent could forge is a credential the door
+ * refuses. How the CLI runs it (`runs`):
+ * - `http`: the CLI posts the call to the door itself, no process started, and the door answers
+ *   in the CLI's own words: an empty object lets it be, `deny` (a JSON template, `{reason}`
+ *   the door's) refuses it.
+ * - `shell`: the CLI runs the hook helper's command line (`sandbox/runner/decide.ts`) through
+ *   this shell and its arguments, which the runner's start check runs it through as well.
+ * - `exec`: the record's own file starts the helper by its argv, with no shell.
+ * The helper reads the call as every CLI here hands it (`tool_name`, `tool_input`) and
+ * answers exit 0 and `{}` to let it be, exit 2 with the reason on stderr to refuse it.
  * - `file`: where the config goes. Under `{system}`, the run's own (merged into the record's
  *   file of that path, if any); else a root path under `/etc` every run of the engine shares
  *   (a managed settings file), which the latest run's start writes for the owner's rules.
- * - `template`: the file, `{matcher}` the anchored pattern of the CLI's tool names to match
- *   and `{decide}` the helper's command line, each filled as its quoted value.
+ * - `template`: the file, `{matcher}` the anchored pattern of the CLI's tool names to match;
+ *   `{decide_url}`, `{decide_header}` and `{decide_env}` the door, its credential's header and
+ *   the variable it is in (`http`); `{decide}` the helper's command line, `{decide_argv}` its
+ *   argv as JSON. Each is filled as its quoted value.
  * - `argv`: what loads the file, where the CLI takes it from its command line.
  * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
  *   it lacks, no rule holds at its hook.
  * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
  * - `fails`: whether a hook that cannot start lets the call through (`open`, closed by the
  *   runner's start check alone) or blocks it.
+ * - `alterable`: how the agent can change what the hook answers, where it can, from files it
+ *   writes: the hook is written all the same, and the owner's note says no rule holds there.
  * - `cite`, `read`: the vendor's page for all of it, and when it was read.
  */
+export type HookRuns =
+  | { readonly http: { readonly deny: string } }
+  | { readonly shell: readonly string[] }
+  | { readonly exec: true };
+
 export type Decide =
   | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
+      readonly runs: HookRuns;
       readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
       readonly mcp: { readonly prefix: string; readonly join: string };
-      readonly fails: "open" | "closed"; readonly cite: string; readonly read: string }
+      readonly fails: "open" | "closed"; readonly alterable?: string;
+      readonly cite: string; readonly read: string }
   | { readonly unsupported: string };
 
 /** An engine (`connect: ["cli"]`): a provider's own CLI, run whole in the sandbox. */

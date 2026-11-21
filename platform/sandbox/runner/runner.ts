@@ -28,9 +28,10 @@
  *   taken and its home made from the engine's store (its `secret_paths` and
  *   `session_paths`, nothing else: a CLI's other home files never outlive a run), the
  *   refusal of env files the CLI would load (its home's, the agent's, and every ancestor's
- *   of its cwd), the CLI's own pre-tool hook where the owner's rules name tools it matches
- *   (asked of the run's decide door first, its file written, then the helper's start check
- *   as that user: one that fails fails the run, so a hook that fails open never starts
+ *   of its cwd; for a hooked run, none that sets the decide credential or a variable that
+ *   loads code), the CLI's own pre-tool hook where the owner's rules name tools it matches
+ *   (asked of the decide door first, its file written, then its start check, the hook run as
+ *   the CLI runs it: one that fails fails the run, so a hook that fails open never starts
  *   broken), the CLI as that user from the record, its events framed and posted (a batch
  *   at least every `HEARTBEAT_MS`); at its end every process of the user killed, the kept
  *   paths back into the store, the files synced out, the user given back, then the end.
@@ -71,16 +72,18 @@ import { dirname, join } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
-import { RUN_BASICS } from "../../sources/src/run-env";
+import { CODE_LOADING_ENV, RUN_BASICS } from "../../sources/src/run-env";
+import type { Decide } from "../../sources/src/schema";
 import { type Served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
-import { decideUrl, RUNNER_HEADER } from "../../contract/src/egress";
+import { DECIDE_HEADER, decideDoor, RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
 import { binPath, HOMES, type Invocation, invocation, isKept, keptPaths } from "./engine";
-import { DECIDE_MS, decideCommand, helperArgv, helperCommand, hookTools } from "./decide";
+import { DECIDE_ENV, DECIDE_MS, decideCommand, helperArgv, helperCommand,
+         hookTools } from "./decide";
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
@@ -1041,28 +1044,64 @@ function scratchFor(start: StartDoc, run: string):
   return { dir, notice: scratchCleared(pruned) };
 }
 
+/** Each shared hook file's policy generation, as the start that last wrote it asked it. */
+const HOOK_GENERATIONS = `${STATE}/hooks`;
+
 /**
  * The hook file every run of an engine shares (`Invocation.shared`): written root's, readable
- * by every user, or removed when the owner's rules name no tool it matches.
+ * by every user, or removed when the owner's rules name no tool it matches, under one lock,
+ * and only by a start whose rules are as new as the last writer's (`generation`): two starts
+ * at once around a policy write never leave the older rules there.
  */
-function writeShared(shared: Invocation["shared"]): void {
+async function writeShared(engine: string, shared: Invocation["shared"],
+                           generation: number): Promise<void> {
   if (shared === null) {
     return;
   }
-  if (shared.text === null) {
-    remove(shared.path);
-    return;
-  }
-  safeWrite("/", shared.path, new TextEncoder().encode(shared.text), 0o644, undefined, 0o755);
+  const locks = `${STATE}/locks`;
+  safeDirs("/", locks, 0o700);
+  await withLock(`${locks}/hooks.lock`, COMMAND_MS, () => new Error(
+    `the shared hook files stayed locked past ${COMMAND_MS} ms`), () => {
+    const mark = `${HOOK_GENERATIONS}/${engine}`;
+    const last = Number(safeRead(STATE, mark)?.toString("utf8") ?? "0");
+    if (last > generation) {
+      return;
+    }
+    if (shared.text === null) {
+      remove(shared.path);
+    } else {
+      safeWrite("/", shared.path, new TextEncoder().encode(shared.text), 0o644, undefined,
+                0o755);
+    }
+    safeWrite(STATE, mark, new TextEncoder().encode(String(generation)), 0o600);
+  });
 }
 
 /**
- * The hook's start check: the helper as the run's user, in the CLI's own environment, asks
- * the decide door as the hook will; any failure fails the run loudly.
+ * The hook's start check, the hook run as its CLI runs it (`runs`), in the CLI's own
+ * environment: an `http` hook's post of the door's check, by the credential its header takes
+ * from that environment; the helper's command line through the CLI's shell, as the run's
+ * user; or the helper's argv as the record's own file starts it, with only what that file
+ * hands it. Any failure fails the run loudly.
  */
-async function startCheck(as: { uid: number; gid: number }, call: Invocation): Promise<void> {
-  const check = spawnBounded(asUser(as, [shared()], [...helperArgv(ownDigest()), "check"]), {
-    cwd: call.cwd, env: { ...call.env }, stdio: ["ignore", "ignore", "pipe"] }, DECIDE_MS * 2);
+async function startCheck(as: { uid: number; gid: number }, call: Invocation,
+                          decide: Exclude<Decide, { unsupported: string }>, url: string):
+    Promise<void> {
+  const runs = decide.runs;
+  if ("http" in runs) {
+    await hookTools(url, call.env[DECIDE_ENV] ?? "").catch((error: unknown) => {
+      throw new Error(`the CLI's hook could not reach the owner's rules: ${String(error)}`);
+    });
+    return;
+  }
+  const argv = "shell" in runs
+    ? [...runs.shell, `${helperCommand(ownDigest(), url)} check`]
+    : [...helperArgv(ownDigest(), url), "check"];
+  const env = "shell" in runs ? { ...call.env }
+    : Object.fromEntries([DECIDE_ENV, "NODE_EXTRA_CA_CERTS"].flatMap((name) =>
+      call.env[name] === undefined ? [] : [[name, call.env[name]!]]));
+  const check = spawnBounded(asUser(as, [shared()], argv), {
+    cwd: call.cwd, env, stdio: ["ignore", "ignore", "pipe"] }, DECIDE_MS * 2);
   let stderr = "";
   check.child.stderr!.on("data", (data: Buffer) => {
     stderr = (stderr + data.toString("utf8")).slice(-FRAME_UNITS_MAX);
@@ -1151,14 +1190,16 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
     // The tools the owner's rules name that the CLI's own hook matches, asked first: its
     // file is written only for those.
-    const hook = "unsupported" in cli.decide ? {}
-      : { hook: { tools: await hookTools(decideUrl(start.urls.mcp)),
-                  command: helperCommand(ownDigest()) } };
+    const decide = "unsupported" in cli.decide ? null : cli.decide;
+    const door = decide === null ? null : decideDoor(start.urls.mcp);
+    const asked = door === null ? null : await hookTools(door.url, door.credential);
+    const hook = asked === null ? {} : { hook: { tools: asked.tools, digest: ownDigest() } };
+    const hooked = asked !== null && asked.tools.length > 0;
     let call = invocation(rec, start, process.env, {
       continued, home, system, ...hook,
       ...(conversationDir === undefined ? {} : { conversationDir }),
       ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
-    writeShared(call.shared);
+    await writeShared(rec.id, call.shared, asked?.generation ?? 0);
     if (recovering && !call.resumed) {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
                            "rebooted sandbox cannot continue it");
@@ -1170,8 +1211,10 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           lchownSync(conversationDir, as.uid, as.gid);
         }
         // The env files the CLI would load: never one that sets what the run's own
-        // environment does not take.
-        const forbid = cli.per_credential?.[start.credential]?.forbid_env ?? [];
+        // environment does not take, nor, for a hooked run, the decide credential or a
+        // variable that loads code, which would reach the hook.
+        const forbid = [...cli.per_credential?.[start.credential]?.forbid_env ?? [],
+                        ...(hooked ? [DECIDE_ENV, ...CODE_LOADING_ENV] : [])];
         const found = envFiles(home, call.cwd, call.files);
         const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
           ?? projectEnvRefusal(found.project, forbid)
@@ -1180,8 +1223,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           outbox.push({ type: "ta.refused", ...refusal });
           throw new RunRefused(refusal.code);
         }
-        if ((hook.hook?.tools.length ?? 0) > 0) {
-          await startCheck(as, call);
+        if (hooked) {
+          await startCheck(as, call, decide!, door!.url);
         }
         const events = cli.engine.events;
         for (let attempt = 0; ; attempt += 1) {

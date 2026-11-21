@@ -605,8 +605,12 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     root-owned files only when needed, and runs the start check; the honest note (d3 §N5):
     `policyRead` gives each rule where it holds and where it can't (`holds_at`,
     `not_enforced`), from `acts.json` and the engines' records. No engine defers: a held call
-    is refused with its card on every CLI (`untangle/r5-hooks`; `r5-hooks.md`), after the
-    protocol's expand deploy (`untangle/r5-hooks-speaks`).
+    is refused with its card on every CLI. The hook's address is only its root-owned file's,
+    and nothing the agent writes reaches its process (`r5-hooks.md` item 13). After the
+    protocol's expand (`untangle/r5-hooks-speaks`) (`untangle/r5-hooks`; `r5-hooks.md`).
+  - [ ] Codex's hook holding against its agent: one that starts no login shell, its
+    `mcp_tool` type researched first; until then its record is `alterable` and the note says
+    no rule holds there (`r5-hooks.md` item 13; `untangle/r5-hooks-codex`).
   - [ ] P-defer, only if d3 §N9's first live check shows Claude's turn of several tool calls
     denies a deferred call: `defer` in the hook's data and Claude's record; a held call the
     hook deferred resumes on no input, and its conversation waits on its card

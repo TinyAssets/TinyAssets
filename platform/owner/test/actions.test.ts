@@ -263,46 +263,78 @@ describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", 
 
   it("names the tools the hook matches for the owner's rules, as its CLI names them", async () => {
     const { r, o, run } = await hooked();
-    expect(await r.stub.runDecide(run, { check: true })).toEqual({ tools: [] });
+    expect(await r.stub.runDecide(run, { check: true })).toEqual({ tools: [], generation: 1 });
     await ruled(o, [{ act: "workspace.shell", do: "ask" },
                     { act: "people.message", do: "never", agent: "other",
                       tools: ["mcp:gmail:send_*", "mcp:my-mail:post.v2"] }]);
     // Every rule's tools, any agent's: the decision holds each rule to its own agent.
     expect(await r.stub.runDecide(run, { check: true })).toEqual({ tools: [
-      "Bash", "Monitor", "mcp__gmail__send_.*", "mcp__my.mail__post.v2"].sort() });
+      "Bash", "Monitor", "PowerShell", "mcp__gmail__send_.*", "mcp__my.mail__post.v2"].sort(),
+      generation: 2 });
     const gemini = await hooked("gemini");
     await ruled(gemini.o, [{ act: "people.message", do: "ask", tools: ["mcp:gmail:send_*"] }]);
     expect(await gemini.r.stub.runDecide(gemini.run, { check: true }))
-      .toEqual({ tools: ["mcp_gmail_send_.*"] });
+      .toEqual({ tools: ["mcp_gmail_send_.*"], generation: 2 });
   });
 
-  it("decides the call as each act it is, the strictest first, at the tool as its door",
+  it("decides the call as each act it is, every never first, at the tool as its door",
      async () => {
-    const { r, o, run } = await hooked();
+    const { r, o, run } = await hooked("gemini");
     const call = (tool_name: string, tool_input: unknown) =>
       r.stub.runDecide(run, { tool_name, tool_input });
-    expect(await call("Bash", { command: "ls" })).toEqual({ allow: true });
+    expect(await call("run_shell_command", { command: "ls" })).toEqual({ allow: true });
     await ruled(o, [{ act: "workspace.shell", do: "ask" },
                     { act: "people.message", do: "never", tools: ["mcp:gmail:send_*"] }]);
-    const card = await heldCard(() => call("Bash", { command: "curl example.com" }));
+    const card = await heldCard(() => call("run_shell_command", { command: "curl x.test" }));
     expect((await r.stub.actionRequest(o.owner, { card_id: card })).card).toMatchObject({
-      act: "workspace.shell", door: "Bash", agent: "main",
-      request: JSON.stringify({ command: "curl example.com" }) });
-    expect((await failure(() => call("mcp__gmail__send_mail", { to: "a@b.c" }))).code)
+      act: "workspace.shell", door: "run_shell_command", agent: "main",
+      request: JSON.stringify({ command: "curl x.test" }) });
+    expect((await failure(() => call("mcp_gmail_send_mail", { to: "a@b.c" }))).code)
       .toBe("action_never");
-    expect(await call("Read", { file_path: "/workspace/a" })).toEqual({ allow: true });
-    expect(await call("mcp__gmail__read", {})).toEqual({ allow: true });
+    expect(await call("read_file", { path: "/workspace/a" })).toEqual({ allow: true });
+    expect(await call("mcp_gmail_read", {})).toEqual({ allow: true });
     // A tool two rules name is both acts: the never refuses it, and no card is filed.
     await ruled(o, [{ act: "share", do: "ask", tools: ["mcp:board:post"] },
                     { act: "people.message", do: "never", tools: ["mcp:board:post"] }]);
-    expect((await failure(() => call("mcp__board__post", {}))).code).toBe("action_never");
+    expect((await failure(() => call("mcp_board_post", {}))).code).toBe("action_never");
     expect(await outcomes(o)).toEqual(["denied", "denied", "held"]);
     // A run on an engine with no hook is let be: its rules hold at the doors alone.
     const kimi = await hooked("kimi");
     await ruled(kimi.o, [{ act: "workspace.shell", do: "never" }]);
-    expect(await kimi.r.stub.runDecide(kimi.run, { check: true })).toEqual({ tools: [] });
+    expect(await kimi.r.stub.runDecide(kimi.run, { check: true }))
+      .toEqual({ tools: [], generation: 0 });
     expect(await kimi.r.stub.runDecide(kimi.run, { tool_name: "Shell", tool_input: {} }))
       .toEqual({ allow: true });
+  });
+
+  it("files one card for a call two asked acts name, whose one yes admits it", async () => {
+    const { r, o, run } = await hooked("gemini");
+    const call = () => r.stub.runDecide(run, { tool_name: "mcp_board_post", tool_input: {} });
+    await ruled(o, [{ act: "share", do: "ask", tools: ["mcp:board:post"] },
+                    { act: "people.message", do: "ask", tools: ["mcp:board:post"] }]);
+    const card = await heldCard(call);
+    expect(await heldCard(call)).toBe(card);
+    const { digest } = await r.stub.actionRequest(o.owner, { card_id: card });
+    await r.stub.actionApprove(o.session, { card_id: card, digest });
+    expect(await call()).toEqual({ allow: true });
+    expect(await outcomes(o)).toEqual(["admitted", "approved", "held"]);
+  });
+
+  it("answers Claude Code's own post in its own words: {} lets be, its deny refuses",
+     async () => {
+    const { r, o, run } = await hooked();
+    const call = (tool_name: string) => r.stub.runDecide(run, { tool_name, tool_input: {} });
+    expect(await call("Bash")).toEqual({ hook: {} });
+    await ruled(o, [{ act: "workspace.shell", do: "never" },
+                    { act: "workspace.files", do: "ask" }]);
+    const denied = (reason: string | RegExp) => ({ hook: { hookSpecificOutput: {
+      hookEventName: "PreToolUse", permissionDecision: "deny",
+      permissionDecisionReason: typeof reason === "string" ? reason
+        : expect.stringMatching(reason) } } });
+    expect(await call("Bash"))
+      .toEqual(denied("the owner's rule never lets an agent do this (workspace.shell)"));
+    expect(await call("Write")).toEqual(denied(/^held for your owner's answer: card act_/));
+    expect(await call("Read")).toEqual({ hook: {} });
   });
 
   it("is a run's alone, and a call with a tool's name", async () => {
@@ -325,11 +357,11 @@ describe("the honest note (d3 §N5)", () => {
     await ruled(o, [{ act: "workspace.shell", do: "ask" },
                     { act: "people.message", do: "never", tools: ["mcp:gmail:send_*"] },
                     { act: "workspace.workflows", do: "ask" }]);
-    const unheld = ["main_agent", "sandbox_programs", "codex.fails_open", "gemini.fails_open",
-                    "kimi"];
+    // Codex's hook is written, but the agent can alter what it answers (its record says how).
+    const unheld = ["main_agent", "sandbox_programs", "codex", "gemini.fails_open", "kimi"];
     expect((await o.stub.policyRead(o.owner)).notes).toEqual([
-      { holds_at: ["claude-code", "codex", "gemini", "pi"], not_enforced: unheld },
-      { holds_at: ["doors", "claude-code", "codex", "gemini", "pi"], not_enforced: unheld },
+      { holds_at: ["claude-code", "gemini", "pi"], not_enforced: unheld },
+      { holds_at: ["doors", "claude-code", "gemini", "pi"], not_enforced: unheld },
       { holds_at: ["doors"], not_enforced: [] },
     ]);
   });

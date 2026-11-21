@@ -157,11 +157,17 @@
     },
     "decide": {
       "file": "{system}/decide.mjs",
-      "template": "import { spawn } from \"node:child_process\";\nconst MATCHER = new RegExp(\"{matcher}\");\nexport default function (pi) {\n  pi.on(\"tool_call\", (event) => MATCHER.test(event.toolName) ? new Promise((done) => {\n    const helper = spawn(\"/bin/sh\", [\"-c\", \"{decide}\"], { stdio: [\"pipe\", \"ignore\", \"pipe\"] });\n    let reason = \"\";\n    helper.stderr.on(\"data\", (chunk) => { reason += chunk; });\n    helper.on(\"error\", (error) => done({ block: true, reason: String(error) }));\n    helper.on(\"close\", (code) => done(code === 0 ? undefined\n      : { block: true, reason: reason.trim() || \"the owner's rules could not be checked\" }));\n    helper.stdin.end(JSON.stringify({ tool_name: event.toolName, tool_input: event.input }));\n  }) : undefined);\n}\n",
+      "template": "import { spawn } from \"node:child_process\";\nconst MATCHER = new RegExp(\"{matcher}\");\nconst [command, ...args] = JSON.parse(\"{decide_argv}\");\nexport default function (pi) {\n  pi.on(\"tool_call\", (event) => MATCHER.test(event.toolName) ? new Promise((done) => {\n    const env = Object.fromEntries([\"{decide_env}\", \"NODE_EXTRA_CA_CERTS\"]\n      .filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]]));\n    const helper = spawn(command, args, { env, stdio: [\"pipe\", \"ignore\", \"pipe\"] });\n    let reason = \"\";\n    helper.stderr.on(\"data\", (chunk) => { reason += chunk; });\n    helper.on(\"error\", (error) => done({ block: true, reason: String(error) }));\n    helper.on(\"close\", (code) => done(code === 0 ? undefined\n      : { block: true, reason: reason.trim() || \"the owner's rules could not be checked\" }));\n    helper.stdin.end(JSON.stringify({ tool_name: event.toolName, tool_input: event.input }));\n  }) : undefined);\n}\n",
       "argv": [
+        "--no-extensions",
+        "-e",
+        "builtin:mcp",
         "-e",
         "{system}/decide.mjs"
       ],
+      "runs": {
+        "exec": true
+      },
       "kinds": {
         "shell": [
           "bash"

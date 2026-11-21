@@ -207,7 +207,13 @@
     },
     "decide": {
       "file": "{system}/gemini-settings.json",
-      "template": "{\"hooks\": {\"BeforeTool\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"name\": \"tinyassets-decide\", \"type\": \"command\", \"command\": \"{decide}\", \"timeout\": 60000}]}]}}",
+      "template": "{\"advanced\": {\"ignoreLocalEnv\": true}, \"hooks\": {\"BeforeTool\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"name\": \"tinyassets-decide\", \"type\": \"command\", \"command\": \"{decide}\", \"timeout\": 60000}]}]}}",
+      "runs": {
+        "shell": [
+          "bash",
+          "-c"
+        ]
+      },
       "kinds": {
         "shell": [
           "run_shell_command"
@@ -222,7 +228,7 @@
         "join": "_"
       },
       "fails": "open",
-      "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/hooks/reference.md",
+      "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/packages/core/src/hooks/hookRunner.ts",
       "read": "2026-11-21"
     },
     "tools": {

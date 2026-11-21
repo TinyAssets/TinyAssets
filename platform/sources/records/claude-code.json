@@ -227,10 +227,16 @@
     },
     "decide": {
       "file": "/etc/claude-code/managed-settings.json",
-      "template": "{\"hooks\": {\"PreToolUse\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"type\": \"command\", \"command\": \"{decide}\", \"timeout\": 60, \"onFailure\": \"block\"}]}]}}",
+      "template": "{\"allowedHttpHookUrls\": [\"{decide_url}\"], \"httpHookAllowedEnvVars\": [\"{decide_env}\"], \"hooks\": {\"PreToolUse\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"type\": \"http\", \"url\": \"{decide_url}\", \"headers\": {\"{decide_header}\": \"${decide_env}\"}, \"allowedEnvVars\": [\"{decide_env}\"], \"timeout\": 60, \"onFailure\": \"block\"}]}]}}",
+      "runs": {
+        "http": {
+          "deny": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"{reason}\"}}"
+        }
+      },
       "kinds": {
         "shell": [
           "Bash",
+          "PowerShell",
           "Monitor"
         ],
         "file_write": [

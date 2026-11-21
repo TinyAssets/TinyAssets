@@ -618,7 +618,8 @@ export class Doors {
    * for a check (none, so no hook is written), and a call let be.
    */
   decide: (body: Record<string, unknown>) => { status: number; value: unknown } = (body) =>
-    ({ status: 200, value: body["check"] === true ? { tools: [] } : { allow: true } });
+    ({ status: 200, value: body["check"] === true ? { tools: [], generation: 1 }
+      : { allow: true } });
   /** Uploads the sync agent aborted, by intent id. */
   readonly aborted: string[] = [];
   #server: Server | null = null;

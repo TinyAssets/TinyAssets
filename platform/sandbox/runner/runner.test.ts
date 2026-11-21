@@ -300,30 +300,36 @@ describe("the invocation", () => {
 
 describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
   const MANAGED = "/etc/claude-code/managed-settings.json";
-  /** The decide door's checks the run's start asked, the runner's and its helper's. */
-  const checks = () => doors.posts.filter((post) => post.path.endsWith("/decide")
+  /** The decide door's checks the run's start asked, the runner's and its start check's. */
+  const checks = () => doors.posts.filter((post) => post.path === "/decide"
     && post.body["check"] === true);
-  /** The door's check answered with `tools`, then each later check with `then`. */
-  function answering(tools: string[],
-                     then: { status: number; value: unknown } = { status: 200, value: { tools } }) {
+  /** The door's check answered with `tools` at `generation`, then each later one with `then`. */
+  function answering(tools: string[], then?: { status: number; value: unknown },
+                     generation = 1) {
     let asked = 0;
     doors.decide = (body) => body["check"] !== true ? { status: 200, value: { allow: true } }
-      : (asked += 1) === 1 ? { status: 200, value: { tools } } : then;
+      : (asked += 1) === 1 || then === undefined
+        ? { status: 200, value: { tools, generation } } : then;
   }
+  /** The run's decide credential, as its MCP URL names its run and secret. */
+  const credentialOf = (start: StartDoc) => `${start.run}:${"e".repeat(64)}`;
 
-  it("is written for the tools the owner's rules name, after the helper's start check",
-     async () => {
+  it("is Claude Code's own post to the door, from the root-owned file, for the tools the " +
+     "owner's rules name, after its start check", async () => {
     answering(["Bash", "mcp__gmail__send_.*"]);
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [MANAGED] });
     const { start } = await run("claude-code");
     const seen = box.ran("claude-code").at(-1)!;
-    expect(seen.env["TA_DECIDE"]).toBe(start.urls.mcp.replace(/\/mcp$/, "/decide"));
-    const hook = JSON.parse(seen.dumps[MANAGED]!).hooks.PreToolUse;
-    expect(hook).toEqual([{ matcher: "^(?:Bash|mcp__gmail__send_.*)$", hooks: [{
-      type: "command", timeout: 60, onFailure: "block",
-      command: `${NODE} --no-warnings ${RUNNERS}/${box.digest}/runner.mjs decide` }]
-    }]);
-    expect(checks()).toHaveLength(2);
+    expect(seen.env["TA_DECIDE"]).toBe(credentialOf(start));
+    const managed = JSON.parse(seen.dumps[MANAGED]!);
+    const url = `${doors.origin}/decide`;
+    expect(managed).toEqual({
+      allowedHttpHookUrls: [url], httpHookAllowedEnvVars: ["TA_DECIDE"],
+      hooks: { PreToolUse: [{ matcher: "^(?:Bash|mcp__gmail__send_.*)$", hooks: [{
+        type: "http", url, headers: { "x-ta-decide": "$TA_DECIDE" },
+        allowedEnvVars: ["TA_DECIDE"], timeout: 60, onFailure: "block" }] }] } });
+    expect(checks().map((post) => post.headers["x-ta-decide"]))
+      .toEqual([credentialOf(start), credentialOf(start)]);
   });
 
   it("is none, and its shared file gone, when no rule names a tool it matches", async () => {
@@ -334,24 +340,66 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     doors.posts.length = 0;
     const { start } = await run("claude-code");
     const seen = box.ran("claude-code").at(-1)!;
-    expect([seen.dumps[MANAGED], seen.env["TA_DECIDE"]])
-      .toEqual([null, start.urls.mcp.replace(/\/mcp$/, "/decide")]);
+    expect([seen.dumps[MANAGED], seen.env["TA_DECIDE"]]).toEqual([null, credentialOf(start)]);
     expect(checks()).toHaveLength(1);
   });
 
-  it("fails the run loudly when its helper cannot reach the owner's rules", async () => {
+  it("keeps the newer rules in a shared file when an older start writes after", async () => {
+    answering(["Bash", "PowerShell"], undefined, 3);
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [MANAGED] });
+    await run("claude-code");
+    // A start that asked under the older generation, written after: the file is the newer's.
+    answering(["Write"], undefined, 2);
+    await run("claude-code");
+    const matchers = box.ran("claude-code").map((seen) =>
+      JSON.parse(seen.dumps[MANAGED]!).hooks.PreToolUse[0].matcher);
+    expect(matchers).toEqual(["^(?:Bash|PowerShell)$", "^(?:Bash|PowerShell)$"]);
+  });
+
+  it("fails the run loudly when its start check cannot reach the owner's rules", async () => {
     answering(["Bash"], { status: 403, value: { error: { message: "owner_suspended" } } });
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
     const before = box.ran("claude-code").length;
     const { end } = await run("claude-code");
     expect(end).toEqual({ exit_code: 1 });
     expect(doors.frames().find((event) => event["type"] === "ta.runner_error")!["message"])
-      .toMatch(/the CLI's hook could not reach the owner's rules \(exit 2\): owner_suspended/);
+      .toMatch(/the CLI's hook could not reach the owner's rules: .*owner_suspended/);
     expect(box.ran("claude-code")).toHaveLength(before);
   });
 
-  it("is the run's own file where the CLI loads it from its argv or its system settings",
-     async () => {
+  it.each([
+    ["a spoofed credential in the agent's Claude settings", "claude-code",
+     "/workspace/agents/main/.claude/settings.json",
+     JSON.stringify({ env: { TA_DECIDE: 'data:application/json,{"allow":true}' } }), "TA_DECIDE"],
+    ["a NODE_OPTIONS require in the agent's Claude settings", "claude-code",
+     "/workspace/agents/main/.claude/settings.json",
+     JSON.stringify({ env: { NODE_OPTIONS: "--require /workspace/agents/main/x.js" } }),
+     "NODE_OPTIONS"],
+    ["a NODE_OPTIONS require in the agent's .env, which Gemini loads", "gemini",
+     "/workspace/agents/main/.env", "NODE_OPTIONS=--require /workspace/agents/main/x.js\n",
+     "NODE_OPTIONS"],
+    ["a spoofed credential in the workspace's .env", "gemini", "/workspace/.env",
+     "TA_DECIDE=run_x:y\n", "TA_DECIDE"],
+  ])("refuses a hooked run, before its CLI, with %s", async (_what, engine, file, text, sets) => {
+    answering(["Bash", "run_shell_command"]);
+    doors.files.set(file, { text, version: 9 });
+    box.cli(engine, { lines: SHAPES[engine]!.lines });
+    const { end } = await run(engine);
+    expect(end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toMatchObject({ code: "project_env_refused", sets });
+    expect(box.ran(engine)).toEqual([]);
+  });
+
+  it("lets an unhooked run keep its agent's own Node options", async () => {
+    doors.files.set("/workspace/agents/main/.env",
+                    { text: "NODE_OPTIONS=--max-old-space-size=512\n", version: 9 });
+    box.cli("gemini", { lines: SHAPES["gemini"]!.lines });
+    expect((await run("gemini")).end).toEqual({ exit_code: 0 });
+  });
+
+  it("is the run's own file where the CLI loads it from its argv or its system settings, " +
+     "the helper by its argv or under env -i, its start check run the same way", async () => {
     answering(["bash"]);
     const piStart = startDoc(doors, "pi", { config: config("pi") });
     const piFile = `/etc/ta/runs/${piStart.run}/decide.mjs`;
@@ -360,9 +408,11 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     box.runner("launch", piStart.run);
     await doors.ended_(25_000, piStart.run);
     const pi = box.ran("pi").at(-1)!;
-    expect(pi.argv.join(" ")).toContain(`-e ${piFile}`);
+    expect(pi.argv.join(" ")).toContain(`--no-extensions -e builtin:mcp -e ${piFile}`);
     expect(pi.dumps[piFile]).toContain('new RegExp("^(?:bash)$")');
+    expect(pi.dumps[piFile]).toContain(`${doors.origin}/decide`);
     answering(["run_shell_command"]);
+    doors.posts.length = 0;
     const geminiStart = startDoc(doors, "gemini", { config: config("gemini") });
     const settings = `/etc/ta/runs/${geminiStart.run}/gemini-settings.json`;
     box.cli("gemini", { lines: SHAPES["gemini"]!.lines, dumps: [settings] });
@@ -370,8 +420,14 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     box.runner("launch", geminiStart.run);
     await doors.ended_(25_000, geminiStart.run);
     const gemini = JSON.parse(box.ran("gemini").at(-1)!.dumps[settings]!);
-    expect([gemini.hooks.BeforeTool[0].matcher, gemini.mcpServers.tinyassets.httpUrl])
-      .toEqual(["^(?:run_shell_command)$", geminiStart.urls.mcp]);
+    expect([gemini.hooks.BeforeTool[0].matcher, gemini.mcpServers.tinyassets.httpUrl,
+            gemini.advanced]).toEqual(["^(?:run_shell_command)$", geminiStart.urls.mcp,
+                                       { ignoreLocalEnv: true }]);
+    expect(gemini.hooks.BeforeTool[0].hooks[0].command).toMatch(
+      /^\/usr\/bin\/env -i NODE_EXTRA_CA_CERTS="\$NODE_EXTRA_CA_CERTS" TA_DECIDE="\$TA_DECIDE" /);
+    // Its start check, through bash -c as Gemini runs it, reached the door by the credential.
+    expect(checks().map((post) => post.headers["x-ta-decide"]))
+      .toEqual([credentialOf(geminiStart), credentialOf(geminiStart)]);
   });
 });
 

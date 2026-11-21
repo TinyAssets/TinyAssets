@@ -15,7 +15,7 @@ import { HEX64 } from "../../contract/src/ids";
 import type { EngineEvents, EventMatcher } from "../../contract/src/run-events";
 import { forbids, SOURCE_ID } from "../../contract/src/text";
 
-import { RUN_BASICS } from "./run-env";
+import { CODE_LOADING_ENV, RUN_BASICS } from "./run-env";
 import {
   type ApiKeyEnv, type CliSpec, type ConnectMethod, type Decide, type Engine, type HostedUse,
   type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
@@ -164,10 +164,17 @@ const ARG = /^.{0,4096}$/su;
 const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
   "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}", "{system}",
-  "{matcher}", "{decide}",
+  "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}",
 ]);
-/** The placeholders only the hook's template takes (`cli.decide.template`), both of them. */
-const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze(["{matcher}", "{decide}"]);
+/** The placeholders only the hook's template takes (`cli.decide.template`). */
+const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze([
+  "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}"]);
+/** What each way a CLI runs its hook carries in its template, beside `{matcher}`. */
+const RUNS_CARRY = Object.freeze({
+  http: ["{decide_url}", "{decide_header}", "{decide_env}"],
+  shell: ["{decide}"],
+  exec: ["{decide_argv}", "{decide_env}"],
+});
 /**
  * The one shape `{prompt}` may take in an argv: joined to its option (`--prompt={prompt}`),
  * so no prompt is ever read as an option or a file include (`-x`, `@file`). Where the CLI
@@ -188,13 +195,6 @@ const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
  */
 export const CREDENTIAL_NAME =
   /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT|PROXY)(?:_|$)/;
-/**
- * A variable that loads code into a process or changes what its runtime loads (Node's
- * options and module path, the dynamic linker's preloads and paths, Bun's, Python's, Perl's,
- * Ruby's and the JVM's, a shell's startup file): never a record's own, so nothing a record
- * sets runs code inside a CLI.
- */
-const CODE_LOADING = /^(?:NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|LD_[A-Z0-9_]+|DYLD_[A-Z0-9_]+|BUN_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|PERL5?LIB|PERL5OPT|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|BASH_ENV|ENV|GCONV_PATH|MALLOC_[A-Z0-9_]+)$/;
 /** A settings key shaped like a credential, a credential helper or an environment block. */
 const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
 /**
@@ -561,7 +561,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     // The record's own variables are the run's allow-list (`runEnv`): none is shaped like
     // a credential or an endpoint, and none is HOME or a basic, which the runner sets.
-    const loading = sets.find((name) => CODE_LOADING.test(name));
+    const loading = sets.find((name) => forbids(CODE_LOADING_ENV, name));
     if (loading !== undefined) {
       check.fail(`the record sets ${loading}, which loads code into the CLI's process`);
     }
@@ -1000,10 +1000,12 @@ const SHARED_PATH = /^\/etc(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,128}){1,4}$/
 /**
  * The CLI's own pre-tool hook (`Decide`): its file under `{system}` (merged into the record's
  * JSON file of that path, if it writes one) or a shared root path under `/etc`, a `.json`,
- * `.toml` or `.mjs` file whose template carries `{matcher}` and `{decide}` (each filled as its
- * quoted value) and no credential key; its argv, only for a file of the run's own; its kinds'
- * tool names; its MCP names; whether it fails open; and the page it was read from. Or why no
- * hook holds.
+ * `.toml` or `.mjs` file whose template carries `{matcher}` and what its way of running
+ * carries (`RUNS_CARRY`), and no credential key; how the CLI runs it (an `http` hook's refusal
+ * a JSON template whose one `{reason}` the door fills, a shell its program and arguments, or
+ * `exec`); its argv, only for a file of the run's own; its kinds' tool names; its MCP names;
+ * whether it fails open, and how the agent can alter it, if it can; and the page it was read
+ * from. Or why no hook holds.
  */
 function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
                     template: (item: unknown, what: string) => string,
@@ -1013,8 +1015,29 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
     return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
                                                    "cli.decide.unsupported") });
   }
-  const fields = check.keys(value, "cli.decide", ["file", "template", "kinds", "mcp", "fails",
-                                                  "cite", "read"], ["argv"]);
+  const fields = check.keys(value, "cli.decide", ["file", "template", "runs", "kinds", "mcp",
+                                                  "fails", "cite", "read"],
+                            ["argv", "alterable"]);
+  const runs = (object(fields["runs"]) ? fields["runs"] : {}) as Record<string, unknown>;
+  const way = Object.keys(runs).length === 1 ? Object.keys(runs)[0] : undefined;
+  const http = runs["http"];
+  const deny = way === "http" && object(http) && Object.keys(http).length === 1
+    ? http["deny"] : undefined;
+  let denyParses = false;
+  try {
+    denyParses = typeof deny === "string" && object(JSON.parse(deny))
+      && deny.split("{reason}").length === 2;
+  } catch {
+    denyParses = false;
+  }
+  const shell = runs["shell"];
+  if (!(way === "http" ? denyParses
+    : way === "shell" ? Array.isArray(shell) && shell.length >= 1 && shell.length <= 4
+      && shell.every((arg) => typeof arg === "string" && /^[A-Za-z0-9/_.-]{1,64}$/.test(arg))
+      : way === "exec" && runs["exec"] === true)) {
+    check.fail("cli.decide.runs is http (its deny a JSON object with one {reason}), a shell " +
+               "and its arguments, or exec");
+  }
   const file = fields["file"];
   const own = typeof file === "string" && file.startsWith("{system}/")
     && runFilePath(file) !== null;
@@ -1025,8 +1048,11 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
                "shared by every run, and only a .json file the record writes besides");
   }
   const text = template(fields["template"], "cli.decide.template");
-  if (!HOOK_PLACEHOLDERS.every((placeholder) => text.includes(placeholder))) {
-    check.fail("cli.decide.template carries {matcher} and {decide}");
+  const carries = ["{matcher}", ...RUNS_CARRY[way as keyof typeof RUNS_CARRY]];
+  if (!HOOK_PLACEHOLDERS.every((placeholder) => text.includes(placeholder)
+                                                === carries.includes(placeholder))) {
+    check.fail(`cli.decide.template carries ${carries.join(", ")}, and no other hook ` +
+               "placeholder");
   }
   if (!String(file).endsWith(".mjs")) {
     const read = settingsOf(String(file), text);
@@ -1052,6 +1078,9 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   if (fields["fails"] !== "open" && fields["fails"] !== "closed") {
     check.fail("cli.decide.fails is open or closed");
   }
+  if (fields["alterable"] !== undefined) {
+    check.text(fields["alterable"], REASON, "cli.decide.alterable");
+  }
   check.https(fields["cite"], "cli.decide.cite");
   check.text(fields["read"], DATE, "cli.decide.read");
   return Object.freeze({
@@ -1059,6 +1088,9 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
     kinds: Object.freeze(Object.fromEntries(Object.entries(kinds as Record<string, string[]>)
       .map(([kind, names]) => [kind, Object.freeze([...names])]))),
     mcp: Object.freeze(mcp),
+    runs: Object.freeze(way === "http" ? { http: Object.freeze({ deny }) }
+      : way === "shell" ? { shell: Object.freeze([...(shell as string[])]) }
+      : { exec: true }),
   }) as unknown as Decide;
 }
 
