@@ -57,6 +57,8 @@ agent run on it.
   `scripts/diagnose_connected_sources.py`), and the provider-name lists in
   `scripts/check_shapes.py` and `scripts/check_channel_agnostic.py`, which name Kimi as a
   provider to detect.
+- **`fact15-defaults.md`'s owed research line** still names Kimi among the engines to read. The
+  untangle check holds owed items verbatim, and the research reads only the records there are.
 - **A sandbox store kept for Kimi** is not swept: Kimi's sign-in was never switched on by
   default, and no runner reads a store whose engine is not served.
 
