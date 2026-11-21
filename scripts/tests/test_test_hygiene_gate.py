@@ -107,6 +107,14 @@ def test_a_case_deleted_beside_the_scripts_needs_a_stated_reason(tmp_path):
     assert hygiene.evaluate(delta, reason) == []
 
 
+def test_a_test_file_renamed_out_of_collection_loses_its_cases(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    base = _commit(tmp_path, {_FILE: _TWO})
+    head = _commit(tmp_path, {_FILE: None, "scripts/tests/a_cases.py": _TWO})
+    delta = hygiene.compute_delta(base, head, tmp_path, _TODAY)
+    assert sorted(f.where for f in delta.tampering) == [f"{_FILE}::test_a", f"{_FILE}::test_b"]
+
+
 def test_a_script_named_like_a_test_is_not_a_test(tmp_path):
     _git(tmp_path, "init", "-q", "-b", "main")
     base = _commit(tmp_path, {"scripts/test_gate.py": _TWO})
