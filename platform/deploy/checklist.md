@@ -102,8 +102,10 @@ It never counts as "absent".
    `redirect-uri-invalid` page stops the kit, naming it. Mode `plan` cannot list the
    callback, so there a `redirect-uri-invalid` answer reads "dark registers it"; every
    other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
-   `auth_time` only a real sign-in shows: mode `probe` settles them, after `dark` and
-   before `routes`.
+   `auth_time` only a real sign-in shows: the stage's first sign-in settles them (d3 §H).
+   If its `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS
+   value (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in
+   `upstreamFrom` (`deploy.ts`, one line), a change of its own.
 2. **Storage, created only when its listing answered and lacks it:** the KV namespaces
    `platform/deploy/platform.json` titles, one for each binding the configs make, and the
    R2 buckets and the queues the Workers' configs name (a queue its producer's), each listed
@@ -160,33 +162,6 @@ It never counts as "absent".
 
 ## Later steps, each its own approved run
 
-- **Mode `probe`: one real sign-in through the doors, between `dark` and `routes`.** Every
-  sign-in at `routes` rests on three things only a real sign-in through the doors' own code
-  shows: User Management's `authenticate` takes the API key as the client's secret, the
-  access token's `iss` is the one the kit expects (`upstreamFrom`'s `token_issuer`,
-  `https://api.workos.com/user_management/<client id>` by WorkOS's docs), and it carries a
-  fresh `auth_time`. The probe:
-  - runs only after `dark`: the doors deployed, the control record admitting nobody, and
-    WorkOS listing the callback. It reads each live and stops otherwise. Before a route
-    moves, it runs `dark`'s early sign-in check again;
-  - hands the doors only the routes that take the sign-in's own two paths (`PROBE_ROUTES`,
-    `deploy/facts.ts`), by the same handover. No Worker serves those paths today (they
-    answer `404`), and the probe
-    stops if one does. It deploys nothing and changes no gate. Then the platform's canary;
-  - prints one sign-in link, the doors' own app's (`/authorize`, its client, its
-    `/app/signed-in` redirect, the `/app` resource and a fresh S256 challenge).
-
-  **Open the link and sign in once.** Read where the browser ends against the pass and
-  fail signs the apply job prints under the link (`PROBE_SIGNS` in `deploy.ts`), and report
-  it.
-
-  If the `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS value
-  (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in `upstreamFrom`
-  (`deploy.ts`, one line), a change of its own, then
-  `dark` and the probe again. `routes`
-  later finds both paths already the doors'. Until `routes`, never delete the control
-  record (`CONTROL_KEY` in `contract/src/control.ts`): the doors read a missing record as open and would admit owners on
-  these two paths.
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
   the doors' routes over (`routes` in `platform/contract/identity.json`) one route at a
   time, through Cloudflare's routes API, so no path is ever served by nothing:

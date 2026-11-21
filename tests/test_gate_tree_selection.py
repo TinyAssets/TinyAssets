@@ -20,7 +20,6 @@ from scripts.affected_tests import (
     deploy_paths,
     gate_selection,
     provable_shape,
-    retiring_tests,
     select,
     tree_readers,
 )
@@ -376,23 +375,6 @@ def test_a_root_that_climbs_back_up_is_the_checkout(tmp_path) -> None:
                              "def test_x():\n    assert list(REPO_ROOT.iterdir())\n")})
     assert gate_selection(["platform/owner/x.ts"], root=root, shared=set())[0] == [
         "tests/test_it.py"]
-
-
-def test_retiring_tests_reach_only_the_old_stack(tmp_path) -> None:
-    root = _tree(tmp_path, {
-        "tinyassets/__init__.py": "",
-        "tinyassets/old.py": "X = 1\n",
-        "scripts/__init__.py": "",
-        "scripts/ops.py": "from tinyassets.old import X\n",
-        "scripts/tool.py": "Y = 2\n",
-        "tests/test_old.py": "from tinyassets.old import X\ndef test_it(): assert X\n",
-        "tests/test_old_ops.py": "from scripts.ops import X\ndef test_it(): assert X\n",
-        "tests/test_mixed.py": (
-            "from tinyassets.old import X\nfrom scripts.tool import Y\n"
-            "def test_it(): assert X and Y\n"),
-        "tests/test_text.py": "def test_it(): assert True\n",
-    })
-    assert retiring_tests(Graph(root)) == ["tests/test_old.py", "tests/test_old_ops.py"]
 
 
 def _run_audited(root: Path) -> dict[str, str]:

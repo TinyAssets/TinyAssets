@@ -15,8 +15,7 @@
  * keyring is never replaced, and is rotated only by adding a key; the control record is
  * written only when the API answers that it is absent; an absent discovery field is unknown,
  * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
- * from the environment's store. The sign-in probe takes only the sign-in's two unserved
- * paths, behind a control record that admits nobody, and `routes` then finds both held.
+ * from the environment's store.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -53,10 +52,10 @@ import {
   Cloudflare, describeStep, handback, handover, type Route,
 } from "../cloudflare";
 import {
-  authorizeCheck, deployedConfig,
+  authorizeCheck, deployedConfig, firstPartyLink,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
   lifecycleHook, lockRefusal, type Mode, MODES, parse,
-  perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
+  perform, PUBLIC_INPUTS, registerRedirect, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
 import {
@@ -64,7 +63,7 @@ import {
 } from "../../sandbox/template/pair";
 import {
   boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, FILES_BUCKET, IMPORT_NAMES,
-  KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED,
+  KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, QUEUES, RETIRED,
   retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, workerNames,
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
@@ -174,8 +173,6 @@ const LIVE: readonly Route[] = [
 interface WorldOptions {
   /** Everything a dark run makes is there already. */
   readonly held?: boolean;
-  /** The probe's two routes are the doors' already. */
-  readonly probed?: boolean;
   /** E2B holds the pair's tag. */
   readonly paired?: boolean;
   /** This tree's image, as `image.ts` computes it: the pin by default. */
@@ -250,10 +247,7 @@ function world(options: WorldOptions = {}) {
   for (const name of options.retired === true ? RETIRED : []) {
     secrets.set(name, []);
   }
-  const routes = new Map((options.probed === true || held
-    ? [...LIVE, { id: "p1", pattern: "tinyassets.io/authorize*", script: DOORS },
-       { id: "p2", pattern: "tinyassets.io/oauth/*", script: DOORS }] : LIVE)
-    .map((route) => [route.id, { ...route }]));
+  const routes = new Map(LIVE.map((route) => [route.id, { ...route }]));
   const hooks: Json[] = held ? [{ id: "w1", url: E2B_HOOK.url, enabled: false,
                                   events: [...E2B_HOOK.events] }] : [];
   /** KV, by namespace id and key: the control record when held. */
@@ -484,7 +478,7 @@ function world(options: WorldOptions = {}) {
     if (at.pathname === "/user_management/redirect_uris") {
       events.push(`workos ${method} redirect_uris`);
       return method === "POST" ? json({}, 201)
-        : json({ data: held || options.probed === true ? [{ uri: UPSTREAM_CALLBACK }] : [] });
+        : json({ data: held ? [{ uri: UPSTREAM_CALLBACK }] : [] });
     }
     if (at.host === "api.e2b.app") {
       expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe(E2B_KEY);
@@ -793,7 +787,7 @@ describe("the command line", () => {
   const w = world();
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
-    expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
+    expect(Object.keys(MODES)).toEqual(["plan", "dark", "routes", "h2", "pair",
                                         "handback", "control", "owner", "restore", "copyback",
                                         "recover", "erase",
                                         "rotation", "retire"]);
@@ -803,7 +797,7 @@ describe("the command line", () => {
     for (const argv of [[], ["--mode"], ["--mode", "apply"], ["--mode", "constructor"],
                         ["--yes", "--routes"], ["--mode", "--yes"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
-        "--mode is one of plan, dark, probe, routes, h2, pair, handback, control, owner");
+        "--mode is one of plan, dark, routes, h2, pair, handback, control, owner");
     }
     for (const argv of [["--mode", "dark", "--mode", "routes"], ["--mode", "dark", "--mode", "dark"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
@@ -834,10 +828,6 @@ describe("the command line", () => {
     }
     expect([...parse(["--mode", "dark", "--migrate", MIGRATES.join(",")], ENV, w.io).migrate])
       .toEqual(MIGRATES);
-    for (const option of ["--rotate", "--migrate"]) {
-      expect(() => parse(["--mode", "probe", option, "owner"], ENV, w.io))
-        .toThrow("mode probe deploys nothing: it takes no --rotate or --migrate");
-    }
     const run = parse(["--mode", "routes", "--yes", "--plan", "plan.json", "--rotate",
                        "ROUTING_MAC_KEY,FILES_KEYRING", "--migrate", "owner"], ENV, w.io);
     expect([run.reach, run.apply, [...run.rotate], [...run.migrate]])
@@ -902,8 +892,8 @@ describe("the plan the apply job runs", () => {
     w.routes.delete("r6");
     const { why, changed } = await refused(w, "routes", plan);
     expect(why).toMatch(/^the live state no longer plans what was approved, so nothing is changed: /);
-    expect(why).toContain("approved, and not planned now: record the zone's 8 routes");
-    expect(why).toContain("planned now, and never approved: record the zone's 7 routes");
+    expect(why).toContain("approved, and not planned now: record the zone's 6 routes");
+    expect(why).toContain("planned now, and never approved: record the zone's 5 routes");
     expect(changed).toEqual([]);
   });
 
@@ -1390,7 +1380,7 @@ describe("the route record", () => {
         expect(text).not.toContain(secret);
       }
       // The plan says how to hand it back, and the summary holds the record too.
-      expect(work.plan).toContain(`record the zone's ${table.length} routes and the handover's 8 ` +
+      expect(work.plan).toContain(`record the zone's ${table.length} routes and the handover's 10 ` +
         "changes, the egress domain (none) and E2B's lifecycle webhook (disabled) as this " +
         `run's route record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode ` +
         "handback --record <this run's id>");
@@ -1463,13 +1453,13 @@ describe("the route record", () => {
       NOW.toISOString()}, before its first change: hand back with --mode handback --record ` +
       "<this run's id>");
     const later = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
-    // The doors hold the old proxy's three in place, in the zone's order, and the five added.
+    // The doors hold the old proxy's three in place, in the zone's order, and the seven added.
     expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 9 routes and the handover's 0 changes, the ` +
       `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as this run's route ` +
       `record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback ` +
       "--record <this run's id>; " +
-      `${DOORS} holds ${["mcp*", "app*", "api*", "hooks/inbound/*", "hooks/e2b/*",
-                         ".well-known/oauth-*"].map((path) => `${ZONE}/${path}`).join(", ")} ` +
+      `${DOORS} holds ${["mcp*", "app*", "api*", "hooks/inbound/*", "hooks/e2b/*", "authorize*",
+                         "oauth/*", ".well-known/oauth-*"].map((path) => `${ZONE}/${path}`).join(", ")} ` +
       "already: the record of the routes run that moved them is the one to hand back, and it " +
       "covers this run's changes too");
     const at = w.events.length;
@@ -1484,7 +1474,7 @@ describe("the route record", () => {
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
     w.kill.after = undefined;
     const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
-    expect(fresh.plan).toContain("record the zone's 8 routes and the handover's 7 changes, the " +
+    expect(fresh.plan).toContain("record the zone's 6 routes and the handover's 9 changes, the " +
       "egress domain (none) and E2B's lifecycle webhook (disabled) as this run's route record " +
       `in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
       `<this run's id>; ${DOORS} holds tinyassets.io/mcp* already: the record of the ` +
@@ -1533,7 +1523,7 @@ describe("a handback run", () => {
     expect(work.plan).toEqual([
       HELD,
       `the route record ${KEY}: the zone's ${before.length} routes as run 7001 read them at ${
-        NOW.toISOString()}, and the handover's 8 changes`,
+        NOW.toISOString()}, and the handover's 10 changes`,
       `disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was before routes`,
       `detach the custom domain ${EGRESS_DOMAIN} from ${DOORS}, as it was before routes`,
       "add the route tinyassets.io/.well-known/oauth-protected-resource* back for " +
@@ -1542,16 +1532,12 @@ describe("a handback run", () => {
       "tinyassets-mcp-proxy",
       ...["mcp*", "api*", "app*"].map((path) =>
         `move the route tinyassets.io/${path} from ${DOORS} back to tinyassets-mcp-proxy`),
-      ...["hooks/inbound/*", "hooks/e2b/*", ".well-known/oauth-*"].map(
+      ...["hooks/inbound/*", "hooks/e2b/*", "authorize*", "oauth/*", ".well-known/oauth-*"].map(
         (path) => `delete ${DOORS}'s route tinyassets.io/${path}, which the handover added`),
       `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_DOMAIN} (100::), where ` +
       "the detach leaves them",
       "the zone's routes, the egress domain and the webhook read back as the record has them",
     ]);
-    // The probe's routes, the doors' before the handover, stay theirs.
-    for (const pattern of PROBE_ROUTES) {
-      expect(before).toContainEqual({ pattern, script: DOORS });
-    }
     // Run again, it changes nothing.
     const at = w.events.length;
     const again = await runMode(w, "handback", ["--yes", "--record", "7001"]);
@@ -1737,7 +1723,7 @@ describe("a handback run", () => {
       expect(() => parse(["--mode", "handback", "--record", id], ENV, w.io), id)
         .toThrow(`--record is ${what}`);
     }
-    for (const mode of ["plan", "dark", "probe", "routes", "control", "owner"]) {
+    for (const mode of ["plan", "dark", "routes", "control", "owner"]) {
       expect(() => parse(["--mode", mode, "--record", "7001"], ENV, w.io)).toThrow(
         `mode ${mode} takes no --record: it is mode handback's`);
     }
@@ -1757,7 +1743,7 @@ describe("a handback run", () => {
                                { CLOUDFLARE_API_TOKEN: "cf-token" });
     expect(w.events.slice(from).filter((event) => CHANGE.test(event)
       || event.startsWith("node canary"))).toEqual([]);
-    expect(work.plan).toHaveLength(12);
+    expect(work.plan).toHaveLength(14);
     expect(work.plan[1]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job ` +
                               "before any change");
     expect(w.logs.at(-1)).toBe("\nNothing was changed.");
@@ -1926,46 +1912,6 @@ describe("a handback run", () => {
       `deleting the DNS record AAAA ${EGRESS_DOMAIN} (100::) failed (403, [10000]): run the ` +
       "handback again");
     expect(kept(refused.routes.values())).toEqual(before);
-  });
-});
-
-describe("a probe run", () => {
-  it("hands the doors the sign-in's two paths alone, after the early sign-in check, then " +
-     "prints the one link", async () => {
-    const w = world({ held: true, probed: false });
-    // The dark run's state, with the probe's routes not yet the doors'.
-    for (const id of ["p1", "p2"]) {
-      w.routes.delete(id);
-    }
-    const work = await runMode(w, "probe", ["--yes"]);
-    const [, , authorized, first, second] = order(w.events, [
-      "cf GET /accounts", "workos GET redirect_uris", "workos authorize",
-      "cf POST /zones/z/workers/routes", "cf POST /zones/z/workers/routes"]);
-    expect(authorized).toBeLessThan(first!);
-    expect(second).toBeGreaterThan(first!);
-    expect(w.events.filter((event) => /^(wrangler|e2b)/.test(event))).toEqual([]);
-    expect(work.plan.slice(-2)).toEqual(PROBE_ROUTES.map((pattern) =>
-      `add the route ${pattern} for ${DOORS}`));
-    expect(w.logs.at(-1)!.startsWith(
-      `\nSign in once, in a browser, at:\n${ORIGIN}${identity.signin.authorize}?`)).toBe(true);
-    expect(w.logs.at(-1)).toContain(PROBE_SIGNS);
-    // The old stack still serves /mcp: the canary holds whichever side answers.
-    expect(w.events).toContain("node canary.ts");
-  });
-
-  it("stops unless a dark run came first, every gate closed and the callback listed",
-     async () => {
-    await expect(runMode(world(), "probe", ["--yes"])).rejects.toThrow(
-      `${DOORS} is not deployed: the probe runs after a dark run`);
-    // A record that admits an owner, or that the doors read as malformed, stops it unchanged.
-    for (const record of [{ ...DARK, canary: ["user_a"] }, { ...DARK, ordinary: "all" },
-                          { ...DARK, ordinary: "nobody" }]) {
-      const w = world({ held: true, probed: false });
-      w.kv.set(`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(record));
-      await expect(runMode(w, "probe", ["--yes"])).rejects.toThrow(
-        "the control record is missing or admits someone");
-      expect(w.events.filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
-    }
   });
 });
 
@@ -2318,46 +2264,8 @@ describe("the parts of a run", () => {
     expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
   });
 
-  it("probes the sign-in on its two unheld paths alone; routes then finds both the doors'",
-     async () => {
-    expect(PROBE_ROUTES.every((pattern) => ROUTES.includes(pattern))).toBe(true);
-    const fake = zoneApi(LIVE);
-    const cloudflare = client(fake);
-    const steps = probeSteps(await cloudflare.routes("z"));
-    expect(steps).toEqual(PROBE_ROUTES.map((pattern) => ({ method: "POST", pattern,
-                                                           script: DOORS })));
-    await cloudflare.reroute("z", steps, (each) => describeStep(each, DOORS));
-    // Only the sign-in's paths move: every other path is served as before.
-    for (const path of PROBES) {
-      const doors = path === "tinyassets.io/authorize" || path === "tinyassets.io/oauth/token";
-      expect([path, servedBy(fake.table.values(), path)])
-        .toEqual([path, doors ? DOORS : fake.before.get(path)]);
-    }
-    // Run again, it changes nothing; routes hands over the rest, unchanged, and both are held.
-    expect(probeSteps([...fake.table.values()])).toEqual([]);
-    const after = handover([...fake.table.values()], DOORS, ROUTES);
-    expect(after).toEqual(handover(LIVE, DOORS, ROUTES)
-      .filter((each) => !PROBE_ROUTES.includes(each.pattern)));
-    await cloudflare.reroute("z", after, (each) => describeStep(each, DOORS));
-    for (const path of PROBES.slice(0, -1)) {
-      expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
-    }
-    expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
-  });
-
-  it("refuses to probe a path any other Worker, or no Worker, serves", () => {
-    for (const held of [
-      { id: "x", pattern: "tinyassets.io/oauth/*", script: "tinyassets-mcp-proxy" },
-      { id: "x", pattern: "tinyassets.io/oauth/token", script: "tinyassets-mcp-proxy" },
-      { id: "x", pattern: "tinyassets.io/*", script: "site" },
-      { id: "x", pattern: "tinyassets.io/authorize*" },
-    ] as Route[]) {
-      expect(() => probeSteps([...LIVE, held])).toThrow(/nothing is changed/);
-    }
-  });
-
-  it("prints the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
-    const link = new URL(probeLink());
+  it("starts the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
+    const link = new URL(firstPartyLink());
     expect(`${link.origin}${link.pathname}`).toBe(`${ORIGIN}${identity.signin.authorize}`);
     const { code_challenge: challenge, state, ...rest } = Object.fromEntries(link.searchParams);
     expect(rest).toEqual({ response_type: "code", client_id: WEB_CLIENT,
@@ -2365,9 +2273,7 @@ describe("the parts of a run", () => {
                            resource: APP_RESOURCE });
     expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(state).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(new URL(probeLink()).searchParams.get("code_challenge")).not.toBe(challenge);
-    expect(PROBE_SIGNS).toContain(`${WEB_REDIRECT}?error=temporarily_unavailable`);
-    expect(PROBE_SIGNS).toContain(UPSTREAM_CALLBACK);
+    expect(new URL(firstPartyLink()).searchParams.get("code_challenge")).not.toBe(challenge);
   });
 
   it("stops the handover at a refused change, saying what is done", async () => {
@@ -3998,7 +3904,7 @@ const ROUTES_HELD = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
   ISSUED,
   `the pair ${PAIR} passed its standing checks in this E2B team`,
-  `record the zone's ${LIVE.length + 2} routes and the handover's 8 changes, the egress ` +
+  `record the zone's ${LIVE.length} routes and the handover's 10 changes, the egress ` +
   "domain (none) and E2B's lifecycle webhook (disabled) as this run's route record in " +
   `${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
   "<this run's id>",
@@ -4010,6 +3916,8 @@ const ROUTES_HELD = [
     `move the route tinyassets.io/${path} from tinyassets-mcp-proxy to ${DOORS}`),
   `add the route tinyassets.io/hooks/inbound/* for ${DOORS}`,
   `add the route tinyassets.io/hooks/e2b/* for ${DOORS}`,
+  `add the route tinyassets.io/authorize* for ${DOORS}`,
+  `add the route tinyassets.io/oauth/* for ${DOORS}`,
   `add the route tinyassets.io/.well-known/oauth-* for ${DOORS}`,
   `delete tinyassets-mcp-proxy's narrower route ` +
   `tinyassets.io/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,

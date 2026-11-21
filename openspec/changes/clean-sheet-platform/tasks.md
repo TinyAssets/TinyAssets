@@ -216,10 +216,9 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
   deletes the old stack, the import window above, the old stack's workflows (`dr-drill.yml`
   among them), its docs, rules and specs, and `docs/architecture.md`'s S36 row then reads
   converged.
-  - **Old tests leave with their code** (Direction 6): every test file
-    `python scripts/affected_tests.py --retiring` lists (its `RETIRING` paths follow the
-    manifest), and any other test that fails only because its code is gone. None is skipped,
-    quarantined or rewritten to pass; a test that also reaches kept code keeps those cases. A
+  - **Old tests leave with their code** (Direction 6): `tests/` whole, as the manifest lists
+    it, once the process's tests it holds are carried out to `scripts/tests/` (the manifest's
+    moves). None is skipped, quarantined or rewritten to pass. A
     structural guard (`scripts/ci_structural_guards.py` `GUARDS`) goes only once this line names
     its platform replacement or the decision that retires its principle. `tests.yml` loses
     `select`, `structural-guards`, `required-tests-shard`, `affected-tests` and
@@ -347,8 +346,8 @@ P3 and P5 landed in #5504: no ritual body lines, no 8-file cap, the tamper check
 platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §B7).
 
 - [x] `.agents/activity.log` deleted (#5505).
-- [ ] The manifest's inventory: every path in the repo that goes, is edited or moves, and every
-  live object (d3 §A10).
+- [x] The manifest's inventory: every path in the repo that goes, is edited or moves, and every
+  live object (d3 §A10; `untangle-2026-11/b24-manifest.md`).
 
 ### Step 4. The lanes, lane T, lane R, R5, the comments and tests passes, the re-check
 
@@ -393,8 +392,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       exceptions are its own `KEPT`, each with its reason (`untangle-2026-11/o4c.md`).
     - [x] X1b: the deploy tests and founder checklist use the configured resource names
       (`untangle-2026-11/x1b.md`).
-  - B12 reshapes only the modes that stay. `routes`' handover, `handback` and `h2` go on the
-    manifest's end-of-hold list, and mode `probe` is deleted (d3 §A5, §H).
+  - [x] B12's end-of-hold list: `routes`' handover, `handback` and `h2` are on the manifest's
+    hold phase, and mode `probe` is deleted, the stage's first sign-in doing its job (d3 §A5,
+    §H; `b24-manifest.md`).
+  - B12 reshapes only the modes that stay (`untangle/b24-dry-run`).
   - [x] V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`). Built in
     `untangle/o-keyrings`: the goldens sealed again by their own commit's code for a connection
     id, and the gateway's binding takes the owner's connection ids, a doorbell's its own
@@ -411,9 +412,11 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     - [x] Inventory the founder's one-time setup and its readers (`b24-setup-inventory.md`).
       The cutover manifest lists the form, tests, workflow and documentation changes. The
       founder's WorkOS and installed review App recovery instructions live in `docs/host-actions.md`.
-    - `untangle/b24-manifest`: the rest of the repository inventory (the old stack, the
-      workflows, the gate scripts, the docs, the rules, the specs and the site) and the dry-run
-      job that applies all three phases to a temporary tree.
+    - [x] `untangle/b24-manifest`: the rest of the repository inventory, every root, workflow,
+      script, doc, spec and live object, with carry-outs (`b24-manifest.md`).
+    - `untangle/b24-dry-run`: the dry-run job that applies all three phases to a temporary tree
+      (step 5), B12's reshape of the modes that stay, and each structural guard's platform
+      replacement or retiring decision named on §9 step 15's line (`b24-manifest.md` item 6).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
@@ -647,7 +650,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
   and `owner.state` (`owner-state-op.md`).
-- [ ] The manifest's dry run green (d3 §A10).
+- [ ] The manifest's dry run green (d3 §A10; `untangle/b24-dry-run`).
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
@@ -782,8 +785,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 
 Measured on the stage as it runs:
 
-- [ ] The stage's first sign-in shows the access token's exact `iss` and `auth_time`, in place
-  of mode `probe` (d3 §H).
+- [ ] The stage's first sign-in shows the access token's exact `iss` and `auth_time`, the job
+  of the deleted mode `probe` (d3 §H).
 - [ ] Live numbers: R2 read latency from an owner object; the longest put in flight against
   `PUT_GRACE_MS`; the owner's sustained write rate against the change log's ship rate and
   `LOG_BYTES`; `limits.subrequests` at 10,000,000; the usage receipts' rows per call; whether the
@@ -810,7 +813,7 @@ Measured on the stage as it runs:
 - [ ] On the founder's word: the droplet, the final backup and `tinyassets-final-backup` with
   its `deploy/platform.json` entry; mode `handback` and the route record; the handles canary's
   old side; the old proxy Worker `tinyassets-mcp-proxy`, its tunnel, the `mcp.` record and its
-  Access token (list3 P23, P24).
+  Access token (list3 P23, P24): the manifest's hold phase.
 
 ### After the cutover: fixes for rare failures nothing builds on
 
@@ -845,7 +848,9 @@ Moved before the window, into lane R (d3 §F3, §G).
   `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json` (list3 P34); the
   desktop shell's twin (list3 P33). The stores also require: Sign in with Apple wherever Google
   or GitHub sign-in is offered (4.8); account deletion inside the app, with `erasureAnswer`
-  wired at the erase door first (5.1.1(v), d3 §C6); the shell's native features (4.2).
+  wired at the erase door first (5.1.1(v), d3 §C6); the shell's native features (4.2). The
+  mobile shell's `@capacitor/cli` still reaches a vulnerable `uuid` through `xcode` (build time
+  only; its concern file, filed 2026-09-03, leaves with `docs/concerns/`).
 - [ ] Billing: a billing door, Stripe's endpoint on it, and `storage_full`'s upgrade (list3 P38).
   Until then a tier changes through the operator path.
 - [ ] Connectors for the owner's own agents: the agent's `mcp.json` merged into the run config,
