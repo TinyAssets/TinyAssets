@@ -623,13 +623,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     nothing the agent writes reaches its process, and no settings layer the agent writes is
     loaded beside it (`r5-hooks.md` items 13 and 14). After the
     protocol's expand (`untangle/r5-hooks-speaks`) (`untangle/r5-hooks`; `r5-hooks.md`).
-  - [ ] Codex's hook holding against its agent: one that starts no login shell, its
-    `mcp_tool` type researched first; until then its record is `alterable` and the note says
-    no rule holds there (`r5-hooks.md` item 13; `untangle/r5-hooks-codex`).
-  - [ ] P-defer, only if d3 §N9's first live check shows Claude's turn of several tool calls
-    denies a deferred call: `defer` in the hook's data and Claude's record; a held call the
-    hook deferred resumes on no input, and its conversation waits on its card
-    (`r5-resume-hooks.md` items 6 and 7; `r5-hooks.md` item 1; `untangle/r5-defer`).
   - [x] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file
     (`policy.json`); the notice's words as data (`import/notice.json`). A spend cap refuses
@@ -784,14 +777,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     against an organization's server-managed settings; Codex, Gemini and pi loading our
     root-owned hooks unattended; the delay one decision adds; a census of non-default rules,
     spend caps and egress `ask` in the import (the census's `policy` counts and its
-    `policy_spend` problem, `r5-import.md`). From P-hooks (`r5-hooks.md` items 12 to 14): a
-    user `allowedHttpHookUrls` or `httpHookAllowedEnvVars` narrowing the managed hook;
-    Claude's `--setting-sources user` keeping the project and local layers out, live too; a
-    skill's ``!`command` `` context and a subagent's frontmatter hooks under
-    `allowManagedHooksOnly` and `strictPluginOnlyCustomization`; Gemini's system
-    `ignoreLocalEnv` over a project's, and `hooksConfig.enabled`; pi's `-e` beside
-    `--no-extensions`, and `builtin:mcp`; an approval meeting a repeat call whose free text
-    (`Bash`'s `description`) changed.
+    `policy_spend` problem, `r5-import.md`).
 
 ### Step 8. The live stage (d3 §F1, §H), in order
 
