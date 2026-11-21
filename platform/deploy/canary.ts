@@ -54,6 +54,7 @@ import { fileURLToPath } from "node:url";
 
 import { REPO } from "../ci/paths.ts";
 import { DISPATCH } from "../contract/src/canary.ts";
+import { EGRESS_HOST } from "../contract/src/egress.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
@@ -62,7 +63,7 @@ import identity from "../contract/identity.json" with { type: "json" };
 import {
   APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
 } from "../contract/src/identity.ts";
-import { AUTHORIZE, E2B_HOOK_URL, EGRESS_DOMAIN } from "./facts.ts";
+import { AUTHORIZE, E2B_HOOK_URL } from "./facts.ts";
 import { watch } from "./offsite.ts";
 
 type Json = Record<string, unknown>;
@@ -262,13 +263,13 @@ async function clientDocument(world: World): Promise<string> {
 }
 
 async function egressHost(world: World): Promise<string> {
-  const url = `https://${EGRESS_DOMAIN}/`;
+  const url = `https://${EGRESS_HOST}/`;
   const answer = await send(world, url);
   const error = answer.status === 404 ? (await json(answer, url, 2))["error"] : null;
   if (typeof (error as Json | null)?.["code"] !== "string") {
     throw new Failure(2, `${url} answered ${answer.status}, not the egress door's refusal`);
   }
-  return `${EGRESS_DOMAIN} answers with the egress door's refusal`;
+  return `${EGRESS_HOST} answers with the egress door's refusal`;
 }
 
 async function signIn(world: World): Promise<string> {

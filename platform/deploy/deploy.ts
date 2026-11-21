@@ -127,10 +127,10 @@ import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
 import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
-import { ZONE } from "../contract/src/egress.ts";
+import { EGRESS_HOST } from "../contract/src/egress.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import {
-  APP_RESOURCE, E2B_HOOK_EVENTS, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
+  APP_RESOURCE, E2B_HOOK_EVENTS, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT, ZONE,
 } from "../contract/src/identity.ts";
 import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
@@ -156,7 +156,7 @@ import {
   type LockRule, type Moved, narrower, type Route, type RouteChange, unlike,
 } from "./cloudflare.ts";
 import {
-  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, EGRESS_DOMAIN, FILES_BUCKET,
+  AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, FILES_BUCKET,
   IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
   RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
 } from "./facts.ts";
@@ -866,7 +866,7 @@ function routeRecord(job: JobRun, at: Date, zoneId: string, table: readonly Rout
     at: at.toISOString(),
     routes: table.map((route) => ({ pattern: route.pattern, script: route.script ?? null })),
     moved: steps.map((each) => ({ method: each.method, pattern: each.pattern })),
-    domain: { hostname: EGRESS_DOMAIN, service: domain, created: null },
+    domain: { hostname: EGRESS_HOST, service: domain, created: null },
     hook: { url: E2B_HOOK.url, present: hook !== null, enabled: hook?.["enabled"] === true },
   };
 }
@@ -908,7 +908,7 @@ export function recordOf(value: unknown, key: string, zoneId: string): RouteReco
     }
   }
   const domain = held.domain as Partial<RouteRecord["domain"]> | null | undefined;
-  if (typeof domain !== "object" || domain === null || domain.hostname !== EGRESS_DOMAIN
+  if (typeof domain !== "object" || domain === null || domain.hostname !== EGRESS_HOST
       || !(domain.service === null || typeof domain.service === "string")
       || !(domain.created === null || (Array.isArray(domain.created)
         && (domain.created as Partial<DnsRecord>[]).every((each) => typeof each?.id === "string"
@@ -933,19 +933,19 @@ export function recordOf(value: unknown, key: string, zoneId: string): RouteReco
 async function egressBefore({ cloudflare, account, zone: id }:
                               Pick<Values, "cloudflare" | "account" | "zone">):
     Promise<string | null> {
-  const held = await cloudflare.domains(account, EGRESS_DOMAIN);
+  const held = await cloudflare.domains(account, EGRESS_HOST);
   const others = held.filter((domain) => domain.service !== DOORS);
   if (others.length > 0) {
-    throw new Error(`${EGRESS_DOMAIN} is ${others.map((domain) => domain.service).join(", ")}'s ` +
+    throw new Error(`${EGRESS_HOST} is ${others.map((domain) => domain.service).join(", ")}'s ` +
                     "custom domain: routes would take it, and a handback could not give it " +
                     "back; nothing is changed");
   }
   if (held.length > 0) {
     return DOORS;
   }
-  const records = await cloudflare.dnsRecords(id, EGRESS_DOMAIN);
+  const records = await cloudflare.dnsRecords(id, EGRESS_HOST);
   if (records.length > 0) {
-    throw new Error(`${EGRESS_DOMAIN} holds ${records.length} DNS record(s) (${records.map(
+    throw new Error(`${EGRESS_HOST} holds ${records.length} DNS record(s) (${records.map(
       (record) => record.type).join(", ")}): the doors' custom domain would replace them, and ` +
       "a handback could not give them back; nothing is changed");
   }
@@ -2024,7 +2024,7 @@ const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, go
 /** The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`). */
 const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stage" | "kept">(
   async ({ run, say }, got) => {
-    say(`add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`);
+    say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy)`);
     if (!run.apply) {
       return;
     }
@@ -2036,7 +2036,7 @@ const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stag
     // attach's: kept in the record, for a handback to remove exactly if the detach leaves it.
     const { record, namespace, key } = got.kept;
     if (record.domain.service === null && record.domain.created === null) {
-      const created = await got.cloudflare.dnsRecords(got.zone, EGRESS_DOMAIN);
+      const created = await got.cloudflare.dnsRecords(got.zone, EGRESS_HOST);
       const status = await got.cloudflare.put(got.account, namespace, key,
                                               { ...record, domain: { ...record.domain, created } });
       if (status !== 200) {

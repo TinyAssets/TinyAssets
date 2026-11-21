@@ -9,11 +9,12 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { SUBSCRIPTIONS_PER_AGENT } from "../../contract/src/limits";
+import { BUSY, slotBusy } from "../../contract/src/slots";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { mcpOrigin } from "../src/binder";
 import {
-  appPost, call, connect, crossed, legacyPost, OPEN, ownDoor, registerAgent, registerClient,
-  rpcBody, serveFirstPartyDocument, setControl, signInApp, type Tokens, url,
+  appPost, call, connect, crossed, legacyPost, OPEN, ownDoor, refuseOnce, registerAgent,
+  registerClient, rpcBody, serveFirstPartyDocument, setControl, signInApp, type Tokens, url,
 } from "./support";
 
 const KEY = new Uint8Array(32).map((_, n) => n + 1);
@@ -164,6 +165,15 @@ describe("MCP Events at the MCP door", () => {
     const stranger = await connect(await registerClient(), { owner: alice });
     expect(await code(await subscribe(stranger, "echo/x")))
       .toMatchObject({ code: -32024 });
+  });
+
+  it("answers the object's refusal for the moment as a recoverable failure with its wait",
+     async () => {
+    const { alice, tokens } = await ringingClient();
+    await refuseOnce("wakeEvents", alice, slotBusy());
+    expect((await subscribe(tokens, "echo/x"))["error"])
+      .toEqual({ code: -32603, message: BUSY, data: { reason: BUSY, retryAfterMs: 1000 } });
+    expect((await subscribe(tokens, "echo/x"))["result"]).toBeDefined();
   });
 });
 

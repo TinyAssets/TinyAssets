@@ -10,7 +10,7 @@ import { ProtocolError } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 
 import { MAINTENANCE } from "../../contract/src/control";
-import { Refusal } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import {
   answered, asEgress, asEgressFault, asEvent, asInbound, asJson, asRedirect, asShared, asTool,
   EVENT_ERRORS,
@@ -143,6 +143,20 @@ describe("MCP Events' answer", () => {
                                              "a room is room:<app>:<room>"]);
     const no = thrown(new Refusal("refused", "no agent here"));
     expect([no.code, no.data]).toEqual([EVENT_ERRORS.forbidden, { reason: "no agent here" }]);
+  });
+
+  it("is a recoverable failure with its reason and wait for any refusal for the moment, " +
+     "never Forbidden, which a client stops on", () => {
+    for (const [refusal, ms] of [[new Refusal("unavailable", MAINTENANCE), 60_000],
+                                 [new Refusal("restoring", "restoring"), 60_000],
+                                 [new Refusal("storage_busy", "full", { retryAfterS: 7 }), 7_000],
+                                 [refusalOf(Object.assign(new Error("overloaded"),
+                                                          { overloaded: true }))!, 1_000],
+                                ] as const) {
+      const busy = thrown(refusal);
+      expect([busy.code, busy.message, busy.data]).toEqual(
+        [-32603, refusal.message, { reason: refusal.message, retryAfterMs: ms }]);
+    }
   });
 
   it("throws a full agent's refusal that carries no limit, a bug, rather than answer it", () => {

@@ -90,7 +90,8 @@ reviewers stop running whole workspace suites and the recorders before a PR open
    off the door does not exist (`inbound.ts` step 1). `wire-reach.record.ts` records the same
    events with the gate on, as another test, in another shard than 3/4, the one the first
    mutation ran (by the `" > "` full names' hash), so that mutation came out the same.
-   - [ ] The duplicate gate-off block leaves `wire.record.ts` (`untangle/recorder-inbound`).
+   - [x] The duplicate gate-off block leaves `wire.record.ts` (`untangle/recorder-inbound`).
+     Done (`small-shape.md` §2).
 9. **Left:** the watchdog, 45 minutes, is about six times the estimate in item 4 until CI
    measures the shards.
    - [ ] The shards' time read from this PR's own run (`live:` its `platform-recorders` legs);

@@ -57,6 +57,9 @@ from datetime import datetime
 
 from linux_oracle import NO_TEST_RAN
 
+#: The line a failed job's log starts with when it stopped before any test ran: the old
+#: oracle's, which no job prints once the old suite is gone (the cutover's edit empties it).
+STOPPED_LINES = (NO_TEST_RAN,)
 CAP = 2
 LABEL = "queue-handoff"
 CAPPED_EXIT = 3
@@ -164,7 +167,7 @@ def stopped_before_tests(failed_step: str | None, log: str) -> bool:
     """Whether a failed job shows it stopped before any test ran."""
     if failed_step and _GITHUB_STEP.match(failed_step):
         return True
-    return any(_STAMP.sub("", _ANSI.sub("", raw)).startswith(NO_TEST_RAN)
+    return any(_STAMP.sub("", _ANSI.sub("", raw)).startswith(STOPPED_LINES)
                for raw in log.splitlines())
 
 

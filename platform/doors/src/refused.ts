@@ -89,13 +89,17 @@ export const asShared: Surface<Response> = (refusal) => {
 /** MCP Events' error codes: the design sketch's (`-32023` to `-32026`), and JSON-RPC's. */
 export const EVENT_ERRORS = Object.freeze({
   notFound: -32023, forbidden: -32024, exhausted: -32025, unsupported: -32026,
-  invalidParams: -32602,
+  invalidParams: -32602, internal: -32603,
 });
 
 /**
  * MCP Events': the design sketch's error, thrown, which the SDK answers. A full agent's is
  * `ResourceExhausted` with the owner's limit, `{limit, max}`, from its refusal's facts; a
  * `subscription_limit` refusal without them is a bug, thrown, never an answer with no limit.
+ * A refusal for the moment is `-32603` with its reason and wait: the sketch names no code
+ * for one, answers a recoverable failure `-32603` with `data.reason`, and has a client stop
+ * on `Forbidden` (its "Transient per-occurrence error" and open question 6, at
+ * `c77b84395eff`, read 2026-11-21).
  */
 export const asEvent: Surface<never> = (refusal) => {
   if (refusal.code === "subscription_limit") {
@@ -108,6 +112,12 @@ export const asEvent: Surface<never> = (refusal) => {
   }
   if (refusal.invalid) {
     throw new ProtocolError(EVENT_ERRORS.invalidParams, refusal.message);
+  }
+  if (refusal.transient) {
+    const seconds = refusal.retryAfter;
+    throw new ProtocolError(EVENT_ERRORS.internal, refusal.message, {
+      reason: refusal.message, ...(seconds === undefined ? {} : { retryAfterMs: seconds * 1000 }),
+    });
   }
   throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden", { reason: refusal.message });
 };

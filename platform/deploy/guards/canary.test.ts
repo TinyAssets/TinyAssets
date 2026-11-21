@@ -14,13 +14,14 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { DISPATCH, PAGER } from "../../contract/src/canary";
+import { EGRESS_HOST } from "../../contract/src/egress";
 import { E2B_API } from "../../sandbox/e2b/transport";
 import { TOKEN } from "../actions";
 import { alarm, LABEL, pageDue } from "../alarm";
 import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World }
   from "../canary";
 import { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } from "../../contract/src/identity";
-import { E2B_HOOK_URL, EGRESS_DOMAIN } from "../facts";
+import { E2B_HOOK_URL } from "../facts";
 import { NIGHTLY } from "../offsite";
 import { night, type Night, nightsAnswer } from "./copy-nights";
 
@@ -114,7 +115,7 @@ function world(p: Platform, env: Record<string, string> = KEYED): World & { sent
       if (url === WEB_CLIENT) {
         return json({ client_id: WEB_CLIENT });
       }
-      if (url === `https://${EGRESS_DOMAIN}/`) {
+      if (url === `https://${EGRESS_HOST}/`) {
         return json({ error: { code: "not_found", message: "not found" } }, 404);
       }
       if (url.startsWith(`${ORIGIN}/api/tools/`)) {

@@ -25,7 +25,7 @@ import {
 import { TIER_UNREAD } from "../src/files";
 import { eraseBegun, finished, wipedWhole } from "./erasure-support";
 import { gated, type Gated } from "./gateway-support";
-import { MCP, MUSE, signedIn } from "./ledger-support";
+import { MCP, MUSE, signedIn, dm } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, sandboxOf, scripted, startOf, syncOf, TIERS }
   from "./runs-support";
@@ -815,7 +815,7 @@ describe("the runs lane", () => {
     const due = await r.in((_instance, state) => {
       const { ledger, gate } = storesOn(state);
       return gate.write(() => {
-        ledger.post(null, `dm:${nativeId("main")}`, "m-1", "hello", null);
+        ledger.post(null, dm(nativeId("main")), "m-1", "hello", null);
         return ledger.mailDue(true);
       });
     });

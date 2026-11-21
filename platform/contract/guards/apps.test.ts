@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import raw from "../apps.json" with { type: "json" };
 import { appList, checkedApps, connectUrl, refusedRegistrationLine, registrationRefusal,
          vendorOf } from "../src/apps";
+import { MCP_RESOURCE } from "../src/identity";
 
 describe("apps.json", () => {
   it("holds each app to its shape: an id, its registration, match data, a connect step " +
@@ -136,6 +137,13 @@ describe("apps.json", () => {
       expect(() => checkedApps({ ...raw, apps: [{ ...one, match: { ...one.match,
         redirects: [pattern] } }] }), pattern).toThrow(/match\.redirects/);
     }
+  });
+
+  it("names the identity's MCP door wherever a connect step gives its address", () => {
+    const claude = appList().find((app) => app.id === "claude")!;
+    expect(new URL(claude.connect.link!).searchParams.get("connectorUrl")).toBe(MCP_RESOURCE);
+    expect(JSON.stringify(appList())).not.toContain("{mcp}");
+    expect(appList().find((app) => app.id === "cursor")!.connect.code).toContain(MCP_RESOURCE);
   });
 
   it("points each app at its place on the public connect page", () => {
