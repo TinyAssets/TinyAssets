@@ -124,7 +124,8 @@ describe("the owner app's settings routes", () => {
     const app = await signInApp({ owner: who });
     const client = await registerClient("Listed");
     const tokens = await connect(client, { owner: who });
-    expect(await listed(tokens)).toEqual(profileNames("custom"));
+    // Custom, code withheld: code mode is off by default.
+    expect(await listed(tokens)).toEqual(profileNames("custom").filter((n) => n !== "code"));
     const origin = await mcpOrigin(client.clientId, client.redirectUri);
     const { clients } = await answered(await appPost("grants", app.access_token, null, {})) as
       { clients: Record<string, unknown>[] };

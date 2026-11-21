@@ -1,7 +1,8 @@
 /**
  * Code mode at the MCP door: the object's `codeRun`, in workerd with the real codemode Worker
- * behind `CODEMODE_VM`. On by default, and refused and hidden from the caller's tools once the
- * owner's policy turns `codemode.on` off; served only where the caller's profile holds `code`; one
+ * behind `CODEMODE_VM`. Off by default, refused saying why and withheld from the caller's tools
+ * until the owner's policy turns `codemode.on` on; served only where the caller's profile holds
+ * `code`; one
  * script calls several tools, each the caller's own door, admitted again against its grant and the
  * control record's gates (the record flipped while a call is held at the FILES gate, the object's
  * clock moved by a fake `Date`); no tool outside the profile and no capability outside the grant; a
@@ -21,14 +22,14 @@ import { profileNames } from "../../contract/src/doors";
 import type { Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
 import { PLACE_BYTES } from "../../contract/src/limits";
-import {
-  CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS,
-} from "../src/codemode";
+import { CODE_ANSWER_TOO_LARGE, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS } from "../src/codemode";
 import { CONTROL_FRESH_MS, ControlGate, objectKeeper } from "../src/control-gate";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { PAGE_BYTES } from "../src/bodies";
-import { DEFAULT_POLICY_JSON, validate } from "../../contract/src/policy-document";
+import {
+  CODE_MODE_OFF, DEFAULT_POLICY_JSON, validate,
+} from "../../contract/src/policy-document";
 import { customTools } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
@@ -41,6 +42,13 @@ async function setPolicy(r: Rig, codemode: boolean, custom?: string[]): Promise<
   await r.stub.policyWrite(r.session(null), { expected_generation: generation, policy: {
     ...rest, codemode: { on: codemode },
     ...(custom === undefined ? {} : { tools: { custom } }) } });
+}
+
+/** A rig whose owner has turned code mode on. */
+async function onRig(): Promise<Rig> {
+  const r = await rig();
+  await setPolicy(r, true);
+  return r;
 }
 
 /** The owner names a client's profile, and its mode and scopes, against its revision. */
@@ -96,31 +104,40 @@ async function switchedMidScript(r: Rig, meanwhile: () => void) {
 }
 
 describe("the code door", () => {
-  it("is on by default, and refused and hidden once the owner turns it off", async () => {
+  it("is off by default, refused saying why and withheld, until the owner turns it on",
+     async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(MUSE));
-    // A client's grant names custom, every tool, until the owner names another.
-    expect(await r.stub.toolProfile(r.bind(MUSE)))
-      .toEqual({ profile: "custom", tools: profileNames("custom") });
-    expect(await r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }))
-      .toMatchObject({ ok: true, value: 1 });
-    await setPolicy(r, false);
+    // A client's grant names custom, every tool, until the owner names another: `code`
+    // withheld while code mode is off.
+    const off = { profile: "custom", withheld: ["code"],
+                  tools: profileNames("custom").filter((name) => name !== "code") };
     for (const caller of [r.bind(null), r.bind(MUSE)]) {
       expect((await failure(() => r.stub.codeRun(caller, { script: "return 1;" }))).message)
         .toBe(CODE_MODE_OFF);
-      expect((await r.stub.toolProfile(caller)).tools).not.toContain("code");
+      expect(await r.stub.toolProfile(caller)).toEqual(off);
     }
     await setPolicy(r, true);
+    expect(await r.stub.toolProfile(r.bind(MUSE)))
+      .toEqual({ profile: "custom", tools: profileNames("custom"), withheld: [] });
     expect(await r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }))
       .toMatchObject({ ok: true, value: 1 });
+    await setPolicy(r, false);
+    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+      .message).toBe(CODE_MODE_OFF);
   });
 
   it("is served only where the caller's profile holds it", async () => {
-    const r = await rig();
+    const r = await onRig();
     await r.stub.outsideAgents(r.bind(MUSE));
     await profiled(r, MUSE, "directory");
     expect(await r.stub.toolProfile(r.bind(MUSE)))
-      .toEqual({ profile: "directory", tools: profileNames("directory") });
+      .toEqual({ profile: "directory", tools: profileNames("directory"), withheld: [] });
+    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+      .message).toBe(CODE_NOT_SERVED);
+    // Code mode off withholds nothing it does not hold: turning it on would not serve it.
+    await setPolicy(r, false);
+    expect((await r.stub.toolProfile(r.bind(MUSE))).withheld).toEqual([]);
     expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(CODE_NOT_SERVED);
     // The owner's custom choice leaves code out.
@@ -133,8 +150,7 @@ describe("the code door", () => {
   });
 
   it("runs one script calling two tools, each the caller's own door", async () => {
-    const r = await rig();
-    await setPolicy(r, true);
+    const r = await onRig();
     await r.stub.outsideAgents(r.bind(MUSE));
     await profiled(r, MUSE, "custom");
     const result = await r.stub.codeRun(r.bind(MUSE), { script: lines(
@@ -154,7 +170,7 @@ describe("the code door", () => {
 
   it("reaches no tool outside the caller's profile, and no capability outside its grant",
      async () => {
-    const r = await rig();
+    const r = await onRig();
     await r.register(MUSE);
     await setPolicy(r, true, ["code", "collection_get", "collection_write"]);
     await profiled(r, MUSE, "custom", "scoped",
@@ -173,8 +189,7 @@ describe("the code door", () => {
   });
 
   it("refuses a revoked client and a call bound to another owner", async () => {
-    const r = await rig();
-    await setPolicy(r, true);
+    const r = await onRig();
     await r.stub.outsideAgents(r.bind(MUSE));
     await profiled(r, MUSE, "custom");
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
@@ -190,8 +205,7 @@ describe("the code door", () => {
   });
 
   it("stops a script past its wall time", async () => {
-    const r = await rig();
-    await setPolicy(r, true);
+    const r = await onRig();
     // The object runs in this isolate, so it reads this clock, which moves a second at every
     // reading: the script's tool calls take it past production's wall time in moments. A
     // clock that never moved would hold no deadline; one moved by the test could not be,
@@ -230,7 +244,7 @@ describe("the code door", () => {
      "second old", async () => {
     // Outside access turned off while the second call is held, and the object's clock moved
     // past the freshness of its last read: the calls after it read the record again.
-    const r = await rig();
+    const r = await onRig();
     const result = await switchedMidScript(r, () => later(CONTROL_FRESH_MS / 1000 + 1));
     expect(result).toMatchObject({ ok: true,
       value: ["ok", "ok", OUTSIDE_OFF, OUTSIDE_OFF, OUTSIDE_OFF] });
@@ -245,7 +259,7 @@ describe("the code door", () => {
 
   it("holds the owner's own script to the maintenance gate alone, never to outside access",
      async () => {
-    const r = await rig();
+    const r = await onRig();
     await r.stub.outsideAgents(r.bind(MUSE));
     await writeControl(env.CONTROL, JSON.stringify({ ...OPEN, outside: "off" }));
     const script = lines(
@@ -278,7 +292,7 @@ describe("the code door", () => {
     const unread = `owner-${crypto.randomUUID()}`;
     expect(await gates(env.OWNER.getByName(unread), unread))
       .toEqual([OUTSIDE_OFF, MAINTENANCE, undefined]);
-    const r = await rig();
+    const r = await onRig();
     expect(await r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }))
       .toMatchObject({ ok: true, value: 1 });
     // The door's read kept: the copy admits as the record did, and hands no switches to keep.
@@ -296,7 +310,7 @@ describe("the code door", () => {
     // The same switch with the object's clock still: the read the script began with serves
     // every call, and all five land; the next script's door reads the record again. The
     // clock is held still from the script's start, so a slow host moves it no second on.
-    const r = await rig();
+    const r = await onRig();
     later(0);
     const result = await switchedMidScript(r, () => undefined);
     expect(result).toMatchObject({ ok: true, value: ["ok", "ok", "ok", "ok", "ok"],
@@ -307,7 +321,7 @@ describe("the code door", () => {
   });
 
   it("cuts output past one answer, saying so, and refuses only a value past it", async () => {
-    const r = await rig();
+    const r = await onRig();
     // A value past one answer alone: refused, its calls and what landed kept.
     const value = await r.stub.codeRun(r.bind(null), { script: lines(
       "await tools.collection_write({ collection: 'board', row_id: 'big', body: 'b',",

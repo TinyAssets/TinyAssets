@@ -394,8 +394,10 @@ It never counts as "absent".
   as such. The zone's plan is **unverified** here.
 - **Mode `h2`: H2's probes alone**, once a probe owner exists. They deploy nothing. Store
   the probe keys `deploy/h2-probes.ts` names (`INPUTS`: two owners' API keys, plus an app
-  token and a key id for the revoke probe) as `production` secrets. It prints one row per
-  probe.
+  token and a key id for the revoke probe) as `production` secrets. Each probe owner first
+  turns code mode on in its owner app (Connected apps, Code mode): it is off by default until
+  H2 passes, and a probe's `code` call is refused `code_mode_off` until its owner turns it on.
+  It prints one row per probe.
 - **Open the gates with mode `control`** when you are ready (the cutover's Step 14): canary
   owners first (`set`: `outside=on canary+=<owner>`), then everyone (`ordinary=all`), and
   `inbound=true` for `/hooks/inbound`. The plan job shows each field's old and new value; the

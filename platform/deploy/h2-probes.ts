@@ -5,8 +5,8 @@
  * fake; a probe whose answer is a transport failure stops the run loudly.
  *
  * Inputs (environment): TA_DOORS_URL (default the doors' `ORIGIN`); TA_PROBE_KEY, an API
- * key of probe owner A whose grant holds read_graph (code mode is on by default);
- * TA_PROBE_KEY_B, owner B's; and, for the revoke probe, TA_PROBE_APP_TOKEN (owner A's
+ * key of probe owner A whose grant holds read_graph; TA_PROBE_KEY_B, owner B's (each owner
+ * turns code mode on first, in its owner app: it is off by default until H2 passes); and, for the revoke probe, TA_PROBE_APP_TOKEN (owner A's
  * first-party token) and TA_PROBE_KEY_ID (the id of TA_PROBE_KEY, which that probe
  * revokes, so it runs last).
  *

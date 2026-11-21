@@ -1,7 +1,7 @@
 /**
  * The `tools/list` recorder (`ci/record.ts`): MCP `tools/list` byte for byte,
  * each profile's raw answer body (a custom client, a listed one, the directory's, a run's,
- * with code mode on and off), and the app's tool list, each one `TOOLS` line.
+ * with code mode off, its default, and on), and the app's tool list, each one `TOOLS` line.
  */
 import { env } from "cloudflare:test";
 import { beforeEach, describe, it } from "vitest";
@@ -69,12 +69,12 @@ describe("tools/list, byte for byte", () => {
     // `ci/fake-sandbox.ts`, bound to the doors' tests as `SANDBOX_LOG`).
     const [start] = (await env.SANDBOX_LOG.recorded(who)).starts as SandboxStart[];
     console.log(`TOOLS\trun\t${await runListed(start!)}`);
-    // Code mode off: every custom tool but code.
+    // Code mode on: every custom tool, code too.
     const { generation, policy } = await ownDoor(who, "policyRead");
     const { tools: _tools, ...rest } = policy;
     await stub.policyWrite(session, { expected_generation: generation,
-                                      policy: { ...rest, codemode: { on: false } } });
-    console.log(`TOOLS\tcustom-nocode\t${await listedRaw(custom.access_token)}`);
-    console.log(`TOOLS\trun-nocode\t${await runListed(start!)}`);
+                                      policy: { ...rest, codemode: { on: true } } });
+    console.log(`TOOLS\tcustom-code\t${await listedRaw(custom.access_token)}`);
+    console.log(`TOOLS\trun-code\t${await runListed(start!)}`);
   });
 });

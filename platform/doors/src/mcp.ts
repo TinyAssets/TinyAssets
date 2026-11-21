@@ -89,11 +89,15 @@ function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv,
   return mcp;
 }
 
-/** The profile and tools the object serves this caller (`toolProfile`: its grant or its run). */
+/**
+ * The profile and tools the object serves this caller (`toolProfile`: its grant or its run),
+ * and the tools its profile holds that the owner's policy withholds (`code` while code mode
+ * is off): never listed here.
+ */
 export async function profileOf(bound: Bound):
-    Promise<{ profile: ProfileName; tools: readonly Tool[] }> {
-  const { profile, tools } = await bound.stub.toolProfile(bound.binding);
-  return { profile, tools: toolsNamed(tools) };
+    Promise<{ profile: ProfileName; tools: readonly Tool[]; withheld: readonly Tool[] }> {
+  const { profile, tools, withheld } = await bound.stub.toolProfile(bound.binding);
+  return { profile, tools: toolsNamed(tools), withheld: toolsNamed(withheld) };
 }
 
 /** An MCP request, or the object's refusal of the caller as JSON, with its reason. */

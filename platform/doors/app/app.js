@@ -745,7 +745,7 @@ async function apps(arg = null) {
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
     call("agent/doorbell/kinds")]);
   const document_ = policy.policy;
-  const codemode = h("input", { type: "checkbox", checked: document_.codemode?.on !== false });
+  const codemode = h("input", { type: "checkbox", checked: policy.codemode.on });
   const custom = document_.tools?.custom ?? null;
   const every = h("input", { type: "checkbox", checked: custom === null });
   const picks = tools.map((tool) => h("label", {},

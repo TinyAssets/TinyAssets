@@ -13,8 +13,8 @@
  *   caller's grant, its profile and the owner's switch.
  * - **No stub is held:** each execution's `remote()` calls `CODEMODE_VM.codemodeExecute` with a
  *   name of its own, which resolves when the VM has stopped.
- * - **When:** only while the owner's policy turns it on (`codemode.on`, on by default,
- *   `CODEMODE_DEFAULTS`).
+ * - **When:** only while the owner's policy turns it on (`codemode.on`, off by default
+ *   until its isolation probe passes, `CODEMODE_DEFAULTS`).
  * - **How long:** `CODEMODE_TIMEOUT_MS` of wall time, tool calls included, and the
  *   codemode Worker's interrupt budget of compute between them.
  */
@@ -33,6 +33,7 @@ import type { Account, Call, Door, DoorUnits, ObjectReads } from "./door";
 import type { Binding } from "../../contract/src/binding";
 import type { Gate } from "./control-gate";
 import type { ProfileName } from "../../contract/src/doors";
+import { CODE_MODE_OFF } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerEnv } from "./env";
 
@@ -126,9 +127,7 @@ function codeTool(): string {
   return doorRow("codeRun").tool!.name;
 }
 
-/** Code mode's refusals. */
-
-export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode off";
+/** Code mode's refusals; while it is off, `CODE_MODE_OFF`, beside its default. */
 
 export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
 
@@ -255,15 +254,38 @@ export interface CodemodeDoorNeeds extends Pick<DoorUnits, "door">,
 /**
  * The tools a caller is served: a run's, the `run` profile; an outside client's, its grant's
  * (`custom`: the owner's policy's choice); the owner's own, `custom`. `code` only while the
- * owner's policy turns code mode on.
+ * owner's policy turns code mode on; while it is off, a profile that holds `code` has it
+ * `withheld`: never listed, and a call of it answered by its door's refusal, which says why.
  */
-function profile(o: CodemodeDoorNeeds, account: Account):
-    { profile: ProfileName; tools: readonly string[] } {
+function profile(o: CodemodeDoorNeeds, account: Account): Served {
   const profile: ProfileName = account.run !== null ? "run"
     : account.grant?.profile ?? "custom";
   const names = profile === "custom" ? o.policy.customTools() : profileNames(profile);
-  return { profile, tools: o.policy.codemode() ? names
-    : names.filter((n) => n !== codeTool()) };
+  const off = !o.policy.codemode() && names.includes(codeTool());
+  return { profile, tools: off ? names.filter((n) => n !== codeTool()) : names,
+           withheld: off ? [codeTool()] : [] };
+}
+
+/** What `profile` answers: the tools a caller is served, and those its switch withholds. */
+interface Served {
+  readonly profile: ProfileName;
+  readonly tools: readonly string[];
+  readonly withheld: readonly string[];
+}
+
+/**
+ * The tools of `account`'s profile, where it is served `code`: refused `code_mode_off` where
+ * the switch withholds it, and `tool_not_served` where its profile does not hold it.
+ */
+function codeServed(o: CodemodeDoorNeeds, account: Account): readonly string[] {
+  const { tools, withheld } = profile(o, account);
+  if (withheld.includes(codeTool())) {
+    throw new Refusal("code_mode_off", CODE_MODE_OFF);
+  }
+  if (!tools.includes(codeTool())) {
+    throw new Refusal("tool_not_served", CODE_NOT_SERVED);
+  }
+  return tools;
 }
 
 /** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
@@ -275,11 +297,7 @@ async function scripted(o: CodemodeDoorNeeds, binding: Binding, tool: Tool, args
       throw new Refusal("refused", closed);
     }
     await o.door(() => {
-      const { tools } = profile(o, o.accountAt("toolProfile", binding));
-      if (!o.policy.codemode()) {
-        throw new Refusal("code_mode_off", CODE_MODE_OFF);
-      }
-      if (!tools.includes(codeTool()) || !tools.includes(tool.name)) {
+      if (!codeServed(o, o.accountAt("toolProfile", binding)).includes(tool.name)) {
         throw new Refusal("tool_not_served", CODE_NOT_SERVED);
       }
     });
@@ -298,8 +316,8 @@ export const codemodeDoors = Object.freeze({
   /**
    * Code mode at the MCP door: one script calling the caller's profile's other tools as
    * `tools.<name>(args)`, its VM in the codemode Worker (`codemode.ts`), its wall time
-   * `CODEMODE_TIMEOUT_MS`. Refused unless the owner's policy has `codemode.on` (its
-   * default) and the caller's profile holds `code`. Each call is the tool's own door with
+   * `CODEMODE_TIMEOUT_MS`. Refused unless the owner's policy has `codemode.on` (off by
+   * default, `CODE_MODE_OFF`) and the caller's profile holds `code`. Each call is the tool's own door with
    * the caller's binding, admitted again (grant, run, admission), held to the caller's
    * profile and the switch as they stand then, and to the platform's gates the door read
    * (the control record's kill switch for an outside client, its maintenance gate for a
@@ -314,13 +332,7 @@ export const codemodeDoors = Object.freeze({
       if (typeof r["script"] !== "string" || r["script"].trim() === "") {
         throw new Refusal("invalid", "a script is text");
       }
-      if (!o.policy.codemode()) {
-        throw new Refusal("code_mode_off", CODE_MODE_OFF);
-      }
-      const { tools: names } = profile(o, account);
-      if (!names.includes(codeTool())) {
-        throw new Refusal("tool_not_served", CODE_NOT_SERVED);
-      }
+      const names = codeServed(o, account);
       // The gate its door read: every `/mcp` and `/api` binding carries the client's origin,
       // the owner's own MCP clients' too, so they take the outside gate; a run (the egress
       // door) and the owner's app (no origin) the maintenance gate.
@@ -338,12 +350,10 @@ export const codemodeDoors = Object.freeze({
                                                       () => control.refusal(gate, owner)) });
   },
   /**
-   * The tools this caller is served (the doors list and call no others): a run's, the `run`
-   * profile; an outside client's, its grant's (`custom`: the owner's policy's choice); the
-   * owner's own, `custom`. `code` only while the owner's policy turns code mode on.
+   * The tools this caller is served (the doors list and call no others), and `code` withheld
+   * while the owner's policy has code mode off (`profile`).
    */
-  toolProfile(o: CodemodeDoorNeeds, { account }: Call<undefined>):
-      { profile: ProfileName; tools: readonly string[] } {
+  toolProfile(o: CodemodeDoorNeeds, { account }: Call<undefined>): Served {
     return profile(o, account);
   },
 });
