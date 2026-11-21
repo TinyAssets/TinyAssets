@@ -48,5 +48,5 @@
    - Code fragments stay: step names, imports, test titles, YAML keys. They change only with the code, and then the manifest should change too.
    - No mechanical rule is added. "Prose" cannot be told from a code string by a pattern, and a rule that refused whitespace would refuse every step name and import. The rule is in the manifest's `about` and `cutover.ts`'s `Entry` note, for a reviewer to hold.
 8. **Left, each with where it goes.**
-   - P6 (`untangle/p6-process-code`): the queue helpers' and the hygiene gate's imports of the old suite (item 3), and the carried tests' move itself, which P6 may make first.
+   - P6, which P6 PR 1 (`untangle/p6-process-code`) did not take: the queue helpers' and the hygiene gate's imports of the old suite (item 3) are `untangle/p6-queue-helpers`', and the carried tests' move itself is `untangle/p6-tests-beside`', which may land first.
    - B24 lists no platform Worker in the kit's `retired` list: the cutover retires none, since the import window's consumer lives in the doors.
