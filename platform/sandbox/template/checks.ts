@@ -137,7 +137,7 @@ function entry(template: string, runner: Bundle, probes: Bundle, outcomes: reado
     runner: runner.sha,
     probes: probes.sha,
     passed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-    logins: of("login").map((r) => ({ engine: r["engine"], region: r["region"], ok: r["ok"],
+    logins: of("login").map((r) => ({ engine: r["engine"], ok: r["ok"],
                                       host: r["host"] ?? null })),
     routes: of("route").map((r) => ({ engine: r["engine"], provider: r["provider"], ok: r["ok"],
                                       turns: r["turns"] ?? null,

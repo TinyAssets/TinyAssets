@@ -79,7 +79,7 @@ describe("the strongest connected model", () => {
 describe("a subscription's plan", () => {
   it("ranks by its record's model, for every engine that signs in: never an unknown", () => {
     const plans = [...served().values()].filter(signsIn);
-    expect(plans.map((record) => record.id)).toEqual(["claude-code", "codex", "gemini", "kimi"]);
+    expect(plans.map((record) => record.id)).toEqual(["claude-code", "codex", "gemini"]);
     for (const record of plans) {
       expect(rankOf({ provider: planProvider(record), model: model(record.cli.login.model.id) }),
              record.id).toBeLessThan(ranking.ranks.length);

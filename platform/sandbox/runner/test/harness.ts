@@ -871,10 +871,10 @@ export class Sandbox extends Box {
   }
 
   /** A sign-in's document and the lease's secrets, as the sandbox Worker leaves them. */
-  login(doc: { id: string; engine: string; region?: string | null; mode?: "in" | "out";
-               authority?: string }, doors: Doors): void {
+  login(doc: { id: string; engine: string; mode?: "in" | "out"; authority?: string },
+        doors: Doors): void {
     const signin: SigninDoc = {
-      id: doc.id, engine: doc.engine, region: doc.region ?? null, mode: doc.mode ?? "in",
+      id: doc.id, engine: doc.engine, region: null, mode: doc.mode ?? "in",
       authority: doc.authority ?? "owner",
       urls: { events: `${doors.origin}/signin/${doc.id}/events`,
               signin: `${doors.origin}/signin` } };

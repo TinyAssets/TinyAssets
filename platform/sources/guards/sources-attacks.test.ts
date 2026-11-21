@@ -27,7 +27,6 @@ const claude = load("claude-code");
 const codex = load("codex");
 const pi = load("pi");
 const gemini = load("gemini");
-const kimi = load("kimi");
 const anthropic = load("anthropic");
 
 function cli(edit: (spec: Json) => void, record: Json = claude): Json {
@@ -60,7 +59,6 @@ describe("unknown keys at every level", () => {
     ["login", cli((s) => { at(s, "login")["stray"] = 1; })],
     ["login.state_checks[0]", cli((s) => {
       (at(s, "login")["state_checks"] as Json[])[0]!["stray"] = 1; }, codex)],
-    ["regions hosts", cli((s) => { at(s, "regions.global.hosts")["stray"] = []; }, kimi)],
     ["api_key_env entry", cli((s) => { at(s, "api_key_env.anthropic")["stray"] = 1; })],
     ["unattended entry (allowed)", cli((s) => {
       at(s, "unattended.vendor_login_in_sandbox")["stray"] = 1; })],
@@ -180,13 +178,6 @@ describe("prompt injection by argv", () => {
       delete at(s, "engine")["stdin"];
       at(s, "engine")["argv"] = argv;
       at(s, "engine")["resume_argv"] = [...argv, "--session", "{sid}"]; }, pi))).toBe(false);
-  });
-});
-
-describe("regions", () => {
-  it("refuses {region} in the engine's own argv", () => {
-    expect(accepted(cli((s) => {
-      (at(s, "engine")["argv"] as string[]).push("--region={region}"); }, kimi))).toBe(false);
   });
 });
 

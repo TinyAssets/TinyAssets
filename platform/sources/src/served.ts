@@ -62,21 +62,15 @@ export function npmInstalled(record: Served): record is NpmInstalled {
 }
 
 /**
- * An engine's vendor hosts, its sign-in's and its model calls', and the chosen region's
- * (`cli.regions`) when it has regions, each once: what a job's sandbox network is let out to
- * for a job on its sign-in (the owner's start and sign-in hand them to the sandbox Worker),
- * and what the template's sign-in check runs under. An engine with no CLI, or a region it
- * lacks, throws.
+ * An engine's vendor hosts, its sign-in's and its model calls', each once: what a job's
+ * sandbox network is let out to for a job on its sign-in (the owner's start and sign-in hand
+ * them to the sandbox Worker), and what the template's sign-in check runs under. An engine
+ * with no CLI throws.
  */
-export function engineHosts(engine: string, region: string | null): string[] {
+export function engineHosts(engine: string): string[] {
   const cli = servedRecord(engine)?.cli;
   if (cli === undefined) {
     throw new Error(`engine ${engine} has no CLI record`);
   }
-  const chosen = region === null ? undefined : cli.regions?.[region];
-  if (region !== null && chosen === undefined) {
-    throw new Error(`engine ${engine} has no region ${region}`);
-  }
-  return [...new Set([...cli.hosts.login, ...cli.hosts.provider,
-                      ...(chosen?.hosts.login ?? []), ...(chosen?.hosts.provider ?? [])])];
+  return [...new Set([...cli.hosts.login, ...cli.hosts.provider])];
 }

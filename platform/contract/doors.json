@@ -950,7 +950,7 @@
       "door": "signinStart", "class": "work", "capability": null,
       "args": {
         "refused": "invalid run request", "required": { "engine": {} },
-        "optional": { "authority": {}, "region": {}, "mode": {} }
+        "optional": { "authority": {}, "mode": {} }
       }
     },
     {

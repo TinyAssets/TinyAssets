@@ -144,20 +144,18 @@ export type Started = { readonly started: true }
  * The vendor's own sign-in started in a sandbox (`owner/src/signins.ts`), or its sign-out:
  * the record's `cli.login` run there by the runner as a user of its own (`ta-runner
  * login-launch`), under the sandbox's lease, which a start that opened it configures
- * (`tokens`, `network`) as a run's would. `region` is the owner's choice among the record's
- * `cli.regions` (its hosts in `hosts`), `urls.events` the sign-in's own event door and
+ * (`tokens`, `network`) as a run's would. `urls.events` is the sign-in's own event door and
  * `urls.signin` the presence report's.
  */
 export interface SandboxSignin {
   readonly id: string;
   readonly engine: string;
-  readonly region: string | null;
   readonly mode: "in" | "out";
   readonly authority: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
   readonly tokens: SandboxStart["tokens"];
   readonly network: NetworkPlan | null;
-  /** The engine's vendor hosts and its region's, let out as a start's (`SandboxStart.hosts`). */
+  /** The engine's vendor hosts, let out as a start's (`SandboxStart.hosts`). */
   readonly hosts: readonly string[];
   /**
    * Whose sandbox this is, sealed for E2B's metadata, as a start's (`SandboxStart.route`): a

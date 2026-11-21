@@ -429,22 +429,22 @@ test("the agent form offers a subscription signed in inside the sandbox, beside 
   const file = written.find((each) => each.path === "/workspace/agents/subscribed/agent.json");
   assert.ok(file, "the form wrote the agent's agent.json");
   assert.match(JSON.stringify(file), /vendor_login_in_sandbox/);
-  // Kimi signs in only: switched off (its terms unverified), the form says so and offers it
-  // not; switched on in the control record, it is an engine a Kimi agent is made on.
-  await page.goto(`${ORIGIN}/app#agents`);
-  await page.getByRole("heading", { name: "New agent" }).waitFor();
-  assert.match(await page.locator("section", { hasText: "New agent" }).innerText(),
-               /switched off for [^.]*Kimi/);
-  const control = await mf.getKVNamespace("CONTROL", workerConfig(DOORS).name);
-  await writeControl(control, JSON.stringify({ ...OPEN, signins: { kimi: true } }));
-  try {
+  // Codex's sign-in is switched off (its terms unclear), so the form offers its key alone;
+  // switched on in the control record, the form offers its sign-in beside it.
+  const offered = async () => {
     await page.goto(`${ORIGIN}/app#home`);
     await page.goto(`${ORIGIN}/app#agents`);
     const again = page.locator("section", { hasText: "New agent" });
-    await again.getByLabel(/^Engine/).selectOption("kimi");
-    assert.deepEqual(await again.getByLabel(/^Runs on/).locator("option").allInnerTexts(),
-                     ["Whichever the engine has",
-                      "Your subscription, signed in inside your sandbox"]);
+    await again.getByLabel(/^Engine/).selectOption("codex");
+    return await again.getByLabel(/^Runs on/).locator("option").allInnerTexts();
+  };
+  assert.deepEqual(await offered(), ["Whichever the engine has", "An API key you connected"]);
+  const control = await mf.getKVNamespace("CONTROL", workerConfig(DOORS).name);
+  await writeControl(control, JSON.stringify({ ...OPEN, signins: { codex: true } }));
+  try {
+    assert.deepEqual(await offered(), ["Whichever the engine has",
+                                       "Your subscription, signed in inside your sandbox",
+                                       "An API key you connected"]);
   } finally {
     await writeControl(control, JSON.stringify(OPEN));
   }

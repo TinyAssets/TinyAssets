@@ -65,7 +65,7 @@ describe("a sign-in", () => {
                                  state: "starting", url: null });
     const asked = await lastSignin(r);
     expect(asked).toMatchObject({ id: (view as { id: string }).id, engine: "claude-code",
-                                  mode: "in", region: null, authority: "owner",
+                                  mode: "in", authority: "owner",
                                   urls: { events: `https://egress.tinyassets.io/signin/${
                                     (view as { id: string }).id}/events` } });
     // It opened the lease: the sandbox is configured by this start (its tokens, its network).
@@ -77,13 +77,12 @@ describe("a sign-in", () => {
       .toBe(SIGNIN_LIVE);
   });
 
-  it("is refused for an engine with no vendor sign-in, a region it does not take, or one " +
-     "it needs and lacks", async () => {
+  it("is refused for an engine with no vendor sign-in, a field it does not take, or a " +
+     "mode it has not", async () => {
     const r = await gated();
     // A sign-out sits behind no switch, so only the record refuses an engine that cannot sign in.
     for (const request of [{ engine: "pi" }, { engine: "pi", mode: "out" }, { engine: "nope" },
                            { engine: "claude-code", region: "global" },
-                           { engine: "kimi" }, { engine: "kimi", region: "moon" },
                            { engine: "claude-code", mode: "sideways" }]) {
       expect((await failure(() => r.stub.signinStart(r.bind(), request as never))).code,
              JSON.stringify(request)).toBe("invalid");
@@ -150,13 +149,11 @@ describe("a sign-in", () => {
 
   it("shows the host the vendor's URL sends the owner to", async () => {
     const r = await gated();
-    const { id } = await r.stub.signinStart(r.bind(), { engine: "kimi", region: "global" }) as
-      { id: string };
+    const { id } = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
     await r.stub.signinEvents(runnerOfSignin(r, await lastSignin(r)), { id, frames: [
-      frame(1, { state: "open", url: "https://www.kimi.ai/code/authorize_device?user_code=K1-ABC",
-                 code: "K1-ABC", accepts_code: false })] });
+      frame(1, { state: "open", url: CODEX_PAGE, code: "ABCD-EFGH2", accepts_code: false })] });
     expect((await r.stub.signinList(r.bind())).signins[0]).toMatchObject({
-      host: "www.kimi.ai", code: "K1-ABC" });
+      host: "auth.openai.com", code: "ABCD-EFGH2" });
   });
 
   it("holds the lease a run joins, and leaves it to the run at its end", async () => {
@@ -260,8 +257,8 @@ describe("a sign-in", () => {
 
   it("signs out by the same door, its runner deleting the engine's secrets", async () => {
     const r = await gated();
-    await r.stub.signinStart(r.bind(), { engine: "kimi", mode: "out" });
-    expect(await lastSignin(r)).toMatchObject({ engine: "kimi", mode: "out", region: null });
+    await r.stub.signinStart(r.bind(), { engine: "gemini", mode: "out" });
+    expect(await lastSignin(r)).toMatchObject({ engine: "gemini", mode: "out" });
   });
 
   it("is watched on the app socket by its id, the owner's own", async () => {
@@ -287,10 +284,8 @@ describe("a sign-in", () => {
 });
 
 /** A sign-in of `engine` begun, its runner's binding, and its first frames posted. */
-async function begun(r: Gated, engine: string, frames: Record<string, unknown>[],
-                     region?: string) {
-  const { id } = await r.stub.signinStart(r.bind(), { engine, ...(region === undefined ? {}
-    : { region }) }) as { id: string };
+async function begun(r: Gated, engine: string, frames: Record<string, unknown>[]) {
+  const { id } = await r.stub.signinStart(r.bind(), { engine }) as { id: string };
   const runner = runnerOfSignin(r, await lastSignin(r));
   const answer = await r.stub.signinEvents(runner, {
     id, frames: frames.map((event, i) => frame(i + 1, event)) });
@@ -366,13 +361,10 @@ describe("the vendor's page, pinned", () => {
         "&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive", null],
       ["gemini", "https://accounts.google.com/Logout?continue=https://appengine.google.com/" +
         "_ah/logout?continue=https://evil.example/", null],
-      ["kimi", "https://www.kimi.ai/code/authorize_device?user_code=K1&continue=" +
-        "https%3A%2F%2Fevil.example", "K1-ABC", "global"],
-      ["kimi", "https://www.kimi.com/code/authorize_device?user_code=K1", "K1-ABC", "global"],
     ];
-    for (const [engine, url, code, region] of cases) {
+    for (const [engine, url, code] of cases) {
       const { id, answer } = await begun(r, engine, [
-        { state: "open", url, code, accepts_code: false }], region);
+        { state: "open", url, code, accepts_code: false }]);
       expect(answer, url).toEqual({ accepted: 1, ended: true });
       expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
       expect((await recorder(r.stub)).signinCancels.at(-1)).toEqual({ authority: "owner", id });
@@ -391,11 +383,9 @@ describe("the vendor's page, pinned", () => {
 
   it("is taken as the pinned CLI shows it, on each record", async () => {
     const r = await gated();
-    for (const [engine, url, code, region] of [
+    for (const [engine, url, code] of [
       ["claude-code", CLAUDE_PAGE, null],
       ["codex", CODEX_PAGE, "ABCD-EFGH2"],
-      ["kimi", "https://www.kimi.com/code/authorize_device?user_code=1JAG-4POS", "1JAG-4POS",
-       "mainland-cn"],
       ["gemini", "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2F" +
         "codeassist.google.com%2Fauthcode&access_type=offline&scope=https%3A%2F%2Fwww." +
         "googleapis.com%2Fauth%2Fcloud-platform%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2F" +
@@ -403,8 +393,7 @@ describe("the vendor's page, pinned", () => {
         "code_challenge_method=S256&code_challenge=abc_DEF-123&state=" + "a1".repeat(32) +
         "&response_type=code&client_id=681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps." +
         "googleusercontent.com", null]] as const) {
-      const { id, runner, answer } = await begun(r, engine, [
-        { state: "open", url, code }], region);
+      const { id, runner, answer } = await begun(r, engine, [{ state: "open", url, code }]);
       expect(answer, engine).toEqual({ accepted: 1, ended: false });
       expect((await r.stub.signinList(r.bind())).signins[0]).toMatchObject({ id, url, code });
       await r.stub.signinEvents(runner, { id, frames: [frame(9, { state: "cancelled" })] });

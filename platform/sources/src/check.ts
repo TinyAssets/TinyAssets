@@ -21,7 +21,7 @@ import { CODE_LOADING_ENV, RUN_BASICS } from "./run-env";
 import {
   type ApiKeyEnv, type CliSpec, type ConnectMethod, type Decide, type Engine, type HostedUse,
   type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
-  type Region, type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
+  type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
 } from "./schema";
 import type { CredentialKind } from "../../contract/src/sandbox";
 
@@ -165,7 +165,7 @@ const ARG = /^.{0,4096}$/su;
 /** The placeholders the runner fills, in an argv, an env value or a file template. */
 const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
-  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}", "{system}",
+  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{run_secret}", "{system}",
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}",
 ]);
 /** The placeholders only the hook's template takes (`cli.decide.template`). */
@@ -276,8 +276,6 @@ function settingsOf(path: string, text: string):
 }
 
 
-/** A region's id, as the runner passes it in `{region}`. */
-const REGION = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** A dotted path into a JSON value (an event's field, a settings file's key). */
 const DOTTED = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,7}$/;
 /** A path segment: no `.` or `..`, a `*` only whole (any one segment). */
@@ -336,7 +334,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   const fields = check.keys(value, "cli", [
     "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
     "decide", "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
-    "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files",
+    "hosts"], ["login", "api_key_env", "per_credential", "env", "files",
                "run_secret_env", "compaction"]);
   const argvs: [string, string[]][] = [];
   const argv = (item: unknown, what: string, max = 64): string[] => {
@@ -644,32 +642,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
   }
 
-  let regions: Record<string, Region> | undefined;
-  if (fields["regions"] !== undefined) {
-    const map = fields["regions"];
-    if (!signsIn || !object(map) || Object.keys(map).length === 0
-        || Object.keys(map).length > 8 || !Object.keys(map).every((id) => REGION.test(id))) {
-      check.fail("cli.regions maps 1 to 8 region ids to their hosts, for a record that signs " +
-                 "in with the vendor's own flow");
-    }
-    regions = {};
-    for (const [id, entry] of Object.entries(map as Record<string, unknown>)) {
-      const what = `cli.regions.${id}`;
-      const region = check.keys(entry, what, ["display_name", "hosts"]);
-      const hosts = check.keys(region["hosts"], `${what}.hosts`, ["login", "provider"]);
-      for (const kind of ["login", "provider"] as const) {
-        hosts[kind] = Object.freeze(check.strings(hosts[kind], `${what}.hosts.${kind}`, HOST, 16));
-      }
-      regions[id] = Object.freeze({
-        display_name: check.text(region["display_name"], TEXT, `${what}.display_name`),
-        hosts: Object.freeze(hosts) as unknown as Region["hosts"] });
-    }
-    const loginArgv = argvs.find(([what]) => what === "cli.login.argv")![1];
-    if (!loginArgv.some((item) => item.includes("{region}"))) {
-      check.fail("cli.login.argv carries {region}, which the owner's choice of region fills");
-    }
-  }
-
   // Placeholders the runner knows, `{sid}` only where a run resumes, and `{mcp_config}`
   // only beside the file it names.
   for (const [what, text] of [...argvs.flatMap(([what, list]) =>
@@ -687,9 +659,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                                    || !PROMPT_ARG.test(text))) {
         check.fail(`${what} carries {prompt} other than as --option={prompt} in the engine's ` +
                    "argv: a prompt goes on stdin, or joined to its option, never bare");
-      }
-      if (found === "{region}" && (regions === undefined || !what.startsWith("cli.login."))) {
-        check.fail(`${what} uses {region}, which only the sign-in carries, under cli.regions`);
       }
       // The run's own secret only in its MCP file's header, never an argument.
       if (found === "{run_secret}" && what !== "cli.mcp.template") {
@@ -754,7 +723,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     install,
     credential: Object.freeze(credential),
     ...(login === undefined ? {} : { login }),
-    ...(regions === undefined ? {} : { regions: Object.freeze(regions) }),
     ...(apiKeyEnv === undefined ? {} : { api_key_env: Object.freeze(apiKeyEnv) }),
     unattended: Object.freeze(unattended),
     ...(perCredential === undefined ? {} : { per_credential: Object.freeze(perCredential) }),
@@ -916,20 +884,15 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
     check.fail("cli.engine has no invoke: a CLI is an engine, never a backend (ADR-033 " +
                "decision 2)");
   }
-  const fields = check.keys(value, "cli.engine", ["argv", "resume_argv", "resume", "events"],
+  const fields = check.keys(value, "cli.engine", ["argv", "resume_argv", "events"],
                             ["stdin", "model_argv"]);
   const run = argv(fields["argv"], "cli.engine.argv");
   const resume = argv(fields["resume_argv"], "cli.engine.resume_argv");
   if (run[0] !== "{bin}" || resume[0] !== "{bin}") {
     check.fail("cli.engine's argv and resume_argv each run {bin}");
   }
-  const mode = fields["resume"];
-  const resumesById = resume.some((item) => item.includes("{sid}"));
-  if (mode !== "session_id" && mode !== "continue_in_cwd") {
-    check.fail("cli.engine.resume is session_id or continue_in_cwd");
-  }
-  if (resumesById !== (mode === "session_id")) {
-    check.fail("cli.engine.resume_argv carries {sid} exactly when a run resumes by session id");
+  if (!resume.some((item) => item.includes("{sid}"))) {
+    check.fail("cli.engine.resume_argv carries {sid}: a run resumes by its session id");
   }
   if (fields["stdin"] !== undefined && fields["stdin"] !== "{prompt}") {
     check.fail("cli.engine.stdin is {prompt} or absent");
@@ -955,13 +918,11 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   if ((events["final_text"] as unknown[]).length === 0) {
     check.fail("cli.engine.events.final_text has at least one matcher");
   }
-  if (((events["session_id"] as unknown[]).length > 0) !== (mode === "session_id")) {
-    check.fail("cli.engine.events.session_id has matchers exactly when a run resumes by " +
-               "session id");
+  if ((events["session_id"] as unknown[]).length === 0) {
+    check.fail("cli.engine.events.session_id has at least one matcher: a run resumes by it");
   }
   return Object.freeze({
     argv: Object.freeze(run), resume_argv: Object.freeze(resume),
-    resume: mode as Engine["resume"],
     ...(prompted ? { stdin: "{prompt}" as const } : {}),
     ...(model === undefined ? {} : { model_argv: Object.freeze(model) }),
     events: Object.freeze(events) as unknown as EngineEvents,

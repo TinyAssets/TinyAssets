@@ -298,13 +298,6 @@ describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", 
                     { act: "people.message", do: "never", tools: ["mcp:board:post"] }]);
     expect((await failure(() => call("mcp_board_post", {}))).code).toBe("action_never");
     expect(await outcomes(o)).toEqual(["denied", "denied", "held"]);
-    // A run on an engine with no hook is let be: its rules hold at the doors alone.
-    const kimi = await hooked("kimi");
-    await ruled(kimi.o, [{ act: "workspace.shell", do: "never" }]);
-    expect(await kimi.r.stub.runDecide(kimi.run, { check: true }))
-      .toEqual({ tools: [], generation: 0 });
-    expect(await kimi.r.stub.runDecide(kimi.run, { tool_name: "Shell", tool_input: {} }))
-      .toEqual({ allow: true });
   });
 
   it("files one card for a call two asked acts name, whose one yes admits it", async () => {
@@ -358,7 +351,7 @@ describe("the honest note (d3 §N5)", () => {
                     { act: "people.message", do: "never", tools: ["mcp:gmail:send_*"] },
                     { act: "workspace.workflows", do: "ask" }]);
     // Codex's hook is written, but the agent can alter what it answers (its record says how).
-    const unheld = ["main_agent", "sandbox_programs", "codex", "gemini.fails_open", "kimi"];
+    const unheld = ["main_agent", "sandbox_programs", "codex", "gemini.fails_open"];
     expect((await o.stub.policyRead(o.owner)).notes).toEqual([
       { holds_at: ["claude-code", "gemini", "pi"], not_enforced: unheld },
       { holds_at: ["doors", "claude-code", "gemini", "pi"], not_enforced: unheld },

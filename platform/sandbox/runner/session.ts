@@ -25,8 +25,6 @@ import { give, group, type Identity, killAll, SHARED_GROUP, take } from "./users
 const STATE = STATE_DIR;
 /** Each engine's store: what a run's home is made from and kept back into. */
 export const STORE = `${STATE}/store`;
-/** The conversations of the engines that resume by their working directory. */
-export const CONVERSATIONS = "/var/lib/ta-conv";
 
 export const RECORDS = served();
 

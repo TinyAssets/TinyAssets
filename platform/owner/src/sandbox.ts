@@ -82,11 +82,10 @@ export function boundSandbox(service: SandboxService, id: DurableObjectId): Owne
 /**
  * The vendor hosts a job's sandbox network is let out to (`SandboxStart.hosts`,
  * `SandboxSignin.hosts`): on the vendor's own sign-in (a sign-in's always), the engine's
- * sign-in and model hosts and the chosen region's; none on a key.
+ * sign-in and model hosts; none on a key.
  */
-export function vendorHosts(engine: string, credential: CredentialKind,
-                            region: string | null): string[] {
-  return credential === "vendor_login_in_sandbox" ? engineHosts(engine, region) : [];
+export function vendorHosts(engine: string, credential: CredentialKind): string[] {
+  return credential === "vendor_login_in_sandbox" ? engineHosts(engine) : [];
 }
 
 /** A start that did not answer: whether its job launched is not known. */
