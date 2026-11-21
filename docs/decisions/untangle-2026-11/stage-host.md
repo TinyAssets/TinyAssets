@@ -41,7 +41,9 @@ the founder's `routes` run: the deploy is dispatch-only, so merging changes noth
 
 **Proof.** `shippedPair`'s inputs, run before and after the flip: the same pair tag,
 `tinyassets-sandbox:s85528cdd2cd74efa-r902c61908c03cb34-p30616a26de49b794` (the runner and
-probes bundles are host-free since PR 1). The deploy harness's `routes` plan at the stage host
+probes bundles are host-free since PR 1). After merging main (#5743 moved the runner), either
+host again gives one tag, `tinyassets-sandbox:s85528cdd2cd74efa-rebbbb7c006973760-pa8968fa95f19ddff`.
+The deploy harness's `routes` plan at the stage host
 (the `at a host under the zone` kit, over the checked-in identity, dumped once, not committed):
 the route record, one DNS record (`AAAA stage.tinyassets.io (100::)`, proxied, before any
 deploy), the WorkOS redirect for the stage callback, the eight identity routes added on
