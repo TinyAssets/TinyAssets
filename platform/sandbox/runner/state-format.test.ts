@@ -36,7 +36,8 @@ import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./test/s
  */
 const FROZEN = Object.freeze({
   formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263" },
-  protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2" },
+  protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2",
+               "2": "c38091d43b77abc01243f22e52285771355d6680a9d0ae3cce9ac438c5440fc0" },
 });
 
 const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
