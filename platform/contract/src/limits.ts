@@ -46,7 +46,7 @@ export const INTENT_ID_BYTES = 16;
 /** A sandbox lease's life without a renewal; a run's heartbeat lapses as soon. */
 export const LEASE_TTL_S = 60;
 /**
- * A sync door's body: two 4 MiB chunks' base64 (the files plane's most a call,
+ * A sync door's body: two chunks' base64 (the files plane's most a call,
  * `BATCH_BYTES`), or the object's read of them, with room for the request's own fields.
  */
 export const SYNC_BODY_MAX = 12 * 1024 * 1024;
@@ -82,7 +82,7 @@ export const BODY_BYTES_MAX = EGRESS_BODY_MAX / 2;
  * A request's body on the MCP door, a technical ceiling: the MCP SDK's own default
  * (`maxRequestBodySize`, 4 MiB), kept because the SDK materializes a JSON-RPC message whole,
  * so its ceiling is what the doors' isolate holds a few at a time; bodies up to
- * `BODY_BYTES_MAX` (8 MiB) go by `/api` (memshape_research.md §4).
+ * `BODY_BYTES_MAX` go by `/api`.
  */
 export const MCP_BODY_MAX = 4 * 1024 * 1024;
 /** The consent form's body: its handle and decision, a few short fields. */
@@ -91,8 +91,8 @@ export const AUTHORIZE_BODY_MAX = 4 * 1024;
 export const HOOK_BODY_MAX = 64 * 1024;
 
 /**
- * An owner's protected session's life, in seconds (the Python's 28 800): the object's
- * session row expires so, and the doors' session cookie's `Max-Age` is the same.
+ * An owner's protected session's life, in seconds: the object's session row expires so, and
+ * the doors' session cookie's `Max-Age` is the same.
  */
 export const SESSION_TTL_S = 28_800;
 
@@ -150,8 +150,8 @@ export const RECOVERY_WINDOW_S = 30 * 86_400;
 // without the other fails. Each is a technical ceiling of the owner's database, its 10 GB of
 // which the owner-bound guard holds the worst case under half (`limits-audit.md`). Three
 // frozen numbers live elsewhere: `RUNS_CEILING`, in `control.ts`, the control record's bound
-// on a tier; `SEGMENT_LEAST_BYTES`, in `owner/src/segments.ts`,
-// which the segments' own seal derives; and `SHARE_BYTES`, the manifest's share charge.
+// on a tier; `SEGMENT_LEAST_BYTES`, in `owner/src/segments.ts`, which the segments' own seal
+// derives; and `SHARE_BYTES`, the manifest's share charge.
 
 /** An outside client's sealed credential blob (`connections.ts`), in characters. */
 export const CONNECTION_BLOB_MAX = 64 * 1024;
@@ -247,7 +247,7 @@ export const LOG_BYTES = 68 * 1024 * 1024;
 export const LOG_ROW_BYTES = 64;
 /**
  * The widest row image the change log takes, under a Durable Object row's 2 MB: derived from
- * the widest real row (review L5-1), every exported table's at its ceiling escaped at JSON's
+ * the widest real row, every exported table's at its ceiling escaped at JSON's
  * worst, a connection's models list at its 640 KiB among them, rounded up to a quarter MiB
  * (the owner-bound guard holds it equal). So no change, a token refresh's included, ever
  * writes the wide mark (`changelog.ts` `LOG_WIDE`); that mark stays the backstop should a
@@ -342,7 +342,7 @@ export const SIGNIN_URL_MAX = 8000;
  */
 export const SIGNIN_CODE_MAX = 16;
 /**
- * The mail that starts runs (slice ID), which the schema checks without the ledger's code:
+ * The mail that starts runs, which the schema checks without the ledger's code:
  * a ledger message's id (`msg_` and 32 hex), the ledger id of one of the owner's own agents
  * (`ta_` and 16 hex), and a message's authority as JSON (an outside client's id and family,
  * 64 hex each, its grant generation and its sign-in time, and their keys).

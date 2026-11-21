@@ -1,6 +1,6 @@
 /**
- * The external tool table (research §4.3, checklist 18, 21): one tool per
- * outside-callable owner door, every hint explicit and right, and never the model's own.
+ * The external tool table: one tool per outside-callable owner door, every hint explicit
+ * and right, and never the model's own.
  *
  * A tool is its door's row of the owner's door table (`contract/doors.json`), so its
  * capability and its arguments are its door's by construction. Every tool is confined to the
@@ -8,7 +8,7 @@
  * client's call reaches, and each such door has a tool or is owed one, is the owner's guard
  * (`owner/guards/doors.test.ts`): who a door takes is its steps' (`owner/doors.json`).
  *
- * And the profiles (`profiles.json`, slice M): each lists exactly its tools, table tools in
+ * And the profiles (`profiles.json`): each lists exactly its tools, table tools in
  * the table's order; `code`, a generic executor, never in the directory's. What the doors
  * tell an agent of the tools is the doors' own guard (`doors/guards/definition.test.ts`).
  */
@@ -20,7 +20,7 @@ import {
 } from "../src/doors";
 
 /**
- * The mailbox tools, which a run never holds (slice ID): its mail is its input, and its
+ * The mailbox tools, which a run never holds: its mail is its input, and its
  * agent's mailbox holds every authority's mail; `inbox_digest`'s mail part is a mailbox read.
  */
 const MAILBOX_TOOLS: readonly string[] = Object.freeze(["mailbox_read", "mailbox_ack",
@@ -34,9 +34,9 @@ const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "ru
  * any other may (the founder, 2026-11-03), so a run launches, schedules, reads and cancels.
  */
 const NEVER_RUN: readonly string[] = Object.freeze(["converse"]);
-/** The file readers' tools (the starter slice): ChatGPT's search and fetch among them. */
+/** The file readers' tools: ChatGPT's search and fetch among them. */
 const READERS: readonly string[] = Object.freeze(["file_read", "search", "fetch"]);
-/** The file writers' tools (slice BRAIN): the additive write-back first. */
+/** The file writers' tools: the additive write-back first. */
 const WRITERS: readonly string[] = Object.freeze(["file_append", "file_write", "file_edit"]);
 /** An engine's own tool names, its vendor's: never served as one of ours. */
 const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash", "ta"]);
@@ -45,7 +45,7 @@ const DISPATCH: readonly string[] = Object.freeze(["method", "operation", "tool"
                                                    "action", "command"]);
 /**
  * Writes that destroy or send nothing: an ack, a filed card, a proposal, a new directory,
- * text added after a file's bytes (slice BRAIN: never a byte already there changed).
+ * text added after a file's bytes (never a byte already there changed).
  */
 const ADDITIVE: readonly string[] = Object.freeze(["mailboxAck", "registerPropose",
                                                    "policyPropose", "fileMkdir", "fileAppend"]);
@@ -234,7 +234,7 @@ describe("tool table guard", () => {
     expect(toolTable().map((tool) => tool.door)).not.toContain("toolProfile");
   });
 
-  it("serves a run no mailbox tool: its mail is its input (slice ID)", () => {
+  it("serves a run no mailbox tool: its mail is its input", () => {
     expect(profileNames("run").filter((name) => MAILBOX_TOOLS.includes(name))).toEqual([]);
     expect(profileNames("run").length).toBe(toolTable().length - NEVER_RUN.length
                                             - MAILBOX_TOOLS.length);

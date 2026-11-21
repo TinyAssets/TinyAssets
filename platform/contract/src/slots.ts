@@ -1,10 +1,10 @@
 /**
  * Memory bounded by structure (ADR-037): an isolate's one pool of units.
  *
- * Large data moves only as streams or 4 MiB chunks, never whole. A path takes units for
+ * Large data moves only as streams or chunks, never whole. A path takes units for
  * what it holds while it holds it, and only then: a step's units are taken before the bytes
  * it brings arrive and released once they are gone, never across a step that holds nothing
- * of them (review M1). A hold is weighted by what it holds, in units of `UNIT_BYTES`, the
+ * of them. A hold is weighted by what it holds, in units of `UNIT_BYTES`, the
  * files plane's chunk: a body window takes one, a chunk-wise edit's making step its declared
  * cost (`holds.ts`), each measured by the workerd leg. A pool counts units, never bytes, so
  * nothing is estimated at run time. Its capacity is its Worker's own, a parameter (the owner
@@ -185,22 +185,22 @@ interface Asker {
  * A pool of `capacity` units, waits of at most `waitMs`, and `reserve` units only one-unit
  * holds take. At most `waiters` larger holds and `smallWaiters` one-unit holds wait at once,
  * each class its own cap, so larger holds waiting never get a small read refused (each its
- * Worker's own figure, `isolatePool`). A call may name its
- * owner (the gateway's calls do; the owner object's isolate is one owner's): within each
- * class the owners waiting take turns (`Turns`), and a full class makes room by refusing the
- * newest waiter of the owner waiting most.
+ * Worker's own figure, `isolatePool`). A call may name its owner (the gateway's calls do;
+ * the owner object's isolate is one owner's): within each class the owners waiting take
+ * turns (`Turns`), and a full class makes room by refusing the newest waiter of the owner
+ * waiting most.
  *
  * **The one admission rule** (`#fits`): a call takes free units only where no call it must
  * not pass is waiting for them.
  * - A larger hold never takes the reserve.
  * - While a larger hold waits, a one-unit hold takes only the reserve, so the units one-unit
- *   holds took past it come back to the larger one as they are released (review M-b).
+ *   holds took past it come back to the larger one as they are released.
  * - While the oldest holder waits to grow (wait-die: only it may wait while it holds), no
  *   other call takes past the reserve: a younger holder gives way, and a call holding nothing
- *   takes only the reserve, as for a larger hold waiting (`rveg_report.md` V-M1).
+ *   takes only the reserve, as for a larger hold waiting.
  * - While another owner waits, an owner holding half the pool or more takes no more until
  *   that waiter is served: a share under contention, not a cap; alone, an owner may use it
- *   all (V-H2).
+ *   all.
  * Each class's waiters are drained as the rule admits them, the oldest holder's growth first,
  * then the larger, in turns by owner.
  */
@@ -567,7 +567,7 @@ export interface Sharer {
 }
 
 /**
- * An exact budget of retained data the isolate's objects share (the relay's tails, M5):
+ * An exact budget of retained data the isolate's objects share (the relay's tails):
  * each member counts what it holds in the budget's own unit, and past the budget the member
  * holding the most drops its oldest unit, then the next, until the total fits. A member that
  * is gone (an evicted object's instance, collected) leaves on its own: members are held

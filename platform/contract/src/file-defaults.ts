@@ -1,5 +1,5 @@
 /**
- * The owner's file settings as a new owner starts with them (plan §6): what each setting is
+ * The owner's file settings as a new owner starts with them: what each setting is
  * until the owner's policy document sets it (`owner/src/policy.ts` says what each means and
  * its range). Each is off by default (Fact 15): no file size cap but the most one upload
  * holds, and no retention, so every version is kept until the owner deletes it or sets one.

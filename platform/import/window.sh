@@ -30,6 +30,12 @@
 #   through its reserved IP alone): every owner the staging bucket holds an index of, admitted
 #   or discarded, or exit 3 naming each left (r7-rotation-driver.md item 8). It writes nothing;
 #   the workflow deletes the doors' IMPORT_KEY after a real window's pass.
+# - admit makes its own deletion check, in the same run, right before its job: the old broker's
+#   current off-host deletion jobs listed and read with the source key (the same store's
+#   deletion-jobs/, as `deletion_records.py` writes them), compared offline with the bundled
+#   original owners (`deletions`), which writes the check to the window's folder; the networked
+#   admit takes it once, discards each withheld owner and admits none of them
+#   (i-deletion-withhold.md). A failed list or read stops it before any job.
 # - Each job in `docker run --rm`, one folder writable for the step's output. The jobs without
 #   network see the work folder read-only at its own path (so the kernel's loop devices name
 #   its images); the modes that reach R2 and Queues see the bundles alone (bundle/out), never
@@ -48,11 +54,11 @@
 #   messages go to the work folder's host.private.log; this script prints fixed words and counts.
 #   A remote's refusal names the operation, rclone's exit code and an allowlisted S3 code and
 #   HTTP status (`cause`), never rclone's own words, which go to the log alone.
-# - Credentials arrive on stdin, one a line: the source key (census, deletions, offsite) in
+# - Credentials arrive on stdin, one a line: the source key (census, admit, offsite) in
 #   SOURCE_CREDENTIALS' order, then the off-site key (offsite) in OFFSITE_CREDENTIALS'; each
 #   refused by its name when it holds a space or a control character, and the run refused when
-#   a line follows the last (a credential that held a line break); the
-#   job's (stage, verify, wipe, admit, dlq, close) in CREDENTIALS' order, which reach only the job,
+#   a line follows the last (a credential that held a line break); the job's (stage, verify,
+#   wipe, admit after the source key, dlq, close) in CREDENTIALS' order, which reach only the job,
 #   piped to its stdin (`docker run -i`), so they are in no argument, no container config
 #   (`docker inspect`), no environment and no file. The exclusion list (bundle) is stdin
 #   whole, piped to the job the same way.
@@ -79,7 +85,7 @@ readonly KEEP_FREE_PERCENT=20
 # The job's credential inputs (cli.ts STAGE_INPUTS), in the order stdin hands them.
 readonly CREDENTIALS=(CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
                       CLOUDFLARE_API_TOKEN IMPORT_KEY)
-# The primary backup store's read-only Spaces key (census, deletions, offsite), in stdin's order.
+# The primary backup store's read-only Spaces key (census, admit, offsite), in stdin's order.
 readonly SOURCE_CREDENTIALS=(SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY)
 # The off-site bucket's R2 key (offsite), after the source's, in stdin's order.
 readonly OFFSITE_CREDENTIALS=(CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY)
@@ -105,7 +111,7 @@ run="${2:-}"
 kind="${3:-}"
 extra="${4:-}"
 case "$mode" in
-  census|bundle|deletions|stage|verify|wipe|admit|dlq|close|offsite|clean) ;;
+  census|bundle|stage|verify|wipe|admit|dlq|close|offsite|clean) ;;
   *) refuse "no such mode" ;;
 esac
 [[ "$run" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] \
@@ -161,9 +167,13 @@ take() {
 
 network=none
 case "$mode" in
-  census|deletions) take "${SOURCE_CREDENTIALS[@]}" ;;
+  census) take "${SOURCE_CREDENTIALS[@]}" ;;
   offsite) take "${SOURCE_CREDENTIALS[@]}" "${OFFSITE_CREDENTIALS[@]}" ;;
-  stage|verify|wipe|admit|dlq|close)
+  admit)
+    network=bridge
+    take "${SOURCE_CREDENTIALS[@]}" "${CREDENTIALS[@]}"
+    ;;
+  stage|verify|wipe|dlq|close)
     network=bridge
     take "${CREDENTIALS[@]}"
     ;;
@@ -531,30 +541,6 @@ case "$mode" in
     job "$work/census" census "$work" --tiers "$control" \
       --table "$work/census/census.private.tsv"
     ;;
-  deletions)
-    has_copy
-    use_image
-    [[ -d "$work/bundle/out" ]] || refuse "this run has no bundles: run bundle first"
-    # List from the remote root as the old broker does: a store with no jobs is a valid
-    # empty listing. A list or read failure aborts before the offline comparison starts.
-    scan="$work/deletion-scan.private"
-    rm -rf -- "$scan"
-    mkdir -m 700 "$scan" "$scan/jobs"
-    trap 'rm -rf -- "$scan"' EXIT
-    remote list "the current deletion jobs could not be listed" "$scan/list" source_rclone \
-      lsf --recursive --files-only --include '/deletion-jobs/*.json' "$SOURCE"
-    while IFS= read -r name || [[ -n "$name" ]]; do
-      [[ "$name" =~ ^deletion-jobs/([0-9a-f]{64})[.]json$ ]] \
-        || refuse "the deletion authority named an invalid job file"
-      remote read "a current deletion job could not be read" "$scan/jobs/${name##*/}" \
-        source_rclone cat "$SOURCE/$name"
-    done < "$scan/list"
-    flags=()
-    if [[ "$kind" == rehearsal ]]; then
-      flags=(--rehearsal "$run")
-    fi
-    job - deletions "$work" --jobs "$scan/jobs" "${flags[@]}"
-    ;;
   offsite)
     has_copy
     use_image
@@ -608,6 +594,35 @@ case "$mode" in
         ;;
       close)
         job - close --facts "$facts"
+        ;;
+      admit)
+        # The admit's own check, made now: no older scan, and no check left by an earlier run.
+        # List from the remote root as the old broker does: a store with no jobs is a valid
+        # empty listing. A list or read failure stops the run before any job.
+        scan="$work/deletion-scan.private"
+        check="$work/window/deletions.private.json"
+        rm -rf -- "$scan" "$check"
+        mkdir -m 700 "$scan" "$scan/jobs"
+        trap 'rm -rf -- "$scan" "$check"' EXIT
+        remote list "the current deletion jobs could not be listed" "$scan/list" source_rclone \
+          lsf --recursive --files-only --include '/deletion-jobs/*.json' "$SOURCE"
+        while IFS= read -r name || [[ -n "$name" ]]; do
+          [[ "$name" =~ ^deletion-jobs/([0-9a-f]{64})[.]json$ ]] \
+            || refuse "the deletion authority named an invalid job file"
+          remote read "a current deletion job could not be read" "$scan/jobs/${name##*/}" \
+            source_rclone cat "$SOURCE/$name"
+        done < "$scan/list"
+        flags=()
+        if [[ "$kind" == rehearsal ]]; then
+          flags=(--rehearsal)
+        fi
+        # The comparison reads the copy and the private bundles, so it runs without the network.
+        network=none
+        job "$work/window" deletions "$work" --jobs "$scan/jobs" --run "$run" --check "$check" \
+          "${flags[@]}" || exit $?
+        network=bridge
+        job "$work/window" admit "$out" --run "$run" --facts "$facts" --record "$record" \
+          --deletions "$check"
         ;;
       *)
         job "$work/window" "$mode" "$out" --run "$run" --facts "$facts" --record "$record"

@@ -1,12 +1,13 @@
 /**
- * The read-only pre-admission comparison. window.sh reads the old broker's current
- * off-host deletion records with the backup store's read key. This offline job
- * compares them with the original owners of the bundles this run actually made,
- * including when rehearsal bundles carry substitute names. The same ordinal as
- * stage and verify is all that leaves the host. This observation cannot authorize
- * admission: the old broker may accept another request after its records were read.
+ * The deletion check each `admit` makes for itself (`i-deletion-withhold.md`). window.sh's
+ * admit reads the old broker's current off-host deletion records with the backup store's
+ * read key; this offline job compares them with the original owners of the bundles this run
+ * actually made, including when rehearsal bundles carry substitute names, and writes the
+ * check (`writeCheck`): the run, every bundle, and the ones withheld. The networked admit
+ * takes it once (`takeCheck`): it discards each withheld owner and admits none of them. The
+ * same ordinal as stage and verify is all that leaves the host.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { object } from "../contract/src/checks";
@@ -16,7 +17,14 @@ import { BUNDLE_FORMAT, rehearsalName } from "../contract/src/import-message";
 
 import { layout, openStore, tablesOf } from "./backup";
 import { DIGESTS, PRIVATE_RECORD } from "./bundle";
-import { bundlesIn } from "./stage";
+import { bundlesIn, type Staged } from "./stage";
+
+/** A run's deletion check: every bundle, by key and digest, and the keys withheld. */
+export interface DeletionCheck {
+  readonly run: string;
+  readonly bundles: Readonly<Record<string, string>>;
+  readonly withheld: readonly string[];
+}
 
 /** An error while parsing a broker record must never print a principal or a status token. */
 function document(path: string): Record<string, unknown> {
@@ -32,9 +40,12 @@ function document(path: string): Record<string, unknown> {
   return value;
 }
 
-/** Return the staged bundle ordinals that have a deletion record, finished or unfinished. */
-export function compareDeletions(work: string, jobs: string, rehearsal: string | null):
-    { bundles: number; withhold: number[] } {
+/**
+ * The run's check, and the ordinals of the bundles whose original owner has a deletion
+ * record, finished or unfinished.
+ */
+export function compareDeletions(work: string, jobs: string, run: string, rehearsal: boolean):
+    { check: DeletionCheck; withhold: number[] } {
   const held = new Set<string>();
   for (const file of readdirSync(jobs, { withFileTypes: true })) {
     const id = file.name.slice(0, -5);
@@ -80,7 +91,7 @@ export function compareDeletions(work: string, jobs: string, rehearsal: string |
     }
     const original = sha256Hex(row.owner);
     const originalKey = original.slice(0, 16);
-    const name = rehearsal === null || row.excluded ? row.owner : rehearsalName(rehearsal, row.owner);
+    const name = !rehearsal || row.excluded ? row.owner : rehearsalName(run, row.owner);
     const key = sha256Hex(name).slice(0, 16);
     const bundle = saved.digests[originalKey];
     if (row.key !== key || originals.has(originalKey) || candidates.has(key)
@@ -101,6 +112,7 @@ export function compareDeletions(work: string, jobs: string, rehearsal: string |
     throw new Error("the bundles and the private cutover record cover different owners");
   }
   const withhold: number[] = [];
+  const withheld: string[] = [];
   for (const [index, bundle] of staged.entries()) {
     const owner = candidates.get(bundle.key);
     if (owner?.name !== bundle.owner || owner?.bundle !== bundle.bundle) {
@@ -108,7 +120,40 @@ export function compareDeletions(work: string, jobs: string, rehearsal: string |
     }
     if (held.has(owner.original)) {
       withhold.push(index + 1);
+      withheld.push(bundle.key);
     }
   }
-  return { bundles: staged.length, withhold };
+  const bundles = Object.fromEntries(staged.map((bundle) => [bundle.key, bundle.bundle]));
+  return { check: { run, bundles, withheld }, withhold };
+}
+
+/** The check written for its admit alone, 0600; one already there is refused, never reused. */
+export function writeCheck(file: string, check: DeletionCheck): void {
+  writeFileSync(file, JSON.stringify(check), { flag: "wx", mode: 0o600 });
+}
+
+/**
+ * The keys `admit` withholds: its check, deleted as it is read, so each admit follows a read
+ * of its own; refused unless it is this run's and names exactly these bundles.
+ */
+export function takeCheck(file: string, run: string, bundles: readonly Staged[]):
+    ReadonlySet<string> {
+  let check: Record<string, unknown>;
+  try {
+    check = document(file);
+  } catch {
+    throw new Error("admit has no deletion check of its own (window.sh's admit reads the " +
+                    "current requests first): no owner is admitted");
+  } finally {
+    rmSync(file, { force: true });
+  }
+  const named = check.bundles;
+  const withheld = check.withheld;
+  if (check.run !== run || !object(named) || !Array.isArray(withheld)
+      || Object.keys(named).length !== bundles.length
+      || bundles.some((staged) => named[staged.key] !== staged.bundle)
+      || withheld.some((key) => typeof key !== "string" || !Object.hasOwn(named, key))) {
+    throw new Error("the deletion check is not of this run's bundles: no owner is admitted");
+  }
+  return new Set(withheld as string[]);
 }

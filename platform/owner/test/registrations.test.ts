@@ -1,7 +1,7 @@
 /**
- * An MCP client's held agent registration (slice 3's review L2): filed on the client's
- * own verified call, so the object captured its origin, and applied by the owner in its
- * session by card id and the digest it was shown, as a held policy proposal is.
+ * An MCP client's held agent registration: filed on the client's own verified call, so the object
+ * captured its origin, and applied by the owner in its session by card id and the digest it was
+ * shown, as a held policy proposal is.
  */
 import { describe, expect, it } from "vitest";
 

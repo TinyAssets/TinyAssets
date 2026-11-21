@@ -1,5 +1,5 @@
 /**
- * The vendor's own sign-in inside a sandbox (slice SIGNIN; `signins.ts`), in workerd with the
+ * The vendor's own sign-in inside a sandbox (`signins.ts`), in workerd with the
  * recording fake behind `SANDBOX`: the owner's door opens the sandbox's lease with no run and
  * asks the sandbox Worker to start the record's login; the runner's `ta.signin` frames keep
  * the vendor's prompt, renew the lease and reach the owner's app socket; a pasted code goes
@@ -280,9 +280,9 @@ async function begun(r: Gated, engine: string, frames: Record<string, unknown>[]
   return { id, runner, answer };
 }
 
-// -- the review's attacks (rvsi), each refused --------------------------------------------
+// -- the review's attacks, each refused --------------------------------------------
 
-describe("what leaves the VM through the trusted side (review M1)", () => {
+describe("what leaves the VM through the trusted side", () => {
   it("is a sign-in's fixed states only: a state the VM made up is refused, never stored",
      async () => {
     const r = await gated();
@@ -327,7 +327,7 @@ describe("what leaves the VM through the trusted side (review M1)", () => {
   });
 });
 
-describe("the vendor's page, pinned (review M2)", () => {
+describe("the vendor's page, pinned", () => {
   it("is refused when it is another OAuth client's page, a redirect chain, or a stuffed " +
      "query, on the vendor's own host", async () => {
     const r = await gated();
@@ -395,7 +395,7 @@ describe("the vendor's page, pinned (review M2)", () => {
   });
 });
 
-describe("a sign-in's deadline (review M4)", () => {
+describe("a sign-in's deadline", () => {
   it("ends it on the runner's own expiry, which the app is told", async () => {
     const r = await gated();
     const { answer } = await begun(r, "claude-code", [{ state: "expired" }]);
@@ -427,7 +427,7 @@ describe("a sign-in's deadline (review M4)", () => {
   });
 });
 
-describe("the per-source switch, in the owner's object (review H1)", () => {
+describe("the per-source switch, in the owner's object", () => {
   it("refuses a sign-in to a source switched off, whatever door asks", async () => {
     const r = await gated();
     expect((await failure(() => r.stub.signinStart(r.bind({ signins: ["claude-code"] }),
@@ -483,7 +483,7 @@ describe("the per-source switch, in the owner's object (review H1)", () => {
   });
 });
 
-describe("the runs lane's own read of the switches (review round 2, N1)", () => {
+describe("the runs lane's own read of the switches", () => {
   const OPEN = OPEN_GATES;
 
   /** `agent`'s schedule due now, the lane run once, with no door call handing a list. */
@@ -538,7 +538,7 @@ describe("the runs lane's own read of the switches (review round 2, N1)", () => 
   });
 });
 
-describe("a pasted code (review L1)", () => {
+describe("a pasted code", () => {
   it("goes only to a sign-in asking for one, within its deadline, a terminal line at most",
      async () => {
     const r = await gated();

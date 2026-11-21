@@ -1,5 +1,5 @@
 /**
- * The platform's explicit admit (slice L, `admission.ts`): a fresh object is pending and
+ * The platform's explicit admit (`admission.ts`): a fresh object is pending and
  * refuses every door and lane until the platform admits it; the admit is the reserved
  * caller's alone, idempotent, and lifts no suspension; a pending owner is never suspended;
  * and the key store's and inbound bindings' rows follow their grants and routes.
@@ -282,7 +282,7 @@ describe("an inbound event at the object's door, as the doors hand it", () => {
   });
 
   it("refuses an event at the hot ceiling mailbox_full, whether it clears by itself or is held " +
-     "by a full storage, never counting it to the breaker (review E-2)", async () => {
+     "by a full storage, never counting it to the breaker", async () => {
     const r = await rig();
     const binding = await shared(r);
     for (const blocked of [0, ...Array<number>(BREAKER_FAILURES + 1).fill(1)]) {
@@ -300,7 +300,7 @@ describe("an inbound event at the object's door, as the doors hand it", () => {
     const r = await rig();
     const binding = await shared(r);
     expect(await accept(r, binding, "evt-b0")).toMatchObject({ state: "admitted" });
-    // Too much mail unread, owner-wide (slice STORE item 2: one ceiling, no mailbox's own).
+    // Too much mail unread, owner-wide (one ceiling, no mailbox's own).
     await r.sql("UPDATE ledger_usage SET unacked = 1000000");
     for (let i = 1; i <= BREAKER_FAILURES; i++) {
       expect(await accept(r, binding, `evt-b${i}`))

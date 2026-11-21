@@ -1,10 +1,9 @@
 /**
- * The owner's model connections (tasks 4 G2): the connect doors in the owner's session,
- * OAuth flows bound to it and cancelled with it, a revoke's crypto-delete and its provider
- * revoke, the refresh lease under concurrent sandbox calls (`egressOpen` refreshes a
- * credential near its expiry before it admits a call), the reseal's compare-and-swap (a
- * blob the gateway resealed, handed back at `egressSettle`), the largest built-in catalog,
- * and the plaintext key never in the object.
+ * The owner's model connections: the connect doors in the owner's session, OAuth flows bound to it
+ * and cancelled with it, a revoke's crypto-delete and its provider revoke, the refresh lease under
+ * concurrent sandbox calls (`egressOpen` refreshes a credential near its expiry before it admits a
+ * call), the reseal's compare-and-swap (a blob the gateway resealed, handed back at
+ * `egressSettle`), the largest built-in catalog, and the plaintext key never in the object.
  */
 import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
