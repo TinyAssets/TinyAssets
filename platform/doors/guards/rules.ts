@@ -55,6 +55,7 @@
  *   `enable_request_signal`) are its own.
  */
 import type { ConfigRules } from "../../ci/kit/config";
+import type { Exemption } from "../../ci/kit/module-state";
 import type { Owed } from "../../ci/kit/owed";
 
 /**
@@ -117,3 +118,13 @@ export const CONFIG: ConfigRules = Object.freeze({
 
 /** What the doors still owe the platform's guards (`ci/kit/owed.ts`). Nothing, now. */
 export const OWED: readonly Owed[] = Object.freeze([]);
+
+/**
+ * The doors' module state, each by design (`ci/kit/module-state.ts`): the isolate's copy of the
+ * control record last read well formed, the platform's one record and no owner's, which the
+ * doors serve when KV can't be read (`src/control.ts`).
+ */
+export const MODULE_STATE: readonly Exemption[] = Object.freeze([
+  Object.freeze({ file: "doors/src/control.ts", symbol: "held",
+                  reason: "the isolate's last good copy of the control record" }),
+]);

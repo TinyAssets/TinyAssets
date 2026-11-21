@@ -13,7 +13,6 @@ import {
   CALLS_OPEN, CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
 } from "../../contract/src/limits";
 import { sqlIn } from "../../ci/workerd";
-import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import {
   FILE_INDEX_FULL, FILE_QUOTA, FILE_SHARE, type Files, MAX_OPEN_INTENTS,
 } from "../src/files";
@@ -695,10 +694,21 @@ describe("a random sequence of changes", () => {
 });
 
 describe("the files policy's shares", () => {
-  it("are owner policy, with defaults and a high bound; the index's ceiling is none",
-     async () => {
+  it("are off until the owner sets one: a client may take the owner's whole", async () => {
     const r = await rig();
-    expect(FILE_DEFAULTS).toMatchObject({ client_share: 25, owner_reserve: 25 });
+    for (let i = 0; i < MAX_OPEN_INTENTS; i++) {
+      await r.stub.fileUploadBegin(r.bind(MUSE), {
+        size: INLINE_BYTES + 1, chunks: [i.toString(16).padStart(64, "0")] });
+    }
+    await refused(r, () => r.stub.fileUploadBegin(r.bind(DOT), {
+      size: INLINE_BYTES + 1, chunks: ["f".repeat(64)] }),
+                  `${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
+    expect((await share(r, CLIENT))!["chunk_bytes"]).toBe(MAX_OPEN_INTENTS * (INLINE_BYTES + 1));
+    await counted(r);
+  });
+
+  it("are owner policy within their range; the index's ceiling is none", async () => {
+    const r = await rig();
     expect(Object.keys(FILE_SETTINGS)).not.toContain("max_manifest_bytes");
     for (const files of [{ max_manifest_bytes: 1 }, { client_share: 101 },
                          { owner_reserve: -1 }, { client_share: 2.5 }]) {

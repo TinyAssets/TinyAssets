@@ -24,10 +24,10 @@
  * - an edited one is never overwritten: the new version is written beside it as
  *   `<file>.ta-new`, a name no engine loads, and the owner gets one notice for the pass;
  * - a deleted one is never restored (its receipt's `deleted`);
- * - a change that widens what the agent may do (more `agent.json` scopes, a new or changed
- *   script, or what the package marks `widens` for that version) arrives as a proposal even
- *   when unedited: written beside it as `.ta-new`, with a notice, applied only by the owner
- *   moving it over the file;
+ * - a change that widens what the agent may do (more `agent.json` scopes, an `mcp.json` server
+ *   or `hooks.json` hook added or changed, a new or changed script, or what the package marks
+ *   `widens` for that version) arrives as a proposal even when unedited: written beside it as
+ *   `.ta-new`, with a notice, applied only by the owner moving it over the file;
  * - the owner adopting an offered `.ta-new` (the file's content now the offered one) is
  *   taken as installed.
  * Undo is the files plane's own history: every write here is a version, and `file_restore`
@@ -38,7 +38,7 @@
  * says: never by inventing a file. Every write is a unit of the object's gate; a pass is
  * single-flight on its lane.
  */
-import { agentFile } from "./agent-file";
+import { definitionFileOf, definitionWidening } from "../../contract/src/agent-definition";
 import { FileFault, Refusal } from "../../contract/src/refusal";
 import { contentIdOf } from "../../contract/src/content";
 import { type Content, type Files, lostSwap } from "./files";
@@ -72,16 +72,10 @@ export function widening(file: StarterFile, from: number | null, before: Uint8Ar
   if (file.widens !== undefined && from !== null && file.widens.version > from) {
     return file.widens.why;
   }
-  if (file.path.endsWith("/agent.json")) {
+  const definition = definitionFileOf(file.path);
+  if (definition !== null) {
     const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
-    let had: readonly string[] = [];
-    try {
-      had = before === null ? [] : agentFile(decode(before)).scopes;
-    } catch {
-      had = [];  // an unreadable file held no scope
-    }
-    const added = agentFile(decode(after)).scopes.filter((scope) => !had.includes(scope));
-    return added.length === 0 ? null : `agent.json adds the scopes ${added.join(", ")}`;
+    return definitionWidening(definition, before === null ? null : decode(before), decode(after));
   }
   if (!file.path.endsWith(".md")) {
     return before === null ? `${file.path} is a new script` : `${file.path} changes a script`;

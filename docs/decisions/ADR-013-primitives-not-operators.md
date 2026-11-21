@@ -4,6 +4,8 @@
 
 Accepted
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the missing primitive, never a special case, and tests that drive the product as a user would (ADR-039 decision 2.8).
+
 ## Date
 
 2026-08-30 (irreducibility rule 2026-07-25)

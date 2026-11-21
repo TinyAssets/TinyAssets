@@ -22,12 +22,12 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { bundledRecords, catalogOf } from "../src/catalog";
-import { CREDENTIAL_NAME, sealedSource, sourceRecord } from "../src/check";
+import { sealedSource, sourceRecord } from "../src/check";
 import { RUN_BASICS, runEnv } from "../src/run-env";
 import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
 import { supportedApis } from "../../contract/src/api-rules";
 import { readEvent } from "../../contract/src/run-events";
-import { forbids } from "../../contract/src/text";
+import { CREDENTIAL_NAME, forbids } from "../../contract/src/text";
 import { RECORDS_DIR, recordFiles } from "../write-records";
 
 const SOURCES = join(PLATFORM, "sources");
@@ -384,8 +384,10 @@ describe("the engine records", () => {
     expect(spec.mcp).toEqual(expect.objectContaining({ file: "{home}/.pi/agent/mcp.json",
       template: "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", " +
                 "\"exposure\": \"direct\"}}}" }));
-    // JSON mode cannot show the trust prompt: the run approves the agent's own folder.
-    expect(spec.unattended_argv).toContain("--approve");
+    // JSON mode cannot show the trust prompt, and the agent's folder is never trusted: its
+    // .pi/mcp.json and extensions never load, and its skills are given by argv.
+    expect(spec.definition.native.argv).toEqual(["--no-approve"]);
+    expect(spec.definition.skills).toEqual({ paths: [], argv_each: ["--skill", "{skill}"] });
     expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
   });
 
@@ -541,10 +543,54 @@ describe("the engine records", () => {
     expect(Object.keys(LIMITS).sort()).toEqual(engines.map((record) => record.id).sort());
   });
 
-  it("read Claude Code's own retry as no error: a call it recovers is no failed run", () => {
-    const events = engines.find((record) => record.id === "claude-code")!.cli!.engine.events;
-    expect(readEvent(events, { type: "system", subtype: "api_retry", attempt: 1,
-                               error_status: 429, error: "rate_limit" }).error).toBeNull();
+  // Each as its pinned CLI reports it (its source, read 2026-11-21): what it goes on from (a
+  // call it retries, a warning) is no error; a call it gave up on is.
+  const GOES_ON: Record<string, { error: unknown[]; not: unknown[] }> = {
+    "claude-code": {
+      error: [{ type: "result", is_error: true, result: "API Error: 529 Overloaded" }],
+      not: [{ type: "system", subtype: "api_retry", attempt: 1, error_status: 429,
+              error: "rate_limit" }],
+    },
+    // Its `error` event is also each stream reconnect (app-server `will_retry: true`).
+    codex: {
+      error: [{ type: "turn.failed", error: { message: "stream disconnected" } }],
+      not: [{ type: "error", message: "Reconnecting... 2/5 (stream disconnected)" }],
+    },
+    gemini: {
+      error: [{ type: "error", severity: "error", message: "Maximum session turns exceeded" },
+              { type: "result", status: "error", error: { type: "Error", message: "x" } }],
+      not: [{ type: "error", severity: "warning", message: "Loop detected, stopping execution" }],
+    },
+    kimi: { error: [], not: [{ type: "ta.stderr", text: "provider.rate_limit: 429" }] },
+    pi: {
+      error: [{ type: "auto_retry_end", success: false, attempt: 3, finalError: "529" },
+              { type: "compaction_end", reason: "overflow", aborted: false, willRetry: false,
+                errorMessage: "Context overflow recovery failed: no model" }],
+      not: [{ type: "auto_retry_end", success: true, attempt: 1 },
+            { type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+              errorMessage: "Auto-compaction failed: no model" }],
+    },
+  };
+
+  it.each(Object.keys(GOES_ON))("read as %s's error only a call it gave up on", (id) => {
+    const events = engines.find((record) => record.id === id)!.cli!.engine.events;
+    for (const event of GOES_ON[id]!.error) {
+      expect(readEvent(events, event).error, JSON.stringify(event)).not.toBeNull();
+    }
+    for (const event of GOES_ON[id]!.not) {
+      expect(readEvent(events, event).error, JSON.stringify(event)).toBeNull();
+    }
+    expect(Object.keys(GOES_ON).sort()).toEqual(engines.map((record) => record.id).sort());
+  });
+
+  it("read pi's own retries, and only those, as withdrawing the error it reported", () => {
+    const events = engines.find((record) => record.id === "pi")!.cli!.engine.events;
+    const retries = [{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000,
+                       errorMessage: "529 overloaded" },
+                     { type: "compaction_start", reason: "overflow" }];
+    expect(retries.map((event) => readEvent(events, event).retry)).toEqual([true, true]);
+    expect(readEvent(events, { type: "compaction_start", reason: "threshold" }).retry)
+      .toBe(false);
   });
 });
 
@@ -676,10 +722,6 @@ describe("an engine record that does not fit", () => {
     ["a no-update with nothing in it", cli((s) => { s["no_update"] = {}; })],
     ["a no-update file the record does not write", cli((s) => {
       s["no_update"] = { file: "{home}/settings.json" }; })],
-    ["skills outside the agent's directory", cli((s) => { s["skills_paths"] = ["/etc/skills"]; })],
-    ["skills that climb out", cli((s) => { s["skills_paths"] = ["../skills"]; })],
-    ["instructions shadowed by themselves", cli((s) => {
-      at(s, "instructions")["shadowed_by"] = ["AGENTS.md"]; })],
     ["a login state check outside the secret paths", cli((s) => {
       at(s, "login")["state_checks"] = [{ path: "{home}/state.json", present: ["token"] }]; })],
     ["a login pattern that is not a regular expression", cli((s) => {
@@ -921,7 +963,8 @@ describe("an engine record that does not fit", () => {
       expect(sourceRecord(cli((s) => { s["install"] = install; })).cli!.install).toEqual(install);
     }
     const unsupported = { unsupported: "No MCP client: TinyAssets is reached another way." };
-    expect(sourceRecord(cli((s) => { s["mcp"] = unsupported; }, pi)).cli!.mcp)
+    expect(sourceRecord(cli((s) => {
+      s["mcp"] = unsupported; at(s, "definition")["mcp"] = unsupported; }, pi)).cli!.mcp)
       .toEqual(unsupported);
     expect(claudeCli["mcp"]).toHaveProperty("file");
   });
@@ -951,10 +994,8 @@ describe("an engine's own pre-tool hook", () => {
     ["a pinned settings file with the hook's placeholder", cli((s) => {
       at(s, "decide")["pins"] = { "{home}/.claude/settings.json": "{\"a\": \"{matcher}\"}" };
     })],
-    ["a refused file that climbs out of the agent's directory", cli((s) => {
-      at(s, "decide")["refuses"] = ["../.gemini/settings.json"]; })],
-    ["a refused file by an absolute path", cli((s) => {
-      at(s, "decide")["refuses"] = ["/workspace/.gemini/settings.json"]; })],
+    ["a refused file, which the definition's native layers hold now", cli((s) => {
+      at(s, "decide")["refuses"] = [".gemini/settings.json"]; })],
     ["a hook that neither fails open nor closed", cli((s) => {
       at(s, "decide")["fails"] = "maybe"; })],
     ["no page it was read from", cli((s) => { delete at(s, "decide")["cite"]; })],
@@ -983,7 +1024,80 @@ describe("an engine's own pre-tool hook", () => {
 
   it("takes one that holds none, with why", () => {
     const why = { unsupported: "No hook loads from a root-owned path." };
-    expect(sourceRecord(cli((s) => { s["decide"] = why; }, codex)).cli!.decide).toEqual(why);
+    expect(sourceRecord(cli((s) => {
+      s["decide"] = why; at(s, "definition")["hooks"] = why; }, codex)).cli!.decide).toEqual(why);
+  });
+});
+
+describe("how the agent's definition reaches an engine", () => {
+  it("keeps every engine's whole, as its file holds it", () => {
+    for (const id of ["claude-code", "codex", "gemini", "pi", "kimi"]) {
+      const file = records.get(id) as Json;
+      expect(sourceRecord(file).cli!.definition).toEqual(at(file, "cli.definition"));
+    }
+  });
+
+  it.each([
+    ["skills outside the agent's directory", cli((s) => {
+      at(s, "definition.skills")["paths"] = ["/etc/skills"]; })],
+    ["skills that climb out", cli((s) => { at(s, "definition.skills")["paths"] = ["../skills"]; })],
+    ["no skills folder", cli((s) => { at(s, "definition.skills")["paths"] = []; })],
+    ["skills by an argv without the skill", cli((s) => {
+      at(s, "definition.skills")["argv_each"] = ["--skill"]; }, pi)],
+    ["skills by an argv carrying the skill twice", cli((s) => {
+      at(s, "definition.skills")["argv_each"] = ["--skill={skill}", "{skill}"]; }, pi)],
+    ["the skill's placeholder outside its argv", cli((s) => {
+      s["unattended_argv"] = ["--skill", "{skill}"]; }, pi)],
+    ["instructions shadowed by themselves", cli((s) => {
+      at(s, "definition.instructions")["shadowed_by"] = ["AGENTS.md"]; })],
+    // The engine's own layers, kept out of every run: never one the definition renders.
+    ["no native layers", cli((s) => { at(s, "definition.native")["refuses"] = []; })],
+    ["a native layer outside the cwd", cli((s) => {
+      at(s, "definition.native")["refuses"] = ["../.claude/settings.json"]; })],
+    ["a native layer that is the skills folder", cli((s) => {
+      at(s, "definition.native")["refuses"] = [".claude"]; })],
+    ["a native layer that is what shadows the instructions", cli((s) => {
+      at(s, "definition.native")["refuses"] = ["CLAUDE.md"]; })],
+    ["a native layer twice", cli((s) => {
+      at(s, "definition.native")["refuses"] = [".mcp.json", ".mcp.json"]; })],
+    ["native layers with no page", cli((s) => { delete at(s, "definition.native")["cite"]; })],
+    ["a native argv set to nothing", cli((s) => {
+      at(s, "definition.native")["argv"] = ["--approve="]; }, pi)],
+    // The agent's own MCP servers go where the run's door does, each entry carrying the server's.
+    ["agent servers under a key the MCP file has not", cli((s) => {
+      at(s, "definition.mcp")["servers"] = "servers"; })],
+    ["agent servers in a file when the door is a flag", cli((s) => {
+      delete at(s, "definition.mcp")["flag"]; }, records.get("codex") as Json)],
+    ["agent servers by a flag the door is not given by", cli((s) => {
+      at(s, "definition.mcp")["flag"] = "--config"; }, records.get("codex") as Json)],
+    ["agent servers by a flag with a names list", cli((s) => {
+      at(s, "definition.mcp")["names"] = "mcp.allowed"; }, records.get("codex") as Json)],
+    ["agent servers on a names list that does not name the door", cli((s) => {
+      at(s, "definition.mcp")["names"] = "context.fileName"; }, records.get("gemini") as Json)],
+    ["agent servers where the door has no place", cli((s) => {
+      s["mcp"] = { unsupported: "none" }; })],
+    ["an http entry without the server's URL", cli((s) => {
+      at(s, "definition.mcp.http")["url"] = "https://example.com/mcp"; })],
+    ["an http entry carrying the URL twice", cli((s) => {
+      at(s, "definition.mcp.http")["also"] = "{url}"; })],
+    ["a stdio entry without the server's env", cli((s) => {
+      delete at(s, "definition.mcp.stdio")["env"]; })],
+    ["a stdio entry carrying an unknown value", cli((s) => {
+      at(s, "definition.mcp.stdio")["cwd"] = "{cwd}"; })],
+    // The agent's own hooks: every event by the engine's name, in the decide hook's layer.
+    ["hooks missing an event", cli((s) => { delete at(s, "definition.hooks.events")["stop"]; })],
+    ["hooks with an event the format has not", cli((s) => {
+      at(s, "definition.hooks.events")["notification"] = "Notification"; })],
+    ["two events by one name", cli((s) => {
+      at(s, "definition.hooks.events")["stop"] = "SessionEnd"; })],
+    ["hooks with no page", cli((s) => { delete at(s, "definition.hooks")["cite"]; })],
+    ["hooks on an engine whose decide hook is unsupported", cli((s) => {
+      at(s, "definition")["hooks"] = structuredClone(at(claudeCli, "definition.hooks")); },
+    records.get("kimi") as Json)],
+    ["no hooks on an engine whose decide hook has a layer", cli((s) => {
+      at(s, "definition")["hooks"] = { unsupported: "none" }; })],
+  ])("refuses %s", (_what, record) => {
+    expect(refused(record)).toMatch(/cli\.definition/);
   });
 });
 

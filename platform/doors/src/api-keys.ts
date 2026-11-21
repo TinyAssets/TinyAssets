@@ -14,9 +14,11 @@
  *   held key request with it when the owner names one (`proposal`), and writes the key's
  *   row; then the directory entry, then the secret, once. A refused mint writes no entry;
  *   an entry that fails to write leaves a grant the owner can revoke.
- * - **Use**: parse, read the entry, compare hashes, then the kill switch. A wrong key is
- *   `401` before any object is reached. The binding's origin is `apiKeyOrigin(id)` and
- *   its sign-in the mint time, so a revoked key never passes the fence.
+ * - **Use** (`presentedKey`, the one check of both doors a key opens, `/api` and `/mcp`):
+ *   the `Authorization: Bearer` header alone, never a query or a cookie; parse, read the
+ *   entry, compare hashes, then the kill switch. A wrong key is `401` before any object is
+ *   reached. The binding's origin is `apiKeyOrigin(id)` and its sign-in the mint time, so a
+ *   revoked key never passes the fence. A key has no expiry: it is live until revoked.
  * - **Revoke**: `grantRevoke` first, so the object refuses the key at once, then the
  *   directory entry goes, so dead keys stop at the edge.
  * - **Delete**: revoked first, then the directory entry, then `grantForget`, which the
@@ -35,10 +37,10 @@ import { KEY_NAME_MAX } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 
 import { bindApiKey, type Bound } from "./binder";
-import { apiKeyOrigin } from "../../contract/src/binding";
+import { type AccountBinding, apiKeyOrigin } from "../../contract/src/binding";
 import type { DoorsEnv } from "./env";
 import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
-import { randomToken } from "./kit";
+import { bearer, randomToken } from "./kit";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
@@ -65,9 +67,11 @@ function equal(a: string, b: string): boolean {
   return left.byteLength === right.byteLength && crypto.subtle.timingSafeEqual(left, right);
 }
 
-/** The owner's binding for a key whose secret matches its entry, or null. */
-export async function verifyKey(env: DoorsEnv, token: string): Promise<Bound | null> {
-  const parsed = parseKey(token);
+/** The owner's binding for the request's bearer key whose secret matches its entry, or null. */
+export async function presentedKey(env: DoorsEnv, request: Request):
+    Promise<Bound<AccountBinding> | null> {
+  const token = bearer(request);
+  const parsed = token === null ? null : parseKey(token);
   if (parsed === null) {
     return null;
   }

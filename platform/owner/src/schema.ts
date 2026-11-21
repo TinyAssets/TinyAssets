@@ -2536,6 +2536,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_purges', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
+  // 20 (`untangle-2026-11/control-last-good.md`): the control record's last good copy, which
+  // the object's own gate serves when KV can't be read (`contract/src/control.ts`
+  // `SqlKeeper`). The platform's, not the owner's: not exported.
+  Object.freeze([
+    "CREATE TABLE control_kept (only INTEGER PRIMARY KEY CHECK (only = 1), text TEXT NOT NULL, " +
+      "read_at INTEGER NOT NULL)",
+  ]),
 ]);
 
 /**
@@ -2581,6 +2588,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 17
   null,  // 18
   ROOMS_BACKFILLED,  // 19
+  null,  // 20
 ]);
 
 /**

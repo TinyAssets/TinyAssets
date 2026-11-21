@@ -10,7 +10,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { agentFile } from "../src/agent-file";
+import { agentFile } from "../../contract/src/agent-definition";
 import { contentIdOf } from "../../contract/src/content";
 import { STARTER_RETRY_S } from "../src/starter";
 import { carried, NEWER, starterPackage } from "../src/starter-package";
@@ -25,17 +25,22 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const MCP_NONE = JSON.stringify({ mcpServers: {} });
+const MCP_DOCS = JSON.stringify({ mcpServers: { docs: { url: "https://mcp.example.com/mcp" } } });
+const HOOKS_NONE = JSON.stringify({ hooks: {} });
 const V1 = starterPackage({ version: SEED + 1, files: [
   file(`${SKILLS}/a/SKILL.md`, "a1"), file(`${SKILLS}/b/SKILL.md`, "b1"),
   file(`${SKILLS}/c/SKILL.md`, "c1"), file(`${AGENTS}/SOUL.md`, "soul1", { class: "personal" }),
-  file(`${AGENTS}/AGENTS.md`, "agents1"), file(`${AGENTS}/agent.json`, agentJson(["read_files"])),
+  file(`${AGENTS}/AGENTS.md`, "agents1"), file(`${AGENTS}/mcp.json`, MCP_NONE),
+  file(`${AGENTS}/hooks.json`, HOOKS_NONE), file(`${AGENTS}/agent.json`, agentJson(["read_files"])),
 ] });
 const V2 = starterPackage({ version: SEED + 2, files: [
   file(`${SKILLS}/a/SKILL.md`, "a2"), file(`${SKILLS}/b/SKILL.md`, "b2"),
   file(`${SKILLS}/c/SKILL.md`, "c2"), file(`${AGENTS}/SOUL.md`, "soul2", { class: "personal" }),
   file(`${SKILLS}/d/SKILL.md`, "d2"), file(`${SKILLS}/e/run.sh`, "echo hi"),
   file(`${SKILLS}/f/SKILL.md`, "f2", { widens: { version: SEED + 2, why: "it fetches the web" } }),
-  file(`${AGENTS}/AGENTS.md`, "agents1"),
+  file(`${AGENTS}/AGENTS.md`, "agents1"), file(`${AGENTS}/mcp.json`, MCP_DOCS),
+  file(`${AGENTS}/hooks.json`, "{\"hooks\": {\"stop\": []}}"),
   file(`${AGENTS}/agent.json`, agentJson(["read_files", "run_graph"])),
 ] });
 const V3 = starterPackage({ ...V2, version: SEED + 3, files: V2.files.map((each) =>
@@ -158,6 +163,8 @@ describe("a starter update", () => {
     expect(await readText(r, `${AGENTS}/agent.json`)).toBe(agentJson(["read_files"]));
     expect(await readText(r, `${AGENTS}/agent.json${NEWER}`))
       .toBe(agentJson(["read_files", "run_graph"]));
+    expect(await readText(r, `${AGENTS}/mcp.json`)).toBe(MCP_NONE);
+    expect(await readText(r, `${AGENTS}/mcp.json${NEWER}`)).toBe(MCP_DOCS);
     expect(await readText(r, `${SKILLS}/e/run.sh`)).toBeNull();
     expect(await readText(r, `${SKILLS}/e/run.sh${NEWER}`)).toBe("echo hi");
     expect(await readText(r, `${SKILLS}/f/SKILL.md`)).toBeNull();
@@ -167,6 +174,7 @@ describe("a starter update", () => {
                  [`${SKILLS}/c/SKILL.md`]: "deleted", [`${SKILLS}/d/SKILL.md`]: "installed",
                  [`${SKILLS}/e/run.sh`]: "proposed", [`${SKILLS}/f/SKILL.md`]: "proposed",
                  [`${AGENTS}/SOUL.md`]: "installed", [`${AGENTS}/AGENTS.md`]: "installed",
+                 [`${AGENTS}/mcp.json`]: "proposed", [`${AGENTS}/hooks.json`]: "installed",
                  [`${AGENTS}/agent.json`]: "proposed" });
     // One notice for the edited files, one for the proposals.
     const updated = await notices(r, "starter_update");
@@ -175,6 +183,7 @@ describe("a starter update", () => {
     const proposed = await notices(r, "starter_proposal");
     expect(proposed).toHaveLength(1);
     expect(proposed[0]).toContain("agent.json adds the scopes run_graph");
+    expect(proposed[0]).toContain("mcp.json adds or changes the servers docs");
     expect(proposed[0]).toContain("e/run.sh is a new script");
     expect(proposed[0]).toContain("it fetches the web");
     // The replacement is a version of its own: the history says the starter wrote it.

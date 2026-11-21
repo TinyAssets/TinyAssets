@@ -17,6 +17,11 @@ import { keyed, object } from "./checks.ts";
 
 /** A CLI's own tool kind whose every call is the act (`kinds`). */
 export type HookKind = keyof typeof raw.kinds;
+/**
+ * A tool a rule or the agent's own hook names beside the kinds: an MCP server's and its tool's
+ * names (`mcp:<server>:<tool>`), `*` matching any run of them.
+ */
+export const TOOL_MATCHER = /^mcp:[A-Za-z0-9_*-]{1,64}:[A-Za-z0-9_.*-]{1,128}$/;
 /** When a door's call is its act (`conditions`): every call when its row names none. */
 export type Condition = keyof typeof raw.conditions;
 /** A way an act can be done that nothing of ours sees (`unseen`). */

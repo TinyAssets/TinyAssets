@@ -117,6 +117,23 @@
               "message.stopReason": "error"
             },
             "path": "message.errorMessage"
+          },
+          {
+            "match": {
+              "type": "auto_retry_end",
+              "success": false
+            },
+            "path": "finalError"
+          },
+          {
+            "match": {
+              "type": "compaction_end",
+              "reason": "overflow"
+            },
+            "pattern": {
+              "errorMessage": "."
+            },
+            "path": "errorMessage"
           }
         ],
         "usage": [
@@ -158,16 +175,80 @@
             },
             "path": ""
           }
+        ],
+        "retry": [
+          {
+            "match": {
+              "type": "auto_retry_start"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "compaction_start",
+              "reason": "overflow"
+            },
+            "path": ""
+          }
         ]
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": []
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": [
+          "AGENTS.override.md"
+        ]
+      },
+      "skills": {
+        "paths": [],
+        "argv_each": [
+          "--skill",
+          "{skill}"
+        ]
+      },
+      "native": {
+        "refuses": [
+          ".pi/settings.json",
+          ".pi/mcp.json",
+          ".pi/extensions",
+          ".pi/prompts",
+          ".pi/SYSTEM.md",
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "argv": [
+          "--no-approve"
+        ],
+        "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/security.md",
+        "read": "2026-11-21"
+      },
+      "mcp": {
+        "servers": "mcpServers",
+        "http": {
+          "url": "{url}",
+          "exposure": "direct"
+        },
+        "stdio": {
+          "command": "{command}",
+          "args": "{args}",
+          "env": "{env}",
+          "exposure": "direct"
+        }
+      },
+      "hooks": {
+        "events": {
+          "pre_tool": "tool_call",
+          "post_tool": "tool_result",
+          "prompt": "input",
+          "session_start": "session_start",
+          "stop": "agent_end",
+          "session_end": "session_shutdown",
+          "pre_compact": "session_before_compact"
+        },
+        "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/extensions.md",
+        "read": "2026-11-21"
+      }
     },
-    "skills_paths": [
-      ".pi/skills"
-    ],
     "mcp": {
       "file": "{home}/.pi/agent/mcp.json",
       "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", \"exposure\": \"direct\"}}}",
@@ -190,9 +271,6 @@
       "runs": {
         "exec": true
       },
-      "refuses": [
-        ".pi/settings.json"
-      ],
       "kinds": {
         "shell": [
           "bash",
@@ -220,9 +298,7 @@
         "join": ","
       }
     },
-    "unattended_argv": [
-      "--approve"
-    ],
+    "unattended_argv": [],
     "home_env": {
       "PI_CODING_AGENT_DIR": "{home}/.pi/agent"
     },

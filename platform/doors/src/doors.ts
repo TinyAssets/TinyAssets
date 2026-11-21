@@ -23,15 +23,17 @@ import { serveApp } from "./app";
 import { serveEgress } from "./egress";
 import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
-import { bindMcp, withAccount } from "./binder";
+import { presentedKey } from "./api-keys";
+import { type Bound, bindMcp } from "./binder";
 import {
   AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH, MCP_PATH,
   UPSTREAM_CALLBACK_PATH,
 } from "./config";
 import { ORIGIN, WEB_CLIENT, WEB_REDIRECT } from "../../contract/src/identity";
+import type { AccountBinding } from "../../contract/src/binding";
 import type { DoorsEnv } from "./env";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
-import { outsideRead } from "./control";
+import { outsideAccount } from "./control";
 import { serveInbound } from "./inbound";
 import { plain } from "./kit";
 import { serveMcp } from "./mcp";
@@ -54,6 +56,13 @@ function webClient(): Response {
   }, { headers: { "Cache-Control": "public, max-age=3600" } });
 }
 
+/**
+ * `/mcp`, for both credentials an outside caller holds, served by one handler: an owner's
+ * key (ADR-039 decision 2.18), checked as the `/api` door checks it (`presentedKey`) and
+ * held to its own grant, or an OAuth token for `/mcp`. Any other bearer, a key that does not
+ * verify included, is the OAuth resource's, so it is answered the one `401` naming the
+ * resource's metadata.
+ */
 async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                        sources: Sources): Promise<Response> {
   // No browser origin may send to `/mcp`: a present `Origin` is refused (MCP 2026-07-28
@@ -61,12 +70,19 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   if (request.headers.get("Origin") !== null) {
     return plain(403, "origin not allowed");
   }
-  return mcpResource(async (req, environment, token) => {
-    const bound = await bindMcp(environment, token);
-    return answered(asJson, async () => serveMcp(
-      req, withAccount(bound, await outsideRead(environment, bound.binding.owner), sources),
-      environment));
-  }).fetch(request, env, ctx);
+  const key = await presentedKey(env, request);
+  if (key !== null) {
+    return outsideMcp(request, env, key, sources);
+  }
+  return mcpResource(async (req, environment, token) =>
+    outsideMcp(req, environment, await bindMcp(environment, token), sources))
+    .fetch(request, env, ctx);
+}
+
+function outsideMcp(request: Request, env: DoorsEnv, bound: Bound<AccountBinding>,
+                    sources: Sources): Promise<Response> {
+  return answered(asJson, async () =>
+    serveMcp(request, await outsideAccount(env, bound, sources), env));
 }
 
 /** Serve one request through the doors, over the source records `sources`. */

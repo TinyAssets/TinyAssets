@@ -48,9 +48,9 @@ export function mediaType(request: Request): string {
   return (request.headers.get("Content-Type") ?? "").split(";")[0]!.trim().toLowerCase();
 }
 
-/** The `Authorization: Bearer` token, or null. */
+/** The `Authorization: Bearer` token, or null; the scheme in any case (RFC 7235 §2.1). */
 export function bearer(request: Request): string | null {
-  const match = /^Bearer ([^\s]+)$/.exec(request.headers.get("Authorization") ?? "");
+  const match = /^Bearer +(\S+)$/i.exec(request.headers.get("Authorization") ?? "");
   return match === null ? null : match[1]!;
 }
 

@@ -60,6 +60,23 @@ describe("the runner's events, in the app's words", () => {
                         helper: "echo key" }))
       .toEqual({ type: "ta.refused",
                  reason: "project_env_refused: /a.json names a credential helper (echo key)" });
+    expect(eventShown({ type: "ta.refused", code: "instructions_shadowed",
+                        path: "/workspace/CLAUDE.md" }))
+      .toEqual({ type: "ta.refused", reason: "instructions_shadowed: the engine would read " +
+        "/workspace/CLAUDE.md instead of the agent's AGENTS.md; move what it says into " +
+        "AGENTS.md and remove it" });
+    expect(eventShown({ type: "ta.refused", code: "engine_settings_refused",
+                        path: "/workspace/agents/main/.gemini/settings.json" }))
+      .toEqual({ type: "ta.refused", reason: "engine_settings_refused: " +
+        "/workspace/agents/main/.gemini/settings.json is the engine's own settings, which no " +
+        "run loads beside the agent's definition (agent.json, AGENTS.md, skills, mcp.json, " +
+        "hooks.json); move what it sets there and remove it" });
+    expect(eventShown({ type: "ta.refused", code: "instructions_too_large",
+                        paths: ["/workspace/agents/main/AGENTS.md"], bytes: 40000,
+                        max_bytes: 32768 }))
+      .toEqual({ type: "ta.refused", reason: "instructions_too_large: " +
+        "/workspace/agents/main/AGENTS.md hold 40,000 bytes of instructions, and the engine " +
+        "reads 32,768; shorten them, or move detail into skills" });
     expect(eventShown({ type: "ta.sync_refused", path: "{home}/a", code: "secret_bytes" }))
       .toEqual({ type: "ta.sync_refused", path: "{home}/a", reason: "holds a secret's bytes" });
     expect(eventShown({ type: "ta.sync_skipped", files: 2, skipped: [

@@ -59,7 +59,7 @@
  */
 import { object } from "../../../contract/src/checks";
 import { chunkedId, inlineId } from "../../../contract/src/content";
-import { readControl, tiersOf } from "../../../contract/src/control";
+import { tiersOf } from "../../../contract/src/control";
 import { sha256Hex } from "../../../contract/src/digest";
 import { HEX64 } from "../../../contract/src/ids";
 import {
@@ -75,6 +75,7 @@ import { Refusal, refusalOf } from "../../../contract/src/refusal";
 import { bindImport, bindPlatformFor, type Bound } from "../binder";
 import { namedSecret, now } from "../config";
 import type { DoorsEnv } from "../env";
+import { controlRead } from "../control";
 import { putOwner, readOwner } from "../directory";
 import { held, putChunk } from "../file-bytes";
 
@@ -439,10 +440,11 @@ async function recorded(env: DoorsEnv, message: ImportMessage): Promise<void> {
 /**
  * The control record's tier numbers, read as every account door's binding reads them
  * (`tiersOf`); null for none, so the files plane's quota refuses rather than guesses
- * (`admission.ts`). The import passes no gate: it runs dark, before `routes`.
+ * (`admission.ts`), and none when the record can't be read fresh, so an outage keeps the
+ * numbers the owner's object holds. The import passes no gate: it runs dark, before `routes`.
  */
 async function tiers(env: DoorsEnv): Promise<unknown> {
-  return tiersOf(await readControl(env.CONTROL));
+  return tiersOf(await controlRead(env));
 }
 
 /** The continuation of `message` from `cursor`, sent as JSON (the job's reader takes JSON). */

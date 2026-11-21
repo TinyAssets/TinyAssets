@@ -13,7 +13,7 @@ import { type Binding, nativeId, PLATFORM_CALLER } from "../../contract/src/bind
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../contract/src/socket-shape";
-import { AGENT_DISABLED, agentFilePath } from "../src/agent-file";
+import { AGENT_DISABLED, AGENT_FILES, agentPath } from "../../contract/src/agent-definition";
 import { AGENT_CHANGED } from "../src/launch";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { SIGNIN_REQUIRED } from "../../contract/src/sandbox";
@@ -306,7 +306,7 @@ describe("the runner's events post", () => {
   });
 });
 
-describe("a sandbox's own sign-ins (ADR-031 decision 2)", () => {
+describe("a sandbox's own sign-ins (ADR-039 decision 2.20)", () => {
   it("never run a client's run on the owner's sign-in: auto takes the owner's key, and an " +
      "agent naming the sign-in is started only where its own sandbox signed in", async () => {
     const r = await gated();
@@ -780,7 +780,7 @@ describe("the tier numbers", () => {
     await drainDue(r.stub);
     const refused = await r.stub.agentStatus(r.bind(), { run_id: waiting.run_id });
     expect(refused).toMatchObject({ state: "failed", code: "agent_file_invalid",
-                                    error: expect.stringMatching(/^agent\.json holds only /) });
+                                    error: expect.stringMatching(/^agent\.json: holds only /) });
   });
 });
 
@@ -871,7 +871,7 @@ describe("cases no other test holds", () => {
 
   it("refuses an admission whose agent.json changed after it was read", async () => {
     const r = await gated();
-    const path = agentFilePath("main");
+    const path = agentPath("main", AGENT_FILES.agent);
     // Padding keeps the JSON valid and puts its bytes behind FILES.
     expect(await r.stub.fileWrite(r.session(), {
       path, expected_etag: null, content: text(JSON.stringify(SIGNED_IN).padEnd(INLINE_BYTES + 1)),

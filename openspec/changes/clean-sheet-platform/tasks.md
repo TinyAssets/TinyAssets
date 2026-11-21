@@ -734,8 +734,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
   and `owner.state` (`owner-state-op.md`).
 - [x] The manifest's dry run green (d3 §A10): every leg, the typecheck and the process leg on
-  the manifest's tree (`cutover-dry-run.yml`; `b24-dry-run.md` item 2). It runs on every PR
-  and nightly, so a change that makes what stays need what goes shows red.
+  the manifest's tree (`tests.yml`'s `cutover-dry-run` jobs; `b24-dry-run.md` item 2). It
+  runs on every PR and hourly, and `required-tests` needs it, so a change that makes what
+  stays need what goes cannot merge (`dry-run-required.md`).
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
@@ -758,7 +759,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   and the retired tray and onboarding exports and checks (d3 §C6 F4, `site-mark.md`).
 - [ ] The live stage's four PRs (d3 §H), in order, as cut in `untangle-2026-11/stage.md`: the
   zone and the host, the egress host out of the identity so the pair is the same bytes on the
-  stage (`untangle/stage-zone`); the kit at a host under the zone (`untangle/stage-kit`); the
+  stage (`untangle/stage-zone`); the kit at a host under the zone (`untangle/stage-routes`); the
   host `stage.tinyassets.io` (`untangle/stage-host`); the host back (`untangle/stage-end`).
 - [ ] The two app stores' dashboards checked for anything we must follow up (a review in
   flight, an auto-release, a testing-track deadline, a policy form); the founder's sign-in
@@ -777,7 +778,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     index's R2 level) later, and whether it comes before the cutover is an open founder
     question;
   - [x] Run, policy, egress and settled wake receipt retentions and their readers
-    documented in `limits-audit.md`, “Chosen retentions” (§P item 6).
+    documented in `limits-audit.md`'s list (§P item 6).
   - [ ] The names the port carried, renamed for what they mean before a grant or `agent.json`
     stores them: `read_graph`, `write_graph` and `run_graph`, as capabilities and tools; "command
     center" dropped from registration, grants, tables and wake text unless research finds it a

@@ -4,6 +4,8 @@
 
 Accepted (founder, option 1, 2026-10-26).
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the one app manifest (ADR-039 decision 2.19).
+
 ## Date
 
 2026-10-26

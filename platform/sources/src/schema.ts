@@ -13,11 +13,11 @@
  *   unmodified command-line agent, run whole in the owner's sandbox, never a backend of
  *   ours, so it has no single-inference `invoke`. It never enters the gateway, so it names
  *   no upstream. Its record is everything the sandbox runner needs, as data (`CliSpec`):
- *   install, sign-in, the new-run and resume invocations and their event matchers, the
- *   instruction and skills paths, the MCP template, tool filters and unattended flags, its
+ *   install, sign-in, the new-run and resume invocations and their event matchers, how the
+ *   agent's definition reaches it, the MCP template, tool filters and unattended flags, its
  *   home, the credentials it runs on, whether each may run unattended (with the vendor
  *   page that says so), its `session_paths`, which sync to the owner's files, and its
- *   `secret_paths`, which never leave the sandbox (ADR-031 decision 2). Every path is
+ *   `secret_paths`, which never leave the sandbox (ADR-039 decision 2.20). Every path is
  *   under `{home}`, the runner's engine home, which is sandbox-only and outside
  *   `/workspace`, so secret and session paths compare in one namespace. A prompt goes on
  *   stdin or joined to its option (`--prompt={prompt}`), never bare; no value configures
@@ -44,6 +44,7 @@
  * from an owner's package) is marked `curated: false`; none exists yet.
  */
 import type { HookKind } from "../../contract/src/acts";
+import type { HookEvent } from "../../contract/src/agent-definition";
 import type { Endpoint, Upstream } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -76,10 +77,6 @@ export interface UserKey {
 
 export type OAuthSpec = Rfc6749 | UserKey;
 
-/** Every credential an engine runs on (`CredentialKind`). */
-export const CREDENTIAL_KINDS: readonly CredentialKind[] = Object.freeze([
-  "vendor_login_in_sandbox", "api_key"]);
-
 /**
  * How the engine binary is installed into the sandbox template, pinned: an npm package by
  * version, integrity and the digest of its committed lock (`platform/sources/locks/<id>/`),
@@ -109,14 +106,81 @@ export interface Engine {
   readonly events: EngineEvents;
 }
 
-/** Where the agent's canonical `AGENTS.md` is read, and what would shadow it. */
+/**
+ * Where the agent's canonical `AGENTS.md` is read, and what would shadow it: a run is refused
+ * while one of `shadowed_by` is in its cwd or an ancestor under `/workspace`, or while the
+ * `file`s there hold more than `max_bytes` together, which the engine would cut.
+ */
 export interface Instructions {
   readonly file: string;
-  /** Files that, when present, the engine reads instead: the runner never projects them. */
+  /** Files that, when present, the engine reads instead. */
   readonly shadowed_by: readonly string[];
+  /** The engine's cap on the instructions it reads, whole bytes; absent, none. */
   readonly max_bytes?: number;
   /** The record's file whose template makes the engine read `file`. */
   readonly setting?: string;
+}
+
+/**
+ * Where the agent's own MCP servers (`mcp.json`) go beside the run's door (`cli.mcp`): under
+ * the dotted key `servers`, in the record's MCP file or, with `flag`, as one `<flag>
+ * <servers>.<name>.<key>=<value>` pair a value (a map one pair an entry, `.<key>.<entry>`),
+ * each value JSON. `http` and `stdio` are a server's entry in the engine's own keys, each value
+ * a fixed text or the server's own (`{url}`; `{command}`, `{args}`, `{env}`), and `names`, a
+ * dotted key of the file whose list each server's name joins (an allow-list). Or why none can.
+ */
+export type DefinitionMcp =
+  | { readonly servers: string; readonly flag?: string;
+      readonly http: Readonly<Record<string, string>>;
+      readonly stdio: Readonly<Record<string, string>>;
+      readonly names?: string }
+  | { readonly unsupported: string };
+
+/**
+ * The engine's own name of each engine-neutral hook event (`HOOK_EVENTS`), every one, from its
+ * hooks page (`cite`, read on `read`). Its hooks go in the root-owned layer the record's
+ * `decide` hook does, so an engine with no such layer has none (`unsupported`).
+ */
+export type DefinitionHooks =
+  | { readonly events: Readonly<Record<HookEvent, string>>; readonly cite: string;
+      readonly read: string }
+  | { readonly unsupported: string };
+
+/**
+ * How the agent's skills reach the engine: `paths`, the folders in the agent's directory each
+ * skill is linked into (the projection); `argv_each`, the arguments the run adds for each
+ * skill, `{skill}` its directory.
+ */
+export interface DefinitionSkills {
+  readonly paths: readonly string[];
+  readonly argv_each?: readonly string[];
+}
+
+/**
+ * The engine's own settings layers an agent's folder could hold beside its definition, which
+ * the definition never renders: `refuses`, the paths the engine loads them from, relative to
+ * its cwd and each ancestor under `/workspace`, a run refused while one is there (Fact 8: never
+ * a file loaded beside the definition, nor one silently ignored); `argv`, what keeps the engine
+ * from loading the rest on every run; from the vendor's page (`cite`, read on `read`).
+ */
+export interface DefinitionNative {
+  readonly refuses: readonly string[];
+  readonly argv?: readonly string[];
+  readonly cite: string;
+  readonly read: string;
+}
+
+/**
+ * How the agent's definition (`contract/src/agent-definition.ts`) reaches the engine, part by
+ * part: its instructions, its skills, the engine's own layers kept out, its own MCP servers and
+ * its own hooks.
+ */
+export interface Definition {
+  readonly instructions: Instructions;
+  readonly skills: DefinitionSkills;
+  readonly native: DefinitionNative;
+  readonly mcp: DefinitionMcp;
+  readonly hooks: DefinitionHooks;
 }
 
 /** How TinyAssets' run-scoped MCP door reaches the engine, and how its trust is handled. */
@@ -244,8 +308,6 @@ export interface LoginSpec {
  *   own, and what keeps the CLI from loading a settings layer the agent can write.
  * - `pins`: the CLI's own settings files in the run's home a hooked run writes, root-owned and
  *   not replaceable by the run's user, so the layer they are is never the agent's.
- * - `refuses`: the files, from the agent's directory, that the CLI loads beside the hook and
- *   the agent can write: a hooked run is refused while one is there.
  * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
  *   it lacks, no rule holds at its hook.
  * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
@@ -264,7 +326,6 @@ export type Decide =
   | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
       readonly runs: HookRuns;
       readonly pins?: Readonly<Record<string, string>>;
-      readonly refuses?: readonly string[];
       readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
       readonly mcp: { readonly prefix: string; readonly join: string };
       readonly fails: "open" | "closed"; readonly alterable?: string;
@@ -282,8 +343,7 @@ export interface CliSpec {
   readonly unattended: Readonly<Partial<Record<CredentialKind, Unattended>>>;
   readonly per_credential?: Readonly<Partial<Record<CredentialKind, PerCredential>>>;
   readonly engine: Engine;
-  readonly instructions: Instructions;
-  readonly skills_paths: readonly string[];
+  readonly definition: Definition;
   readonly mcp: Mcp;
   readonly decide: Decide;
   /**

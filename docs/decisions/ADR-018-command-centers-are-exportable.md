@@ -4,6 +4,8 @@
 
 Accepted. Not yet built.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the owner leaves with everything, never a credential (ADR-039 decision 2.12).
+
 ## Date
 
 2026-10-01

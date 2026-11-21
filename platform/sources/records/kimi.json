@@ -165,16 +165,37 @@
             },
             "path": ""
           }
-        ]
+        ],
+        "retry": []
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": []
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": []
+      },
+      "skills": {
+        "paths": [
+          ".agents/skills"
+        ]
+      },
+      "native": {
+        "refuses": [
+          ".mcp.json",
+          ".kimi-code/mcp.json",
+          ".kimi-code/AGENTS.md",
+          ".kimi-code/skills"
+        ],
+        "cite": "https://www.npmjs.com/package/@moonshot-ai/kimi-code/v/2.4.1",
+        "read": "2026-11-21"
+      },
+      "mcp": {
+        "unsupported": "Kimi Code's own server entries were not researched: its record is dropped until it has a usable path (the founder's call 17, 2026-11-21)"
+      },
+      "hooks": {
+        "unsupported": "Kimi Code 2.4.1 names no root-owned layer its hooks load from (cli.decide), so no hook of the agent's is placed there"
+      }
     },
-    "skills_paths": [
-      ".agents/skills"
-    ],
     "mcp": {
       "file": "{home}/.kimi-code/mcp.json",
       "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", \"transport\": \"http\"}}}",

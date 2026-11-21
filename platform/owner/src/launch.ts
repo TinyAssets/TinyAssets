@@ -36,7 +36,9 @@ import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
-import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
+import {
+  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, agentPath,
+} from "../../contract/src/agent-definition";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
 import type { DoorUnits, ObjectReads } from "./door";
@@ -60,7 +62,8 @@ import type { Starter } from "./starter";
 import { type Signins, switchedOn } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
 import {
-  type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
+  type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, type SandboxStart,
+  SIGNIN_REQUIRED,
 } from "../../contract/src/sandbox";
 
 /**
@@ -286,7 +289,7 @@ export class Launcher implements RunHost {
 
   /** An agent's `agent.json`, read whole, and the etag it was read at. */
   async readAgent(agent: string): Promise<{ file: AgentFile; etag: string }> {
-    const path = agentFilePath(agent);
+    const path = agentPath(agent, AGENT_FILES.agent);
     const content = await this.#o.door(() => {
       const entry = this.#o.files.stat(path);
       if (entry === null || entry.kind !== "file") {
@@ -317,7 +320,9 @@ export class Launcher implements RunHost {
   /**
    * Admit a run in one unit (`ask`, which binds the call again, and the agent's file still
    * at the etag it was read at), then start it through the sandbox and record what came of
-   * it (`StartOutcome`): `running`, `failed` with the sandbox's code or its refusal's, or
+   * it (`StartOutcome`): `running`, `failed` with the sandbox's code or its refusal's (a
+   * transient one's once its start, sent again while the run holds its grant, did not start
+   * within the bound), or
    * `unknown` when no answer it can read came (the run is then cancelled too, in case it did
    * start). Its id: a run that waits for its conversation's live run is written `waiting`
    * and starts from the lane, its turn come (`waiting`, the run the lane starts).
@@ -327,7 +332,7 @@ export class Launcher implements RunHost {
       Promise<string> {
     const { admitted, agent, unattended } = await this.#o.door(() => {
       const made = ask();
-      if (this.#o.files.stat(agentFilePath(made.agent))?.etag !== read.etag) {
+      if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
         throw new Refusal("agent_changed", AGENT_CHANGED);
       }
       const done = { agent: made.agent, unattended: made.unattended,
@@ -342,7 +347,7 @@ export class Launcher implements RunHost {
     if (admitted.existing) {
       return admitted.run;
     }
-    const answer = await startOutcome("a run", () => this.#o.sandbox.start({
+    const start: SandboxStart = {
       run: admitted.run, agent, conversation: admitted.conversation,
       engine: admitted.engine, credential: admitted.credential, model: admitted.model,
       session_id: admitted.session_id, prompt: admitted.prompt, unattended,
@@ -351,7 +356,10 @@ export class Launcher implements RunHost {
       hosts: vendorHosts(admitted.engine, admitted.credential, null),
       route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
                                                       authority: admitted.authority }),
-      urls: runUrls(admitted.run, admitted.secret) }));
+      urls: runUrls(admitted.run, admitted.secret) };
+    const answer = await startOutcome("a run", () => this.#o.sandbox.start(start),
+                                      () => this.#o.door(() =>
+                                        this.runs.grant(admitted.run) !== null));
     await this.#o.door(() => {
       if (answer.started === null) {
         this.runs.settle(admitted.run, "unknown", answer.code, null, clock());

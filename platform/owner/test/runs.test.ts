@@ -14,7 +14,7 @@ import { egressTokenOf } from "../../contract/src/egress";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { AGENT_DISABLED, AGENT_UNDEFINED } from "../src/agent-file";
+import { AGENT_DISABLED, AGENT_UNDEFINED } from "../../contract/src/agent-definition";
 import { AUTHORITY_CHANGED } from "../src/authority";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
@@ -28,7 +28,7 @@ import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
-import { secretOf } from "../../ci/workerd";
+import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, spaceOf } from "./support";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
 
@@ -342,6 +342,52 @@ describe("a run's settle", () => {
       .toMatchObject({ state: "unknown", code: "lost" });
   });
 
+  it("fails on a call the engine gave up on, never one it retried itself and recovered",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-pi");
+    await defineAgent(r.stub, r.bind(), "main", { engine: "pi", credential: "api_key",
+                                                  connection, scopes: [] });
+    // pi 1.4.0's `--mode json` stream: each attempt's message ends, then pi says it retries.
+    const attempt = (said: string) => [
+      { type: "message_end", message: { role: "assistant", content: [], stopReason: "error",
+                                        errorMessage: said } },
+      { type: "agent_end", messages: [], willRetry: true },
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000,
+        errorMessage: said }];
+    const recovered = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, recovered.start), {
+      frames: frames({ type: "session", id: "sess-pi" }, ...attempt("529 overloaded")) });
+    const rest = [
+      { type: "message_end", message: { role: "assistant", stopReason: "stop",
+                                        content: [{ type: "text", text: "done" }] } },
+      { type: "auto_retry_end", success: true, attempt: 1 },
+      { type: "agent_end", messages: [], willRetry: false }];
+    expect(await r.stub.runEvents(runnerBinding(r, recovered.start), {
+      frames: rest.map((event, i) => ({ seq: 5 + i, at: 1_800_000_005 + i, event })),
+      end: { exit_code: 0 } })).toEqual({ accepted: 3, settled: "succeeded" });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: recovered.run.run_id }))
+      .toMatchObject({ state: "succeeded", result: "done", code: null, error: null });
+    const spent = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, spent.start), {
+      frames: frames(...attempt("529 overloaded"),
+                     { type: "message_end", message: { role: "assistant", content: [],
+                       stopReason: "error", errorMessage: "529 still overloaded" } },
+                     { type: "agent_end", messages: [], willRetry: false },
+                     { type: "auto_retry_end", success: false, attempt: 3,
+                       finalError: "529 still overloaded" }),
+      end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: spent.run.run_id }))
+      .toMatchObject({ state: "failed", code: "engine_error", error: "529 still overloaded" });
+    // The object's own refusal of a session id is no error of the engine's to withdraw.
+    const refused = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, refused.start), {
+      frames: frames({ type: "session", id: "has space" }, ...attempt("529 overloaded")),
+      end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: refused.run.run_id }))
+      .toMatchObject({ state: "failed", error: SESSION_REFUSED });
+  });
+
   it("keeps the run, its result and its session id and no frame as a row; a session id " +
      "outside its shape is refused and never kept", async () => {
     const r = await gated();
@@ -402,6 +448,54 @@ describe("a run's settle", () => {
     expect((await recorder(r.stub)).cancels).toHaveLength(2);
     // None holds the lease: the last live run's settle gave it back.
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    // A start with no answer is never sent again: it may have launched.
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === lost.run_id))
+      .toHaveLength(1);
+  });
+
+  it("sends a start refused for the moment again, the same start, while the run holds its " +
+     "grant; one whose wait ends past the bound, or whose run was cancelled, is failed by " +
+     "the refusal's own code", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    const submit = (id: string) => r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+                                                      { message: "x", client_send_id: id });
+    const overloaded = (retryAfterS: number) => ({ refuse: {
+      code: "object_overloaded", message: "this account is busy", retryAfterS } });
+    const sent = async (run: string) => (await gate.calls())
+      .filter((call) => call.method === "start"
+              && (call.args as [string, SandboxStart])[1].run === run)
+      .map((call) => (call.args as [string, SandboxStart])[1]);
+    await gate.arm("start", overloaded(0), 2);
+    const again = await submit("t-1");
+    expect(again).toMatchObject({ state: "running", code: null });
+    // Sent three times, each the same start (its tokens and secret with it), and launched once.
+    const starts = await sent(again.run_id);
+    expect(starts).toHaveLength(3);
+    expect(starts[1]).toEqual(starts[0]);
+    expect(starts[2]).toEqual(starts[0]);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === again.run_id))
+      .toHaveLength(1);
+    // A wait past `LANE_CALL_MS`: the refusal stands at once, and nothing is cancelled.
+    await gate.arm("start", overloaded(60));
+    const past = await submit("t-2");
+    expect(past).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await sent(past.run_id)).toHaveLength(1);
+    expect((await recorder(r.stub)).cancels).toEqual([]);
+    // Cancelled while its start waits: never sent again.
+    await gate.arm("start", overloaded(1));
+    const waiting = submit("t-3");
+    let run = "";
+    await until(async () => {
+      run = (await gate.calls()).filter((call) => call.method === "start")
+        .map((call) => (call.args as [string, SandboxStart])[1].run).at(-1) ?? "";
+      return run !== past.run_id && run !== again.run_id && run !== "";
+    }, "the refused start");
+    await r.stub.agentCancel(r.bind(), { run_id: run });
+    expect(await waiting).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await sent(run)).toHaveLength(1);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === run)).toEqual([]);
   });
 });
 

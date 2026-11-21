@@ -277,8 +277,9 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
  * `admission.ts`), which the run doors' admission reads, and the served records whose vendor
  * sign-in is switched on (`signinsRead`, of the catalog the doors serve, the `sources`
  * route's own), which the object's sign-in doors and its runs' admission hold to. No request
- * names either. Both kinds' parsers take the two as the doors read them, so the binding
- * stays its kind.
+ * names either. A record served from the doors' kept copy hands neither (`FRESH_ONLY`): the
+ * object keeps its own and starts no sign-in. Both kinds' parsers take the two as the doors
+ * read them, so the binding stays its kind.
  */
 export function withAccount<B extends AccountBinding | InboundBinding>(
     { binding, stub }: Bound<B>, read: ControlRead, sources: Sources): Bound<B> {

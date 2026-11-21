@@ -13,6 +13,8 @@ unmodified engines, among them a provider's CLI with its own loop in the
 user's sandbox; and the "paid tier only" limit on subscription CLIs, never a
 founder decision (founder, 2026-11-02), is withdrawn (ADR-034 decision 8).
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the trusted side runs outside every sandbox, as ADR-034 amended it (ADR-039 decision 2.13).
+
 ## Date
 
 2026-10-26

@@ -1,7 +1,13 @@
 /**
- * The runner's two refusals over what an agent's files hold, both pure (the runner reads
- * the files, `runner.ts`):
+ * The runner's refusals over what an agent's files hold, each pure (the runner reads the
+ * files, `runner.ts`):
  *
+ * - **The definition** (`sources/src/schema.ts` `Definition`): a run reads its agent's
+ *   definition and nothing beside it. It is refused while its cwd or an ancestor under
+ *   `/workspace` holds a file the engine would read instead of the agent's instructions
+ *   (`instructions.shadowed_by`) or as its own settings (`native.refuses`), or while the
+ *   instructions there hold more than the engine reads (`instructions.max_bytes`), which it
+ *   would cut unseen.
  * - **Project env files** (tasks, "Slice S verifies each engine record live"): a run's
  *   environment is the allow-list alone, but an agent can write the files a CLI loads
  *   variables or a credential helper from in its working directory (Claude's
@@ -18,8 +24,54 @@
  *   least `ATOM_MIN` characters; a file holding any is refused whole, whatever path it was
  *   written to.
  */
-import { forbids } from "../../contract/src/text";
-import { CREDENTIAL_NAME } from "../../sources/src/check";
+import { dirname } from "node:path";
+
+import { WORKSPACE } from "../../contract/src/paths";
+import { CREDENTIAL_NAME, forbids } from "../../contract/src/text";
+import type { Definition } from "../../sources/src/schema";
+
+/** Why a run is refused for what its engine would read beside its definition, or cut of it. */
+export type DefinitionRefusal =
+  | { readonly code: "instructions_shadowed" | "engine_settings_refused";
+      readonly path: string }
+  | { readonly code: "instructions_too_large"; readonly paths: readonly string[];
+      readonly bytes: number; readonly max_bytes: number };
+
+/**
+ * Why the run is refused, from what its cwd and each of its ancestors under `/workspace` hold
+ * (`bytesOf`: a path's size, null when nothing is there), or null. The instructions are counted
+ * together, as an engine that reads every copy gets them.
+ */
+export function definitionRefusal(definition: Definition, cwd: string,
+                                  bytesOf: (path: string) => number | null):
+    DefinitionRefusal | null {
+  const dirs = [cwd];
+  for (let dir = dirname(cwd); dir === WORKSPACE || dir.startsWith(`${WORKSPACE}/`);
+       dir = dirname(dir)) {
+    dirs.push(dir);
+  }
+  const { instructions, native } = definition;
+  for (const [code, names] of [["instructions_shadowed", instructions.shadowed_by],
+                               ["engine_settings_refused", native.refuses]] as const) {
+    for (const path of dirs.flatMap((dir) => names.map((name) => `${dir}/${name}`))) {
+      if (bytesOf(path) !== null) {
+        return { code, path };
+      }
+    }
+  }
+  if (instructions.max_bytes === undefined) {
+    return null;
+  }
+  const read = dirs.map((dir) => `${dir}/${instructions.file}`)
+    .flatMap((path) => {
+      const bytes = bytesOf(path);
+      return bytes === null ? [] : [{ path, bytes }];
+    });
+  const bytes = read.reduce((total, each) => total + each.bytes, 0);
+  return bytes <= instructions.max_bytes ? null
+    : { code: "instructions_too_large", paths: read.map((each) => each.path), bytes,
+        max_bytes: instructions.max_bytes };
+}
 
 /** A settings key naming a credential helper. */
 const HELPER_KEY = /helper/i;

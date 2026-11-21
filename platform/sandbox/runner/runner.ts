@@ -73,7 +73,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
 import { CODE_LOADING_ENV, RUN_BASICS } from "../../sources/src/run-env";
-import type { Decide } from "../../sources/src/schema";
+import type { Decide, Definition } from "../../sources/src/schema";
 import { type Served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { DECIDE_HEADER, decideDoor, RUNNER_HEADER } from "../../contract/src/egress";
@@ -87,9 +87,9 @@ import { DECIDE_ENV, DECIDE_MS, decideCommand, helperArgv, helperCommand,
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
-import { ancestorEnvFile, envScanReach, homeEnvFile, projectEnvFile,
+import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
-import { project } from "./project";
+import { project, skillsOf } from "./project";
 import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
          scratchCleared, type ScratchCleared,
          markUsed,
@@ -775,7 +775,7 @@ async function syncLocked(job: SyncJob): Promise<number> {
         await syncIn(client, place, mirror);
         const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
         const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
-        const made = project(WORKSPACE, job.agent, record(job.engine).cli.skills_paths,
+        const made = project(WORKSPACE, job.agent, record(job.engine).cli.definition.skills.paths,
                              previous);
         safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
         process.stdout.write(JSON.stringify({ ok: true }));
@@ -966,6 +966,22 @@ class Poster {
 
 class RunRefused extends Error {
   override readonly name = "RunRefused";
+}
+
+/**
+ * Refuses the run, saying why, while its cwd or an ancestor under `/workspace` holds what its
+ * engine would read beside its definition, or instructions past what it reads
+ * (`definitionRefusal`). Checked before each start of the CLI, so a file the agent wrote
+ * mid-run never reaches a resumed one. Root follows no link of the agent's: a link counts as
+ * itself (the sync carries none, so the owner's files are measured whole).
+ */
+function definitionHeld(definition: Definition, cwd: string, outbox: Outbox): void {
+  const refusal = definitionRefusal(definition, cwd, (path) =>
+    lstatSync(path, { throwIfNoEntry: false })?.size ?? null);
+  if (refusal !== null) {
+    outbox.push({ type: "ta.refused", ...refusal });
+    throw new RunRefused(refusal.code);
+  }
 }
 
 /**
@@ -1195,8 +1211,9 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     const asked = door === null ? null : await hookTools(door.url, door.credential);
     const hook = asked === null ? {} : { hook: { tools: asked.tools, digest: ownDigest() } };
     const hooked = asked !== null && asked.tools.length > 0;
+    const skills = [...skillsOf(WORKSPACE, start.agent).values()];
     let call = invocation(rec, start, process.env, {
-      continued, home, system, ...hook,
+      continued, home, system, skills, ...hook,
       ...(conversationDir === undefined ? {} : { conversationDir }),
       ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
     await writeShared(rec.id, call.shared, asked?.generation ?? 0);
@@ -1210,27 +1227,24 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         if (conversationDir !== undefined) {
           lchownSync(conversationDir, as.uid, as.gid);
         }
-        // The env files the CLI would load: never one that sets what the run's own
-        // environment does not take, nor, for a hooked run, the decide credential or a
-        // variable that loads code, which would reach the hook.
+        // Before each start of the CLI, a resume's too: the env files it would load, never
+        // one that sets what the run's own environment does not take, nor, for a hooked run,
+        // the decide credential or a variable that loads code, which would reach the hook;
+        // and nothing beside the agent's definition.
         const forbid = [...cli.per_credential?.[start.credential]?.forbid_env ?? [],
                         ...(hooked ? [DECIDE_ENV, ...CODE_LOADING_ENV] : [])];
-        const found = envFiles(home, call.cwd, call.files);
-        const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
-          ?? projectEnvRefusal(found.project, forbid)
-          ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
-        if (refusal !== null) {
-          outbox.push({ type: "ta.refused", ...refusal });
-          throw new RunRefused(refusal.code);
-        }
-        // A settings file the CLI would load beside the hook, which the agent can write:
-        // never while a rule needs the hook (the record's `refuses`).
-        const beside = (hooked ? decide!.refuses ?? [] : []).find((rel) =>
-          lstatSync(join(call.cwd, rel), { throwIfNoEntry: false }) !== undefined);
-        if (beside !== undefined) {
-          outbox.push({ type: "ta.refused", code: "hook_settings_refused", path: beside });
-          throw new RunRefused("hook_settings_refused");
-        }
+        const held = () => {
+          const found = envFiles(home, call.cwd, call.files);
+          const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
+            ?? projectEnvRefusal(found.project, forbid)
+            ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
+          if (refusal !== null) {
+            outbox.push({ type: "ta.refused", ...refusal });
+            throw new RunRefused(refusal.code);
+          }
+          definitionHeld(cli.definition, call.cwd, outbox);
+        };
+        held();
         if (hooked) {
           await startCheck(as, call, decide!, door!.url);
         }
@@ -1289,11 +1303,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           }
           await killAll(as);
           call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-            continued: true, home, system, prompt: CONTINUE_PROMPT, ...hook,
+            continued: true, home, system, prompt: CONTINUE_PROMPT, skills, ...hook,
             ...(conversationDir === undefined ? {} : { conversationDir }) });
           if (!call.resumed) {
             break;
           }
+          held();
           outbox.push({ type: "ta.resumed", after: "renewal" });
         }
       } finally {

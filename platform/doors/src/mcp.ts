@@ -17,8 +17,8 @@
  * caller the object refuses (no grant, a revoked one, an ended run) is answered that
  * refusal, and no tool. An owner refusal or invalid request is the tool's error result,
  * with its reason; anything else is a bug, logged in full and failing the call as
- * `internal error`. The `Origin` and token checks run before this (`doors.ts`,
- * `oauth.ts`); the handler is deliberately validation-free.
+ * `internal error`. The `Origin` and credential checks (an owner's key or an OAuth token) run
+ * before this (`doors.ts`); the handler is deliberately validation-free.
  *
  * **Each result is sent once, as text** (memory_research.md §3): one `text` block holding
  * the result's JSON, and no `structuredContent`. No tool declares an `outputSchema`, so the
