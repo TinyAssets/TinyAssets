@@ -73,8 +73,8 @@ the refusal's own `transient` and `retryAfter`, as `asShared` and `asRedirect` r
 answer and no code is named. `EVENT_ERRORS` gains `internal`. The doors spec's MCP Events
 requirement says it.
 
-**Tests:** `doors/test/refused.test.ts` (a closed gate's, a restore's and a refusal's own
-wait), and `doors/test/events.test.ts`, a full pool's refusal of the object's `wakeEvents`
+**Tests:** `doors/test/refused.test.ts` (a closed gate's, a restore's, a refusal's own
+wait, and an overloaded object's error as `refusalOf` reads it), and `doors/test/events.test.ts`, a full pool's refusal of the object's `wakeEvents`
 across its real RPC answered `-32603` with a second, then the same subscribe succeeding.
 
 ## Found and left
