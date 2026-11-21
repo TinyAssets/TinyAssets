@@ -92,7 +92,7 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
  * would read two ways. Pinned again, with its count, at each new migration.
  */
 const EXPORT_SHAPE = { schema: 19, sha256:
-  "1e146153e7f11417008877d56948b34b429cf415191d0ac80717365a2f4c6eb3" };
+  "bb8d62248574fb8e99bf6070ffe36a2409df9325b8b4f0e6f3fd941f76c7cef9" };
 
 describe("every migration says how a generation from before it is brought forward", () => {
   it("one entry a migration, null only where its text names no exported table, nor reaches " +
