@@ -18,11 +18,6 @@ sys.path.insert(0, str(_ROOT / "scripts"))
 
 import queue_attempts as qa  # noqa: E402
 
-pytestmark = pytest.mark.verifies(
-    "ci-linux-proof-venue:"
-    "A merge-queue removal counts against a head only for a test its diff selected",
-)
-
 
 def test_vitest_and_pytest_failures_are_read_from_a_jobs_log() -> None:
     owner = "\n".join([

@@ -24,10 +24,6 @@ def _git(cwd: Path, *args: str) -> str:
     os.name == "nt",
     reason="the dev box's primary checkout is healed by design; owner=sync-gate runs-in=linux-ci",
 )
-@pytest.mark.verifies(
-    "development-coordination-runtime:Session Orientation Reports Repository Freshness Without "
-    "Mutating Work"
-)
 def test_a_dirty_session_branch_survives_a_compact_session_start(tmp_path: Path):
     origin = tmp_path / "origin.git"
     seed = tmp_path / "seed"

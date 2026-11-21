@@ -59,9 +59,6 @@ def _unexplained(root, base, text):
 _HEAD = "import pytest\n\ndef test_a():\n    assert True\n\n"
 
 
-@pytest.mark.verifies(
-    "development-coordination-runtime:A new skip names its owner and where it runs"
-)
 def test_skip_metadata_on_the_following_line_passes(repo):
     root, base = repo
     text = _HEAD + (
@@ -76,9 +73,6 @@ def test_skip_metadata_on_the_following_line_passes(repo):
     assert _unexplained(root, base, text) == []
 
 
-@pytest.mark.verifies(
-    "development-coordination-runtime:A new skip names its owner and where it runs"
-)
 def test_skip_metadata_in_a_string_or_far_away_does_not_count(repo):
     root, base = repo
     text = _HEAD + (

@@ -1,13 +1,12 @@
-#!/usr/bin/env python3
 """What a Python test file holds, read as text: its tests, their bodies, their skips.
 
 The counterpart of ``platform_tests.py``. The tamper check (``test_hygiene_gate.py``) reads
 a pull request's test files with ``ast.parse`` inside ``pull_request_target`` and imports
-nothing from them; the weekly inventory (``test_inventory.py``) reads ``tests/`` the same way.
-Both take a test, a marker and an environment guard from here, so the report and the gate agree.
+nothing from them. Every reader of a test's shape takes a test, a marker and an environment
+guard from here, so a report and the gate agree.
 
 * A test file is one pytest collects by its default rule: ``test_*.py`` or ``*_test.py``
-  under a ``tests/`` folder, at any depth (``tests/``, ``scripts/tests/``).
+  under a ``tests/`` folder, at any depth.
 * A test is a ``test*`` function at module level or in a ``Test*`` class.
 * A marker is a skip, skipif, xfail or importorskip, as a decorator, a ``pytestmark``, a
   call, or a ``pytest.param(marks=...)`` entry, through any alias of pytest or unittest.

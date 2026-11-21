@@ -12,11 +12,6 @@ _SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SCRIPTS))
 import review_checks as gate  # noqa: E402
 
-pytestmark = pytest.mark.verifies(
-    "development-coordination-runtime:"
-    "A review verdict is a check run only the review App posts"
-)
-
 A = "a" * 40
 HEAD = "b" * 40
 
