@@ -42,6 +42,7 @@
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
  *   passed. It limits nothing: the founder's cost view.
  */
+import { type RefusalCode, refusalOf } from "../../contract/src/refusal";
 import { keyed } from "../../contract/src/checks";
 import {
   type CredentialKind, type SandboxService, START_CODES, type Started,
@@ -88,8 +89,44 @@ export function vendorHosts(engine: string, credential: CredentialKind,
   return credential === "vendor_login_in_sandbox" ? engineHosts(engine, region) : [];
 }
 
-/** A start's answer, checked: a refusal's code is one of the contract's start codes. */
-export function started(value: unknown): Started {
+/** A start that did not answer: whether its job launched is not known. */
+const START_LOST = "start_lost";
+/** A start answered out of the contract's shape: the sandbox Worker's bug. */
+const START_MALFORMED = "start_malformed";
+
+/**
+ * What came of a start, a run's or a sign-in's, as the object acts on it:
+ * - the sandbox's answer (`Started`): started, or one of the contract's start codes;
+ * - a refusal it threw, by its code: the sandbox Worker refuses only before it launches
+ *   anything (its runner's two alerts, `sandbox/src/control.ts`), so nothing started;
+ * - `started: null`: no answer the object can read, so the job may have launched. Either the
+ *   call threw (`START_LOST`: its answer lost on the way, or the sandbox Worker's own fault,
+ *   which crosses as a plain error the object cannot tell from a loss), or it answered out
+ *   of shape (`START_MALFORMED`).
+ */
+export type StartOutcome = Started
+  | { readonly started: false; readonly code: RefusalCode }
+  | { readonly started: null; readonly code: typeof START_LOST | typeof START_MALFORMED };
+
+/**
+ * What came of `start`, a call to the sandbox Worker's `start` or `signin` for `job` (as its
+ * log lines name it), each cause but a start logged as itself. Its answer is read outside
+ * the call's catch, so one out of shape is never taken for a lost start.
+ */
+export async function startOutcome(job: "a run" | "a sign-in", start: () => Promise<unknown>):
+    Promise<StartOutcome> {
+  let value: unknown;
+  try {
+    value = await start();
+  } catch (error) {
+    const refusal = refusalOf(error);
+    if (refusal !== null) {
+      console.error(`the sandbox refused ${job}'s start (${refusal.code}): nothing started`);
+      return { started: false, code: refusal.code };
+    }
+    console.error(`${job}'s start did not answer: whether it launched is unknown`, error);
+    return { started: null, code: START_LOST };
+  }
   if (keyed(value, ["started"]) && value["started"] === true) {
     return { started: true };
   }
@@ -98,5 +135,7 @@ export function started(value: unknown): Started {
   if (code !== undefined) {
     return { started: false, code };
   }
-  throw new Error("the sandbox's start answered out of shape");
+  console.error(`the sandbox answered ${job}'s start out of the contract's shape, a sandbox ` +
+                "Worker bug: whether it launched is unknown");
+  return { started: null, code: START_MALFORMED };
 }

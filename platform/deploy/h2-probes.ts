@@ -4,7 +4,7 @@
  * script in production. Each probe is a measurement printed as a row, never a pass a mock could
  * fake; a probe whose answer is a transport failure stops the run loudly.
  *
- * Inputs (environment): TA_DOORS_URL (default https://tinyassets.io); TA_PROBE_KEY, an API
+ * Inputs (environment): TA_DOORS_URL (default the doors' `ORIGIN`); TA_PROBE_KEY, an API
  * key of probe owner A whose grant holds read_graph (code mode is on by default);
  * TA_PROBE_KEY_B, owner B's; and, for the revoke probe, TA_PROBE_APP_TOKEN (owner A's
  * first-party token) and TA_PROBE_KEY_ID (the id of TA_PROBE_KEY, which that probe

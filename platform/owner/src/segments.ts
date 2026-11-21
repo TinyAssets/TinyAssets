@@ -722,36 +722,31 @@ export class ImageDigest {
 }
 
 /**
- * A members bloom of 64 bytes (three bits a member): which agents' rooms a segment holds,
- * so a purge rewrites only the segments that may hold its agent's mail. A false positive
+ * A rooms bloom of 64 bytes (three bits a room): which rooms a segment's records are in, so a
+ * purge rewrites only the segments that may hold a deleted agent's rooms. A false positive
  * costs one trailer read; there are no false negatives.
  */
 export const BLOOM_BYTES = 64;
 
-function bloomBits(member: string): number[] {
-  const hash = sha256(member);
+function bloomBits(key: string): number[] {
+  const hash = sha256(key);
   return [0, 2, 4].map((at) => hash.readUInt16BE(at) % (BLOOM_BYTES * 8));
 }
 
-/** A bloom of `members`. */
-export function bloomOf(members: Iterable<string>): Uint8Array {
+/** A bloom of `keys`. */
+export function bloomOf(keys: Iterable<string>): Uint8Array {
   const bloom = new Uint8Array(BLOOM_BYTES);
-  for (const member of members) {
-    for (const bit of bloomBits(member)) {
+  for (const key of keys) {
+    for (const bit of bloomBits(key)) {
       bloom[bit >> 3]! |= 1 << (bit & 7);
     }
   }
   return bloom;
 }
 
-/** Whether `bloom` may hold `member`. */
-export function bloomHas(bloom: Uint8Array, member: string): boolean {
-  return bloomBits(member).every((bit) => (bloom[bit >> 3]! & (1 << (bit & 7))) !== 0);
-}
-
-/** A pair's room's members (`dm:<a>`, the owner and `a`; `dm:<a>+<b>`). */
-export function roomMembers(room: string): string[] {
-  return room.startsWith("dm:") ? room.slice(3).split("+") : [];
+/** Whether `bloom` may hold `key`. */
+export function bloomHas(bloom: Uint8Array, key: string): boolean {
+  return bloomBits(key).every((bit) => (bloom[bit >> 3]! & (1 << (bit & 7))) !== 0);
 }
 
 // -- Ids that carry their order key ----------------------------------------------------------

@@ -26,6 +26,7 @@ import { CREDENTIAL_NAME, sealedSource, sourceRecord } from "../src/check";
 import { RUN_BASICS, runEnv } from "../src/run-env";
 import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
 import { supportedApis } from "../../contract/src/api-rules";
+import { readEvent } from "../../contract/src/run-events";
 import { forbids } from "../../contract/src/text";
 import { RECORDS_DIR, recordFiles } from "../write-records";
 
@@ -463,6 +464,88 @@ describe("the engine records", () => {
     expect(engines.filter((record) => record.cli!.engine.stdin === undefined)
       .map((record) => record.id)).toEqual(["kimi"]);
   });
+
+  // Each as its pinned CLI reports it (its source, read 2026-11-21): the vendor's limit, with
+  // the reset it states, and an event of the same kind that is no limit.
+  const LIMITS: Record<string, { limit: [unknown, number | null][]; not: unknown[] }> = {
+    "claude-code": {
+      limit: [[{ type: "rate_limit_event", session_id: "s", rate_limit_info: {
+        status: "rejected", resetsAt: 1_790_000_000, rateLimitType: "five_hour",
+        isUsingOverage: false } },
+               1_790_000_000],
+              [{ type: "assistant", message: { content: [] }, error: "billing_error" }, null],
+              [{ type: "assistant", message: { content: [] }, error: "rate_limit" }, null]],
+      // Rejected, though the plan's paid extra usage serves the call.
+      not: [{ type: "rate_limit_event", rate_limit_info: { status: "rejected",
+                                                           isUsingOverage: true } },
+            { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning",
+                                                           resetsAt: 1_790_000_000 } },
+            { type: "system", subtype: "api_retry", attempt: 1, error_status: 429,
+              error: "rate_limit" },
+            { type: "assistant", message: { content: [] }, error: "server_error" }],
+    },
+    codex: {
+      limit: [[{ type: "turn.failed", error: { message: "You’ve hit your usage limit. " +
+        "Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus)," } }, null],
+              [{ type: "turn.failed", error: {
+                message: "Quota exceeded. Check your plan and billing details." } }, null],
+              [{ type: "turn.failed", error: {
+                message: "Your workspace is out of credits. Add credits to continue." } }, null],
+              [{ type: "turn.failed", error: {
+                message: "exceeded retry limit, last status: 429 Too Many Requests" } }, null]],
+      not: [{ type: "turn.failed", error: { message: "stream disconnected before completion" } },
+            { type: "turn.failed", error: {
+              message: "exceeded retry limit, last status: 500 Internal Server Error" } }],
+    },
+    gemini: {
+      limit: [[{ type: "result", status: "error", error: { type: "TerminalQuotaError",
+                                                         message: "quota" } }, null],
+              [{ type: "result", status: "error", error: { type: "RetryableQuotaError",
+                                                         message: "quota" } }, null]],
+      not: [{ type: "result", status: "error", error: { type: "FatalToolExecutionError",
+                                                       message: "quota" } }],
+    },
+    kimi: {
+      limit: [[{ type: "ta.stderr", text: "provider.rate_limit: 429 Too Many Requests" }, null],
+              [{ type: "ta.stderr", text: "provider.api_error: You exceeded your current " +
+                 "token quota" }, null]],
+      // An MCP server or hook the agent runs writes to the CLI's stderr too.
+      not: [{ type: "ta.stderr", text: "provider.auth_error: invalid api key" },
+            { type: "ta.stderr", text: "wallet: insufficient balance\nprovider.api_error: 500" }],
+    },
+    pi: {
+      limit: [[{ type: "auto_retry_end", success: false, attempt: 3,
+                  finalError: "OpenAI error (429): Rate limit reached for gpt-5" }, null],
+              [{ type: "message_end", message: { role: "assistant", stopReason: "error",
+        errorMessage: "insufficient_quota: You exceeded your current quota" } }, null]],
+      // A 429 pi retries itself (`isRetryableAssistantError`), as Claude's `api_retry`.
+      not: [{ type: "message_end", message: { role: "assistant", stopReason: "error",
+        errorMessage: "OpenAI error (429): Rate limit reached for gpt-5" } },
+            { type: "auto_retry_end", success: true, attempt: 1 },
+            { type: "message_end", message: { role: "assistant", stopReason: "error",
+        errorMessage: "Connection closed by proxy server before the response completed" } },
+            { type: "message_end", message: { role: "assistant", stopReason: "stop",
+        errorMessage: "rate limit" } }],
+    },
+  };
+
+  it.each(Object.keys(LIMITS))("read %s's own report of the vendor's limit, and no other",
+                               (id) => {
+    const events = engines.find((record) => record.id === id)!.cli!.engine.events;
+    for (const [event, reset] of LIMITS[id]!.limit) {
+      expect(readEvent(events, event).vendor_limit, JSON.stringify(event)).toEqual({ reset });
+    }
+    for (const event of LIMITS[id]!.not) {
+      expect(readEvent(events, event).vendor_limit, JSON.stringify(event)).toBeNull();
+    }
+    expect(Object.keys(LIMITS).sort()).toEqual(engines.map((record) => record.id).sort());
+  });
+
+  it("read Claude Code's own retry as no error: a call it recovers is no failed run", () => {
+    const events = engines.find((record) => record.id === "claude-code")!.cli!.engine.events;
+    expect(readEvent(events, { type: "system", subtype: "api_retry", attempt: 1,
+                               error_status: 429, error: "rate_limit" }).error).toBeNull();
+  });
 });
 
 describe("an engine record that does not fit", () => {
@@ -564,6 +647,16 @@ describe("an engine record that does not fit", () => {
     ["an event path that is not dotted", cli((s) => {
       at(s, "engine.events")["usage"] = [{ match: { type: "result" }, path: "a..b" }]; })],
     ["an event format that is not one", cli((s) => { at(s, "engine.events")["format"] = "xml"; })],
+    ["no vendor_limit list", cli((s) => { delete at(s, "engine.events")["vendor_limit"]; })],
+    ["an event pattern that does not compile", cli((s) => {
+      at(s, "engine.events")["vendor_limit"] = [{ match: { type: "result" },
+                                                  pattern: { result: "(" }, path: "" }]; })],
+    ["an empty event pattern", cli((s) => {
+      at(s, "engine.events")["vendor_limit"] = [{ match: { type: "result" },
+                                                  pattern: { result: "" }, path: "" }]; })],
+    ["an event pattern map with none", cli((s) => {
+      at(s, "engine.events")["vendor_limit"] = [{ match: { type: "result" }, pattern: {},
+                                                  path: "" }]; })],
     ["an MCP config with no door URL", cli((s) => {
       at(s, "mcp")["template"] = "{\"mcpServers\": {\"t\": {\"url\": \"https://example.com/mcp\"}}}";
     })],

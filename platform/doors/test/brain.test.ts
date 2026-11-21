@@ -7,6 +7,7 @@
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ORIGIN } from "../../contract/src/identity";
 
 import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "../src/instructions";
 import { mcpOrigin } from "../src/binder";
@@ -108,7 +109,7 @@ describe("dynamic registration (the founder's ruling: for vendors with no CIMD)"
     expect((await register(doorsEnv, "Grok")).status).toBe(404);
     const metadata = await (await call(new Request(
       url("/.well-known/oauth-authorization-server")), on)).json<Record<string, unknown>>();
-    expect(metadata["registration_endpoint"]).toBe("https://tinyassets.io/oauth/register");
+    expect(metadata["registration_endpoint"]).toBe(`${ORIGIN}/oauth/register`);
   });
 
   it("takes no registration for a vendor whose redirects are not recorded yet, a CIMD " +
