@@ -33,7 +33,7 @@
  *   (`sandbox/template/checks.ts pair`).
  * - `control` (the operator path, `operator.ts`): the control record edited in KV by
  *   `--set`'s edits, from `--replace`'s whole record in place of the live one, never through
- *   the doors; written only when `parseControl` takes it, the record it replaces kept first
+ *   the doors; written only when `controlOf` takes it, the record it replaces kept first
  *   and the write read back.
  * - `owner` (the operator path): `--act`'s op asked of the doors for `--owner` through the
  *   operator channel, and their answer said, with the owner's state before and after.
@@ -132,7 +132,7 @@ import { migrated } from "../ci/kit/locks.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
-import { closedToAll, CONTROL_KEY, parseControl } from "../contract/src/control.ts";
+import { closedToAll, CONTROL_KEY, controlOf } from "../contract/src/control.ts";
 import { EGRESS_HOST } from "../contract/src/egress.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import {
@@ -1453,7 +1453,7 @@ const KEPT_PREFIX = "deploy:control:";
  * Mode `control`: the control record edited in KV, never through the doors, so the kill
  * switch works when they don't. The edits apply to the live record, or to `--replace`'s whole
  * record in its place, which a missing or malformed live record needs; the result is written
- * only when `parseControl`, every reader's parser, takes it and it differs. Before the write
+ * only when `controlOf`, every reader's parser, takes it and it differs. Before the write
  * the live record is kept under the run's id (a re-run attempt keeps what its first kept);
  * after it, the record is read back and held to what was written.
  */
@@ -1472,16 +1472,17 @@ const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   } catch {
     // Not JSON: the bytes themselves, which only --replace replaces.
   }
-  if (run.replace === undefined && parseControl(live) === null) {
+  if (run.replace === undefined && (held === undefined || controlOf(held) === null)) {
     throw new Error(`the control record is ${held === undefined ? "missing"
       : `one no reader takes: ${held}`}; give the whole record with --replace; nothing is ` +
                     "changed");
   }
   const record = edited(run.replace ?? live, run.edits);
-  const control = parseControl(record);
+  const text = JSON.stringify(record);
+  const control = controlOf(text);
   if (control === null) {
-    throw new Error("the control record as edited is one no reader takes (parseControl): " +
-                    `${JSON.stringify(record)}; nothing is changed`);
+    throw new Error(`the control record as edited is one no reader takes (controlOf): ${text}; ` +
+                    "nothing is changed");
   }
   const changes = differences(live, record);
   if (changes.length === 0) {
@@ -1501,7 +1502,6 @@ const controlEdit = step<"cloudflare" | "account">(async ({ run, say }, got) => 
       && await got.cloudflare.text(got.account, namespace, kept) === undefined) {
     await putOrStop(got, namespace, kept, held);
   }
-  const text = JSON.stringify(record);
   await putOrStop(got, namespace, CONTROL_KEY, text);
   const back = await got.cloudflare.text(got.account, namespace, CONTROL_KEY);
   if (back !== text) {

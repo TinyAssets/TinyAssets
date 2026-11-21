@@ -35,6 +35,7 @@ import {
   SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
 } from "../../sources/src/signin";
 
+import { staleRefusal } from "../../contract/src/control";
 import { Refusal } from "../../contract/src/refusal";
 import {
  ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
@@ -436,8 +437,12 @@ export const signinsDoors = Object.freeze({
       if (mode !== "in" && mode !== "out") {
         throw new Refusal("invalid", "a sign-in's mode is in or out");
       }
-      // A sign-in sits behind its source's switch; a sign-out never does, so a login is
-      // always removable.
+      // A sign-in sits behind its source's switch, read fresh (a binding that hands no
+      // switches was served from a kept copy); a sign-out never does, so a login is always
+      // removable.
+      if (mode === "in" && binding.signins === undefined) {
+        throw staleRefusal("signin");
+      }
       if (mode === "in" && !switchedOn(o.storage, binding.signins, clock()).has(rec.id)) {
         throw new Refusal("signin_off", SIGNIN_OFF);
       }

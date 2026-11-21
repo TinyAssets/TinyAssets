@@ -2924,7 +2924,7 @@ describe("the operator path's modes", () => {
   ])("control never writes %s", async (_what, edit) => {
     const w = world({ held: true });
     await expect(runMode(w, "control", ["--yes", "--set", edit]))
-      .rejects.toThrow(/no reader takes \(parseControl\)|is no list to add to/);
+      .rejects.toThrow(/no reader takes \(controlOf\)|is no list to add to/);
     expect(writes(w)).toEqual([]);
     expect(live(w)).toEqual(DARK);
   });
@@ -2959,7 +2959,7 @@ describe("the operator path's modes", () => {
   ])("control refuses %s, a key no reader keeps, and touches no prototype", async (edit) => {
     const w = world({ held: true });
     await expect(runMode(w, "control", ["--yes", "--set", edit]))
-      .rejects.toThrow(/no reader takes \(parseControl\)|is inside no object/);
+      .rejects.toThrow(/no reader takes \(controlOf\)|is inside no object/);
     expect(writes(w)).toEqual([]);
     expect(live(w)).toEqual(DARK);
     expect(Object.keys(Object.prototype)).toEqual([]);

@@ -55,6 +55,7 @@ import {
 } from "../../contract/src/identity";
 import { SIGN_IN_MAX_AGE_S } from "../../contract/src/signin";
 import { outsideRead, ownerRead } from "./control";
+import { requireFresh } from "../../contract/src/control";
 import { putOwner, readOwner } from "./directory";
 import { Refusal } from "../../contract/src/refusal";
 import { authorizationServer } from "./oauth";
@@ -323,7 +324,7 @@ async function granting(env: DoorsEnv, oauth: OAuthHelpers, upstream: Upstream,
   }
   const scope = granted(original.scope);
   if (original.resource === MCP_RESOURCE && !firstParty(original)) {
-    await outsideRead(env, owner);
+    requireFresh(await outsideRead(env, owner), "authorization");
     if (record === null) {
       await admit(env, owner);
     }
@@ -343,8 +344,9 @@ async function granting(env: DoorsEnv, oauth: OAuthHelpers, upstream: Upstream,
     return redirect(redirectTo, headers);
   }
   if (original.resource === APP_RESOURCE && firstParty(original)) {
-    await ownerRead(env, owner);
+    const gate = await ownerRead(env, owner);
     if (record === null) {
+      requireFresh(gate, "admit");
       await admit(env, owner);
     }
     const { binding, stub } = await bindSignIn(env, signedIn);
