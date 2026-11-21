@@ -111,7 +111,10 @@ describe("the old policy, mapped", () => {
         .toEqual({ problem: "policy_spend" });
     }
     for (const text of ["{", old([], { egress: { mode: "everywhere", destinations: [] } }),
-                        old([rule("teleport", "do")]), old([], { extra: 1 })]) {
+                        old([rule("teleport", "do")]), old([], { extra: 1 }),
+                        old([], { spend: { ...SPEND, source_ceilings: null } }),
+                        old([{ ...rule("share", "do"), extra: 1 }]),
+                        old([], { egress: { mode: "open", destinations: [], extra: 1 } })]) {
       expect(mapPolicy(text)).toEqual({ problem: "policy_unreadable" });
     }
   });

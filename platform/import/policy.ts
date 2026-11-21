@@ -98,21 +98,26 @@ interface Old {
                      readonly destinations: readonly { host: string; port: number }[] };
 }
 
-/** The old shape, as much of it as the mapping reads; null when it is not that shape. */
+/**
+ * The old shape, its key sets as `_validate` held them, as much of the rest as the mapping
+ * reads; null when it is not that shape.
+ */
 function oldShape(document: unknown): Old | null {
   if (!keyed(document, ["entries", "spend"], ["egress"]) || !Array.isArray(document["entries"])
-      || !keyed(document["spend"], SPEND)) {
+      || !keyed(document["spend"], SPEND) || !object(document["spend"]["source_ceilings"])) {
     return null;
   }
   const egress = document["egress"] ?? { mode: "open", destinations: [] };
-  if (!object(egress) || !["open", "allowlist", "ask"].includes(egress["mode"] as string)
+  if (!keyed(egress, ["mode", "destinations"])
+      || !["open", "allowlist", "ask"].includes(egress["mode"] as string)
       || !Array.isArray(egress["destinations"])
-      || !egress["destinations"].every((entry) => object(entry)
+      || !egress["destinations"].every((entry) => keyed(entry, ["host", "port"])
         && typeof entry["host"] === "string" && typeof entry["port"] === "number")) {
     return null;
   }
   const entries = document["entries"] as unknown[];
-  if (!entries.every((entry) => object(entry) && entry["scope"] === "account"
+  if (!entries.every((entry) => keyed(entry, ["scope", "table", "values"])
+      && entry["scope"] === "account"
       && TABLES.includes(entry["table"] as string) && object(entry["values"])
       && (entry["table"] !== "rules"
           || (BEHAVIOURS.includes(entry["values"]["behaviour"] as Behaviour)
