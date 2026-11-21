@@ -25,18 +25,21 @@ import type {
 
 import type { SandboxControl } from "./control";
 import type { SandboxEnv } from "./env";
-import { SLOTS } from "./slots";
 
 export { SandboxControl } from "./control";
 export { SandboxSlots } from "./slots";
 
 export class Sandbox extends WorkerEntrypoint<SandboxEnv> implements SandboxService {
+  /**
+   * The owner's control, the one place a call's owner is read: every method acts through it,
+   * and it acts only for the owner it is named by, so no method passes the owner on.
+   */
   #owner(owner: string): DurableObjectStub<SandboxControl> {
     return this.env.SANDBOXES.getByName(principal(owner));
   }
 
   async start(owner: string, start: SandboxStart): Promise<Started> {
-    return this.#owner(owner).start(owner, start);
+    return this.#owner(owner).start(start);
   }
 
   async cancel(owner: string, request: { run: string }): Promise<{ cancelled: boolean }> {
@@ -48,7 +51,7 @@ export class Sandbox extends WorkerEntrypoint<SandboxEnv> implements SandboxServ
   }
 
   async signin(owner: string, signin: SandboxSignin): Promise<Started> {
-    return this.#owner(owner).signin(owner, signin);
+    return this.#owner(owner).signin(signin);
   }
 
   async signinInput(owner: string, request: { authority: string; id: string; code: string }):
@@ -66,11 +69,11 @@ export class Sandbox extends WorkerEntrypoint<SandboxEnv> implements SandboxServ
   }
 
   async unwait(owner: string): Promise<void> {
-    await this.env.SLOTS.getByName(SLOTS).leave(principal(owner));
+    await this.#owner(owner).unwait();
   }
 
   async erase(owner: string): Promise<{ killed: number }> {
-    return this.#owner(owner).erase(principal(owner));
+    return this.#owner(owner).erase();
   }
 
   async meter(owner: string, request: { after: number }):

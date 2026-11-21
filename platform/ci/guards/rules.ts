@@ -11,15 +11,14 @@ const cutover = (what: string): Owed => Object.freeze({ guard: "cutover", what, 
 export const OWED: readonly Owed[] = Object.freeze([
   // Mostly the old stack: each split, its old part into a file of its own the manifest
   // deletes, once the open PRs on them land (untangle/manifest-split-docs after #5696 and
-  // #5343; untangle/manifest-split-tests after #5720 and #5722).
+  // #5343; untangle/manifest-split-tests).
   cutover("docs/architecture.md"),
   cutover("docs/host-actions.md"),
   cutover(".github/workflows/tests.yml"),
-  // The old suite's shape, inventory and hygiene halves, and the process tests' old-suite
-  // fixtures, as the tests move beside their code (#5722, untangle/p6-tests-beside).
+  // The old suite's hygiene half, the scope guard's old-suite paths, and the process tests'
+  // old-suite fixtures, left after #5722 moved the tests beside their code
+  // (untangle/p6-tests-beside).
   cutover(".github/workflows/pr-scope-guard.yml"),
-  cutover("scripts/test_shape.py"),
-  cutover("scripts/test_inventory.py"),
   cutover("scripts/test_hygiene_gate.py"),
   cutover("scripts/tests/test_queue_attempts.py"),
   cutover("scripts/tests/test_review_check.py"),

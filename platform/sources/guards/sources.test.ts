@@ -795,6 +795,23 @@ describe("an engine record that does not fit", () => {
   });
 
   it.each([
+    ["no plan model", cli((s) => { delete at(s, "login")["model"]; }),
+     /cli\.login has exactly .*; missing \["model"\]/],
+    ["a plan model with no id", cli((s) => { delete at(s, "login.model")["id"]; }),
+     /cli\.login\.model has exactly id, citation; missing \["id"\]/],
+    ["a plan model id that is no model id", cli((s) => { at(s, "login.model")["id"] = "a b"; }),
+     /cli\.login\.model\.id is invalid/],
+    ["a plan model with no citation",
+     cli((s) => { delete at(s, "login.model")["citation"]; }),
+     /cli\.login\.model has exactly id, citation; missing \["citation"\]/],
+    ["no model_argv to pass the plan's model",
+     cli((s) => { delete at(s, "engine")["model_argv"]; }),
+     /cli\.engine\.model_argv is present on a record that signs in/],
+  ])("refuses a sign-in with %s: a plan always ranks by a real model", (_what, record, said) => {
+    expect(refused(record)).toMatch(said);
+  });
+
+  it.each([
     ["an invoke backend", cli((s) => { s["invoke"] = { argv: ["{bin}", "-p"] }; })],
     ["an invoke inside the engine", cli((s) => { at(s, "engine")["invoke"] = {}; })],
   ])("fails loudly, never a backend: %s", (_what, record) => {
@@ -814,6 +831,66 @@ describe("an engine record that does not fit", () => {
     expect(sourceRecord(cli((s) => { s["mcp"] = unsupported; }, pi)).cli!.mcp)
       .toEqual(unsupported);
     expect(claudeCli["mcp"]).toHaveProperty("file");
+  });
+});
+
+describe("an engine's own pre-tool hook", () => {
+  const codex = records.get("codex") as Json;
+  it.each([
+    ["no hook block at all", cli((s) => { delete s["decide"]; })],
+    ["a file under the home, the agent's to edit", cli((s) => {
+      at(s, "decide")["file"] = "{home}/.claude/settings.json"; })],
+    ["a shared file outside /etc", cli((s) => {
+      at(s, "decide")["file"] = "/opt/claude/managed-settings.json"; })],
+    ["a shared file that climbs out of /etc", cli((s) => {
+      at(s, "decide")["file"] = "/etc/../opt/managed-settings.json"; })],
+    ["a template with no matcher", cli((s) => {
+      at(s, "decide")["template"] = "{\"hooks\": {\"command\": \"{decide}\"}}"; })],
+    ["a template with a credential key", cli((s) => {
+      at(s, "decide")["template"] = "{\"apiKeyHelper\": \"{decide}\", \"m\": \"{matcher}\"}"; })],
+    ["a kind acts.json does not define", cli((s) => { at(s, "decide.kinds")["browser"] = ["B"]; })],
+    ["a kind with no tool", cli((s) => { at(s, "decide.kinds")["shell"] = []; })],
+    ["a pinned settings file outside the home", cli((s) => {
+      at(s, "decide")["pins"] = { "/etc/claude/settings.json": "{\"a\": 1}" }; })],
+    ["a pinned settings file with a credential key", cli((s) => {
+      at(s, "decide")["pins"] = { "{home}/.claude/settings.json": "{\"apiKeyHelper\": \"x\"}" };
+    })],
+    ["a pinned settings file with the hook's placeholder", cli((s) => {
+      at(s, "decide")["pins"] = { "{home}/.claude/settings.json": "{\"a\": \"{matcher}\"}" };
+    })],
+    ["a refused file that climbs out of the agent's directory", cli((s) => {
+      at(s, "decide")["refuses"] = ["../.gemini/settings.json"]; })],
+    ["a refused file by an absolute path", cli((s) => {
+      at(s, "decide")["refuses"] = ["/workspace/.gemini/settings.json"]; })],
+    ["a hook that neither fails open nor closed", cli((s) => {
+      at(s, "decide")["fails"] = "maybe"; })],
+    ["no page it was read from", cli((s) => { delete at(s, "decide")["cite"]; })],
+    ["the hook's placeholder in another file", cli((s) => {
+      at(s, "env")["TA_X"] = "{matcher}"; })],
+    ["an argv that loads another file", cli((s) => {
+      at(s, "decide")["argv"] = ["-e", "{system}/other.mjs"]; }, pi)],
+    ["no way it runs", cli((s) => { delete at(s, "decide")["runs"]; })],
+    ["two ways it runs", cli((s) => { at(s, "decide.runs")["exec"] = true; })],
+    ["an http refusal that is not JSON", cli((s) => {
+      at(s, "decide.runs.http")["deny"] = "no: {reason}"; })],
+    ["an http refusal with no reason", cli((s) => {
+      at(s, "decide.runs.http")["deny"] = "{\"decision\": \"deny\"}"; })],
+    ["an http hook whose template names a command", cli((s) => {
+      at(s, "decide")["template"] = String(at(s, "decide")["template"])
+        .replace("{decide_url}\"]", "{decide}\"]"); })],
+    ["a shell hook whose template names the door's address", cli((s) => {
+      at(s, "decide")["template"] = String(at(s, "decide")["template"])
+        .replace("{decide}", "{decide_url}"); }, codex)],
+    ["a shell given as one line", cli((s) => { at(s, "decide.runs")["shell"] = "sh -c"; }, codex)],
+    ["an alterable hook with no words", cli((s) => { at(s, "decide")["alterable"] = ""; }, codex)],
+  ])("refuses %s", (_what, record) => {
+    expect(refused(record))
+      .toMatch(/cli\.decide|missing \["decide"\]|which only cli\.decide\.template carries/);
+  });
+
+  it("takes one that holds none, with why", () => {
+    const why = { unsupported: "No hook loads from a root-owned path." };
+    expect(sourceRecord(cli((s) => { s["decide"] = why; }, codex)).cli!.decide).toEqual(why);
   });
 });
 

@@ -146,8 +146,9 @@ logs. #5714 and #5722 are editing `cutover.json` now. Owed, below.
   `tests/test_workflow_production_environment.py`. It now cites its platform home,
   `ci/guards/environment.test.ts` (b24-dry-run item 6).
 - **The clean-break item** (`scripts/test_shape.py` and its import in `test_hygiene_gate.py`
-  become a delete) is #5722's, which deletes both the shape checker and its carried test. It
-  is owed to that PR, not done twice.
+  become a delete) was #5722's, which deleted the shape checker and its carried test. Merging
+  it in dropped the ratchet's rows for `test_shape.py` and `test_inventory.py`, which the
+  manifest now deletes.
 
 ## 4. Founder call pending
 
@@ -173,18 +174,17 @@ The site's links to the deleted `openspec/specs` (the developers page, `lib/site
   manifest deletes, and drop their owed rows (untangle/manifest-split-docs, after #5696 and
   #5343).
 - [ ] `.github/workflows/tests.yml`: the old suite's jobs into a workflow of their own the
-  manifest deletes (untangle/manifest-split-tests, after #5720 and #5722).
-- [ ] `scripts/test_shape.py` and `scripts/test_inventory.py` as deletes; the hygiene gate's
-  pytest half; `pr-scope-guard.yml`'s old-suite comment; and the process tests' old-suite
-  fixtures (`test_queue_attempts.py`'s `qa.NO_TEST_RAN`, `test_review_check.py`,
-  `test_rulebook_ratchet.py`). Each row in `ci/guards/rules.ts` is dropped as the
-  ratchet asks (#5722, untangle/p6-tests-beside).
+  manifest deletes (untangle/manifest-split-tests).
+- [ ] The hygiene gate's pytest half; `pr-scope-guard.yml`'s old-suite comment; and the
+  process tests' old-suite fixtures (`test_queue_attempts.py`'s `qa.NO_TEST_RAN`,
+  `test_review_check.py`, `test_rulebook_ratchet.py`). Each row in `ci/guards/rules.ts` is
+  dropped as the ratchet asks (untangle/p6-tests-beside).
 - [ ] `scripts/main_red.py`'s junit and quarantine reading (untangle/p6-queue-helpers).
 - [ ] The dry run applies every edit (`edited`) and runs the edited tests instead of setting
   them aside. That needs the TS, JSON and Markdown names made exact too
   (untangle/manifest-apply).
 - [ ] The manifest as one file per area under `platform/cutover/`, read as one
-  (untangle/manifest-split-files, after #5714 and #5722).
+  (untangle/manifest-split-files).
 - Founder question (not an owed item): IQ1 and IQ2 on the founder's page (`founder_batch.md`
   item 13). Each history keep is then confirmed or made a delete; a keep of history names what
   goes for good, so only the founder's answer ends it.

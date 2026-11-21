@@ -398,6 +398,35 @@ The owner SHALL answer a held call only in its session, by the card's id and the
 - **WHEN** the owner writes its policy while a card is pending
 - **THEN** the card is neither shown nor answered, and the call asked again is decided under the new rules
 
+### Requirement: A run's CLI's own tool calls are decided at its hook
+Where a run's engine record names a pre-tool hook (`decide`), the run's decide door SHALL answer which of the CLI's tools the owner's rules name, and SHALL decide each call the hook sends as each act it is (its tool kind's, or a rule's tools'), as that act's door call is decided, refused with the card where held. The runner SHALL write the hook only when a rule names a tool it matches, and SHALL fail the run when the hook's helper cannot reach the door before the CLI starts.
+
+#### Scenario: A shell command held at the hook
+- **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }` and a run's Claude Code calls `Bash`
+- **THEN** the call is refused `held_for_owner` with a card naming `Bash`, and a `Read` is let be
+
+### Requirement: Nothing the agent writes changes what its hook answers
+A run's hook SHALL take the door's address only from its root-owned file, and the run's environment SHALL carry only the run's credential, which the door SHALL refuse when forged. A hooked run's CLI SHALL load no settings layer, hook or variable a file the agent writes reaches, at its start or live, or the run SHALL be refused; where a CLI allows neither, its record SHALL say so, and its note SHALL say no rule holds there.
+
+#### Scenario: A spoofed credential
+- **WHEN** the agent's settings set the decide credential to an answer that allows
+- **THEN** the run is refused before its CLI starts, and a hook asked with that credential refuses the call
+
+#### Scenario: The agent's own settings beside the hook
+- **WHEN** the agent's directory holds a Gemini `.gemini/settings.json` that disables the hook by name
+- **THEN** a hooked Gemini run is refused before its CLI starts, and a hooked Claude Code run loads neither its project's nor its local settings, and its home's settings file is root's
+
+#### Scenario: The helper cannot reach the door
+- **WHEN** a run's hook is written and its start check is refused
+- **THEN** the run fails before its CLI starts
+
+### Requirement: The owner sees where each rule holds
+`policyRead` SHALL say, beside each action rule, where it holds and where it can't (`holds_at`, `not_enforced`), from `contract/acts.json` and the engines' records.
+
+#### Scenario: A rule nothing sees on one engine
+- **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }`
+- **THEN** its note holds it at every engine whose hook the agent can't alter, and names `codex`, `kimi`, `main_agent` and `sandbox_programs` among where it can't hold
+
 ### Requirement: A yes to a run's held call resumes its conversation
 A run's held call SHALL be bound to the run's conversation: the owner's yes SHALL admit the call only in that conversation, and SHALL write a run waiting there, under the held run's own authority, on an input that names the card, which starts once the conversation is free. A no SHALL resume nothing. A run whose engine stopped at a tool call it deferred (its record's `deferred` matcher) SHALL settle with the code `tool_deferred`, and its result SHALL post no reply.
 
@@ -1097,7 +1126,7 @@ When the sandbox Worker has no room to start a run's sandbox (`sandbox_waiting`:
 - **THEN** the sandbox Worker is told to release that lease
 
 ### Requirement: `auto` sees the owner's subscriptions, by presence only
-Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its record's `status_argv`) to the object, which SHALL keep them per sandbox, never a credential: the owner's own sandbox's one row an engine (signed in or not, when it was checked and changed, and the models the runner read it offers), and an outside client's sandbox's on its own lease. A login SHALL never be copied between sandboxes (ADR-031 decision 2): a run SHALL use only its own sandbox's sign-ins, so a client's `auto` run takes a plan only where that client's sandbox is known signed in, else the owner's keys. An agent naming the vendor's sign-in SHALL be admitted unless its sandbox is known signed out (the owner's, `signin_lapsed`); the sandbox's start checks the sign-in there and answers `signin_required` when none is, and the run SHALL settle `failed` (`signin_required`) with a notice to sign in inside that sandbox. `auto` SHALL rank the signed-in engines with the owner's connections by the same ranking, and where a subscription and a key cover one provider it SHALL pick the subscription. A sign-in that lapses SHALL leave the owner a "sign in again" notice, and `auto` (and an agent naming that engine on its sign-in) SHALL be refused `signin_lapsed`, never falling back silently to another source.
+Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its record's `status_argv`) to the object, which SHALL keep them per sandbox, never a credential: the owner's own sandbox's one row an engine (signed in or not, when it was checked and changed), and an outside client's sandbox's on its own lease. A login SHALL never be copied between sandboxes (ADR-031 decision 2): a run SHALL use only its own sandbox's sign-ins, so a client's `auto` run takes a plan only where that client's sandbox is known signed in, else the owner's keys. An agent naming the vendor's sign-in SHALL be admitted unless its sandbox is known signed out (the owner's, `signin_lapsed`); the sandbox's start checks the sign-in there and answers `signin_required` when none is, and the run SHALL settle `failed` (`signin_required`) with a notice to sign in inside that sandbox. `auto` SHALL rank the signed-in engines with the owner's connections by the same ranking, each by the model its engine record says a run on its plan is given (`cli.login.model`), so no plan ranks as an unknown model, and a run on a plan SHALL be given that model unless the agent names one; where a subscription and a key cover one provider it SHALL pick the subscription. An `auto` agent that names a model SHALL pick only among the sources that offer it (a key whose connection lists it, a plan whose record names it), and SHALL be refused `no_source` where none does, never passing the model to another vendor's engine. A sign-in that lapses SHALL leave the owner a "sign in again" notice, and `auto` (and an agent naming that engine on its sign-in) SHALL be refused `signin_lapsed`, never falling back silently to another source.
 
 #### Scenario: Only a Claude subscription
 - **WHEN** the owner has no connection and its runner reported Claude Code signed in

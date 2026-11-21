@@ -70,6 +70,10 @@
       "hosted_use": {
         "verdict": "unclear",
         "citation": "subscription-engines.md section 2 and 11: no text permits or forbids a platform hosting the unmodified Codex CLI for a user's own ChatGPT sign-in; OpenAI names API keys for automation and ChatGPT sign-in only on trusted private infrastructure"
+      },
+      "model": {
+        "id": "gpt-6.1-sol",
+        "citation": "the models.json bundled in the pinned @openai/codex 0.166.0 binary (read 2026-11-21): gpt-6.1-sol is its priority-1 model, the picker's first; the live catalog is the account's and can differ (strongest-plan.md)"
       }
     },
     "api_key_env": {
@@ -232,6 +236,32 @@
         "argv": [],
         "note": "A server given by -c is the run's own config, read without a project-trust prompt in exec mode."
       }
+    },
+    "decide": {
+      "file": "/etc/codex/requirements.toml",
+      "template": "[features]\nhooks = true\n\n[[hooks.PreToolUse]]\nmatcher = \"{matcher}\"\n\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"{decide}\"\ntimeout = 60\n",
+      "runs": {
+        "shell": [
+          "sh",
+          "-lc"
+        ]
+      },
+      "kinds": {
+        "shell": [
+          "Bash"
+        ],
+        "file_write": [
+          "apply_patch"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp__",
+        "join": "__"
+      },
+      "fails": "open",
+      "alterable": "Codex runs a hook command through the run user's login shell ($SHELL -lc, codex-rs/hooks/src/engine/command_runner.rs), which reads ~/.profile in the run's home, a file the agent writes, and it loads $CODEX_HOME/.env, the agent's too (codex-rs/arg0/src/lib.rs, read 2026-11-21)",
+      "cite": "https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/hooks/src/engine/command_runner.rs",
+      "read": "2026-11-21"
     },
     "tools": {
       "deny": {

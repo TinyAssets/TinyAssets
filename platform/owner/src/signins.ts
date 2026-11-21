@@ -386,12 +386,11 @@ export interface SigninCodeRequest extends SigninRequestById {
 }
 /**
  * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
- * that signs in with the vendor's own login, whether its record's `status_argv` succeeded,
- * and the models it read the engine offers. Presence only: never a credential.
+ * that signs in with the vendor's own login, whether its record's `status_argv` succeeded.
+ * Presence only: never a credential.
  */
 export interface SigninRequest {
-  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean;
-                               readonly models?: readonly string[] }[];
+  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean }[];
 }
 
 // -- THE DOORS: the `signins` rows' handlers (`owner/doors.json`) ---------------------------------
@@ -403,8 +402,8 @@ export interface SigninRequest {
  * owner's notices.
  */
 export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
-                                          Pick<ObjectReads, "owner" | "storage"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY" | "SANDBOX">;
+                                          Pick<ObjectReads, "owner" | "sandbox" | "storage"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
   readonly signins: Signins;
   readonly files: Pick<Files, "leaseRenew" | "leaseSignins" | "liveLeases" | "sandboxLease">;
   readonly grants: { live(client: string): boolean };
@@ -469,7 +468,7 @@ export const signinsDoors = Object.freeze({
     });
     let answer: Started | null = null;
     try {
-      answer = started(await o.env.SANDBOX.signin(o.owner(), {
+      answer = started(await o.sandbox.signin({
         id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
         authority: begun.row.authority, lease: begun.lease,
         tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
@@ -522,8 +521,7 @@ export const signinsDoors = Object.freeze({
     }
     if (stopped) {
       // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
-      await o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority,
-                                                               id: row.id })
+      await o.sandbox.signinCancel({ authority: row.authority, id: row.id })
         .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
     }
     return { accepted: frames.length, ended };
@@ -542,14 +540,13 @@ export const signinsDoors = Object.freeze({
       }
       return { row, code };
     });
-    return o.env.SANDBOX.signinInput(o.owner(), { authority: row.authority, id: row.id,
-                                                  code });
+    return o.sandbox.signinInput({ authority: row.authority, id: row.id, code });
   },
   /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
   async signinCancel(o: SigninsDoorNeeds, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
     const row = await o.door(() => o.signins.get(door.check().r["id"]));
-    return o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority, id: row.id });
+    return o.sandbox.signinCancel({ authority: row.authority, id: row.id });
   },
   /**
    * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
@@ -564,9 +561,9 @@ export const signinsDoors = Object.freeze({
   /**
    * The runner's report of the engines' sign-ins (`SigninRequest`), on the egress host by
    * the egress token of the live lease: each engine's row (signed in or not, when it was
-   * checked, the models it offers), never a credential; `auto` ranks the signed-in ones
-   * with the owner's connections. A sign-in that lapsed (signed in, now not) leaves a
-   * "sign in again" notice, and `auto` stops picking that engine.
+   * checked), never a credential; `auto` ranks the signed-in ones, each by its record's
+   * plan model, with the owner's connections. A sign-in that lapsed (signed in, now not)
+   * leaves a "sign in again" notice, and `auto` stops picking that engine.
    */
   signinReport(o: SigninsDoorNeeds, { lease: held, r }: Call<SigninRequest>):
       { recorded: number; lapsed: string[] } {
@@ -599,8 +596,7 @@ export const signinsDoors = Object.freeze({
       return { recorded: reports.length, lapsed };
     }
     for (const report of reports) {
-      if (o.runs.reportSignin(report.engine, report.signed_in, report.models, clock())
-            .lapsed) {
+      if (o.runs.reportSignin(report.engine, report.signed_in, clock()).lapsed) {
         lapsed.push(report.engine);
         o.notices.add("signin_lapsed", `${report.engine}: sign in again`, clock());
       }

@@ -71,7 +71,7 @@ describe("the default policy", () => {
     const r = await rig();
     const policy = await current(r);
     expect(policy).toEqual({ owner: r.owner, generation: 1, digest: DEFAULT_POLICY_DIGEST,
-                             policy: defaults() });
+                             policy: defaults(), notes: [] });
     expect(policyDigest(defaults())).toBe(DEFAULT_POLICY_DIGEST);
     expect(canonical(defaults())).toBe(DEFAULT_POLICY_JSON);
     expect(validate(defaults())).toEqual(defaults());

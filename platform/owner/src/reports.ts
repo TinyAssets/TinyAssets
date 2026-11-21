@@ -3,7 +3,7 @@
  * numbered from 1 and rising, and an optional end: `runEvents`, and a sign-in's frames,
  * `signinEvents`) and its sandbox's engines' sign-in reports (`signinReport`).
  */
-import { ENGINE_SIGNINS, SIGNIN_MODELS_CHARS } from "../../contract/src/limits";
+import { ENGINE_SIGNINS } from "../../contract/src/limits";
 import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX } from "../../contract/src/run-events";
 import type { PostedFrame } from "./runs";
 import { Refusal } from "../../contract/src/refusal";
@@ -44,14 +44,14 @@ export function eventsRequest(r: Record<string, unknown>): {
 
 /** The engine, its reports in one batch at most `ENGINE_SIGNINS`, each engine once. */
 export function signinRequest(r: Record<string, unknown>):
-    { engine: string; signed_in: boolean; models: string[] }[] {
+    { engine: string; signed_in: boolean }[] {
   const signins = r["signins"];
   if (!Array.isArray(signins) || signins.length === 0 || signins.length > ENGINE_SIGNINS) {
     throw new Refusal("invalid", `a sign-in report names 1 to ${ENGINE_SIGNINS} engines`);
   }
   const seen = new Set<string>();
   return signins.map((entry) => {
-    const f = fields(entry, ["engine", "signed_in"], ["models"], "invalid sign-in report");
+    const f = fields(entry, ["engine", "signed_in"], [], "invalid sign-in report");
     const engine = f["engine"];
     if (typeof engine !== "string" || !signsIn(servedRecord(engine)) || seen.has(engine)) {
       throw new Refusal("invalid", "a sign-in report names engines that sign in, each once");
@@ -60,14 +60,6 @@ export function signinRequest(r: Record<string, unknown>):
     if (typeof f["signed_in"] !== "boolean") {
       throw new Refusal("invalid", "signed_in is true or false");
     }
-    const models = f["models"] ?? [];
-    if (!Array.isArray(models) || models.some((model) => typeof model !== "string"
-                                               || !/^[!-~]+$/.test(model))
-        || JSON.stringify(models).length > SIGNIN_MODELS_CHARS) {
-      throw new Refusal("invalid",
-                        `models are model ids, at most ${SIGNIN_MODELS_CHARS} characters ` +
-                        "as JSON");
-    }
-    return { engine, signed_in: f["signed_in"], models: models as string[] };
+    return { engine, signed_in: f["signed_in"] };
   });
 }

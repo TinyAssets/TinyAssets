@@ -613,6 +613,13 @@ export class Doors {
   holdCommit = false;
   /** The held commit's answer, sent at that heartbeat. */
   #heldCommit: (() => void) | null = null;
+  /**
+   * The decide door's answer, by the helper's or the runner's body: the tools a hook matches
+   * for a check (none, so no hook is written), and a call let be.
+   */
+  decide: (body: Record<string, unknown>) => { status: number; value: unknown } = (body) =>
+    ({ status: 200, value: body["check"] === true ? { tools: [], generation: 1 }
+      : { allow: true } });
   /** Uploads the sync agent aborted, by intent id. */
   readonly aborted: string[] = [];
   #server: Server | null = null;
@@ -648,6 +655,10 @@ export class Doors {
             held();
           }
           return;
+        }
+        if (door === "decide") {
+          const answer = this.decide(body);
+          return json(answer.status, answer.value);
         }
         if (path === "/signin") {
           return json(200, { reported: true });

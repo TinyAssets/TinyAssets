@@ -238,7 +238,7 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
 Each in its own PR, taking the next free slot, never behind product work; the product lanes
 keep running (the untangle skill's "Process first", founder 2026-11-15).
 
-- [ ] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
+- [x] P2 in order (d3 §F4; `untangle-2026-11/p2-review-gate.md`):
   - [x] the verdict posted as a `COMMENT` PR review on the commit read, as the App's `review`
     check reads it, and each decision one new check run, never an edit of one (an edit
     GitHub refused had left a red "could not decide" on #5656); ADR-038 drafted
@@ -248,8 +248,10 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   - [x] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
     holding a check an App posts to the workflow named for it, and `enqueue-merge.yml`
     listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
-  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until its
-    read-back, `untangle/p2-receipt-delete` does not merge);
+  - [x] the founder's `PUT` of that file (`live:` host-actions "Pin the context"): ruleset
+    24065294 read back on 2026-11-21, requiring `Diff scope declared`, `required-tests`,
+    `invariants` and `review` from App 5634948, with classic protection's required checks
+    cleared (`untangle-2026-11/p2-receipt-delete.md`);
   - [x] a verdict counts only from an account that can push (GitHub's permission read, from
     every grant), and a permission it cannot read is no verdict, never a pass; lands before
     the receipt goes, which would let a read-only member's `APPROVE` pass alone
@@ -270,8 +272,9 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     check, every script a workflow names is held to exist, a lost duration stops
     `budgets.mjs`, and §B8 is decided (`untangle/p6-process-code`;
     `untangle-2026-11/p6-process-code.md`);
-  - [ ] the process tests beside their scripts, held by the tamper rule
-    (`untangle/p6-tests-beside`);
+  - [x] the process tests beside their scripts, held by the tamper rule, and the process
+    leg's watchdog 6x its slowest run (`untangle/p6-tests-beside`;
+    `untangle-2026-11/p6-tests-beside.md`);
   - [x] queue-freshness and rerun-cancelled-checks deleted on their measured runs
     (`untangle/p6-queue-deletes`; `untangle-2026-11/p6-queue-deletes.md`);
   - [ ] main-red and queue-attempts reading the ruleset and the jobs, not the old suite
@@ -309,7 +312,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   deletes them: no packing fits one (a 477 s case and the image build, 62 minutes at five
   times), and #5646's calibration is Vitest's only. Decided: no cover and no research, since
   nothing is built for the old suite that the cutover deletes (the founder, 2026-11-21;
-  `untangle-2026-11/passes-after-cutover.md`).
+  `untangle-2026-11/passes-after-cutover.md`); the `process` leg, which stays, has 8 minutes,
+  6x its slowest run (`untangle/p6-tests-beside`; `untangle-2026-11/p6-tests-beside.md` item 6).
 - [ ] `main_red.py` `REQUIRED_JOB` and `queue_attempts.py` `AGGREGATE_JOB` name the Tests
   aggregate by its job name, and nothing ties them to `tests.yml`: a rename leaves main-red
   reading no job (`untangle/aggregate-name`; found by `untangle/required-checks`).
@@ -626,13 +630,15 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     stop matcher in its record's `events`; a held call's digest bound to its run's
     conversation; owner migration 18 (`untangle/r5-resume-hooks`; `r5-resume-hooks.md`).
   - [x] Owner migration 18's pin, after P-resume merges (`untangle/r5-resume-pin18`).
-  - [ ] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
-    `sources/src/schema.ts` and the four records; the runner writes the root-owned files only
-    when needed, and runs the start check; the honest note (d3 §N5): `policyRead` gives each
-    rule where it holds and where it can't (`holds_at`, `not_enforced`), from `acts.json` and
-    the agent's engine record; a held call the hook deferred resumes on no input, and its
-    conversation waits on its card (`r5-resume-hooks.md` items 6 and 7). After the sandbox
-    pass lands, since the runner writes the files (`untangle/r5-hooks`).
+  - [x] P-hooks: the hook helper and the run-scoped decide door; the `decide` block in
+    `sources/src/schema.ts` and the five records (Kimi's holding none); the runner writes the
+    root-owned files only when needed, and runs the start check; the honest note (d3 §N5):
+    `policyRead` gives each rule where it holds and where it can't (`holds_at`,
+    `not_enforced`), from `acts.json` and the engines' records. No engine defers: a held call
+    is refused with its card on every CLI. The hook's address is only its root-owned file's,
+    nothing the agent writes reaches its process, and no settings layer the agent writes is
+    loaded beside it (`r5-hooks.md` items 13 and 14). After the
+    protocol's expand (`untangle/r5-hooks-speaks`) (`untangle/r5-hooks`; `r5-hooks.md`).
   - [x] P-import: the census of non-default `entries`, `spend` and egress `ask` (read-only);
     the mapping, the old defaults written explicitly (d3 §N7), and the archive file
     (`policy.json`); the notice's words as data (`import/notice.json`). A spend cap refuses
@@ -709,14 +715,16 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `gatewaySlots()`), `weighedBody`'s and `readHeld`'s nullable `hold`, the doorbell's `send`,
     `meter.ts` `sentHeaders` (its source-record check to `sources/`), and six exports nothing
     reads (`pass-gateway.md` §3).
-  - [ ] An overloaded owner object is answered as a contract refusal on each surface: today
+  - [x] An overloaded owner object is answered as a contract refusal on each surface: today
     `doors.ts` `serve` answers it plain text, `429` with its own `Retry-After: 1`, the egress
     door's included, whose callers read `{error: {code, message}}` (`pass-doors.md` §3;
-    `untangle/doors-overloaded`).
-  - [ ] E2B's lifecycle events in one list: the kit registers `deploy.ts` `E2B_HOOK.events`,
+    `untangle/doors-overloaded`). Done: `refusalOf` reads it as `object_overloaded`
+    (`untangle/recheck-doors-e2b`; `recheck-doors-e2b.md`).
+  - [x] E2B's lifecycle events in one list: the kit registers `deploy.ts` `E2B_HOOK.events`,
     the doors handle `doors/src/e2b-hooks.ts` `TYPES`, and nothing holds the two equal; one
     list in the contract beside the hook's path (`identity.json`) (`pass-ci-deploy.md` §2;
-    `untangle/e2b-hook-events`).
+    `untangle/e2b-hook-events`). Done: `contract/src/identity.ts` `E2B_HOOK_EVENTS`
+    (`untangle/recheck-doors-e2b`).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 

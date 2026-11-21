@@ -5,7 +5,8 @@
  * first-party app's client document and redirect, which the doors serve and the deploy kit's
  * probe signs in with; the first-party resource, where the owner's own app is, whose tokens
  * the doors take for `/app/api/*` and whose pages the owner's object cites a file by
- * (`owner/src/files.ts`); and how a route of its `routes` takes a URL.
+ * (`owner/src/files.ts`); the events E2B's lifecycle hook takes; and how a route of its
+ * `routes` takes a URL.
  */
 import identity from "../identity.json" with { type: "json" };
 
@@ -23,6 +24,14 @@ export const WEB_REDIRECT = `${ORIGIN}${identity.first_party.redirect}`;
 export const MCP_RESOURCE = `${ORIGIN}${identity.mcp}`;
 /** The first-party resource: the owner's own app, and its tokens' audience. */
 export const APP_RESOURCE = `${ORIGIN}${identity.first_party.resource}`;
+
+/**
+ * The E2B lifecycle events the doors' hook (`identity.json` `hook`) takes, the two that carry
+ * a billed execution: the doors deliver them (`doors/src/e2b-hooks.ts`), and the deploy kit
+ * registers the hook for them (`deploy/deploy.ts` `E2B_HOOK`).
+ */
+export const E2B_HOOK_EVENTS = Object.freeze(["sandbox.lifecycle.paused",
+                                              "sandbox.lifecycle.killed"] as const);
 
 /**
  * Whether the Worker route `pattern` takes `url`, as Cloudflare matches one (its routes page):
