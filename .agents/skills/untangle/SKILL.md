@@ -31,7 +31,8 @@ Untangle the code a change touches, or a whole area, and finish the job.
   and left, by builder or reviewer, is fixed in place or owed there: a `- [ ]`
   line naming the PR, branch or `live:` wait that fixes it, ticked when done
   (`review_checks.py --owed` lists them). The PR ticks its own `tasks.md`
-  line, adding none.
+  line, adding none. Before each push, `review_checks.py --untangle-check`
+  on the body allows it; a body edit goes on the open PR, which CI reads.
 - **Every reviewer**, whatever engine built the PR, runs step 5's search on it
   and checks that section; a missing one, `Test-Removal:` line or decision
   file is a finding. A problem the PR adds or leaves in scope unexplained
