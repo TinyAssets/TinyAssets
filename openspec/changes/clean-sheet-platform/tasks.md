@@ -627,6 +627,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     swallowed errors decided, and four checks that could never fail made to (the r2-keys
     guard's builder, prefix and exemption rules; the root rewrap's etag) (#5679;
     `untangle-2026-11/pass-files.md`).
+  - [x] `platform/gateway/`, both passes in one PR, with the area's list2 items and its own
+    swallowed errors decided, the fake's twelve dead commands gone, and three checks that
+    could never fail made to (the doorbell's echo bound, two OAuth redirect checks, a misfit
+    plaintext at open) (`untangle/pass-gateway`; `untangle-2026-11/pass-gateway.md`).
   - [x] `platform/doors/`, both passes in one PR, with `d2:N56` and `d2:N57` decided and the
     app-files guard held to what the doors serve (`untangle/pass-doors`;
     `untangle-2026-11/pass-doors.md`).
@@ -647,6 +651,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     and never past `endAt` less the longest pause (#5680; `untangle-2026-11/renew-deadline.md`).
   - [ ] `runner.ts` `RunState.renewing`, written for the tests alone, dropped with the next
     state format (`renew-deadline.md` §4).
+  - [ ] `gateway/src`'s surface only its tests use goes: `Hold`'s pool (every caller passes
+    `gatewaySlots()`), `weighedBody`'s and `readHeld`'s nullable `hold`, the doorbell's `send`,
+    `meter.ts` `sentHeaders` (its source-record check to `sources/`), and six exports nothing
+    reads (`pass-gateway.md` §3).
   - [ ] An overloaded owner object is answered as a contract refusal on each surface: today
     `doors.ts` `serve` answers it plain text, `429` with its own `Retry-After: 1`, the egress
     door's included, whose callers read `{error: {code, message}}` (`pass-doors.md` §3;

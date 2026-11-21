@@ -1,9 +1,8 @@
 /**
- * The egress review's cases (rveg, REQUEST_CHANGES), as real tests of the fixed behaviour: a
- * metered call held by its weight (H1), its slots taken as its bytes arrive and let go at its
- * stop or its deadline (H2), keys past ASCII and a path-named model's body `model` refused
- * (M1, M2), any throw before the fetch settled `failed` (M3), and a body shorter than its
- * length refused (L1).
+ * A metered call as the gateway holds it (`held.ts`): held by its weight, its slots taken as
+ * its bytes arrive and let go at its stop or its deadline, keys past ASCII and a path-named
+ * model's body `model` refused, any throw before the fetch settled `failed`, a body shorter
+ * than its length refused; and the isolate's pool under load, wait-die.
  */
 import { createExecutionContext } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
@@ -12,54 +11,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { aliased, apiRules } from "../../contract/src/api-rules";
-import { builtinCatalog } from "../src/catalog";
 import { EGRESS_BODY_MAX, SLOT_WAIT_MS } from "../../contract/src/limits";
 import {
   GATEWAY_POOL_SLOTS, gatewaySlots, Hold, heldDeadlineMs, readHeld, TEXT_COST, Tokens,
 } from "../src/held";
 import { ConnectGateway, EgressGateway } from "../src/index";
-import { learnMeter, meteredRecord } from "../src/meter";
-import { SlotPool, UNIT_BYTES } from "../../contract/src/slots";
+import { UNIT_BYTES } from "../../contract/src/slots";
 import { until } from "../../ci/workerd";
-import { C1, GOOGLE, OPENAI } from "./support";
+import { C1, GOOGLE, granting, meterable, OPENAI, outcome, posted } from "./support";
 import type { Reserve } from "../../contract/src/gateway";
 
 /** The doors' connect entrypoint (the doors and owner suites reach it over a real binding). */
 const connect = new ConnectGateway(createExecutionContext(), env);
 
-async function responsesModel(): Promise<{ id: string }> {
-  const catalog = builtinCatalog();
-  for (const record of catalog.provider("openai")!.getModels()
-    .filter((candidate) => candidate.api === "openai-responses")) {
-    if (await learnMeter(catalog, OPENAI.upstream, "sk-fwd", meteredRecord(
-      catalog, OPENAI.upstream, record.id)!) !== null) {
-      return record;
-    }
-  }
-  throw new Error("no metered Responses model in the catalog");
-}
+/** An OpenAI Responses model whose output cap pi-ai sets, so its calls can be metered. */
+const responsesModel = () => meterable(OPENAI, "sk-fwd");
 
-/** A reserve that grants each call as asked, recording each ask. */
-function granting(asked: unknown[] = []): Reserve {
-  return async (call) => {
-    asked.push(call);
-    return { metering: { max_output_tokens: 77, input_bytes: EGRESS_BODY_MAX, model: call.model,
-                         tier: call.tier } };
-  };
-}
-
-function posted(path: string, body: string, headers: Record<string, string> = {}): Request {
-  return new Request(`https://egress${path}`, {
-    method: "POST", body,
-    headers: { "content-length": String(new TextEncoder().encode(body).byteLength),
-               ...headers } });
-}
-
-async function outcome(answer: { outcome: ReadableStream<Uint8Array> }): Promise<unknown> {
-  return JSON.parse(await new Response(answer.outcome).text());
-}
-
-describe("a key past ASCII, or a body model where the path names it (M1, M2)", () => {
+describe("a key past ASCII, or a body model where the path names it", () => {
   it("refuses max_tokenſ, ſtream and ſervice_tier, which Go's folding reads as ASCII", () => {
     const completions = apiRules("openai-completions")!;
     expect(aliased(completions, { model: "m", MAX_TOKENS: 9 })).toBe(true);
@@ -89,19 +57,10 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
   it("refuses a Google call whose body names a model beside its path's", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await connect.seal("alice", C1, 1, "sk-fwd", GOOGLE)).blob;
-    const catalog = builtinCatalog();
-    let path: string | null = null;
-    for (const record of catalog.provider("google")!.getModels()
-      .filter((candidate) => candidate.api === "google-generative-ai")) {
-      const meter = await learnMeter(catalog, GOOGLE.upstream, "sk-fwd", meteredRecord(
-        catalog, GOOGLE.upstream, record.id)!);
-      if (meter !== null) {
-        path = meter.path.replace("{model}", record.id);
-        break;
-      }
-    }
+    const { id, meter } = await meterable(GOOGLE, "sk-fwd");
+    const path = meter.path.replace("{model}", id);
     const asked: unknown[] = [];
-    const answer = await egress.forward("alice", C1, 1, blob, posted(path!, JSON.stringify({
+    const answer = await egress.forward("alice", C1, 1, blob, posted(path, JSON.stringify({
       model: "models/some-dearer-model", contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
       { "x-fake-mode": "echo" }), granting(asked), new ReadableStream());
     expect(await answer.response.json()).toMatchObject({ error: { code: "egress_aliased_key" } });
@@ -109,7 +68,7 @@ describe("a key past ASCII, or a body model where the path names it (M1, M2)", (
   });
 });
 
-describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
+describe("a held call's length, weight and holds", () => {
   it("refuses a body shorter than its Content-Length, before any reserve", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
@@ -244,8 +203,8 @@ describe("a held call's length, weight and holds (L1, H1, H2, M3)", () => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-describe("the verification's cases (rveg2)", () => {
-  it("weighs a body of `\\u` escapes as the two-byte text its parse makes (V-H1)", () => {
+describe("a held call's sender, and its weight past ASCII", () => {
+  it("weighs a body of `\\u` escapes as the two-byte text its parse makes", () => {
     const tokens = new Tokens();
     tokens.feed(new TextEncoder().encode('{"model":"m","input":"\\u2014 dash"}'));
     expect(tokens.ascii).toBe(false);
@@ -254,7 +213,7 @@ describe("the verification's cases (rveg2)", () => {
     expect(plain.ascii).toBe(true);
   });
 
-  it("lets every one of 16 silent calls go at its unit's deadline: another owner lands (V-H2)",
+  it("lets every one of 16 silent calls go at its unit's deadline: another owner lands",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
     const alice = (await connect.seal("alice", C1, 1, "sk-fwd", OPENAI)).blob;
@@ -293,9 +252,9 @@ describe("the verification's cases (rveg2)", () => {
     await until(() => pool.state().held === 0, "the pool let go", 1500);
   });
 
-  it("never counts a wait for a unit against the sender (V-M2)", async () => {
-    const pool = new SlotPool(3, 12_000, 12, 0, 12);
-    const blocker = await pool.acquire(2, "x");
+  it("never counts a wait for a unit against the sender", async () => {
+    const pool = gatewaySlots();
+    const blocker = await pool.acquire(GATEWAY_POOL_SLOTS - 1, "x");
     const bytes = new TextEncoder().encode(JSON.stringify({ input: "a".repeat(2 * 1024 * 1024) }));
     // The body is the test's to feed: up to the first byte past one unit's, then the rest.
     const first = Math.floor(UNIT_BYTES / TEXT_COST) + 1;
@@ -308,10 +267,11 @@ describe("the verification's cases (rveg2)", () => {
         headers: { "content-length": String(bytes.byteLength) } }), bytes.byteLength, hold,
         new AbortController().signal);
       feed.enqueue(bytes.slice(0, first));
-      // Its second unit waits on the blocker, on the fake clock past the sender's whole
-      // deadline; granted, the sender has its whole deadline again before the rest comes.
+      // Its second unit waits on the blocker, on the fake clock to just short of the pool's
+      // wait; granted, the sender has its whole deadline again before the rest comes, so the
+      // rest arrives past the sender's deadline counted from the first unit's grant.
       await until(() => pool.state().waiting === 1, "the second unit's wait");
-      await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS + 1_000);
+      await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 1);
       blocker.release();
       await until(() => hold.units === 2, "the second unit");
       await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 1);
@@ -346,9 +306,9 @@ describe("the verification's cases (rveg2)", () => {
   });
 });
 
-describe("wait-die under load (rveg2 V-M1)", () => {
+describe("the isolate's pool under load, wait-die", () => {
   // On the fake clock: each call's reads and holds take their time on it, and the pool's
-  // wait is its own; nothing here waits on the host.
+  // wait is its own; nothing here waits on the host. The pool is the gateway's own.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   });
@@ -357,9 +317,9 @@ describe("wait-die under load (rveg2 V-M1)", () => {
   });
 
   /** One call: its read grows a unit at a time to `read`, then it tops up to `weight`. */
-  async function call(pool: SlotPool, owner: string, read: number, weight: number,
+  async function call(owner: string, read: number, weight: number,
                       holdMs: number): Promise<"done" | "busy"> {
-    const hold = new Hold(pool, owner, new AbortController().signal);
+    const hold = new Hold(gatewaySlots(), owner, new AbortController().signal);
     try {
       for (let units = 1; units <= read; units++) {
         await hold.grow(units);
@@ -380,12 +340,12 @@ describe("wait-die under load (rveg2 V-M1)", () => {
 
   it("lets a burst through without waiting out the pool's wait: the oldest grows, the others " +
      "give way", async () => {
-    const pool = new SlotPool(16, 1000, 64, 0, 64);
+    const pool = gatewaySlots();
     let ended = 0;
     const ends = Promise.all(["a", "b", "c", "d"].map((owner) =>
-      call(pool, owner, 4, 8, 50).finally(() => { ended++; })));
+      call(owner, 4, 8, 50).finally(() => { ended++; })));
     // Every call ends before the pool's wait could refuse one.
-    await vi.advanceTimersByTimeAsync(999);
+    await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 1);
     expect(ended).toBe(4);
     expect((await ends).filter((end) => end === "done").length).toBeGreaterThanOrEqual(1);
     expect(pool.state()).toMatchObject({ held: 0, waiting: 0 });
@@ -393,13 +353,13 @@ describe("wait-die under load (rveg2 V-M1)", () => {
 
   it("keeps a closed loop of 8 owners at least as productive as one call at a time",
      async () => {
-    const pool = new SlotPool(16, 500, 64, 0, 64);
+    const pool = gatewaySlots();
     const end = Date.now() + 4000;
     let done = 0;
     let busy = 0;
     const loops = Promise.all(Array.from({ length: 8 }, async (_, n) => {
       while (Date.now() < end) {
-        if (await call(pool, `o${n}`, 5, 9, 50) === "done") {
+        if (await call(`o${n}`, 5, 9, 50) === "done") {
           done++;
         } else {
           busy++;

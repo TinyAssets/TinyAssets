@@ -1,8 +1,8 @@
 /**
- * The egress memory leg's own Worker (`egress.mjs`, egress shape research §5; b23 research
- * question 5), beside the real doors and gateway, each bundled as a deploy bundles it, in
- * isolates of their own. Nothing here runs inside either: the leg reads both from outside,
- * through the inspector. Its entrypoints, by what the doors and the gateway reach:
+ * The egress memory leg's own Worker (`egress.mjs`, egress shape research §5), beside the
+ * real doors and gateway, each bundled as a deploy bundles it, in isolates of their own.
+ * Nothing here runs inside either: the leg reads both from outside, through the inspector.
+ * Its entrypoints, by what the doors and the gateway reach:
  * - `LegOwner`: the doors' `OWNER` namespace, as far as the egress door asks of it: every
  *   call admitted, its connection the blob `/seal` held, and reserved as asked (the owner's
  *   own rules have their own tests);

@@ -1,7 +1,7 @@
 /**
- * The model gateway Worker (ADR-032 Decision 3; research §12 G1). Not deployed: its
- * config has no routes and no URL, so only the service bindings of the owner Worker and
- * the doors Worker (the binder) reach it, and it binds nothing, so it reaches no object.
+ * The model gateway Worker (ADR-032 Decision 3; research §12 G1). Its config has no routes
+ * and no URL, so only the service bindings of the owner Worker and the doors Worker (the
+ * binder) reach it, and it binds nothing, so it reaches no object.
  *
  * - `seal`: a pasted API key, sealed with its source record (§7.2 inline connect).
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
@@ -10,7 +10,7 @@
  * - `reseal`, `resealDoorbell`: a connection's or a doorbell subscription's blob resealed
  *   under the active kid at the next version (the sweep that retires a kid).
  * - `sealDoorbell`, `verifyDoorbell`, `ringDoorbell`: a wake's secret sealed, an MCP Events
- *   callback verified and sealed, and one wake sent with it (`doorbell.ts`, slice W).
+ *   callback verified and sealed, and one wake sent with it (`doorbell.ts`).
  *
  * Each entrypoint serves one caller. The doors Worker binds `ConnectGateway`, the steps of
  * a connect (`seal`, `exchange`, `verify`, and a doorbell's seal and verification), and
@@ -43,13 +43,13 @@ import { binding, open, reseal, seal } from "./keyring";
 import { exchange, refresh, revokeAtProvider } from "./oauth";
 
 /**
- * What the doors Worker (the binder) binds, as the named entrypoint `ConnectGateway`:
- * the three connect steps and nothing else. It cannot make a model call, forward
- * egress, refresh, reseal or revoke, and the keyring stays here (doors research §7.2,
+ * What the doors Worker (the binder) binds, as the named entrypoint `ConnectGateway`: the
+ * connect steps (a key's seal, a code's exchange, a credential's check, and a doorbell's seal
+ * and verification) and nothing else. It cannot make a model call, forward egress, refresh,
+ * reseal or revoke, and the keyring stays here (doors research §7.2,
  * `doors/guards/config.test.ts`).
  */
 export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> implements ConnectService {
-  /** Seals a pasted API key for the connection, with its source record's values. */
   async seal(owner: string, connection: string, version: number, key: string,
              record: unknown): Promise<Sealed> {
     return guarded(async () => {
@@ -62,27 +62,23 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> implements Conn
     });
   }
 
-  /** Exchanges an authorization code and seals what it buys. */
   async exchange(owner: string, connection: string, version: number, grant: unknown,
                  record: unknown): Promise<Exchanged> {
     return guarded(() => exchange(this.env, binding(owner, connection, version), grant,
                                   record));
   }
 
-  /** Checks a sealed credential against its provider, and lists its models. */
   async verify(owner: string, connection: string, version: number,
                blob: string): Promise<Verified> {
     return guarded(() => verify(this.env, binding(owner, connection, version), blob,
                                 builtinCatalog()));
   }
 
-  /** Seals the owner's pasted wake token (a `/fire` token, a routine key) for its callback. */
   async sealDoorbell(owner: string, subscription: string, version: number,
                      input: unknown): Promise<Sealed> {
     return guarded(() => sealDoorbell(this.env, owner, subscription, version, input));
   }
 
-  /** Verifies an MCP Events callback with a signed challenge, then seals it. */
   async verifyDoorbell(owner: string, subscription: string, version: number,
                        input: unknown): Promise<DoorbellVerified> {
     return guarded(() => verifyDoorbell(this.env, owner, subscription, version, input));
@@ -91,19 +87,11 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> implements Conn
 
 /**
  * What the egress door binds, as the named entrypoint `EgressGateway`: `forward` and
- * nothing else (G4). The caller names the owner, connection and version the owner's object
+ * nothing else. The caller names the owner, connection and version the owner's object
  * admitted the request under and hands the blob the object returned; the seal holds the
  * call to them, and the sealed endpoints to where it may go.
  */
 export class EgressGateway extends WorkerEntrypoint<GatewayEnv> implements EgressService {
-  /**
-   * Forwards one admitted sandbox call under the sealed endpoints: a model call metered
-   * (`forwardMetered`), its reservation made through `reserve`, the door's callback, once
-   * the gateway's one parse read its model and tier; or, with no `reserve`, a read
-   * (`forwardRead`). Its answer streams back, and its outcome (`MeterOutcome`, one JSON
-   * line) comes on `outcome` once the answer ended. `stop`, closed or errored, aborts the
-   * provider's request.
-   */
   async forward(owner: string, connection: string, version: number, blob: string,
                 request: Request, reserve: Reserve | null, stop: ReadableStream<Uint8Array>):
       Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }> {
@@ -135,13 +123,11 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv>
     return failureResponse("not_found");
   }
 
-  /** Refreshes an OAuth credential; the result is bound to `version + 1`. */
   async refresh(owner: string, connection: string, version: number,
                 blob: string): Promise<Refreshed> {
     return guarded(() => refresh(this.env, binding(owner, connection, version), blob));
   }
 
-  /** Sends one wake with its sealed secret, for the owner's object (`doorbell.ts`). */
   async ringDoorbell(owner: string, subscription: string, version: number, blob: string,
                      previous: { readonly version: number; readonly blob: string } | null,
                      request: unknown): Promise<RingAnswer> {
@@ -149,13 +135,11 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv>
                                       request));
   }
 
-  /** Asks the provider to revoke an OAuth credential (RFC 7009). */
   async revokeAtProvider(owner: string, connection: string, version: number,
                          blob: string): Promise<Revoked> {
     return guarded(() => revokeAtProvider(this.env, binding(owner, connection, version), blob));
   }
 
-  /** Reseals a blob under the active kid, bound to `version + 1`. */
   async reseal(owner: string, connection: string, version: number,
                blob: string): Promise<Resealed> {
     return guarded(async () => {
@@ -165,7 +149,6 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv>
     });
   }
 
-  /** Reseals a doorbell subscription's blob under the active kid, bound to `version + 1`. */
   async resealDoorbell(owner: string, subscription: string, version: number,
                        blob: string): Promise<Resealed> {
     return guarded(() => resealDoorbell(this.env, owner, subscription, version, blob));
