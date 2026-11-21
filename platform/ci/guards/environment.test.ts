@@ -77,7 +77,7 @@ const ENVIRONMENT_SECRETS: Record<string, string> = {
 
 // The step shapes that take a pull request's own code into a run (GitHub's "Securely using
 // pull_request_target"): a checkout of its head, merge ref or repository, or `gh pr checkout`.
-// Fetching the head to read a diff (auto-enroll-merge.yml, pr-scope-guard.yml) runs nothing.
+// Fetching the head to read a diff (pr-scope-guard.yml, review.yml) runs nothing.
 const PULL_REQUEST_CODE = /github\.event\.pull_request\.head\.|github\.head_ref|refs\/pull\//;
 const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/;
 

@@ -243,21 +243,25 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   - [x] `review` required: `docs/ops/merge-queue-ruleset.json`, with `required-checks.test.ts`
     holding a check an App posts to the workflow named for it, and `enqueue-merge.yml`
     listening to it (`untangle/p2-review-required`; `untangle-2026-11/p2-review-required.md`);
-  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until then
-    `enqueue-merge` refuses on the drift);
+  - [ ] the founder's `PUT` of that file (`live:` host-actions "Pin the context"; until its
+    read-back, `untangle/p2-receipt-delete` does not merge);
   - [x] a verdict counts only from an account that can push (GitHub's permission read, from
     every grant), and a permission it cannot read is no verdict, never a pass; lands before
     the receipt goes, which would let a read-only member's `APPROVE` pass alone
     (`untangle/p2-review-writers`; `untangle-2026-11/p2-review-writers.md`);
-  - [ ] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
-    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`). With no
-    body edit at landing, `enqueue-merge` no longer reruns after the PR review's decision
-    (`review` on `workflow_run`, which it skips): decide there whether it follows that run or
-    auto-merge alone queues the PR.
+    - [x] its `live:` proof: `review` run 44020160475, the first after #5666 merged, decided
+      #5667's merge group `dcfd9df870ae` as `APPROVE: reviewed at this head`, with the
+      permission read working (`p2-review-writers.md` item 9);
+  - [x] the receipt half deleted, from `land/7`'s `66d29f032` where it still applies, with
+    ADR-038 accepted, superseding ADR-015's review line (`untangle/p2-receipt-delete`, after
+    the `PUT`'s read-back): auto-merge alone queues the PR, so `enqueue-merge` goes, and its
+    drift check moves to auto-enroll, which arms every PR at open
+    (`untangle-2026-11/p2-receipt-delete.md`).
 - [ ] P6, process code in one place, research first: the scripts' tests beside them, the queue
   helpers reading the platform legs, d3 §B8's three checks decided and §B9's three workflows
-  measured, `enqueue_merge.py` reading each check's newest run as GitHub does
-  (`untangle/p6-process-code`; `untangle-2026-11/p2-review-required.md` item 6).
+  measured, and `drain_review_gate.py` named for what it holds now, the review check and the
+  Untangle check, with the host's landing script told (`untangle/p6-process-code`;
+  `untangle-2026-11/p2-receipt-delete.md`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
   `docs/reference/executable-gates.md` hold the briefs' rules; `README.md` and
   `CONTRIBUTING.md` point at them (`untangle-2026-11/p7.md`).
