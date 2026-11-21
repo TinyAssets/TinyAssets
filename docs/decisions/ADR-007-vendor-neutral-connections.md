@@ -4,6 +4,8 @@
 
 Accepted
 
+Superseded by ADR-032 (founder, 2026-11-21), except: no vendor code, now Direction 2 and ADR-034 decision 5 (ADR-039 decision 2.3).
+
 ## Date
 
 2026-09-24

@@ -4,6 +4,8 @@
 
 Accepted
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the platform makes no model call of its own (ADR-039 decision 2.2).
+
 ## Date
 
 2026-09-24

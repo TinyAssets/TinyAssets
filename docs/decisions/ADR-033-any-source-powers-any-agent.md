@@ -5,6 +5,8 @@
 Accepted (founder, 2026-11-01). Amends ADR-031 decisions 1 and 3, and the
 Consequences bullets that follow from them (the paid hosted-CLI tier for
 interactive work only; `trigger: human`). Its other decisions stand.
+ADR-031 is superseded by ADR-032 (founder, 2026-11-21): the decisions this ADR
+left standing are held by ADR-039 decision 2.20.
 
 ## Date
 

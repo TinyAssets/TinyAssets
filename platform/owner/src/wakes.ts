@@ -1,8 +1,8 @@
 /**
- * Outside-agent wakes, the `wakes` lane of the object's one schedule (ADR-026 zero idle
- * tail), and the doorbell that rings them. Each object is its own owner and schedules itself
- * on its own Lifecycle job queue (`schedule.ts`), so there is no global tick and nothing to
- * rotate.
+ * Outside-agent wakes, the `wakes` lane of the object's one schedule (the zero idle tail,
+ * ADR-039 decision 2.16), and the doorbell that rings them. Each object is its own owner and
+ * schedules itself on its own Lifecycle job queue (`schedule.ts`), so there is no global tick
+ * and nothing to rotate.
  *
  * The may-have-sent record is the wake row's `marked` flag, written by `mark()` before the
  * doorbell's first byte. A send abandoned past its lease is

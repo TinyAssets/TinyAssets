@@ -17,7 +17,7 @@
  *   instruction and skills paths, the MCP template, tool filters and unattended flags, its
  *   home, the credentials it runs on, whether each may run unattended (with the vendor
  *   page that says so), its `session_paths`, which sync to the owner's files, and its
- *   `secret_paths`, which never leave the sandbox (ADR-031 decision 2). Every path is
+ *   `secret_paths`, which never leave the sandbox (ADR-039 decision 2.20). Every path is
  *   under `{home}`, the runner's engine home, which is sandbox-only and outside
  *   `/workspace`, so secret and session paths compare in one namespace. A prompt goes on
  *   stdin or joined to its option (`--prompt={prompt}`), never bare; no value configures

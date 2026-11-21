@@ -214,10 +214,11 @@ export interface SandboxService {
     Promise<{ readonly cancelled: boolean }>;
   /**
    * The lease is over: no run lives under it. The sandbox Worker pauses that sandbox at
-   * once unless a run started in it since (ADR-026's zero idle tail; a paused sandbox costs
-   * nothing and keeps its memory, files and sign-ins). The Worker keeps asking E2B until
-   * the pause lands, and reaps on its own a sandbox idle for a lease's TTL (a release that
-   * never reached it), so an idle sandbox is never left to its ceiling.
+   * once unless a run started in it since (the zero idle tail, ADR-039 decision 2.16; a
+   * paused sandbox costs nothing and keeps its memory, files and sign-ins). The Worker
+   * keeps asking E2B until the pause lands, and reaps on its own a sandbox idle for a
+   * lease's TTL (a release that never reached it), so an idle sandbox is never left to its
+   * ceiling.
    */
   release(owner: string, request: { readonly lease_id: string }):
     Promise<{ readonly paused: boolean }>;

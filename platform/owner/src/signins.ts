@@ -1,5 +1,5 @@
 /**
- * The vendor's own sign-in inside a sandbox (ADR-031 decision 2, ADR-033,
+ * The vendor's own sign-in inside a sandbox (ADR-039 decision 2.20, ADR-033,
  * ADR-034): a subscription is used only through the vendor's unmodified CLI, signed in inside
  * the owner's own sandbox (or one client's own, for that client), and a login is never copied
  * between sandboxes.

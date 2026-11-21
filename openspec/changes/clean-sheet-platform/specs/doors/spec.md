@@ -441,7 +441,7 @@ The runner SHALL keep a reserve on the disk (`RESERVE_BYTES`) that it lets go wh
 - **THEN** the tool's write fails `ENOSPC`, the runner's state and the run's end are still written and posted, and the sync agent has its room for sync-out
 
 ### Requirement: The runner never syncs a secret's bytes
-The sandbox runner (slices R and S) SHALL refuse to sync out any file, or any transcript line, that contains the bytes of a file under its engine's `secret_paths`, read from the records, so a secret an engine's own tool printed or copied never leaves the sandbox by its content (ADR-031 decision 2), whatever path it was written to.
+The sandbox runner (slices R and S) SHALL refuse to sync out any file, or any transcript line, that contains the bytes of a file under its engine's `secret_paths`, read from the records, so a secret an engine's own tool printed or copied never leaves the sandbox by its content (ADR-039 decision 2.20), whatever path it was written to.
 
 #### Scenario: An engine prints its own credential
 - **WHEN** an engine's tool prints a `secret_paths` file into its transcript, or copies it under `/workspace`
