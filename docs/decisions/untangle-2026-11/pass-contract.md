@@ -11,11 +11,12 @@ and `metered-body.test.ts` (`pass-gateway.md` §2), `policy-document.ts`'s resea
 `apps.json`'s (`pass-small.md` §1), `files.ts`'s docs (`pass-files.md` §1), and the owner side
 of the contract (`pass-owner.md` §1).
 
-The passes are two PRs (`tasks.md`, the passes line):
+The passes are two PRs:
 
 1. **This PR** (`untangle/pass-contract`): both passes on every file of the area but seven.
 2. **`untangle/pass-contract-2`**, owed: the seven files `untangle/r5-hooks` (#5707) changes,
-   once it merges, so the two merge cleanly (§4).
+   once it merges, so the two merge cleanly (§4). Its item is §4's, not a `tasks.md` line
+   (`owed-in-decisions.md`).
 
 **Behaviour is unchanged.** Every non-test source of the workspace (`src/*.ts`, `requests.ts`,
 `vitest.config.ts`, `guards/rules.ts`), each minified with esbuild, has the same digest on base
@@ -82,10 +83,9 @@ step), and the reason comments.
     from `apps.json` in the site's cutover PR (`tasks.md`, the public `/connect` page).
   - `sandbox.ts` `NetworkPlan` "What the sandbox slice sends": the owner's object makes it
     (`owner/src/network.ts`) for a start that opens a lease and for a re-apply.
-  - `guards/rules.ts` `OWED`: "until lane I's B7 adopts them". Nothing adopts the import
-    message's two SHA-256s: the cutover deletes the message, and then the kernel guard refuses
-    the entry ("owes …, which no longer holds"). The comment says so, and `cutover.json` gains
-    the edit that takes the entry out with the message (§3).
+  - `guards/rules.ts` `OWED`: "until lane I's B7 adopts them". #5709 rewrote it on `main`
+    (B24, leaving with the message) and gave `cutover.json` the edit that takes the entry
+    out; this PR takes `main`'s (§3).
 - **Orphaned:** `sandbox.ts`'s doc of `SandboxStart.urls` sat above `route`'s doc, two docs
   stacked on one field. Each is on its own field.
 - **Copies of values in prose:** `content.ts`'s and `slots.ts`'s "4 MiB chunks" and
@@ -145,16 +145,22 @@ gateway's tests to the contract's guards for three lines.
 
 ## 3. Found and fixed beyond comments
 
-- **The cutover's manifest misses `contract/guards/rules.ts`.** Its `OWED` lists the import
-  message's two SHA-256s (`kernels("B7", …)`). The cutover deletes `import-message.ts`, and
-  `ci/kit/owed.ts` `ratchet` then refuses the entry as one that no longer holds, so the
-  cutover's change would fail the kernel guard. `cutover.json` gains the edit
-  (`platform/contract/guards/rules.ts`, its `import-message.ts` entry), and the comment says
-  the entry is "deleted at the cutover", which the manifest guard holds to the manifest.
+- **The cutover's manifest missed `contract/guards/rules.ts`.** Its `OWED` lists the import
+  message's two SHA-256s. The cutover deletes `import-message.ts`, and `ci/kit/owed.ts`
+  `ratchet` then refuses the entry as one that no longer holds. This PR added the edit; #5709
+  (the cutover's dry run) added the same edit on `main` while it was open, and named the
+  entry's fix B24. On merging `main`, this PR keeps `main`'s entry and comment and drops its
+  own, so the manifest names `rules.ts` once.
 
-## 4. Owed: `untangle/pass-contract-2`, after #5707 merges
+## 4. Owed
 
-The seven files `untangle/r5-hooks` changes, not touched here so the two merge cleanly:
+- [ ] `platform/contract/`, part 2: both passes on `doors.json`, `guards/wire.test.ts` and
+  `src/{acts,egress,owner-doors,owner,requests}.ts`, once #5707 merges
+  (`untangle/pass-contract-2`).
+- [ ] `contract/src/wake-kinds.ts` `canonicalJson`, a second canonical JSON, gone for
+  `canonical.ts`'s, the platform's one (`untangle/wake-canonical`).
+
+Part 2's seven files `untangle/r5-hooks` changes, not touched here so the two merge cleanly:
 - `doors.json`: its `about` and the tool descriptions (agent text, generated into
   `owner-doors.ts`'s docs); no tag found, to be read whole with the hooks' rows.
 - `guards/wire.test.ts`: no tag found.
@@ -167,9 +173,7 @@ The seven files `untangle/r5-hooks` changes, not touched here so the two merge c
 
 And the test pass on the same files.
 
-**Found and left, a code change** (a sub-line of `tasks.md`'s re-check loop line,
-`untangle/wake-canonical`):
-`wake-kinds.ts` `canonicalJson` is a second canonical JSON beside `canonical.ts`, the
+**Found and left, a code change** (the second item above): `wake-kinds.ts` `canonicalJson` is a second canonical JSON beside `canonical.ts`, the
 platform's one (`contract-copies.md` item 3). It differs only on `undefined` (it never drops
 a field), which no subscription's JSON arguments hold, so `subscriptionId` would read the
 same. Its fix is a code change, and this pass changes none.
@@ -184,5 +188,4 @@ same. Its fix is a code change, and this pass changes none.
   - `aliased` reading a key past ASCII as any other (the moved "is refused at every level the
     rules read", now in the contract's guards);
   - `allows` without its encoded-separator check (two cases of the moved `allows` table);
-  - `cutover.json` without the new edit (the manifest guard: "rules.ts says deleted at the
-    cutover, and is not on the manifest").
+  - `allows` without its user-info check (the review's: the moved `user:pass@` case).

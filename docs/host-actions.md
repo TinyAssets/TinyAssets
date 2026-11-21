@@ -613,6 +613,15 @@ then applied.
 | Any ruleset change | Once the PR changing the file merges: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Not the Settings page: an edit there that the file lacks stops auto-enroll until a PR copies it. Between the merge and the `PUT`, a PR opened or pushed is not armed: arm it again after the read-back (a push, or `gh pr merge --auto`). |
 | Classic protection's copy of the checks | Settings → Branches → `main` → clear **Require status checks to pass before merging** and save, keeping the rule (it blocks force pushes and deletion). The ruleset requires every check it does, and the classic copy can't be read without an admin token, so nothing could check it against the file. Read back: `gh api repos/TinyAssets/TinyAssets/branches/main/protection --jq .required_status_checks` gives `null`. |
 
+## Delete the `stale-vs-main` label (2026-11-21)
+
+Queue-freshness, its one writer, is deleted (`docs/decisions/untangle-2026-11/p6-queue-deletes.md`),
+and nothing reads it. It blocks nothing.
+
+| Item | Smallest founder-only action |
+|---|---|
+| The label | `gh label delete stale-vs-main --repo TinyAssets/TinyAssets --yes`, which also takes it off any PR still carrying it. Read back: `gh label list --repo TinyAssets/TinyAssets --search stale-vs-main` lists nothing. |
+
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
 The platform has no LLM (AGENTS.md Hard Rule 15), and after the retire-platform-llm-logins

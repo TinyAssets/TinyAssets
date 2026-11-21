@@ -220,7 +220,8 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     it, once the process's tests it holds are carried out to `scripts/tests/` (the manifest's
     moves). None is skipped, quarantined or rewritten to pass. A
     structural guard (`scripts/ci_structural_guards.py` `GUARDS`) goes only once this line names
-    its platform replacement or the decision that retires its principle. `tests.yml` loses
+    its platform replacement or the decision that retires its principle: each of the 40 is
+    named in `untangle-2026-11/b24-dry-run.md` item 6. `tests.yml` loses
     `select`, `structural-guards`, `required-tests-shard`, `affected-tests` and
     `heavy-tests`; `required-tests` keeps `platform-tests`, `platform-sizes`, `platform-app` and
     `process`.
@@ -266,7 +267,8 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
     `untangle-2026-11/p6-process-code.md`);
   - [ ] the process tests beside their scripts, held by the tamper rule
     (`untangle/p6-tests-beside`);
-  - [ ] queue-freshness and rerun-cancelled-checks deleted (`untangle/p6-queue-deletes`);
+  - [x] queue-freshness and rerun-cancelled-checks deleted on their measured runs
+    (`untangle/p6-queue-deletes`; `untangle-2026-11/p6-queue-deletes.md`);
   - [ ] main-red and queue-attempts reading the ruleset and the jobs, not the old suite
     (`untangle/p6-queue-helpers`).
 - [x] P7's builder page: the untangle skill's "How this project uses it" and
@@ -403,7 +405,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] B12's end-of-hold list: `routes`' handover, `handback` and `h2` are on the manifest's
     hold phase, and mode `probe` is deleted, the stage's first sign-in doing its job (d3 §A5,
     §H; `b24-manifest.md`).
-  - B12 reshapes only the modes that stay (`untangle/b24-dry-run`).
+  - [x] B12 reshapes only the modes that stay: already built by X3 (rows, typed steps, the
+    per-Worker data, the reporter) and X6 (the plan artifact); no mode but through the row
+    table, and nothing of d2 B12's list left (`b24-dry-run.md` item 5).
   - [x] V2-H1's `CONNECTION` goldens re-sealed (#5543; `gateway/src/keyring.ts:58`). Built in
     `untangle/o-keyrings`: the goldens sealed again by their own commit's code for a connection
     id, and the gateway's binding takes the owner's connection ids, a doorbell's its own
@@ -422,9 +426,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       founder's WorkOS and installed review App recovery instructions live in `docs/host-actions.md`.
     - [x] `untangle/b24-manifest`: the rest of the repository inventory, every root, workflow,
       script, doc, spec and live object, with carry-outs (`b24-manifest.md`).
-    - `untangle/b24-dry-run`: the dry-run job that applies all three phases to a temporary tree
-      (step 5), B12's reshape of the modes that stay, and each structural guard's platform
-      replacement or retiring decision named on §9 step 15's line (`b24-manifest.md` item 6).
+    - [x] `untangle/b24-dry-run`: the dry run (`ci/dry-run.ts`, `cutover-dry-run.yml`), the
+      dependencies it found declared, and each structural guard's platform replacement or
+      retiring decision (`b24-dry-run.md`).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
     specs name exists (d3 §C7). It reads a platform comment's "ported from `tinyassets/...`
     at <commit>" as history, which stays (`b24-manifest.md` item 1).
@@ -661,18 +665,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     run), with the two ci checks that could never fail removed (the memory legs'
     `--expose-gc` text, which their header comments held) (`untangle/pass-ci-deploy`;
     `untangle-2026-11/pass-ci-deploy.md`).
-  - [x] `platform/contract/`, part 1: both passes on every file but the seven R5's hooks
-    change, with the gateway's tests of the contract's rules on hand-written input moved to
-    the contract's guards, and the cutover's manifest made to take out the contract's owed
-    entry for the import message (`untangle/pass-contract`; `untangle-2026-11/pass-contract.md`).
-  - [ ] `platform/contract/`, part 2: both passes on `doors.json`, `guards/wire.test.ts` and
-    `src/{acts,egress,owner-doors,owner,requests}.ts`, once `untangle/r5-hooks` (#5707) merges
-    (`untangle/pass-contract-2`; `pass-contract.md` §4).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
   - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
     `pass-doors.md` §3).
-- [ ] The re-check loop (d2 §E step 6): every `owed` list empty, the layer guard with no
+- [ ] The re-check loop (d2 §E step 6): each item below and each one
+  `python scripts/review_checks.py --owed` lists done (a PR's new owed items go in its decision
+  file, none here; `owed-in-decisions.md`), every `owed` list empty, the layer guard with no
   exceptions, nothing worth fixing left, behaviour unchanged.
   - [ ] `sandbox/runner/runner.ts` `safeSignedIn` logs why a status check failed
     (`pass-sandbox.md` §4).
@@ -700,14 +699,14 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     the doors handle `doors/src/e2b-hooks.ts` `TYPES`, and nothing holds the two equal; one
     list in the contract beside the hook's path (`identity.json`) (`pass-ci-deploy.md` §2;
     `untangle/e2b-hook-events`).
-  - [ ] `contract/src/wake-kinds.ts` `canonicalJson`, a second canonical JSON, gone for
-    `canonical.ts`'s, the platform's one (`pass-contract.md` §4; `untangle/wake-canonical`).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 
 - [x] The operator path's minimum: lane R's channel, `control` and `owner` (d3 §C2; `r3.md`),
   and `owner.state` (`owner-state-op.md`).
-- [ ] The manifest's dry run green (d3 §A10; `untangle/b24-dry-run`).
+- [x] The manifest's dry run green (d3 §A10): every leg, the typecheck and the process leg on
+  the manifest's tree (`cutover-dry-run.yml`; `b24-dry-run.md` item 2). It runs on every PR
+  and nightly, so a change that makes what stays need what goes shows red.
 - [x] The platform's canary and one alert path, as d3 §J2 and §J3 design them (R6; X5,
   `x5.md`). Live from `routes` (§9 step 13).
 - [ ] The canary's alerts for what is only log lines today (list3 P18): `sandbox_waiting`,
