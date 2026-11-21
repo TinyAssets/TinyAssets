@@ -100,3 +100,8 @@ export function actNamed(name: unknown): Act | undefined {
 export function isCondition(name: unknown): name is Condition {
   return typeof name === "string" && Object.hasOwn(raw.conditions, name);
 }
+
+/** Whether `name` is a CLI tool kind the file defines. */
+export function isHookKind(name: unknown): name is HookKind {
+  return typeof name === "string" && Object.hasOwn(raw.kinds, name);
+}

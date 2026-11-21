@@ -328,6 +328,7 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   fileChanges(binding: Binding, request: DoorRequest<"fileChanges">):
     Promise<DoorAnswer<"fileChanges">>;
   runEvents(binding: Binding, request: DoorRequest<"runEvents">): Promise<DoorAnswer<"runEvents">>;
+  runDecide(binding: Binding, request: DoorRequest<"runDecide">): Promise<DoorAnswer<"runDecide">>;
   signinStart(binding: Binding, request: DoorRequest<"signinStart">):
     Promise<DoorAnswer<"signinStart">>;
   signinEvents(binding: Binding, ...request: DoorLoose<"signinEvents">):

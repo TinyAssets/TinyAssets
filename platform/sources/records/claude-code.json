@@ -229,6 +229,41 @@
         "note": "A non-bare -p run loads its --mcp-config without folder trust; --strict-mcp-config ignores every other server. Neither is restored on resume, so both go on every run."
       }
     },
+    "decide": {
+      "file": "/etc/claude-code/managed-settings.json",
+      "template": "{\"allowManagedHooksOnly\": true, \"strictPluginOnlyCustomization\": [\"hooks\"], \"allowedHttpHookUrls\": [\"{decide_url}\"], \"httpHookAllowedEnvVars\": [\"{decide_env}\"], \"hooks\": {\"PreToolUse\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"type\": \"http\", \"url\": \"{decide_url}\", \"headers\": {\"{decide_header}\": \"${decide_env}\"}, \"allowedEnvVars\": [\"{decide_env}\"], \"timeout\": 60, \"onFailure\": \"block\"}]}]}}",
+      "argv": [
+        "--setting-sources",
+        "user"
+      ],
+      "runs": {
+        "http": {
+          "deny": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"{reason}\"}}"
+        }
+      },
+      "pins": {
+        "{home}/.claude/settings.json": "{\"cleanupPeriodDays\": 30}"
+      },
+      "kinds": {
+        "shell": [
+          "Bash",
+          "PowerShell",
+          "Monitor"
+        ],
+        "file_write": [
+          "Write",
+          "Edit",
+          "NotebookEdit"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp__",
+        "join": "__"
+      },
+      "fails": "closed",
+      "cite": "https://code.claude.com/docs/en/hooks",
+      "read": "2026-11-21"
+    },
     "run_secret_env": {
       "env": "ANTHROPIC_CUSTOM_HEADERS",
       "value": "x-ta-run: {run_secret}"

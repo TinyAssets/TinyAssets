@@ -211,6 +211,8 @@ export interface DoorRows {
     { readonly module: "files"; readonly caller: "changes"; readonly gate: "door" };
   readonly runEvents:
     { readonly module: "runs"; readonly caller: "run"; readonly gate: "units" };
+  readonly runDecide:
+    { readonly module: "actions"; readonly caller: "account"; readonly gate: "door" };
   readonly signinStart:
     { readonly module: "signins"; readonly caller: "owner"; readonly gate: "units" };
   readonly signinEvents:
@@ -625,6 +627,8 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "fileChanges">>;
   runEvents(binding: Binding, request: RequestIn<H, "runEvents">):
     Promise<AnswerIn<H, "runEvents">>;
+  runDecide(binding: Binding, request: RequestIn<H, "runDecide">):
+    Promise<AnswerIn<H, "runDecide">>;
   signinStart(binding: Binding, request: RequestIn<H, "signinStart">):
     Promise<AnswerIn<H, "signinStart">>;
   signinEvents(binding: Binding, request: RequestIn<H, "signinEvents">):

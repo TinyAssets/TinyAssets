@@ -173,6 +173,9 @@
         "note": "The server is in the user-level mcp.json, which needs no workspace trust; a project-level one would."
       }
     },
+    "decide": {
+      "unsupported": "Kimi Code 2.4.1 runs PreToolUse hooks from its own settings, but its bundle names no root-owned path they load from (read 2026-11-21), so a hook there is the agent's to edit: none is written, and a rule holds on Kimi at the platform's own doors alone"
+    },
     "tools": {},
     "unattended_argv": [],
     "home_env": {

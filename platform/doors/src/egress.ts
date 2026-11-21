@@ -4,10 +4,11 @@
  * their providers' own APIs with placeholder keys (the contract's `sandboxEnv`). The run in
  * the path is what the object holds the call to (that run's own connection), and
  * the run's own secret beside it is what lets a call act as that run: only the run's CLI
- * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), and
- * the runner's own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a
- * run's event door (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by
- * the same egress token.
+ * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), the
+ * runs' decide door (`/decide`, a run's CLI's hook's, by its credential), and the runner's
+ * own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a run's event door
+ * (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by the same egress
+ * token.
  *
  * 1. **The identity.** E2B's transform sets the sandbox's egress token (`x-ta-sandbox`)
  *    and the egress generation its network was made under (`x-ta-network-generation`)
@@ -48,8 +49,9 @@ import {
   type MeterOutcome, outcomeOf, type Reservation,
 } from "../../contract/src/gateway";
 import {
-  EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER, generationIn, type Outcome,
-  RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER, SYNC_HEADER, type SyncDoor,
+  DECIDE_HEADER, decideCredential, EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER,
+  generationIn, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+  SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
 import type { JsonBody, SettleSent } from "../../contract/src/owner";
@@ -231,6 +233,29 @@ async function serveRunMcp(request: Request, env: DoorsEnv, run: string, secret:
 }
 
 /**
+ * The runs' decide door (R5 P-hooks; `runDecide`): a run's CLI's pre-tool hook's question of a
+ * tool call it saw, or the runner's of the tools that hook matches, the run named by its
+ * credential (`DECIDE_HEADER`, `<run>:<secret>`), which binds it as the run's own secret
+ * does. Only the sandbox calls it, so an `Origin` is refused. A hook the CLI sends itself
+ * (an `http` hook) is answered in the CLI's own words (`hook`, its body as the object made
+ * it); a refusal is answered with its message, which the helper hands the CLI.
+ */
+function serveDecide(request: Request, env: DoorsEnv): Promise<Response> {
+  const named = decideCredential(request.headers.get(DECIDE_HEADER));
+  if (named === null) {
+    throw refused("run_secret_missing");
+  }
+  return sandboxDoor(request, EGRESS_BODY_MAX, async () => {
+    const sandbox = await sandboxToken(request, env);
+    return bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, named.run,
+                   { secret: named.secret });
+  }, async ({ binding, stub }, body) => {
+    const answer = await stub.runDecide(binding, body);
+    return "hook" in answer ? answer.hook : answer;
+  });
+}
+
+/**
  * A run's event door (ADR-034 decision 10), the runner's `POST` of its frames and its end
  * (`runEvents`), and a sign-in's, the runner's `ta.signin` frames of the
  * vendor's own sign-in it drives (`signinEvents`): each by the runner's secret, each frame
@@ -377,6 +402,8 @@ async function egress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
       }
       return serveRunMcp(request, env, door.run, secret);
     }
+    case "decide":
+      return serveDecide(request, env);
     case "events":
       return serveEvents(request, env, { run: door.run });
     case "signin":
