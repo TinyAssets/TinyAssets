@@ -607,8 +607,8 @@ describe("the ledger's binding", () => {
       }
       migrate(state.storage, MIGRATIONS.slice(0, rooms));
       const [outside, own] = ["agent_0123456789abcdef", "ta_0123456789abcdef"];
-      for (const [seq, room] of [[1, dm(own)], [2, dm(outside)],
-                                 [3, dm(outside, own)], [4, dm(own)]] as const) {
+      for (const [seq, room] of [[1, `dm:${own}`], [2, `dm:${outside}`],
+                                 [3, `dm:${outside}+${own}`], [4, `dm:${own}`]] as const) {
         sql.exec("INSERT INTO ledger_messages (seq, message_id, command_center_id, room_id, " +
                    "sender_kind, sender_id, client_message_id, body_sha256, parent_id, " +
                    "chain_root, chain_depth, created_at, body_bytes, line_bytes) VALUES (?, ?, " +
@@ -627,16 +627,16 @@ describe("the ledger's binding", () => {
     });
     const [outside, own] = ["agent_0123456789abcdef", "ta_0123456789abcdef"];
     expect(made.rooms).toEqual([
-      { room_id: dm(outside), members_key: `${outside}+owner`, created_at: 2 },
-      { room_id: dm(outside, own), members_key: `${outside}+${own}`, created_at: 3 },
-      { room_id: dm(own), members_key: `owner+${own}`, created_at: 1 }]);
+      { room_id: `dm:${outside}`, members_key: `${outside}+owner`, created_at: 2 },
+      { room_id: `dm:${outside}+${own}`, members_key: `${outside}+${own}`, created_at: 3 },
+      { room_id: `dm:${own}`, members_key: `owner+${own}`, created_at: 1 }]);
     expect(made.members).toEqual([
-      { room_id: dm(outside), member_id: outside },
-      { room_id: dm(outside), member_id: "owner" },
-      { room_id: dm(outside, own), member_id: outside },
-      { room_id: dm(outside, own), member_id: own },
-      { room_id: dm(own), member_id: "owner" },
-      { room_id: dm(own), member_id: own }]);
+      { room_id: `dm:${outside}`, member_id: outside },
+      { room_id: `dm:${outside}`, member_id: "owner" },
+      { room_id: `dm:${outside}+${own}`, member_id: outside },
+      { room_id: `dm:${outside}+${own}`, member_id: own },
+      { room_id: `dm:${own}`, member_id: "owner" },
+      { room_id: `dm:${own}`, member_id: own }]);
     expect(made.purges).toEqual([{ room_id: "dm:agent_ffffffffffffffff" }]);
   });
 });
