@@ -1,4 +1,0 @@
-## 1. Reach the handler
-
-- [x] 1.1 Move `pause_schedule`, `unpause_schedule`, `unschedule_branch` from `_EXTENSIONS_ADMIN_ACTIONS` to `_EXTENSIONS_COSTLY_ACTIONS` in `tinyassets/auth/provider.py`; rebuild the plugin mirror. Verify: nine parametrized cases in `tests/test_scheduler_owner.py` drive the real `extensions()` dispatch → `require_action_scope` → handler with a costly-only grant — red on the old tiers (all nine refused at the scope gate), green after; a costly-only non-owner is refused by the handler with `owner_not_admin`; a costly-only delegated universe admin succeeds. Codex exact-head review 2026-08-30: items 1/2/4/5 AGREE, item 3 asked for this delta.
-- [x] 1.2 Spec the two-layer contract (this change's delta), sync it into `openspec/specs/user-owned-automations/spec.md`, archive this change in the landing PR. Verify: `openspec validate --specs` green for the touched spec.
