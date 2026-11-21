@@ -40,10 +40,10 @@ agent run on it.
 ## Left, and why
 
 - **Frozen formats keep a null region.** The runner protocol 2's sign-in document records
-  `region` (`protocol.json`), so the Worker writes `null` until the next protocol drops it; a
-  protocol change ships in two deploys. The owner's `sandbox_signins.region` column is in the
-  baseline migration and is never written now; the next migration that changes that table
-  drops it.
+  `region` (`protocol.json`, frozen by digest), so the Worker writes `null` until protocol 3
+  drops it; a protocol change ships in two deploys. The owner's `sandbox_signins.region`
+  column is in the baseline migration and is never written now. Each is owed below, with its
+  branch.
 - **Shapes no record uses, which the checker holds for any CLI**: a prompt joined to its option
   instead of on stdin, a `forbid_env` pattern (`X_*`), and the `unsupported` decide, MCP and
   definition entries. Each is a few lines, names no vendor and is covered by a mutation
@@ -57,10 +57,24 @@ agent run on it.
   `scripts/diagnose_connected_sources.py`), and the provider-name lists in
   `scripts/check_shapes.py` and `scripts/check_channel_agnostic.py`, which name Kimi as a
   provider to detect.
-- **`fact15-defaults.md`'s owed research line** still names Kimi among the engines to read. The
-  untangle check holds owed items verbatim, and the research reads only the records there are.
+- **`fact15-defaults.md`'s owed research line** still names Kimi among the engines to read, and
+  `strongest-plan.md`'s owed `live:` line names Kimi's plan model. The untangle check holds
+  owed items verbatim; the research reads only the records there are, and the live check runs
+  only the sign-in engines there are.
 - **A sandbox store kept for Kimi** is not swept: Kimi's sign-in was never switched on by
   default, and no runner reads a store whose engine is not served.
+
+## Owed
+
+- [ ] `untangle/runner-protocol-3`: runner protocol 3 drops the sign-in document's `region`
+  (`protocol.json`, `SigninDoc`, `signinDocument`), shipped in a protocol change's two deploys.
+- [ ] `untangle/drop-signin-models`: its owner migration also drops `sandbox_signins.region`
+  (the baseline's, written by nothing now), with its bound in `owner-bound.test.ts` and the
+  comment in `signins.ts`'s `begin`: one migration and one pin for both sign-in columns.
+- [ ] #5744: whichever of #5744 and this PR lands second drops `kimi-for-coding` from #5744's
+  `sources/src/model-ranking.json` (it moves the ranking there from the owner's) and rebases
+  #5744's Kimi test cases (`app.e2e.mjs`, `doors/test/signin.test.ts`, `actions.test.ts`) on
+  the engines there are.
 
 ## What brings Kimi back
 

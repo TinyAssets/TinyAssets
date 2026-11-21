@@ -903,7 +903,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - every CLI: its event shapes against the matchers on a run and a resume; a resume after a
     cold create restores `session_paths`; MCP injection reaches the run's door with no bearer
     in the config; the tool filters and unattended flags run with no prompt; `no_update` holds;
-    every credential file it writes is in `secret_paths`; a signed-in run starts with every `forbid_env` name unset; on a key, its own
+    every credential file it writes is in `secret_paths`; a signed-in run starts with every
+    `forbid_env` name unset; on a key, its own
     model-call body and headers pass `api-rules.ts` through the egress door and any other call
     is cited free or refused; no synced file or transcript line holds a `secret_paths` file's
     bytes; project files that set a forbidden variable refuse the run; `HOME={home}` holds all
