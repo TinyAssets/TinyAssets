@@ -936,9 +936,9 @@ def review_app_id(env: dict[str, str] | None = None) -> int:
 
 
 def _gh_read(args: list[str], timeout: int) -> str:
-    """`gh api` with `args`, a read. GitHub's 5xx answers pass (a 502 stopped #5689's
-    decision), so one is asked again, 5 s then 10 s later, as review.yml's `get`
-    does; any other failure raises at once."""
+    """`gh api` with `args`, a read, and its whole answer. GitHub's 5xx answers pass (a
+    502 stopped #5689's decision), so one is asked again, 5 s then 10 s later; any
+    other failure raises at once. review.yml's reads come here through `--gh-read`."""
     for attempt in (1, 2):
         try:
             return subprocess.run(["gh", "api", *args], capture_output=True, text=True,
@@ -946,6 +946,7 @@ def _gh_read(args: list[str], timeout: int) -> str:
         except subprocess.CalledProcessError as exc:
             if not re.search(r"HTTP 5\d\d", exc.stderr or ""):
                 raise
+            sys.stderr.write(exc.stderr)
             time.sleep(5 * attempt)
     return subprocess.run(["gh", "api", *args], capture_output=True, text=True,
                           check=True, timeout=timeout).stdout
@@ -1128,6 +1129,13 @@ def main() -> int:
         return _print_diff_key(sys.argv[2:])
     if sys.argv[1:2] == ["--list-carry-heads"]:
         return _list_carry_heads(sys.argv[2:])
+    if sys.argv[1:2] == ["--gh-read"]:
+        try:
+            sys.stdout.write(_gh_read(sys.argv[2:], 120))
+        except subprocess.CalledProcessError as exc:
+            sys.stderr.write(exc.stderr or "")
+            return 1
+        return 0
     parser = argparse.ArgumentParser()
     parser.add_argument("--head", required=True)
     parser.add_argument("--body-file", type=Path, required=True)
