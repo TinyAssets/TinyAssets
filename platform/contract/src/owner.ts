@@ -454,7 +454,8 @@ export interface DoorTypes {
       { readonly keys: readonly string[]; readonly routes: readonly string[] } | null;
   };
   readonly toolProfile: {
-    readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[] };
+    readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[];
+                       readonly withheld: readonly string[] };
   };
   readonly wakeEvents: {
     readonly loose: [commandCenter?: string];
@@ -644,7 +645,8 @@ export interface DoorTypes {
   readonly policyRead: {
     readonly answer: { readonly generation: number; readonly policy: PolicyDocument;
                        readonly notes: readonly { readonly holds_at: readonly string[];
-                                                  readonly not_enforced: readonly string[] }[] };
+                                                  readonly not_enforced: readonly string[] }[];
+                       readonly codemode: { readonly on: boolean } };
   };
   readonly policyProposal: { readonly answer: { readonly digest: string } };
   readonly grantList: {

@@ -66,12 +66,12 @@ async function kinds(r: Rig, kind: string) {
 }
 
 describe("the default policy", () => {
-  it("starts at generation 1 with no action rules, its digest the document's own",
-     async () => {
+  it("starts at generation 1 with no action rules and code mode off, its digest the " +
+     "document's own", async () => {
     const r = await rig();
     const policy = await current(r);
     expect(policy).toEqual({ owner: r.owner, generation: 1, digest: DEFAULT_POLICY_DIGEST,
-                             policy: defaults(), notes: [] });
+                             policy: defaults(), notes: [], codemode: { on: false } });
     expect(policyDigest(defaults())).toBe(DEFAULT_POLICY_DIGEST);
     expect(canonical(defaults())).toBe(DEFAULT_POLICY_JSON);
     expect(validate(defaults())).toEqual(defaults());

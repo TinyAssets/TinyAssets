@@ -215,12 +215,19 @@ export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [numb
   });
 
 /**
- * Owner code mode policy: whether code mode scripts may run, their
- * VMs in the codemode Worker. On until the owner turns it off: code mode adds no authority
- * (each call is the tool's own door, admitted again), so the owner's own setting is the
- * one that limits it.
+ * Owner code mode policy: whether code mode scripts may run, their VMs in the codemode
+ * Worker. Off until the owner turns it on, until code mode's isolation probe passes (H2,
+ * `tasks.md` §5: whether one owner's looping script starves other owners' objects, as it
+ * did in workerd; founder call 10, `untangle-2026-11/codemode-off.md`). Turning it on for
+ * every owner is this value and the refusal's reason below, changed together, only on H2's
+ * pass.
  */
-export const CODEMODE_DEFAULTS = Object.freeze({ on: true });
+export const CODEMODE_DEFAULTS = Object.freeze({ on: false });
+
+/** The refusal of a `code` call while the owner's policy has code mode off, saying why. */
+export const CODE_MODE_OFF = "code_mode_off: code mode is off for this owner. It is off " +
+  "by default until its isolation probe (H2) passes; the owner turns it on in the owner " +
+  "app (Connected apps, Code mode)";
 
 /** The document's `codemode` table, as written. */
 export interface CodemodePolicy {

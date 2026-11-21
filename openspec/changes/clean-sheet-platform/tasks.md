@@ -63,7 +63,9 @@ end.
   with the directory's outside record (`doors/src/erase.ts`, `owner/src/erasure.ts`).
 - [ ] H2 live, narrowed to code mode (`platform/deploy/h2-probes.ts`), first on the live stage
   (§10 step 8), since code mode ships off until it passes (the founder, 2026-11-21;
-  `untangle-2026-11/founder-answers.md` call 10): a script past its
+  `untangle-2026-11/founder-answers.md` call 10; `codemode-off.md`): its probe owners turn it
+  on in their own policy first, and its pass alone turns it on by default (`CODEMODE_DEFAULTS`
+  and `CODE_MODE_OFF`, changed together). It probes a script past its
   interrupt budget against the Worker's `cpu_ms`; 10 s of one owner's script compute against
   another owner's; whether `exchange` calls count as subrequests of the owner object or of the
   code mode Worker; whether pi-codemode's own deadline fires in production while a script calls
@@ -817,7 +819,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] 9. The package format: the starter's generalized, a folder of agent files plus a manifest,
     published by any owner, installed by copy (`untangle/packages`); then 8, the "New agent" form
     a template picker that writes the agent's files (`untangle/template-picker`).
-  - [ ] 10. Code mode off by default until H2 passes (§5; `untangle/codemode-off`).
+  - [x] 10. Code mode off by default until H2 passes (§5; `untangle/codemode-off`): the owner's
+    switch off by default, `code` withheld and refused saying why (`codemode-off.md`).
   - [ ] 11. Fact 15: each retention an owner setting, off keeping forever, or a ceiling with its
     derivation, and `client_share` and `owner_reserve` off by default
     (`untangle/fact15-defaults`); `openPerRun`, code mode's limits taken from pi's defaults and

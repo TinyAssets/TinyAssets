@@ -1,8 +1,8 @@
 /**
  * Code mode's executor (ADR-034 decision 12), in workerd with the real codemode Worker behind
  * `CODEMODE_VM`: a script's VM runs in the codemode Worker, each execution named by its owner
- * and a random id, each tool call an RPC back through `exchange`; and it is on in the owner's
- * policy until the owner turns it off. And pi's `RemoteCodemodeSandbox` over the service
+ * and a random id, each tool call an RPC back through `exchange`; and it is off in the owner's
+ * policy until the owner turns it on. And pi's `RemoteCodemodeSandbox` over the service
  * binding, a nested call's round trip. The MCP door's `code` tool, which hands a script the
  * door's own tools, is `code-door.test.ts`'s. Workerd shows neither CPU limits nor isolation.
  */
@@ -81,11 +81,11 @@ describe("code mode's executor", () => {
     expect(named).not.toMatch(/a code mode execution is named/);
   });
 
-  it("is on in the owner's policy until the owner turns it off, its one switch", () => {
+  it("is off in the owner's policy until the owner turns it on, its one switch", () => {
     const base = JSON.parse(DEFAULT_POLICY_JSON) as object;
-    expect(codemodeSettings(validate(base))).toEqual({ on: true });
-    expect(codemodeSettings(validate({ ...base, codemode: { on: false } })))
-      .toEqual({ on: false });
+    expect(codemodeSettings(validate(base))).toEqual({ on: false });
+    expect(codemodeSettings(validate({ ...base, codemode: { on: true } })))
+      .toEqual({ on: true });
     for (const codemode of [{ on: 1 }, { timeout_ms: 2000 }, { cpu_ms: 50 }, []]) {
       expect(() => validate({ ...base, codemode })).toThrow("invalid codemode policy");
     }

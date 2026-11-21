@@ -44,7 +44,9 @@ describe.each([
     const client = await mcpClient(tokens, mode);
     expect(client.getNegotiatedProtocolVersion()).toBe(revision);
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(profileNames("custom"));
+    // Code withheld: code mode is off by default (its hints: the tools recorder's custom-code).
+    expect(tools.map((tool) => tool.name))
+      .toEqual(profileNames("custom").filter((name) => name !== "code"));
     for (const tool of tools) {
       const row = toolTable().find((r) => r.name === tool.name)!;
       expect(tool.title).toBe(row.title);

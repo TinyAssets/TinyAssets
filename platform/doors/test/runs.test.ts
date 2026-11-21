@@ -205,8 +205,9 @@ describe("a run's own doors on the egress host", () => {
     // Nor a mailbox tool: the inbox digest's mail part is a mailbox read.
     expect(tools.some((tool) => ["mailbox_read", "mailbox_ack", "inbox_digest"]
       .includes(tool.name))).toBe(false);
-    // Exactly the run profile, code mode on by default.
-    expect(tools.map((tool) => tool.name)).toEqual(profileNames("run"));
+    // Exactly the run profile, but code: code mode is off by default.
+    expect(tools.map((tool) => tool.name))
+      .toEqual(profileNames("run").filter((name) => name !== "code"));
     // The engine is told where working files go: its scratch, never the owner's storage.
     expect(client.getInstructions()).toBe(RUN_INSTRUCTIONS);
     expect(structured(await client.callTool({ name: "file_stat",

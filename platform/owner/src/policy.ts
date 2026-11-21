@@ -35,8 +35,9 @@
  *   door, `egress.ts`), and owner-wide and per-source daily and monthly cost ceilings.
  *   The Python's per-turn limits were code constants; here they are policy.
  * - The optional `codemode` table holds one switch: whether code mode scripts may run
- *   (`on`, on unless the owner turns it off; `CODEMODE_DEFAULTS`), their VMs in the
- *   codemode Worker. The MCP door's `code` tool refuses while it is off (slice M).
+ *   (`on`, off unless the owner turns it on, until its isolation probe passes;
+ *   `CODEMODE_DEFAULTS`), their VMs in the codemode Worker. The MCP door's `code` tool
+ *   refuses while it is off (slice M).
  * - The optional `tools` table is the owner's own tool profile (`custom`, slice M): the
  *   MCP door's tools a client whose grant names `custom` is served, each a tool of the
  *   table, none twice. Left out, `custom` is every tool (`contract/profiles.json`).
@@ -151,8 +152,9 @@ interface PolicyState {
 }
 
 /**
- * What `read` shows the owner: the Python's `OwnerPolicy.projection()`, and where each of its
- * action rules holds and can't (`ruleNotes`, d3 §N5).
+ * What `read` shows the owner: the Python's `OwnerPolicy.projection()`, where each of its
+ * action rules holds and can't (`ruleNotes`, d3 §N5), and the code mode settings in force
+ * (`codemodeSettings`), so the app shows the switch with no copy of its default.
  */
 export interface Projection {
   readonly owner: string;
@@ -160,6 +162,13 @@ export interface Projection {
   readonly digest: string;
   readonly policy: PolicyDocument;
   readonly notes: readonly RuleNote[];
+  readonly codemode: { readonly on: boolean };
+}
+
+/** The projection of `owner`'s policy as it stands. */
+function projected(owner: string, { generation, digest, document }: PolicyState): Projection {
+  return { owner, generation, digest, policy: document, notes: ruleNotes(document),
+           codemode: codemodeSettings(document) };
 }
 
 type ReceiptKind = "write" | "wake_limits" | "outside_grant" | "proposal" | "refusal";
@@ -248,7 +257,7 @@ export class Policy {
     return customTools(this.read().document);
   }
 
-  /** Whether code mode is on (`codemode.on`, its default on). */
+  /** Whether code mode is on (`codemode.on`, off by default). */
   codemode(): boolean {
     return codemodeSettings(this.read().document).on;
   }
@@ -286,8 +295,7 @@ export class Policy {
   }
 
   projection(owner: string): Projection {
-    const { generation, digest, document } = this.read();
-    return { owner, generation, digest, policy: document, notes: ruleNotes(document) };
+    return projected(owner, this.read());
   }
 
   /** One receipt; each bucket keeps its newest `receiptsPerBucket`. */
@@ -587,12 +595,9 @@ export const policyDoors = Object.freeze({
    */
   async policyWrite(o: PolicyDoorNeeds, door: Door<PolicyWriteRequest, "session">):
       Promise<Projection> {
-    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
-      const written = o.policy.write(session, r["expected_generation"], r["policy"],
-                                         r["proposal"] ?? null, clock());
-      return { owner, generation: written.generation, digest: written.digest,
-               policy: written.document, notes: ruleNotes(written.document) };
-    }));
+    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) =>
+      projected(owner, o.policy.write(session, r["expected_generation"], r["policy"],
+                                      r["proposal"] ?? null, clock()))));
     await o.door(() => o.egress.end("policy"));
     return done;
   },
