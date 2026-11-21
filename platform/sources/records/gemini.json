@@ -158,7 +158,8 @@
         "error": [
           {
             "match": {
-              "type": "error"
+              "type": "error",
+              "severity": "error"
             },
             "path": "message"
           },
@@ -204,7 +205,8 @@
             },
             "path": ""
           }
-        ]
+        ],
+        "retry": []
       }
     },
     "instructions": {

@@ -117,6 +117,23 @@
               "message.stopReason": "error"
             },
             "path": "message.errorMessage"
+          },
+          {
+            "match": {
+              "type": "auto_retry_end",
+              "success": false
+            },
+            "path": "finalError"
+          },
+          {
+            "match": {
+              "type": "compaction_end",
+              "reason": "overflow"
+            },
+            "pattern": {
+              "errorMessage": "."
+            },
+            "path": "errorMessage"
           }
         ],
         "usage": [
@@ -155,6 +172,21 @@
             },
             "pattern": {
               "finalError": "rate.?limit|too many requests|resource_exhausted|\\b429\\b"
+            },
+            "path": ""
+          }
+        ],
+        "retry": [
+          {
+            "match": {
+              "type": "auto_retry_start"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "compaction_start",
+              "reason": "overflow"
             },
             "path": ""
           }

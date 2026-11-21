@@ -776,7 +776,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     index's R2 level) later, and whether it comes before the cutover is an open founder
     question;
   - [x] Run, policy, egress and settled wake receipt retentions and their readers
-    documented in `limits-audit.md`, “Chosen retentions” (§P item 6).
+    documented in `limits-audit.md`'s list (§P item 6).
   - [ ] The names the port carried, renamed for what they mean before a grant or `agent.json`
     stores them: `read_graph`, `write_graph` and `run_graph`, as capabilities and tools; "command
     center" dropped from registration, grants, tables and wake text unless research finds it a

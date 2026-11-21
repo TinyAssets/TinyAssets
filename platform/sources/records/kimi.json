@@ -165,7 +165,8 @@
             },
             "path": ""
           }
-        ]
+        ],
+        "retry": []
       }
     },
     "instructions": {
