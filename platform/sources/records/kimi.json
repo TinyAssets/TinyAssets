@@ -57,6 +57,10 @@
       "hosted_use": {
         "verdict": "unclear",
         "citation": "subscription-engines.md section 5 and 12: the help center warns that use with unauthorized platforms or tools may be a violation and enforces a client whitelist; hosting the first-party CLI is not addressed"
+      },
+      "model": {
+        "id": "kimi-code/kimi-for-coding",
+        "citation": "the pinned @moonshot-ai/kimi-code 2.4.1 bundle and kimi.com/code/docs config files (read 2026-11-21): the plan's model is kimi-for-coding, which the managed provider /login writes names kimi-code/kimi-for-coding, the alias -m takes (strongest-plan.md)"
       }
     },
     "regions": {
@@ -168,6 +172,9 @@
         "argv": [],
         "note": "The server is in the user-level mcp.json, which needs no workspace trust; a project-level one would."
       }
+    },
+    "decide": {
+      "unsupported": "Kimi Code 2.4.1 runs PreToolUse hooks from its own settings, but its bundle names no root-owned path they load from (read 2026-11-21), so a hook there is the agent's to edit: none is written, and a rule holds on Kimi at the platform's own doors alone"
     },
     "tools": {},
     "unattended_argv": [],

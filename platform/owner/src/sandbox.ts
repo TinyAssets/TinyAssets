@@ -6,6 +6,11 @@
  * reaches nothing but E2B, with one class of its own per owner that
  * serializes that owner's E2B calls and renews each sandbox before its runtime ceiling).
  *
+ * The object reaches it only bound to its own owner (`boundSandbox`, built once from the
+ * object's `ctx.id`): no call names an owner, so none can name another's sandbox, with its
+ * synced files and vendor sign-in. The binding's owner argument is the wire's alone, and the
+ * sandbox-bound guard holds that nothing else in the source reads the binding.
+ *
  * - `start`: resume or create the owner's sandbox and start the in-VM runner for one run, in
  *   the background (E2B's `commands.run(..., { background: true })`), answering at once.
  *   `tokens` and `network` come only with the start that opened the sandbox's lease: the
@@ -38,8 +43,40 @@
  *   passed. It limits nothing: the founder's cost view.
  */
 import { keyed } from "../../contract/src/checks";
-import { type CredentialKind, START_CODES, type Started } from "../../contract/src/sandbox";
+import {
+  type CredentialKind, type SandboxService, START_CODES, type Started,
+} from "../../contract/src/sandbox";
 import { engineHosts } from "../../sources/src/served";
+import { namedOwner } from "./door";
+
+/** The sandbox Worker as one owner's object reaches it: each method less its owner. */
+export type OwnerSandbox = {
+  readonly [M in keyof SandboxService]: SandboxService[M] extends
+    (owner: string, ...rest: infer A) => infer R ? (...rest: A) => R : never;
+};
+
+/**
+ * `service` bound to the owner the object `id` names: the one place the object hands the
+ * sandbox Worker an owner. The owner Worker binds no Durable Object namespace and is handed no
+ * `ctx.exports` (the config and self-reach guards), so the only id its code holds is its own
+ * object's.
+ */
+export function boundSandbox(service: SandboxService, id: DurableObjectId): OwnerSandbox {
+  const owner = () => namedOwner(id);
+  const bound: OwnerSandbox = {
+    start: (start) => service.start(owner(), start),
+    cancel: (request) => service.cancel(owner(), request),
+    release: (request) => service.release(owner(), request),
+    signin: (signin) => service.signin(owner(), signin),
+    signinInput: (request) => service.signinInput(owner(), request),
+    signinCancel: (request) => service.signinCancel(owner(), request),
+    network: (request) => service.network(owner(), request),
+    unwait: () => service.unwait(owner()),
+    erase: () => service.erase(owner()),
+    meter: (request) => service.meter(owner(), request),
+  };
+  return Object.freeze(bound);
+}
 
 /**
  * The vendor hosts a job's sandbox network is let out to (`SandboxStart.hosts`,

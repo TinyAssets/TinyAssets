@@ -943,6 +943,10 @@
       "args": { "refused": "invalid run events", "required": { "frames": {} }, "optional": { "end": {} } }
     },
     {
+      "door": "runDecide", "class": "work", "capability": null,
+      "args": { "refused": "invalid decide request", "required": {}, "optional": { "check": {}, "tool_name": {}, "tool_input": {} } }
+    },
+    {
       "door": "signinStart", "class": "work", "capability": null,
       "args": {
         "refused": "invalid run request", "required": { "engine": {} },

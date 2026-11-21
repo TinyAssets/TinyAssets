@@ -819,15 +819,18 @@ describe("no caller is counted or capped by the doors", () => {
       .toBeLessThanOrEqual(sent);
   });
 
-  it("answers an overloaded owner object 429 with Retry-After, never retried", async () => {
+  it("answers an overloaded owner object as the refusal object_overloaded, 429 and a second, " +
+     "once", async () => {
     const app = await signInApp({ owner: owner() });
     const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    const keyList = vi.fn(() => Promise.reject(busy));
     const stub = vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
-      keyList: () => Promise.reject(busy) }) as never);
-    const answer = await appPost("keys/list", app.access_token, null, {});
-    stub.mockRestore();
-    expect(answer.status).toBe(429);
-    expect(answer.headers.get("Retry-After")).toBe("1");
+      keyList }) as never);
+    const answer = await appPost("keys/list", app.access_token, null, {})
+      .finally(() => stub.mockRestore());
+    expect([answer.status, answer.headers.get("Retry-After"), await answer.json()])
+      .toEqual([429, "1", { error: "this account is busy; try again shortly" }]);
+    expect(keyList).toHaveBeenCalledTimes(1);
   });
 });
 

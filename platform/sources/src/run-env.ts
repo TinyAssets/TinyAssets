@@ -19,6 +19,21 @@ export const RUN_BASICS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * The variables that load code into a process or change what its runtime loads (Node's
+ * options and module path, the dynamic linker's preloads, paths and tunables, Bun's,
+ * Python's, Perl's, Ruby's and the JVM's, a shell's startup file), as `forbids` reads them:
+ * never a record's own, so nothing a record sets runs code inside a CLI (review round 4,
+ * R4-1); and never one a file a hooked run's CLI loads sets, so nothing the agent writes runs
+ * code inside its hook (R5 P-hooks).
+ */
+export const CODE_LOADING_ENV: readonly string[] = Object.freeze([
+  "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "LD_*", "DYLD_*", "GLIBC_TUNABLES",
+  "BUN_*", "PYTHON*", "PERL5LIB", "PERLLIB", "PERL5OPT", "RUBYOPT", "RUBYLIB",
+  "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "BASH_ENV", "ENV", "GCONV_PATH",
+  "MALLOC_*",
+]);
+
+/**
  * What one engine run's environment is made from (`sandboxEnv`, `contract/src/egress.ts`): the
  * credential it runs on, the engine's own variables for each provider's key (an API-key
  * run's alone), and the variables that credential forbids.

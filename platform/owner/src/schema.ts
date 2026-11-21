@@ -1077,8 +1077,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // `waiting` row (not live: it holds no slot, grant or lease), its input kept beside it
     // (`run_inputs`) until it starts, at most `QUEUE_ROWS` and `QUEUE_BYTES` of input in all.
     // Each engine's sign-in, as the runner last reported it (`engine_signins`, one row an
-    // engine, at most `ENGINE_SIGNINS`): signed in or not, when, and the models it offers;
-    // never a credential.
+    // engine, at most `ENGINE_SIGNINS`): signed in or not, and when; never a credential.
+    // Its `models` is read by nothing (a plan's model is its record's), its drop owed.
     "CREATE TABLE runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
       "id TEXT NOT NULL UNIQUE CHECK (length(id) = 36), " +
       "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +

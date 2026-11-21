@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-# The checkout's root, wherever the file sits (the cutover carries it to scripts/tests/).
+# The checkout's root, wherever the file sits.
 REPO_ROOT = next(at for at in Path(__file__).resolve().parents if (at / "AGENTS.md").is_file())
 HOOK = REPO_ROOT / ".claude" / "hooks" / "session_sync_gate_hook.py"
 
@@ -23,10 +23,6 @@ def _git(cwd: Path, *args: str) -> str:
 @pytest.mark.skipif(
     os.name == "nt",
     reason="the dev box's primary checkout is healed by design; owner=sync-gate runs-in=linux-ci",
-)
-@pytest.mark.verifies(
-    "development-coordination-runtime:Session Orientation Reports Repository Freshness Without "
-    "Mutating Work"
 )
 def test_a_dirty_session_branch_survives_a_compact_session_start(tmp_path: Path):
     origin = tmp_path / "origin.git"
