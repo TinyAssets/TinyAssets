@@ -629,10 +629,10 @@ const H2_INPUTS_LIST = Object.values(H2_INPUTS);
 type Kit = Pick<typeof import("../deploy"), "perform" | "parse">;
 
 /**
- * `mode` run whole in `w`, with `flags` and `env`, by `kit`: its work, or its refusal. An applied run is
- * the workflow's two jobs: the plan job's run (`--public`) writes its plan to a file, then the
- * apply job's run is held to it, which first makes the plan job's steps again. Each job has a
- * log of its own, so `w` keeps only the apply job's, after the plan made again.
+ * `mode` run whole in `w`, with `flags` and `env`, by `kit`: its work, or its refusal. An
+ * applied run is the workflow's two jobs: the plan job's run (`--public`) writes its plan to a
+ * file, then the apply job's run is held to it, which first makes the plan job's steps again.
+ * Each job has a log of its own, so `w` keeps only the apply job's, after the plan made again.
  */
 async function runMode(w: ReturnType<typeof world>, mode: Mode, flags: string[] = [],
                        env: Record<string, string> = ENV, kit: Kit = { perform, parse }) {
@@ -1549,8 +1549,8 @@ describe("the route record", () => {
       expect(again).toBeLessThan(deployed!);
       expect(onStage(w)).toEqual([{ id: "dns-made3", type: "AAAA", name: STAGE,
                                     content: "100::", proxied: true }]);
-      expect(stored(w).host).toEqual({ name: STAGE, held: false,
-                                       made: [{ id: "dns-made3", type: "AAAA", content: "100::" }] });
+      expect(stored(w).host).toEqual({ name: STAGE, held: false, made: [
+        { id: "dns-made3", type: "AAAA", content: "100::" }] });
       expect(work.plan).toContain(`make the DNS record ${PLACED}, proxied, for the doors' ` +
         "routes on it, before anything is deployed: the route record keeps it, for a handback " +
         "to delete exactly it");
@@ -1588,7 +1588,8 @@ describe("the route record", () => {
       const work = await runMode(w, "routes", ["--yes"], RUN, stage);
       expect(work.plan).toContain(`${STAGE} holds its DNS record already, ${PLACED}: none is made`);
       expect(stored(w).host).toEqual({ name: STAGE, held: true, made: null });
-      expect(w.events.some((event) => event.startsWith("cf POST /zones/z/dns_records"))).toBe(false);
+      expect(w.events.some((event) => event.startsWith("cf POST /zones/z/dns_records")))
+        .toBe(false);
       const back = await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
       expect(back.plan.some((line) => line.includes(`routes made on ${STAGE}`))).toBe(false);
       expect(onStage(w).map((record) => record.id)).toEqual(["p1"]);

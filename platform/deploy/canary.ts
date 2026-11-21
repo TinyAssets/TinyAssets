@@ -16,18 +16,18 @@
  * - **The old stack** (before `routes`, and after a `handback`): the platform is dark. It
  *   checks that the old stack still answers the zone's `/mcp` (its anonymous `401` carries a
  *   body, the doors' none, so a `routes` stopped partway is seen) and that E2B holds the
- *   pinned template and the doors' lifecycle hook, disabled. The doors' own checks wait for `routes`, each
- *   named, never passed.
+ *   pinned template and the doors' lifecycle hook, disabled. The doors' own checks wait for
+ *   `routes`, each named, never passed.
  * - **The doors:** the anonymous challenge and the resource document; the app page (`/app`,
  *   `/app?upgrade=1`) with its CSP; the first-party client document; the egress host's
  *   refusal; the sign-in's start (the doors' `/authorize` to WorkOS, WorkOS to AuthKit's
  *   page, the issuer's discovery and JWKS); E2B's template and the hook, enabled at the
  *   doors' hook; the off-account copy, a night of which must have passed inside two nights
  *   once it is configured (`offsite.ts` `watch`: an erased owner's hide there is owed within
- *   a week; it says so while unconfigured). Then, with the canary owner's API key (`TA_PROBE_KEY`): the
- *   handle set (one read-only `GET /api/tools/<name>` a name: each doors tool `405`, each
- *   old-only one and an unknown name `404`); a file written, read and removed in the owner's
- *   workspace; and the full run.
+ *   a week; it says so while unconfigured). Then, with the canary owner's API key
+ *   (`TA_PROBE_KEY`): the handle set (one read-only `GET /api/tools/<name>` a name: each
+ *   doors tool `405`, each old-only one and an unknown name `404`); a file written, read and
+ *   removed in the owner's workspace; and the full run.
  * - **The full run:** one short turn of the canary owner's main agent (`converse`), on the
  *   model source the founder connected to that owner (a free tier's), which boots a sandbox,
  *   runs the engine and calls the model through the egress host. It runs once a day: its

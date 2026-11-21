@@ -48,15 +48,16 @@ cutover but with mode `routes` itself at the hold's end (`cutover.json`).
    product parameter): the record made, kept and handed back; a placeholder held before
    left; a foreign record stopping `routes` and its plan job; a refused make; a re-run
    recording the record its killed first attempt made; the hook's URL moving. The canary's
-   fake serves the doors at the host and the old stack at the zone.
+   fake serves the doors at the host and the old stack at the zone, and its own `at a host
+   under the zone` block loads the canary the same way: dark while the host answers nothing,
+   the doors checked at the host with the zone left alone.
 6. **The checklist.** The stage's section (§7.1's steps) with the first sign-in's pass and
    fail signs, which were mode `probe`'s (`PROBE_SIGNS` before #5703); the DNS scope, the
    host record in `routes` and `handback`, the hook by name and the canary's sides.
 
 **Proof.** Every plan the deploy harness reports, dumped on `main` and here (7,493 lines),
-is identical but for the new scenarios' 270 added lines. The deploy guards, the canary's
-tests and the handles guard pass with `host` the zone and, uncommitted, with
-`stage.tinyassets.io`.
+is identical but for the new scenarios' 270 added lines. The deploy guards and the handles
+guard pass with `host` the zone and, uncommitted, with `stage.tinyassets.io`.
 
 ## Owed
 

@@ -598,8 +598,8 @@ export interface HookWanted {
  * step). Held, it is changed only where the run asks: its signature secret only with
  * `setSecret`, when this run also sets the doors' E2B_WEBHOOK_SECRET (E2B never shows a
  * hook's secret, so the two change together or not at all); its URL and its events when
- * they differ from the identity's; and it is enabled with `enable`. It is never deleted, and never disabled here: only a
- * handback disables it, back to the state its route record kept. Without `apply` it only
+ * they differ from the identity's; and it is enabled with `enable`. It is never deleted, and
+ * never disabled here: only a handback disables it, back to the state its route record kept. Without `apply` it only
  * lists and checks. A failed listing or write throws.
  */
 export async function lifecycleHook(e2b: E2bAdmin, { secret, setSecret, enable }: HookWanted,
@@ -1214,7 +1214,7 @@ const recorded = step<Recording | "hook", "kept">((ctx, got) => keepRecord(ctx, 
 const recordedLater = step<Recording, "kept">((ctx, got) => keepRecord(ctx, got, undefined));
 
 /** The DNS records `records`, as a plan names them on `name`. */
-function named(records: readonly DnsRecord[], name: string): string {
+function named(records: readonly Omit<DnsRecord, "id">[], name: string): string {
   return records.map((each) => `${each.type} ${name} (${each.content})`).join(", ");
 }
 
@@ -1232,7 +1232,7 @@ const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "
     }
     say(got.placed.length > 0
       ? `${HOST} holds its DNS record already, ${named(got.placed, HOST)}: none is made`
-      : `make the DNS record ${named([{ id: "", ...PLACEHOLDER }], HOST)}, proxied, for the ` +
+      : `make the DNS record ${named([PLACEHOLDER], HOST)}, proxied, for the ` +
         "doors' routes on it, before anything is deployed: the route record keeps it, for a " +
         "handback to delete exactly it");
     if (!run.apply) {

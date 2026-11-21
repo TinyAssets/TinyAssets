@@ -9,7 +9,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
@@ -20,9 +20,8 @@ import { TOKEN } from "../actions";
 import { alarm, LABEL, pageDue } from "../alarm";
 import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World }
   from "../canary";
-import {
-  APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, ZONE,
-} from "../../contract/src/identity";
+import identity from "../../contract/identity.json" with { type: "json" };
+import * as IDENTITY from "../../contract/src/identity";
 import { E2B_HOOK } from "../deploy";
 import { E2B_HOOK_URL } from "../facts";
 import { NIGHTLY } from "../offsite";
@@ -39,8 +38,8 @@ const KEYED: Record<string, string> = {
   TA_PROBE_KEY: "probe-key", E2B_API_KEY: "e2b-key-123", OWNER_ISSUER: ISSUER,
   WORKOS_CLIENT_ID: "client_test", [TOKEN]: "run-token" };
 const AUTO: Options = { side: null, unkeyed: false, clock: false, full: false };
-/** The doors' resource document, on their host; the old stack's, on the zone. */
-const DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`;
+const { ORIGIN, ZONE } = IDENTITY;
+/** The old stack's resource document, on the zone. */
 const OLD_DOCUMENT = `https://${ZONE}/.well-known/oauth-protected-resource/mcp`;
 
 /** What the fake platform is: which side serves, and what each part answers. */
@@ -77,8 +76,14 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json",
                                                          ...headers } });
 
-/** The world the canary runs in, over `p`: each request it sent, by method and URL. */
-function world(p: Platform, env: Record<string, string> = KEYED): World & { sent: string[] } {
+/**
+ * The world the canary runs in, over `p`, with the doors at the identity `doors` gives: each
+ * request it sent, by method and URL.
+ */
+function world(p: Platform, env: Record<string, string> = KEYED,
+               doors: typeof IDENTITY = IDENTITY): World & { sent: string[] } {
+  const { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } = doors;
+  const DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`;
   const sent: string[] = [];
   return {
     sent, env, now: () => NOW,
@@ -324,6 +329,39 @@ describe("the platform canary", () => {
       expect([file, /python3?\b/.test(readFileSync(join(dir, file), "utf8"))])
         .toEqual([file, false]);
     }
+  });
+});
+
+describe("the platform canary at a host under the zone", () => {
+  // The canary as it runs while the identity's host is a name under the zone (the live
+  // stage's), its modules loaded afresh over that identity: the old stack keeps the zone.
+  const STAGE = `stage.${ZONE}`;
+  let stage: { canary: typeof canary; identity: typeof IDENTITY };
+  beforeAll(async () => {
+    vi.resetModules();
+    vi.doMock("../../contract/identity.json", () => ({ default: { ...identity, host: STAGE } }));
+    stage = { canary: (await import("../canary")).canary,
+              identity: await import("../../contract/src/identity") };
+    vi.doUnmock("../../contract/identity.json");
+    vi.resetModules();
+  });
+
+  it("reads the platform dark while the host answers nothing and the zone is the old stack's",
+     async () => {
+    const w = world(platform({ side: "old" }), KEYED, stage.identity);
+    const result = await stage.canary(w, AUTO);
+    expect([result.side, states(result), exitOf(result)]).toEqual(["old", [
+      ["the old stack", "passed"], ["E2B", "passed"], ["the doors", "waiting"]], 0]);
+    expect(w.sent).toContain(`POST https://${ZONE}/mcp`);
+  });
+
+  it("checks the doors at the host, leaving the old stack at the zone", async () => {
+    const w = world(platform({ hookUrl: `https://${STAGE}${identity.hook}` }), KEYED,
+                    stage.identity);
+    const result = await stage.canary(w, { ...AUTO, side: "doors", unkeyed: true });
+    expect([result.side, exitOf(result)]).toEqual(["doors", 0]);
+    expect(w.sent).toContain(`POST https://${STAGE}/mcp`);
+    expect(w.sent.filter((each) => each.includes(`//${ZONE}/`))).toEqual([]);
   });
 });
 
