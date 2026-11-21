@@ -25,9 +25,11 @@
  * way, which no later erase touches; a row made again under that key starts a new chain past
  * the newest revision any erase gave (`revision_floor`), so none repeats. The history and
  * the erasures are bounded together by what they take, not by rows times revisions: their
- * entries as SQLite lays them out (`maxHistoryCharge`), the oldest change pruned first. It is
- * a retention, never refused. Nothing of it is let go to admit a write: at the owner's
- * storage a write is refused (`storage_full`).
+ * entries as SQLite lays them out (`maxHistoryCharge`), the oldest change pruned first,
+ * never refused: a technical ceiling, not a retention the owner sets, since the history lives
+ * in the object's SQLite, whose 10 GB the owner-bound guard holds (`limits-audit.md`).
+ * Nothing of it is let go to admit a write: at the owner's storage a write is refused
+ * (`storage_full`).
  *
  * Where a body lives is the placement rule (ADR-035, `bodies.ts`): a body past
  * `PLACE_BYTES` is placed in R2 before its write (the door's `Bodies.begin`), and the row

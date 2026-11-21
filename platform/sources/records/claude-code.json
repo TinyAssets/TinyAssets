@@ -227,19 +227,50 @@
             },
             "path": ""
           }
-        ]
+        ],
+        "retry": []
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": [
-        "CLAUDE.md",
-        "CLAUDE.local.md"
-      ]
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": [
+          "CLAUDE.md",
+          "CLAUDE.local.md"
+        ]
+      },
+      "skills": {
+        "paths": [
+          ".claude/skills"
+        ]
+      },
+      "mcp": {
+        "servers": "mcpServers",
+        "http": {
+          "type": "http",
+          "url": "{url}"
+        },
+        "stdio": {
+          "type": "stdio",
+          "command": "{command}",
+          "args": "{args}",
+          "env": "{env}"
+        }
+      },
+      "hooks": {
+        "events": {
+          "pre_tool": "PreToolUse",
+          "post_tool": "PostToolUse",
+          "prompt": "UserPromptSubmit",
+          "session_start": "SessionStart",
+          "stop": "Stop",
+          "session_end": "SessionEnd",
+          "pre_compact": "PreCompact"
+        },
+        "cite": "https://code.claude.com/docs/en/hooks",
+        "read": "2026-11-21"
+      }
     },
-    "skills_paths": [
-      ".claude/skills"
-    ],
     "mcp": {
       "file": "{home}/run/mcp.json",
       "template": "{\"mcpServers\": {\"tinyassets\": {\"type\": \"http\", \"url\": \"{mcp_url}\", \"headers\": {\"x-ta-run\": \"{run_secret}\"}}}}",

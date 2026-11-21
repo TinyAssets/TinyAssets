@@ -99,6 +99,16 @@ export function agentId(value: unknown): string {
 }
 
 /**
+ * A variable name shaped like a credential, an endpoint or a proxy: a source record's own
+ * variables, which every run carries, are never one, so nothing credential-shaped is set but a
+ * key run's own placeholder (`sandboxEnv`); the runner refuses a run whose agent's files set
+ * one (`sandbox/runner/guards.ts`); and the agent's own MCP servers are never given one
+ * (`agent-definition.ts`): their credentials come through a connection.
+ */
+export const CREDENTIAL_NAME =
+  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT|PROXY)(?:_|$)/;
+
+/**
  * Whether `list` (variable names and `PREFIX_*` patterns, as a source record's
  * `forbid_env` holds them) names `name`.
  */

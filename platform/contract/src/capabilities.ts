@@ -1,6 +1,6 @@
 /**
  * The capabilities a run's MCP door can hold (ADR-034 decision 6): what an agent's
- * `agent.json` names as its `scopes` (`owner/src/agent-file.ts`), and what the owner's app
+ * `agent.json` names as its `scopes` (`agent-definition.ts`), and what the owner's app
  * shows the owner of each (`doors/src/app.ts`).
  */
 

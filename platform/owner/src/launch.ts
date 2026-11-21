@@ -39,7 +39,9 @@ import { type Ranking, rankingOf, shippedRanking } from "../../sources/src/ranki
 import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
-import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
+import {
+  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, agentPath,
+} from "../../contract/src/agent-definition";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
 import type { DoorUnits, ObjectReads } from "./door";
@@ -307,7 +309,7 @@ export class Launcher implements RunHost {
    * silent fall back to the platform's.
    */
   async readAgent(agent: string): Promise<AgentRead> {
-    const path = agentFilePath(agent);
+    const path = agentPath(agent, AGENT_FILES.agent);
     const read = await this.#whole(path);
     if (read === null) {
       throw new Refusal("agent_undefined", AGENT_UNDEFINED);
@@ -371,7 +373,7 @@ export class Launcher implements RunHost {
       Promise<string> {
     const { admitted, agent, unattended } = await this.#o.door(() => {
       const made = ask();
-      if (this.#o.files.stat(agentFilePath(made.agent))?.etag !== read.etag) {
+      if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
         throw new Refusal("agent_changed", AGENT_CHANGED);
       }
       const { file, ranking } = read;

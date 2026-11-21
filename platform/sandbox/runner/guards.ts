@@ -18,8 +18,7 @@
  *   least `ATOM_MIN` characters; a file holding any is refused whole, whatever path it was
  *   written to.
  */
-import { forbids } from "../../contract/src/text";
-import { CREDENTIAL_NAME } from "../../sources/src/check";
+import { CREDENTIAL_NAME, forbids } from "../../contract/src/text";
 
 /** A settings key naming a credential helper. */
 const HELPER_KEY = /helper/i;

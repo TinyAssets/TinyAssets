@@ -234,7 +234,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   archive_moves: "an archive move in flight, between its two units",
   policy_usage: "counters the schema's triggers derive",
   proposal_shares: "counters the schema's triggers derive",
-  ledger_wakes: "doorbell deliveries, in flight and settled ones kept a week: delivery " +
+  ledger_wakes: "doorbell deliveries, in flight and the newest settled ones: delivery " +
     "telemetry, not the owner's data",
   wake_callbacks: "sealed doorbell tokens (ADR-018: credentials are never exported)",
   grant_fences: "the grants' revoke fence, an internal mark",
