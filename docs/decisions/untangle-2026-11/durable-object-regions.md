@@ -34,3 +34,24 @@ a two-region alternative. The architecture comparison remains open pending compa
 measurements of successful owner operations. The existing canary exercises one configured
 owner from the deployed system (`platform/deploy/canary.ts`), so its results describe that
 owner's path. No vendor resource or test owner was provisioned for this review.
+
+## Review (2026-11-21)
+
+The table's dates, scopes, components and first-notice states match each incident's record,
+and the June 2025 figures match the postmortem. Two later incidents, after the sample, were
+posted while impact was live:
+
+| Scope reported | First public update, UTC | Fix, closure, UTC | What customers experienced |
+|---|---|---|---|
+| A subset of customers, with D1 | Nov 19, 13:05 | —, 13:37 | Storage operations failed or were slow. [Incident](https://www.cloudflarestatus.com/incidents/5pe5mb9fefi8) |
+| Eastern North America, with R2 | Nov 20, 02:52 | 04:02, 04:35 | Intermittent errors and failed requests. [Incident](https://www.cloudflarestatus.com/incidents/pfwuex7qix27) |
+
+An object stays where it was created; only the first `get()` reads a hint, and a
+jurisdiction only bounds where it runs. So an incident where an owner's object lives is that
+owner's whole outage, from every edge: each door (`/mcp`, `/api`, `/hooks/inbound`) fails,
+and the owner's wakes (the object's alarms) wait on the same location, with no failover.
+Owners elsewhere see nothing. Direction 8 needs no host here, yet fails for that owner for
+the incident: at least 70 minutes on November 20. A hint or a jurisdiction changes neither,
+so the doors set none. The canary's one owner lives in one location, so an incident
+elsewhere raises no alarm: that, and ADR-032's per-region measurement, are `tasks.md` step
+2's "Per-region owner availability". [Data location](https://developers.cloudflare.com/durable-objects/reference/data-location/)
