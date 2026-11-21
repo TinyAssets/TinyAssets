@@ -19,6 +19,7 @@ import { LIMITS } from "../src/collections";
 import { Files, PLACE_TTL_S } from "../src/files";
 import { BODY_BYTES_MAX, GC_GRACE_S, INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
 import { GRANT_LIMITS, scopes } from "../src/grants";
+import { LANE_CALL_MS } from "../src/schedule";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import { TIER_UNREAD } from "../src/files";
@@ -441,10 +442,15 @@ describe("the placement rule, held to the owner's own limits", () => {
     onTestFinished(() => begins.mockRestore());
     const refused = () => begins.mock.results.filter((result) => result.type === "throw"
       && (result.value as { code?: string }).code === "chunk_deleting").length;
+    // Time passes on the fake clock while the delete is held, advanced inside the object
+    // (workerd resolves a timer it set only in its own context): no guessed wait ends it.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
     const again = put("b");
     // The write met the chunk being deleted, and waits on that delete while it is held,
     // never beginning again before it lands.
     await until(() => refused() > 0, "the write's refusal");
+    await runInDurableObject(stub, () => vi.advanceTimersByTimeAsync(LANE_CALL_MS));
+    vi.useRealTimers();
     expect(await sqlIn(stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha(LARGE)))
       .toEqual([{ state: "deleting" }]);
     expect(refused()).toBe(1);

@@ -66,8 +66,9 @@ finishes a stopped builder's partial work, kept where it is right.
   the same conflation as an answer out of shape.
 - `s7.md` says an answer out of shape settles `start_lost`; it records its own PR, and this file
   supersedes it.
-- A wait for a delete held longer than a guess cannot be shown without host-clock time, which
-  the timeouts guard refuses in tests; `placing` holds no timer.
+- A wait for a delete held longer than a guess is shown on the fake clock (the review): the
+  bodies test advances it by `LANE_CALL_MS` inside the object while the delete is held, and
+  the write begins once, so a guessed sleep in place of the wait fails it.
 
 ## Owed
 
@@ -78,3 +79,9 @@ finishes a stopped builder's partial work, kept where it is right.
 - [ ] `signins.ts` `signinStart`: a start with no answer the object can read ends the sign-in
   and frees its lease, but nothing stops a sign-in CLI that did launch, where a run's is
   cancelled. Research first (`untangle/signin-start-unknown`).
+- [ ] `sandbox.ts` `startOutcome`: a transient refusal of a start (`object_overloaded`, the
+  runtime's overload of the sandbox Worker's object, read by `refusalOf`) settles the run
+  `failed`, where the contract leaves a transient one to be tried again (`refusal.ts`'s
+  header); main settled it `unknown` `start_lost`, also never tried again. Research first
+  whether it waits as `sandbox_waiting` does, for the lane's next pass
+  (`untangle/start-transient`; found by the review of #5733).
