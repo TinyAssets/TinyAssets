@@ -11,26 +11,15 @@ import { QUEUES } from "../../contract/src/queue-names";
 
 import { canaryClock } from "./canary-clock";
 import type { DoorsEnv } from "./env";
-import { serve } from "./doors";
+import { serve, versioned } from "./doors";
 import { ringQueue } from "./ring";
 import { erasureQueue } from "./erase";
 import { importQueue } from "./import";
 import { operatorQueue } from "./operator";
 import { bundledSources } from "../../sources/src/catalog";
 
-/** The header naming the version that served an answer: its id (`CF_VERSION_METADATA`). */
-export const VERSION_HEADER = "x-tinyassets-version";
-
-/**
- * `answer`, naming `version`: Cloudflare ignores a version override for a version outside
- * the deployment and still answers, so a check reads which version served it here.
- */
-function versioned(answer: Response, version: WorkerVersionMetadata): Response {
-  const named = new Response(answer.body, answer);
-  named.headers.set(VERSION_HEADER, version.id);
-  return named;
-}
-
+// workerd serves every named export of the entry as a handler or an entrypoint, so the entry
+// exports its handlers and classes alone (`ci/guards/kit.test.ts`).
 export default Object.freeze({
   fetch: async (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
     versioned(await serve(request, env, ctx, bundledSources()), env.CF_VERSION_METADATA),

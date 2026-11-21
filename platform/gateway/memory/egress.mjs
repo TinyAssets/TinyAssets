@@ -26,7 +26,7 @@
 //   pool's wait is refused `busy`.
 // Run: `npm run test:memory -w gateway`. Exits non-zero on any failed check, printing every
 // figure.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createRequire } from "node:module";
@@ -203,7 +203,9 @@ const doors :Workerd.Worker = (
     (name = "ROUTING_MAC_KEY", text = "${routing}"),
     (name = "CONTROL", kvNamespace = (name = "leg", entrypoint = "Control")),
     (name = "OWNER", durableObjectNamespace = (className = "LegOwner", serviceName = "leg")),
-    (name = "EGRESS", service = (name = "gateway", entrypoint = "EgressGateway")) ],
+    (name = "EGRESS", service = (name = "gateway", entrypoint = "EgressGateway")),
+    (name = "${doors.version_metadata.binding}", json = ${JSON.stringify(JSON.stringify(
+      { id: randomUUID(), tag: "", timestamp: "0" }))}) ],
 );
 const gateway :Workerd.Worker = (
   modules = [ ${capnpModules("gateway", built.gateway)} ],

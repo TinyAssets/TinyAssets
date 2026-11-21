@@ -55,7 +55,10 @@ of gradual deploys that changes nothing at 100%. The rollout itself is A2.
   Worker's new version.
 - A rotated shared secret (`ROUTING_MAC_KEY`) reaches the owner with its version and the doors
   with theirs, the next Worker in the order; before, the two `secret put`s did it, both before
-  any code.
+  any code. The key is one key, no keyring, so the two disagree from the owner's deploy until
+  the doors' (their upload and deploy, longer than the gap between two `secret put`s): a token
+  or route the owner seals then is refused by the doors. Nothing in the run checks the two hold
+  one key; the run's canary seals nothing (the daily engine run does).
 - Plan lines read `set the secret <name> on <Worker> with its version`.
 - Every doors answer carries `x-tinyassets-version`.
 
@@ -65,15 +68,22 @@ of gradual deploys that changes nothing at 100%. The rollout itself is A2.
   `wrangler secret put`: each sets one secret on the code already live and deploys nothing new,
   which at 100% is the same code. How they behave during a split, and whether they become
   `versions secret put` plus a deploy, is the rollout's (A2) to settle.
-- No documented length limit for a tag or a message was found in the docs tree; the tag stays
-  short (at most 12 digits, `-m` and the counts).
+- The gateway's memory leg (`gateway/memory/egress.mjs`) lists the doors' bindings by hand; it
+  now carries `CF_VERSION_METADATA` by the config's name for it. Building them from the config
+  (`ci/workers.ts`) is the leg's own change.
+- Cloudflare's API schema (`cloudflare/api-schemas` `openapi.json`, version annotations) caps
+  `workers/tag` at 100 bytes and truncates `workers/message` past 1,000, with no character
+  rule; wrangler checks neither. The tag is 12 digits, `-m` and the counts (17 bytes for the
+  sandbox's two locks), the message 40.
 
 ## Owed
 
 - [ ] A2, the rollout: the rollout record, the stages, the soak and health check, the reverse
   rollback and the forward-only refusal that reads each version's `-m` counts, mode `rollback`,
   the doors' 0% smoke reading `x-tinyassets-version`; and mode `retire`'s and the import
-  window's `secret put` during a split (`untangle/deploy-rollout`).
+  window's `secret put` during a split (`untangle/deploy-rollout`); and a rotated
+  `ROUTING_MAC_KEY` under a split, where the doors' and the owner's versions disagree for the
+  split's length unless rotation runs at 100% or the key becomes a keyring.
 - [ ] live: the next `dark` run shows each Worker's version tagged with the commit and its
   locks' counts, its message the commit, a secret set by it present after it, and a doors
   answer carrying `x-tinyassets-version` equal to the deployed version's id.

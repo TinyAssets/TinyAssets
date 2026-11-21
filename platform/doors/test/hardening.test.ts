@@ -17,7 +17,7 @@ import {
 } from "../../contract/src/identity";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
-import { VERSION_HEADER } from "../src/index";
+import { VERSION_HEADER } from "../src/doors";
 import { revokeClient } from "../src/revoke";
 import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
