@@ -189,17 +189,21 @@ Sources (V): [Connect & manage custom apps](https://support.google.com/gemini/an
 5. **Muse:** confirmed pull only.
 
 Also corrected where they copied these facts: the Claude limits line on a deleted token,
-`limits-audit.md`'s `max_body_bytes` row, `tasks.md` step 2 (ticked) and §10 step 7 (the `429`
-question dropped), and one pointer line in `main-agents.md`'s unreachable-sources section.
+`limits-audit.md`'s `max_body_bytes` row (in review: it points at the records instead of copying
+their numbers and read dates), the owner-object spec's dead-token scenario (in review: it named
+Claude's `401` alone; it now names only the record's list), `tasks.md` step 2 (ticked) and §10
+step 7 (the `429` question dropped), and one pointer line in `main-agents.md`'s
+unreachable-sources section.
 
 Out of scope: a pull-only `gemini` record beside Muse's (its agent already registers as `pull`
 with no record).
 
 ## Owed live (`tasks.md` §10 step 7)
 
-- live: whether a personal paid ChatGPT account (Plus or Pro) can add the custom MCP plugin and
-  subscribe to MCP Events, against a Business account (`main-agents.md` §9 item 2); and whether a
-  refresh's re-verification is ever refused.
-- live: the Grok routine webhook URL's host (pinned in `url.hosts` once seen) and the status a stale
-  key gets (into `token_dead`).
-- live: Muse's minimum recurring interval, and whether mail to a Muse's own address starts work.
+- [ ] live: whether a personal paid ChatGPT account (Plus or Pro) can add the custom MCP plugin
+      and subscribe to MCP Events, against a Business account (`main-agents.md` §9 item 2); and
+      whether a refresh's re-verification is ever refused.
+- [ ] live: the Grok routine webhook URL's host (pinned in `url.hosts` once seen) and the status
+      a stale key gets (into `token_dead`).
+- [ ] live: Muse's minimum recurring interval, and whether mail to a Muse's own address starts
+      work.
