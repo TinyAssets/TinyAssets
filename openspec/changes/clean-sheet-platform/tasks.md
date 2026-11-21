@@ -418,7 +418,8 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
       (step 5), B12's reshape of the modes that stay, and each structural guard's platform
       replacement or retiring decision named on §9 step 15's line (`b24-manifest.md` item 6).
   - B26: the specs and docs follow the code, and a check that every path and identifier the
-    specs name exists (d3 §C7).
+    specs name exists (d3 §C7). It reads a platform comment's "ported from `tinyassets/...`
+    at <commit>" as history, which stays (`b24-manifest.md` item 1).
   - Lane O: the owner setting, off by default, that stops agent-to-agent mail past a chain
     depth (Fact 15; the coordinator, 2026-11-12, below).
   - [x] Lane G's first PR: `MISTRAL` derived from `COMPLETIONS` in `contract/src/api-rules.ts`,

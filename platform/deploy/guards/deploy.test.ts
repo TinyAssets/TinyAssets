@@ -1453,7 +1453,7 @@ describe("the route record", () => {
       NOW.toISOString()}, before its first change: hand back with --mode handback --record ` +
       "<this run's id>");
     const later = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
-    // The doors hold the old proxy's three in place, in the zone's order, and the seven added.
+    // The doors hold the old proxy's three in place, in the zone's order, and the five added.
     expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 9 routes and the handover's 0 changes, the ` +
       `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as this run's route ` +
       `record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback ` +
