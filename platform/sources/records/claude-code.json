@@ -201,7 +201,8 @@
           {
             "match": {
               "type": "rate_limit_event",
-              "rate_limit_info.status": "rejected"
+              "rate_limit_info.status": "rejected",
+              "rate_limit_info.isUsingOverage": false
             },
             "path": "rate_limit_info.resetsAt"
           },

@@ -324,7 +324,8 @@ export class Launcher implements RunHost {
    * come (`waiting`, the run the lane starts).
    */
   async launch(read: { file: AgentFile; etag: string }, ask: () => Omit<Ask, "file">,
-               waiting: string | null = null, taken: () => void = () => {}): Promise<string> {
+               waiting: string | null = null, taken: (run: string) => void = () => {}):
+      Promise<string> {
     const { admitted, agent, unattended } = await this.#o.door(() => {
       const made = ask();
       if (this.#o.files.stat(agentFilePath(made.agent))?.etag !== read.etag) {
@@ -336,7 +337,7 @@ export class Launcher implements RunHost {
                                          engine: chosen.engine, credential: chosen.credential,
                                          ...(chosen.connection === null ? {}
                                            : { connection: chosen.connection }) }), waiting) };
-      taken();  // the input it was asked on is its own now (a mail's, taken)
+      taken(done.admitted.run);  // the input it was asked on is its own now (a mail's, taken)
       return done;
     });
     if (admitted.existing) {
@@ -596,7 +597,8 @@ export class Launcher implements RunHost {
     // it fires once: a run admitted claims it; a terminal refusal claims it with the refusal
     // kept; a transient refusal claims nothing, and it stays due for the lane's next pass.
     // (A unit keeps what it wrote before a throw, `gate.ts`: so the claim is the admission's
-    // last write, never its first.)
+    // last write, never its first; its record beside it, before the run's sandbox can
+    // report a hold, `Runs.#hold`, that a later record would clear.)
     while (clock() < until) {
       const row = await this.#o.door(() => this.#o.admission.unadmitted() !== null
         ? null : this.runs.due(clock()));
@@ -606,7 +608,7 @@ export class Launcher implements RunHost {
       let gone = false;
       try {
         const read = await this.readAgent(row.agent);
-        const run = await this.launch(read, () => {
+        await this.launch(read, () => {
           if (!this.runs.stands(row)) {
             gone = true;
             throw new Refusal("no_schedule", NO_SCHEDULE);
@@ -616,8 +618,10 @@ export class Launcher implements RunHost {
             conversation: null, request: null,
             tiers: this.#o.admission.numbers(), unattended: true,
             prompt: row.input, mail: null };
-        }, null, () => this.runs.claim(row, clock()));
-        await this.#o.door(() => this.runs.ran(row.id, run, null));
+        }, null, (run) => {
+          this.runs.claim(row, clock());
+          this.runs.ran(row.id, run, null);
+        });
       } catch (error) {
         if (!(error instanceof Refusal) || error.transient) {
           throw error;  // a transient refusal fails the pass: unclaimed, the schedule stays due

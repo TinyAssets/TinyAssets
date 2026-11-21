@@ -15,6 +15,7 @@ import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import {
   ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS,
+  whileOut,
 } from "./runs-support";
 import { drainDue, failure } from "./support";
 
@@ -127,7 +128,7 @@ describe("a scheduled run's result", () => {
   });
 
   it("posts nothing when its engine stopped at a deferred call, the run settled tool_deferred " +
-     "though the end came in a later batch", async () => {
+     "though the end came in a later batch, after a vendor's limit it got past", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
@@ -139,8 +140,12 @@ describe("a scheduled run's result", () => {
     const start = await startOf(r.stub, (await recorder(r.stub)).starts.at(-1)!.run);
     // Claude Code's stop at a call its hook deferred: a result, though no reply.
     await r.stub.runEvents(runnerBinding(r, start), { frames: [
-      { seq: 1, at: 1, event: { type: "system", subtype: "init", session_id: "s-deferred" } },
-      { seq: 2, at: 2, event: { type: "result", subtype: "success", result: "Asking first.",
+      { seq: 1, at: 1, event: { type: "system", subtype: "init", session_id: "s-deferred" } }] });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 2, at: 2, event: { type: "rate_limit_event", rate_limit_info: {
+        status: "rejected", isUsingOverage: false, rateLimitType: "seven_day_opus" } } }] });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [
+      { seq: 3, at: 3, event: { type: "result", subtype: "success", result: "Asking first.",
                                 stop_reason: "tool_deferred" } }] });
     await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: start.run }))
@@ -322,7 +327,8 @@ describe("the vendor's limit (ADR-034 decision 7)", () => {
     // Claude Code's own report: the window rejected, then the turn's error and its result.
     await r.stub.runEvents(runnerBinding(r, start), { frames: [
       { seq: 1, at: 1, event: { type: "rate_limit_event", session_id: "s", rate_limit_info: {
-        status: "rejected", resetsAt: reset, rateLimitType: "seven_day" } } }] });
+        status: "rejected", resetsAt: reset, rateLimitType: "seven_day",
+        isUsingOverage: false } } }] });
     await r.stub.runEvents(runnerBinding(r, start), { frames: [
       { seq: 2, at: 2, event: { type: "assistant", message: { content: [] },
                                 error: "rate_limit" } },
@@ -364,5 +370,21 @@ describe("the vendor's limit (ADR-034 decision 7)", () => {
     const [lifted] = await held(r, "main");
     expect(lifted!.last_error).toBeNull();
     expect(lifted!.next_at).toBeGreaterThan(Date.now() / 1000);
+  });
+
+  it("keeps the hold of a scheduled run the vendor refused before its start was answered",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief", cron: CRON });
+    await r.sql("UPDATE run_schedules SET next_at = ?", Date.now() / 1000 - 1);
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/limited", expected_etag: null });
+    await whileOut(r.name, "start", () => drainDue(r.stub), async () => {
+      const start = await startOf(r.stub, (await recorder(r.stub)).starts.at(-1)!.run);
+      await r.stub.runEvents(runnerBinding(r, start), { frames: [
+        { seq: 1, at: 1, event: { type: "assistant", message: { content: [] },
+                                  error: "billing_error" } }], end: { exit_code: 1 } });
+    });
+    expect(await held(r, "main")).toEqual([{ next_at: null, last_error: VENDOR_HELD }]);
   });
 });

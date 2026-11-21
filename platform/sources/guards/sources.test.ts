@@ -470,11 +470,15 @@ describe("the engine records", () => {
   const LIMITS: Record<string, { limit: [unknown, number | null][]; not: unknown[] }> = {
     "claude-code": {
       limit: [[{ type: "rate_limit_event", session_id: "s", rate_limit_info: {
-        status: "rejected", resetsAt: 1_790_000_000, rateLimitType: "five_hour" } },
+        status: "rejected", resetsAt: 1_790_000_000, rateLimitType: "five_hour",
+        isUsingOverage: false } },
                1_790_000_000],
               [{ type: "assistant", message: { content: [] }, error: "billing_error" }, null],
               [{ type: "assistant", message: { content: [] }, error: "rate_limit" }, null]],
-      not: [{ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning",
+      // Rejected, though the plan's paid extra usage serves the call.
+      not: [{ type: "rate_limit_event", rate_limit_info: { status: "rejected",
+                                                           isUsingOverage: true } },
+            { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning",
                                                            resetsAt: 1_790_000_000 } },
             { type: "system", subtype: "api_retry", attempt: 1, error_status: 429,
               error: "rate_limit" },
@@ -505,14 +509,20 @@ describe("the engine records", () => {
       limit: [[{ type: "ta.stderr", text: "provider.rate_limit: 429 Too Many Requests" }, null],
               [{ type: "ta.stderr", text: "provider.api_error: You exceeded your current " +
                  "token quota" }, null]],
-      not: [{ type: "ta.stderr", text: "provider.auth_error: invalid api key" }],
+      // An MCP server or hook the agent runs writes to the CLI's stderr too.
+      not: [{ type: "ta.stderr", text: "provider.auth_error: invalid api key" },
+            { type: "ta.stderr", text: "wallet: insufficient balance\nprovider.api_error: 500" }],
     },
     pi: {
-      limit: [[{ type: "message_end", message: { role: "assistant", stopReason: "error",
-        errorMessage: "OpenAI error (429): Rate limit reached for gpt-5" } }, null],
+      limit: [[{ type: "auto_retry_end", success: false, attempt: 3,
+                  finalError: "OpenAI error (429): Rate limit reached for gpt-5" }, null],
               [{ type: "message_end", message: { role: "assistant", stopReason: "error",
         errorMessage: "insufficient_quota: You exceeded your current quota" } }, null]],
+      // A 429 pi retries itself (`isRetryableAssistantError`), as Claude's `api_retry`.
       not: [{ type: "message_end", message: { role: "assistant", stopReason: "error",
+        errorMessage: "OpenAI error (429): Rate limit reached for gpt-5" } },
+            { type: "auto_retry_end", success: true, attempt: 1 },
+            { type: "message_end", message: { role: "assistant", stopReason: "error",
         errorMessage: "Connection closed by proxy server before the response completed" } },
             { type: "message_end", message: { role: "assistant", stopReason: "stop",
         errorMessage: "rate limit" } }],

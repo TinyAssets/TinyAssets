@@ -1369,7 +1369,7 @@ export class Runs {
                      "state = CASE WHEN state = 'queued' THEN 'running' ELSE state END, " +
                      "started_at = coalesce(started_at, ?), beat_at = ? WHERE id = ?",
                    last, result, resultCut ? 1 : 0, error,
-                   limited ? VENDOR_LIMIT : deferred ? TOOL_DEFERRED : row.code,
+                   deferred ? TOOL_DEFERRED : limited ? VENDOR_LIMIT : row.code,
                    now, now, runId);
     // The vendor's limit holds the schedules from the batch that brings it: once a run, with
     // a notice, and again where a later batch states the vendor's reset.

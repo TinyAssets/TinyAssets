@@ -144,7 +144,17 @@
               "message.stopReason": "error"
             },
             "pattern": {
-              "message.errorMessage": "insufficient_quota|quota exceeded|out of budget|billing|credit balance|insufficient credits|rate.?limit|too many requests|resource_exhausted|\\(429\\)|^429\\b"
+              "message.errorMessage": "GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing|subscription_sharing_(?:workplace_individual_)?usage_limit_exceeded|credit balance|insufficient credits"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "auto_retry_end",
+              "success": false
+            },
+            "pattern": {
+              "finalError": "rate.?limit|too many requests|resource_exhausted|\\b429\\b"
             },
             "path": ""
           }
