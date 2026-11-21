@@ -116,3 +116,58 @@ def test_the_required_decision_reads_the_body_s_check(tmp_path: Path) -> None:
         == "allow"
     unread = _decide(repo, "not-a-commit", code, "## Untangle check\n")
     assert unread.stdout.strip() == "deny" and "changed paths" in unread.stderr
+
+
+OWED = ("# x as built\n\n## Owed\n\n- [ ] `a.ts` `f` goes, with the next change to it\n"
+        "  (`untangle/a-f`).\n- [ ] `b.ts` `g`'s retry is decided (live: the dark deploy).\n")
+
+
+def test_an_owed_item_is_a_checkbox_line_with_its_wrapped_lines() -> None:
+    assert gate.owed_items(OWED + "  - a note under it\n- [x] Done (#5700).\n- plain\n") == [
+        (5, False, "`a.ts` `f` goes, with the next change to it (`untangle/a-f`)."),
+        (7, False, "`b.ts` `g`'s retry is decided (live: the dark deploy)."),
+        (9, True, "Done (#5700)."),
+    ]
+
+
+def test_a_change_keeps_every_open_owed_item_until_it_is_ticked(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    log = "docs/decisions/log/x.md"
+    base = _commit(repo, {log: OWED})
+    _git(repo, "checkout", "-q", "-b", "pr")
+    check = "## Untangle check\n\nNothing left.\n"
+
+    def decided(files: dict[str, str]) -> subprocess.CompletedProcess:
+        _git(repo, "checkout", "-q", "-B", "pr", base)
+        return _decide(repo, base, _commit(repo, files), check)
+
+    # Removed without being done: refused, though the change is only prose.
+    dropped = decided({log: OWED.replace("- [ ] `b.ts`", "- `b.ts`")})
+    assert dropped.stdout.strip() == "deny" and "gone without being ticked" in dropped.stderr
+    assert "`b.ts` `g`" in dropped.stderr
+    assert decided({log: OWED.replace("- [ ] `b.ts`", "- [x] `b.ts`")}).stdout.strip() \
+        == "allow"
+    moved = OWED.split("## Owed\n\n")[1]
+    assert decided({log: "# x as built\n", "docs/decisions/log/y.md": moved}).stdout.strip() \
+        == "allow"
+    unnamed = decided({"docs/decisions/log/z.md": "- [ ] `c.ts` waits for lane O.\n"})
+    assert unnamed.stdout.strip() == "deny" and "z.md:1: an owed item names no PR" in \
+        unnamed.stderr
+
+
+def test_the_owed_list_is_every_open_item_in_the_decision_files(tmp_path: Path) -> None:
+    (tmp_path / "docs/decisions/log").mkdir(parents=True)
+    (tmp_path / "docs/decisions/log/x.md").write_text(OWED + "- [x] Done (#5700).\n",
+                                                      encoding="utf-8")
+    listed = subprocess.run([sys.executable, str(_SCRIPTS / "review_checks.py"), "--owed"],
+                            cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert listed.stdout.splitlines() == [
+        "docs/decisions/log/x.md:5: `a.ts` `f` goes, with the next change to it "
+        "(`untangle/a-f`).",
+        "docs/decisions/log/x.md:7: `b.ts` `g`'s retry is decided (live: the dark deploy).",
+    ]
+    elsewhere = subprocess.run([sys.executable, str(_SCRIPTS / "review_checks.py"), "--owed"],
+                               cwd=tmp_path / "docs", capture_output=True, text=True)
+    assert elsewhere.returncode == 2 and "repository's root" in elsewhere.stderr

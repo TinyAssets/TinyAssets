@@ -4,7 +4,9 @@
 * `review.yml` posts the one review gate, the required `review` check, from the PR's
   reviews (`--review-check`, `review_check`).
 * `pr-scope-guard.yml`, the required `Diff scope declared`, asks a change to more than
-  prose for an Untangle check in its body (`--untangle-check`, `untangle_check_problems`).
+  prose for an Untangle check in its body (`--untangle-check`, `untangle_check_problems`),
+  and refuses any change that drops an open owed item from the decision files
+  (`owed_problems`); `--owed` lists the open ones.
 
 Every pull request is reviewed: on 2026-10-01 auto-enroll armed #4247, a superseded
 head with a known data-loss bug, because it touched no path that needed a review, and
@@ -351,6 +353,65 @@ def untangle_check_problems(body: str, paths: list[str]) -> list[str]:
             f"live: wait: {item[:200]}" for item in _owed_items(section)]
 
 
+# ---- The owed record (the untangle skill, "The PR body") -----------------------------
+#
+# What a PR leaves owed is a checkbox line (`- [ ] ...`) in its own decision file under
+# `docs/decisions/`, naming its fix as the body's owed items do. The PR that does it
+# ticks it (`- [x]`); an open one is never deleted or reworded. No shared list holds
+# them, so no shared line grows with each PR: on 2026-11-21 six passes each appended to
+# the same two `tasks.md` lists, and each merge made the next PR conflict and rerun CI.
+# `--owed` lists the open ones for the re-check loop; the Untangle check refuses a
+# change that drops one, or opens one that names no fix. An item is identified by its
+# text, so moving it to another decision file in the same change keeps it.
+
+_DECISIONS = "docs/decisions/"
+_OWED_LINE_RE = re.compile(r"^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$")
+_NO_BLOB = re.compile(rb"0+")
+
+
+def owed_items(text: str) -> list[tuple[int, bool, str]]:
+    """A decision file's owed items: (line, ticked, text with its wrapped lines joined)."""
+    items: list[list] = []
+    indent: int | None = None
+    for number, line in enumerate(text.splitlines(), 1):
+        item = _OWED_LINE_RE.match(line)
+        if item:
+            indent = len(item[1])
+            items.append([number, item[2] != " ", item[3]])
+        elif (indent is not None and line.strip() and not _BULLET_RE.match(line)
+              and len(line) - len(line.lstrip()) > indent):
+            items[-1][2] += f" {line}"
+        else:
+            indent = None
+    return [(number, ticked, " ".join(text.split())) for number, ticked, text in items]
+
+
+def owed_problems(base: str, head: str, *, cwd: Path | None = None) -> list[str]:
+    """Why merge-base(base, head)..head drops an open owed item or opens one with no fix."""
+    def items(blob: bytes) -> list[tuple[int, bool, str]]:
+        if _NO_BLOB.fullmatch(blob):
+            return []
+        return owed_items(subprocess.run(
+            ["git", "cat-file", "blob", blob.decode("ascii")], cwd=cwd, capture_output=True,
+            check=True).stdout.decode("utf-8", "replace"))
+
+    before: list[tuple[str, str]] = []
+    after: list[tuple[str, int, bool, str]] = []
+    for raw_path, meta in change_entries(_raw_change(base, head, cwd=cwd)).items():
+        path = raw_path.decode("utf-8", "surrogateescape")
+        if not (path.startswith(_DECISIONS) and path.endswith(".md")):
+            continue
+        old, new = meta.split()[2:4]
+        before += [(path, text) for _, ticked, text in items(old) if not ticked]
+        after += [(path, *item) for item in items(new)]
+    kept = {text for *_, text in after}
+    return [f"{path}: an open owed item is gone without being ticked done: {text[:200]}"
+            for path, text in before if text not in kept] + [
+        f"{path}:{line}: an owed item names no PR (#123), branch (untangle/, fix/, process/, "
+        f"land/) or live: wait: {text[:200]}"
+        for path, line, ticked, text in after if not ticked and not _NAMES_FIX_RE.search(text)]
+
+
 def changed_paths(base: str, head: str, *, cwd: Path | None = None) -> list[str]:
     """Every path `git diff merge-base(base, head)..head` changes; a rename is both."""
     return [p.decode("utf-8", "surrogateescape")
@@ -612,7 +673,8 @@ def _gh_json(path: str) -> object:
 
 
 def _untangle_check(argv: list[str]) -> int:
-    """`--untangle-check`: does the body's Untangle check hold for the PR's change?
+    """`--untangle-check`: does the body's Untangle check hold for the PR's change, and
+    does the change keep every open owed item?
 
     Prints `allow` (exit 0) or `deny` (exit 2), each problem on stderr.
     """
@@ -623,13 +685,30 @@ def _untangle_check(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         body = args.body_file.read_text(encoding="utf-8", errors="replace")
-        problems = untangle_check_problems(body, changed_paths(args.base, args.head))
+        problems = (untangle_check_problems(body, changed_paths(args.base, args.head))
+                    + owed_problems(args.base, args.head))
     except (subprocess.CalledProcessError, ValueError, OSError) as exc:
         problems = [f"cannot read the PR's body or changed paths: {exc}"]
     for problem in problems:
         print(f"untangle check: {problem}", file=sys.stderr)
     print("deny" if problems else "allow")
     return 2 if problems else 0
+
+
+def _owed(argv: list[str]) -> int:
+    """`--owed`: every open owed item in the decision files, as `path:line: text`.
+
+    Run from the repository's root; the re-check loop reads this list.
+    """
+    argparse.ArgumentParser(prog="review_checks.py --owed").parse_args(argv)
+    if not Path(_DECISIONS).is_dir():
+        print(f"no {_DECISIONS} here: run from the repository's root", file=sys.stderr)
+        return 2
+    for path in sorted(Path(_DECISIONS).rglob("*.md")):
+        for line, ticked, text in owed_items(path.read_text(encoding="utf-8")):
+            if not ticked:
+                print(f"{path.as_posix()}:{line}: {text}")
+    return 0
 
 
 def _gh_read_command(argv: list[str]) -> int:
@@ -644,6 +723,7 @@ def _gh_read_command(argv: list[str]) -> int:
 
 _COMMANDS = {
     "--gh-read": _gh_read_command,
+    "--owed": _owed,
     "--review-check": _review_check,
     "--signal-pr": _signal_pr,
     "--untangle-check": _untangle_check,
