@@ -1,0 +1,93 @@
+# The cutover's dry run (untangle B24, d3 §A10; tasks.md §10 step 5): the manifest
+# (platform/cutover.json) applied to this run's own checkout by platform/ci/dry-run.ts, its
+# carry-outs and deletes made, what an edit still loads kept and the tests it edits set aside,
+# then every platform-tests leg (derived from tests.yml, less the workspaces it deletes), the
+# typecheck and the process leg run on that tree. Green when nothing that stays, and is no
+# edit, needs what goes. The tree is never pushed, no job holds a secret, and nothing live is
+# reached. A path a staying workflow names is held by ci/guards/cutover.test.ts on every PR,
+# so actionlint stays actionlint.yml's.
+name: Cutover dry run
+
+on:
+  pull_request:
+  schedule:
+    - cron: '41 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cutover-dry-run-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  legs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.legs.outputs.matrix }}
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - id: legs
+        run: echo "matrix=$(node --experimental-strip-types --no-warnings ci/dry-run.ts legs)" >> "$GITHUB_OUTPUT"
+
+  suites:
+    needs: legs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.legs.outputs.matrix) }}
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - run: node --experimental-strip-types --no-warnings ci/dry-run.ts apply
+      - run: npm ci
+      - run: ${{ matrix.command }}
+
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci
+        working-directory: platform
+      - run: node --experimental-strip-types --no-warnings platform/ci/dry-run.ts apply
+      - run: npm ci
+        working-directory: platform
+      - run: npm run typecheck
+        working-directory: platform
+      - run: pip install -r scripts/process-requirements.txt
+      - run: python -m pytest --noconftest -q -p no:cacheprovider scripts/tests
