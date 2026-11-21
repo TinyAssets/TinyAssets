@@ -1,15 +1,13 @@
 /**
- * The owner's admission (tasks 2, "Owner admission and erasure"; tasks 5, F1): one row in
- * the owner's own object, which is strongly consistent and on every path, so no door reads
- * it from anywhere else and the alarm reads it locally. The Python's `owner_admission`
- * record (`tinyassets/broker/admission.py`), ported:
+ * The owner's admission: one row in the owner's own object, which is strongly consistent and
+ * on every path, so no door reads it from anywhere else and the alarm reads it locally:
  *
  * - `pending`: the owner's object was made (migration 10 writes the row with the schema)
  *   and the platform has not admitted it: every door and lane refuses (`OWNER_UNADMITTED`).
  *   Any `getByName` makes an object, so being made never admits it: only the platform's
  *   explicit admit at sign-up does (`admissionSet` with `{admit: true}`, which the doors'
- *   sign-in callback sends when the owner directory holds no record of the owner, slice
- *   L). A stale `getByName` of a wiped owner whose tombstone a crash lost therefore makes
+ *   sign-in callback sends when the owner directory holds no record of the owner). A
+ *   stale `getByName` of a wiped owner whose tombstone a crash lost therefore makes
  *   an object that refuses everything, and the directory's erased record keeps the
  *   platform from ever admitting that name again: `erase.ts`'s window, closed;
  * - `admitted`: the platform admitted the owner, or every suspension was lifted;
@@ -19,7 +17,7 @@
  *   sign-in and what only lowers risk or storage; an abuse suspension refuses every door.
  *   Work is refused where it is enforced, not only where it starts: every authority check
  *   (`Authority`), every sandbox lease and egress call (`Launcher.openLease`,
- *   `egressOpen`), and every lane with the Python's `require_work` semantics in its own
+ *   `egressOpen`), and every lane that requires work, in its own
  *   unit: the `wakes` lane's claim (`ledger.ts`), whose lane then has no job for its open
  *   rows. A suspension also ends the sandbox's in-flight egress streams, the prompt stop;
  * - `erased`: the tombstone the owner's erasure leaves as its last step, written after
@@ -313,10 +311,6 @@ export function writeTombstone(sql: Pick<SqlStorage, "exec">): void {
 }
 
 // -- THE DOORS: the `admission` rows' handlers (`owner/doors.json`) -------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`AdmissionDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `admission` doors reach: the admission, what a suspension ends (the sandbox's
@@ -332,7 +326,6 @@ export interface AdmissionDoorNeeds extends Pick<DoorUnits, "door" | "synced">,
   readonly files: Pick<Files, "storedNow">;
 }
 
-/** The `admission` doors' handlers, by door. */
 export const admissionDoors = Object.freeze({
   /**
    * The platform suspends the owner for a reason (`billing`, `abuse`), or lifts it

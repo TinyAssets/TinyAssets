@@ -1,5 +1,5 @@
 /**
- * The owner export (ADR-018; slice P): everything the owner holds, as one generation
+ * The owner export (ADR-018): everything the owner holds, as one generation
  * (`backup.ts`, `changelog.ts`), the same artifact the nightly manifest's root names: a fuzzy
  * base copy of every row and every chunk's hash, then the change log captured while the base
  * was read, consistent at its end E; and the chunks' bytes fetched by hash (`exportChunks`).
@@ -32,7 +32,7 @@
  * it does not name did not change from S to E, so its base line is its value at E (Postgres's
  * base backup and WAL replay, at row level).
  *
- * **Archive segments (version 3; slice STORE item 2, `segments.ts`).** An `archive_segments`
+ * **Archive segments (version 3, `segments.ts`).** An `archive_segments`
  * row names a content whose bytes are export lines of this same grammar: each archived record's
  * `row` lines (a message, its body's row, its recipients), then one `{"t":"segment",...}`
  * trailer line, then 16 ASCII digits (the trailer's offset). A body is raw, never escaped: its
@@ -345,8 +345,8 @@ function value(cell: unknown): unknown {
 /**
  * Lines of the stream as a generation's part holds them, encoded once: one buffer of their
  * UTF-8, each line followed by its newline, and where each line ends in it. One buffer a
- * page, never an array a line (review rvbackup 1: an array a line costs about 190 bytes of
- * its own, more than a small line's bytes).
+ * page, never an array a line (an array a line costs about 190 bytes of its own, more than a
+ * small line's bytes).
  */
 export interface Lines {
   readonly bytes: Uint8Array;
@@ -362,7 +362,7 @@ export function encodeLines(lines: readonly string[]): Lines {
     ends[n] = at;
   }
   // Counted first, then encoded straight into one buffer of exactly those bytes: never the
-  // lines joined into one text (and its flattened copy) and encoded again (rvburst W1).
+  // lines joined into one text (and its flattened copy) and encoded again.
   const bytes = new Uint8Array(at);
   const encoder = new TextEncoder();
   let written = 0;
@@ -421,7 +421,7 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
     const { columns, key } = all[table]!;
     const keyed = key.join(", ");
     const where = after === null ? "" : `WHERE (${keyed}) > (${key.map(() => "?").join(", ")}) `;
-    // Its rows a row at a time from the cursor, never a batch held whole (rvburst W1).
+    // Its rows a row at a time from the cursor, never a batch held whole.
     let read = 0;
     for (const row of sql.exec<Record<string, SqlStorageValue>>(
            `SELECT ${[...new Set([...columns, ...key])].join(", ")} FROM ${table} ${where}` +
@@ -475,10 +475,6 @@ export function endLine(at: number, seq: number): string {
 }
 
 // -- THE DOORS: the `export` rows' handlers (`owner/doors.json`) ----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`ExportDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `export` doors reach: the exports open, the generations they read, the files
@@ -491,7 +487,6 @@ export interface ExportDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "syn
   readonly files: Pick<Files, "space" | "storedChunks" | "fetch">;
 }
 
-/** The `export` doors' handlers, by door. */
 export const exportDoors = Object.freeze({
   /**
    * One object of the owner's export from `cursor` (null: the start, which opens the export

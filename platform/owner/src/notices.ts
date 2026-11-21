@@ -54,17 +54,12 @@ export class Notices {
 }
 
 // -- THE DOORS: the `notices` rows' handlers (`owner/doors.json`) ---------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`NoticesDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /** What the `notices` doors reach: the notices. */
 export interface NoticesDoorNeeds {
   readonly notices: Notices;
 }
 
-/** The `notices` doors' handlers, by door. */
 export const noticesDoors = Object.freeze({
   /** The owner's notices, newest first (`notices.ts`). */
   noticeList(o: NoticesDoorNeeds, _call: Call<undefined>): { notices: Notice[] } {

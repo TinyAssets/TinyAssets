@@ -275,7 +275,7 @@ export class Bodies {
     const located = (value: T) => ({ value, located: this.locate(
       shown === undefined ? [] : shown.contents(value)) });
     // A body whose chunk the sweep is deleting this moment begins again once the delete
-    // lands (review rvlim L5), a few times, then the refusal stands.
+    // lands, a few times, then the refusal stands.
     let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
     // Whose files scope the write's bodies count in: the tier's one storage number holds
     // them, inline or placed, retention making room first (`Files.held`).
@@ -414,7 +414,7 @@ export class Bodies {
   /**
    * A window of each located body, by content id, in order: its text from `offsetOf(id)`,
    * at most `maxOf(id)` bytes, cut back to a character, read by the verified ranges it spans
-   * (`FILES` rechecks each whole chunk's hash and answers the range: review L7). The windows
+   * (`FILES` rechecks each whole chunk's hash and answers the range). The windows
    * stop once they hold `WINDOWS_BYTES`, always past the first: a body not read ends its
    * page before it. Outside any unit.
    */

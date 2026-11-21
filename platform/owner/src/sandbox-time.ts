@@ -1,5 +1,5 @@
 /**
- * Sandbox time, metered per owner (slice P): how long each of the owner's sandboxes ran, and
+ * Sandbox time, metered per owner: how long each of the owner's sandboxes ran, and
  * each run in it, for the founder's cost view (E2B bills a running sandbox by the second).
  * It limits nothing: no door, no admission and no run reads it to refuse.
  *
@@ -13,14 +13,15 @@
  *   replayed sooner by its id; each live sandbox's last execution is kept until its kill
  *   (`sandbox_live`), so a kill of a paused sandbox however long after counts nothing again.
  *   Past `BILLED_KEPT` inside the window an execution is counted all the same, and tallied
- *   `unverified` on its day, which the view shows: it never quietly understates. It covers what the Worker did not cause: E2B's own
+ *   `unverified` on its day, which the view shows: it never quietly understates. It covers
+ *   what the Worker did not cause: E2B's own
  *   timeout pauses and kills, a Worker lost mid-call, time kept warm.
- * - **Estimate, and the fallback.** The sandbox Worker is the one that starts, pauses, resumes and kills a
- *   sandbox (slice S's `SandboxControl`, which serializes them per owner), and it logs each
- *   as it happens, with its time: `start` (created) and `resume` begin a running span,
+ * - **Estimate, and the fallback.** The sandbox Worker is the one that starts, pauses,
+ *   resumes and kills a sandbox (its `SandboxControl`, which serializes them per owner), and it
+ *   logs each as it happens, with its time: `start` (created) and `resume` begin a running span,
  *   `pause` and `kill` end it. The owner's object reads that log after its cursor
- *   (`SandboxService.meter`) and applies it here in one unit; the cursor then moves, so the
- *   log is read once (the Worker drops what the cursor passed).
+ *   (`SandboxService.meter`) and applies it here in one unit; the cursor then moves, so the log is
+ *   read once (the Worker drops what the cursor passed).
  * - **When.** On the `sandbox` lane of the object's one schedule: as soon as a settled run
  *   has no sandbox time yet, and, while a span stands open, `METER_OPEN_S` after the last
  *   read, so a pause that came after the run's settle is in the day's sum within that.
@@ -357,17 +358,12 @@ function billedEvent(value: unknown): BilledEvent {
 }
 
 // -- THE DOORS: the `sandbox-time` rows' handlers (`owner/doors.json`) ----------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`SandboxTimeDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /** What the `sandbox-time` doors reach: the meter, and whether the owner is gone. */
 export interface SandboxTimeDoorNeeds extends Pick<DoorUnits, "door">, Pick<ObjectReads, "gone"> {
   readonly sandboxTime: SandboxTime;
 }
 
-/** The `sandbox-time` doors' handlers, by door. */
 export const sandboxTimeDoors = Object.freeze({
   /**
    * One execution E2B billed, from its signed lifecycle event, which the doors verified and

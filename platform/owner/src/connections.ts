@@ -1,13 +1,12 @@
 /**
- * The owner's model connections (gateway research §1.4, §2.6, §7; tasks 4 G2): what each
+ * The owner's model connections (gateway research §1.4, §2.6, §7): what each
  * one is, the blob the gateway sealed its credential into, the OAuth flows that connect
  * one, the refresh lease, and the `connections` lane's housekeeping.
  *
  * **No plaintext enters the object.** The binder hands a pasted key to `GATEWAY.seal`
  * and an OAuth code to `GATEWAY.exchange`; the object stores only what comes back, the
  * sealed blob, which only the gateway can open, and only for this owner, connection and
- * version (the seal's additional data). The Python's door-only exchange had the same
- * rule (`broker/model_connect.py`: "no credential leaves the broker").
+ * version (the seal's additional data).
  *
  * The steps of a connect, each a door in the owner's live session (`owner-do.ts`):
  * 1. `prepare`: a pending row, its id and version 1, which the binder seals for, and
@@ -23,7 +22,7 @@
  *    its whole pi-ai capability record, which the object has no catalog for: `ModelRecord`),
  *    where sandbox egress may forward its credential (`egress`: the sealed base URL and
  *    endpoints the check read from the blob, no secret; the egress door's admission reads
- *    it, G4) and, for OAuth, the access expiry in clear.
+ *    it) and, for OAuth, the access expiry in clear.
  *    A credential the provider issued whose setup check then failed is committed `failed`:
  *    the connection is in `error`, and a revocable one's blob is kept for the lane's
  *    provider revoke; an unrevocable one's is deleted, with an owner notice to delete it
@@ -36,12 +35,11 @@
  * have failed (then it is deleted anyway, with an owner notice: the provider may still
  * hold a live token). A credential its provider cannot be asked to revoke (`revocable`
  * false: a pasted key, or a key-exchange source's key) is deleted in the revoke's unit,
- * and one the provider issued gets an owner notice to delete it there. A refresh that lands after the revoke keeps its rotated tokens for the lane to
- * revoke too, whether or not the lane already revoked the old ones. A call that already
- * holds the blob completes; the bound is one call.
- * Account revocation (`sessionCloseAll`) and a session's sign-out cancel the session's
- * open flows in their own unit, as the Python's `revoke_owner` did, so a late callback
- * finds no flow.
+ * and one the provider issued gets an owner notice to delete it there. A refresh that lands after
+ * the revoke keeps its rotated tokens for the lane to revoke too, whether or not the lane already
+ * revoked the old ones. A call that already holds the blob completes; the bound is one call.
+ * Account revocation (`sessionCloseAll`) and a session's sign-out cancel the session's open flows
+ * in their own unit, so a late callback finds no flow.
  *
  * **The refresh lease.** An OAuth access token expiring within `refreshMarginMs` is
  * refreshed before a call. The first caller takes the lease on the row (its id and
@@ -108,7 +106,7 @@ interface ConnectionLimits {
 }
 
 /**
- * Flows last 10 minutes and at most 10 are open (the Python's `MAX_PER_OWNER`); a refresh
+ * Flows last 10 minutes and at most 10 are open; a refresh
  * starts 3 minutes before the access token expires (research §2.6); a lease outlasts the
  * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: the largest
  * built-in catalog of pi-ai 1.4.0 has 386 (the connections test finds it by a scan, and
@@ -981,10 +979,6 @@ export class Connections {
 }
 
 // -- THE DOORS: the `connections` rows' handlers (`owner/doors.json`) -----------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`ConnectionsDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `connections` doors reach: the connections, the sandbox egress a revoke ends,
@@ -1000,7 +994,6 @@ export interface ConnectionsDoorNeeds extends Pick<DoorUnits, "door" | "synced">
 // no session and is refused, with a refusal receipt. The binder seals and exchanges with
 // the gateway between them; no plaintext secret reaches the object.
 
-/** The `connections` doors' handlers, by door. */
 export const connectionsDoors = Object.freeze({
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
   connectionPrepare(o: ConnectionsDoorNeeds,

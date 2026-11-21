@@ -1,5 +1,5 @@
 /**
- * The vendor's own sign-in inside a sandbox (slice SIGNIN; ADR-031 decision 2, ADR-033,
+ * The vendor's own sign-in inside a sandbox (ADR-031 decision 2, ADR-033,
  * ADR-034): a subscription is used only through the vendor's unmodified CLI, signed in inside
  * the owner's own sandbox (or one client's own, for that client), and a login is never copied
  * between sandboxes.
@@ -19,11 +19,11 @@
  * lapsed with it. So is one past its deadline (`deadline`): the vendor's code's lifetime
  * (the record's `expires`, cited), and one lease TTL for its runner's last frame.
  *
- * Only what the trusted side checked leaves this module for the owner's app (review M1): a
+ * Only what the trusted side checked leaves this module for the owner's app: a
  * sign-in's fixed states (`SIGNIN_STATES`), the record's own URL and code (`signinShape`,
  * again here, outside the VM), and a refusal's fixed reason (`SIGNIN_REFUSALS`).
  *
- * Each source's sign-in sits behind its own switch (review H1): the served records whose
+ * Each source's sign-in sits behind its own switch: the served records whose
  * sign-in the platform's control record switches on, as the binder hands them with every
  * call (`Binding.signins`), kept for the runs the object's own lane starts
  * (`platform_signins`). None kept, none is on.
@@ -221,7 +221,7 @@ export class Signins {
    * In a unit: the runner's frames of sign-in `id`, under the lease that holds it: the latest
    * prompt kept, its beat renewed; an end frame (or the post's end) ends it, and so does its
    * deadline (`expired`). Only a sign-in's fixed states pass; a refusal keeps only its fixed
-   * reason, and no other frame any text (review M1). A prompt that is not the record's own
+   * reason, and no other frame any text. A prompt that is not the record's own
    * shape (`signinShape`: the pinned page, a device code, nothing credential-shaped) is
    * checked here, outside the VM, and refused, as is a state no sign-in reports: the sign-in
    * ends `refused`, the prompt never kept nor relayed (a hijacked engine shows no look-alike
@@ -286,7 +286,7 @@ export class Signins {
                        ? { reason: event["reason"] } : {}) });
     }
     if (!ENDS.includes(state) && deadline(row) <= now) {
-      // Past the vendor's code's lifetime: what it showed is dead (review M4).
+      // Past the vendor's code's lifetime: what it showed is dead.
       stopped = true;
       state = "expired";
       url = null;
@@ -304,7 +304,7 @@ export class Signins {
   }
 
   /**
-   * The live sign-in `id`, now asking for a pasted code (review L1): its record takes one,
+   * The live sign-in `id`, now asking for a pasted code: its record takes one,
    * it is showing the vendor's prompt (or took a code already, which the vendor may ask
    * again), and it is within its deadline. A read.
    */
@@ -395,15 +395,12 @@ export interface SigninRequest {
 }
 
 // -- THE DOORS: the `signins` rows' handlers (`owner/doors.json`) ---------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`SigninsDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `signins` doors reach: the sign-ins; the sandbox's leases they open, renew and
- * free, and the sandbox Worker and the route key they reach it by; the switched-on engines; the runs' signed-in engines; the
- * app sockets a sign-in's frames go to; a client's grant; and the owner's notices.
+ * free, and the sandbox Worker and the route key they reach it by; the switched-on engines; the
+ * runs' signed-in engines; the app sockets a sign-in's frames go to; a client's grant; and the
+ * owner's notices.
  */
 export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
                                           Pick<ObjectReads, "owner" | "storage"> {
@@ -417,7 +414,6 @@ export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
   readonly runs: Pick<Runs, "reportSignin" | "signins">;
 }
 
-/** The `signins` doors' handlers, by door. */
 export const signinsDoors = Object.freeze({
   /**
    * Begin the vendor's own sign-in to `engine` (`mode: "in"`), or its sign-out (`"out"`),
@@ -443,7 +439,7 @@ export const signinsDoors = Object.freeze({
         throw new Refusal("invalid", "a sign-in's mode is in or out");
       }
       // A sign-in sits behind its source's switch; a sign-out never does, so a login is
-      // always removable (review H1).
+      // always removable.
       if (mode === "in" && !switchedOn(o.storage, binding.signins, clock()).has(rec.id)) {
         throw new Refusal("signin_off", SIGNIN_OFF);
       }

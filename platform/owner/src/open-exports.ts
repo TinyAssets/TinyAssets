@@ -1,5 +1,5 @@
 /**
- * The exports open (`owner_exports`, slice P): each named by the id its first page gave,
+ * The exports open (`owner_exports`): each named by the id its first page gave,
  * reading one generation (`backup.ts`) and pinning it from deletion for `EXPORT_LIFE_S`
  * (under `GC_GRACE_S`, so every chunk it names is still in the bucket). At most
  * `EXPORTS_OPEN` are open; a new one past them ends the oldest.
