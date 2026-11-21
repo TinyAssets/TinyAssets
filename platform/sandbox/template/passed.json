@@ -2399,5 +2399,238 @@
       "upload_ms": 370,
       "install_ms": 180
     }
+  },
+  {
+    "tag": "s8661fc8113e20662",
+    "runner": "cde54e5309ef50f56490b2cb0c23ee889b42946dee4a330eb1e2e0ba8cef06c0",
+    "probes": "8cc7078f4f6dcaa554d2eb22e3943af449bb7d931fe112daf46d40a5bc0a035a",
+    "passed_at": "2026-11-21T19:03:00Z",
+    "logins": [
+      {
+        "engine": "claude-code",
+        "ok": true,
+        "host": "claude.com"
+      },
+      {
+        "engine": "codex",
+        "ok": true,
+        "host": "auth.openai.com"
+      },
+      {
+        "engine": "gemini",
+        "ok": true,
+        "host": "accounts.google.com"
+      }
+    ],
+    "routes": [
+      {
+        "engine": "claude-code",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "codex",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": true
+      },
+      {
+        "engine": "gemini",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "anthropic",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "cerebras",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "google",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "groq",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "mistral",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "openrouter",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      },
+      {
+        "engine": "pi",
+        "provider": "xai",
+        "ok": true,
+        "turns": [
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": false
+          },
+          {
+            "exit": 0,
+            "answered": true,
+            "resumed": true
+          }
+        ],
+        "compacted": null
+      }
+    ],
+    "matcher": {
+      "step_ns": 4.464,
+      "ceiling_ns": 6,
+      "ok": true
+    },
+    "install": {
+      "bytes": 298935,
+      "upload_ms": 73,
+      "install_ms": 150
+    }
   }
 ]
