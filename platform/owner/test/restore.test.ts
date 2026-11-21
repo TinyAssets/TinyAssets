@@ -1,9 +1,9 @@
 /**
- * Restore (`restore.ts`; `operator_research.md` §3.5): a production-shaped owner's generation
- * read back into the owner's own object once that object is lost, every table and every counter
- * as it stood at E and every chunk read back; each refusal with nothing written; a restore cut
- * anywhere, or two at once, ending the same, never a row twice; nothing put to R2 and no row in
- * an answer; the load order held to the schema's triggers.
+ * Restore (`restore.ts`): a production-shaped owner's generation read back into the owner's
+ * own object once that object is lost, every table and every counter as it stood at E and
+ * every chunk read back; each refusal with nothing written; a restore cut anywhere, or two
+ * at once, ending the same, never a row twice; nothing put to R2 and no row in an answer;
+ * the load order held to the schema's triggers.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -414,7 +414,7 @@ describe("a restore", () => {
     } });
     await drainDue(o.stub);
     // Nothing changed since the newest began, so no later generation takes the fallback's
-    // place; and a give-up's notice was given since (review F1), which must not silence this.
+    // place; and a give-up's notice was given since, which must not silence this.
     await sqlIn(o.stub, "UPDATE owner_backups SET changed_at = NULL WHERE gen = ?", second.gen);
     await sqlIn(o.stub, "UPDATE owner_backup_state SET told = 1");
     const [kept] = await sqlIn(o.stub, "SELECT changed_at FROM owner_backups WHERE gen = ?",

@@ -46,8 +46,9 @@ export function namespaceOf(key: string): string | null {
  * Where the bucket marks a namespace deleted on purpose (an erasure's, or the cutover's
  * discard's): `e/<ns>`, outside every namespace's prefix, so no prefix delete, sweep or
  * listing of a namespace reaches it. The files Worker makes the mark at an erasure's start and
- * before its prefix delete, and nothing deletes it, so the nightly copy carries it off the account, where a copy back
- * reads it after the account is gone (`docs/decisions/untangle-2026-11/r8-account-loss.md`).
+ * before its prefix delete, and nothing deletes it, so the nightly copy carries it off the
+ * account, where a copy back reads it after the account is gone
+ * (`docs/decisions/untangle-2026-11/r8-account-loss.md`).
  * A namespace is random, so a mark holds no person's identifier.
  */
 export const MARKS = "e/";
@@ -88,7 +89,7 @@ export interface ChunkPut {
 
 /**
  * One chunk to read: whole, or `length` bytes from `offset`. The files Worker reads and opens
- * the whole chunk, rechecks its hash, and answers the range alone (review L7), so each read
+ * the whole chunk, rechecks its hash, and answers the range alone, so each read
  * holds a whole chunk while it is checked.
  */
 export interface ChunkGet {

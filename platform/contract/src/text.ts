@@ -1,10 +1,10 @@
-/** Text and byte rules every Worker reads, matching the Python trusted side's. */
+/** Text and byte rules every Worker reads. */
 import { Refusal } from "./refusal.ts";
 
 /** Characters Python's `str.isprintable()` refuses: other, and separators but the space. */
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|[^\P{Zs} ]/u;
 
-/** Python's `len()`: code points, not UTF-16 units. */
+/** A text's length in code points, not UTF-16 units. */
 export function codePoints(value: string): number {
   let count = 0;
   for (const _ of value) {
@@ -120,7 +120,7 @@ export function name(value: unknown, what: string): string {
   return printable(value, 256, what);
 }
 
-/** An owner or caller, as `validate_principal`: trimmed, 1 to 512 printable characters. */
+/** An owner or caller: trimmed, 1 to 512 printable characters. */
 export function principal(value: unknown): string {
   if (typeof value !== "string" || !value.trim() || value !== value.trim()
       || codePoints(value) > 512 || !isPrintable(value)) {

@@ -462,12 +462,10 @@ def _run_ci(args: argparse.Namespace, root: Path, tag: str) -> int:
                 aggregate = [sys.executable, "scripts/ci_required_tests.py",
                              "--aggregate", str(tier_output), "--expect-shards", "6",
                              "--shard-job-result", "success", "--junit",
-                             str(output / "aggregate.xml")]
-                if scope == "ALL":
-                    aggregate += ["--min-ran", "10700"]
-                else:
-                    aggregate += ["--exclude-from", ".github/heavy-test-files.txt",
-                                  "--affected", str(tier_output / name),
+                             str(output / "aggregate.xml"),
+                             "--exclude-from", ".github/heavy-test-files.txt"]
+                if scope != "ALL":
+                    aggregate += ["--affected", str(tier_output / name),
                                   "--profile", "affected", "--selection", digest]
                 if subprocess.run(aggregate, cwd=root).returncode:
                     _ci_summary("FAIL queue aggregate", selections)

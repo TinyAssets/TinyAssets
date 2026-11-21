@@ -5,9 +5,9 @@
  * the legs that are not Vitest runs (the typecheck, the owner's and the gateway's memory
  * legs), and `platform-sizes` the large tests, sharded (`ci/classes.ts`). A matrix job's
  * result is every leg's, and `required-tests` (the protected context) fails unless all three,
- * the owner app's browser job and the `process` leg succeeded. Those five are the gate's
- * lasting shape: the old stack's Python jobs beside them leave at the cutover, and this guard
- * does not read them. `process` runs the process's own tests with plain pytest on the runner,
+ * the owner app's browser job, the recorders' shards (`platform-recorders`, `ci/record.ts`)
+ * and the `process` leg succeeded. Those six are the gate's lasting shape: the old stack's
+ * Python jobs beside them leave at the cutover, and this guard does not read them. `process` runs the process's own tests with plain pytest on the runner,
  * with nothing of the old stack installed. Held here: every workspace `platform/package.json`
  * lists has its tests run by a leg, its `test` script whole or each `npm run` part of it;
  * every workspace with a large test has its `test:sizes` run; every Vitest leg names its
@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { keyed } from "../../contract/src/checks";
+import { declared, inShard, problems as recordProblems, RECORDED, shardOf } from "../record";
 import { largeTests } from "../timeouts";
 import { PLATFORM, REPO } from "../paths";
 import { type Data, json, workflow } from "../workflows";
@@ -396,11 +397,121 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
   });
 });
 
+describe("platform-recorders", () => {
+  const CHECK = "npm --prefix platform run record:check -- " +
+    '"$BASE" "$SHARD" "$RUNNER_TEMP/body.md"';
+
+  /** Each way the job could compare less than every recorder, base against head, whole. */
+  function recordersProblems(job: Data): string[] {
+    const found: string[] = [];
+    if (!keyed(job, ["name", "permissions", "runs-on", "steps", "strategy",
+                     "timeout-minutes"])) {
+      found.push("platform-recorders carries keys that may change what it runs: " +
+                 Object.keys(job ?? {}).sort().join(", "));
+    }
+    if (job?.name !== "platform-recorders" || job?.["runs-on"] !== "ubuntu-latest" ||
+        !Number.isInteger(job?.["timeout-minutes"])) {
+      found.push("platform-recorders is one job of that name, on the plain runner, watched");
+    }
+    if (JSON.stringify(job?.permissions) !==
+        JSON.stringify({ contents: "read", "pull-requests": "read" })) {
+      found.push("platform-recorders reads the code and the PR's body, and writes nothing");
+    }
+    const strategy = job?.strategy ?? {};
+    const shards: unknown[] = strategy.matrix?.shard ?? [];
+    if (!keyed(strategy, [], ["fail-fast", "matrix"]) || !keyed(strategy.matrix, ["shard"])) {
+      found.push("platform-recorders' legs are its shards alone, listed whole");
+    }
+    if (shards.length === 0 ||
+        shards.some((shard, at) => shard !== `${at + 1}/${shards.length}`)) {
+      found.push(`platform-recorders runs every shard of one count once: ${shards.join(", ")}`);
+    }
+    const steps: Data[] = job?.steps ?? [];
+    const compare = steps[2] ?? {};
+    if (steps.length !== 3 ||
+        JSON.stringify(steps.slice(0, 2)) !== JSON.stringify(SETUP.slice(0, 2)) ||
+        compare.env?.SHARD !== "${{ matrix.shard }}" ||
+        String(compare.run).trimEnd().split("\n").at(-1) !== CHECK ||
+        !keyed(compare, ["name", "env", "run"])) {
+      found.push("platform-recorders' steps are checkout, setup-node and the comparison, " +
+                 `which ends in the check, whole: ${CHECK}`);
+    }
+    if (json("package.json").scripts["record:check"] !== "node ci/record.ts check") {
+      found.push("record:check is not ci/record.ts's check");
+    }
+    return found;
+  }
+
+  it("compares every shard of the recorders on every event, its check run whole", () => {
+    expect(recordersProblems(tests().jobs["platform-recorders"])).toEqual([]);
+  });
+
+  const mutations: Record<string, (job: Data) => void> = {
+    "job if": (job) => { job.if = "github.event_name == 'merge_group'"; },
+    "job continue-on-error": (job) => { job["continue-on-error"] = true; },
+    "a shard dropped": (job) => { job.strategy.matrix.shard.pop(); },
+    "a shard twice": (job) => { job.strategy.matrix.shard[1] = "1/4"; },
+    "a shard excluded": (job) => { job.strategy.matrix.exclude = [{ shard: "1/4" }]; },
+    "the check swallowed": (job) => { job.steps[2].run += " || true"; },
+    "the check's step skipped": (job) => { job.steps[2].if = "false"; },
+    "the check's step allowed to fail": (job) => { job.steps[2]["continue-on-error"] = true; },
+    "a shell that runs nothing": (job) => { job.steps[2].shell = "true {0}"; },
+    "a default shell that runs nothing": (job) => { job.defaults = { run: { shell: "true {0}" } }; },
+    "another shard's check": (job) => { job.steps[2].env.SHARD = "1/4"; },
+    "a step after the check": (job) => { job.steps.push({ run: "true" }); },
+    "a write permission": (job) => { job.permissions.contents = "write"; },
+  };
+  for (const [name, mutate] of Object.entries(mutations)) {
+    it(`catches the mutation: ${name}`, () => {
+      const job = structuredClone(tests().jobs["platform-recorders"]);
+      mutate(job);
+      expect(recordersProblems(job)).not.toEqual([]);
+    });
+  }
+
+  it("fails a recorder that differs undeclared and a failed run, and nothing declared", () => {
+    expect(recordProblems(["rpc", "rv"], [], declared("Recorders-Differ: rpc, rv -- a door")))
+      .toEqual([]);
+    expect(recordProblems(["wire"], [], declared("Recorders-Differ: rpc\r\n"))).toHaveLength(1);
+    expect(recordProblems([], ["head owner"], declared("Recorders-Differ: rv"))).toHaveLength(1);
+    expect(recordProblems(["tools"], [], declared("> Recorders-Differ: tools"))).toHaveLength(1);
+    for (const body of ["Recorders-Differ: rcp", "Recorders-Differ:",
+                        "Recorders-Differ: rpc\nRecorders-Differ: rv"]) {
+      expect(() => declared(body), body).toThrow();
+    }
+  });
+
+  it("records a diff that touches any platform file but prose", () => {
+    for (const path of ["platform/contract/doors.json", "platform/doors/wrangler.jsonc",
+                        "platform/ci/workerd.ts", "platform/package-lock.json",
+                        "platform/owner/test/support.ts", "platform/owner/src/owner-do.ts"]) {
+      expect(RECORDED.test(path), path).toBe(true);
+    }
+    for (const path of ["platform/README.md", "docs/architecture.md", "scripts/x.py"]) {
+      expect(RECORDED.test(path), path).toBe(false);
+    }
+  });
+
+  it("puts each test in one shard, by its name alone", () => {
+    const names = Array.from({ length: 400 }, (_, i) => `rv rpc: the table's doors > door d${i}`);
+    for (const count of [1, 4, 7]) {
+      const shards = Array.from({ length: count }, (_, i) => shardOf(`${i + 1}/${count}`));
+      const per = shards.map((shard) => names.filter((name) => inShard(name, shard)).length);
+      expect(per.reduce((a, b) => a + b)).toBe(names.length);
+      expect(Math.min(...per), `${count} shards: ${per}`).toBeGreaterThan(names.length / count / 2);
+    }
+    for (const bad of ["0/4", "5/4", "4", "a/b"]) {
+      expect(() => shardOf(bad), bad).toThrow();
+    }
+  });
+});
+
 describe("required-tests", () => {
   const RESULTS = { PLATFORM_RESULT: "${{ needs.platform-tests.result }}",
                     CHECKS_RESULT: "${{ needs.platform-checks.result }}",
                     APP_RESULT: "${{ needs.platform-app.result }}",
                     SIZES_RESULT: "${{ needs.platform-sizes.result }}",
+                    RECORDERS_RESULT: "${{ needs.platform-recorders.result }}",
                     PROCESS_RESULT: "${{ needs.process.result }}" };
 
   it("needs the platform's jobs and the process leg, each run on every event and never " +
@@ -409,7 +520,8 @@ describe("required-tests", () => {
     const agg = jobs["required-tests"];
     expect(agg.if).toBe("always()");
     expect(agg["continue-on-error"]).toBeUndefined();
-    for (const name of [...LEG_JOBS, "platform-app", "platform-sizes", "process"]) {
+    for (const name of [...LEG_JOBS, "platform-app", "platform-sizes", "platform-recorders",
+                        "process"]) {
       expect(agg.needs).toContain(name);
       expect(jobs[name].if, `${name} must run on every event`).toBeUndefined();
       expect(jobs[name].needs, `${name} must wait on no other job`).toBeUndefined();
