@@ -95,7 +95,7 @@ describe("test timeouts", () => {
     expect(hits('it.concurrent("a", function () {}, 7);')).toEqual(["7"]);
     expect(hits("vi.setConfig({ testTimeout: 1 });")).toEqual(["vi.setConfig({ testTimeout: 1 })"]);
     expect(hits('it("a", { tags: ["large"] }, () => {}); it("b", () => {});')).toEqual([]);
-    // The reviewer's probes: a hook by name, a quoted key, vitest's own namespace, an alias.
+    // A hook by name, a quoted key, vitest's own namespace, an alias.
     expect(hits("beforeAll(setup, 60_000);")).toEqual(["60_000"]);
     expect(hits("vitest.beforeEach(setup, LONG);")).toEqual(["LONG"]);
     expect(hits('it("a", body, 60_000);')).toEqual(["60_000"]);

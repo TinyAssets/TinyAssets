@@ -24,7 +24,6 @@ export function catalogOf(records: readonly unknown[]): Sources {
         return undefined;
       }
       const record = sourceRecord(found);
-      // Each engine a key names is a served CLI record that runs on a key of this provider.
       for (const engine of record.engines ?? []) {
         const named = byId(engine) === undefined ? undefined : sourceRecord(byId(engine));
         const cli = named?.cli;
@@ -40,7 +39,6 @@ export function catalogOf(records: readonly unknown[]): Sources {
   };
 }
 
-/** The platform's records (`platform/sources/records/*.json`). */
 export function bundledSources(): Sources {
   return catalogOf(RECORDS);
 }

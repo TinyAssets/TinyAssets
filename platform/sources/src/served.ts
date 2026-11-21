@@ -9,7 +9,6 @@
 import { bundledSources } from "./catalog";
 import type { CliSpec, Install, LoginSpec, SourceRecord } from "./schema";
 
-/** A served CLI record. */
 export type Served = SourceRecord & { readonly cli: CliSpec };
 
 /** A served record that signs in by the vendor's own login in the sandbox. */

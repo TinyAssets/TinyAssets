@@ -4,8 +4,8 @@
  * migrations, and so the deploy order), `platform.json` (what no config can say, each entry
  * with its reason, and so each Worker's record, `WORKER_FACTS`), the shared apps' file it
  * names (their signing secrets) and `contract/identity.json` (the doors' public identity).
- * The deploy kit, its workflow's guard, the environment guard and the founder's setup read
- * them here or from those files; none holds a list of its own.
+ * The deploy kit, its workflow's guard, the import job and the founder's setup read them
+ * here or from those files; none holds a list of its own.
  *
  * Node runs this file as it is (type stripping), as the kit does. Run with `--import`, it prints
  * the import job's names (`IMPORT_NAMES`) as JSON, for the job's bundle.
@@ -265,14 +265,6 @@ export const ROTATED: Readonly<Record<string, Rotated>> = Object.freeze(Object.f
 /** Where a sign-in starts. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
 
-/**
- * The sign-in probe's routes (mode `probe`): the routes that take the sign-in's own two paths,
- * which no Worker serves before the cutover, so handing them to the doors early serves no
- * user.
- */
-export const PROBE_ROUTES: readonly string[] = Object.freeze(ROUTES.filter((pattern) =>
-  [AUTHORIZE, UPSTREAM_CALLBACK].some((url) =>
-    routeTakes(pattern, url.slice("https://".length)))));
 /** The URL E2B's lifecycle webhook is sent to: the doors' hook. */
 export const E2B_HOOK_URL = `${ORIGIN}${identity.hook}`;
 

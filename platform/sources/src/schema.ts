@@ -1,9 +1,8 @@
 /**
- * Model source records (gateway research §2.4, §2.6, §7.2; tasks 4 G3): what an owner can
- * connect, as data. Each is an editable JSON file (`platform/sources/records/`,
- * Direction 3), ported from the Python's `tinyassets/providers/source_records/`, and checked
- * whole (`check.ts`), so a record that does not fit fails loudly where it is used and in the
- * tests, never half-read.
+ * Model source records: what an owner can connect, as data. Each is an editable JSON file
+ * (`platform/sources/records/`, Direction 3), ported from the Python's
+ * `tinyassets/providers/source_records/`, and checked whole (`check.ts`), so a record that
+ * does not fit fails loudly where it is used and in the tests, never half-read.
  *
  * A record names how it connects (`connect`):
  * - `api_key`: a pasted key, sealed by the gateway (`doors/src/connect.ts`).

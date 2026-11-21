@@ -32,7 +32,7 @@
     },
     "deploy/guards": {
       "slowest_ms": 383,
-      "test": "deploy/guards/deploy.test.ts > the deploy kit's facts prints the import job's names for its bundle, each storage this kit makes",
+      "test": "deploy/guards/deploy.test.ts > the deploy kit's facts prints the import job's names for its bundle, each storage this kit makes, and the doors",
       "measured": "CI runs 43736045737, 43749136142 and 43751240226 (merge groups of #5635, #5636 and #5637, after #5628's files sizes leg), each one's tests-report-0 to tests-report-12 (platform-tests) and sizes-report-0 to sizes-report-7 (platform-sizes), with owner.test.ts's every-earlier-version migration test read as large (budgets-ci-3 tags it so), the slowest across the three, 2026-11-15"
     },
     "doors/guards": {

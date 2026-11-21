@@ -1,10 +1,10 @@
 /**
- * The platform's canary (d3 §J2, untangle B14 as d3 §A7 has it): the platform checked from
- * outside, through its public routes, as a user's client reaches it. It runs on GitHub's
- * runners (`.github/workflows/platform-canary.yml`), started every ten minutes by the doors'
- * clock (`doors/src/canary-clock.ts`), and after each deploy by the kit (`deploy.ts`). A
- * check run inside Cloudflare could not prove the routes: a Worker's fetch of its own zone's
- * routes never reaches them.
+ * The platform's canary (d3 §J2, §A7): the platform checked from outside, through its public
+ * routes, as a user's client reaches it. It runs on GitHub's runners
+ * (`.github/workflows/platform-canary.yml`), started every ten minutes by the doors' clock
+ * (`doors/src/canary-clock.ts`), and after each deploy by the kit (`deploy.ts`). A check run
+ * inside Cloudflare could not prove the routes: a Worker's fetch of its own zone's routes never
+ * reaches them.
  *
  *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--unkeyed]
  *        [--clock] [--full] [--result <file>]
@@ -57,7 +57,7 @@ import { DISPATCH } from "../contract/src/canary.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
-import { authorizeCheck, heldHook, probeLink, upstreamFrom } from "./deploy.ts";
+import { authorizeCheck, firstPartyLink, heldHook, upstreamFrom } from "./deploy.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import {
   APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
@@ -280,7 +280,7 @@ async function signIn(world: World): Promise<string> {
   if (keys.status !== 200 || !Array.isArray((await json(keys, record.jwks_uri, 5))["keys"])) {
     throw new Failure(5, `the issuer's JWKS ${record.jwks_uri} answered ${keys.status}, no keys`);
   }
-  const answer = await send(world, probeLink());
+  const answer = await send(world, firstPartyLink());
   const to = answer.headers.get("Location");
   const sent = to === null ? null : new URL(to, AUTHORIZE);
   if (answer.status !== 302 || sent === null
