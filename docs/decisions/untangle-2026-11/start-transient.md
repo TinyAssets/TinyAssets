@@ -90,6 +90,27 @@ a sign-in's start with no answer ended the sign-in but did not stop a CLI that m
   contract marks `object_overloaded` transient with a one-second `Retry-After`. The resend
   waits that `Retry-After`, never at once, so this PR keeps to the contract and leaves its entry.
 
+## Review (2026-11-21)
+
+- **A refusal after the create** (research 1 was wrong here). In `#ensure`'s create path, the
+  line's `took` ran after `e2b.create` and the row's write, but before `#install` and
+  `#prepare`. An overload of that call crossed as `object_overloaded`. The resend then found
+  the sandbox running, with its row naming this Worker's runner, so it ran neither the
+  adoption nor `prepare`. The run launched with no pinned resolver and `/proc` not hidden.
+  **Fixed:** `#took` logs a failure and goes on, as `#freed` does. The line's own back-off
+  rings the owner, which leaves the line once none of its runs wait. A sandbox test holds it.
+- **A send's own time is unbounded.** The bound covers the waits and every send but the
+  last. A start is not wrapped in `inTime` as the lane's other outside calls are, so a pass
+  that starts a run can outlast its hung timeout, as it could before this PR. The comment now
+  says so.
+- Checked and sound:
+  - An awaited timer in a request handler holds no input gate, and `startOutcome` runs
+    outside the write gate's units.
+  - The control's `#serial` chain is free between sends.
+  - `Retry-After` is checked against the bound before the wait.
+  - A cancel deletes the grant, so `stands` stops the resend.
+  - Keeping the secret only in memory is right: the rows keep only its hash (ADR-034).
+
 ## Owed
 
 - [ ] `launch.ts` `run`: a transient refusal met by a waiting, mailed or scheduled run's
@@ -98,3 +119,10 @@ a sign-in's start with no answer ended the sign-in but did not stop a CLI that m
 - [ ] `signins.ts` `signinCancel`: a stop asked while the sign-in's start is out, or waits to be
   sent again, does not stop it. Research first whether the stop ends the row
   (`untangle/signin-cancel-start`).
+- [ ] `sandbox/src/control.ts` `#ensure`, `#resume`: a fault (not a refusal) after a create or
+  a resume, and before `prepare` ends, leaves a running sandbox. The next start finds it
+  running and launches in it unprepared. Research first whether a row marks its sandbox
+  prepared (`untangle/sandbox-unprepared-row`).
+- [ ] `owner/src/launch.ts` `launch`: a start's call is bounded by nothing, where every other
+  outside call a lane's row makes is bounded by `LANE_CALL_MS` (`inTime`). Research first how a
+  late start stays fenced (`untangle/lane-start-bound`).

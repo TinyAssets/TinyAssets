@@ -487,7 +487,8 @@ export const signinsDoors = Object.freeze({
     if (answer.started === null) {
       // In case its CLI did launch: stopped, as a run's is cancelled.
       await o.sandbox.signinCancel({ authority: begun.row.authority, id: begun.row.id })
-        .catch(() => console.error("a lost sign-in start's stop did not reach the sandbox"));
+        .catch((error) => console.error("a lost sign-in start's stop did not reach the sandbox",
+                                        error));
     }
     return { started: false, code: answer.code };
   },

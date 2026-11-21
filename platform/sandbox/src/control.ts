@@ -467,6 +467,21 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     }
   }
 
+  /**
+   * The owner's start got its sandbox: out of the line, its next rung (logged on fault). A
+   * start that resumed or made a sandbox is never failed for it, since a refusal of the start
+   * says nothing began (`refusal.ts`), and the line's own back-off rings the owner, which
+   * leaves once no run of its waits (`sandboxRung`).
+   */
+  async #took(): Promise<void> {
+    try {
+      await this.#slots().took(this.#owner);
+    } catch (error) {
+      console.error("the sandbox line did not take a start's leave; its own back-off rings " +
+                    "the owner", error);
+    }
+  }
+
   /** A sandbox of the platform's paused or ended: the line's first is rung (logged on fault). */
   async #freed(): Promise<void> {
     try {
@@ -733,7 +748,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (found !== null) {
         const handle = await this.#resume(row!, found, network, ceilings, true);
         if (handle !== null) {
-          await slots.took(this.#owner);
+          await this.#took();
           return { handle };
         }
         if (network === null) {
@@ -757,7 +772,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                        "excluded.runner", authority, created.sandboxID,
                      info === null ? Date.now() : Date.parse(info.endAt), digest);
       this.#log(authority, "start");
-      await slots.took(this.#owner);
+      await this.#took();
       // The template holds no runner: this Worker's, installed before its first command.
       const box = { ...created, runner: digest };
       await this.#install(box);

@@ -497,6 +497,23 @@ describe("the platform's line", () => {
     expect(await turn("nobody")).toBe(true);
   });
 
+  it("starts, its sandbox prepared, though the line refuses its leave after the create",
+     async () => {
+    await e2b("/script", { full: true, signin: { "claude-code": 0 } });
+    const who = owner();
+    await stub(who).start(start());  // no room: it waits, first in line
+    await e2b("/script", { full: false });
+    // The line overloaded as the start leaves it: the start goes on, never refused after the
+    // create (a start sent again would find a sandbox never prepared).
+    await env.SLOTS_GATE.arm({ method: "took", refuse: { code: "object_overloaded",
+                                                          message: "the line is busy" } });
+    expect(await stub(who).start(start())).toEqual({ started: true });
+    expect((await seen()).commands.map((command) => command.argv[1]))
+      .toEqual(["install", "prepare", "signin-check", "launch"]);
+    // Still first in line, until its ring finds no run waiting and it leaves.
+    expect(await turn("nobody")).toBe(false);
+  });
+
   it("rings the first in line when a sandbox of the platform pauses", async () => {
     await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
     const holder = owner();
