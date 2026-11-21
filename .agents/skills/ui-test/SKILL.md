@@ -27,9 +27,8 @@ MCP calls are navigation aids, never proof.
 "Cannot connect to Chrome CDP" means "not running this instant", not "ask the
 host". Run `new-chat` (auto-launches, sends nothing), then re-check. The Chrome
 binary is auto-detected as the newest Playwright chromium, overridable with
-`TINYASSETS_CHROME_BIN` — never re-pin a build number; the old pin
-(`chromium-1208`) crashes on this host and auto-launch then fails with a bare CDP
-error that hides the cause.
+`TINYASSETS_CHROME_BIN` — never re-pin a build number (an old
+pin crashed, and auto-launch hid it behind a bare CDP error).
 
 Preflight: `references/preflight-and-setup.md`.
 

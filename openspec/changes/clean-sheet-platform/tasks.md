@@ -279,8 +279,12 @@ keep running (the untangle skill's "Process first", founder 2026-11-15).
   the root leftovers, the OpenSpec prompts' copies, `setup-secure-merge-gate.sh`, the finished
   changes, `ideas/`' leftovers, the Windows hook and pre-commit installer (`untangle/p9-now`;
   what stayed and why: `untangle-2026-11/p9-now.md`).
-- [ ] P9: `openspec/` keeps only `clean-sheet-platform`; the old changes and the archive go,
-  their readers re-pointed, so the window's deletion is smaller (`untangle/p9-openspec`).
+- [x] P9: the archive and the 72 old changes no test claims an id of go, their readers
+  re-pointed at main's last commit holding them, and `check_shapes.py`'s `adr-has-spec` with
+  them (`untangle/p9-cleanup`; `untangle-2026-11/p9-cleanup.md`). The 13 whose ids the old
+  suite's tests claim go in the window with `tests/` and `test-shape-prune.yml`
+  (`platform/cutover.json`; founder, 2026-11-21: nothing is built before the cutover that it
+  deletes).
 - [x] `slow-tests`, which collected no test, left the ruleset and the classic branch
   protection (the founder, 2026-11-16, d3 §E4), then its job went (`untangle/slow-tests`,
   from `land/3`; `untangle-2026-11/slow-tests.md`).
@@ -346,9 +350,10 @@ The research for B23, B4, the operator channel, the stage, R5 and B13 is decided
   ADR-032's two-region trigger has no per-region series. Research first (canary owners placed
   by location hint, or Cloudflare's per-location analytics for the owner namespace), then
   build it with the canary's keyed checks, which wait for `routes`.
-- [ ] The vendors' wake pages re-read, since `main-agents.md` could not read them: MCP Events
-  plan tiers, any Grok or Meta Muse wake API; `wake-kinds.json` and `apps.json` corrected where
-  they differ (d3 §C8, list3 P16).
+- [x] The vendors' wake pages re-read (d3 §C8, list3 P16; `untangle-2026-11/wake-pages.md`):
+  MCP Events states no plan tier (Work chats and dots; the live test tries a personal paid and a
+  Business account); Grok's routine webhook confirmed, its host still unpublished; Muse has no
+  wake API; `wake-kinds.json` and `apps.json` corrected.
 
 ### Step 3. This re-cut, P3, the manifest's inventory
 
@@ -527,9 +532,6 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] An erasure of a lost object marks nothing (its object and no restore record name a
     namespace): mode `erase` finds its namespaces first, and refuses while R2 holds one naming
     it, until it is restored (`r8-lost-object.md` item 8; `untangle/r8-lost-erase`).
-  - [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
-    it, since `copyback` needs an object naming the namespace and `recover` begins every owner
-    (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`).
   - [ ] Live, on the stage: a copy back of a rehearsal owner's namespace with a day's R2 write
     key, then its restore (`live:` after `untangle/r8-copy-restore`).
   - [ ] Live, on the stage: a rotation of each keyring through `retire` on a rehearsal owner
@@ -834,9 +836,9 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
 - [ ] 7. The wakes: each vendor end to end (a ChatGPT dot and Work chat subscribing, a Claude
   `/fire`, a Grok webhook routine, Muse's catch-up); the SSRF probe (a callback whose DNS
   answers 127.0.0.1, 10.x or 169.254.169.254 is refused by `global_fetch_strictly_public`);
-  Grok's webhook host, pinned as data once seen; whether Claude's over-limit fire answers
-  `429`. E2B's lifecycle webhook: whether a kill of a paused sandbox carries the pause's
-  execution and `sandbox_execution_id`, and E2B's retry timing against `BILLED_WINDOW_S`.
+  Grok's webhook host, pinned as data once seen. E2B's lifecycle webhook: whether a kill of a
+  paused sandbox carries the pause's execution and `sandbox_execution_id`, and E2B's retry
+  timing against `BILLED_WINDOW_S`.
 - [ ] 8. The founder's own test (§8).
 
 Measured on the stage as it runs:
@@ -880,6 +882,11 @@ The fixes the untangle skill's cutover rule holds until after the cutover (found
   connection or doorbell blob, each counted left) has no remedy, so `retire` never passes while one
   exists: the founder's decision between the options in `r7-rotation-driver.md` item 9,
   then its build (`untangle/r7-unopenable`).
+- [ ] A lost object whose namespace R2 lost too, only the copy holding it: no mode restores
+  it, since `copyback` needs an object naming the namespace and `recover` begins every owner
+  (`r8-lost-object.md` item 8; `untangle/r8-lost-copy`). Nothing builds on it, it is rare, it
+  is loud (the operator sees the refusal) and it is recoverable (the copy keeps the current
+  objects), so it waits until after the cutover (Lane R after #5674, 2026-11-17).
 
 ### Step 17. Restore and the off-account copy
 

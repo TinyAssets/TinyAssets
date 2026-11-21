@@ -13,6 +13,6 @@ Deterministic failure sequence: an active matching subscription receives event E
 
 ## Resolution contract
 
-`openspec/changes/zero-impact-deploys/design.md` D6 and task 2.3 own the planned fix: make delivery state a recoverable claim linked to durable work, with stable event/subscription identity and an atomic admission or transactional outbox. Merely moving the marker after `_run_fn` creates a duplicate-run crash window and is insufficient.
+[`zero-impact-deploys`'s `design.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/zero-impact-deploys/design.md) D6 and task 2.3 own the planned fix: make delivery state a recoverable claim linked to durable work, with stable event/subscription identity and an atomic admission or transactional outbox. Merely moving the marker after `_run_fn` creates a duplicate-run crash window and is insufficient.
 
 Before resolving, inject termination after claim commit and before run admission, and after admission before acknowledgement. Replay must produce exactly one run per event/subscription; a failed admission must remain retryable, subject to current authorization. No runtime fix is included in this design lane.
