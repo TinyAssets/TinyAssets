@@ -70,7 +70,7 @@ describe("a pool of units", () => {
     expect(() => new SlotPool(2, 1000, 2, 2, 2)).toThrow(/at least one unit/);
   });
 
-  // Review rvmem4 (M-b), flipped: a stream of one-unit holds once starved a larger one.
+  // A stream of one-unit holds once starved a larger one.
   it("lets a five-unit append land amid one-unit holds cycling through all but the reserve",
      async () => {
     const pool = owners(1_500);
@@ -97,7 +97,7 @@ describe("a pool of units", () => {
     expect(outcome).toBe("granted");
   });
 
-  // Review rvmem4 (L-a), flipped: larger waiters once filled a cap one-unit holds shared.
+  // Larger waiters once filled a cap one-unit holds shared.
   it("never refuses a small read for larger holds waiting: each class is capped apart",
      async () => {
     const pool = owners(1_500);

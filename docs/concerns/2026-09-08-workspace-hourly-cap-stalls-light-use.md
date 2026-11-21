@@ -201,7 +201,7 @@ Shipped specifications are being synchronized with #3577's engine-share removal:
 300 write admissions / 900 total, no separate 600 engine ceiling. The table above
 is historical diagnosis evidence, not a claim that retired gates remain current.
 The already-landed `run-usage-budgets` records were verified, synced and archived
-under `openspec/changes/archive/2026-09-08-run-usage-budgets/`. A new
+under [the `run-usage-budgets` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-09-08-run-usage-budgets). A new
 accounting scope, authority surface, or storage migration needs proposal/design
 and independent cross-family review. No exact thresholds, cross-universe owner
 aggregation, commercial tier changes, or extra provider spending are authorized

@@ -1,11 +1,7 @@
 /**
- * S30 message ledger core: attribution, idempotency, rooms, reads and receipts.
- *
- * Ported from `tests/test_message_ledger.py` and the ledger parts of
- * `tests/test_mailbox_door.py` (origin/main 8b415f569), test for test. Where the Python
- * went through the router's owner channel with an `origin`, this goes through the
- * object's RPC door with a {@link Binding}. The Python's account erasure, policy
- * bootstrap and racing-open tests have no counterpart: the object is the account.
+ * The message ledger's core: attribution, idempotency, rooms, reads and receipts, through
+ * the object's RPC door with a {@link Binding}. The object is the account, so no test here
+ * erases one or opens it twice.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -176,7 +172,7 @@ describe("a reader sees only its own mail", () => {
       .filter((x) => x["through_seq"] === through);
     const [reader] = await acked();
     expect(reader!["acked_at"]).not.toBeNull();
-    expect((await r.read(MUSE)).messages).toEqual([]);  // W3-R5: a retried session
+    expect((await r.read(MUSE)).messages).toEqual([]);  // a retried session
     expect((await r.ack(MUSE, 0)).through).toBe(through);  // never moves back
     expect((await r.ack(MUSE, through)).through).toBe(through);  // a retry: a no-op
     const past = await failure(() => r.ack(MUSE, through + 10));
@@ -359,7 +355,7 @@ describe("outside agents register from a verified identity", () => {
     expect(hooked.delivery_method).toBe("webhook");
   });
 
-  it("admits the delivery a wake-kind record names, with W3's defaults and bounds",
+  it("admits the delivery a wake-kind record names, with its defaults and bounds",
      async () => {
     const r = await rig();
     const refused = await failure(() => r.register(MUSE, "Muse", "a2a"));
@@ -709,7 +705,7 @@ describe("the policy store's counters", () => {
   });
 });
 
-describe("a registration's identity (slice D review M1)", () => {
+describe("a registration's identity", () => {
   it("never moves to another client, universe or id, so its client's agent count holds",
      async () => {
     const r = await rig();

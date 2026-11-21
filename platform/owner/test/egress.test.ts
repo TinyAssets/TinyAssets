@@ -1,10 +1,10 @@
 /**
- * Sandbox egress at the owner's object (tasks 4 G4): the sandbox's one lease and its two
- * MAC'd tokens, owner-internal; each call admitted at open (`egressOpen`) by every check in
- * order, a model call charged against its run's, the owner's and the source's caps and
- * nothing else, on counters none of them pi's; a refusal kept as a receipt; the streams a
- * change ends; and each charge settled once (`egressSettle`) at the cost the gateway's
- * meter read, or kept whole when it could not. The egress door itself is the doors' tests'.
+ * Sandbox egress at the owner's object: the sandbox's one lease and its two MAC'd tokens,
+ * owner-internal; each call admitted at open (`egressOpen`) by every check in order, a model call
+ * charged against its run's, the owner's and the source's caps and nothing else, on counters none
+ * of them pi's; a refusal kept as a receipt; the streams a change ends; and each charge settled
+ * once (`egressSettle`) at the cost the gateway's meter read, or kept whole when it could not. The
+ * egress door itself is the doors' tests'.
  */
 import { createHash } from "node:crypto";
 
@@ -539,15 +539,24 @@ describe("an egress call", () => {
     const lease = await leased(r);
     const opened = await admitted(r, lease, connection);
     await r.stub.egressSettle(lease.as(), settle(opened.reservation));
-    expect(EGRESS_LIMITS.refusalsKept).toBe(500);
+    // A full bucket of older refusals: each new one lets the oldest go.
+    const kept = EGRESS_LIMITS.refusalsKept;
+    await r.sql(
+      "INSERT INTO egress_reservations (id, lease_id, run, token, connection_id, method, " +
+        "path, generation, opened_at, state, code, settled_at) SELECT " +
+        "lower(hex(randomblob(16))), ?, ?, ?, ?, 'GET', '/old', 1, ?, 'refused', 'egress_rate', " +
+        "? FROM (WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) " +
+        "SELECT i FROM n)", lease.lease_id, lease.run, lease.egress, connection,
+      Date.now() / 1000 - 60, Date.now() / 1000 - 60, kept);
     for (let i = 0; i < 8; i++) {
       await r.stub.egressOpen(lease.as(), request(connection, { path: `/v1/files/${i}` }));
     }
     const late = await r.stub.egressOpen(lease.as(), request(connection, { path: "/v1/x" }));
     expect(late).toMatchObject({ ok: false, code: "egress_endpoint_refused" });
     expect((late as { receipt: unknown }).receipt).not.toBeNull();
-    expect(await r.sql("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'refused'"))
-      .toEqual([{ n: 9 }]);
+    expect(await r.sql("SELECT COUNT(*) AS n, SUM(path = '/old') AS old FROM " +
+                         "egress_reservations WHERE state = 'refused'"))
+      .toEqual([{ n: kept, old: kept - 9 }]);
     expect(await r.sql("SELECT state FROM egress_reservations WHERE id = ?", opened.reservation))
       .toEqual([{ state: "settled" }]);
   });
@@ -657,7 +666,7 @@ describe("the sync token", () => {
       .message).toBe(SYNC_FENCED);
   });
 
-  it("works only beside its own lease's egress token: from inside that sandbox (M-5)",
+  it("works only beside its own lease's egress token: from inside that sandbox",
      async () => {
     const r = await gated();
     const lease = await leased(r);
@@ -730,7 +739,7 @@ async function defaultLease(r: Gated): Promise<Leased> {
   return leased(r, false);
 }
 
-describe("a call's reservation (review round 3)", () => {
+describe("a call's reservation", () => {
   it.each([
     ["OpenRouter", OPENROUTER, "/api/v1/chat/completions"],
     ["ChatGPT's Responses API", OPENAI, "/v1/responses"],
@@ -1179,7 +1188,7 @@ describe("a change that ends egress", () => {
   });
 });
 
-describe("a lease given back (untangle A2, review F5)", () => {
+describe("a lease given back", () => {
   it("ends its streams when a sign-in that held it ends (leaseFreed)", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
@@ -1395,7 +1404,7 @@ describe("the sandbox's lease", () => {
     expect(first.egress).not.toBe(next.egress);
   });
 
-  it("hands the sandbox slice its policy and its clients' environment", async () => {
+  it("hands the sandbox its policy and its clients' environment", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     const { start } = await ownerRun(r.stub, r.bind(), { engine: "claude-code",
@@ -1430,7 +1439,7 @@ describe("the sandbox's lease", () => {
   });
 });
 
-describe("a sandbox's network (E1)", () => {
+describe("a sandbox's network", () => {
   /** The egress door's binding for `start`'s lease and run, at the transform's `generation`. */
   const egressOf = (r: Gated, start: SandboxStart, generation: number) => r.bind({ sandbox: {
     kind: "egress", token: hashOf("egress", egressTokenOf(start.network!.network)!), generation,
@@ -1493,7 +1502,7 @@ describe("a sandbox's network (E1)", () => {
   });
 });
 
-describe("a live lease's network re-applied after an egress write (E2)", () => {
+describe("a live lease's network re-applied after an egress write", () => {
   /**
    * The owner's egress table changed (the egress generation moves, to 2 from a fresh 1),
    * then the pass of the `runs` lane the write's unit woke.

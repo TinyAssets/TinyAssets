@@ -35,7 +35,7 @@ export async function readOn(read: (offset: number | undefined) => Promise<Bodie
 
 /**
  * A read's `body_offset` field, absent for the first part, with what names the item read on
- * (a message's `message_id`, a row's `etag`: reviews L2 and L3).
+ * (a message's `message_id`, a row's `etag`).
  */
 export function at(offset: number | undefined, names: Record<string, string> = {}):
     Record<string, unknown> {

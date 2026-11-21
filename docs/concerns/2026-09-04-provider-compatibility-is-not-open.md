@@ -86,7 +86,7 @@ authorizing unchecked profile variables, local-only execution or guessed default
 
 The installed production CLI was pinned at 0.135.0; it did not automatically
 update. A live model catalogue exposed a reasoning value its parser could not
-accept. See [the checklist recovery record](../../openspec/changes/workspace-node/checklist-loop.md)
+accept. See [the checklist recovery record](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/workspace-node/checklist-loop.md)
 and [native-model review](../reviews/2026-09-05-provider-native-model-defaults-claude.md)
 for dated evidence and the distinction between catalogue mismatch and model
 rejection. PR #2964 is an immediate

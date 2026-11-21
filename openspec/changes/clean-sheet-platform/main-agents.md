@@ -35,6 +35,7 @@ Anthropic hosts (`claude.com`, `support.claude.com`, `code.claude.com`,
 
 Also unreachable: the GitHub REST API for `anthropics/claude-code`.
 The github.com web page was readable.
+Re-read 2026-11-21 in full for OpenAI, xAI, platform.muse.ai, Gemini and Claude's fire reference: `docs/decisions/untangle-2026-11/wake-pages.md`. Meta's help-center articles are still read only through search extracts.
 
 ### Corrections to the plan and the repo (evidence first)
 
