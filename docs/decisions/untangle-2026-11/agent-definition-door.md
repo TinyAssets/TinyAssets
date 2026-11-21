@@ -61,9 +61,14 @@ instructions.
   says "never ... install packages ... under /workspace", which the guard's ask pattern reads
   as an ask. The definition is the owner's text, served when the user pulls it in; the guard
   holds the platform's own words (the instructions, the prompt's title and description).
-- **A ceiling, `DEFINITION_BYTES_MAX` (16 MiB, `contract/src/limits.ts`)**: the object answers
-  the definition whole in one RPC result, and the doors' isolate holds it beside one MCP
-  answer. Past it, `result_too_large`, never cut (Fact 15: a recorded technical ceiling).
+- **A ceiling, `DEFINITION_BYTES_MAX` (2 MiB, half `MCP_BODY_MAX`, `contract/src/limits.ts`,
+  `limits-audit.md`)**: the SDK materializes each MCP answer whole, the `agent` prompt both
+  files at once, so the answer with its JSON escapes stays within what the doors' isolate
+  holds a few at a time (ADR-037, ruling 3); the object reads it in one unit of its pool
+  (`DEFINITION_UNITS`). The review lowered it from 16 MiB, which put up to 80 MiB of one
+  answer's copies in a 128 MB isolate outside any pool. Past it, `result_too_large`, never cut
+  (Fact 15: a recorded technical ceiling). Raising it needs one file an answer and stored
+  digests.
 
 ## Owed
 

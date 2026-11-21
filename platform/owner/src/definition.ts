@@ -12,11 +12,13 @@
 import type { Door, DoorUnits } from "./door";
 import type { Content, Files } from "./files";
 import { MAIN_AGENT } from "./authority";
+import { DEFINITION_UNITS, ownerSlots } from "./holds";
 import {
   AGENT_FILES, agentPath, type ServedDefinition, type ServedSkill, skillUnion,
 } from "../../contract/src/agent-definition";
 import { DEFINITION_BYTES_MAX, MAX_LIST } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
+import { slotted } from "../../contract/src/slots";
 
 /** What `definitionRead` reaches: the owner's files, read in a unit, then their chunks. */
 export interface DefinitionDoorNeeds extends Pick<DoorUnits, "door"> {
@@ -83,15 +85,17 @@ export const definitionDoors = Object.freeze({
     });
     const bytes = async (content: Content | null) => content === null ? null
       : content.inline ?? await o.files.range(content.chunks ?? [], 0, content.entry.size);
-    const skills: ServedSkill[] = [];
-    for (const { skill, files } of pinned.skills) {
-      const read: Record<string, Uint8Array> = {};
-      for (const [path, content] of files) {
-        read[path] = (await bytes(content))!;
+    return slotted(ownerSlots(), DEFINITION_UNITS, async () => {
+      const skills: ServedSkill[] = [];
+      for (const { skill, files } of pinned.skills) {
+        const read: Record<string, Uint8Array> = {};
+        for (const [path, content] of files) {
+          read[path] = (await bytes(content))!;
+        }
+        skills.push({ name: skill, files: read });
       }
-      skills.push({ name: skill, files: read });
-    }
-    return { agent: pinned.agent, instructions: await bytes(pinned.instructions),
-             soul: await bytes(pinned.soul), skills };
+      return { agent: pinned.agent, instructions: await bytes(pinned.instructions),
+               soul: await bytes(pinned.soul), skills };
+    });
   },
 });

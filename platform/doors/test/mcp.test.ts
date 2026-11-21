@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MCP_RESOURCE } from "../../contract/src/identity";
+import { DEFINITION_BYTES_MAX } from "../../contract/src/limits";
 import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
 import { profileNames, toolTable } from "../../contract/src/doors";
@@ -62,6 +63,23 @@ async function seededSkills(client: Client): Promise<string[]> {
     dir: "/workspace/.agents/skills", limit: 100 } })) as { entries: { path: string }[] };
   return listed.entries.map((entry) => entry.path.split("/").at(-1)!).sort();
 }
+
+describe("the agent's definition past DEFINITION_BYTES_MAX", () => {
+  it("is refused result_too_large, never cut, while its tools still serve", async () => {
+    const client = await mcpClient(await connect(await registerClient(), { owner: owner() }),
+                                   { pin: "2026-07-28" });
+    const content = `---\nname: big\ndescription: A skill past the ceiling.\n---\n${
+      "x".repeat(DEFINITION_BYTES_MAX)}`;
+    expect((await client.callTool({ name: "file_write", arguments: {
+      path: "/workspace/skills/big/SKILL.md", expected_etag: "", content } })).isError)
+      .toBeFalsy();
+    for (const asked of [() => client.listResources(), () => client.getPrompt({ name: "agent" })]) {
+      await expect(asked()).rejects.toThrow("result_too_large");
+    }
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+    await client.close();
+  });
+});
 
 describe.each([
   ["2026-07-28", { pin: "2026-07-28" }],
