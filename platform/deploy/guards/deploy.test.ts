@@ -11,7 +11,7 @@
  * registers the WorkOS redirect URI only when missing and never deletes one; and it sets the
  * routing key on the doors and the owner together or not at all.
  *
- * Slice L's review (H2, research 3b and 3c): a failed lookup is never "absent"; a held
+ * Each lookup is checked too: a failed one is never "absent"; a held
  * keyring is never replaced, and is rotated only by adding a key; the control record is
  * written only when the API answers that it is absent; an absent discovery field is unknown,
  * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
@@ -224,7 +224,8 @@ const NOW = new Date("2026-11-07T12:00:00.000Z");
 /**
  * A fake of everything the kit reaches, as one ordered event log: Cloudflare's API and
  * wrangler (the account's state changing as the kit changes it), WorkOS, the owner issuer,
- * E2B, python and the migrations guard.
+ * E2B, the canary, the pair's checks, the migration locks' command line, H2's probes and
+ * rclone.
  */
 function world(options: WorldOptions = {}) {
   const held = options.held === true;
@@ -2102,15 +2103,15 @@ describe("the parts of a run", () => {
       .toThrow(/GATEWAY_KEYRING is .*32 bytes/);
     expect(secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(ROTATED)))
       .toEqual([{ worker: "gateway", name: "GATEWAY_KEYRING" }]);
-    // The files Worker's data keys' ring, by the same rule (slice P).
+    // The files Worker's data keys' ring, by the same rule.
     expect(() => secretPlan(held, new Set(["FILES_KEYRING"]), values(RING)))
       .toThrow(/FILES_KEYRING holds/);
     expect(secretPlan(held, new Set(["FILES_KEYRING"]), values(ROTATED)))
       .toEqual([{ worker: "files", name: "FILES_KEYRING" }]);
   });
 
-  it("refuses to deploy unless each migration lock pins every migration it ships, in order " +
-     "(review M5-2), by the locks' own command line", async () => {
+  it("refuses to deploy unless each migration lock pins every migration it ships, in order, " +
+     "by the locks' own command line", async () => {
     // The real command line's answer, whatever the checked-in locks pin: the kit's own.
     const run = parse(["--mode", "dark"], ENV, { ...world().io, spawn: spawnSync });
     for (const worker of migrated()) {
@@ -2237,8 +2238,8 @@ describe("the parts of a run", () => {
       .toThrow("wrangler versions upload failed (exit 1): the API refused it");
   });
 
-  it("hands each route from the old proxy to the doors one at a time, no path unserved " +
-     "(review D3)", async () => {
+  it("hands each route from the old proxy to the doors one at a time, no path unserved",
+     async () => {
     const fake = zoneApi(LIVE);
     const cloudflare = client(fake);
     const { id: zone, account } = await cloudflare.zone(ZONE);

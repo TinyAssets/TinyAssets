@@ -3,7 +3,7 @@
 Done-check: in `platform/`, `npm run typecheck`, `npm test -w <ws>` per touched
 workspace, and `npx vitest run --root ci guards/` for a `platform/` diff;
 from the root, touched `pytest` files, `check_shapes.py`,
-`ci_structural_guards.py --head HEAD`, `openspec validate clean-sheet-platform`,
+`ci_structural_guards.py`, `openspec validate clean-sheet-platform`,
 and `test_hygiene_gate.py` on the body (each cut test: `Test-Removal:`).
 Each passes by exit code (pipefail). After a red CI job, rerun only
 its failing tests.

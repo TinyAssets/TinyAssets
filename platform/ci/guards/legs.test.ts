@@ -1,26 +1,25 @@
 /**
- * The platform's CI legs, held where they survive the cutover (moved from the Python suite's
- * `tests/test_tests_workflow.py`, audit D4).
+ * The platform's CI legs, held where they survive the cutover.
  *
  * `platform-tests` runs every workspace's Vitest tests as parallel legs, `platform-checks`
  * the legs that are not Vitest runs (the typecheck, the owner's and the gateway's memory
- * legs), and
- * `platform-sizes` the large tests, sharded (`ci/classes.ts`). A matrix job's result is every
- * leg's, and `required-tests` (the protected context) fails unless all three, the owner
- * app's browser job and the `process` leg succeeded. Those five are the gate's lasting
- * shape: the old stack's Python jobs beside them leave at the cutover, and this guard does
- * not read them. `process` runs the process's own tests with plain pytest on the runner, with
- * nothing of the old stack installed. Held here: every workspace `platform/package.json`
+ * legs), and `platform-sizes` the large tests, sharded (`ci/classes.ts`). A matrix job's
+ * result is every leg's, and `required-tests` (the protected context) fails unless all three,
+ * the owner app's browser job and the `process` leg succeeded. Those five are the gate's
+ * lasting shape: the old stack's Python jobs beside them leave at the cutover, and this guard
+ * does not read them. `process` runs the process's own tests with plain pytest on the runner,
+ * with nothing of the old stack installed. Held here: every workspace `platform/package.json`
  * lists has its tests run by a leg, its `test` script whole or each `npm run` part of it;
  * every workspace with a large test has its `test:sizes` run; every Vitest leg names its
- * shard, `1/1` when whole, and every shard of a command has its leg; the
- * typecheck has its leg; every Vitest leg uploads its report (the input of `ci/budgets.mjs`)
- * and no other leg takes the reporters; no leg is excluded, conditional or allowed to fail;
- * and each leg runs exactly its command.
- * Nothing may change how a command runs (round 8, R8-2): the jobs and their steps carry only
- * the keys listed below, no `shell` (`shell: true {0}` makes every leg a no-op that
- * succeeds), no `env` (`npm_config_script_shell` does the same through npm), no
- * `working-directory` of a step's own; `defaults.run` is exactly the platform folder.
+ * shard, `1/1` when whole, and every shard of a command has its leg; the typecheck has its
+ * leg; every Vitest leg uploads its report (the input of `ci/budgets.mjs`) and no other leg
+ * takes the reporters; no leg is excluded, conditional or allowed to fail; and each leg runs
+ * exactly its command.
+ *
+ * Nothing may change how a command runs: the jobs and their steps carry only the keys listed
+ * below, no `shell` (`shell: true {0}` makes every leg a no-op that succeeds), no `env`
+ * (`npm_config_script_shell` does the same through npm), no `working-directory` of a step's
+ * own; `defaults.run` is exactly the platform folder.
  *
  * A leg's `timeout-minutes` is a watchdog derived from its measured time, recorded beside it
  * in `tests.yml`. No figure is pinned here: a time limit is never a design input.
@@ -290,7 +289,7 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
   it("run the owner's and the gateway's workerd memory legs, each with its control", () => {
     // ADR-037: the differential workerd checks that each chunk-wise path is O(1) in its
     // data's size, and the egress door's and the gateway's, each with a control that must
-    // read as growing.
+    // read as growing. Each leg's own run fails without its `--expose-gc` (its `gc()` throws).
     const legs = tests().jobs["platform-checks"].strategy.matrix.include;
     for (const [ws, script, control] of [["owner", "leg.mjs", "the control kept"],
                                          ["gateway", "egress.mjs", "control held"]]) {
@@ -299,7 +298,6 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
       expect(json(`${ws}/package.json`).scripts["test:memory"]).toBe(`node memory/${script}`);
       const leg = readFileSync(join(PLATFORM, ws!, "memory", script!), "utf8");
       expect(leg).toContain(control);
-      expect(leg).toContain("--expose-gc");
     }
   });
 
@@ -323,7 +321,7 @@ describe("platform-tests, platform-checks and platform-sizes", () => {
     legs(jobs[to]).push(...legs(jobs[from]).filter((leg) => leg.leg === name));
     drop(name)(jobs[from]);
   };
-  // The reviewer's mutations (round 8), each a job that must fail, in each leg job.
+  // Each a job that must fail, in each leg job.
   const mutations: Record<string, Mutation> = {
     "job continue-on-error": (job) => { job["continue-on-error"] = true; },
     "job if": (job) => { job.if = "github.event_name != 'pull_request'"; },

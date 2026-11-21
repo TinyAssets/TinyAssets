@@ -642,6 +642,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [x] `platform/doors/`, both passes in one PR, with `d2:N56` and `d2:N57` decided and the
     app-files guard held to what the doors serve (`untangle/pass-doors`;
     `untangle-2026-11/pass-doors.md`).
+  - [x] `platform/ci/` and `platform/deploy/`, both passes in one PR for the two areas (one CI
+    run), with the two ci checks that could never fail removed (the memory legs'
+    `--expose-gc` text, which their header comments held) (`untangle/pass-ci-deploy`;
+    `untangle-2026-11/pass-ci-deploy.md`).
 - [ ] d2's problem index, with decisions for the swallowed errors (`d2:N56`), the retries
   (`d2:N57`) and `s2:N51` (d3 §A11).
   - [x] `d2:N56` and `d2:N57`, each item kept with its reason (`untangle/pass-doors`;
@@ -670,6 +674,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     `doors.ts` `serve` answers it plain text, `429` with its own `Retry-After: 1`, the egress
     door's included, whose callers read `{error: {code, message}}` (`pass-doors.md` §3;
     `untangle/doors-overloaded`).
+  - [ ] E2B's lifecycle events in one list: the kit registers `deploy.ts` `E2B_HOOK.events`,
+    the doors handle `doors/src/e2b-hooks.ts` `TYPES`, and nothing holds the two equal; one
+    list in the contract beside the hook's path (`identity.json`) (`pass-ci-deploy.md` §2;
+    `untangle/e2b-hook-events`).
 
 ### Step 5. What the cutover needs that the lanes don't hold (d3 §C)
 

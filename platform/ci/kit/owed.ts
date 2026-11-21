@@ -1,5 +1,5 @@
 /**
- * The `owed` ratchet (untangle wave 2): a guard can land before the fixes that make it pass.
+ * The `owed` ratchet: a guard can land before the fixes that make it pass.
  *
  * Each workspace's `guards/rules.ts` may export `OWED`, the violations it still owes, each
  * tagged with the fix that removes it. A guard fails on any violation its workspace does not
@@ -56,9 +56,9 @@ export function kernels(fix: string, kernel: string,
 }
 
 /**
- * The literal guard's finding (`deploy/guards/literals.test.ts`, untangle B10): the file
- * `from`, by its path from the repository root, spells live names `count` times outside the
- * configs and `deploy/platform.json`. It names none, so the entry that owes it spells none.
+ * The literal guard's finding (`deploy/guards/literals.test.ts`): the file `from`, by its path
+ * from the repository root, spells live names `count` times outside the configs and
+ * `deploy/platform.json`. It names none, so the entry that owes it spells none.
  */
 export const literalBreak = (from: string, count: number): string =>
   `${from}: live names ×${count}`;

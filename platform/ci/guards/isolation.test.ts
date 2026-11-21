@@ -1,10 +1,10 @@
 /**
- * One import-layer table over every file (untangle B1, `ci/kit/layers.ts`): every script
- * under `platform/` and `scripts/` is in exactly one layer, by its path; each of its imports,
- * by every way one module names another, lands where its layer may import; and so does each
- * workflow's inline module. The only exceptions are what each workspace owes
- * (`<workspace>/guards/rules.ts`'s `OWED`), exactly: an import no workspace owes fails, and
- * so does an owed one that no longer holds (`ci/kit/owed.ts`).
+ * One import-layer table over every file (`ci/kit/layers.ts`): every script under `platform/`
+ * and `scripts/` is in exactly one layer, by its path; each of its imports, by every way one
+ * module names another, lands where its layer may import; and so does each workflow's inline
+ * module. The only exceptions are what each workspace owes (`<workspace>/guards/rules.ts`'s
+ * `OWED`), exactly: an import no workspace owes fails, and so does an owed one that no longer
+ * holds (`ci/kit/owed.ts`).
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

@@ -1,6 +1,6 @@
 /**
- * The off-account copy (d3 §G; `operator_research.md` §4): every night the files bucket is
- * copied to a Backblaze B2 bucket outside the Cloudflare account, by `offsite-copy.yml`.
+ * The off-account copy (d3 §G): every night the files bucket is copied to a Backblaze B2 bucket
+ * outside the Cloudflare account, by `offsite-copy.yml`.
  *
  * - **What it holds:** the files bucket alone, byte for byte at the same keys. That bucket is
  *   every owner's chunks and nightly generations (`files/src/keys.ts`), each object sealed
@@ -36,9 +36,9 @@
  *   back first, then every unmarked namespace with a root, locates each one's owner from its
  *   generation (`restore.locate`) and begins its restore, in one run; a namespace another
  *   holds (`o/<ns>/h/<held>`) goes with its holder, and one whose owner is live is held by the
- *   owner's own (`restore.hold`), so no erasure misses it (`r8-erased-orphans.md`). Until it has, a night
- *   refuses to copy a bucket that lacks a mark the copy holds (`copy`): nothing deletes a mark,
- *   so such a bucket lost them, and its sync would hide every one.
+ *   owner's own (`restore.hold`), so no erasure misses it (`r8-erased-orphans.md`). Until it
+ *   has, a night refuses to copy a bucket that lacks a mark the copy holds (`copy`): nothing
+ *   deletes a mark, so such a bucket lost them, and its sync would hide every one.
  *
  * `node --experimental-strip-types deploy/offsite.ts settings` writes `configured` for the
  * workflow; `… copy` runs the copy, and `… drill` the copy and then the drill. Node runs this

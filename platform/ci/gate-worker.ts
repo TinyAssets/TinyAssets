@@ -18,10 +18,10 @@
  * an object (`GATE.object`) the class is a Durable Object that forwards to the real object of
  * the same name; otherwise it is the default entrypoint.
  *
- * A held call and the test's calls are different requests of this Worker, and workerd does
- * not wake one request by a promise another resolves: it cancels the held call as hung
- * (`b23_research.md`, question 2). So every piece of state is plain module state, and each
- * request polls it inside itself. No promise is ever handed from one request to another.
+ * A held call and the test's calls are different requests of this Worker, and workerd does not
+ * wake one request by a promise another resolves: it cancels the held call as hung. So every
+ * piece of state is plain module state, and each request polls it inside itself. No promise is
+ * ever handed from one request to another.
  */
 import { DurableObject, env, WorkerEntrypoint } from "cloudflare:workers";
 

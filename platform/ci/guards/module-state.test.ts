@@ -84,7 +84,7 @@ describe("module-state guard", () => {
 
   it.each([
     "globalThis.owner = 'alice';",
-    // The reviewer's first miss: a write through the global object from inside a body.
+    // A write through the global object from inside a body.
     "export function remember(owner: string) { globalThis.lastOwner = owner; }",
     "class C { m(v: string) { self.cache.rows[v] = v; } }",
     "const f = () => { global['seen'] += 1; };",
@@ -125,7 +125,7 @@ describe("module-state guard", () => {
   });
 
   it.each([
-    // The reviewer's second miss: a source the bundler takes that is not `.ts`.
+    // A source the bundler takes that is not `.ts`.
     ["probe.js", "export let current = null;"],
     ["probe.mjs", "export function f() { globalThis.owner = 1; }"],
     ["probe.mts", "let count = 0;"],

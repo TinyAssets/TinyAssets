@@ -1,13 +1,12 @@
 /**
- * The kernel guard (untangle B7): where the platform has one module that does a thing, no
- * source in that module's reach does it again. Each kernel names its one home, the layers of
- * the import table (`layers.ts`) it holds, by their names there, and the folder it holds them
- * under:
+ * The kernel guard: where the platform has one module that does a thing, no source in that
+ * module's reach does it again. Each kernel names its one home, the layers of the import table
+ * (`layers.ts`) it holds, by their names there, and the folder it holds them under:
  *
  * - SHA-256 is `contract/src/digest.ts`'s, in the contract beside it (every Worker's code
- *   too), every Worker's source and the runner. An HMAC
- *   is a key's, not the digest's. The template's pin reader and the builds keep their own,
- *   since they import nothing by rule: their layers are not held.
+ *   too), every Worker's source and the runner. An HMAC is a key's, not the digest's. The
+ *   template's pin reader and the builds keep their own, since they import nothing by rule:
+ *   their layers are not held.
  * - Now is the owner's clock's (`owner/src/clock.ts`), in the owner's source.
  * - The test that a value is a JSON object is `contract/src/checks.ts`'s (`object`, `keyed`),
  *   in every layer that may import the contract: a type guard of `Record<string, unknown>`

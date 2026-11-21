@@ -3,10 +3,9 @@
  * account's token: the zone and its account, the account's Workers and their secrets' names,
  * KV namespaces, keys and values, R2 buckets with their lock rules and objects, queues with
  * their messages and consumers, and the zone's Worker routes, DNS records and Workers custom
- * domains. Every call is checked: a failed
- * listing or read throws, never reads as "absent", and a body that is not JSON throws. Every
- * listing is read to its last page.
- * The kit's other Cloudflare tool is wrangler (`deploy.ts`), which deploys and sets secrets.
+ * domains. Every call is checked: a failed listing or read throws, never reads as "absent",
+ * and a body that is not JSON throws. Every listing is read to its last page. The kit's
+ * other Cloudflare tool is wrangler (`deploy.ts`), which deploys and sets secrets.
  *
  * Node runs this file as it is (type stripping), as the kit does.
  */

@@ -14,7 +14,7 @@
     "workers": ["doors", "owner", "gateway", "sandbox", "files"]
   },
   "retired": {
-    "why": "The Workers the platform no longer has: the one way a platform Worker is deleted, so the cutover manifest names its Workers here. Each is deleted by the deploy step after every Worker is deployed, when the account's Workers listing holds it: by then no Worker of this tree binds it, and Cloudflare refuses the delete while any other Worker still references it (the kit never forces it) and deletes the Worker's own Durable Object namespaces with it. tinyassets-hooks is the code mode Worker's name before untangle B25: its VMs keep no state, so its objects go with it. An entry is deleted once a deploy has run it.",
+    "why": "The Workers the platform no longer has: the one way a platform Worker is deleted, so the cutover manifest names its Workers here. Each is deleted by the deploy step after every Worker is deployed, when the account's Workers listing holds it: by then no Worker of this tree binds it, and Cloudflare refuses the delete while any other Worker still references it (the kit never forces it) and deletes the Worker's own Durable Object namespaces with it. tinyassets-hooks is the code mode Worker's name before its rename: its VMs keep no state, so its objects go with it. An entry is deleted once a deploy has run it.",
     "workers": ["tinyassets-hooks"]
   },
   "buckets": {
