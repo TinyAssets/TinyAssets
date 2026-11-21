@@ -21,7 +21,7 @@ while `model_bootstrap_binding.py` only accepts an untouched first binding.
 The user must be able to disconnect in TinyAssets and later reconnect normally,
 preserving other sources and user content, without reviving stale authority.
 Partial failures and already-dispatched outcomes must stay explicit. Track the
-general fix in `openspec/changes/remove-universe-connections/`; no live test-account
+general fix in [the `remove-universe-connections` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/remove-universe-connections); no live test-account
 interaction until reviewed general fixes are deployed and end-to-end ready.
 
 ## Historical finding (superseded)
@@ -81,4 +81,4 @@ undoable. That is the strongest argument for doing this next.
 
 - `docs/concerns/2026-08-27-credential-deposit-refusals-are-unobservable.md`
 - PR #2604 (the deposit this was found in), change
-  `openspec/changes/paste-anything-connection-deposit/`
+  [the `paste-anything-connection-deposit` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/paste-anything-connection-deposit)

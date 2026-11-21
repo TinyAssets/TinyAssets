@@ -1,8 +1,0 @@
-name: app-outbound-adapter
-version: 1
-summary: Deliver founder-authorized app replies through a server-owned transport boundary
-applyRequires:
-  - proposal.md
-  - design.md
-  - specs/app-outbound-adapter/spec.md
-  - tasks.md

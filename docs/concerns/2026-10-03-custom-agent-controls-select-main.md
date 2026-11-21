@@ -36,7 +36,7 @@ retain the D8 integration dependency. Their foundation approval is not an assert
 that custom agents have independently enforced controls. This concern makes that
 existing owner-level P1 visible; it does not reopen their capped reviews.
 
-Resolution is tracked by [addressed-agent-control-provenance](../../openspec/changes/addressed-agent-control-provenance/design.md).
+Resolution is tracked by [addressed-agent-control-provenance](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/addressed-agent-control-provenance/design.md).
 Close only after reviewed implementation proves the served two-agent effector,
 queue/resume, request and owner-control flows; current owner/home revocation and
 cross-owner negatives; safe legacy handling; and separately authorized grouped
