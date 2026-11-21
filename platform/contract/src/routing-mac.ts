@@ -1,5 +1,5 @@
 /**
- * Self-routing sandbox tokens, MAC'd (G4): what lets a door reach an owner's object by the
+ * Self-routing sandbox tokens, MAC'd: what lets a door reach an owner's object by the
  * token alone, with no directory read, and lets no stranger's token reach any object.
  *
  * A token is `<owner>.<expires>.<secret>.<mac>`:
@@ -141,7 +141,7 @@ function routeKey(key: unknown): Buffer {
 }
 
 /**
- * The sandbox's route, sealed (AES-256-GCM, a fresh nonce) for E2B's metadata (slice P): the
+ * The sandbox's route, sealed (AES-256-GCM, a fresh nonce) for E2B's metadata: the
  * owner object seals it on each start (`SandboxStart.route`), the sandbox Worker sets it on
  * the sandbox it creates (`ta_route`), and E2B echoes it on every lifecycle event, which the
  * doors open to reach that owner's object. E2B learns no owner id from it.
