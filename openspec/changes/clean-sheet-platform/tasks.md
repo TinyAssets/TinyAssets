@@ -170,6 +170,11 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     secrets); every open Checkout Session completes or expires and its webhook is applied; then
     Stripe's endpoint (`/app/billing/webhook`) is disabled. No paid subscription exists (the
     founder; d2 B13), and a billing door is later work (§10 step 19).
+  - The old stack stops taking requests, deletions included, until `routes` (`live:` the
+    founder, once Stripe's endpoint is disabled: `gh workflow disable deploy-prod.yml`, then
+    on the droplet `sudo systemctl stop daemon-watchdog.timer tinyassets-watchdog.timer`, then
+    `sudo docker stop tinyassets-tunnel`; `checklist.md`, "The
+    old stack stops taking requests before the window's backup"; `i-deletion-withhold.md`).
   - The full backup, then the census on that copy. Any paid owner or Stripe id it counts is
     raised before the window, and any edge case (digest-only tombstones, live capability URLs,
     unacked mail, an owner past 30,000 entries) stops it loudly and goes to the founder (the
@@ -177,13 +182,12 @@ d3 §A10), held to the tree by `ci/guards/cutover.test.ts`.
     from the old stack's records and `docs/host-actions.md`.
   - Mode `offsite` copies the final backup to `tinyassets-final-backup` and reads each object
     back against its manifest (the founder, 2026-11-09).
-- [ ] **Step 11. `bundle`, `stage`, `verify`, the deletion jobs compared, `admit`.**
+- [ ] **Step 11. `bundle`, `stage`, `verify`, `admit` with its deletion check.**
   - The deletion jobs compared (d3 §C4, list3 P28): the old stack's deletion jobs, finished or
     not (`tinyassets/broker/deletion_records.py`, read from the off-host authority, never a
-    backup copy), against the run's bundles: mode `deletions` (`i-deletion-compare.md`). An
-    owner whose job was made after the copy is discarded (still `pending`) and withheld before
-    any owner is admitted. The discard, the withholding and their hold on `admit` remain open
-    (§10 step 5).
+    backup copy), against the run's bundles, by each `admit` itself, right before it
+    (`i-deletion-compare.md`, `i-deletion-withhold.md`). An owner whose job was made after the
+    copy is discarded (still `pending`) and withheld before any owner is admitted.
   - `verify`, which holds every imported owner's check to its bundle, runs here, while
     `IMPORT_KEY` is still set (list3 P27).
   - `admit` admits each verified owner (`tierSet`, `admissionSet`, each suspension, the `o:`
@@ -723,11 +727,13 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   (`/teams/{id}/metrics/max`) against the concurrency ceiling. Reading the logs needs a
   read-only Cloudflare token (Workers Observability Read), not the deploy token. E2B's credit
   and spend have no API. (The off-account copy's alarm past two nights is built: `x7.md`.)
-- [ ] The deletion-jobs step before `admit` (§9 step 11; d3 §C4).
+- [x] The deletion-jobs step before `admit` (§9 step 11; d3 §C4).
   - [x] `deletions` checks current off-host requests against the original owners of the
     run's bundles (`i-deletion-compare.md`).
-  - [ ] Withhold and discard the matching pending owners before admitting any. Establish
-    when the old service stops accepting new deletion requests or hands them onward.
+  - [x] Withhold and discard the matching pending owners before admitting any: each `admit`
+    reads the requests itself and takes its check once; the old stack stops taking requests
+    before the window's backup (`live:` §9 step 10), and `routes` hands them to the doors
+    (`i-deletion-withhold.md`).
 - [ ] The site at the cutover, one PR (d3 §C6 F2): the site reads `identity.json`,
   `contract/apps.json` and `profiles.json`; the `/connect` page rebuilt (§9); the privacy and
   account-deletion pages corrected, in the founder's copy.
