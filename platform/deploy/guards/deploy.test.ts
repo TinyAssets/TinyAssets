@@ -1916,7 +1916,12 @@ describe("the route record", () => {
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
     const first = stored(w);
     w.kill.after = undefined;
-    const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
+    // KV lists eventually: the re-run attempt's listing lacks the record its first attempt wrote.
+    const fetch = w.io.fetch;
+    const unlisted = { ...w, io: { ...w.io, fetch: async (url: string, init?: RequestInit) =>
+      url.includes("/keys?prefix=deploy%3Aroutes%3A")
+        ? Response.json({ success: true, result: [] }) : fetch(url, init) } };
+    const again = await runMode(unlisted, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
     // As the first attempt wrote it, with only the attach's DNS record added once it is done.
     expect(first.domain.created).toBeNull();
     expect(stored(w)).toEqual({ ...first, domain: { ...first.domain, created: [{ id: "dns-egress", type: "AAAA", content: "100::" }] } });
@@ -2108,6 +2113,22 @@ describe("the route record", () => {
       expect(onStage(w)).toEqual([]);
     });
 
+    it("makes the host's record again when the one the route record made is gone, and its " +
+       "handback deletes the new one", async () => {
+      const w = world({ held: true });
+      await runMode(w, "routes", ["--yes"], RUN, stage);
+      w.dns.splice(w.dns.findIndex((record) => record.id === "dns-made3"), 1);
+      const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" }, stage);
+      expect(again.plan).toContain(`make the DNS record ${PLACED}, proxied, for the doors' ` +
+        "routes on it, before anything is deployed: the route record keeps it, for a handback " +
+        "to delete exactly it");
+      const [made] = onStage(w);
+      expect(stored(w).host).toEqual({ name: STAGE, held: false, made: [
+        { id: made!.id, type: "AAAA", content: "100::" }] });
+      await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(onStage(w)).toEqual([]);
+    });
+
     it("records on a re-run the record its first attempt made before it was written in, and " +
        "makes none again", async () => {
       const w = world({ held: true });
@@ -2236,7 +2257,8 @@ describe("a handback run", () => {
     const missing = world({ held: true });
     await expect(runMode(missing, "handback", ["--yes", "--record", "7999"])).rejects.toThrow(
       `there is no route record deploy:routes:7999 in ${NAMESPACES["CONTROL"]}: name the id a routes ` +
-      "run's job summary gives; nothing is changed");
+      "plan gives (a handback that read back deletes its records, copied into its job summary); " +
+      "nothing is changed");
     await expect(runMode(world(), "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
       /there is no route record deploy:routes:7001/);
     const { w } = await cutOver();

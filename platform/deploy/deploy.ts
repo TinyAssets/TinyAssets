@@ -1534,13 +1534,15 @@ type Recording = "cloudflare" | "zone" | "account" | "table" | "changes" | "plac
  * is held (`keepRecord`), so a later one is a kit's from before that rule: kept while the
  * oldest stood, it holds the handover's own state as its before. A record naming another host
  * is that host's handover; a listed key whose value is gone was deleted since the listing (KV
- * lists eventually); any other value out of shape throws (`recordOf`).
+ * lists eventually); any other value out of shape throws (`recordOf`). The run's own key
+ * (`own`) is read whether listed or not: a listing just after a write can lack it, and a
+ * re-run attempt that missed its first attempt's record would write over it.
  */
 async function hostRecords({ cloudflare, account, zone: id }:
                              Pick<Values, "cloudflare" | "account" | "zone">,
-                           namespace: string): Promise<KeptRecord[]> {
+                           namespace: string, own: string): Promise<KeptRecord[]> {
   const held: KeptRecord[] = [];
-  for (const key of await cloudflare.keys(account, namespace, RECORD_PREFIX)) {
+  for (const key of new Set([...await cloudflare.keys(account, namespace, RECORD_PREFIX), own])) {
     const value = await cloudflare.value(account, namespace, key);
     const host = (value as { host?: { name?: unknown } } | null | undefined)?.host?.name;
     if (value === undefined || (typeof host === "string" && host !== HOST)) {
@@ -1580,7 +1582,7 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
         "apply job stops until a dark run makes it");
     return { kept: null };
   }
-  const [first, ...later] = await hostRecords(got, namespace);
+  const [first, ...later] = await hostRecords(got, namespace, key);
   if (first !== undefined) {
     say(`keep the route record ${first.key}, ${heldLine(first)}, the state before the first ` +
         `routes run on ${HOST}, as it is, and write none${later.length === 0 ? ""
@@ -1631,9 +1633,10 @@ const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "
     }
     // A route record that has the host holding none before routes makes a placeholder on it
     // now the handover's: one an earlier run or attempt made before it was written in, or the
-    // one added by hand after a refused make (the checklist's fallback); its handback deletes it.
+    // one added by hand after a refused make (the checklist's fallback), or a new one made when
+    // the one it made is gone since (deleted by hand); its handback deletes it.
     const bare = got.kept !== null && !got.kept.record.host.held
-      && got.kept.record.host.made === null;
+      && (got.kept.record.host.made === null || got.placed.length === 0);
     say(got.placed.length > 0
       ? bare ? `${HOST} holds ${named(got.placed, HOST)}, and held none when the route record ` +
                "was kept: the record keeps it as the handover's, for a handback to delete"
@@ -2942,10 +2945,11 @@ const recordRead = step<"cloudflare" | "zone" | "account", "record" | "ending">(
       : await got.cloudflare.value(got.account, namespace, key);
     if (namespace === undefined || value === undefined) {
       throw new Error(`there is no route record ${key} in ${NAMESPACES["CONTROL"]}: name the ` +
-                      "id a routes run's job summary gives; nothing is changed");
+                      "id a routes plan gives (a handback that read back deletes its records, " +
+                      "copied into its job summary); nothing is changed");
     }
     const record = recordOf(value, key, got.zone);
-    const held = await hostRecords(got, namespace);
+    const held = await hostRecords(got, namespace, key);
     const first = held[0];
     if (first !== undefined && first.record.at < record.at) {
       throw new Error(`the record ${key} was kept at ${record.at}, after the route record ${

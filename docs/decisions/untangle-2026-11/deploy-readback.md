@@ -1,4 +1,4 @@
-# deploy-readback (2026-11-22)
+# deploy-readback as built (2026-11-22)
 
 `untangle/deploy-readback` fixes three defects of the deploy package seen live on 2026-11-22 on
 the stage (`stage-routes.md`, `deploy-zero.md`). The research came first (Fact 14).
@@ -176,10 +176,6 @@ new deploy. The handback does not touch the Workers.
 - **The route record keeps no URL of the hook before.** A handback disables the hook and
   leaves it at the host's URL (the stage's, here). A disabled hook sends nothing, and
   `stage-end` moves the URL with `host`. This predates this PR and is not the race.
-- **A `routes` run whose kept record names a DNS record it made, gone since,** plans "make the
-  DNS record" and makes none (`hostRecord` writes only into a bare record). A re-run attempt
-  could already reach this, which needs a hand deleting the stage's placeholder mid-handover.
-  It predates this PR.
 - **`FETCH_DEFAULTS` copies Node's fetch's defaults.** The verbatim test holds them to real
   fetch on the Node the tests run, which is the workflow's 22, so a Node that changes them
   fails that test.
@@ -187,6 +183,35 @@ new deploy. The handback does not touch the Workers.
   few small keys) and trusts KV as the route record always has. The namespace is writable by
   the doors, owner and sandbox, so a planted older record of the host would be the one named.
   The plan names its run and time, which the founder holds to the job summary, as before.
+
+## Review (2026-11-22)
+
+- **A re-run attempt could write over its first attempt's record.** `keepRecord` found the
+  host's records only by KV's listing, which lags a write (the reason `hostRecords` skips a
+  listed key whose value is gone), and a re-run attempt's key is its first attempt's. A re-run
+  soon after a first attempt that changed the zone would have missed the record and written
+  the changed state over it, losing the one before-state. `hostRecords` now also reads the
+  run's own key (`own`: `keepRecord`'s this run's, `recordRead`'s the one `--record` names)
+  whether listed or not, as the kit before this PR read it.
+- **A kept record whose made DNS record is gone** (deleted by hand, or a record read stale just
+  after a handback deleted it) planned "make the DNS record" and made none, leaving the doors'
+  routes on the host with no record to take requests. `hostRecord` now treats such a record as
+  bare: it makes one and writes it in, and the handback deletes that one.
+- **A handback after a handback** stops with "there is no route record", which now says that a
+  handback that read back deletes its records, copied into its job summary, and that the id
+  to name is the one a routes plan gives.
+- Checked and kept: the read-back's bound and cadence (at most 31 reads a minute of one
+  Worker, against Cloudflare's 1,200 API requests per five minutes; a lag past the bound stops
+  at the first, so a run waits at most a minute more than before; the wait says nothing until
+  it ends, as the egress wait does); deleting the records after a read-back-verified handback,
+  with the job summary as the copy (a record serves only its handback; later ones go first, so
+  a killed handback keeps the one it names and is run again); `verbatim`'s TLS (Node's default
+  verification, which refuses a self-signed certificate as fetch does), its abort mid-body, its
+  kept `Set-Cookie`s, and the GitHub runner's proxy (neither client takes one).
+- The hook URL left at handback stays as left above. Restoring it needs a URL field the three
+  live records lack, the optional field this PR declined. Today it has no effect: the stage's
+  handback disables the hook, and on the zone the URL `routes` sets is the identity's own path
+  on the zone (`/hooks/e2b/lifecycle`).
 
 ## Owed
 
