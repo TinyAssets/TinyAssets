@@ -13,7 +13,7 @@ import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 import { runEnv } from "../../sources/src/run-env";
 import { EGRESS_IP_LITERAL, EGRESS_MODES } from "../../contract/src/policy-document";
-import { BOUNDARY_NOTE, networkDocument } from "../src/network";
+import { BOUNDARY_NOTE, narrows, networkDocument } from "../src/network";
 import {
   ALL_TRAFFIC, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
   generationOf, SANDBOX_HEADER, sandboxEnv, withEgressToken,
@@ -109,6 +109,35 @@ describe("the network document", () => {
       [GENERATION_HEADER]: "9", [SANDBOX_HEADER]: TOKEN } } }] });
     expect(egressTokenOf(opened)).toBe(TOKEN);
     expect({ ...opened, rules: {} }).toEqual({ ...network, rules: {} });
+  });
+});
+
+describe("a narrowing", () => {
+  const allow = (...hosts: string[]) => ({ mode: "allowlist" as const,
+                                           destinations: hosts.map((host) => ({ host,
+                                                                                port: 443 })) });
+  const open = { mode: "open" as const, destinations: [] };
+
+  it("is a write after which a name the network let out is not let out", () => {
+    expect(narrows(open, allow("pypi.org"))).toBe(true);
+    expect(narrows(allow("pypi.org", "example.com"), allow("pypi.org"))).toBe(true);
+    expect(narrows(allow("pypi.org"), allow("example.com"))).toBe(true);
+    // A name on 80 opens it on 443 too: dropping its last port drops the name.
+    expect(narrows({ mode: "allowlist", destinations: [{ host: "pypi.org", port: 80 }] },
+                   allow())).toBe(true);
+  });
+
+  it("is not a write that keeps or adds every name, or opens the network", () => {
+    expect(narrows(allow("pypi.org"), allow("pypi.org", "example.com"))).toBe(false);
+    expect(narrows(allow("pypi.org"), open)).toBe(false);
+    expect(narrows(open, open)).toBe(false);
+    expect(narrows(allow(), allow())).toBe(false);
+    // Another port of a kept name, or a port E2B cannot filter by name, lets nothing less out.
+    expect(narrows(allow("pypi.org"), { mode: "allowlist", destinations: [
+      { host: "pypi.org", port: 80 }] })).toBe(false);
+    expect(narrows({ mode: "allowlist", destinations: [{ host: "db.example.com",
+                                                           port: 5432 }] }, allow()))
+      .toBe(false);
   });
 });
 

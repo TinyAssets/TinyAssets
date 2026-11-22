@@ -33,7 +33,7 @@ import {
   type Egressible, runUrls, sandboxEnv, withEgressToken,
 } from "../../contract/src/egress";
 import type { PolicyDocument } from "../../contract/src/policy-document";
-import { PLACE_BYTES } from "../../contract/src/limits";
+import { LEASE_TTL_S, PLACE_BYTES } from "../../contract/src/limits";
 import { slotted } from "../../contract/src/slots";
 import { Refusal } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
@@ -83,6 +83,20 @@ import {
  * taking it again.
  */
 export const NETWORK_RETRY_S = 30;
+
+/**
+ * How long a live lease's sandbox may owe a narrowed egress policy (a host the owner dropped
+ * still let out by its older network) before its lease is given back and its runs stopped
+ * (`Launcher.reapply`, `NETWORK_UNCONFIRMED`): one lease's TTL, the time the platform already
+ * lets a sandbox run unconfirmed (a runner unheard that long is settled lost). It holds two
+ * whole tries, the write's own and the retry `NETWORK_RETRY_S` on, each answered within
+ * `LANE_CALL_MS` (a test holds this), so a re-apply that lands is never cut short
+ * (`untangle-2026-11/network-narrow-bound.md`).
+ */
+export const NARROWED_WITHIN_S = LEASE_TTL_S;
+
+/** A run's settle code, and the owner's notice, when a narrowing was not in force in time. */
+export const NETWORK_UNCONFIRMED = "network_unconfirmed";
 
 /** What a run is admitted on (`readAgent`). */
 export interface AgentRead {
@@ -154,7 +168,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
     read(): { readonly document: PolicyDocument };
   };
   readonly relay: Pick<Relay, "settled">;
-  readonly signins: Pick<Signins, "holds">;
+  readonly signins: Pick<Signins, "end" | "holds" | "list">;
   readonly starter: Pick<Starter, "seeded" | "version">;
   readonly usage: { spent(period: string, source: string | null): number };
 }
@@ -559,7 +573,8 @@ export class Launcher implements RunHost {
       return now;
     }
     const times = [this.runs.next(now, admitted),
-                   ...(admitted ? this.#behind(now).map((each) => each.due) : [])]
+                   ...(admitted ? this.#behind(now).map((each) => each.due) : []),
+                   ...this.#narrowedDue()]
       .filter((time): time is number => time !== null);
     return times.length === 0 ? null : Math.min(...times);
   }
@@ -833,19 +848,66 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * Each live lease whose network is behind the current egress generation, made again
-   * under it and re-applied on its sandbox (the sandbox Worker's `network`, which keeps the
-   * live egress token and the launched jobs' vendor hosts), each one due (`#behind`): at
-   * once after a policy write that moved the egress generation, whose unit wakes this lane
-   * (`synced`). Its send is a unit (`networkSent`): the lease's calls are admitted under
-   * the new generation from there on, since only that network's transform sets it. Its
-   * answer is another (`networkAnswered`): `applied` confirms it; `at_resume` keeps it out
-   * for its paused sandbox; `lost` or a throw clears it. No answer within `LANE_CALL_MS`
-   * records nothing: the send's retry clock stands.
+   * In a unit: when each live lease owing a narrowed egress policy is given back, if no
+   * re-apply confirms it first (`#unconfirmed`).
+   */
+  #narrowedDue(): number[] {
+    return this.#o.files.liveLeases(clock()).flatMap((lease) => lease.narrowed_at === null
+      ? [] : [lease.narrowed_at + NARROWED_WITHIN_S]);
+  }
+
+  /**
+   * In a unit: each live lease whose sandbox has owed a narrowed egress policy for
+   * `NARROWED_WITHIN_S`, no re-apply having confirmed it, given back, so no host the owner
+   * dropped stays reachable from it: its sign-ins ended and its runs settled `failed`
+   * (`NETWORK_UNCONFIRMED`), so its runner's next post is refused and stops each CLI (which
+   * needs neither the sandbox Worker nor E2B, whose fault may be why no re-apply landed);
+   * its tokens and streams end with it; each CLI stopped and its sandbox paused through the
+   * Worker as well; and the owner told. Whatever the owner's admission: a stop is never held.
+   */
+  #unconfirmed(now: number): void {
+    for (const lease of this.#o.files.liveLeases(now)) {
+      if (lease.narrowed_at === null || lease.narrowed_at + NARROWED_WITHIN_S > now) {
+        continue;
+      }
+      const signins = this.#o.signins.list().filter((row) => row.lease_id === lease.lease_id);
+      for (const row of signins) {
+        this.#o.signins.end(row.id);
+        this.#o.relay.settled(row.id);
+      }
+      const runs = this.runs.endLease(lease.lease_id, NETWORK_UNCONFIRMED, now);
+      this.leaseFreed(lease.lease_id, lease.epoch);
+      this.stop(runs);
+      for (const row of signins) {
+        queueMicrotask(() => void this.#o.sandbox.signinCancel({ authority: row.authority,
+                                                                 id: row.id })
+          .catch(() => console.error("a stopped sign-in's cancel did not reach the sandbox")));
+      }
+      const sandboxOf = lease.authority === OWNER ? "your own sandbox"
+        : `client ${lease.authority}'s sandbox`;
+      this.#o.notices.add(NETWORK_UNCONFIRMED, `The egress policy you narrowed was not in ` +
+        `force on ${sandboxOf} within ${NARROWED_WITHIN_S} s, so it was stopped: ` +
+        `${runs.length} run(s) and ${signins.length} sign-in(s) ended. A new run starts it ` +
+        "again under the policy in force.", now);
+    }
+  }
+
+  /**
+   * Each live lease past its narrowing's bound given back (`#unconfirmed`); then each whose
+   * network is behind the current egress generation, made again under it and re-applied on
+   * its sandbox (the sandbox Worker's `network`, which keeps the live egress token and the
+   * launched jobs' vendor hosts), each one due (`#behind`): at once after a policy write
+   * that moved the egress generation, whose unit wakes this lane (`synced`). Its send is a
+   * unit (`networkSent`): the lease's calls are admitted under the new generation from
+   * there on, since only that network's transform sets it. Its answer is another
+   * (`networkAnswered`): `applied` confirms it; `at_resume` keeps it out for its paused
+   * sandbox; `lost` or a throw clears it. No answer within `LANE_CALL_MS` records nothing:
+   * the send's retry clock stands.
    */
   async reapply(): Promise<void> {
     const { sandbox } = this.#o;
     const sent = await this.#o.door(() => {
+      this.#unconfirmed(clock());
       if (this.#o.admission.unadmitted() !== null) {
         return [];
       }
