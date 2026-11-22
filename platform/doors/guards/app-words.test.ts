@@ -8,8 +8,6 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
-
 type Shown = (event: unknown) => unknown;
 const VIEW = join(import.meta.dirname, "..", "app", "view.js");
 const { eventShown } = await import(VIEW) as { eventShown: Shown };
@@ -18,8 +16,7 @@ describe("the runner's events, in the app's words", () => {
   it("says the sync-ignore lines past their ceilings, which and why", () => {
     const lines = [{ line: "*a?", reason: "states" }, { line: "*b?", reason: "states" }];
     expect(eventShown({ type: "ta.sync_ignore_unapplied", lines, count: 2,
-                        list_bytes_past: 1200, automaton_states: AUTOMATON_STATES,
-                        list_bytes: LIST_BYTES }))
+                        list_bytes_past: 1200, automaton_states: 8192, list_bytes: 6291456 }))
       .toEqual({ type: "ta.sync_ignore_unapplied", lines, count: 2, list_bytes_past: 1200,
                  message: "In /workspace/.ta/sync-ignore, 2 lines past the 8,192 automaton " +
                    "states the lines with *, ? or [ ] may take together, and the list past its " +

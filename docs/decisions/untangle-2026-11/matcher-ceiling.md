@@ -63,5 +63,5 @@ Dark deploy run 45057290524 (main `99d42771a`) stopped at its pair job: the temp
      - Owed as `untangle/automaton-states`, below.
    - **`sizing.ts`'s note on the agent's measured peak at 500,000 entries.** It belongs to `LIST_BYTES`' heap derivation, not to this lane. It goes to `untangle/automaton-states` with the other 500,000.
 
-- [ ] untangle/automaton-states: research and derive `AUTOMATON_STATES`' value from a platform fact that forces it, or delete it if none does (Fact 15), now that no session deadline or entry ceiling bounds a sync-out (memory, or the matching's latency against `SLOW_MATCH_MS`), and restate `sizing.ts`'s 500,000-entry peak with it.
+- [x] untangle/automaton-states: research and derive `AUTOMATON_STATES`' value from a platform fact that forces it, or delete it if none does (Fact 15), now that no session deadline or entry ceiling bounds a sync-out (memory, or the matching's latency against `SLOW_MATCH_MS`), and restate `sizing.ts`'s 500,000-entry peak with it.
 - [ ] live: the next deploy's pair job passes with the new probes (pair tag `…-rfdd886565dc407f5-p311cea63a2dea235`): its log shows the sign-in and route checks and no `"check":"matcher"` line (the kit runs `checks.ts pair` without `--record`, so nothing lands in `passed.json`).

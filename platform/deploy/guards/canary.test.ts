@@ -7,6 +7,8 @@
  * stopped clock, climbs its ladder, stops at the founder's answer and closes on green.
  */
 import { readdirSync, readFileSync } from "node:fs";
+import { createServer, type IncomingHttpHeaders } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -15,11 +17,11 @@ import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { DISPATCH, PAGER } from "../../contract/src/canary";
 import { EGRESS_HOST } from "../../contract/src/egress";
-import { navigation } from "../../contract/src/navigation";
+import { NAVIGATE, navigation } from "../../contract/src/navigation";
 import { E2B_API } from "../../sandbox/e2b/transport";
 import { TOKEN } from "../actions";
-import { alarm, LABEL, pageDue } from "../alarm";
-import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World }
+import { alarm, LABEL, pageDue, type World as AlarmWorld } from "../alarm";
+import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, verbatim, type World }
   from "../canary";
 import identity from "../../contract/identity.json" with { type: "json" };
 import * as IDENTITY from "../../contract/src/identity";
@@ -79,122 +81,129 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 
 /**
  * The world the canary runs in, over `p`, with the doors at the identity `doors` gives: each
- * request it sent, by method and URL.
+ * request it sent, by method and URL. Its `request` reaches the platform with every header as
+ * given; its `fetch` as Node's does, `Sec-Fetch-Mode` overwritten with the request's mode
+ * (the `verbatim` tests below hold Node's fetch to it).
  */
 function world(p: Platform, env: Record<string, string> = KEYED,
                doors: typeof IDENTITY = IDENTITY): World & { sent: string[] } {
   const { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } = doors;
   const DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`;
   const sent: string[] = [];
+  const request: World["request"] = async (url, init) => {
+    const method = init?.method ?? "GET";
+    const body = init?.body === undefined ? null : JSON.parse(String(init.body)) as Json;
+    sent.push(`${method} ${url}`);
+    const at = new URL(url);
+    if (!p.reachable && (at.host === new URL(ORIGIN).host || at.host === ZONE)) {
+      throw new TypeError("fetch failed",
+                          { cause: new Error(`getaddrinfo ENOTFOUND ${at.host}`) });
+    }
+    // The doors serve their host; the old stack the zone; and a host under the zone that the
+    // doors do not serve answers nothing (no DNS record): the throw at the end. On the zone
+    // the two are one.
+    if (url === DOCUMENT && p.side === "doors") {
+      return json({ resource: `${ORIGIN}/mcp`, authorization_servers: [ORIGIN] });
+    }
+    if (url === `${ORIGIN}/mcp` && p.side === "doors") {
+      return new Response("", { status: 401, headers: {
+        "WWW-Authenticate": `Bearer resource_metadata="${DOCUMENT}"` } });
+    }
+    if (url === OLD_DOCUMENT) {
+      return json({ resource: `https://${ZONE}/mcp`,
+                    authorization_servers: [HANDLES.old.authorization_server] });
+    }
+    if (url === `https://${ZONE}/mcp`) {
+      return new Response(p.oldBody, { status: 401 });
+    }
+    if (url.startsWith(E2B_API)) {
+      if (at.pathname.startsWith("/templates/aliases/")) {
+        return json({ templateID: "t1" });
+      }
+      if (at.pathname === "/templates/t1/tags/exists") {
+        return json({ exists: true });
+      }
+      return json([{ id: "w1", name: E2B_HOOK.name, url: p.hookUrl,
+                     enabled: p.side === "doors" }]);
+    }
+    if (url === `${ISSUER}/.well-known/openid-configuration`) {
+      return json({ issuer: ISSUER, jwks_uri: `${ISSUER}/jwks` });
+    }
+    if (url === `${ISSUER}/jwks`) {
+      return json({ keys: [] });
+    }
+    if (url.startsWith(`${ORIGIN}/authorize?`)) {
+      if (!navigation(new Request(url, init))) {
+        return new Response("Open this page in your browser to sign in.", { status: 403 });
+      }
+      return new Response(null, { status: 302, headers: { Location: `${WORKOS_AUTHORIZE}?${
+        new URLSearchParams({ client_id: "client_test", redirect_uri: UPSTREAM_CALLBACK })}` } });
+    }
+    if (url.startsWith(`${WORKOS_AUTHORIZE}?`)) {
+      return new Response(null, { status: 302, headers: { Location: `${ISSUER}/sign-in` } });
+    }
+    if (url.startsWith(APP_RESOURCE)) {
+      return new Response("<!doctype html>", { headers: { "Content-Type": "text/html",
+                                                          "Content-Security-Policy": "x" } });
+    }
+    if (url === WEB_CLIENT) {
+      return json({ client_id: WEB_CLIENT });
+    }
+    if (url === `https://${EGRESS_HOST}/`) {
+      return json({ error: { code: "not_found", message: "not found" } }, 404);
+    }
+    if (url.startsWith(`${ORIGIN}/api/tools/`)) {
+      const name = at.pathname.slice("/api/tools/".length);
+      if (method === "GET") {
+        return new Response("", { status: p.served.has(name) ? 405 : 404 });
+      }
+      if (name === "file_read") {
+        if (body?.["path"] === FULL_RUN) {
+          return p.record === null ? json({ error: "no such file" }, 404)
+            : json({ text: JSON.stringify(p.record), entry: { etag: "e-record" } });
+        }
+        return json({ text: lastBeat, entry: { etag: "e-beat" } });
+      }
+      if (name === "file_write") {
+        if (body?.["path"] === FULL_RUN) {
+          p.record = JSON.parse(String(body["content"])) as Json;
+          return json({ entry: { etag: "e-record" } });
+        }
+        lastBeat = String(body?.["content"]);
+        return json({ entry: { etag: "e-beat" } });
+      }
+      if (name === "file_remove") {
+        return json({ entry: null });
+      }
+      if (name === "converse") {
+        return json({ run_id: "r1", engine: "pi", state: p.runState, code: null,
+                      result: p.runState === "succeeded" ? "ok" : null, error: null });
+      }
+    }
+    const repository = `https://api.github.com/repos/${DISPATCH.repository}`;
+    if (url.startsWith(repository)
+        && new Headers(init?.headers).get("Authorization") !== `Bearer ${env[TOKEN]}`) {
+      return json({ message: "Bad credentials" }, 401);
+    }
+    if (url.startsWith(`${NIGHTS}?`) && p.nightsStatus !== 200) {
+      return json({ message: "unavailable" }, p.nightsStatus);
+    }
+    const nights = nightsAnswer(url, p.nights);
+    if (nights !== null) {
+      return nights;
+    }
+    if (url.includes("/actions/workflows/") && url.includes("event=workflow_dispatch")) {
+      return json({ workflow_runs: p.lastDispatch === null ? []
+        : [{ created_at: p.lastDispatch }] });
+    }
+    throw new Error(`the fake world has no ${method} ${url}`);
+  };
   return {
-    sent, env, now: () => NOW,
-    fetch: async (url, init) => {
-      const method = init?.method ?? "GET";
-      const body = init?.body === undefined ? null : JSON.parse(String(init.body)) as Json;
-      sent.push(`${method} ${url}`);
-      const at = new URL(url);
-      if (!p.reachable && (at.host === new URL(ORIGIN).host || at.host === ZONE)) {
-        throw new TypeError("fetch failed",
-                            { cause: new Error(`getaddrinfo ENOTFOUND ${at.host}`) });
-      }
-      // The doors serve their host; the old stack the zone; and a host under the zone that the
-      // doors do not serve answers nothing (no DNS record): the throw at the end. On the zone
-      // the two are one.
-      if (url === DOCUMENT && p.side === "doors") {
-        return json({ resource: `${ORIGIN}/mcp`, authorization_servers: [ORIGIN] });
-      }
-      if (url === `${ORIGIN}/mcp` && p.side === "doors") {
-        return new Response("", { status: 401, headers: {
-          "WWW-Authenticate": `Bearer resource_metadata="${DOCUMENT}"` } });
-      }
-      if (url === OLD_DOCUMENT) {
-        return json({ resource: `https://${ZONE}/mcp`,
-                      authorization_servers: [HANDLES.old.authorization_server] });
-      }
-      if (url === `https://${ZONE}/mcp`) {
-        return new Response(p.oldBody, { status: 401 });
-      }
-      if (url.startsWith(E2B_API)) {
-        if (at.pathname.startsWith("/templates/aliases/")) {
-          return json({ templateID: "t1" });
-        }
-        if (at.pathname === "/templates/t1/tags/exists") {
-          return json({ exists: true });
-        }
-        return json([{ id: "w1", name: E2B_HOOK.name, url: p.hookUrl,
-                       enabled: p.side === "doors" }]);
-      }
-      if (url === `${ISSUER}/.well-known/openid-configuration`) {
-        return json({ issuer: ISSUER, jwks_uri: `${ISSUER}/jwks` });
-      }
-      if (url === `${ISSUER}/jwks`) {
-        return json({ keys: [] });
-      }
-      if (url.startsWith(`${ORIGIN}/authorize?`)) {
-        if (!navigation(new Request(url, init))) {
-          return new Response("Open this page in your browser to sign in.", { status: 403 });
-        }
-        return new Response(null, { status: 302, headers: { Location: `${WORKOS_AUTHORIZE}?${
-          new URLSearchParams({ client_id: "client_test", redirect_uri: UPSTREAM_CALLBACK })}` } });
-      }
-      if (url.startsWith(`${WORKOS_AUTHORIZE}?`)) {
-        return new Response(null, { status: 302, headers: { Location: `${ISSUER}/sign-in` } });
-      }
-      if (url.startsWith(APP_RESOURCE)) {
-        return new Response("<!doctype html>", { headers: { "Content-Type": "text/html",
-                                                            "Content-Security-Policy": "x" } });
-      }
-      if (url === WEB_CLIENT) {
-        return json({ client_id: WEB_CLIENT });
-      }
-      if (url === `https://${EGRESS_HOST}/`) {
-        return json({ error: { code: "not_found", message: "not found" } }, 404);
-      }
-      if (url.startsWith(`${ORIGIN}/api/tools/`)) {
-        const name = at.pathname.slice("/api/tools/".length);
-        if (method === "GET") {
-          return new Response("", { status: p.served.has(name) ? 405 : 404 });
-        }
-        if (name === "file_read") {
-          if (body?.["path"] === FULL_RUN) {
-            return p.record === null ? json({ error: "no such file" }, 404)
-              : json({ text: JSON.stringify(p.record), entry: { etag: "e-record" } });
-          }
-          return json({ text: lastBeat, entry: { etag: "e-beat" } });
-        }
-        if (name === "file_write") {
-          if (body?.["path"] === FULL_RUN) {
-            p.record = JSON.parse(String(body["content"])) as Json;
-            return json({ entry: { etag: "e-record" } });
-          }
-          lastBeat = String(body?.["content"]);
-          return json({ entry: { etag: "e-beat" } });
-        }
-        if (name === "file_remove") {
-          return json({ entry: null });
-        }
-        if (name === "converse") {
-          return json({ run_id: "r1", engine: "pi", state: p.runState, code: null,
-                        result: p.runState === "succeeded" ? "ok" : null, error: null });
-        }
-      }
-      const repository = `https://api.github.com/repos/${DISPATCH.repository}`;
-      if (url.startsWith(repository)
-          && new Headers(init?.headers).get("Authorization") !== `Bearer ${env[TOKEN]}`) {
-        return json({ message: "Bad credentials" }, 401);
-      }
-      if (url.startsWith(`${NIGHTS}?`) && p.nightsStatus !== 200) {
-        return json({ message: "unavailable" }, p.nightsStatus);
-      }
-      const nights = nightsAnswer(url, p.nights);
-      if (nights !== null) {
-        return nights;
-      }
-      if (url.includes("/actions/workflows/") && url.includes("event=workflow_dispatch")) {
-        return json({ workflow_runs: p.lastDispatch === null ? []
-          : [{ created_at: p.lastDispatch }] });
-      }
-      throw new Error(`the fake world has no ${method} ${url}`);
+    sent, env, now: () => NOW, request,
+    fetch: (url, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("Sec-Fetch-Mode", "cors");
+      return request(url, { ...init, headers });
     },
   };
 }
@@ -379,22 +388,23 @@ describe("the doors' smoke at a share below 100", () => {
   /**
    * `w` with each doors answer naming the version that served it: the override's, where it
    * names the doors and `taken` takes the request, else the version the shares pick. Each
-   * request's override is kept, by method and URL.
+   * request's override is kept, by method and URL, through either client.
    */
   const versioned = (w: World & { sent: string[] }, taken = (_url: string) => true) => {
     const overrides: string[] = [];
-    return { ...w, overrides, fetch: async (url: string, init?: RequestInit) => {
+    const named = (client: World["fetch"]): World["fetch"] => async (url, init) => {
       const asked = new Headers(init?.headers).get("Cloudflare-Workers-Version-Overrides");
       overrides.push(`${init?.method ?? "GET"} ${url} ${asked}`);
-      const answer = await w.fetch(url, init);
+      const answer = await client(url, init);
       if (!DOORS_HOSTS.includes(new URL(url).host)) {
         return answer;
       }
-      const named = new Response(answer.body, answer);
-      named.headers.set(IDENTITY.VERSION_HEADER, asked === `${DOORS}="v-new"` && taken(url)
+      const by = new Response(answer.body, answer);
+      by.headers.set(IDENTITY.VERSION_HEADER, asked === `${DOORS}="v-new"` && taken(url)
         ? "v-new" : "v-old");
-      return named;
-    } };
+      return by;
+    };
+    return { ...w, overrides, fetch: named(w.fetch), request: named(w.request) };
   };
 
   it("sends each doors request to the version, holds each answer to it, and runs the doors' " +
@@ -529,7 +539,7 @@ function hub(change: Partial<Hub> = {}) {
                    issue: null, comments: [], ...change };
   const sent: string[] = [];
   const pages: URLSearchParams[] = [];
-  const w: World = { env: ARMED, now: () => NOW, fetch: async (url, init) => {
+  const w: AlarmWorld = { env: ARMED, now: () => NOW, fetch: async (url, init) => {
     const method = init?.method ?? "GET";
     sent.push(`${method} ${url.replace(API, "")}`);
     const body = typeof init?.body === "string" ? JSON.parse(init.body) as Json : null;
@@ -621,5 +631,60 @@ describe("the platform canary's alarm", () => {
     const { w, sent } = hub({ issue: { number: 7 } });
     expect(await alarm(w, GREEN)).toEqual(["green: closed #7"]);
     expect(sent.slice(-2)).toEqual(["POST /issues/7/comments", "PATCH /issues/7"]);
+  });
+});
+
+describe("the canary's verbatim request", () => {
+  /** A local server answering `answer`, each request's headers kept: its URL. */
+  const serving = async (answer: (heard: IncomingHttpHeaders) => Response) => {
+    const heard: IncomingHttpHeaders[] = [];
+    const server = createServer((request, response) => {
+      heard.push(request.headers);
+      const out = answer(request.headers);
+      response.writeHead(out.status, Object.fromEntries(out.headers));
+      void out.text().then((text) => response.end(text));
+    });
+    await new Promise<void>((done) => { server.listen(0, "127.0.0.1", done); });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/authorize`;
+    return { url, heard, close: () => new Promise((done) => { server.close(done); }) };
+  };
+  const OVERRIDE = { "Cloudflare-Workers-Version-Overrides": `${DOORS}="v-new"` };
+
+  it("reaches a server with each header as given, where Node's fetch overwrites " +
+     "Sec-Fetch-Mode, as the fake world's fetch does", async () => {
+    const at = await serving(() => new Response(null, { status: 302,
+                                                        headers: { Location: "/next" } }));
+    try {
+      const init = { headers: { ...NAVIGATE, ...OVERRIDE }, redirect: "manual" as const };
+      const [direct, fetched] = [await verbatim(at.url, init), await fetch(at.url, init)];
+      // Neither follows the redirect.
+      expect([direct.status, direct.headers.get("Location"), fetched.status])
+        .toEqual([302, "/next", 302]);
+      const [mine, node] = at.heard;
+      expect(mine).toMatchObject({ "sec-fetch-mode": "navigate", "sec-fetch-dest": "document",
+                                   "cloudflare-workers-version-overrides": `${DOORS}="v-new"` });
+      expect(node).toMatchObject({ "sec-fetch-mode": "cors", "sec-fetch-dest": "document" });
+      // Beside that, the headers fetch sends, but the body encodings it decodes.
+      const { "accept-encoding": _, ...rest } = node!;
+      expect({ ...mine, "sec-fetch-mode": "cors", connection: rest.connection }).toEqual(rest);
+    } finally {
+      await at.close();
+    }
+  });
+
+  it("answers with the server's status, headers and body, a text body sent as given",
+     async () => {
+    const at = await serving((heard) => Response.json({ heard: heard["content-type"] },
+                                                       { status: 404 }));
+    try {
+      const answer = await verbatim(at.url, { method: "POST", body: '{"a":1}',
+                                              headers: { "Content-Type": "application/json" } });
+      expect([answer.status, answer.headers.get("Content-Type"), await answer.json()])
+        .toEqual([404, "application/json", { heard: "application/json" }]);
+      expect(() => verbatim("ftp://example.test/", {})).toThrow(
+        "a verbatim request takes an http(s) URL and a text body or none: ftp://example.test/");
+    } finally {
+      await at.close();
+    }
   });
 });

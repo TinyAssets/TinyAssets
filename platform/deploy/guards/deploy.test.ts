@@ -238,6 +238,11 @@ interface WorldOptions {
   /** Cloudflare refuses a Worker's delete: another Worker still references it. */
   readonly refusingDelete?: boolean;
   /**
+   * How many reads of a Worker's deployments listing after each deployment it makes still
+   * answer the deployment before it, as Cloudflare's did once live (run 45065434026).
+   */
+  readonly lagging?: number;
+  /**
    * How the doors answer each message sent to the operator queue: its outcome, or none (it is
    * never answered). Each is answered at once by default, with its args as its result.
    */
@@ -388,6 +393,13 @@ function world(options: WorldOptions = {}) {
       versions.set(version, { script, tag });
     }
   }
+  /** The listing reads left, by script, that answer the deployment before (`lagging`). */
+  const lag = new Map<string, number>();
+  /** A deployment the run made: listed at once, unless `lagging`. */
+  const deploy = (script: string, serving: { version: string; percentage: number }[]) => {
+    deployments.set(script, serving);
+    lag.set(script, options.lagging ?? 0);
+  };
   let uploads = 0;
   /** A new version of `script` tagged `tag`: its id. */
   const version = (script: string, tag: string | null): string => {
@@ -406,10 +418,16 @@ function world(options: WorldOptions = {}) {
     const deploying = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)\/deployments(\?per_page=100)?$/
       .exec(path);
     if (deploying !== null && method === "GET") {
-      // The latest alone on the default page, as the kit reads it; every one on the long page.
+      // The latest alone on the default page, as the kit reads it, or while it lags the one
+      // before; every one on the long page.
       const history = deployments.history(deploying[1]!);
-      return json({ success: true, result: { deployments: (deploying[2] === undefined
-        ? history.slice(0, 1) : history).map((serving, at) => ({ id: `d${at}`,
+      const behind = deploying[2] === undefined ? lag.get(deploying[1]!) ?? 0 : 0;
+      if (behind > 0) {
+        lag.set(deploying[1]!, behind - 1);
+      }
+      return json({ success: true, result: { deployments: (deploying[2] !== undefined ? history
+        : history.slice(behind > 0 ? 1 : 0, behind > 0 ? 2 : 1)).map((serving, at) => ({
+          id: `d${at}`,
           strategy: "percentage", versions: serving.map((each) =>
             ({ version_id: each.version, percentage: each.percentage })) })) },
                     result_info: { page: 1, per_page: 100, total_count: history.length } });
@@ -425,7 +443,7 @@ function world(options: WorldOptions = {}) {
         expect(versions.get(each.version_id)?.script).toBe(deploying[1]);
       }
       if (!inert.has("deploy")) {
-        deployments.set(deploying[1]!, given.versions.map((each) =>
+        deploy(deploying[1]!, given.versions.map((each) =>
           ({ version: each.version_id, percentage: each.percentage })));
       }
       return json({ success: true, result: { id: "d2" } });
@@ -611,6 +629,13 @@ function world(options: WorldOptions = {}) {
       return stored === undefined ? json({ success: false, errors: [{ code: 10009 }] }, 404)
         : new Response(stored, { status: 200 });
     }
+    const deleting = /^\/accounts\/a+\/storage\/kv\/namespaces\/([^/]+)\/bulk\/delete$/.exec(path);
+    if (deleting !== null && method === "POST") {
+      for (const key of JSON.parse(body!) as string[]) {
+        kv.delete(`${deleting[1]}/${key}`);
+      }
+      return json({ success: true, result: null });
+    }
     return json({ success: false, errors: [{ code: 1 }] }, 500);
   };
   const fetcher = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -724,7 +749,7 @@ function world(options: WorldOptions = {}) {
         const id = version(script, tagged);
         stdout = `${args[0] === "deploy" ? "Current" : "Worker"} Version ID: ${id}\n`;
         if (args[0] === "deploy" && !inert.has("deploy")) {
-          deployments.set(script, [{ version: id, percentage: 100 }]);
+          deploy(script, [{ version: id, percentage: 100 }]);
         }
       } else if (script !== undefined && args[0] === "versions" && args[1] === "deploy") {
         // Each `<id>@<share>` before the flags, in the order given, as wrangler sends them.
@@ -734,7 +759,7 @@ function world(options: WorldOptions = {}) {
           return { version: version!, percentage: Number(share) };
         });
         if (!inert.has("deploy")) {
-          deployments.set(script, specs);
+          deploy(script, specs);
         }
       }
       return { status: 0, stdout, stderr: "" };
@@ -1883,53 +1908,99 @@ describe("the route record", () => {
     expect(taken.events.filter((event) => CHANGE.test(event))).toEqual([]);
   });
 
-  it("is kept as its first attempt wrote it on a re-run, and a later run's own changes nothing " +
-     "when handed back", async () => {
+  it("is kept as its first attempt wrote it on a re-run, and by every later routes run, which " +
+     "writes none, so the one record a handback names is the state before the first", async () => {
     const w = world({ held: true });
+    const before = kept(w.routes.values());
     w.kill.after = 3;
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
     const first = stored(w);
     w.kill.after = undefined;
-    const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
+    // KV lists eventually: the re-run attempt's listing lacks the record its first attempt wrote.
+    const fetch = w.io.fetch;
+    const unlisted = { ...w, io: { ...w.io, fetch: async (url: string, init?: RequestInit) =>
+      url.includes("/keys?prefix=deploy%3Aroutes%3A")
+        ? Response.json({ success: true, result: [] }) : fetch(url, init) } };
+    const again = await runMode(unlisted, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
     // As the first attempt wrote it, with only the attach's DNS record added once it is done.
     expect(first.domain.created).toBeNull();
     expect(stored(w)).toEqual({ ...first, domain: { ...first.domain, created: [{ id: "dns-egress", type: "AAAA", content: "100::" }] } });
-    expect(again.plan).toContain(`keep this run's route record as attempt 1 wrote it at ${
-      NOW.toISOString()}, before its first change: hand back with --mode handback --record ` +
-      "<this run's id>");
+    const keeps = `keep the route record ${KEY}, run 7001's (attempt 1, ${NOW.toISOString()}), ` +
+      `the state before the first routes run on ${HOST}, as it is, and write none: hand back ` +
+      "with --mode handback --record 7001";
+    expect(again.plan).toContain(keeps);
+    // A later run, the doors serving: it keeps the same record and writes none of its own.
+    const kv = new Map(w.kv);
     const later = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
-    // The doors hold the old proxy's three in place, in the zone's order, and the five added.
-    expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 9 routes and the handover's 0 changes, the ` +
-      `egress domain (${DOORS}) and E2B's lifecycle webhook as this run's route ` +
-      `record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback ` +
-      "--record <this run's id>; " +
-      `${DOORS} holds ${["mcp*", "app*", "api*", "hooks/inbound/*", "hooks/e2b/*", "authorize*",
-                         "oauth/*", ".well-known/oauth-*"].map((path) => `${HOST}/${path}`).join(", ")} ` +
-      "already: the record of the routes run that moved them is the one to hand back, and it " +
-      "covers this run's changes too; the webhook it records: enabled");
-    const at = w.events.length;
-    await runMode(w, "handback", ["--yes", "--record", "7002"]);
-    expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
+    expect(later.plan).toContain(keeps);
+    expect(later.plan.some((line) => line.startsWith("record the zone's"))).toBe(false);
+    expect(w.kv.get(`${CONTROL_NS}/${KEY}`)).toBe(kv.get(`${CONTROL_NS}/${KEY}`));
+    expect(w.kv.has(`${CONTROL_NS}/deploy:routes:7002`)).toBe(false);
+    await expect(runMode(w, "handback", ["--yes", "--record", "7002"])).rejects.toThrow(
+      "there is no route record deploy:routes:7002");
+    await runMode(w, "handback", ["--yes", "--record", "7001"]);
+    expect([kept(w.routes.values()), w.domains.size, w.hooks[0]?.["enabled"]])
+      .toEqual([before, 0, false]);
   });
 
-  it("names, when an earlier routes run moved some of the doors' routes, that its record is " +
-     "the one to hand back", async () => {
+  it("keeps the record of the run that began the handover when a later run finishes it, and " +
+     "its handback puts the zone back", async () => {
     const w = world({ held: true });
+    const before = kept(w.routes.values());
     w.kill.after = 1;
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
     w.kill.after = undefined;
     const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
-    expect(fresh.plan).toContain("record the zone's 6 routes and the handover's 9 changes, the " +
-      "egress domain (none) and E2B's lifecycle webhook as this run's route record " +
-      `in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
-      `<this run's id>; ${DOORS} holds ${HOST}/mcp* already: the record of the ` +
-      "routes run that moved them is the one to hand back, and it covers this run's changes " +
-      "too; the webhook it records: disabled");
-    // The first run's record does: its handback, after the second run, puts the zone back.
-    const before = kept(stored(w).routes);
+    expect(fresh.plan).toContainEqual(expect.stringMatching(new RegExp(
+      `^keep the route record ${KEY}, run 7001's .* --record 7001$`)));
     await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
+    expect(w.kv.has(`${CONTROL_NS}/deploy:routes:7002`)).toBe(false);
     await runMode(w, "handback", ["--yes", "--record", "7001"]);
     expect(kept(w.routes.values())).toEqual(before);
+  });
+
+  it("names the oldest of a host's records, which a kit before this one left beside later " +
+     "ones, and its handback ends them all, another host's left", async () => {
+    // The live stage's state (2026-11-22): the first routes run's record, then two runs' each
+    // recording the handover's own state as its before.
+    const { w, before } = await cutOver();
+    const live = stored(w);
+    const hour = (n: number) => new Date(NOW.getTime() + n * 3_600_000).toISOString();
+    const legacy = (run: string, at: string): RouteRecord => ({
+      ...live, run, attempt: "1", at, routes: kept(w.routes.values()), moved: [],
+      domain: { hostname: EGRESS_HOST, service: DOORS, created: null },
+      hook: { ...live.hook, present: true, enabled: true } });
+    w.kv.set(`${CONTROL_NS}/deploy:routes:7002`, JSON.stringify(legacy("7002", hour(1))));
+    w.kv.set(`${CONTROL_NS}/deploy:routes:7003`, JSON.stringify(legacy("7003", hour(2))));
+    // Another host's handover, older still: not this host's to keep or end.
+    const other = `deploy:routes:6999`;
+    w.kv.set(`${CONTROL_NS}/${other}`, JSON.stringify({ ...live, run: "6999", at: hour(-1),
+                                                        host: { ...live.host, name: `x.${ZONE}` } }));
+    const plan = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7004" });
+    expect(plan.plan).toContain(`keep the route record ${KEY}, run 7001's (attempt 1, ${
+      NOW.toISOString()}), the state before the first routes run on ${HOST}, as it is, and ` +
+      "write none (deploy:routes:7002, deploy:routes:7003, kept while it stood, hold the " +
+      "handover's own state; a handback of it ends them too): hand back with --mode handback " +
+      "--record 7001");
+    // A later record, handed back, would leave the host served: it stops, naming the oldest.
+    for (const later of ["7002", "7003"]) {
+      const at = w.events.length;
+      await expect(runMode(w, "handback", ["--yes", "--record", later])).rejects.toThrow(
+        `the record deploy:routes:${later} was kept at ${hour(Number(later) - 7001)}, after ` +
+        `the route record ${KEY}, run 7001's (attempt 1, ${NOW.toISOString()}), the state ` +
+        `before the first routes run on ${HOST}: it holds the handover's own state, and its ` +
+        "handback would leave the host served. Hand back with --record 7001; nothing is changed");
+      expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
+    }
+    const back = await runMode(w, "handback", ["--yes", "--record", "7001"]);
+    expect(back.plan).toContain("once the handback reads back as the record has it, delete " +
+      `deploy:routes:7003, then deploy:routes:7002, then ${KEY} from ${NAMESPACES["CONTROL"]}: ` +
+      "the handback ends the handover they record (each copied into this run's job summary " +
+      "first)");
+    expect([kept(w.routes.values()), w.domains.size, w.hooks[0]?.["enabled"]])
+      .toEqual([before, 0, false]);
+    expect([...w.kv.keys()].filter((key) => key.includes("deploy:routes:")))
+      .toEqual([`${CONTROL_NS}/${other}`]);
   });
 
   describe("at a host under the zone", () => {
@@ -2034,10 +2105,26 @@ describe("the route record", () => {
       w.dns.push({ id: "p1", type: "AAAA", name: STAGE, content: "100::" });
       const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" },
                                   stage);
-      expect(again.plan).toContain(`${STAGE} holds ${PLACED}, and held none when this run's ` +
-        "route record was kept: the record keeps it as this run's, for a handback to delete");
+      expect(again.plan).toContain(`${STAGE} holds ${PLACED}, and held none when the route ` +
+        "record was kept: the record keeps it as the handover's, for a handback to delete");
       expect(stored(w).host).toEqual({ name: STAGE, held: false,
                                        made: [{ id: "p1", type: "AAAA", content: "100::" }] });
+      await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(onStage(w)).toEqual([]);
+    });
+
+    it("makes the host's record again when the one the route record made is gone, and its " +
+       "handback deletes the new one", async () => {
+      const w = world({ held: true });
+      await runMode(w, "routes", ["--yes"], RUN, stage);
+      w.dns.splice(w.dns.findIndex((record) => record.id === "dns-made3"), 1);
+      const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" }, stage);
+      expect(again.plan).toContain(`make the DNS record ${PLACED}, proxied, for the doors' ` +
+        "routes on it, before anything is deployed: the route record keeps it, for a handback " +
+        "to delete exactly it");
+      const [made] = onStage(w);
+      expect(stored(w).host).toEqual({ name: STAGE, held: false, made: [
+        { id: made!.id, type: "AAAA", content: "100::" }] });
       await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
       expect(onStage(w)).toEqual([]);
     });
@@ -2103,6 +2190,9 @@ describe("a handback run", () => {
       HELD,
       `the route record ${KEY}: the zone's ${before.length} routes as run 7001 read them at ${
         NOW.toISOString()}, and the handover's 10 changes`,
+      `once the handback reads back as the record has it, delete ${KEY} from ${
+        NAMESPACES["CONTROL"]}: the handback ends the handover it records (each copied into ` +
+      "this run's job summary first)",
       `E2B lifecycle webhook ${E2B_HOOK.url}: disable it, as it was before routes`,
       `detach the custom domain ${EGRESS_HOST} from ${DOORS}, as it was before routes`,
       `add the route ${HOST}/.well-known/oauth-protected-resource* back for ` +
@@ -2116,18 +2206,15 @@ describe("a handback run", () => {
       `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_HOST} (100::), where ` +
       "the detach leaves them",
       "the zone's routes, the egress domain and the webhook read back as the record has them",
+      `deleted ${KEY}`,
     ]);
-    // Run again, it changes nothing.
-    const at = w.events.length;
-    const again = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(w.events.slice(at).filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
-    expect(again.plan.slice(2)).toEqual([
-      `E2B lifecycle webhook ${E2B_HOOK.url}: not enabled already`,
-      `the custom domain ${EGRESS_HOST}: detached already`,
-      "the zone's routes are the record's already: nothing to hand back",
-      `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_HOST} (100::), where ` +
-      "the detach leaves them",
-      "the zone's routes, the egress domain and the webhook read back as the record has them"]);
+    // Read back, the record is ended last, so the next routes run records the zone afresh.
+    const ended = `cf POST /accounts/${ACCOUNT}/storage/kv/namespaces/${CONTROL_NS}/bulk/delete`;
+    expect(ran.indexOf(ended)).toBeGreaterThan(ran.lastIndexOf("e2b GET /events/webhooks"));
+    expect(ran.indexOf(ended)).toBeGreaterThan(ran.lastIndexOf("cf GET /zones/z/workers/routes"));
+    expect(w.kv.has(`${CONTROL_NS}/${KEY}`)).toBe(false);
+    const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
+    expect(fresh.plan).toContainEqual(expect.stringMatching(/^record the zone's /));
   });
 
   // Ten outward changes each way: routes' eight route changes, the custom domain and the hook;
@@ -2158,8 +2245,10 @@ describe("a handback run", () => {
       expect(kept(w.routes.values())).toEqual(before);
       expect([w.domains.size, JSON.stringify(w.hooks), JSON.stringify(w.dns)])
         .toEqual([0, hooks, dns]);
+      // The handback ended the record: a third stops, changing nothing.
       const at = w.events.length;
-      await runMode(w, "handback", ["--yes", "--record", "7001"]);
+      await expect(runMode(w, "handback", ["--yes", "--record", "7001"])).rejects
+        .toThrow(`there is no route record ${KEY}`);
       expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
     });
   }
@@ -2168,7 +2257,8 @@ describe("a handback run", () => {
     const missing = world({ held: true });
     await expect(runMode(missing, "handback", ["--yes", "--record", "7999"])).rejects.toThrow(
       `there is no route record deploy:routes:7999 in ${NAMESPACES["CONTROL"]}: name the id a routes ` +
-      "run's job summary gives; nothing is changed");
+      "plan gives (a handback that read back deletes its records, copied into its job summary); " +
+      "nothing is changed");
     await expect(runMode(world(), "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
       /there is no route record deploy:routes:7001/);
     const { w } = await cutOver();
@@ -2230,7 +2320,7 @@ describe("a handback run", () => {
       { url: E2B_HOOK.url, present: true, enabled: true }]);
     const at = w.events.length;
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan.slice(2, 4)).toEqual([
+    expect(work.plan.slice(3, 5)).toEqual([
       `E2B lifecycle webhook ${E2B_HOOK.url}: enabled before routes, left`,
       `the custom domain ${EGRESS_HOST}: ${DOORS}'s before routes, left`]);
     expect(w.events.slice(at).filter((event) => /^(e2b PATCH|cf DELETE \/accounts)/.test(event)))
@@ -2245,7 +2335,7 @@ describe("a handback run", () => {
     expect(stored(w).hook).toEqual({ url: E2B_HOOK.url, present: false, enabled: false });
     expect(w.hooks[0]!["enabled"]).toBe(true);
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan[2]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: disable it, as it was ` +
+    expect(work.plan[3]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: disable it, as it was ` +
                               "absent before routes (a disabled hook sends nothing)");
     expect(w.hooks).toEqual([expect.objectContaining({ id: "w1", enabled: false })]);
     expect(w.events.some((event) => event.startsWith("e2b DELETE"))).toBe(false);
@@ -2328,8 +2418,8 @@ describe("a handback run", () => {
                                { CLOUDFLARE_API_TOKEN: "cf-token" });
     expect(w.events.slice(from).filter((event) => CHANGE.test(event)
       || event.startsWith("node canary"))).toEqual([]);
-    expect(work.plan).toHaveLength(14);
-    expect(work.plan[1]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job ` +
+    expect(work.plan).toHaveLength(15);
+    expect(work.plan[2]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job ` +
                               "before any change");
     expect(w.logs.at(-1)).toBe("\nNothing was changed.");
   });
@@ -2513,6 +2603,12 @@ describe("the rollout record and mode rollback", () => {
   const serving = (w: ReturnType<typeof world>) => Object.fromEntries([...w.deployments]
     .map(([script, versions]) => [script, versions.map((each) =>
       `${each.version}@${each.percentage}`).join(",")]));
+  /** How many times the kit read `script`'s active deployment after it deployed it. */
+  const readsOf = (w: ReturnType<typeof world>, script: string) => {
+    const path = `/accounts/${ACCOUNT}/workers/scripts/${script}/deployments`;
+    return w.events.slice(w.events.indexOf(`cf POST ${path}`))
+      .filter((event) => event === `cf GET ${path}`).length;
+  };
   /** Each Worker's version before, as a held account serves it. */
   const BEFORE_ALL = Object.fromEntries(WORKERS.map((worker) =>
     [NAMES[worker]!, `before-${worker}@100`]));
@@ -2855,8 +2951,25 @@ describe("the rollout record and mode rollback", () => {
     inert.events.splice(0);
     await expect(runMode(inert, "rollback", ["--yes", "--record", "7001"], RUN)).rejects
       .toThrow(new RegExp(`^${NAMES["doors"]}'s deployment read back as 0f7e3a3c-\\S+ at 100%, ` +
-                          "not before-doors at 100%: the rollback stops here$"));
+                          "not before-doors at 100%, 60 s after it was made: the rollback stops " +
+                          "here$"));
     expect(deployed(inert)).toEqual([NAMES["doors"]]);
+    // Re-read, never redeployed, until the bound.
+    expect(readsOf(inert, NAMES["doors"]!)).toBe(31);
+  });
+
+  it("reads each deployment back until Cloudflare lists it, deploying nothing again",
+     async () => {
+    const w = world({ held: true, lagging: 3 });
+    await runMode(w, "dark", ["--yes"], RUN);
+    w.events.splice(0);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+    // Each Worker deployed once, and read back four times, the first three lagging.
+    for (const worker of WORKERS) {
+      expect([worker, deployed(w).filter((name) => name === NAMES[worker]).length,
+              readsOf(w, NAMES[worker]!)]).toEqual([worker, 1, 4]);
+    }
   });
 
   it("takes only a record a deploy wrote, in shape", async () => {
@@ -3031,15 +3144,49 @@ describe("the rollout record and mode rollback", () => {
       held.inert.add("deploy");
       await expect(runMode(held, "dark", ["--yes"], RUN)).rejects.toThrow(
         `${NAMES["codemode"]}'s deployment read back as before-codemode at 100%, not ${
-          MADE_ID(1)} at 0% and before-codemode at 100%: the run stops here (--mode rollback ` +
-        "--record 7001 takes it back)");
+          MADE_ID(1)} at 0% and before-codemode at 100%, 60 s after it was made: the run stops ` +
+        "here (--mode rollback --record 7001 takes it back)");
       expect(shares(held)).toEqual([`${MADE_ID(1)}@0 before-codemode@100`]);
       const fresh = world();
       fresh.inert.add("deploy");
       await expect(runMode(fresh, "dark", ["--yes"], RUN)).rejects.toThrow(
-        `${NAMES["codemode"]}'s deployment read back as none, not ${MADE_ID(1)} at 100%: the ` +
-        "run stops here (--mode rollback --record 7001 takes it back)");
+        `${NAMES["codemode"]}'s deployment read back as none, not ${MADE_ID(1)} at 100%, 60 s ` +
+        "after it was made: the run stops here (--mode rollback --record 7001 takes it back)");
       expect(fresh.events.filter((event) => event.startsWith("wrangler deploy"))).toHaveLength(1);
+    });
+
+    it("reads each deployment back until Cloudflare lists it, each stage and a whole deploy, " +
+       "deploying nothing again", async () => {
+      // Run 45065434026: the gateway's 100% read back as its 0% split, the deployment before.
+      for (const held of [true, false]) {
+        const run = async (lagging: number) => {
+          const w = world({ held, lagging });
+          const { sleep } = w.io;
+          Object.assign(w.io, { sleep: async (ms: number) => {
+            w.events.push(`sleep ${ms}`);
+            await sleep(ms);
+          } });
+          return { w, work: await runMode(w, "dark", ["--yes"], RUN) };
+        };
+        const [lag, none] = [await run(2), await run(0)];
+        const made = (w: ReturnType<typeof world>) => w.events.filter((event) =>
+          /^wrangler (deploy|versions deploy) /.test(event));
+        // The same deployments, each said read back as it was made.
+        expect(made(lag.w)).toEqual(made(none.w));
+        expect(lag.work.plan).toEqual(none.work.plan);
+        for (const worker of WORKERS) {
+          const deployments = none.work.plan.filter((line) =>
+            line.startsWith(`${NAMES[worker]} serves `)).length;
+          expect(deployments).toBe(held ? 2 : 1);
+          // Each read twice more, two seconds apart, before Cloudflare lists it.
+          const reads = (w: ReturnType<typeof world>) =>
+            w.events.filter((event) => event === read(worker)).length;
+          expect([worker, reads(lag.w) - reads(none.w)]).toEqual([worker, 2 * deployments]);
+        }
+        expect(lag.w.events.filter((event) => event === "sleep 2000")).toHaveLength(
+          2 * none.work.plan.filter((line) => / serves .*, read back$/.test(line)).length);
+        expect(none.w.events.filter((event) => event === "sleep 2000")).toEqual([]);
+      }
     });
   });
 });
