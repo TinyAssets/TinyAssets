@@ -1369,8 +1369,9 @@ describe("a dark run", () => {
     expect([zone, mask]).toEqual([zone, zone + 1]);
     expect(w.events.findIndex((event) => event.includes(ACCOUNT))).toBe(mask);
     expect(mask).toBeLessThan(w.events.findIndex((event) => event.startsWith("wrangler")));
-    expect(w.logs.filter((line) => line.startsWith("::add-mask::"))).toEqual(
-      [`::add-mask::${ACCOUNT}`]);
+    // The canary's own zone read masks it again, which changes nothing.
+    expect(new Set(w.logs.filter((line) => line.startsWith("::add-mask::")))).toEqual(
+      new Set([`::add-mask::${ACCOUNT}`]));
   });
 
   it("stops before anything without an input its row reads, naming where it comes from",
@@ -1700,7 +1701,7 @@ describe("a routes run", () => {
                      "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
                      "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
                      "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Run ",
-                     "node canary.ts --side doors --unkeyed"]);
+                     "node canary.ts --side doors --closed"]);
     // The routes are read once, before any change; the doors' last version is deployed before
     // a route moves; the hook is enabled only after the last route and the custom domain.
     expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);
@@ -1740,7 +1741,7 @@ describe("a routes run", () => {
     expect(after.lastIndexOf(asked)).toBeLessThan(after.indexOf(
       "e2b PATCH /events/webhooks/w1 {\"enabled\":true}"));
     expect(after.lastIndexOf(asked)).toBeLessThan(after.indexOf(
-      "node canary.ts --side doors --unkeyed"));
+      "node canary.ts --side doors --closed"));
     expect(work.plan).toContain(`https://${EGRESS_HOST}/ answers with the egress door's refusal`);
   });
 
@@ -2732,6 +2733,38 @@ describe("the rollout record and mode rollback", () => {
     const again = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
     expect(deployed(w)).toEqual([]);
     expect(again.plan.at(-1)).toBe("every Worker serves its version before the run already");
+  });
+
+  it("has its canary's keyed checks wait only while the control record admits no owner, as " +
+     "after every mode (rollback run 45071780667 judged it apart from routes)", async () => {
+    const canaries = (w: ReturnType<typeof world>) =>
+      w.events.filter((event) => event.startsWith("node canary.ts"));
+    const admitting = JSON.stringify({ ...DARK, outside: "on", canary: ["user_canary"] });
+    for (const [record, closed] of [[JSON.stringify(DARK), " --closed"], [admitting, ""]]) {
+      const w = world({ held: true });
+      w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, record!);
+      await runMode(w, "dark", ["--yes"], RUN);
+      await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+      const routed = world({ held: true });
+      routed.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, record!);
+      await runMode(routed, "routes", ["--yes"]);
+      expect([...canaries(w), ...canaries(routed)]).toEqual([
+        `node canary.ts${closed}`, `node canary.ts${closed}`,
+        `node canary.ts --side doors${closed}`]);
+    }
+    // A record no reader takes, or none, is not known to admit no owner: the key is owed.
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    for (const record of ["off\n", undefined]) {
+      w.events.splice(0);
+      if (record === undefined) {
+        w.kv.delete(`${CONTROL_NS}/${CONTROL_KEY}`);
+      } else {
+        w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, record);
+      }
+      await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+      expect(canaries(w)).toEqual(["node canary.ts"]);
+    }
   });
 
   it("plans with the token alone and changes nothing without --yes", async () => {

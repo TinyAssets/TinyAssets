@@ -6,7 +6,7 @@
  * inside Cloudflare could not prove the routes: a Worker's fetch of its own zone's routes never
  * reaches them.
  *
- *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--unkeyed]
+ *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--closed]
  *        [--clock] [--full] [--result <file>]
  *   node --experimental-strip-types platform/deploy/canary.ts --smoke <version id>
  *
@@ -36,13 +36,15 @@
  *   every run in between carries that ending, so a failed day stays red until a full run
  *   passes. `--full` runs it now.
  *
- * `--side` holds the side asked for (exit 8 if the other serves); `--unkeyed` (the `routes`
- * run's own, since no canary owner can exist before the doors serve) leaves the keyed checks
- * waiting; `--clock` (the workflow's own schedule, the watchdog) checks that the clock
- * dispatched a run in the last 30 minutes. Every check runs and prints one line; the exit is
- * the first failure's code, else 0. A run with a check waiting exits 0 and says what waits:
- * a waiting check is not a pass. `--result` writes the outcomes for the alarm (`alarm.ts`).
- * No credential is ever printed.
+ * `--side` holds the side asked for (exit 8 if the other serves). `--closed` says the control
+ * record admits no owner (`closedToAll`): no canary owner can sign in or pass the doors' gate,
+ * so the keyed checks wait, key or none. The kit reads the record and passes it (`deploy.ts`
+ * `canary`); where it is not passed (the workflow holds no Cloudflare token to read the record)
+ * a canary owner is owed, and a missing key fails (exit 7). `--clock` (the workflow's own
+ * schedule, the watchdog) checks that the clock dispatched a run in the last 30 minutes.
+ * Every check runs and prints one line; the exit is the first failure's code, else 0. A run
+ * with a check waiting exits 0 and says what waits: a waiting check is not a pass. `--result`
+ * writes the outcomes for the alarm (`alarm.ts`). No credential is ever printed.
  *
  * `--smoke` is the deploy kit's smoke of the doors' new version at a share below 100
  * (`deploy.ts` `workers`), alone: the doors must serve, and only their checks run (the
@@ -98,7 +100,7 @@ export type Side = "doors" | "old";
 
 export interface Options {
   readonly side: Side | null;
-  readonly unkeyed: boolean;
+  readonly closed: boolean;
   readonly clock: boolean;
   readonly full: boolean;
   /** `--smoke`: the doors' version the smoke sends each request to, or null for the canary. */
@@ -687,9 +689,9 @@ export async function canary(reached: World, options: Options): Promise<Result> 
   return { side, outcomes: [
     ...await run([...doors, ["E2B", () => sandbox(world, side)],
                   ["the off-account copy", () => offsiteCopy(world)]]),
-    ...options.unkeyed
+    ...options.closed
       ? [waiting("the keyed checks", "the handle set, the owner's files and the full run wait " +
-                                     `for the canary owner's key (${INPUTS.key})`)]
+                                     "for a canary owner: the control record admits no owner")]
       : await run(keyed),
     ...options.clock ? await run([["the clock", () => clock(world)]]) : [] ] };
 }
@@ -726,7 +728,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const result = await canary({ fetch: (url, init) => fetch(url, init), request: verbatim,
                                 env: process.env,
                                 now: () => new Date() },
-                              { side, unkeyed: argv.includes("--unkeyed"),
+                              { side, closed: argv.includes("--closed"),
                                 clock: argv.includes("--clock"), full: argv.includes("--full"),
                                 smoke })
     .catch((error: Error): Result => ({ side: null, outcomes: [{

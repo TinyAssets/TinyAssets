@@ -2875,21 +2875,30 @@ async function answering(run: Run): Promise<string> {
 }
 
 /**
- * Fact 11: after a deploy or a route change, the platform's canary (`canary.ts`), reading
- * its own keys. With no side it holds whichever serves `/mcp`: before `routes` the old stack,
- * where it checks that the old stack still answers and the doors' checks wait. `routes` asks
- * for `--side doors --unkeyed`: the doors must answer `/mcp` and its resource document, and
- * the old stack must not, while the keyed checks wait, since no canary owner's key can be
- * minted before the doors serve `/app/api`, and the dark control record admits no one.
+ * Fact 11: after a deploy, a route change, a rollback or a retire, the platform's canary
+ * (`canary.ts`), reading its own keys. With no side it holds whichever serves `/mcp`: before
+ * `routes` the old stack, where it checks that the old stack still answers and the doors'
+ * checks wait. `routes` asks for the doors' side: the doors must answer `/mcp` and its
+ * resource document, and the old stack must not.
+ *
+ * Its keyed checks follow the control record as it stands, in every mode: while a record read
+ * well formed admits no owner (`closedToAll`, as the dark record), no canary owner can sign in
+ * or pass the doors' gate, so they wait (`--closed`); otherwise a canary owner is owed, and a
+ * missing key fails.
  */
-function canary(...args: [] | ["--side", "doors", "--unkeyed"]): Step<never, never> {
-  return step(({ run }) => {
+function canary(...side: [] | ["--side", "doors"]): readonly Held[] {
+  return Steps.none.then(zone).then(step<"cloudflare" | "account">(async ({ run }, got) => {
+    const namespace = await controlNamespace(got.cloudflare, got.account);
+    const held = namespace === undefined ? undefined
+      : await got.cloudflare.text(got.account, namespace, CONTROL_KEY);
+    const control = held === undefined ? null : controlOf(held);
+    const args = [...side, ...control !== null && closedToAll(control) ? ["--closed"] : []];
     const exit = canaryExit(run, args);
     if (exit !== 0) {
       throw new Error(`the platform canary${args.length === 0 ? "" : ` (${args.join(" ")})`} ` +
                       `failed (exit ${exit})`);
     }
-  });
+  })).list;
 }
 
 /** The platform canary (`canary.ts`) run with `args`, its output the job's: its exit. */
@@ -3446,12 +3455,12 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
   dark: {
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: DARK_LATER.list, secrets: DARK.list },
-    report: { unchanged: NOTHING, after: [canary()] },
+    report: { unchanged: NOTHING, after: canary() },
   },
   routes: {
     inputs: DEPLOY_INPUTS, deploys: true, applies: true, own: [],
     steps: { public: ROUTES_LATER.list, secrets: ROUTED.list },
-    report: { unchanged: NOTHING, after: [canary("--side", "doors", "--unkeyed")] },
+    report: { unchanged: NOTHING, after: canary("--side", "doors") },
   },
   // H2's probes read their own keys (`h2-probes.ts`), the revoke probe's two only if given.
   h2: {
@@ -3477,7 +3486,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [], optional: [] },
     deploys: false, applies: true, own: ["--record"],
     steps: { public: ROLLBACK, secrets: ROLLBACK },
-    report: { unchanged: NOTHING, after: [canary()] },
+    report: { unchanged: NOTHING, after: canary() },
   },
   // The control record, read and written with the Cloudflare token alone: the plan job reads
   // it too.
@@ -3526,7 +3535,7 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [...Object.keys(ROTATED), TOKEN],
               optional: [] },
     deploys: false, applies: true, own: ["--keyring", "--confirm"],
-    steps: { public: RETIRE, secrets: RETIRE }, report: { unchanged: NOTHING, after: [canary()] },
+    steps: { public: RETIRE, secrets: RETIRE }, report: { unchanged: NOTHING, after: canary() },
   },
 });
 
@@ -3864,13 +3873,17 @@ async function stepsOf(row: Row, run: Run, scratch: () => string,
                        approved: readonly string[] | null): Promise<string[]> {
   const lines: string[] = [];
   const hold = approved === null ? null : holding(approved);
-  const ctx: Context = { ...reporterOf(run, lines, hold), run, scratch };
-  const values: Partial<Values> = {};
-  for (const each of row.steps[run.reach]) {
-    Object.assign(values, await each.run(ctx, values as Pick<Values, never>));
-  }
+  await chained(row.steps[run.reach], { ...reporterOf(run, lines, hold), run, scratch });
   hold?.done();
   return lines;
+}
+
+/** `steps` run in order, each given what the ones before made (`Steps`). */
+async function chained(steps: readonly Held[], ctx: Context): Promise<void> {
+  const values: Partial<Values> = {};
+  for (const each of steps) {
+    Object.assign(values, await each.run(ctx, values as Pick<Values, never>));
+  }
 }
 
 /**
@@ -3900,9 +3913,7 @@ export async function perform(run: Run): Promise<{ readonly plan: readonly strin
       if (!run.apply) {
         run.io.log(row.report.unchanged);
       }
-      for (const each of run.apply ? row.report.after : []) {
-        await each.run(ctx, {});
-      }
+      await chained(run.apply ? row.report.after : [], ctx);
     }
   } finally {
     if (scratch !== undefined) {

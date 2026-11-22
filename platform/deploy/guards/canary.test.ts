@@ -40,7 +40,7 @@ const WORKOS_AUTHORIZE = "https://api.workos.com/user_management/authorize";
 const KEYED: Record<string, string> = {
   TA_PROBE_KEY: "probe-key", E2B_API_KEY: "e2b-key-123", OWNER_ISSUER: ISSUER,
   WORKOS_CLIENT_ID: "client_test", [TOKEN]: "run-token" };
-const AUTO: Options = { side: null, unkeyed: false, clock: false, full: false, smoke: null };
+const AUTO: Options = { side: null, closed: false, clock: false, full: false, smoke: null };
 const { ORIGIN, ZONE } = IDENTITY;
 /** The old stack's resource document, on the zone. */
 const OLD_DOCUMENT = `https://${ZONE}/.well-known/oauth-protected-resource/mcp`;
@@ -298,13 +298,16 @@ describe("the platform canary", () => {
       .toMatchObject({ state: "failed", code: 4 });
   });
 
-  it("fails without the canary owner's key, and waits on the keyed checks only when asked",
-     async () => {
-    const { TA_PROBE_KEY: _key, ...unkeyed } = KEYED;
-    expect(exitOf(await canary(world(platform(), unkeyed), AUTO))).toBe(7);
-    const routes = await canary(world(platform(), unkeyed), { ...AUTO, side: "doors",
-                                                             unkeyed: true });
-    expect([states(routes).at(-1), exitOf(routes)]).toEqual([["the keyed checks", "waiting"], 0]);
+  it("fails without the canary owner's key, unless the control record admits no owner, " +
+     "where the keyed checks wait, key or none", async () => {
+    const { TA_PROBE_KEY: _key, ...keyless } = KEYED;
+    expect(exitOf(await canary(world(platform(), keyless), AUTO))).toBe(7);
+    for (const env of [keyless, KEYED]) {
+      const w = world(platform(), env);
+      const closed = await canary(w, { ...AUTO, closed: true });
+      expect([states(closed).at(-1), exitOf(closed)]).toEqual([["the keyed checks", "waiting"], 0]);
+      expect(w.sent.filter((each) => each.includes(`${ORIGIN}/api/`))).toEqual([]);
+    }
   });
 
   it("on the watchdog's schedule, sees a stopped clock, a failure enough alone", async () => {
@@ -375,7 +378,7 @@ describe("the platform canary at a host under the zone", () => {
   it("checks the doors at the host, leaving the old stack at the zone", async () => {
     const w = world(platform({ hookUrl: `https://${STAGE}${identity.hook}` }), KEYED,
                     stage.identity);
-    const result = await stage.canary(w, { ...AUTO, side: "doors", unkeyed: true });
+    const result = await stage.canary(w, { ...AUTO, side: "doors", closed: true });
     expect([result.side, exitOf(result)]).toEqual(["doors", 0]);
     expect(w.sent).toContain(`POST https://${STAGE}/mcp`);
     expect(w.sent.filter((each) => each.includes(`//${ZONE}/`))).toEqual([]);
