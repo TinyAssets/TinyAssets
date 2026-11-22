@@ -227,18 +227,6 @@
         "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/cli/skills.md",
         "read": "2026-11-21"
       },
-      "mcp": {
-        "servers": "mcpServers",
-        "names": "mcp.allowed",
-        "http": {
-          "httpUrl": "{url}"
-        },
-        "stdio": {
-          "command": "{command}",
-          "args": "{args}",
-          "env": "{env}"
-        }
-      },
       "hooks": {
         "events": {
           "pre_tool": "BeforeTool",
@@ -255,15 +243,23 @@
     },
     "mcp": {
       "file": "{system}/gemini-settings.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"httpUrl\": \"{mcp_url}\"}}, \"mcp\": {\"allowed\": [\"tinyassets\"]}, \"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",
+      "template": "{\"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",
+      "servers": "mcpServers",
+      "names": "mcp.allowed",
+      "http": {
+        "httpUrl": "{url}"
+      },
+      "stdio": {
+        "command": "{command}",
+        "args": "{args}",
+        "env": "{env}"
+      },
       "argv": [],
-      "trust": {
-        "argv": [
-          "--allowed-mcp-server-names",
-          "tinyassets"
-        ],
-        "note": "The server is in the system settings, outside the agent's folder, and only it is allowed to load."
-      }
+      "argv_each": [
+        "--allowed-mcp-server-names",
+        "{name}"
+      ],
+      "trust": "Every server is in the system settings, outside the agent's folder, and only they load: mcp.allowed and --allowed-mcp-server-names name each, and the argv's list replaces every settings layer's (packages/cli/src/config/config.ts)."
     },
     "decide": {
       "file": "{system}/gemini-settings.json",

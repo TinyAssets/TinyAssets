@@ -88,6 +88,8 @@ describe("mcp.json", () => {
     ["an argument with a braced variable", server({ command: "x", args: ["${HOME}"] })],
     ["args as one line", server({ command: "x", args: "--a --b" })],
     ["an argument with a NUL", server({ command: "x", args: ["a\0b"] })],
+    ["an argument with a control character", server({ command: "x", args: ["a\x7fb"] })],
+    ["an argument with a lone surrogate", server({ command: "x", args: ["a\ud800b"] })],
     ["a credential-shaped variable", server({ command: "x", env: { GITHUB_TOKEN: "t" } })],
     ["a lower-case credential-shaped variable", server({ command: "x", env: { api_key: "t" } })],
     ["a proxy variable", server({ command: "x", env: { HTTPS_PROXY: "http://p" } })],

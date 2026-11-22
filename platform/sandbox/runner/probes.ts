@@ -299,7 +299,8 @@ async function probeRoute(rec: Served, provider: string,
     config: { generation: 1, egress: { mode: "open", destinations: [] }, env,
               inherit: engine.inherit },
     urls: { mcp: `${origin}/r/${run}/${secret}/mcp`, mcp_bare: `${origin}/r/${run}/mcp`,
-            events: `${origin}/r/${run}/events`, signin: `${origin}/signin` } };
+            events: `${origin}/r/${run}/events`, signin: `${origin}/signin` },
+    mcp_servers: {} };
   // A fake sign-in in each of the store's secret paths: if any of it reaches a request, a
   // key run's home carried the sign-in.
   const store = `${STORE}/${rec.id}`;

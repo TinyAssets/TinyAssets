@@ -276,7 +276,8 @@ function httpsDoors(urls: Readonly<Record<string, string>>): boolean {
 /**
  * The start's document as the runner reads it (the protocol's own, field by field): the
  * start but the lease's secrets, its network and its sealed route, with the control
- * record's scratch retention (`scratch_retention_days`, null when it names none).
+ * record's scratch retention (`scratch_retention_days`, null when it names none) and the
+ * agent's own MCP servers, each by its URL or its command.
  */
 function startDocument(start: SandboxStart, retentionDays: number | null): StartDoc {
   const { config, lease, urls } = start;
@@ -289,13 +290,16 @@ function startDocument(start: SandboxStart, retentionDays: number | null): Start
               inherit: config.inherit },
     urls: { mcp: urls.mcp, mcp_bare: urls.mcp_bare, events: urls.events, signin: urls.signin },
     scratch_retention_days: retentionDays,
+    mcp_servers: Object.fromEntries(Object.entries(start.mcp_servers).map(([name, server]) =>
+      [name, "url" in server ? { url: server.url }
+        : { command: server.command, args: server.args, env: server.env }])),
   };
 }
 
 /**
  * A sign-in's document as the runner reads it: the sign-in but its lease and its secrets.
- * Protocol 2's document carries a region, which no sign-in has any more: always null, until
- * the next protocol drops it (`untangle-2026-11/drop-kimi.md`).
+ * Protocol 2's document carries a region, which no sign-in has any more: always null, while
+ * this Worker speaks 2 (`untangle-2026-11/drop-kimi.md`).
  */
 function signinDocument(signin: SandboxSignin): SigninDoc {
   return { id: signin.id, engine: signin.engine, region: null, mode: signin.mode,

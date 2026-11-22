@@ -13,6 +13,7 @@
  * - the Worker's own log of the owner's sandboxes (`MeterEvent`), read `METER_BATCH` at a time.
  */
 
+import type { McpServer } from "./agent-definition.ts";
 import type { EgressMode } from "./policy-document.ts";
 
 /** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
@@ -117,6 +118,11 @@ export interface SandboxStart {
    */
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
+  /**
+   * The agent's own MCP servers (`mcp.json`) its admission kept: those the owner's egress lets
+   * out (`owner/src/network.ts` `agentServers`), by name.
+   */
+  readonly mcp_servers: Readonly<Record<string, McpServer>>;
 }
 
 /** The start codes the owner's object answers by name (`START_CODES`). */

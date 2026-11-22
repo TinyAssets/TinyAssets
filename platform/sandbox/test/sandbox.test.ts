@@ -29,7 +29,7 @@ import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/
 import { refusalOf } from "../../contract/src/refusal";
 import { inboxCode, inboxDoc, INBOX, INCOMING, LEASE_FILE, PROTOCOL,
          SPEAKS } from "../runner/protocol";
-import { PROTOCOLS, shapeProblems } from "../runner/test/state-shape";
+import { shapeProblems, spokenShape } from "../runner/test/state-shape";
 import Sandbox from "../src/index";
 import { runnerBytes, runnerDigest } from "../src/runner-bytes";
 import { CONTROL_MIGRATIONS, SLOTS_MIGRATIONS } from "../src/schema";
@@ -118,6 +118,9 @@ const CLAUDE_HOSTS = ["claude.ai", "api.anthropic.com"];
 const GEMINI = { engine: "gemini", hosts: ["accounts.google.com"] };
 /** A run on a key: no vendor hosts. */
 const ON_KEY = { credential: "api_key", hosts: [] } as const;
+/** The agent's own MCP servers a start's admission kept, one by URL and one by command. */
+const AGENT_SERVERS = { docs: { url: "https://mcp.example.com/mcp" },
+                        local: { command: "uvx", args: ["some-mcp"], env: { MODE: "ro" } } };
 
 function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
@@ -128,7 +131,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
     network: NETWORK as never, hosts: CLAUDE_HOSTS,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
-    urls: runUrls(RUN, hex(64, "e")),
+    urls: runUrls(RUN, hex(64, "e")), mcp_servers: {},
     ...over,
   };
 }
@@ -207,7 +210,8 @@ describe("a start", () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     const began = Date.now();
-    expect(await stub(who).start(start())).toEqual({ started: true });
+    expect(await stub(who).start(start({ mcp_servers: AGENT_SERVERS })))
+      .toEqual({ started: true });
     const state = await seen();
     expect(state.sandboxes).toHaveLength(1);
     const box = state.sandboxes[0]!;
@@ -245,14 +249,14 @@ describe("a start", () => {
     expect(lease.tokens).toEqual({ runner_token: hex(64, "d"), sync_token: "sync" });
     expect(leaseFile).not.toContain(EGRESS_TOKEN);
     const doc = state.files[`${box.id}:${inboxDoc(RUN)}`]!;
-    // Both are the documents the runner protocol records, field for field.
-    const documents = PROTOCOLS[String(PROTOCOL)]!.documents;
-    expect(shapeProblems(lease, documents.lease)).toEqual([]);
-    expect(shapeProblems(JSON.parse(doc), documents.start)).toEqual([]);
+    // Both are the documents the runner protocols the Worker speaks record, field for field.
+    expect(shapeProblems(lease, spokenShape("lease", SPEAKS))).toEqual([]);
+    expect(shapeProblems(JSON.parse(doc), spokenShape("start", SPEAKS))).toEqual([]);
     expect(doc).not.toContain(hex(64, "d"));
     expect(JSON.parse(doc)).not.toHaveProperty("tokens");
     expect(JSON.parse(doc)).not.toHaveProperty("network");
     expect(JSON.parse(doc).prompt).toBe("hello");
+    expect(JSON.parse(doc).mcp_servers).toEqual(AGENT_SERVERS);
     // The look is armed a lease's TTL on, for the idle reap, before its renewal window.
     const look = await alarmOf(who);
     expect(look!).toBeGreaterThanOrEqual(began + LEASE_TTL_S * 1000);
@@ -1241,7 +1245,7 @@ describe("a sign-in", () => {
     const doc = JSON.parse(state.files[`${box.id}:${inboxDoc(SI)}`]!);
     expect(doc).toEqual({ id: SI, engine: "codex", region: null, mode: "in",
                           authority: "owner", urls: signin().urls });
-    expect(shapeProblems(doc, PROTOCOLS[String(PROTOCOL)]!.documents.signin)).toEqual([]);
+    expect(shapeProblems(doc, spokenShape("signin", SPEAKS))).toEqual([]);
     // A sign-in's start that opens the lease hands the runner the same two tokens, no more.
     const leaseFile = state.files[`${box.id}:${LEASE_FILE}`]!;
     expect(JSON.parse(leaseFile).tokens).toEqual({ runner_token: "d".repeat(64),

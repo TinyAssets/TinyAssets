@@ -187,16 +187,18 @@ export function agentFile(text: string): AgentFile {
 // ---- values every engine takes as they are ----
 
 /**
- * A value an engine reads literally: no NUL, which no argument, variable or C string can
- * carry; no `${NAME}` or `$NAME`, which Claude Code's and Gemini CLI's MCP config expand from
- * the environment; and no leading `!`, which pi runs as a command for the value. So a value is
- * the same on every engine, and none reads anything from the sandbox.
+ * A value an engine reads literally: printable (`isPrintable`), so no NUL, which no argument,
+ * variable or C string can carry, and nothing a TOML string cannot (Codex reads a server's
+ * values as TOML, and a lone surrogate or a control character fails there into another value);
+ * no `${NAME}` or `$NAME`, which Claude Code's and Gemini CLI's MCP config expand from the
+ * environment; and no leading `!`, which pi runs as a command for the value. So a value is the
+ * same on every engine, and none reads anything from the sandbox.
  */
 function literal(value: unknown, name: string, what: string): string {
-  if (typeof value !== "string" || value.includes("\0") || /\$(?:\{|[A-Za-z_])/.test(value)
+  if (typeof value !== "string" || !isPrintable(value) || /\$(?:\{|[A-Za-z_])/.test(value)
       || value.startsWith("!")) {
-    refuse(name, `${what} is text the engine takes as it is: no NUL, no $NAME or \${NAME}, ` +
-                 "no leading !");
+    refuse(name, `${what} is printable text the engine takes as it is: no control character, ` +
+                 "no $NAME or ${NAME}, no leading !");
   }
   return value as string;
 }
