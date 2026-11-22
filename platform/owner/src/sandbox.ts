@@ -42,10 +42,12 @@
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
  *   passed. It limits nothing: the founder's cost view.
  */
-import { namedRefusal, type RefusalCode, refusalOf } from "../../contract/src/refusal";
+import {
+  namedRefusal, type Refusal, type RefusalCode, refusalOf,
+} from "../../contract/src/refusal";
 import { keyed, object } from "../../contract/src/checks";
 import {
-  type CredentialKind, type SandboxService, START_CODES, type Started,
+  type CredentialKind, NETWORK_STATES, type SandboxService, START_CODES, type Started,
 } from "../../contract/src/sandbox";
 import { engineHosts } from "../../sources/src/served";
 import { clockMs } from "./clock";
@@ -90,35 +92,96 @@ export function vendorHosts(engine: string, credential: CredentialKind): string[
   return credential === "vendor_login_in_sandbox" ? engineHosts(engine) : [];
 }
 
+/**
+ * What one call to the sandbox Worker came to, read by the contract (`read`: its answer, or
+ * undefined for one out of the contract's shape):
+ * - `answered`: the answer, as the contract has it;
+ * - `refused`: a refusal it threw that the contract reads, by its code;
+ * - `malformed`: an answer came, returned or thrown as a refusal, out of the contract's shape
+ *   (another version's code, say): the call is over and its fault is the sandbox Worker's.
+ *   `cause` names it: a refusal's code, or the contract's own `fields` and only the names of
+ *   the answer's keys, since a bug's answer is no place a log can trust to hold nothing
+ *   secret: a code or field's value as it came only in the shape of a contract code (`shown`);
+ * - `unanswered`: the call threw a plain error, its answer lost on the way or the sandbox
+ *   Worker's own fault, which crosses as a plain error the object cannot tell from a loss.
+ *
+ * The answer is read outside the call's catch, so one out of shape is never taken for a lost
+ * one. Each call's own reader says what each means for its job (`startOutcome`,
+ * `networkOutcome`).
+ */
+/** A value in the shape of a contract code, a boolean, a number or none; else its type. */
+function shown(value: unknown): string {
+  if (typeof value === "string") {
+    return /^[a-z][a-z0-9_]{0,31}$/.test(value) ? value : "string";
+  }
+  return typeof value === "object" && value !== null ? "object" : String(value);
+}
+
+type SandboxAnswer<T> = { readonly kind: "answered"; readonly answer: T }
+  | { readonly kind: "refused"; readonly refusal: Refusal }
+  | { readonly kind: "malformed"; readonly cause: string }
+  | { readonly kind: "unanswered"; readonly error: unknown };
+
+async function sandboxAnswer<T>(call: () => Promise<unknown>, fields: readonly string[],
+                                read: (value: unknown) => T | undefined):
+    Promise<SandboxAnswer<T>> {
+  let value: unknown;
+  try {
+    value = await call();
+  } catch (error) {
+    const refusal = refusalOf(error);
+    if (refusal !== null) {
+      return { kind: "refused", refusal };
+    }
+    return namedRefusal(error)
+      ? { kind: "malformed", cause: `a refusal of code ${shown((error as { code?: unknown }).code)}` }
+      : { kind: "unanswered", error };
+  }
+  const answer = read(value);
+  if (answer !== undefined) {
+    return { kind: "answered", answer };
+  }
+  return { kind: "malformed", cause: object(value)
+    ? [...fields.map((field) => `${field} ${shown(value[field])}`),
+       `keys ${Object.keys(value).join(" ")}`].join(", ")
+    : typeof value };
+}
+
 /** A start that did not answer: whether its job launched is not known. */
 const START_LOST = "start_lost";
 /** A start answered out of the contract's shape: the sandbox Worker's bug. */
 const START_MALFORMED = "start_malformed";
 
 /**
- * What came of a start, a run's or a sign-in's, as the object acts on it:
+ * What came of a start, a run's or a sign-in's, as the object acts on it (`sandboxAnswer`):
  * - the sandbox's answer (`Started`): started, or one of the contract's start codes;
  * - a refusal it threw, by its code: the sandbox Worker refuses only before it launches
  *   anything (its runner's two alerts, `sandbox/src/control.ts`), and the runtime's overload
  *   of an object (`object_overloaded`) is thrown before the call runs, so nothing started;
  * - `started: null`: no answer the object can read, so the job may have launched, and is
  *   stopped in case it did. Its `state` says what the job's start came to:
- *   - `unknown` (`START_LOST`): the call threw, its answer lost on the way or the sandbox
- *     Worker's own fault, which crosses as a plain error the object cannot tell from a loss;
- *   - `failed` (`START_MALFORMED`): an answer came, returned or thrown as a refusal, out of
- *     the contract's shape (another version's code, say). The call is over and its fault
- *     is the sandbox Worker's, but an answer out of the contract says nothing of what it
- *     launched.
+ *   - `unknown` (`START_LOST`): the call was `unanswered`;
+ *   - `failed` (`START_MALFORMED`): it was `malformed`. The call is over, but an answer out of
+ *     the contract says nothing of what the sandbox Worker launched.
  */
 export type StartOutcome = Started
   | { readonly started: false; readonly code: RefusalCode }
   | { readonly started: null; readonly code: typeof START_LOST; readonly state: "unknown" }
   | { readonly started: null; readonly code: typeof START_MALFORMED; readonly state: "failed" };
 
+/** A start's answer as the contract has it (`Started`), or undefined. */
+function started(value: unknown): Started | undefined {
+  if (keyed(value, ["started"]) && value["started"] === true) {
+    return { started: true };
+  }
+  const code = keyed(value, ["code", "started"]) && value["started"] === false
+    ? START_CODES.find((each) => each === value["code"]) : undefined;
+  return code === undefined ? undefined : { started: false, code };
+}
+
 /**
  * What came of `start`, a call to the sandbox Worker's `start` or `signin` for `job` (as its
- * log lines name it), each cause but a start logged as itself. Its answer is read outside
- * the call's catch, so one out of shape is never taken for a lost start.
+ * log lines name it), each cause but a start logged as itself.
  *
  * A transient refusal says the same start succeeds later (`refusal.ts`), and nothing started
  * (above), so the same start (its job's id, its admission's tokens and network) is sent again
@@ -131,47 +194,61 @@ export type StartOutcome = Started
 export async function startOutcome(job: "a run" | "a sign-in", start: () => Promise<unknown>,
                                    stands: () => Promise<boolean>): Promise<StartOutcome> {
   const bound = clockMs() + LANE_CALL_MS;
-  const malformed = (answer: string): StartOutcome => {
-    console.error(`the sandbox answered ${job}'s start out of the contract's shape (${answer}), ` +
-                  "a sandbox Worker bug: it failed, and is stopped in case it launched");
-    return { started: null, code: START_MALFORMED, state: "failed" };
-  };
   for (;;) {
-    let value: unknown;
-    try {
-      value = await start();
-    } catch (error) {
-      const refusal = refusalOf(error);
-      if (refusal === null && namedRefusal(error)) {
-        return malformed(`a refusal of code ${String((error as { code?: unknown }).code)}`);
-      }
-      if (refusal === null) {
-        console.error(`${job}'s start did not answer: whether it launched is unknown`, error);
-        return { started: null, code: START_LOST, state: "unknown" };
-      }
-      const waitMs = (refusal.retryAfter ?? 0) * 1000;
-      if (refusal.transient && clockMs() + waitMs <= bound) {
-        console.warn(`the sandbox refused ${job}'s start for the moment (${refusal.code}): ` +
-                     "nothing started, so it is sent again");
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-        if (await stands()) {
-          continue;
-        }
-      }
-      console.error(`the sandbox refused ${job}'s start (${refusal.code}): nothing started`);
-      return { started: false, code: refusal.code };
+    const got = await sandboxAnswer(start, ["started", "code"], started);
+    if (got.kind === "answered") {
+      return got.answer;
     }
-    if (keyed(value, ["started"]) && value["started"] === true) {
-      return { started: true };
+    if (got.kind === "malformed") {
+      console.error(`the sandbox answered ${job}'s start out of the contract's shape (${
+        got.cause}), a sandbox Worker bug: it failed, and is stopped in case it launched`);
+      return { started: null, code: START_MALFORMED, state: "failed" };
     }
-    const code = keyed(value, ["code", "started"]) && value["started"] === false
-      ? START_CODES.find((each) => each === value["code"]) : undefined;
-    if (code !== undefined) {
-      return { started: false, code };
+    if (got.kind === "unanswered") {
+      console.error(`${job}'s start did not answer: whether it launched is unknown`, got.error);
+      return { started: null, code: START_LOST, state: "unknown" };
     }
-    // The contract's two fields as they came, and only the names of any other: a bug's answer
-    // is no place a log can trust to hold nothing secret.
-    return malformed(object(value) ? `started ${String(value["started"])}, code ${
-      String(value["code"])}, keys ${Object.keys(value).join(" ")}` : typeof value);
+    const { refusal } = got;
+    const waitMs = (refusal.retryAfter ?? 0) * 1000;
+    if (refusal.transient && clockMs() + waitMs <= bound) {
+      console.warn(`the sandbox refused ${job}'s start for the moment (${refusal.code}): ` +
+                   "nothing started, so it is sent again");
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      if (await stands()) {
+        continue;
+      }
+    }
+    console.error(`the sandbox refused ${job}'s start (${refusal.code}): nothing started`);
+    return { started: false, code: refusal.code };
   }
+}
+
+/**
+ * What came of `reapply`, a call to the sandbox Worker's `network` for a live lease, as the
+ * lease's record takes it (`Files.networkAnswered`): `applied` or `at_resume` as answered,
+ * else `failed`: `lost` (no sandbox of that lease), a refusal, an answer out of the
+ * contract's shape (the sandbox Worker's bug) or a plain throw, each cause but `lost` logged
+ * as itself. A re-apply launches nothing and replaces the sandbox's network whole, never with
+ * an older one (the Worker's own check), so whatever a failed one did, sending it again is
+ * safe: the lane does, past its retry clock, and nothing is stopped. Until one lands, the
+ * lease's calls under the new generation are refused: fail-closed.
+ */
+export async function networkOutcome(reapply: () => Promise<unknown>):
+    Promise<"applied" | "at_resume" | "failed"> {
+  const got = await sandboxAnswer(reapply, ["state"], (value) => keyed(value, ["state"])
+    ? NETWORK_STATES.find((each) => each === value["state"]) : undefined);
+  if (got.kind === "answered") {
+    return got.answer === "lost" ? "failed" : got.answer;
+  }
+  if (got.kind === "malformed") {
+    console.error(`the sandbox answered a lease's network re-apply out of the contract's shape (${
+      got.cause}), a sandbox Worker bug: it failed, and the lane tries again`);
+  } else if (got.kind === "refused") {
+    console.error(`the sandbox refused a lease's network re-apply (${got.refusal.code}); ` +
+                  "the lane tries again");
+  } else {
+    console.error("a lease's network re-apply did not reach the sandbox; the lane tries again",
+                  got.error);
+  }
+  return "failed";
 }

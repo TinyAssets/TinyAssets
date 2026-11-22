@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { verifyToken } from "../../contract/src/routing-mac";
 import type { Metering } from "../../contract/src/gateway";
@@ -1587,6 +1587,59 @@ describe("a live lease's network re-applied after an egress write", () => {
                                            tried: 0 }]);
     expect(await r.stub.egressOpen(lease.as(3), request(connection)))
       .toMatchObject({ ok: true, generation: 3 });
+  });
+
+  it("fails an answer out of the contract's shape, or a refusal, each logged as itself, and " +
+     "tries it again", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    // The object runs in this isolate: its log lines are seen here.
+    const logged = vi.spyOn(console, "error");
+    onTestFinished(() => logged.mockRestore());
+    const lines = () => logged.mock.calls.map((call) => String(call[0]))
+      .filter((line) => line.includes("network re-apply"));
+    const failedNow = async (generation: number) => {
+      expect(await networkRow(r)).toEqual([{ network_generation: 1, network_pending: null,
+                                             tried: 1 }]);
+      expect(await refusedWith(r, lease.as(generation), connection))
+        .toBe("egress_network_stale");
+    };
+    // Another version's state, with a key the contract has none of: its value is never logged.
+    await scripted(r.stub, { networkAnswer: { state: "gone", note: "a value" } as never });
+    await egressWrite(r);
+    await failedNow(2);
+    // A contract field's value not in a code's shape (hosts, say) is logged by its type.
+    await scripted(r.stub, { networkAnswer: { state: ["leak.example"] } as never });
+    await egressWrite(r, "open");
+    await failedNow(3);
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("network", { refuse: { code: "e2b_quota", message: "another version's" } });
+    await egressWrite(r);
+    await failedNow(4);
+    await gate.arm("network", { refuse: { code: "object_overloaded", message: "busy" } });
+    await egressWrite(r, "open");
+    await failedNow(5);
+    const again = "the lane tries again";
+    expect(lines()).toEqual([
+      "the sandbox answered a lease's network re-apply out of the contract's shape (state " +
+        `gone, keys state note), a sandbox Worker bug: it failed, and ${again}`,
+      "the sandbox answered a lease's network re-apply out of the contract's shape (state " +
+        `object, keys state), a sandbox Worker bug: it failed, and ${again}`,
+      "the sandbox answered a lease's network re-apply out of the contract's shape (a refusal " +
+        `of code e2b_quota), a sandbox Worker bug: it failed, and ${again}`,
+      `the sandbox refused a lease's network re-apply (object_overloaded); ${again}`]);
+    expect(JSON.stringify(logged.mock.calls)).not.toMatch(/a value|leak\.example/);
+    // Past its retry clock the lane sends it again, and it lands (the refused two never
+    // reached the Worker).
+    await scripted(r.stub, { networkAnswer: { state: "applied" } });
+    await r.sql("UPDATE sandbox_leases SET network_tried_at = network_tried_at - ?",
+                NETWORK_RETRY_S);
+    await laneNow(r);
+    expect((await recorder(r.stub)).networks.map((each) => generationOf(each.network.network)))
+      .toEqual([2, 3, 5]);
+    expect(await networkRow(r)).toEqual([{ network_generation: 5, network_pending: null,
+                                           tried: 0 }]);
   });
 
   it("never sends a re-apply again while one is out: its retry outlasts a call's bound", () => {
