@@ -471,22 +471,22 @@ export function egressScope(value: unknown): EgressScope {
 }
 
 /**
- * Whether `method path` is the scope's metered model call: its meter's method, and its
- * path with a model id (no separator) where the meter names one. The gateway reads the
- * model id the same way (`meteredModel`); this is the owner's check at open.
+ * Whether `method path` (its target's path, `egressTarget`) is the scope's metered model
+ * call: its meter's method, and its path with a model id (no separator) where the meter
+ * names one. The gateway reads the model id the same way (`meteredModel`); this is the
+ * owner's check at open.
  */
 export function meteredCall(scope: ModelScope, method: string, path: string): boolean {
   const meter = scope.meter;
   if (meter === null || method !== meter.method) {
     return false;
   }
-  const bare = path.split("?")[0]!;
   const [head, tail] = meter.path.split("{model}");
   if (tail === undefined) {
-    return bare === meter.path;
+    return path === meter.path;
   }
-  return bare.startsWith(head!) && bare.endsWith(tail) && bare.length > head!.length + tail.length
-    && /^[^/:?#]+$/.test(bare.slice(head!.length, bare.length - tail.length));
+  return path.startsWith(head!) && path.endsWith(tail) && path.length > head!.length + tail.length
+    && /^[^/:?#]+$/.test(path.slice(head!.length, path.length - tail.length));
 }
 
 /**
@@ -521,10 +521,37 @@ export function meteredModel(meter: Meter, method: string, path: string,
 }
 
 /**
+ * Query parameters that carry an API key (Google's `key` among them), stripped from every
+ * call, under any spelling of their names, as some servers read them case-blind.
+ */
+const CREDENTIAL_PARAMS: readonly string[] = Object.freeze(["key", "api_key", "access_token"]);
+
+/**
+ * `params` as they may be sent under `allowed` (`ApiRules.query`), written back by the
+ * URL parser so what is sent is what was read: each credential parameter dropped, or null
+ * when any other is not allowed or holds a value its rule does not take.
+ */
+function keptQuery(allowed: Readonly<Record<string, RegExp>>,
+                   params: URLSearchParams): string | null {
+  const kept = new URLSearchParams();
+  for (const [name, value] of params) {
+    if (CREDENTIAL_PARAMS.includes(name.toLowerCase())) {
+      continue;
+    }
+    if (!Object.hasOwn(allowed, name) || !allowed[name]!.test(value)) {
+      return null;
+    }
+    kept.append(name, value);
+  }
+  return kept.toString();
+}
+
+/**
  * The URL a sandbox request for `path` (its path and query, as the egress door hands it
  * on) is sent to: the path at the base URL's origin, and only when it stays there and
- * `method` and the path are sealed (`allows`). Null otherwise. The gateway's `forward` and
- * the owner's `egressOpen` both ask this, so the two can never disagree.
+ * `method` and the path are sealed (`allows`), with only the query its API's rules allow (a
+ * service's: none). Null otherwise. The gateway's `forward` and the owner's `egressOpen`
+ * both ask this, so the two can never disagree.
  */
 export function egressTarget(scope: EgressScope, method: string, path: string): URL | null {
   if (!path.startsWith("/")) {
@@ -537,5 +564,14 @@ export function egressTarget(scope: EgressScope, method: string, path: string): 
   } catch {
     return null;
   }
-  return target.origin === origin && allows(scope.endpoints, method, target) ? target : null;
+  if (target.origin !== origin || !allows(scope.endpoints, method, target)) {
+    return null;
+  }
+  const query = keptQuery("kind" in scope ? {} : apiRules(scope.api)?.query ?? {},
+                          target.searchParams);
+  if (query === null) {
+    return null;
+  }
+  target.search = query;
+  return target;
 }
