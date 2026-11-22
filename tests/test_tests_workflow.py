@@ -7,12 +7,9 @@ nothing:
 
   1. `concurrency` grouped main runs by ref, so each push killed the previous
      main run and the post-merge job almost never finished.
-  2. `push: branches: [main]` does not fire at all on the normal merge path.
-     auto-enroll-merge.yml enrols PRs with the repo's GITHUB_TOKEN, so GitHub
-     performs the merge as `app/github-actions`, and events raised by
-     GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14). Of the
-     last 6 merges, the 5 app-performed ones produced ZERO push runs; only the
-     one merged by a human PAT produced a run.
+  2. `push: branches: [main]` did not fire on the merge path then: the merge
+     was the repo's GITHUB_TOKEN's, whose events start no run. The merge queue
+     now merges as `github-merge-queue[bot]`, whose push does start one.
 
 So the assertions below are not style checks. Each one pins a property whose
 absence silently converts a gate into decoration.
@@ -313,11 +310,10 @@ def _expr(value: object) -> str:
 
 
 def test_full_suite_runs_on_an_in_repo_schedule() -> None:
-    """The post-merge tripwire needs a trigger `push:` cannot provide.
+    """`heavy-tests` runs only on a schedule, and `main` is checked hourly.
 
-    Regression guard for bug (2). `push: branches: [main]` may stay — it still
-    catches the rare human-PAT merge — but it cannot carry the tripwire, and
-    `workflow_dispatch` needs a human to press it.
+    Regression guard for bug (2). The queue's merges start `push` runs, but
+    `heavy-tests` runs on none of them, and `workflow_dispatch` needs a human.
 
     This deliberately requires an **in-repository `schedule`** rather than
     "any automatic trigger". A `repository_dispatch` driven by some external
@@ -332,9 +328,8 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
     schedule = _triggers(_load()).get("schedule")
     assert isinstance(schedule, list) and schedule, (
         f"tests.yml needs a non-empty `schedule:` — got {schedule!r}. Without "
-        f"it the heavy-tests tripwire never runs: `push: branches: [main]` does "
-        f"NOT fire when auto-merge lands a PR via GITHUB_TOKEN, and "
-        f"workflow_dispatch needs a human."
+        f"it heavy-tests never runs: it skips `push`, and workflow_dispatch "
+        f"needs a human."
     )
     for entry in schedule:
         assert isinstance(entry, dict) and "cron" in entry, (
