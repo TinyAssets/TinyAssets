@@ -272,11 +272,12 @@ export const CRON_MAX_CHARS = 256;
  */
 export const CALLS_OPEN = 1000;
 /**
- * Spend counters kept (`usage.ts`'s): a day's or a month's per source, for the days and
- * months the usage module keeps (40 and 3), each at a hundred sources, past which a new
- * source's first call in a period is refused (`model_spend_full`).
+ * Spend counters kept (`usage.ts`'s): a day's or a month's per source, each period kept
+ * until every charge reserved in it has settled (`owner/src/money.ts` `keptFrom`, a day and
+ * a beat), so at most three days and two months at once, each at a hundred sources, past
+ * which a new source's first call in a period is refused (`model_spend_full`).
  */
-export const SPEND_KEPT = 4300;
+export const SPEND_KEPT = 500;
 /**
  * Socket tickets outstanding at once, each single-use and at most `SOCKET_TICKET_S` long
  * (`socket-shape.ts`); past it a mint is refused (`socket_tickets_full`).

@@ -2589,6 +2589,18 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "DELETE FROM file_temps",
     "DROP TABLE file_temps",
   ]),
+  // 25 (`usage.ts`, `money.ts`; `untangle-2026-11/spend-periods.md`): a spend counter is kept
+  // until every charge reserved in its period has settled, a day and a beat (`keptFrom`), so
+  // a source holds at most three days' and two months' at once and the count is five periods'
+  // (`SPEND_KEPT`). The counters past that go at the next prune, which every reservation runs
+  // before it adds one. `model_spend` is exported and a generation from before may hold more,
+  // so none is brought forward (`SPEND_PERIODS`).
+  Object.freeze([
+    "DROP TRIGGER model_spend_kept",
+    "CREATE TRIGGER model_spend_kept AFTER INSERT ON model_spend " +
+      "WHEN (SELECT COUNT(*) FROM model_spend) > 500 BEGIN " +
+      "SELECT RAISE(ABORT, 'model_spend_full: 500 spend counters are kept'); END",
+  ]),
 ]);
 
 /**
@@ -2616,6 +2628,13 @@ const GRANT_AGENT = "before a restore could bring a generation forward: migratio
  */
 const TEMPS_DROPPED = "before a restore could bring a generation forward: migration 24 drops " +
   "the temporary directories' table, whose lines this schema has no table for";
+
+/**
+ * Why no generation from before migration 25 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/spend-periods.md`).
+ */
+const SPEND_PERIODS = "before a restore could bring a generation forward: migration 25 keeps " +
+  "fewer spend counters than a generation's lines may hold";
 
 /**
  * How a generation of an older schema is brought forward across each migration, one entry a
@@ -2653,6 +2672,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 22
   GRANT_AGENT,  // 23
   TEMPS_DROPPED,  // 24
+  SPEND_PERIODS,  // 25
 ]);
 
 /**

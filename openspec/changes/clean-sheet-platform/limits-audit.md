@@ -48,7 +48,7 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,632,789,949.75 bytes, 46.33% of the 10 GB: 367.2 MB under
+**The worst case that ships is 4,629,609,349.75 bytes, 46.30% of the 10 GB: 370.4 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 The rooms as rows (`rooms`, `room_members`, and `archive_purges` by room; owner migration 19,
 `untangle-2026-11/shapes.md`) take 27.2 MB of it at `maxRooms`.
@@ -254,7 +254,7 @@ Not yet in one of the kinds, each owed:
 | `owner/src/usage.ts` `USAGE_LIMITS.minOutput` | 1,024 tokens (2,048 reasoning) | the least output a reservation is worth | refused when an owner's ceiling leaves less | technical ceiling | Only when an owner's own ceiling binds; provider thinking budgets start at 1,024. |
 | `owner/src/usage.ts` `USAGE_LIMITS.receiptsKept` | 5,000 | model-call receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `model_reservations`. |
 | `contract/src/limits.ts` `CALLS_OPEN` | 1,000 | model reservations open at once | refused `model_calls_full` | technical ceiling | Inside `model_reservations`; far above any tier's runs. |
-| `contract/src/limits.ts` `SPEND_KEPT`; `owner/src/usage.ts` `USAGE_LIMITS.daysKept`, `monthsKept` | 4,300; 40 days and 3 months | day and month spend counters, each at a hundred sources for the days and months kept; past them a period's counters let go | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. The budgets read the current day's and month's alone. |
+| `contract/src/limits.ts` `SPEND_KEPT`; `owner/src/money.ts` `SETTLED_WITHIN_S` | 500; a period kept a day and a minute past its end | day and month spend counters, each period kept until every charge reserved in it has settled, so at most three days and two months at once, each at a hundred sources; past that a period's counters let go | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. The budgets read the current day's and month's alone (`spent`); no view or tool reads an older one, and the export carries the rows as they stand. A charge settles into the periods it was reserved in, within its door's deadline and a beat (`EGRESS_DEADLINE_S` + `EGRESS_BEAT_S`; past them it is settled lost, which moves no counter), so each period is kept that long past its end: a late settle moves its own counter, never one made anew. |
 | `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 settled, 500 refused | egress receipts kept | the oldest let go, never an open call's | technical ceiling | Inside `egress_reservations`. A settled call's charge is on the run and in the spending counters, so letting its receipt go refunds nothing; refusals keep their own count, so they cannot displace settled calls. |
 | `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
 | `contract/src/limits.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
