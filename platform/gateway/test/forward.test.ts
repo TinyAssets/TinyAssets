@@ -260,7 +260,7 @@ describe("forward", () => {
     expect(await response.text()).toBe('{"k":"[redacted]"}');
   });
 
-  it.each(["base64", "base64url", "uri", "form", "plain"])(
+  it.each(["base64", "base64url", "uri", "uri-lower", "form", "plain"])(
     "redacts the secret written back as %s, wherever it starts, from a JSON body and a Location",
     async (encoding) => {
       const env = ring("k1");

@@ -299,6 +299,8 @@ async function forwardEcho(request: Request): Promise<Response> {
     const written = {
       base64, base64url: base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
       uri: encodeURIComponent(text), form: new URLSearchParams({ v: text }).toString().slice(2),
+      // .NET's `HttpUtility.UrlEncode` writes its hex in lower case.
+      "uri-lower": encodeURIComponent(text).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase()),
     }[request.headers.get("x-fake-encoding") ?? ""] ?? text;
     return new Response(`{"echo":"${written.split("/").join("\\/")}"}`, {
       status: 401, headers: { location: `https://login.test/?next=${written}` } });
