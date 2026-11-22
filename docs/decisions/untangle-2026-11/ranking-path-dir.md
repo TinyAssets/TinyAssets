@@ -38,7 +38,8 @@ present but not a usable ranking file refuses the run, naming the file (Fact 8).
   its reason (Fact 15): the read parts and their joined copy are in hand at once, within one
   unit, the same reasoning as `DEFINITION_UNITS`. It is not tied to `DEFINITION_BYTES_MAX`,
   whose reason is the MCP door's body. One check in `#whole` covers `agent.json`, the
-  ranking and, once `untangle/agent-mcp` lands, `mcp.json`.
+  ranking and, once `untangle/agent-mcp` lands, `mcp.json`. The bytes are derived from the
+  units, and the ceiling has its row in `limits-audit.md` (review).
   - `#whole` held a whole file of any size, outside the pool.
 - **The chunks are joined by `Files.range`, the files' one join.**
   - `#whole` had a hand copy of `range`'s fetch-and-join.
@@ -47,8 +48,9 @@ present but not a usable ranking file refuses the run, naming the file (Fact 8).
 
 - Bytes that are not UTF-8 read "is not JSON text": the code, the file named and the
   owner's fix (write JSON text) are the same, so the message stays.
-- `JSON.parse`'s own objects are not counted in the pool. This was already true of every
-  parse of an owner file. The text it parses is now bounded where before it was not.
+- `JSON.parse`'s own objects are not counted in the pool, nor the file's bytes and text once
+  the read's unit is released (as `definitionRead`'s answer is not). This was already true of
+  every parse of an owner file. The text it parses is now bounded where before it was not.
 - The directory case is `untangle/agent-mcp`'s, so this branch does not repeat its check.
   The two branches merge cleanly: this one's size check sits after the unit that branch
   changes.

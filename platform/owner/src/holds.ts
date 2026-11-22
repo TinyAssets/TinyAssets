@@ -206,7 +206,7 @@ export const DEFINITION_UNITS = 1;
  * their joined copy in hand at once. Past it the run is refused, never the file read.
  */
 export const ADMITTED_FILE_UNITS = 1;
-export const ADMITTED_FILE_BYTES = UNIT_BYTES / 2;
+export const ADMITTED_FILE_BYTES = ADMITTED_FILE_UNITS * UNIT_BYTES / 2;
 
 /**
  * A whole body's read (`Bodies.fetch`): per chunk, its bytes, its text (a one-byte string, or
