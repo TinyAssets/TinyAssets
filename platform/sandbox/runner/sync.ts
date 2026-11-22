@@ -17,11 +17,20 @@
  *   into place (`safeStream`); a reset reads the whole tree again by listing, page by page.
  *   A change at the version the mirror holds is this sandbox's own write, never fetched
  *   back. The engines' sessions (`/workspace/.sessions/<authority>/<engine>/...`) are never
- *   fetched by the feed: a session path it names is marked changed in the mirror (`UNREAD`),
+ *   fetched by the feed: a session path it names is marked changed in the mirror (`unread`),
  *   and a resume fetches its own files (`fetchSessions`, the record's `resume_paths`), only
  *   under that engine's own `session_paths`, into the sync agent's own directory, for the
  *   root runner to put in that engine's store; never into the shared workspace, where every
  *   engine's user could reach them.
+ * - **Unsent changes, for every path:** a copy whose bytes are not the ones the mirror last
+ *   synced, and that sync-out sends (`Selection`), is never replaced, removed or dropped by
+ *   the owner's newer version: it goes out against the base it was read at, so the owner's
+ *   commit finds the base moved and keeps both (the owner's in place, this sandbox's beside
+ *   it as `<name>.ta-conflict-<epoch>`, reported, `ta.sync_conflicts`). Then this sandbox
+ *   takes the owner's version: a workspace file at once (`theirs`), where it is still the
+ *   copy sent; a session at its next staging (the store's copy let go) and a resume's fetch.
+ *   So the race ends in one conflict copy, and a copy changed again since it was sent is a
+ *   change of its own, sent again.
  * - **Out:** each engine's sessions the root runner staged first (`stageSessions`, from the
  *   engines' stores, which only root reads), in commits of their own; then
  *   every regular file under `/workspace` whose bytes differ from what was last synced
@@ -59,7 +68,7 @@ import {
   CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_LIST, MAX_SYNC_OPS, SYNC_BODY_MAX,
 } from "../../contract/src/limits";
 import {
-  defaultSyncIgnore, ignoredBy, LIST_BYTES, SYNC_IGNORE, type Unapplied,
+  defaultSyncIgnore, ignoredBy, type Kind, LIST_BYTES, SYNC_IGNORE, type Unapplied,
 } from "../../contract/src/sync-ignore";
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
@@ -75,11 +84,6 @@ const PAGE = 1000;
 
 /** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
 export const SESSIONS_SEEN = `${STATE_DIR}/sessions-seen.json`;
-/**
- * A session's hash in the mirror while the owner's files hold a version of it this sandbox
- * has not read (the feed named it, or a reset no longer lists it): no copy's hash.
- */
-export const UNREAD = "";
 
 /** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
 interface SeenSession {
@@ -151,25 +155,36 @@ export function storeSessions(authority: string):
   return { sessions, seen: next };
 }
 
+/** Whether the store's copy at `local` is still the one `session` hashed: its size and time. */
+export function stillHashed(local: string, session: Pick<StoreSession, "size" | "mtime_ms">):
+    boolean {
+  const stat = lstatSync(local, { throwIfNoEntry: false });
+  return stat?.size === session.size && stat.mtimeMs === session.mtime_ms;
+}
+
 /** The sessions' hashes kept, so the next read of the store hashes only what moved. */
 export function keepSeen(seen: Record<string, SeenSession>): void {
   safeWrite(STATE_DIR, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(seen)), 0o600);
 }
 
+/** What the mirror holds of a path for the root runner (`known`): its hash, and its mark. */
+export type Held = Pick<Known, "sha256" | "unread"> | null;
+
 /**
- * The root runner's step before a run's sync-out: every engine's session the owner's files
- * do not hold as it is now (`known`: the sync mirror's hash of each path, read under the sync
- * agent's lock) staged into the sync agent's `out/<run>`: this run's, and any an earlier
- * sync-out left unsent (refused at a full storage, changed while sent, fenced, cut short), so
- * each is offered again until it lands, whether or not a later run touches it. A session the
- * files hold already is never copied. One the owner's files changed since this sandbox read
- * it (`UNREAD`) is a stale copy: it leaves the store, and a resume fetches the owner's. One
- * holding a secret's bytes is never staged; it is returned (as `{home}/<path>`) once, until
- * it or the secrets change.
+ * The root runner's step before a run's sync-out: every engine's session whose bytes are not
+ * the ones the owner's files were last synced with (`known`: the sync mirror's row of each
+ * path, read under the sync agent's lock) staged into the sync agent's `out/<run>`: this
+ * run's, and any an earlier sync-out left unsent (refused at a full storage, changed while
+ * sent, fenced, cut short), so each is offered again until it lands, whether or not a later
+ * run touches it, and one the owner's files changed meanwhile is a conflict copy there. A
+ * session synced as it is is never copied, and one the owner's files changed since (`unread`)
+ * is a stale copy: it leaves the store, if it is still the copy hashed, and a resume fetches
+ * the owner's. One holding a secret's bytes is never staged; it is returned (as
+ * `{home}/<path>`) once, until it or the secrets change.
  */
 export async function stageSessions(
   authority: string, run: string, secrets: readonly string[],
-  known: (paths: readonly string[]) => Promise<Record<string, string | null>>,
+  known: (paths: readonly string[]) => Promise<Record<string, Held>>,
 ): Promise<string[]> {
   const out = `${SYNC_HOME}/out/${run}`;
   remove(out);
@@ -179,11 +194,18 @@ export async function stageSessions(
   const refused: string[] = [];
   for (const session of sessions) {
     const store = `${STORE}/${session.rec.id}`;
-    if (held[session.path] === UNREAD) {
-      await withStore(session.rec, () => { remove(join(store, session.rel)); });
+    const row = held[session.path] ?? null;
+    if (row?.sha256 === session.digest) {
+      if (row.unread) {
+        await withStore(session.rec, () => {
+          if (stillHashed(join(store, session.rel), session)) {
+            remove(join(store, session.rel));
+          }
+        });
+      }
       continue;
     }
-    if (held[session.path] === session.digest || seen[session.path]!.refused === against) {
+    if (seen[session.path]!.refused === against) {
       continue;
     }
     const bytes = safeRead(store, join(store, session.rel));
@@ -266,13 +288,17 @@ export class SyncClient {
 
 /**
  * What the sandbox last synced of one path: the version it last read or wrote (the base of
- * its next write), and its bytes' identity.
+ * its next write; null where it has read none), its bytes' identity (the bytes it last read
+ * or wrote, or saved beside the owner's as a conflict copy; a size of 0 and no hash where it
+ * holds none), and whether the owner's files hold a version of it this sandbox has not read
+ * (`unread`: a session the feed named, or a reset no longer lists, kept for a resume to fetch).
  */
 interface Known {
-  readonly version: number;
+  readonly version: number | null;
   readonly size: number;
   readonly mtime_ms: number;
   readonly sha256: string;
+  readonly unread: boolean;
 }
 
 /**
@@ -308,12 +334,14 @@ interface Mirror {
 export function openMirror(path: string): Mirror {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; " +
-          "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, version INTEGER NOT NULL, " +
-          "size INTEGER NOT NULL, mtime_ms REAL NOT NULL, sha256 TEXT NOT NULL) WITHOUT ROWID; " +
+          "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, version INTEGER, " +
+          "size INTEGER NOT NULL, mtime_ms REAL NOT NULL, sha256 TEXT NOT NULL, " +
+          "unread INTEGER NOT NULL) WITHOUT ROWID; " +
           "CREATE TABLE IF NOT EXISTS meta (only INTEGER PRIMARY KEY CHECK (only = 1), " +
           "cursor INTEGER NOT NULL); INSERT OR IGNORE INTO meta VALUES (1, 0);");
-  const get = db.prepare("SELECT version, size, mtime_ms, sha256 FROM files WHERE path = ?");
-  const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)");
+  const get = db.prepare("SELECT version, size, mtime_ms, sha256, unread FROM files " +
+                         "WHERE path = ?");
+  const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?)");
   const drop = db.prepare("DELETE FROM files WHERE path = ?");
   const under = db.prepare("DELETE FROM files WHERE path = ? OR (path > ? AND path < ?)");
   const knows = db.prepare("SELECT 1 FROM files WHERE path = ? OR (path > ? AND path < ?) " +
@@ -323,11 +351,12 @@ export function openMirror(path: string): Mirror {
     cursor: () => (db.prepare("SELECT cursor FROM meta").get() as { cursor: number }).cursor,
     setCursor: (cursor) => { db.prepare("UPDATE meta SET cursor = ?").run(cursor); },
     get: (at) => {
-      const row = get.get(at) as Known | undefined;
-      return row === undefined ? undefined : { ...row };
+      const row = get.get(at) as (Omit<Known, "unread"> & { unread: number }) | undefined;
+      return row === undefined ? undefined : { ...row, unread: row.unread === 1 };
     },
     put: (at, known) => {
-      put.run(at, known.version, known.size, known.mtime_ms, known.sha256);
+      put.run(at, known.version, known.size, known.mtime_ms, known.sha256,
+              known.unread ? 1 : 0);
     },
     drop: (at) => { drop.run(at); },
     // Below `p/` is every path from `p/` up to `p0` (`/` is the code point before `0`).
@@ -399,14 +428,24 @@ export function sessionOf(place: Place, path: string):
   return isKept(keptPaths(record).sessions, rel) ? { engine: engine!, rel } : null;
 }
 
+/** A file fetched whole into a temporary file beside its place: put there, or let go. */
+interface Fetched {
+  readonly version: number;
+  readonly size: number;
+  readonly sha256: string;
+  put(): void;
+  drop(): void;
+}
+
 /**
- * A file's bytes from the owner's files into `local` (under `base`), streamed: inline, or two
- * chunks a call each appended to a temporary file as it comes and renamed into place once
- * whole, its hash taken as it streams. Null when the path is gone or is no file.
+ * A file's bytes from the owner's files beside `local` (under `base`), streamed: inline, or
+ * two chunks a call each appended to a temporary file as it comes, its hash taken as it
+ * streams, for the caller to put in place (renamed) or let go. Null when the path is gone or
+ * is no file.
  */
 async function fetchInto(client: SyncClient, path: string, base: string, local: string,
                          modeOf: (mode: number) => number, dirMode: number):
-    Promise<{ version: number; size: number; sha256: string } | null> {
+    Promise<Fetched | null> {
   const read = await client.post("read", { path });
   if (read["missing"] === true) {
     return null;
@@ -436,26 +475,29 @@ async function fetchInto(client: SyncClient, path: string, base: string, local: 
         }
       }
     }
-    out.commit();
   } catch (error) {
     out.abort();
     throw error;
   }
-  return { version: entry.version, size, sha256: hash.digest("hex") };
+  return { version: entry.version, size, sha256: hash.digest("hex"),
+           put: () => { out.commit(); }, drop: () => { out.abort(); } };
 }
 
+/** A row for a path this sandbox holds no bytes of and has read no version of. */
+const NOTHING: Known = { version: null, size: 0, mtime_ms: 0, sha256: "", unread: false };
+
 /**
- * A session the owner's files changed, at `version`, since this sandbox read it: marked so
- * (`UNREAD`), its bytes left where they are, for a resume to fetch (`fetchSessions`). Its
- * row keeps the version this sandbox last read or wrote, as every row does: the base a write
- * of it is offered against, so a copy staged before the mark is a conflict at the owner's
- * files, kept beside their newer one, never over it. A path with no row takes `version`: this
- * sandbox holds no older copy of it to offer (its sessions are named by its own runs' ids).
+ * A session the owner's files changed since this sandbox read it: marked so (`unread`), its
+ * row's base and identity kept (the version and the bytes this sandbox last read or wrote),
+ * its bytes left where they are, for a resume to fetch (`fetchSessions`). So a copy staged
+ * before the mark is a conflict at the owner's files, kept beside their newer one, never
+ * over it; one the store holds as synced is let go at the next staging; and one holding
+ * unsent changes is sent, a conflict there too. A path with no row is marked with no base:
+ * a copy of it is a conflict wherever the owner's files hold the path.
  */
-function unread(place: Place, mirror: Mirror, path: string, version: number): void {
+function unread(place: Place, mirror: Mirror, path: string): void {
   if (sessionOf(place, path) !== null) {
-    mirror.put(path, { version: mirror.get(path)?.version ?? version, size: 0, mtime_ms: 0,
-                       sha256: UNREAD });
+    mirror.put(path, { ...(mirror.get(path) ?? NOTHING), unread: true });
   }
 }
 
@@ -464,64 +506,134 @@ function inSessions(path: string): boolean {
   return path === SESSIONS || path.startsWith(`${SESSIONS}/`);
 }
 
-/** A path the owner's files no longer hold: a session marked unread, any other removed. */
-function vanished(place: Place, mirror: Mirror, path: string, version: number): void {
-  if (inSessions(path)) {
-    unread(place, mirror, path, version);
+/** Two looks at one path the same: both nothing, or one file unchanged between them. */
+function same(now: Stats | null, was: Stats | null): boolean {
+  return now === null ? was === null : was !== null && now.ino === was.ino
+    && now.size === was.size && now.mtimeMs === was.mtimeMs;
+}
+
+/**
+ * Whether the sandbox's file at `path` (`stat`, as just read) holds changes sync-out sends
+ * (`sends`) that the owner's files lack: bytes other than `sent`'s, the identity the owner's
+ * files hold of its bytes (none: any file holds them).
+ */
+async function unsent(place: Place, select: () => Selection, path: string, stat: Stats,
+                      sent: Identity | undefined): Promise<boolean> {
+  return select().sends(path) && await differs(place, path, stat, sent);
+}
+
+/**
+ * The owner's state of a workspace path (`kind`: a file, a folder, or null when gone) into the
+ * sandbox, unless the sandbox's file there holds changes not sent (`unsent`, against `sent`):
+ * one that does is left as it is, its row too, so sync-out sends it against the base it was
+ * read at. A file's bytes are fetched beside it and put in place only while the sandbox's
+ * copy is still the one looked at (a run's write meanwhile is left the same way); a folder
+ * gone goes but for the files under it holding unsent changes.
+ */
+async function theirs(client: SyncClient, place: Place, mirror: Mirror,
+                      select: () => Selection, path: string, kind: string | null,
+                      sent: Identity | undefined): Promise<void> {
+  const local = localOf(place, path);
+  const was = fileStat(local);
+  if (was !== null && await unsent(place, select, path, was, sent)) {
     return;
   }
-  remove(localOf(place, path));
-  mirror.dropUnder(path);
+  const readOnly = place.authority !== "owner" && clientReadOnly(path);
+  const dirMode = readOnly ? 0o2755 : 0o2775;
+  if (kind === "dir") {
+    safeDirs(place.local, local, dirMode);
+    return;
+  }
+  if (kind === null) {
+    if (was === null && lstatSync(local, { throwIfNoEntry: false })?.isDirectory() === true) {
+      await goneFolder(place, mirror, select, path);
+    } else if (same(fileStat(local), was)) {
+      remove(local);
+      mirror.dropUnder(path);
+    }
+    return;
+  }
+  const got = await fetchInto(client, path, place.local, local, (mode) => readOnly
+    ? (mode === 1 ? 0o555 : 0o444) : (mode === 1 ? 0o775 : 0o664), dirMode);
+  if (got === null) {
+    return;  // gone since the feed was read: a later change says so
+  }
+  if (!same(fileStat(local), was)) {
+    got.drop();
+    return;
+  }
+  got.put();
+  mirror.put(path, { version: got.version, size: got.size,
+                     mtime_ms: trusted(lstatSync(local).mtimeMs, Date.now()),
+                     sha256: got.sha256, unread: false });
+}
+
+/**
+ * A folder gone from the owner's files, gone from the sandbox but for the files under it that
+ * hold unsent changes, each kept with its row (sent against its base, a conflict there).
+ */
+async function goneFolder(place: Place, mirror: Mirror, select: () => Selection,
+                          path: string): Promise<void> {
+  const local = localOf(place, path);
+  const under = `${path.slice(`${WORKSPACE}/`.length)}/`;
+  let kept = false;
+  if (select().sends(path, true)) {
+    for (const rel of walkFiles(local, { sorted: true,
+                                         skip: (each, isDir) => select().skip(under + each,
+                                                                              isDir) })) {
+      const each = `${path}/${rel}`;
+      const stat = fileStat(join(local, rel));
+      if (stat !== null && await differs(place, each, stat, mirror.get(each))) {
+        kept = true;
+      } else if (same(fileStat(join(local, rel)), stat)) {
+        remove(join(local, rel));
+        mirror.drop(each);
+      }
+    }
+  }
+  if (!kept) {
+    remove(local);
+    mirror.dropUnder(path);
+  }
+}
+
+/** A path the owner's files changed (to `kind`, null when gone), as sync-in takes it. */
+async function change(client: SyncClient, place: Place, mirror: Mirror,
+                      select: () => Selection, path: string, kind: string | null):
+    Promise<void> {
+  if (inSessions(path)) {
+    if (kind !== "dir") {
+      unread(place, mirror, path);
+    }
+    return;
+  }
+  await theirs(client, place, mirror, select, path, kind, mirror.get(path));
 }
 
 /**
  * One path's state after the feed: gone, a directory, or a file at a version. One at the
  * version the mirror holds is already here (this sandbox's own write, or one it read).
  */
-async function apply(client: SyncClient, place: Place, mirror: Mirror, path: string,
-                     kind: string | null, version: number): Promise<void> {
-  if (mirror.get(path)?.version === version) {
-    return;
+async function apply(client: SyncClient, place: Place, mirror: Mirror,
+                     select: () => Selection, path: string, kind: string | null,
+                     version: number): Promise<void> {
+  if (mirror.get(path)?.version !== version) {
+    await change(client, place, mirror, select, path, kind);
   }
-  if (kind === null) {
-    vanished(place, mirror, path, version);
-    return;
-  }
-  if (inSessions(path)) {
-    if (kind === "file") {
-      unread(place, mirror, path, version);
-    }
-    return;
-  }
-  const local = localOf(place, path);
-  const readOnly = place.authority !== "owner" && clientReadOnly(path);
-  if (kind === "dir") {
-    safeDirs(place.local, local, readOnly ? 0o2755 : 0o2775);
-    return;
-  }
-  const dirMode = readOnly ? 0o2755 : 0o2775;
-  const got = await fetchInto(client, path, place.local, local, (mode) => readOnly
-    ? (mode === 1 ? 0o555 : 0o444) : (mode === 1 ? 0o775 : 0o664), dirMode);
-  if (got === null) {
-    return;  // gone since the feed was read: a later change says so
-  }
-  mirror.put(path, { version: got.version, size: got.size,
-                     mtime_ms: trusted(lstatSync(local).mtimeMs, Date.now()),
-                     sha256: got.sha256 });
 }
 
 /** Every path of the readable tree, by listing, applied as each page comes (a reset). */
 async function listApply(client: SyncClient, place: Place, mirror: Mirror,
-                         dir: string): Promise<void> {
+                         select: () => Selection, dir: string): Promise<void> {
   let after: string | null = null;
   for (;;) {
     const page = await client.post("list", { dir, limit: MAX_LIST,
                                              ...(after === null ? {} : { after }) });
     for (const entry of page["entries"] as { path: string; kind: string; version: number }[]) {
-      await apply(client, place, mirror, entry.path, entry.kind, entry.version);
+      await apply(client, place, mirror, select, entry.path, entry.kind, entry.version);
       mirror.seen(entry.path);
       if (entry.kind === "dir") {
-        await listApply(client, place, mirror, entry.path);
+        await listApply(client, place, mirror, select, entry.path);
       }
     }
     after = page["next"] as string | null;
@@ -533,6 +645,9 @@ async function listApply(client: SyncClient, place: Place, mirror: Mirror,
 
 /** The owner's files into the sandbox, from the mirror's cursor; the mirror updated. */
 export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): Promise<void> {
+  // The sync-ignore is read only where a file is met that may hold changes, as it stands then.
+  let selected: Selection | null = null;
+  const select = () => selected ??= selection(place, mirror);
   for (;;) {
     const cursor = mirror.cursor();
     const page = await client.post("changes", { after: cursor, limit: MAX_LIST });
@@ -540,11 +655,11 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
     if (page["reset"] === true) {
       mirror.resetBegin();
       try {
-        await listApply(client, place, mirror, WORKSPACE);
+        await listApply(client, place, mirror, select, WORKSPACE);
         for (let after = "", gone = mirror.unseen(after, PAGE); gone.length > 0;
              gone = mirror.unseen(after, PAGE)) {
           for (const path of gone) {
-            vanished(place, mirror, path, mirror.get(path)!.version);
+            await change(client, place, mirror, select, path, null);
           }
           after = gone.at(-1)!;
         }
@@ -555,13 +670,13 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
       continue;
     }
     const last = new Map<string, { kind: string | null; version: number }>();
-    for (const change of changes) {
-      last.delete(change.path);
-      last.set(change.path, change);
+    for (const each of changes) {
+      last.delete(each.path);
+      last.set(each.path, each);
     }
     for (const [path, { kind, version }] of last) {
       if (path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)) {
-        await apply(client, place, mirror, path, kind, version);
+        await apply(client, place, mirror, select, path, kind, version);
       }
     }
     mirror.setCursor(page["cursor"] as number);
@@ -574,13 +689,15 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
 /**
  * A resume's files (`resumed`, from the engine's home: its record's `resume_paths`, the sid
  * filled) that the owner's files hold, by the mirror's rows, fetched into the sync agent's
- * own directory where the store lacks one (`have`, the store's paths among them) or holds a
- * copy the owner's files changed since (`UNREAD`). One gone from the owner's files has its row
- * dropped and is named, for the root runner to drop the store's copy.
+ * own directory where the store lacks one (`have`: the store's copies among them, each by its
+ * hash) or holds one the owner's files changed since (`unread`) that holds no change of its
+ * own (its hash the row's). One holding changes stays for the resume, and is sent at the
+ * run's staging, a conflict copy at the owner's files. One gone from the owner's files has
+ * its row dropped and is named, for the root runner to drop the store's copy.
  */
 export async function fetchSessions(client: SyncClient, place: Place, mirror: Mirror,
                                     engine: string, resumed: readonly string[],
-                                    have: ReadonlySet<string>):
+                                    have: ReadonlyMap<string, string>):
     Promise<{ fetched: string[]; gone: string[] }> {
   const prefix = `${SESSIONS}/${place.authority}/${engine}/`;
   const fetched: string[] = [];
@@ -589,8 +706,10 @@ export async function fetchSessions(client: SyncClient, place: Place, mirror: Mi
        paths.length > 0 && paths[0]!.startsWith(prefix); paths = mirror.page(after, PAGE)) {
     for (const path of paths.filter((each) => each.startsWith(prefix))) {
       const session = sessionOf(place, path);
+      const row = mirror.get(path)!;
+      const held = have.get(path);
       if (session === null || !isKept(resumed, session.rel)
-          || (have.has(path) && mirror.get(path)!.sha256 !== UNREAD)) {
+          || (held !== undefined && (!row.unread || held !== row.sha256))) {
         continue;
       }
       const got = await fetchInto(client, path, place.sessionsIn,
@@ -600,8 +719,9 @@ export async function fetchSessions(client: SyncClient, place: Place, mirror: Mi
         mirror.drop(path);
         gone.push(path);
       } else {
+        got.put();
         mirror.put(path, { version: got.version, size: got.size, mtime_ms: 0,
-                           sha256: got.sha256 });
+                           sha256: got.sha256, unread: false });
         fetched.push(path);
       }
     }
@@ -674,25 +794,88 @@ const RACY = -1;
 /**
  * The sync-ignore rules of the workspace at `local`: its file's lines, read to `LIST_BYTES`
  * at most (a line the cut falls in, and every one after it, not applied: `past` says how
- * many bytes), or the defaults, the file written with them (so the owner sees and edits
- * them) when it is missing.
+ * many bytes), or the defaults while it is missing (sync-out writes them, `keepDefaults`).
  */
 function syncIgnore(local: string): { lines: readonly string[]; past: number } {
-  const path = localOf({ local }, SYNC_IGNORE);
-  const read = safeReadHead(local, path, LIST_BYTES);
-  if (read !== null) {
-    let text = read.bytes;
-    if (read.size > read.bytes.length) {
-      const cut = text.lastIndexOf(10);
-      text = text.subarray(0, cut < 0 ? 0 : cut);
-    }
-    return { lines: text.toString("utf8").split("\n"), past: read.size - text.length };
+  const read = safeReadHead(local, localOf({ local }, SYNC_IGNORE), LIST_BYTES);
+  if (read === null) {
+    return { lines: defaultSyncIgnore(), past: 0 };
   }
+  let text = read.bytes;
+  if (read.size > read.bytes.length) {
+    const cut = text.lastIndexOf(10);
+    text = text.subarray(0, cut < 0 ? 0 : cut);
+  }
+  return { lines: text.toString("utf8").split("\n"), past: read.size - text.length };
+}
+
+/**
+ * The sync-ignore file written with the defaults where it is missing, so the owner sees and
+ * edits them: by sync-out alone, so a sync-in never makes a copy of it the owner's own would
+ * meet as one holding changes.
+ */
+function keepDefaults(local: string): void {
+  const path = localOf({ local }, SYNC_IGNORE);
   if (!existsSync(path)) {
     safeWrite(local, path, new TextEncoder().encode(`${defaultSyncIgnore().join("\n")}\n`),
               0o664, undefined, 0o2775);
   }
-  return { lines: defaultSyncIgnore(), past: 0 };
+}
+
+/** A file's bytes as synced: its size and change time, and its hash. */
+type Identity = Pick<Known, "size" | "mtime_ms" | "sha256">;
+
+/**
+ * What sync-out offers of the workspace, by its sync-ignore as read when this was made: every
+ * regular file with a UTF-8 name but what the walk keeps out (`skip`); the one rule sync-in
+ * reads too (`sends`).
+ */
+interface Selection {
+  /** The kind of line that keeps `rel` (from `/workspace`) out, or null; its time counted. */
+  readonly ignored: (rel: string, isDir?: boolean) => Kind | null;
+  /**
+   * An entry kept out, a directory with its whole tree, by its path from `/workspace`: the
+   * sessions' tree (the store's to send), a temporary file's name (`.ta-`), a client's
+   * read-only tree, a custom line's path, and a default line's path the owner does not keep.
+   */
+  readonly skip: (rel: string, isDir: boolean) => boolean;
+  /** Whether sync-out offers `path` (a folder's tree, `isDir`): nothing on its way kept out. */
+  readonly sends: (path: string, isDir?: boolean) => boolean;
+  /** The list's lines not applied, past a ceiling, and its bytes past `LIST_BYTES`. */
+  readonly unapplied: readonly Unapplied[];
+  readonly past: number;
+  /** How long matching has taken, in ms. */
+  readonly matchMs: () => number;
+}
+
+function selection(place: Place, mirror: Mirror): Selection {
+  const list = syncIgnore(place.local);
+  const matcher = ignoredBy(list.lines);
+  let matchMs = 0;
+  const ignored = (rel: string, isDir = false) => {
+    const began = performance.now();
+    try {
+      return matcher(rel, isDir);
+    } finally {
+      matchMs += performance.now() - began;
+    }
+  };
+  const skip = (rel: string, isDir: boolean): boolean => {
+    const path = `${WORKSPACE}/${rel}`;
+    if (path === SESSIONS || rel.split("/").at(-1)!.startsWith(".ta-")
+        || (place.authority !== "owner" && clientReadOnly(path))) {
+      return true;
+    }
+    const why = ignored(rel, isDir);
+    return why === "custom" || (why === "default" && !mirror.knowsUnder(path));
+  };
+  const sends = (path: string, isDir = false): boolean => {
+    const parts = path.slice(`${WORKSPACE}/`.length).split("/");
+    return parts.every((_, i) => !skip(parts.slice(0, i + 1).join("/"),
+                                       isDir || i < parts.length - 1));
+  };
+  return { ignored, skip, sends, unapplied: matcher.unapplied, past: list.past,
+           matchMs: () => matchMs };
 }
 
 /** A file offered: what it is and what the mirror knew; its bytes only when it is small. */
@@ -830,6 +1013,9 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   let committed = 0;
   let batch: Op[] = [];
   let bytes = 0;
+  // What the walk offers, made once the sessions are sent (its sync-ignore read then).
+  let selected: Selection | null = null;
+  const select = () => selected ??= selection(place, mirror);
   const send = async () => {
     if (batch.length === 0) {
       return;
@@ -869,7 +1055,14 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                                                   ops: sent });
     const outcomes = answer["outcomes"] as { path: string; outcome: string;
                                              entry?: { version: number } | null;
+                                             current?: { kind: string } | null;
                                              reason?: string; code?: string }[];
+    const blind = outcomes.find((each) => each.outcome === "conflict"
+                                && each.current === undefined);
+    if (blind !== undefined) {
+      throw new Error(`the commit's conflict at ${blind.path} names no current entry`);
+    }
+    const sentBeside: { op: Op; kind: string | null }[] = [];
     mirror.batch(() => {
       for (const outcome of outcomes) {
         const op = ops.find((each) => each.path === outcome.path);
@@ -879,16 +1072,33 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
             mirror.drop(outcome.path);
           } else {
             mirror.put(outcome.path, { version: outcome.entry.version, size: op!.size!,
-                                       mtime_ms: op!.mtime_ms!, sha256: op!.sha256! });
+                                       mtime_ms: op!.mtime_ms!, sha256: op!.sha256!,
+                                       unread: false });
           }
         } else if (outcome.outcome === "conflict") {
           conflicts.push(outcome.path);
+          if (inSessions(outcome.path)) {
+            // Saved beside the owner's newer one: the row keeps its base and takes the copy's
+            // bytes, marked, so the store's copy goes at the next staging while it is still
+            // the one sent (a resume fetches the owner's), and one changed since is sent.
+            mirror.put(outcome.path, { version: op!.base, size: op!.size!,
+                                       mtime_ms: op!.mtime_ms!, sha256: op!.sha256!,
+                                       unread: true });
+          } else {
+            sentBeside.push({ op: op!, kind: outcome.current?.kind ?? null });
+          }
         } else {
           refused.push({ path: outcome.path, reason: outcome.reason ?? "refused",
                          code: outcome.code ?? "refused" });
         }
       }
     });
+    // A workspace file saved beside the owner's newer version takes theirs, where it is still
+    // the copy sent; one changed since is a change of its own, sent next time.
+    for (const { op, kind } of sentBeside) {
+      await theirs(client, place, mirror, select, op.path, kind, op.op === "remove" ? undefined
+        : { size: op.size!, mtime_ms: op.mtime_ms!, sha256: op.sha256! });
+    }
   };
   /** What a commit says of `op`, but its bytes (inline) or its upload (intent id). */
   const fieldsOf = (op: Op): Record<string, unknown> => ({
@@ -972,42 +1182,19 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
   }
   await send();
-  const list = syncIgnore(place.local);
-  const matcher = ignoredBy(list.lines);
-  // Lines past a ceiling (`AUTOMATON_STATES`, `LIST_BYTES`) are not applied, and said.
-  const unapplied = matcher.unapplied;
-  // How long matching the list took, so a slow list says so in the run's report.
-  let matchMs = 0;
-  const ignored = (rel: string, isDir = false) => {
-    const began = performance.now();
-    try {
-      return matcher(rel, isDir);
-    } finally {
-      matchMs += performance.now() - began;
-    }
-  };
-  /** Kept out: a custom line's path, or a default line's path the owner does not keep yet. */
-  const out = (rel: string, isDir: boolean): boolean => {
-    const why = ignored(rel, isDir);
-    return why === "custom" || (why === "default"
-                                && !mirror.knowsUnder(`${WORKSPACE}/${rel}`));
-  };
+  keepDefaults(place.local);
+  // Lines past a ceiling (`AUTOMATON_STATES`, `LIST_BYTES`) are not applied, and said; and
+  // how long matching the list took, so a slow list says so in the run's report.
+  const { ignored, skip, unapplied, past, matchMs } = select();
   const unnamed: string[] = [];
   let unnamedCount = 0;
-  for (const rel of walkFiles(place.local, { skip: (each, isDir) => {
-    const name = each.split("/").at(-1)!;
-    return `${WORKSPACE}/${each}` === SESSIONS || name.startsWith(".ta-")
-      || out(each, isDir);
-  }, unnamed: (rel) => {
+  for (const rel of walkFiles(place.local, { skip, unnamed: (rel) => {
     unnamedCount += 1;
     if (unnamed.length < LISTED) {
       unnamed.push(`${WORKSPACE}/${rel}`);
     }
   } })) {
     const path = `${WORKSPACE}/${rel}`;
-    if (place.authority !== "owner" && clientReadOnly(path)) {
-      continue;
-    }
     if (path === SYNC_IGNORE) {
       continue;  // offered last, once what its lines hold back is counted
     }
@@ -1025,7 +1212,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       if (ignored(path.slice(`${WORKSPACE}/`.length)) === "custom") {
         // Never removed (the owner keeps it as it was); its changes, never sent, are said.
         kept += 1;
-        if (await heldBack(place, path, mirror.get(path)!)) {
+        const stat = fileStat(localOf(place, path));
+        if (stat !== null && await differs(place, path, stat, mirror.get(path))) {
           held += 1;
           if (held <= LISTED) {
             skipped.push({ path, code: "held_back" });
@@ -1042,8 +1230,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   await offer(SYNC_IGNORE, place.local, localOf(place, SYNC_IGNORE));
   await send();
   return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED),
-           match_ms: Math.round(matchMs), unapplied: unapplied.slice(0, LISTED),
-           unapplied_count: unapplied.length, list_bytes_past: list.past, unnamed,
+           match_ms: Math.round(matchMs()), unapplied: unapplied.slice(0, LISTED),
+           unapplied_count: unapplied.length, list_bytes_past: past, unnamed,
            unnamed_count: unnamedCount };
 }
 
@@ -1059,19 +1247,19 @@ function opBytes(op: Op, fields: Record<string, unknown>): number {
   return Buffer.byteLength(JSON.stringify(fields), "utf8") + carried + 1;
 }
 
-/** Whether a kept file's sandbox copy differs from what the owner's files hold. */
-async function heldBack(place: Place, path: string, known: Known): Promise<boolean> {
-  const local = localOf(place, path);
-  const stat = fileStat(local);
-  if (stat === null) {
-    return false;  // gone here: a held-back path is never removed, and nothing is to send
-  }
-  if (Number(stat.size) !== known.size) {
+/**
+ * Whether the sandbox's file at `path` (`stat`, as just read) holds bytes other than `sent`'s,
+ * the identity the owner's files hold of it (none: any bytes are others): read again only
+ * when its size and change time do not settle it.
+ */
+async function differs(place: Place, path: string, stat: Stats,
+                       sent: Identity | undefined): Promise<boolean> {
+  if (sent === undefined || Number(stat.size) !== sent.size) {
     return true;
   }
-  if (known.mtime_ms !== RACY && Number(stat.mtimeMs) === known.mtime_ms) {
+  if (sent.mtime_ms !== RACY && Number(stat.mtimeMs) === sent.mtime_ms) {
     return false;
   }
-  const read = await scanned(place.local, local, []);
-  return read !== null && read.sha256 !== known.sha256;
+  const read = await scanned(place.local, localOf(place, path), []);
+  return read !== null && read.sha256 !== sent.sha256;
 }

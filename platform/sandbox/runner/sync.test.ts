@@ -12,7 +12,7 @@
  *   sync-out over many paths; the matcher's, at `LIST_BYTES` of any class, within what the
  *   sandbox's heap leaves beside the agent (`sizing.ts`).
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync,
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -30,11 +30,12 @@ import {
 } from "../../contract/src/sync-ignore";
 import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
   from "../../contract/src/limits";
+import { sha256Hex } from "../../contract/src/digest";
 import { served } from "../../sources/src/served";
 import { isKept, resumePaths } from "./engine";
 import { AGENT_PEAK, HEAP_PER_LIST_BYTE, SANDBOX_HEAP } from "./sizing";
-import { fetchSessions, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
-         UNREAD } from "./sync";
+import { fetchSessions, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut }
+  from "./sync";
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
 const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
@@ -99,6 +100,8 @@ function client(handler: Handler, log: string[] = []): Promise<SyncClient> {
 
 /** A mirror of the sync agent's own kind (`openMirror`), in memory. */
 const mirrorOf = () => openMirror(":memory:");
+/** A text's hash, as the mirror keeps a file's. */
+const sha = (text: string) => sha256Hex(text);
 
 let version = 100;
 function commitAll(body: Record<string, unknown>, sent?: string[]) {
@@ -279,7 +282,8 @@ describe("the sync-ignore", () => {
     writeFileSync(join(local, "build", "kept.txt"), "v1");
     writeFileSync(join(local, "build", "new.txt"), "new");
     const mirror = mirrorOf();
-    mirror.put("/workspace/build/kept.txt", { version: 1, size: 1, mtime_ms: 0, sha256: "x" });
+    mirror.put("/workspace/build/kept.txt", { version: 1, size: 1, mtime_ms: 0, sha256: "x",
+                                              unread: false });
     const sent: string[] = [];
     await syncOut(await client((door, body) => door === "commit" ? commitAll(body, sent)
       : { status: 404, body: {} }), p, mirror, LEASE, []);
@@ -811,13 +815,16 @@ describe("a commit's body", () => {
   });
 });
 
+/** The owner's files as a stand-in holds them: each path's version and text, null if gone. */
+type Files = Map<string, { version: number; text: string | null }>;
+
 /**
- * A stand-in feed, read and commit door over `files` (each path's version and text, null if
- * gone), a commit's write against a version that moved on kept beside the owner's under a
- * conflict name, as the owner's object keeps it (`files.ts` `#syncOp`).
+ * A stand-in feed, read and commit door over `files`, a commit's write against a version that
+ * moved on kept beside the owner's under a conflict name and its outcome naming the owner's
+ * entry, as the owner's object does (`files.ts` `#syncOp`); `refuse` names what a commit
+ * refuses (the owner's storage full).
  */
-function feedOf(files: Map<string, { version: number; text: string | null }>,
-                reads: string[]): Handler {
+function feedOf(files: Files, reads: string[], refuse: Set<string> = new Set()): Handler {
   return (door, body) => {
     if (door === "changes") {
       const after = body["after"] as number;
@@ -841,14 +848,24 @@ function feedOf(files: Map<string, { version: number; text: string | null }>,
     const ops = body["ops"] as { op: string; path: string; base: number | null;
                                  inline?: string }[];
     return { status: 200, body: { outcomes: ops.map((op) => {
+      if (refuse.has(op.path)) {
+        return { path: op.path, outcome: "refused", reason: FULL, code: "storage_full" };
+      }
       const now = files.get(op.path);
       const current = now?.text === null ? undefined : now;
       const text = op.op === "remove" ? null : Buffer.from(op.inline!, "base64").toString();
       if (op.base === null ? current !== undefined : current?.version !== op.base) {
         if (text !== null) {
-          files.set(`${op.path}.ta-conflict-${LEASE.epoch}`, { version: version += 1, text });
+          const name = (n: number) =>
+            `${op.path}.ta-conflict-${LEASE.epoch}${n > 1 ? `-${n}` : ""}`;
+          let n = 1;
+          while (files.get(name(n))?.text != null) {
+            n += 1;
+          }
+          files.set(name(n), { version: version += 1, text });
         }
-        return { path: op.path, outcome: "conflict" };
+        return { path: op.path, outcome: "conflict", current: current === undefined ? null
+          : { kind: "file", version: current.version } };
       }
       files.set(op.path, { version: version += 1, text });
       return { path: op.path, outcome: "committed",
@@ -863,8 +880,8 @@ describe("a change the mirror already holds", () => {
     writeFileSync(join(local, "a.md"), "mine");
     const mirror = mirrorOf();
     await syncOut(await client(feedOf(new Map(), [])), p, mirror, LEASE, []);
-    const files = new Map([["/workspace/a.md", { version: mirror.get("/workspace/a.md")!.version,
-                                                 text: "mine" }]]);
+    const files: Files = new Map([["/workspace/a.md", {
+      version: mirror.get("/workspace/a.md")!.version!, text: "mine" }]]);
     const reads: string[] = [];
     await syncIn(await client(feedOf(files, reads)), p, mirror);
     expect(reads).toEqual([]);
@@ -896,18 +913,20 @@ describe("the engines' sessions from the owner's files", () => {
     const door = await client(feedOf(files, reads));
     await syncIn(door, p, mirror);
     expect(reads).toEqual([]);
-    expect(mirror.get(`${at}/s2.jsonl`)).toEqual({ version: 7, size: 0, mtime_ms: 0,
-                                                   sha256: UNREAD });
-    const fetch = (have: readonly string[]) =>
-      fetchSessions(door, p, mirror, "claude-code", resumePaths(claude, "s1"), new Set(have));
-    expect(await fetch([])).toEqual({ fetched: [`${at}/s1.jsonl`, `${at}/s1/subagents/a.jsonl`],
+    // Marked, with no base nor bytes: this sandbox has read none of it.
+    expect(mirror.get(`${at}/s2.jsonl`)).toEqual({ version: null, size: 0, mtime_ms: 0,
+                                                   sha256: "", unread: true });
+    const fetch = (have: Record<string, string>) => fetchSessions(
+      door, p, mirror, "claude-code", resumePaths(claude, "s1"), new Map(Object.entries(have)));
+    expect(await fetch({})).toEqual({ fetched: [`${at}/s1.jsonl`, `${at}/s1/subagents/a.jsonl`],
                                       gone: [] });
     expect(reads).not.toContain(`${at}/s2.jsonl`);
     expect(readFileSync(join(p.sessionsIn, "claude-code", ".claude/projects/main/s1.jsonl"),
                         "utf8")).toBe("one");
     // The store holding both as the owner's files do, none is fetched again.
     reads.length = 0;
-    const both = [`${at}/s1.jsonl`, `${at}/s1/subagents/a.jsonl`];
+    const both = { [`${at}/s1.jsonl`]: sha("one"),
+                   [`${at}/s1/subagents/a.jsonl`]: sha("its subagent") };
     expect([await fetch(both), reads]).toEqual([{ fetched: [], gone: [] }, []]);
     // One changed in the owner's files, one gone from them: fetched again, and named.
     files.set(`${at}/s1.jsonl`, { version: 10, text: "one, edited" });
@@ -916,6 +935,19 @@ describe("the engines' sessions from the owner's files", () => {
     expect(await fetch(both)).toEqual({ fetched: [`${at}/s1.jsonl`],
                                         gone: [`${at}/s1/subagents/a.jsonl`] });
     expect(mirror.get(`${at}/s1/subagents/a.jsonl`)).toBeUndefined();
+    // A store copy holding a turn of its own is never fetched over, nor named gone: the
+    // resume reads it, and the run's staging sends it, a conflict copy at the owner's files.
+    files.set(`${at}/s1/subagents/b.jsonl`, { version: 12, text: "another subagent" });
+    await syncIn(door, p, mirror);
+    await fetch({ [`${at}/s1.jsonl`]: sha("one, edited") });
+    files.set(`${at}/s1.jsonl`, { version: 13, text: "one, edited again" });
+    files.set(`${at}/s1/subagents/b.jsonl`, { version: 14, text: null });
+    await syncIn(door, p, mirror);
+    reads.length = 0;
+    expect([await fetch({ [`${at}/s1.jsonl`]: sha("one, edited, and a turn"),
+                          [`${at}/s1/subagents/b.jsonl`]: sha("its own turn") }), reads])
+      .toEqual([{ fetched: [], gone: [] }, []]);
+    expect(mirror.get(`${at}/s1/subagents/b.jsonl`)).toMatchObject({ unread: true });
   });
 
   it("staged before a sync-in marks it changed, lands beside the owner's edit, never over it",
@@ -936,11 +968,142 @@ describe("the engines' sessions from the owner's files", () => {
     writeFileSync(staged, "one, and this run's turn");
     await syncIn(door, p, mirror);
     const report = await syncOut(door, p, mirror, LEASE, []);
-    // Still marked, so the next staging drops the store's copy and a resume fetches the
-    // owner's: one conflict copy, never one a sync.
+    // Still marked, its hash the copy's sent, so the next staging drops the store's copy
+    // while it is that one and a resume fetches the owner's: one conflict copy, never one a
+    // sync.
     expect([report.conflicts, files.get(path)!.text,
-            files.get(`${path}.ta-conflict-${LEASE.epoch}`)?.text, mirror.get(path)?.sha256])
-      .toEqual([[path], "one, the owner's edit", "one, and this run's turn", UNREAD]);
+            files.get(`${path}.ta-conflict-${LEASE.epoch}`)?.text, mirror.get(path)])
+      .toEqual([[path], "one, the owner's edit", "one, and this run's turn",
+                expect.objectContaining({ sha256: sha("one, and this run's turn"),
+                                          unread: true })]);
+  });
+});
+
+describe("a workspace file holding changes not sent, when the owner's files change it", () => {
+  const at = "/workspace/notes.md";
+  const copy = `${at}.ta-conflict-${LEASE.epoch}`;
+
+  /** A sandbox whose `notes.md` the owner's files hold as it sent it; its door, and theirs. */
+  async function synced(text = "v1") {
+    const { place: p, local } = place();
+    const files: Files = new Map();
+    const reads: string[] = [];
+    const refuse = new Set<string>();
+    const mirror = mirrorOf();
+    const door = await client(feedOf(files, reads, refuse));
+    writeFileSync(join(local, "notes.md"), text);
+    await syncOut(door, p, mirror, LEASE, []);
+    return { p, local, files, reads, refuse, mirror, door,
+             file: () => readFileSync(join(local, "notes.md"), "utf8") };
+  }
+
+  it("refused at a full storage, ends in one conflict copy: never replaced, never a loop",
+     async () => {
+    const s = await synced();
+    writeFileSync(join(s.local, "notes.md"), "the run's edit");
+    s.refuse.add(at);
+    const refused = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect(refused.refused.map((each) => each.code)).toEqual(["storage_full"]);
+    s.refuse.clear();
+    // The owner edits it meanwhile; the next run's sync-in leaves the sandbox's edit.
+    s.files.set(at, { version: version += 1, text: "the owner's edit" });
+    await syncIn(s.door, s.p, s.mirror);
+    expect([s.reads, s.file()]).toEqual([[], "the run's edit"]);
+    // Its sync-out: the owner's edit stays, the run's beside it, said, and the sandbox takes
+    // the owner's.
+    const report = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect([report.conflicts, s.files.get(at)!.text, s.files.get(copy)?.text, s.file()])
+      .toEqual([[at], "the owner's edit", "the run's edit", "the owner's edit"]);
+    // No loop: the next sync-out sends nothing, and sync-in brings the copy.
+    const sent = s.files.size;
+    const again = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    await syncIn(s.door, s.p, s.mirror);
+    expect([again.conflicts, s.files.size,
+            readFileSync(join(s.local, "notes.md.ta-conflict-1"), "utf8")])
+      .toEqual([[], sent, "the run's edit"]);
+    expect((await syncOut(s.door, s.p, s.mirror, LEASE, [])).committed).toBe(0);
+  });
+
+  it("written by a run while sync-in fetches the owner's, is kept, and sent as a copy",
+     async () => {
+    const s = await synced();
+    s.files.set(at, { version: version += 1, text: "the owner's edit" });
+    const racing = await client((door, body) => {
+      if (door === "read") {
+        writeFileSync(join(s.local, "notes.md"), "a second run's edit, mid-fetch");
+      }
+      return feedOf(s.files, s.reads)(door, body);
+    });
+    await syncIn(racing, s.p, s.mirror);
+    expect(s.file()).toBe("a second run's edit, mid-fetch");
+    await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect([s.files.get(at)!.text, s.files.get(copy)?.text, s.file()])
+      .toEqual(["the owner's edit", "a second run's edit, mid-fetch", "the owner's edit"]);
+  });
+
+  it("written again while its conflict commits, is kept: a change of its own, sent again",
+     async () => {
+    const s = await synced();
+    writeFileSync(join(s.local, "notes.md"), "the first edit");
+    s.files.set(at, { version: version += 1, text: "the owner's edit" });
+    const racing = await client((door, body) => {
+      if (door === "commit") {
+        writeFileSync(join(s.local, "notes.md"), "the second edit, mid-commit");
+      }
+      return feedOf(s.files, s.reads)(door, body);
+    });
+    await syncOut(racing, s.p, s.mirror, LEASE, []);
+    expect([s.files.get(copy)?.text, s.file()])
+      .toEqual(["the first edit", "the second edit, mid-commit"]);
+    await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect([s.files.get(`${copy}-2`)?.text, s.file()])
+      .toEqual(["the second edit, mid-commit", "the owner's edit"]);
+  });
+
+  it("made new where the owner's files make the same path, is sent beside theirs",
+     async () => {
+    const s = await synced();
+    writeFileSync(join(s.local, "draft.md"), "the run's draft");
+    s.files.set("/workspace/draft.md", { version: version += 1, text: "the owner's draft" });
+    await syncIn(s.door, s.p, s.mirror);
+    expect(readFileSync(join(s.local, "draft.md"), "utf8")).toBe("the run's draft");
+    const report = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect([report.conflicts, s.files.get(`/workspace/draft.md.ta-conflict-${LEASE.epoch}`)
+      ?.text, readFileSync(join(s.local, "draft.md"), "utf8")])
+      .toEqual([["/workspace/draft.md"], "the run's draft", "the owner's draft"]);
+  });
+
+  it("removed from the owner's files, alone or with its folder, is sent beside, then goes",
+     async () => {
+    const s = await synced();
+    mkdirSync(join(s.local, "docs"));
+    writeFileSync(join(s.local, "docs", "kept.md"), "kept");
+    writeFileSync(join(s.local, "docs", "plain.md"), "plain");
+    await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    writeFileSync(join(s.local, "notes.md"), "the run's edit");
+    writeFileSync(join(s.local, "docs", "kept.md"), "the run's edit of it");
+    for (const path of [at, "/workspace/docs/kept.md", "/workspace/docs/plain.md",
+                        "/workspace/docs"]) {
+      s.files.set(path, { version: version += 1, text: null });
+    }
+    await syncIn(s.door, s.p, s.mirror);
+    expect([s.file(), readFileSync(join(s.local, "docs", "kept.md"), "utf8"),
+            existsSync(join(s.local, "docs", "plain.md"))])
+      .toEqual(["the run's edit", "the run's edit of it", false]);
+    const report = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect([[...report.conflicts].sort(), s.files.get(copy)?.text,
+            existsSync(join(s.local, "notes.md")), existsSync(join(s.local, "docs", "kept.md"))])
+      .toEqual([["/workspace/docs/kept.md", at], "the run's edit", false, false]);
+  });
+
+  it("is the owner's to replace where sync-out never sends it (a default line's)",
+     async () => {
+    const s = await synced();
+    mkdirSync(join(s.local, "build"));
+    writeFileSync(join(s.local, "build", "out.js"), "rebuilt here");
+    s.files.set("/workspace/build/out.js", { version: version += 1, text: "the owner's" });
+    await syncIn(s.door, s.p, s.mirror);
+    expect(readFileSync(join(s.local, "build", "out.js"), "utf8")).toBe("the owner's");
   });
 });
 
