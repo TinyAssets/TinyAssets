@@ -19,6 +19,10 @@
  * `acts.json`, and `when`, the condition under which a call is the act, every call when it
  * names none), so a rule on that act holds at that door.
  *
+ * A door whose work runs while its caller waits (`code`'s script) says so (`stop`): the doors
+ * hand it, after its request, its caller's stop, a stream they close once that caller stops
+ * waiting (`doors/src/tools.ts` `callDoor`), and the door ends its work then.
+ *
  * The outside-callable doors' rows carry their MCP tool (`tool`), which the
  * doors serve on `/mcp` and as `POST /api/tools/<name>` (`doors/src/tools.ts`): its capability
  * and its arguments are its door's own. Each tool's four hints are explicit (OpenAI's
@@ -103,9 +107,11 @@ export interface DoorRow {
   readonly act?: { readonly name: string; readonly when?: Condition };
   readonly args: DoorArgs;
   readonly tool?: ToolInfo;
+  /** Its work runs while its caller waits: it takes the caller's stop after its request. */
+  readonly stop?: true;
 }
 
-const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool"]);
+const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool", "stop"]);
 const TOOL_KEYS = Object.freeze(["name", "title", "description", "destructiveHint",
   "idempotentHint", "openWorldHint", "readOnlyHint"]);
 
@@ -187,6 +193,10 @@ export function doorProblems(rows: unknown): string[] {
         || !Object.keys(act).every((key) => key === "name" || key === "when")
         || ("when" in act && !isCondition(act["when"])))) {
       say("an act is one of acts.json's, and when, one of its conditions");
+    }
+    if ("stop" in row && (row["stop"] !== true || UNBOUND_DOORS.includes(row["door"] as string)
+                          || row["args"] === "none")) {
+      say("a stop is true, on a door that takes a binding and a request");
     }
     if (!("args" in row)) {
       say("no argument schema");
@@ -276,6 +286,11 @@ export function toolsNamed(names: readonly string[]): readonly Tool[] {
 /** Whether a door takes a request after its binding. */
 export function takesRequest(row: DoorRow): boolean {
   return row.args !== "none";
+}
+
+/** Whether a door takes its caller's stop after its request (`stop`). */
+export function takesStop(row: DoorRow): boolean {
+  return row.stop === true;
 }
 
 /** A profile's name: what a caller is served (`profiles.json`). */

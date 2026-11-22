@@ -3,14 +3,16 @@
  * `CODEMODE_VM`: a script's VM runs in the codemode Worker, each execution named by its owner
  * and a random id, each tool call an RPC back through `exchange`; and it is off in the owner's
  * policy until the owner turns it on. And pi's `RemoteCodemodeSandbox` over the service
- * binding, a nested call's round trip. The MCP door's `code` tool, which hands a script the
- * door's own tools, is `code-door.test.ts`'s. Workerd shows neither CPU limits nor isolation.
+ * binding, a nested call's round trip; and no clock ends a script (pi-codemode's timers faked
+ * and moved ten minutes on while its call is pending). The MCP door's `code` tool, which hands
+ * a script the door's own tools, is `code-door.test.ts`'s. Workerd shows neither CPU limits nor
+ * isolation.
  */
 import { env } from "cloudflare:workers";
 import {
   type CodemodeRemote, type CodemodeRemoteMessage, RemoteCodemodeSandbox,
 } from "@earendil-works/pi-codemode/portable";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { type CodemodeService, codemodeSandbox } from "../src/codemode";
 import { sha256Hex } from "../../contract/src/digest";
@@ -53,6 +55,34 @@ describe("code mode's executor", () => {
     expect(names).toHaveLength(2);
     expect(names[1]).not.toBe(names[0]);
     await sandbox.close();
+  });
+
+  it("never ends a script by a clock: it runs while its caller waits", async () => {
+    // pi-codemode's own deadline is a timer in this isolate: faked, and moved ten minutes on
+    // (past its default, 5 minutes) while the script's one call is pending.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let answer: (value: unknown) => void = () => undefined;
+    let called: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      called = resolve;
+    });
+    const sandbox = codemodeSandbox({ service: env.CODEMODE_VM, owner: () => "owner-a",
+      tools: [{ name: "wait", execute: () => {
+        called();
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      } }] });
+    try {
+      const running = sandbox.execute("return (await tools.wait({})).done;");
+      await pending;
+      vi.advanceTimersByTime(600_000);
+      answer({ done: "late" });
+      expect(await running).toMatchObject({ ok: true, value: "late" });
+    } finally {
+      vi.useRealTimers();
+      await sandbox.close();
+    }
   });
 
   it("runs for an owner of any principal's length: its name is the principal's digest",

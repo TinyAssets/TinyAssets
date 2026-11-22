@@ -16,14 +16,15 @@
  * - `contract/src/owner-doors.ts`: the owner object's doors as the doors call them
  *   (`OwnerDoors`, `contract/src/owner.ts` says what each part means): each door its row's,
  *   its binding but on an unbound door (`UNBOUND_DOORS`), no request, an optional one, its
- *   row's fields (`DoorRequest`) or a loose door's own parameters (`DoorLoose`), and the
- *   answer the doors read (`DoorAnswer`), its doc the row's tool description.
+ *   row's fields (`DoorRequest`) or a loose door's own parameters (`DoorLoose`), its caller's
+ *   stop where its row takes one (`stop`), and the answer the doors read (`DoorAnswer`), its
+ *   doc the row's tool description.
  */
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type Args, type DoorRow, doorTable, UNBOUND_DOORS } from "./src/doors.ts";
+import { type Args, type DoorRow, doorTable, takesStop, UNBOUND_DOORS } from "./src/doors.ts";
 import { docLines, WIDTH } from "./src/source-lines.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -106,7 +107,8 @@ function door(row: DoorRow): string[] {
   const request = row.args === "none" ? []
     : row.args === "loose" ? [`...request: DoorLoose<"${row.door}">`]
       : [`request${"omitted" in row.args ? "?" : ""}: DoorRequest<"${row.door}">`];
-  const parts = [...UNBOUND_DOORS.includes(row.door) ? [] : ["binding: Binding"], ...request];
+  const parts = [...UNBOUND_DOORS.includes(row.door) ? [] : ["binding: Binding"], ...request,
+                 ...takesStop(row) ? ["stop: ReadableStream<Uint8Array>"] : []];
   const answer = `Promise<DoorAnswer<"${row.door}">>;`;
   const line = `  ${row.door}(${parts.join(", ")}): ${answer}`;
   return [...row.tool === undefined ? [] : docLines(row.door, row.tool.description, "  "),

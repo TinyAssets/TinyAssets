@@ -23,7 +23,7 @@ import { Refusal } from "../../contract/src/refusal";
 import { isMinted } from "./proof-mint";
 import type { Grant, Stamped } from "./authority";
 import type { ControlGate } from "./control-gate";
-import type { DoorRows } from "./door-map";
+import type { DoorRows, StopDoors } from "./door-map";
 import type { Binds, CallerKind, TakenBy } from "./door-steps";
 import type { OwnerEnv } from "./env";
 import type { SandboxLease } from "./files";
@@ -171,6 +171,15 @@ export interface Door<R = unknown, K extends CallerKind = Binds> {
   authorized(): void;
 }
 
+/**
+ * What a door whose row takes its caller's stop (`StopDoors`) is handed beside its door: the
+ * caller's leaving, from the stop the doors close once their caller stops waiting.
+ */
+export interface Leaving {
+  /** Aborted once the caller stops waiting for this call (its stop closed or broken). */
+  readonly left: AbortSignal;
+}
+
 /** What the stores are built over: the object's write gate, its storage view and its units. */
 export type Units = Pick<WriteGate, "storage" | "write" | "quiet">;
 
@@ -243,12 +252,14 @@ type DoorsIn<M extends Module> =
   { [D in DoorName]: DoorRows[D]["module"] extends M ? D : never }[DoorName];
 /**
  * A door's handler, handed `N` (its first parameter: what it may reach) and, by its row's
- * gate, the door that checks its call in each unit it makes, or the call checked in one unit
- * of that gate, with its row's caller's proof. Its request is its own (`never` here, so any
+ * gate, the door that checks its call in each unit it makes (with its caller's leaving where
+ * its row takes its stop), or the call checked in one unit of that gate, with its row's
+ * caller's proof. Its request is its own (`never` here, so any
  * request type fits), held to the row's fields by the runner.
  */
 export type HandlerOf<D extends DoorName, N> = GateOf<D> extends "units"
-  ? (o: N, door: Door<never, CallerOf<D>>) => Promise<unknown>
+  ? (o: N, door: Door<never, CallerOf<D>> & (D extends StopDoors ? Leaving : unknown)) =>
+    Promise<unknown>
   : (o: N, call: Call<never, CallerOf<D>>) => unknown;
 /** The handlers of module `M`'s doors, each handed `N`: one per row that names `M`. */
 export type DoorsOf<M extends Module, N> = { readonly [D in DoorsIn<M>]: HandlerOf<D, N> };

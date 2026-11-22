@@ -194,6 +194,9 @@ export function stepProblems(steps: unknown, rows: readonly DoorRow[]): string[]
     if (step["seeded"] !== undefined && (step["seeded"] !== true || step["gate"] !== "units")) {
       say("a seeded door's handler makes its own units");
     }
+    if (row?.stop === true && step["gate"] !== "units") {
+      say("a door that takes its caller's stop makes its own units (`Door.left`)");
+    }
     if (among(["owner", "session"], caller) && !("action" in step)) {
       say("an owner's door names what only the owner may do");
     }

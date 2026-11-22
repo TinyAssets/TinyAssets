@@ -211,12 +211,12 @@ function sourceList(sources: Sources, switchedOn: readonly string[]): unknown {
 }
 
 /** `tools/<name>`: one tool of the table, called by the owner as itself. */
-const ownerTool: Route = async ({ owner: { binding, stub }, body: request, rest: name }) => {
+const ownerTool: Route = async ({ owner: { binding, stub }, body, rest: name, request }) => {
   const tool = toolTable().find((row) => row.name === name);
   if (tool === undefined) {
     return failure(404, "no such tool");
   }
-  return answerJson(tool.name, await callDoor(stub, binding, tool.door, request));
+  return answerJson(tool.name, await callDoor(stub, binding, tool.door, body, request.signal));
 };
 
 /**
@@ -508,7 +508,8 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
     return failure(400, NO_FIELDS);
   }
   if ("door" in route) {
-    return answer(200, await callDoor(owner.stub, owner.binding, route.door, parsed));
+    return answer(200, await callDoor(owner.stub, owner.binding, route.door, parsed,
+                                      request.signal));
   }
   return route.serve({ env, owner, body: parsed, presented: presented!, token, request,
                        sources, gate, rest: found!.rest });

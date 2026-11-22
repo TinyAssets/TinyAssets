@@ -36,7 +36,7 @@ export default {
       const owner = env.OWNER.getByName(name);
       const binding = { owner: name, caller: name, origin: null };
       const door = <D extends DoorName>(called: D, asked?: unknown) =>
-        callDoor(owner, binding, called, asked);
+        callDoor(owner, binding, called, asked, new AbortController().signal);
       const files: Record<string, boolean> = {};
       for (const path of SEEDED) {
         files[path] = (await door("fileStat", { path })).entry !== null;
