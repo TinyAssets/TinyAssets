@@ -13,8 +13,8 @@
  *   `AUTOMATON_STATES` at the deepest path, within what the sandbox's heap leaves beside the
  *   agent (`sizing.ts`).
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync,
-         utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync,
+         statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SYNC_IGNORE,
@@ -42,6 +42,27 @@ import { fetchSessions, openMirror, type Place, SyncClient, SyncFenced, syncIn, 
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
 const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
+
+/**
+ * Each folder's listing as it closes (an `opendirSync` handle's `closeSync`), told to
+ * `listed.closed`: the moment a walk has read past every entry of that folder, so a run's
+ * write made then is one the walk cannot have seen.
+ */
+const listed = vi.hoisted(() => ({ closed: (_dir: string): void => {} }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs") & { default: object }>();
+  const opendirSync = (...args: Parameters<typeof fs.opendirSync>) => {
+    const dir = fs.opendirSync(...args);
+    const close = dir.closeSync.bind(dir);
+    dir.closeSync = () => {
+      close();
+      listed.closed(String(args[0]));
+    };
+    return dir;
+  };
+  return { ...fs, default: { ...fs.default, opendirSync }, opendirSync };
+});
+afterEach(() => { listed.closed = () => {}; });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -907,17 +928,30 @@ type Files = Map<string, { version: number; text: string | null; kind?: "dir" }>
  * A stand-in feed, read and commit door over `files`, a commit's write against a version that
  * moved on, onto a folder, or under a file (the copy beside that file, the rest of the path
  * below it) kept beside the owner's under a conflict name and its outcome naming the owner's
- * entry, as the owner's object does (`files.ts` `#syncOp`, `#copyPath`); `refuse` names what a
- * commit refuses (the owner's storage full).
+ * entry, as the owner's object does (`files.ts` `#syncOp`, `#copyPath`), each write making
+ * the folders above it that the owner's files lack (`#parents`); `refuse` names what a
+ * commit refuses (the owner's storage full). The feed names each path's last change in the
+ * order of their versions.
  */
 function feedOf(files: Files, reads: string[], refuse: Set<string> = new Set()): Handler {
   const kindOf = (file: { text: string | null; kind?: "dir" } | undefined) =>
     file?.kind ?? (file?.text == null ? null : "file");
+  const write = (path: string, text: string) => {
+    const parts = path.split("/");
+    for (let end = 3; end < parts.length; end++) {
+      const dir = parts.slice(0, end).join("/");
+      if (kindOf(files.get(dir)) === null) {
+        files.set(dir, { version: version += 1, text: null, kind: "dir" });
+      }
+    }
+    files.set(path, { version: version += 1, text });
+  };
   return (door, body) => {
     if (door === "changes") {
       const after = body["after"] as number;
       const changes = [...files.entries()].filter(([, file]) => file.version > after)
-        .map(([path, file]) => ({ path, kind: kindOf(file), version: file.version }));
+        .map(([path, file]) => ({ path, kind: kindOf(file), version: file.version }))
+        .sort((one, other) => one.version - other.version);
       return { status: 200, body: { changes, reset: false, cursor: Math.max(after,
         ...changes.map((change) => change.version)) } };
     }
@@ -956,12 +990,16 @@ function feedOf(files: Files, reads: string[], refuse: Set<string> = new Set()):
           while (files.get(name(n))?.text != null) {
             n += 1;
           }
-          files.set(name(n), { version: version += 1, text });
+          write(name(n), text);
         }
         return { path: op.path, outcome: "conflict", current: current === undefined ? null
           : { kind: kindOf(current), version: current.version } };
       }
-      files.set(op.path, { version: version += 1, text });
+      if (text === null) {
+        files.set(op.path, { version: version += 1, text });
+      } else {
+        write(op.path, text);
+      }
       return { path: op.path, outcome: "committed",
                entry: text === null ? null : { version } };
     }) } };
@@ -1330,24 +1368,25 @@ describe("a resume's session, when a run keeps a newer copy in the store during 
   });
 });
 
-describe("a path that changes kind in the owner's files", () => {
-  /** A sandbox holding the owner's files as it sent them: its door, and theirs. */
-  async function sent(write: Record<string, string>) {
-    const { place: p, local } = place();
-    const files: Files = new Map();
-    const mirror = mirrorOf();
-    const door = await client(feedOf(files, []));
-    for (const [rel, text] of Object.entries(write)) {
-      mkdirSync(dirname(join(local, rel)), { recursive: true });
-      writeFileSync(join(local, rel), text);
-    }
-    await syncOut(door, p, mirror, LEASE, []);
-    const read = (rel: string) => existsSync(join(local, rel))
-      ? statSync(join(local, rel)).isDirectory() ? "a folder" : readFileSync(join(local, rel), "utf8")
-      : null;
-    return { p, local, files, mirror, door, read };
+/** A sandbox holding the owner's files as it sent them: its door, its fetches, and theirs. */
+async function sent(write: Record<string, string>) {
+  const { place: p, local } = place();
+  const files: Files = new Map();
+  const reads: string[] = [];
+  const mirror = mirrorOf();
+  const door = await client(feedOf(files, reads));
+  for (const [rel, text] of Object.entries(write)) {
+    mkdirSync(dirname(join(local, rel)), { recursive: true });
+    writeFileSync(join(local, rel), text);
   }
+  await syncOut(door, p, mirror, LEASE, []);
+  const read = (rel: string) => existsSync(join(local, rel))
+    ? statSync(join(local, rel)).isDirectory() ? "a folder" : readFileSync(join(local, rel), "utf8")
+    : null;
+  return { p, local, files, reads, mirror, door, read };
+}
 
+describe("a path that changes kind in the owner's files", () => {
   it("a file where the sandbox holds a folder: its unsent files sent beside, then the owner's " +
      "file", async () => {
     const s = await sent({ "docs/kept.md": "kept", "docs/plain.md": "plain" });
@@ -1402,6 +1441,98 @@ describe("a path that changes kind in the owner's files", () => {
     await syncIn(s.door, s.p, s.mirror);
     expect([s.read("docs"), s.read("notes.md/a.md")]).toEqual(["the owner's docs", "theirs"]);
     expect((await syncOut(s.door, s.p, s.mirror, LEASE, [])).committed).toBe(0);
+  });
+});
+
+describe("a folder gone from the owner's files", () => {
+  const LATE = "a run's file, made once the walk read its folder";
+
+  /**
+   * The owner's files removing `docs`, as the files door does (`#remove`: the folder's own
+   * entries, then those deeper, then the folder), and holding `docs` as `owner` (null: gone).
+   */
+  function removeDocs(files: Files, below: readonly string[], owner: string | null = null) {
+    for (const rel of below) {
+      files.set(`/workspace/docs/${rel}`, { version: version += 1, text: null });
+    }
+    files.set("/workspace/docs", { version: version += 1, text: owner });
+  }
+
+  /**
+   * A sandbox holding a `plain.md` in `docs`, `docs/sub` and `docs/sub/deep` as it sent them,
+   * the owner's files removing `docs` (or making a file of it, `owner`); a run writes
+   * `late.md` in `at` as sync-in's walk closes that folder's listing.
+   */
+  async function lateIn(at: string, owner: string | null) {
+    const s = await sent({ "docs/plain.md": "plain", "docs/sub/plain.md": "plain",
+                           "docs/sub/deep/plain.md": "plain" });
+    removeDocs(s.files, ["plain.md", "sub", "sub/deep", "sub/plain.md", "sub/deep/plain.md"],
+               owner);
+    listed.closed = (dir) => {
+      if (dir === join(s.local, at)) {
+        listed.closed = () => {};
+        writeFileSync(join(s.local, at, "late.md"), LATE);
+      }
+    };
+    await syncIn(s.door, s.p, s.mirror);
+    return s;
+  }
+
+  it("keeps a file a run makes in it once the walk read past it, and sends it as any new file: " +
+     "the owner's folder made again", async () => {
+    // In `docs/sub/deep` the walk is `docs/sub`'s, which the owner's removal names first.
+    for (const at of ["docs", "docs/sub", "docs/sub/deep"]) {
+      const s = await lateIn(at, null);
+      const folders = ["docs/sub", "docs/sub/deep"];
+      expect([s.read(`${at}/late.md`),
+              ...["docs", ...folders].map((rel) => s.read(`${rel}/plain.md`)),
+              folders.filter((rel) => s.read(rel) !== null)])
+        .toEqual([LATE, null, null, null,
+                  folders.filter((rel) => `${at}/`.startsWith(`${rel}/`))]);
+      const report = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+      expect([report.conflicts, report.committed, s.files.get(`/workspace/${at}/late.md`)?.text,
+              s.files.get("/workspace/docs")?.kind])
+        .toEqual([[], 1, LATE, "dir"]);
+      // No loop: sync-in fetches nothing, and nothing is sent again.
+      await syncIn(s.door, s.p, s.mirror);
+      expect([s.reads, (await syncOut(s.door, s.p, s.mirror, LEASE, [])).committed])
+        .toEqual([[], 0]);
+    }
+  });
+
+  it("where the owner's files make a file of it, keeps such a file, sent beside theirs, then " +
+     "takes their file", async () => {
+    const s = await lateIn("docs", "the owner's docs");
+    expect([s.read("docs/late.md"), s.read("docs/sub")]).toEqual([LATE, null]);
+    const report = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect([report.conflicts, s.files.get(`/workspace/docs.ta-conflict-${LEASE.epoch}/late.md`)
+      ?.text, s.read("docs")])
+      .toEqual([["/workspace/docs/late.md"], LATE, "the owner's docs"]);
+    await syncIn(s.door, s.p, s.mirror);
+    expect([s.read(`docs.ta-conflict-${LEASE.epoch}/late.md`),
+            (await syncOut(s.door, s.p, s.mirror, LEASE, [])).committed])
+      .toEqual([LATE, 0]);
+  });
+
+  it("goes an entry at a time: what sync-out never sends, and each folder emptied, but one " +
+     "holding an unsent file", async () => {
+    const s = await sent({ "docs/sub/kept.md": "kept", "docs/other/deep/plain.md": "plain" });
+    writeFileSync(join(s.local, "docs", "sub", "kept.md"), "the run's edit");
+    mkdirSync(join(s.local, "docs", "other", "node_modules"));
+    writeFileSync(join(s.local, "docs", "other", "node_modules", "x.js"), "rebuilt");
+    symlinkSync("../elsewhere", join(s.local, "docs", "link"));
+    writeFileSync(Buffer.concat([Buffer.from(join(s.local, "docs", "/")), Buffer.from([0xff])]),
+                  "a name not UTF-8");
+    removeDocs(s.files, ["sub", "other", "sub/kept.md", "other/deep", "other/deep/plain.md"]);
+    await syncIn(s.door, s.p, s.mirror);
+    expect([readdirSync(join(s.local, "docs")), readdirSync(join(s.local, "docs", "sub")),
+            s.read("docs/sub/kept.md")])
+      .toEqual([["sub"], ["kept.md"], "the run's edit"]);
+    const report = await syncOut(s.door, s.p, s.mirror, LEASE, []);
+    expect([report.conflicts,
+            s.files.get(`/workspace/docs/sub/kept.md.ta-conflict-${LEASE.epoch}`)?.text,
+            s.read("docs/sub/kept.md")])
+      .toEqual([["/workspace/docs/sub/kept.md"], "the run's edit", null]);
   });
 });
 

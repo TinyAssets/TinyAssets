@@ -101,7 +101,8 @@ it by name (`formatStep`), so a rollback meets only that, and takes no forward e
   sync-in's rename onto the folder fails loudly (`is a directory`), and so does every sync-in
   after it, until the folder goes. It predates this change and is not this race.
 - **A gone folder keeping a file** leaves what sync-out never sends under it (an ignored
-  tree, a link): only while a file under it holds unsent changes.
+  tree, a link): only while a file under it holds unsent changes. (Fixed in
+  `gone-folder-late-file.md`: those go whatever stays.)
 
 ## Review (2026-11-22)
 
