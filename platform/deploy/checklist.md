@@ -77,15 +77,13 @@ More on two of them:
 - **The migration locks.** The kit refuses to run unless each lock
   (`platform/owner/migrations.json`, and the sandbox Worker's
   `platform/sandbox/migrations/<class>.json`) marks the first deploy and pins every migration
-  the code ships, in order. **A deploy that adds a migration** pins it first:
-  1. **Pin.** On a branch made from the current `main`, run this in `platform/`, naming the
-     Worker (`owner` or `sandbox`):
-     `node ci/kit/locks.ts pin owner $(git rev-parse HEAD)`.
-     It appends a digest for each new migration to that Worker's locks.
-  2. **Land it.** Commit only those files and merge them to `main` by pull request. The workflow
-     runs only from `main`, and the kit reads the lock there.
-  3. **Pin only when you deploy.** A pinned migration is frozen for good: from then on a
-     change to it is a new migration, even if no deploy follows.
+  the code ships, in order. Every lock marks its first deploy, so **the pull request that adds
+  a migration pins it** (`node ci/kit/locks.ts pin owner HEAD` in `platform/`, naming the
+  Worker); its Worker's migrations guard fails the PR until it does, so `main` is always
+  pinned and a deploy pins nothing. From its merge a migration is frozen: a change to it is
+  a new migration, even if no deploy has run it. A new Worker's lock marks its first deploy
+  by the same command, on a branch from `main` with the commit it deploys, merged before
+  that deploy: the workflow runs only from `main`, and the kit reads the lock there.
 - **The sandbox's template is built** (`E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`).
   The kit checks E2B has a ready build, and the `pair` job checks the pair.
 
