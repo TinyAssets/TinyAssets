@@ -133,6 +133,7 @@ import { migrated } from "../ci/kit/locks.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
 // The envelope and the E2B client import only by their own names, so Node's type stripping
 // runs them here.
+import { canonical } from "../contract/src/canonical.ts";
 import { closedToAll, CONTROL_KEY, controlOf } from "../contract/src/control.ts";
 import { EGRESS_HOST } from "../contract/src/egress.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
@@ -141,7 +142,7 @@ import {
 } from "../contract/src/identity.ts";
 import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
-  argsText, LOCATE_PAGE, locateArgs, type LocatedPage, namespacesArgs, OPERATOR_KEYRING,
+  LOCATE_PAGE, locateArgs, type LocatedPage, namespacesArgs, OPERATOR_KEYRING,
   type OperatorArgs,
 } from "../contract/src/operator-message.ts";
 import type { LocatedOwner, NamespacePage } from "../contract/src/files.ts";
@@ -1582,7 +1583,7 @@ async function asked(run: Run, got: Pick<Values, "cloudflare" | "account">, op: 
 const ownerAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   const { op, args } = run.act!;
   const owner = run.owner!;
-  say(`ask the doors ${op} ${argsText(args)} for ${owner}, through the operator channel, ` +
+  say(`ask the doors ${op} ${canonical(args)} for ${owner}, through the operator channel, ` +
       "between its state (owner.state) before and after");
   if (!run.apply) {
     return;
