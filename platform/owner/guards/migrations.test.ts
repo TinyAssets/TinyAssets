@@ -1,6 +1,6 @@
 /**
  * The owner's migrations held to their lock, `owner/migrations.json` (`ci/kit/locks.ts`,
- * which says what a lock holds and how a deploy pins it).
+ * which says what a lock holds and when a migration is pinned).
  */
 import { createHash } from "node:crypto";
 
@@ -14,7 +14,7 @@ import { workerSources } from "../../ci/kit/sources";
 import { LOCKS } from "./locks";
 
 describe("append-only migrations", () => {
-  it("hold every deployed migration to its pinned text", () => {
+  it("hold every migration to its pin", () => {
     expect(holdLocks(LOCKS)).toEqual([]);
   });
 });

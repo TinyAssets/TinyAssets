@@ -72,7 +72,7 @@ export function sample(shape: Shape, over: Record<string, unknown> = {}): Record
 
 /**
  * A document as the Worker writes it (`protocol.ts`): every field each protocol it speaks
- * (`speaks`) records, of the types any of them gives it, so a runner of each reads it.
+ * (`speaks`) records, of the types every one recording it reads, so a runner of each reads it.
  */
 export function spokenShape(kind: keyof Protocol["documents"], speaks: readonly number[]):
     Shape {
@@ -87,7 +87,11 @@ function joined(a: Shape, b: Shape): Shape {
     if (had === undefined) {
       out[key] = types;
     } else if (typeof had === "string" && typeof types === "string") {
-      out[key] = [...new Set([...had.split("|"), ...types.split("|")])].join("|");
+      const both = had.split("|").filter((type) => types.split("|").includes(type));
+      if (both.length === 0) {
+        throw new Error(`${key} has no type every protocol reads: ${had}, ${types}`);
+      }
+      out[key] = both.join("|");
     } else if (typeof had !== "string" && typeof types !== "string") {
       out[key] = joined(had, types);
     } else {
