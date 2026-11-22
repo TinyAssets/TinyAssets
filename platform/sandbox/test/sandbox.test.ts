@@ -11,7 +11,8 @@
  * create uploads and installs it before its first command, a resume with it there sends
  * nothing more, an absent one is installed and asked again, bytes not their digest launch
  * nothing, and a sandbox on another runner keeps it while anything lives and adopts the
- * Worker's at the first start that finds nothing living.
+ * Worker's at the first start that finds nothing living, whatever protocol the other speaks;
+ * a start goes on under a runner it keeps only where the Worker speaks its protocol.
  */
 import {
   createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
@@ -1250,6 +1251,88 @@ describe("the runner, by digest", () => {
         : "sandbox_runner_protocol");
     }
   });
+
+  for (const protocol of [PROTOCOL - 1, PROTOCOL + 5]) {
+    it(`adopts its own over a runner nothing lives on, speaking protocol ${protocol}`,
+       async () => {
+      const who = owner();
+      const old = "0".repeat(64);
+      await bornUnder(who, old);
+      await e2b("/script", { state: { live: 0, quiet: true }, protocol });
+      const before = (await seen()).commands.length;
+      expect(await stub(who).start(start({ run: `run_${hex(32, "3")}`, tokens: null,
+                                            network: null }))).toEqual({ started: true });
+      const digest = await runnerDigest();
+      expect((await seen()).commands.slice(before).map((command) =>
+        [command.argv[1], command.runner])).toEqual([
+        ["state", old], ["install", null], ["adopt", digest], ["prepare", digest],
+        ["signin-check", digest], ["launch", digest]]);
+    });
+  }
+
+  for (const protocol of [PROTOCOL, PROTOCOL - 1]) {
+    it(`restarts a rebooted sandbox's runs under their runner only where it speaks its ${
+      ""}protocol (${protocol})`, async () => {
+      const who = owner();
+      const old = "0".repeat(64);
+      await bornUnder(who, old);
+      await e2b("/script", { state: { live: 0, quiet: true }, pauseMode: "filesystem" });
+      await stub(who).release({ lease_id: LEASE.lease_id });
+      await e2b("/script", { protocol });
+      const before = (await seen()).commands.length;
+      const answer = await stub(who).start(start({ run: `run_${hex(32, "3")}`,
+                                                   lease: { lease_id: hex(32, "f"), epoch: 2 } }))
+        .then((started) => started, (error: unknown) => refusalOf(error)?.code);
+      const commands = (await seen()).commands.slice(before).map((command) =>
+        [command.argv[1], command.runner]);
+      // Never adopted over: its runs restart under the runner that launched them, or, where
+      // this Worker does not speak its protocol, nothing more is sent to it.
+      if (SPEAKS.includes(protocol)) {
+        expect(answer).toEqual({ started: true });
+        expect(commands).toEqual([["state", old], ["prepare", old], ["recover", old],
+                                  ["signin-check", old], ["launch", old]]);
+      } else {
+        expect(answer).toBe("sandbox_runner_protocol");
+        expect(commands).toEqual([["state", old]]);
+        // Resumed, so its row says it runs, and the look is armed for it.
+        expect((await seen()).sandboxes[0]!.state).toBe("running");
+        expect(await runInDurableObject(stub(who), (_instance, state) =>
+          state.storage.sql.exec("SELECT paused FROM sandboxes").one().paused)).toBe(0);
+        expect(await alarmOf(who)).not.toBeNull();
+      }
+    });
+  }
+
+  for (const protocol of [PROTOCOL, PROTOCOL - 1]) {
+    it(`goes on under a renewal's runner only where it speaks its protocol (${protocol})`,
+       async () => {
+      await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
+      const who = owner();
+      const old = "0".repeat(64);
+      const id = await bornUnder(who, old);
+      await e2b("/script", { state: { live: 1, quiet: true } });
+      await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+      // The renewal's pause lands and its resume is refused: a lease's run lives in it.
+      await e2b("/script", { others: 1, refuseResume: true });
+      await runDurableObjectAlarm(stub(who));
+      expect((await seen()).sandboxes[0]!.state).toBe("paused");
+      await e2b("/script", { refuseResume: false, protocol });
+      const before = (await seen()).commands.length;
+      const answer = await stub(who).start(start({ run: `run_${hex(32, "3")}`, tokens: null,
+                                                   network: null }))
+        .then((started) => started, (error: unknown) => refusalOf(error)?.code);
+      const commands = (await seen()).commands.slice(before).map((command) =>
+        [command.argv[1], command.runner]);
+      if (SPEAKS.includes(protocol)) {
+        expect(answer).toEqual({ started: true });
+        expect(commands).toEqual([["state", old], ["prepare", old], ["renewed", old],
+                                  ["signin-check", old], ["launch", old]]);
+      } else {
+        expect(answer).toBe("sandbox_runner_protocol");
+        expect(commands).toEqual([["state", old]]);
+      }
+    });
+  }
 
   it("names a runner whose bytes are not their digest for the founder", async () => {
     const who = owner();

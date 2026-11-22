@@ -11,17 +11,21 @@
  * `protocol.json` records each version whole (its commands, exit codes, paths, documents
  * and answers), frozen by digest (`state-format.test.ts`); this file, what the Worker writes
  * and what the runner answers are held to its record. The runner reports its own protocol in
- * `state`; the Worker speaks `SPEAKS` and refuses loudly a runner speaking another, and each
- * document it writes holds every field a protocol it speaks reads (one a newer protocol added,
- * one it dropped), so any of their runners reads it. A change ships in two deploys: the first
- * Worker speaks both while its runner speaks the old one, the second runner speaks the new one.
+ * `state`, which every protocol answers alike (`state-format.test.ts`), so the Worker reads any
+ * runner's protocol and whether anything lives on it. The Worker speaks `SPEAKS`: it launches
+ * nothing on a runner speaking another, refusing loudly, and adopts its own over one that
+ * nothing lives on, whatever that one speaks. Each document it writes holds every field a
+ * protocol it speaks reads (one a newer protocol added, one it dropped), so any of their
+ * runners reads it. A change ships in two deploys: the first Worker speaks both while its
+ * runner speaks the old one, the second runner speaks the new one. A later Worker speaks the
+ * new one alone, dropping what only the old one read.
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
 export const PROTOCOL = 4;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([3, 4]);
+export const SPEAKS: readonly number[] = Object.freeze([4]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({
@@ -67,16 +71,6 @@ export type HookCommand = (typeof HOOK_COMMANDS)[number];
 /** What the runner runs of its own: a job's detached runner, the sync agent, the hook commands. */
 export const INTERNAL_COMMANDS = Object.freeze([COMMAND.run, COMMAND.loginRun, COMMAND.sync,
                                                 ...HOOK_COMMANDS] as const);
-
-/**
- * Retired: commands protocol 1 records that the runner no longer takes. The template's
- * standing checks run from a bundle of their own (`probes.ts`) and were never the Worker's,
- * recorded by mistake; `status` the Worker never sent (the owner's object finds a lost
- * runner by its heartbeat). The next protocol's record names the Worker's and the runner's
- * own commands alone.
- */
-export const RETIRED_IN_1: readonly string[] = Object.freeze(["login-probe", "matcher-probe",
-                                                              "route-probe", "status"]);
 
 /**
  * The exit codes. The runner's: done, a usage refused (no such command), "no" (not signed
@@ -180,8 +174,7 @@ export interface DocLease {
  * under which lease, the run's config, its doors (`mcp` carries the run's own secret;
  * `mcp_bare` is the one a record sending that secret in a header takes), the control
  * record's scratch retention (null when it names none; absent, the same), the agent's own
- * MCP servers its admission kept (protocol 3), and its own hooks by event, an event absent
- * holding none (protocol 4).
+ * MCP servers its admission kept, and its own hooks by event, an event absent holding none.
  */
 export interface StartDoc {
   readonly run: string;

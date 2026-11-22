@@ -21,8 +21,10 @@
  * the newest format on the disk and is never lowered: a rolled-back runner leaves it as it
  * found it. A runner meeting a format it does not read fails loudly (`checkFormat`, at
  * `prepare` and `adopt`), and nothing runs. The protocol (`protocol.ts`: the commands and
- * the `state` answer the Worker relies on) moves the same way: the Worker speaks `SPEAKS`,
- * its runner's protocol and at most the ones either side of it.
+ * the documents) moves the same way: the Worker speaks `SPEAKS`, its runner's protocol and at
+ * most the ones either side of it. Its `state` answer never moves: every protocol gives it
+ * alike, so the Worker reads any runner's protocol, and adopts its own over one nothing
+ * lives on whatever that one speaks.
  *
  * `state-format.json` records each format (the mirror's schema, and each persisted file's
  * fields and their types) and `protocol.json` each protocol; both are frozen once recorded

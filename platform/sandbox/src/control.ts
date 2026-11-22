@@ -40,9 +40,12 @@
  * and the sandbox goes on with the runner it has, asked again at its next start. The
  * loader's absent (24) has the Worker's own digest uploaded and installed and the command
  * asked again, once; its mismatch (25) is the alert `sandbox_runner_mismatch`, logged and
- * thrown as the contract's refusal of that code, and nothing launches. A runner speaking a
- * protocol this Worker does not (`SPEAKS`) is refused the same way
- * (`sandbox_runner_protocol`).
+ * thrown as the contract's refusal of that code, and nothing launches. Before a start
+ * launches on a runner not its own, the Worker asks it `state`, which every protocol answers
+ * alike: one nothing lives on is adopted where it can be, whatever protocol it speaks; one it
+ * keeps (something lives on it, its adoption failed, or a rebooted sandbox's runs restart
+ * under it) must speak a protocol this Worker does (`SPEAKS`), or the start is refused the
+ * same way (`sandbox_runner_protocol`) and nothing is sent to it. The look refuses it too.
  *
  * **The look** (the alarm; the founder's rule of 2026-11-03): a sandbox may run
  * `runtime_ceiling_s` at a stretch, and a pause resets that window (probed). The window's
@@ -277,8 +280,7 @@ function httpsDoors(urls: Readonly<Record<string, string>>): boolean {
  * The start's document as the runner reads it (the protocol's own, field by field): the
  * start but the lease's secrets, its network and its sealed route, with the control
  * record's scratch retention (`scratch_retention_days`, null when it names none), the
- * agent's own MCP servers, each by its URL or its command, and its own hooks by event:
- * protocol 4's field, which a protocol 3 runner does not read.
+ * agent's own MCP servers, each by its URL or its command, and its own hooks by event.
  */
 function startDocument(start: SandboxStart, retentionDays: number | null): StartDoc {
   const { config, lease, urls } = start;
@@ -347,20 +349,19 @@ function answerOf<T>(out: string, fields: AnswerFields<T>): T {
 }
 
 /**
- * The state `box`'s runner answered (`out`), from a runner speaking a protocol this Worker
- * speaks: one that does not is refused (`sandbox_runner_protocol`), and nothing runs on it.
+ * The state `box`'s runner answered, from a runner speaking a protocol this Worker speaks:
+ * one that does not is refused (`sandbox_runner_protocol`), and nothing runs on it.
  */
-function stateOf(box: Box, out: string): StateAnswer {
-  const protocol = (JSON.parse(out) as Partial<Record<keyof StateAnswer, unknown>>).protocol;
-  if (typeof protocol !== "number" || !SPEAKS.includes(protocol)) {
+function spoken(box: Box, state: StateAnswer): StateAnswer {
+  if (!SPEAKS.includes(state.protocol)) {
     console.error(`sandbox_runner_protocol: the runner ${box.runner} in sandbox ${
-      box.sandboxID} speaks protocol ${String(protocol)}; this Worker speaks ${
+      box.sandboxID} speaks protocol ${state.protocol}; this Worker speaks ${
       SPEAKS.join(" and ")}`);
     throw new Refusal("sandbox_runner_protocol",
                       "the sandbox's runner speaks a protocol this Worker does not; nothing " +
                       "runs on it");
   }
-  return answerOf<StateAnswer>(out, ANSWERS[COMMAND.state]);
+  return state;
 }
 
 /**
@@ -613,40 +614,55 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * The sandbox on this Worker's runner, when it runs another and nothing lives in it (no
-   * run, no sign-in): installed, `adopt`ed (the disk held to its format; nothing deleted)
-   * and committed to its row, its caller then running the adopted runner's `prepare`, which
-   * drops the other runners' bytes. Otherwise as it is: a live run's runner stays. A
-   * failure on the way keeps the runner it has (logged loudly, asked again at the next
-   * start): an adoption is never what fails a start. Only a refusal (the runner's, by its
-   * code) is thrown. Whether it adopted.
+   * The sandbox's runner as a start finds it, made one this Worker speaks to before anything
+   * else is sent to it. Its own is as it is. Another is asked `state`, which every protocol
+   * answers alike: when nothing lives in it (no run, no sign-in) and `adoptable`, this
+   * Worker's is installed, `adopt`ed (the disk held to its format; nothing deleted) and
+   * committed to its row, its caller then running the adopted runner's `prepare`, which drops
+   * the other runners' bytes. A runner kept (a live run's, a rebooted sandbox's, a renewal's,
+   * or one whose adoption failed) must speak a protocol this Worker speaks, or it is refused
+   * (`sandbox_runner_protocol`); one whose `state` fails is a fault, thrown, never gone on
+   * with. An adoption that fails on the way keeps the runner it has (logged loudly, asked
+   * again at the next start), so an adoption alone never fails a start. Whether it adopted.
    */
-  async #adopt(authority: string, box: Box): Promise<{ box: Box; adopted: boolean }> {
-    const digest = this.#digest;
-    if (box.runner === digest) {
+  async #speaking(authority: string, box: Box, adoptable: boolean):
+      Promise<{ box: Box; adopted: boolean }> {
+    if (box.runner === this.#digest) {
       return { box, adopted: false };
     }
+    const asked = await this.#exec(box, [COMMAND.state]);
+    // Its own runner gone from the disk: nothing can live on it.
+    const state = asked.exitCode === EXIT.absent ? null
+      : answerOf<StateAnswer>(answered(COMMAND.state, asked).out, ANSWERS[COMMAND.state]);
+    if (adoptable && (state === null || state.live === 0) && await this.#adopt(authority, box)) {
+      return { box: { ...box, runner: this.#digest }, adopted: true };
+    }
+    if (state === null) {
+      throw new Error(`the runner ${box.runner} is gone from sandbox ${box.sandboxID}, and ` +
+                      "this Worker's is not adopted");
+    }
+    spoken(box, state);
+    return { box, adopted: false };
+  }
+
+  /** `box` on this Worker's runner, nothing living in it: whether it adopted. */
+  async #adopt(authority: string, box: Box): Promise<boolean> {
+    const digest = this.#digest;
+    const adopted = { ...box, runner: digest };
     try {
-      const asked = await this.#exec(box, [COMMAND.state]);
-      // Its own runner gone from the disk: nothing can live on it.
-      if (asked.exitCode !== EXIT.absent
-          && stateOf(box, answered(COMMAND.state, asked).out).live > 0) {
-        return { box, adopted: false };
-      }
-      const adopted = { ...box, runner: digest };
       await this.#install(adopted);
       if ((await this.#run(adopted, [COMMAND.adopt])).code !== EXIT.ok) {
-        return { box, adopted: false };  // something began living since the look
+        return false;  // something began living since the look
       }
       this.#sql.exec("UPDATE sandboxes SET runner = ? WHERE authority = ?", digest, authority);
-      return { box: adopted, adopted: true };
+      return true;
     } catch (error) {
       if (refusalOf(error) !== null) {
         throw error;
       }
       console.error(`sandbox_runner_adopt_failed: sandbox ${box.sandboxID} keeps its runner ${
         box.runner}, and this Worker's ${digest} is tried again at its next start`, error);
-      return { box, adopted: false };
+      return false;
     }
   }
 
@@ -659,18 +675,25 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * A paused sandbox resumed (memory restored, or rebooted when E2B kept its files only):
    * prepared again, and its runs told (`renewed`) or restarted from disk (`recover`). Null
    * when E2B has it no more. E2B's refusal for room is thrown (`noRoom`). A start's resume
-   * (`adopt`) of a sandbox resumed with its memory and no renewal pending adopts this
-   * Worker's runner first when nothing lives, so the one `prepare` is the adopted runner's;
-   * a rebooted one's runs restart under the runner that launched them.
+   * (`start`) makes its runner one this Worker speaks to first (`#speaking`): one resumed
+   * with its memory and no renewal pending adopts this Worker's when nothing lives, so the
+   * one `prepare` is the adopted runner's; a rebooted one's runs restart under the runner
+   * that launched them, and a renewal's runs go on under theirs.
    */
   async #resume(row: Row, found: SandboxInfo, network: NetworkDocument | null,
-                ceilings: SandboxCeilings, adopt = false): Promise<Box | null> {
+                ceilings: SandboxCeilings, start = false): Promise<Box | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
     const resumed = await e2b.connect(found.sandboxID, ceilings.runtime_ceiling_s);
     if (resumed === null) {
       return null;
     }
+    // Running from here, so its row says so: a fault or refusal on the way leaves it to the
+    // look (armed by `#launch`), never billed unseen as a paused one to its ceiling.
+    if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
+      this.#log(row.authority, "resume");
+    }
+    this.#sql.exec("UPDATE sandboxes SET paused = 0 WHERE authority = ?", row.authority);
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
                         runner: row.runner };
@@ -680,8 +703,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.#sql.exec("UPDATE sandboxes SET network_due = NULL WHERE authority = ?",
                      row.authority);
     }
-    if (adopt && found.pauseMode !== "filesystem" && row.renewing === 0) {
-      handle = (await this.#adopt(row.authority, handle)).box;
+    if (start) {
+      handle = (await this.#speaking(row.authority, handle,
+                                     found.pauseMode !== "filesystem" && row.renewing === 0)).box;
     }
     await this.#prepare(handle, applied ?? liveNetwork(found));
     if (found.pauseMode === "filesystem") {
@@ -690,11 +714,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await this.#run(handle, [COMMAND.renewed]);
     }
     const after = await e2b.info(resumed.sandboxID);
-    if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
-      this.#log(row.authority, "resume");
-    }
-    this.#sql.exec("UPDATE sandboxes SET renewing = 0, paused = 0, retry_at = NULL, tries = 0, " +
-                     "end_at = ? WHERE authority = ?",
+    this.#sql.exec("UPDATE sandboxes SET renewing = 0, retry_at = NULL, tries = 0, end_at = ? " +
+                     "WHERE authority = ?",
                    after === null ? Date.now() : Date.parse(after.endAt), row.authority);
     this.#owe(resumed.sandboxID);
     await this.#giveBack();
@@ -719,7 +740,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (network !== null) {
         await e2b.network(running.sandboxID, network);
       }
-      const { box, adopted } = await this.#adopt(authority, running);
+      const { box, adopted } = await this.#speaking(authority, running, true);
       if (adopted) {
         // The adopted runner's own `prepare`, the row naming it: its lockdown, and the
         // other runners' bytes dropped.
@@ -737,7 +758,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     };
     if (row !== null && row.renewing === 1 && found !== null) {
       // A renewal's own sandbox keeps its slot: resumed without its turn.
-      const handle = await this.#resume(row, found, network, ceilings);
+      const handle = await this.#resume(row, found, network, ceilings, true);
       return handle === null ? "lost" : { handle };
     }
     const { turn, reserved } = await slots.turn(this.#owner);
@@ -1142,7 +1163,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   async #runnerState(handle: Box): Promise<StateAnswer> {
-    return stateOf(handle, (await this.#run(handle, [COMMAND.state])).out);
+    return spoken(handle, answerOf<StateAnswer>((await this.#run(handle, [COMMAND.state])).out,
+                                                ANSWERS[COMMAND.state]));
   }
 
   /**
