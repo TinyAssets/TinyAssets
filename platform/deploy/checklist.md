@@ -242,7 +242,7 @@ It never counts as "absent".
   it does not,
   enables E2B's lifecycle webhook at the doors' path on the host now that the doors serve
   it, and runs the
-  platform's canary's unkeyed checks (`--side doors --unkeyed`, below). The same
+  platform's canary on the doors' side (`--side doors`, below). The same
   `triggers deploy` sets the doors' Cron Trigger, the canary's clock. Every connector then
   signs in again once.
 
@@ -388,8 +388,12 @@ It never counts as "absent".
     `/workspace/canary-full-run.json`; a failed day stays red until a full run passes;
     dispatch with `full` to run it now). It boots one sandbox a day.
 
-    Without `TA_PROBE_KEY` it fails (exit 7), since an unchecked check is not a pass. A
-    closed gate (`503`) is named too. The handle set assumes the canary owner keeps the
+    The keyed checks wait, key or none, only while the control record admits no owner (the
+    dark record's `ordinary: "canary"` with `canary: []`, or `ordinary: "none"`): no canary
+    owner can sign in or pass the gate then. The kit reads the record after every mode it
+    runs the canary for and says so (`--closed`); the workflow holds no token to read it, so
+    its runs always need the key. Anywhere else, without `TA_PROBE_KEY` it fails (exit 7), since an unchecked check
+    is not a pass. A closed gate (`503`) is named too. The handle set assumes the canary owner keeps the
     default policy (every tool, and code mode on): a narrowed one reads as drift.
   - **Its clock and alarm.** The doors' Cron Trigger dispatches the workflow every ten
     minutes with `PLATFORM_CANARY_TOKEN`; without the token it dispatches nothing. A failed
@@ -401,10 +405,10 @@ It never counts as "absent".
     overdue) open the `platform-down` issue and page, re-paging at 1 h, 4 h and 24 h until
     someone comments; green closes it.
   - **After `routes`, in this order:**
-    1. **The `routes` run's own canary.** It runs the unkeyed checks alone (`--side doors
-       --unkeyed`): the doors answer `/mcp` and its document, and the old stack doesn't. It
-       says the keyed checks wait. It can't run them itself: no canary owner's key exists
-       until the doors serve `/app/api`, and the dark control record admits no one.
+    1. **The `routes` run's own canary** (`--side doors`): the doors answer `/mcp` and its
+       document, and the old stack doesn't. It says the keyed checks wait: the dark control
+       record admits no one, so no canary owner exists yet. Every mode's canary says the same
+       until step 3, and from step 3 each needs `TA_PROBE_KEY`.
     2. **Disable the old pager:** `gh workflow disable uptime-canary.yml` (the manifest's
        `routes` phase). Its old-stack probes would page on every run against the doors.
     3. **Open the control record for the canary owner, both gates:** `outside: "on"`,
@@ -435,8 +439,8 @@ It never counts as "absent".
   1. **`routes`, plan then apply.** The plan shows the route record, the host's DNS record
      to make (`AAAA stage.tinyassets.io 100::`, proxied), everything `dark` does, every
      doors route added on the stage host and none of the zone's touched, the egress custom
-     domain, and the hook moved to the stage host's path and enabled. Its canary runs the
-     unkeyed checks on the stage host.
+     domain, and the hook moved to the stage host's path and enabled. Its canary checks the
+     doors on the stage host, the keyed checks waiting while the record is closed.
   2. **`handback`'s plan job once**, read-only, to see what a handback would do.
   3. **The first sign-in, with the gate closed.** It settles what only a real sign-in through
      the doors shows: User Management's `authenticate` takes the API key as the client's
