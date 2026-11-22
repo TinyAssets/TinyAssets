@@ -563,10 +563,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#connections = new Connections(storage, write, env.GATEWAY, owner, this.#notices);
     this.#egress = new Egress(storage, {
       lease: (token, now) => this.#files.leaseByToken("egress", token, now),
-      runConnection: (run, secret, lease) => {
-        const grant = this.#runs.grantFor(run, secret, lease);
-        return grant === null ? undefined : grant.connection;
-      },
+      runConnections: (run, secret, lease) => this.#runs.grantFor(run, secret, lease) ?? undefined,
       runUsage: (run) => this.#runs.usage(run),
       tierRuns: () => this.#admission.tiers()?.[this.#admission.tier()].runs ?? null,
       generation: () => this.#policy.egressGeneration(),

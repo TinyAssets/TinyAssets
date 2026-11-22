@@ -27,7 +27,7 @@ import { createServer as createHttpServer, type IncomingMessage } from "node:htt
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import type { EgressScope } from "../../contract/src/egress-scope";
+import type { ModelScope } from "../../contract/src/egress-scope";
 import { ALL_TRAFFIC, closedNetwork, DNS_SERVERS, EGRESS_ORIGIN, egressBaseUrl,
          sandboxEnv } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
@@ -203,7 +203,7 @@ const ROUTE_PROBE_MS = COMMAND_MS;
 const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
 /** The sealed API a provider's key goes to, as the gateway's record for it says. */
-function sealedScope(provider: string, engine: string): EgressScope {
+function sealedScope(provider: string, engine: string): ModelScope {
   const found = (bundledRecords() as Record<string, unknown>[]).filter((raw) =>
     raw["provider"] === provider
     && typeof raw["base_url"] === "string" && Array.isArray(raw["connect"])

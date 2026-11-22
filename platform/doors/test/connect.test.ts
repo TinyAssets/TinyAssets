@@ -306,6 +306,49 @@ describe("a pasted key", () => {
   });
 });
 
+describe("a connector's key", () => {
+  const SERVER = "https://mcp.example.com/mcp/";
+
+  it("is sealed by the gateway to its server's URL and header, the object gets only the " +
+     "blob, and nothing is sent anywhere", async () => {
+    const app = await signedIn();
+    const key = `sk-server-${crypto.randomUUID()}`;
+    const { environment, calls } = spied();
+    const answer = await post(app, "connections/connector",
+                              { url: SERVER, key, header: "x-api-key", scheme: "" }, environment);
+    const text = await answer.text();
+    expect(answer.status, text).toBe(200);
+    expect(JSON.parse(text)).toMatchObject({ source: "mcp.example.com", kind: "api_key",
+                                             provider: "service", status: "active",
+                                             display_name: "mcp.example.com", models: [],
+                                             provider_revocable: false });
+    expect(methods(calls)).toEqual(["connectionPrepare", "connectionCommit"]);
+    expect(JSON.parse(calls[1]!.args)[1].egress).toEqual({
+      kind: "service", base_url: SERVER,
+      endpoints: [{ origin: "https://mcp.example.com", paths: ["/mcp/"],
+                    methods: ["POST", "GET", "DELETE"] }] });
+    expect(await received()).toEqual([]);
+    await keptFromObject(app.owner, [key], calls, text);
+  });
+
+  it.each([
+    ["an IP address", { url: "https://10.0.0.1/mcp" }],
+    ["a URL with a query", { url: `${SERVER}?token=x` }],
+    ["a plain http URL", { url: "http://mcp.example.com/mcp/" }],
+    ["a URL not as a parser writes it", { url: "https://MCP.example.com/mcp/" }],
+    ["a header no header name", { header: "X Api Key" }],
+    ["a key with a space", { key: "sk with space" }],
+  ])("is refused for %s, before any object call", async (_what, change) => {
+    const app = await signedIn();
+    const { environment, calls } = spied();
+    const answer = await post(app, "connections/connector",
+                              { url: SERVER, key: "sk-server-1", header: "authorization",
+                                scheme: "Bearer", ...change }, environment);
+    expect(answer.status).toBe(400);
+    expect(methods(calls)).toEqual([]);
+  });
+});
+
 describe("the owner surface's routes", () => {
   it.each(["toString", "__proto__", "hasOwnProperty", "constructor", "connections/key/",
            "connections//key", "connections%2Fkey"])(

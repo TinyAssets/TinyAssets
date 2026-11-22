@@ -351,6 +351,12 @@ export const SIGNIN_URL_MAX = 8000;
  */
 export const SIGNIN_CODE_MAX = 16;
 /**
+ * A run grant's connectors, as JSON (`owner/src/runs.ts`, migration 21): each a connection
+ * id of the owner's, distinct, so at most the owner's live connections, whose ids' JSON the
+ * owner-bound guard holds within it.
+ */
+export const RUN_CONNECTORS_CHARS = 2048;
+/**
  * The mail that starts runs, which the schema checks without the ledger's code:
  * a ledger message's id (`msg_` and 32 hex), the ledger id of one of the owner's own agents
  * (`ta_` and 16 hex), and a message's authority as JSON (an outside client's id and family,

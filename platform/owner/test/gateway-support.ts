@@ -9,7 +9,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { ANTHROPIC, OPENAI } from "../../ci/fixtures";
-import type { EgressScope, Source } from "../../contract/src/egress-scope";
+import {
+  type EgressScope, SERVICE_PROVIDER, serviceSource, type Source,
+} from "../../contract/src/egress-scope";
 import type { ConnectService } from "../../contract/src/gateway";
 
 import type { ModelRecord } from "../../contract/src/model-record";
@@ -131,6 +133,24 @@ export async function gated() {
     return committed.connection;
   };
 
+  /**
+   * Connect a service's key (a connector) for the MCP server at `url`, as the connector door
+   * does: prepare, the gateway's seal and setup check, commit; returns the connection.
+   */
+  const connectService = async (key: string, url: string,
+                                auth = { header: "authorization", scheme: "Bearer" }) => {
+    const prepared = await stub.connectionPrepare(session(), {
+      source: new URL(url).hostname, kind: "api_key", display_name: "Server",
+      provider: SERVICE_PROVIDER, revocable: false });
+    const sealed = await env.CONNECT.seal(name, prepared.connection, 1, key,
+                                          serviceSource(url, auth));
+    const verified = await env.CONNECT.verify(name, prepared.connection, 1, sealed.blob);
+    await stub.connectionCommit(session(), {
+      connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
+      models: [...verified.models], egress: verified.egress });
+    return prepared.connection;
+  };
+
   /** Connect by OAuth: prepare (its flow begun), finish, the gateway's exchange, commit. */
   const connectOAuth = async (record: Source = OAUTH, expiresAt?: number) => {
     const prepared = await stub.connectionPrepare(session(), {
@@ -148,7 +168,7 @@ export async function gated() {
   };
 
   return {
-    name, stub, bind, session, cookie, connect, connectOAuth,
+    name, stub, bind, session, cookie, connect, connectService, connectOAuth,
     gateway: gateFor(env.GATEWAY_GATE, name),
     in: <R>(act: (instance: OwnerDO, state: DurableObjectState) => R | Promise<R>) =>
       runInDurableObject(stub, act),

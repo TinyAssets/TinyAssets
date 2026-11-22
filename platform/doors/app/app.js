@@ -723,7 +723,31 @@ async function sources(arg = null) {
            .map((record) => h("div", { class: "card" }, h("b", {}, record.display_name),
              record.help_url ? [" ", h("a", { href: record.help_url, rel: "noreferrer",
                                                target: "_blank" }, "Where to get one")] : null,
-             connect(record)))));
+             connect(record)))),
+       h("section", {},
+         h("h2", {}, "An MCP server's key"),
+         h("p", { class: "muted" }, "A key for one of your agents' MCP servers, by the server's " +
+           "URL exactly as its mcp.json names it. Its runs reach that server through TinyAssets, " +
+           "which puts the key in; your agents never see it. Disconnect it above to stop it."),
+         serverKey()));
+}
+
+/** The connector door's form: the server's URL, how it takes its key, and the key. */
+function serverKey() {
+  const url = h("input", { type: "url", placeholder: "The server's URL" });
+  // The MCP authorization spec's own way; a server that reads another header says so.
+  const header = h("input", { type: "text", value: "authorization", "aria-label": "Header" });
+  const scheme = h("input", { type: "text", value: "Bearer", "aria-label": "Scheme" });
+  const key = h("input", { type: "password", autocomplete: "off", placeholder: "Key" });
+  return h("div", { class: "card" }, h("div", { class: "row" }, url, header, scheme, key,
+    action("Save the key", async () => {
+      const view = await call("connections/connector", {
+        url: url.value.trim(), key: key.value.trim(), header: header.value.trim(),
+        scheme: scheme.value.trim() });
+      key.value = "";
+      say(`Saved a key for ${view.display_name}.`);
+      await sources();
+    }, report)));
 }
 
 // -- Connected apps: code mode, each client's tools, revokes --------------------------

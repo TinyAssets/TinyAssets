@@ -13,7 +13,7 @@
 import { count, list, shape } from "../../contract/src/checks";
 import {
   CLIENT_KEYS, CLIENT_OPTIONAL, endpoint, type Endpoint, ENDPOINTS_MAX, oauthClient,
-  type OAuthClient, scope, secret, upstream, type Upstream,
+  type OAuthClient, scope, secret, type ServiceUpstream, upstream, type Upstream,
 } from "../../contract/src/egress-scope";
 import { Refusal } from "../../contract/src/refusal";
 
@@ -27,7 +27,8 @@ export interface OAuthGrant extends OAuthClient {
 }
 
 interface Common {
-  readonly upstream: Upstream;
+  /** A model source's, or a service's (`isService`): no API, no meter. */
+  readonly upstream: Upstream | ServiceUpstream;
   readonly endpoints: readonly Endpoint[];
   readonly sealed_at: number;
 }

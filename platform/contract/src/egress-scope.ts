@@ -10,11 +10,16 @@
  * Every value is checked when it is sealed and again when it is opened, so a blob written
  * by older code that no longer fits fails loudly rather than being half-read; anything else
  * is `invalid_source`, the gateway's fixed code.
+ *
+ * A credential is a model source's (`Upstream`, `ModelScope`) or a service's (`ServiceUpstream`,
+ * `ServiceScope`): a key the owner gave for one URL of an outside service, an MCP server of
+ * its agents' (`serviceSource`), sent with no metering and only to that URL.
  */
 import { apiRules, declaredApi } from "./api-rules.ts";
-import { list, shape, text, valueAtPath } from "./checks.ts";
+import { list, object, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
+import { checkDestination } from "./policy-document.ts";
 
 /** One place a credential may be sent: an HTTPS origin, its paths and its methods. */
 export interface Endpoint {
@@ -30,7 +35,7 @@ export interface AuthTemplate {
   readonly scheme: string;
 }
 
-/** The source data sealed with the secret. */
+/** A model source's data, sealed with its secret. */
 export interface Upstream {
   /** A pi-ai provider id, or `custom` for a declared endpoint. */
   readonly provider: string;
@@ -42,6 +47,27 @@ export interface Upstream {
   readonly verify_url?: string;
   /** For `custom` only: the models it serves, each its whole record (`model-record.ts`). */
   readonly models?: readonly ModelRecord[];
+}
+
+/**
+ * A service's data, sealed with its secret: the one URL it is sent to and how (its header and
+ * scheme, as the owner gave them: data, never a vendor's code). No API, no models, no meter.
+ */
+export interface ServiceUpstream {
+  readonly kind: "service";
+  readonly base_url: string;
+  readonly auth: AuthTemplate;
+}
+
+/**
+ * The provider a service's connection names (`owner/src/connections.ts`): no pi-ai provider's
+ * id, so no model path ever takes it for one, and the connection's scope says which service.
+ */
+export const SERVICE_PROVIDER = "service";
+
+/** Whether an upstream is a service's, not a model source's. */
+export function isService(upstream: Upstream | ServiceUpstream): upstream is ServiceUpstream {
+  return "kind" in upstream;
 }
 
 /** How the gateway authenticates to a token endpoint (RFC 6749 §2.3). */
@@ -169,10 +195,50 @@ function supported(api: string): string {
   return api;
 }
 
-/** An upstream; a declared endpoint (`custom`) only on an API with a declared adapter. */
-export function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
+/** How a secret is sent, checked. */
+function authTemplate(value: unknown): AuthTemplate {
+  const auth = shape(value, ["header", "scheme"]);
+  return Object.freeze({ header: text(auth["header"], HEADER), scheme: text(auth["scheme"], SCHEME) });
+}
+
+/**
+ * A service's base URL and kind, held to its endpoints: the URL exactly its one endpoint's
+ * one path, at that endpoint's origin, with no query, so a key is bound to the URL it was
+ * given for and nothing else there.
+ */
+function serviceBase(kind: unknown, value: unknown, endpoints: readonly Endpoint[]): string {
+  const base = httpsUrl(value);
+  const [only] = endpoints;
+  if (kind !== "service" || endpoints.length !== 1 || only!.origin !== base.origin
+      || only!.paths.length !== 1 || only!.paths[0] !== base.pathname || base.search !== "") {
+    throw new Refusal("invalid_source");
+  }
+  return value as string;
+}
+
+function serviceUpstream(value: unknown, endpoints: readonly Endpoint[]): ServiceUpstream {
+  const fields = shape(value, ["kind", "base_url", "auth"]);
+  return Object.freeze({ kind: "service",
+                         base_url: serviceBase(fields["kind"], fields["base_url"], endpoints),
+                         auth: authTemplate(fields["auth"]) });
+}
+
+/** What a service's key is sealed with (`serviceSource`). */
+export interface ServiceSource {
+  readonly upstream: ServiceUpstream;
+  readonly endpoints: readonly Endpoint[];
+}
+
+/** An upstream as it is sealed and opened: a service's, or a model source's. */
+export function upstream(value: unknown, endpoints: readonly Endpoint[]):
+    Upstream | ServiceUpstream {
+  return object(value) && "kind" in value ? serviceUpstream(value, endpoints)
+    : modelUpstream(value, endpoints);
+}
+
+/** A model source's upstream; a declared endpoint (`custom`) only on an API with a declared adapter. */
+function modelUpstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
   const fields = shape(value, ["provider", "api", "base_url", "auth"], ["verify_url", "models"]);
-  const auth = shape(fields["auth"], ["header", "scheme"]);
   const provider = text(fields["provider"], ID);
   const base = httpsUrl(fields["base_url"]);
   if (!endpoints.some((entry) => entry.origin === base.origin)) {
@@ -191,7 +257,7 @@ export function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstre
     provider,
     api,
     base_url: fields["base_url"] as string,
-    auth: Object.freeze({ header: text(auth["header"], HEADER), scheme: text(auth["scheme"], SCHEME) }),
+    auth: authTemplate(fields["auth"]),
     ...(verify === undefined ? {} : { verify_url: verify as string }),
     ...(custom ? { models: Object.freeze(list(fields["models"], 1, MODELS_MAX, checkedRecord)) } : {}),
   });
@@ -228,7 +294,7 @@ export function oauthClient(fields: Record<string, unknown>): OAuthClient {
 export function source(value: unknown, oauth: boolean): Source {
   const fields = shape(value, oauth ? ["upstream", "endpoints", "oauth"] : ["upstream", "endpoints"]);
   const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
-  const checked = { upstream: upstream(fields["upstream"], endpoints), endpoints };
+  const checked = { upstream: modelUpstream(fields["upstream"], endpoints), endpoints };
   if (!oauth) {
     return Object.freeze(checked);
   }
@@ -238,13 +304,56 @@ export function source(value: unknown, oauth: boolean): Source {
   });
 }
 
+/**
+ * The methods MCP's streamable HTTP transport sends its one endpoint (spec 2025-11-25,
+ * Transports: a message `POST`, the stream's `GET`, the session's end `DELETE`).
+ */
+const SERVICE_METHODS: readonly string[] = Object.freeze(["POST", "GET", "DELETE"]);
+
+/**
+ * The values a key the owner gave for the service at `url` is sealed with: that URL alone
+ * (its origin, its exact path, no query), on the transport's methods, its secret sent as
+ * `auth` says. Its host is held to the egress table's own rule (`checkDestination`: a name,
+ * never an IP address), so a key is bound to a host the sandbox's network could name.
+ */
+export function serviceSource(url: unknown, auth: unknown): ServiceSource {
+  const parsed = httpsUrl(url);
+  if (parsed.search !== "") {
+    throw new Refusal("invalid_source");
+  }
+  try {
+    checkDestination({ host: parsed.hostname,
+                       port: parsed.port === "" ? 443 : Number(parsed.port) });
+  } catch {
+    throw new Refusal("invalid_source");
+  }
+  const endpoints = Object.freeze([endpoint({ origin: parsed.origin, paths: [parsed.pathname],
+                                              methods: SERVICE_METHODS })]);
+  return Object.freeze({
+    upstream: serviceUpstream({ kind: "service", base_url: parsed.href, auth }, endpoints),
+    endpoints });
+}
+
+/**
+ * What a pasted key is sealed with, checked: a model source record's values (`source`), or
+ * a service's (`serviceSource`'s, held to its own rule again).
+ */
+export function keySource(value: unknown): Source | ServiceSource {
+  const fields = shape(value, ["upstream", "endpoints"]);
+  if (!(object(fields["upstream"]) && "kind" in fields["upstream"])) {
+    return source(value, false);
+  }
+  const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
+  return Object.freeze({ upstream: serviceUpstream(fields["upstream"], endpoints), endpoints });
+}
+
 /** The source record values of a key-exchange source (`KeyExchange`), checked. */
 export function keyExchangeSource(value: unknown): Source & { readonly key_exchange: KeyExchange } {
   const fields = shape(value, ["upstream", "endpoints", "key_exchange"]);
   const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
   const exchange = shape(fields["key_exchange"], ["endpoint"]);
   return Object.freeze({
-    upstream: upstream(fields["upstream"], endpoints),
+    upstream: modelUpstream(fields["upstream"], endpoints),
     endpoints,
     key_exchange: Object.freeze({ endpoint: httpsUrl(exchange["endpoint"]).href }),
   });
@@ -286,9 +395,20 @@ export function allows(endpoints: readonly Endpoint[], method: string, url: URL)
  * Where a sealed credential may be forwarded: its base URL and its endpoints, none of
  * them secret. The setup check hands them to the binder, which commits them with the
  * connection, so the owner's object can refuse a sandbox request to an endpoint that is not
- * sealed before anything reaches the gateway; the gateway still checks the sealed ones.
+ * sealed before anything reaches the gateway; the gateway still checks the sealed ones. A
+ * model source's (`ModelScope`) or a service's (`ServiceScope`).
  */
-export interface EgressScope {
+export type EgressScope = ModelScope | ServiceScope;
+
+/** A service's scope: its one URL, never metered (`ServiceUpstream`). */
+export interface ServiceScope {
+  readonly kind: "service";
+  readonly base_url: string;
+  readonly endpoints: readonly Endpoint[];
+}
+
+/** A model source's scope. */
+export interface ModelScope {
   /** The sealed API, pi-ai's id: its rules (`api-rules.ts`) shape every metered call. */
   readonly api: string;
   readonly base_url: string;
@@ -335,6 +455,13 @@ function meterOf(value: unknown): Meter | null {
 
 /** A scope checked whole, by the grammar a seal is held to; anything else is `invalid_source`. */
 export function egressScope(value: unknown): EgressScope {
+  if (object(value) && "kind" in value) {
+    const fields = shape(value, ["kind", "base_url", "endpoints"]);
+    const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
+    return Object.freeze({ kind: "service",
+                           base_url: serviceBase(fields["kind"], fields["base_url"], endpoints),
+                           endpoints });
+  }
   const fields = shape(value, ["api", "base_url", "endpoints", "meter"]);
   const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
   const base = httpsUrl(fields["base_url"]);
@@ -351,7 +478,7 @@ export function egressScope(value: unknown): EgressScope {
  * path with a model id (no separator) where the meter names one. The gateway reads the
  * model id the same way (`meteredModel`); this is the owner's check at open.
  */
-export function meteredCall(scope: EgressScope, method: string, path: string): boolean {
+export function meteredCall(scope: ModelScope, method: string, path: string): boolean {
   const meter = scope.meter;
   if (meter === null || method !== meter.method) {
     return false;

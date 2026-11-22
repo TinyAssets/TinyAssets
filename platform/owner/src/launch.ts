@@ -56,7 +56,7 @@ import { type Delivery, type Ledger, type MailAuthority, mailInput } from "./led
 import { nativeId } from "../../contract/src/binding";
 import { RANKING } from "../../contract/src/paths";
 import { clock, inTime } from "./clock";
-import { agentServers, networkDocument } from "./network";
+import { agentServers, connectorsOf, networkDocument, throughConnectors } from "./network";
 import type { Notices } from "./notices";
 import type { Relay } from "./relay";
 import {
@@ -378,7 +378,7 @@ export class Launcher implements RunHost {
    * start). Its id: a run that waits for its conversation's live run is written `waiting`
    * and starts from the lane, its turn come (`waiting`, the run the lane starts).
    */
-  async launch(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking">,
+  async launch(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking" | "connectors">,
                waiting: string | null = null, taken: (run: string) => void = () => {}):
       Promise<string> {
     const { admitted, agent, unattended, servers } = await this.#o.door(() => {
@@ -387,14 +387,20 @@ export class Launcher implements RunHost {
         throw new Refusal("agent_changed", AGENT_CHANGED);
       }
       const { file, ranking } = read;
-      // The servers under the policy the run's network is made by, in this same unit.
+      // The servers under the policy the run's network is made by, in this same unit, each
+      // one an owner's connector is sealed for bound to it, reached through the egress door.
       const kept = agentServers(read.mcp, this.#o.policy.read().document.egress);
-      const done = { agent: made.agent, unattended: made.unattended, servers: kept.servers,
-                     admitted: this.runs.admit({ ...made, file, ranking }, clock(), (chosen) =>
-                       this.#runConfig({ run: chosen.run, secret: chosen.secret,
-                                         engine: chosen.engine, credential: chosen.credential,
-                                         ...(chosen.connection === null ? {}
-                                           : { connection: chosen.connection }) }), waiting) };
+      const bound = connectorsOf(kept.servers, this.#o.connections.egressible());
+      const admitted = this.runs.admit({ ...made, file, ranking,
+                                         connectors: [...new Set(Object.values(bound))] },
+                                       clock(), (chosen) =>
+        this.#runConfig({ run: chosen.run, secret: chosen.secret,
+                          engine: chosen.engine, credential: chosen.credential,
+                          ...(chosen.connection === null ? {}
+                            : { connection: chosen.connection }) }), waiting);
+      const done = { agent: made.agent, unattended: made.unattended, admitted,
+                     servers: admitted.existing ? kept.servers
+                       : throughConnectors(kept.servers, bound, admitted.run, admitted.secret) };
       taken(done.admitted.run);  // the input it was asked on is its own now (a mail's, taken)
       for (const { name, host, why } of done.admitted.existing ? [] : kept.dropped) {
         this.#o.notices.once("mcp_server_dropped", `${made.agent}: its MCP server ${name} (${
