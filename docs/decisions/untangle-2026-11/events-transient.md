@@ -90,4 +90,7 @@ transient refusal. Events adds only its sketch's codes for a terminal refusal.
   extension (SEP-3415). If SEP-3415 renumbers them, the change is in `EVENT_ERRORS` alone.
 - The `this agent subscribes another event` branch cannot be reached while
   `wake-kinds.json` has one subscribing event. It is kept as the check that the object's
-  agent and the asked event agree.
+  agent and the asked event agree, and it is the only one: the object stores a subscription
+  under its agent's own kind and checks only that the asked name is some event, while the
+  door verifies the callback by the asked kind's rules. Deleted, a second subscribing kind in
+  the data would let a client pick the other kind's callback rules.

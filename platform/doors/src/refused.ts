@@ -94,9 +94,10 @@ export const EVENT_ERRORS = Object.freeze({
 });
 
 /**
- * Every MCP request's but a tool call's (MCP Events', the definition's resources, prompt and
- * skills, `definition.ts`): its JSON-RPC error, thrown, which the SDK answers: invalid params
- * for an invalid request, else an internal error, the refusal's reason and wait in its `data`.
+ * Every MCP request's but a tool call's (the definition's resources, prompt and skills,
+ * `definition.ts`; MCP Events' but a terminal refusal, `asEvent`): its JSON-RPC error, thrown,
+ * which the SDK answers: invalid params for an invalid request, else an internal error, the
+ * refusal's reason and wait in its `data`.
  * MCP names no code for a refusal for the moment, and its codes `-32000` to `-32019` mean
  * nothing across implementations (its 2026-07-28 "Error Codes", at `862397cec702`, read
  * 2026-11-22), so `-32603` with `retryAfterMs` is how a client is told to try again.
