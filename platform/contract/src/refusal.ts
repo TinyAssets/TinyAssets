@@ -214,6 +214,8 @@ export const REFUSALS = Object.freeze({
   // whose bytes are not their digest, or that speaks a protocol the Worker does not.
   sandbox_runner_mismatch: BAD_GATEWAY,
   sandbox_runner_protocol: BAD_GATEWAY,
+  // Its own fault before a job's launch (`#launch`): logged there, and nothing launched.
+  sandbox_start_failed: BAD_GATEWAY,
 
   // The gateway's, the only text it lets out (`gateway/src/failure.ts`): provider prose can
   // echo credentials, so its message is its code and nothing else.

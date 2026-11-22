@@ -136,8 +136,10 @@ describe("the code list", () => {
     ["event_identity_required", 400, undefined], ["inbound_proof_invalid", 401, undefined],
     ["inbound_app_unconfigured", 503, 5], ["mailbox_full", 429, 5],
     ["event_conflict", 409, undefined], ["agent_unavailable", 409, undefined],
-    // The sandbox Worker's, its runner refused (the founder's alert).
+    // The sandbox Worker's, its runner refused (the founder's alert), or its own fault before
+    // a job's launch.
     ["sandbox_runner_mismatch", 502, undefined], ["sandbox_runner_protocol", 502, undefined],
+    ["sandbox_start_failed", 502, undefined],
     // The files plane's.
     ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
   ] as const)("answers %s with %i", (code, status, retry) => {

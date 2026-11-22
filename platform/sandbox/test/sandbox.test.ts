@@ -16,7 +16,7 @@
 import {
   createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import {
@@ -93,6 +93,25 @@ async function seenOnce(found: (state: Seen) => boolean, what: string): Promise<
       throw new Error(`the fake never saw ${what}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * What a start or a sign-in (`act`) came to: its answer, the code of the refusal it threw, or
+ * `thrown` for a plain error; and the cause each `sandbox_start_failed` was logged with (the
+ * object runs in this isolate: its log lines are seen here).
+ */
+async function faulted(act: () => Promise<unknown>):
+    Promise<{ got: unknown; causes: unknown[] }> {
+  const logged = vi.spyOn(console, "error");
+  try {
+    const got = await act().then((answer) => answer,
+                                 (error: unknown) => refusalOf(error)?.code ?? "thrown");
+    return { got, causes: logged.mock.calls
+      .filter((call) => String(call[0]).startsWith("sandbox_start_failed"))
+      .map((call) => call[1]) };
+  } finally {
+    logged.mockRestore();
   }
 }
 
@@ -274,17 +293,50 @@ describe("a start", () => {
     for (const url of [`http://${EGRESS_HOST}/r/${RUN}/events`,
                        `https://elsewhere.example/r/${RUN}/events`,
                        `https://${EGRESS_HOST}:8443/r/${RUN}/events`]) {
-      const refused = await stub(who).start(start({ urls: { ...start().urls, events: url } }))
-        .then(() => null, (error: unknown) => error);
-      expect(String(refused)).toMatch(/https doors/);
+      const { got, causes } = await faulted(() =>
+        stub(who).start(start({ urls: { ...start().urls, events: url } })));
+      expect(got).toBe("sandbox_start_failed");
+      expect(String(causes)).toMatch(/https doors/);
     }
     // Its vendor hosts are a list of names, or nothing starts.
     for (const hosts of [undefined, "claude.ai", [1]]) {
-      const refused = await stub(who).start(start({ hosts: hosts as never }))
-        .then(() => null, (error: unknown) => error);
-      expect(String(refused)).toMatch(/vendor hosts/);
+      const { got, causes } = await faulted(() =>
+        stub(who).start(start({ hosts: hosts as never })));
+      expect(got).toBe("sandbox_start_failed");
+      expect(String(causes)).toMatch(/vendor hosts/);
     }
     expect((await seen()).calls).toEqual([]);
+  });
+
+  it("refuses its own fault before the launch by its code, the cause logged: nothing launched",
+     async () => {
+    const who = owner();
+    // The runner's prepare on the create; the sign-in check; the start document's upload to
+    // the inbox (a full disk), on a start joining that sandbox, so no install or lease file
+    // comes first.
+    for (const [fault, each, over] of [[{ broken: "prepare" }, owner(), {}],
+                                       [{ broken: "signin-check" }, who, {}],
+                                       [{ room: 64 }, who, { tokens: null, network: null }],
+                                      ] as const) {
+      await e2b("/script", { signin: { "claude-code": 0 }, broken: null, room: null,
+                             ...fault });
+      const { got, causes } = await faulted(() => stub(each).start(start(over)));
+      expect(got).toBe("sandbox_start_failed");
+      expect(causes).toHaveLength(1);
+    }
+    const state = await seen();
+    expect(state.commands.map((command) => command.argv[1])).not.toContain("launch");
+    expect(Object.keys(state.files).filter((path) => path.includes(`${INBOX}/`))).toEqual([]);
+  });
+
+  it("leaves a fault from the launch command on a plain error: whether it launched is unknown",
+     async () => {
+    // Its reply lost after it ran, or its process never started: envd answers both the same.
+    for (const fault of [{ lost: "launch" }, { broken: "launch" }]) {
+      await e2b("/script", { signin: { "claude-code": 0 }, lost: null, broken: null, ...fault });
+      expect(await faulted(() => stub(owner()).start(start())))
+        .toEqual({ got: "thrown", causes: [] });
+    }
   });
 
   it("lets out the vendor hosts the start hands, and reads no record for them", async () => {
@@ -1304,9 +1356,9 @@ describe("a sign-in", () => {
                        signin({ route: undefined }), signin({ route: "short" }),
                        signin({ urls: { events: `http://${EGRESS_HOST}/x`,
                                         signin: start().urls.signin } })]) {
-      const refused = await stub(who).signin(bad as never)
-        .then(() => null, (error: unknown) => error);
-      expect(refused).not.toBeNull();
+      const { got, causes } = await faulted(() => stub(who).signin(bad as never));
+      expect(got).toBe("sandbox_start_failed");
+      expect(String(causes)).toMatch(/a sign-in names its id/);
     }
     expect((await seen()).sandboxes).toEqual([]);
   });
@@ -1376,8 +1428,9 @@ describe("whose sandboxes a call reaches", () => {
                       env.SANDBOXES.idFromString(env.SANDBOXES.idFromName(who).toString())];
     const refused = (call: Promise<unknown>) => call.then(() => null, (error: unknown) => error);
     for (const id of nameless) {
-      expect(String(await refused(env.SANDBOXES.get(id).start(start()))))
-        .toMatch(/not named by an owner/);
+      const { got, causes } = await faulted(() => env.SANDBOXES.get(id).start(start()));
+      expect(got).toBe("sandbox_start_failed");
+      expect(String(causes)).toMatch(/not named by an owner/);
       expect(String(await refused(env.SANDBOXES.get(id).erase())))
         .toMatch(/not named by an owner/);
     }
