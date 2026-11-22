@@ -37,7 +37,7 @@ import type { NetworkDocument } from "../../contract/src/sandbox";
 import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
-import { engineHosts, type Served, signsIn } from "../../sources/src/served";
+import { engineHosts, type Served, served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
 
 import { binPath, invocation, isKept, keptPaths } from "./engine";
@@ -47,7 +47,7 @@ import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
 import { skillsOf } from "./project";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
-import { engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared, sortedWalk,
+import { engineEnv, giveTree, homeOf, loginFiles, record, shared, sortedWalk,
          spawnBounded, STORE, systemOf, withRunUser } from "./session";
 import { asUser } from "./users";
 
@@ -118,7 +118,7 @@ const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install
 export function plan(runner: string): Plan {
   const logins: PlanStep[] = [];
   const routes: PlanStep[] = [];
-  for (const rec of RECORDS.values()) {
+  for (const rec of served().values()) {
     const cli = rec.cli;
     if (signsIn(rec)) {
       logins.push({ check: "login", timeout_s: 180, argv: [PROBE.login, rec.id],

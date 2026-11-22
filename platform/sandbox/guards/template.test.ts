@@ -224,11 +224,13 @@ function outsideSession(path: string, source: string): string[] {
   return found;
 }
 
-/** The Worker's own build (`BUILD`), both bundles of the platform tree at `root` (this one). */
-async function bundler(): Promise<{
-  build: (root?: string) => Promise<{ runner: Built; probes: Built }> }> {
-  return await import(pathToFileURL(BUILD).href) as {
-    build: (root?: string) => Promise<{ runner: Built; probes: Built }> };
+/**
+ * The Worker's own build (`BUILD`), both bundles of the platform tree at `root` (this one), and
+ * the hook program the runner carries.
+ */
+type Build = (root?: string) => Promise<{ hooks: Built; runner: Built; probes: Built }>;
+async function bundler(): Promise<{ build: Build }> {
+  return await import(pathToFileURL(BUILD).href) as { build: Build };
 }
 
 /** A pair's record in `passed.json`, as far as the pin's guard reads it. */
@@ -382,10 +384,23 @@ describe("the pair", () => {
     expect(built.probes.bytes.toString("utf8")).toContain(JSON.stringify(runner.sha));
   });
 
+  it("starts each hooked event and decided call on a hook program that checks no record and " +
+     "loads only the built-in modules those commands use", async () => {
+    // Measured (`runner-start-cost.md`): the records' checks cost about 20 ms a start, and
+    // each built-in module only the runner uses a few more.
+    const { hooks } = await (await bundler()).build();
+    const text = hooks.bytes.toString("utf8");
+    for (const name of ["sourceRecord", "checkedTogether", "runCommand"]) {
+      expect(text, name).not.toMatch(new RegExp(`\\b${name}\\d*\\b`));
+    }
+    expect([...new Set([...text.matchAll(/\brequire\("([^"]+)"\)/g)].map((found) => found[1]))]
+      .sort()).toEqual(["node:child_process", "node:fs", "node:path"]);
+  });
+
   it("starts each process and takes each run user in the run session alone", async () => {
     const built = await (await bundler()).build();
-    const reached = [...new Set([...built.runner.inputs, ...built.probes.inputs])]
-      .filter((path) => path.endsWith(".ts"));
+    const reached = [...new Set([...built.hooks.inputs, ...built.runner.inputs,
+                                 ...built.probes.inputs])].filter((path) => path.endsWith(".ts"));
     expect(reached).toContain(SESSION);
     expect(reached.flatMap((path) => outsideSession(path, readFileSync(join(PLATFORM, path),
                                                                        "utf8")))).toEqual([]);

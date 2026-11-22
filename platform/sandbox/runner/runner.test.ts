@@ -33,7 +33,8 @@ import { dispatch } from "./hooks";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
-import { COMMAND, inboxCode, JOB_FILES, PROTOCOL, RUNNERS, type StartDoc } from "./protocol";
+import { COMMAND, HOOK_COMMANDS, hookProgram, inboxCode, JOB_FILES, LOADER, PROTOCOL, RUNNERS,
+         type StartDoc } from "./protocol";
 import { READS, STATE_FORMAT } from "./state-format";
 import { Doors, POOL_GIDS, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
          SYNC_UID, TA_GID } from "./test/harness";
@@ -49,7 +50,7 @@ const onFailure = (event: string) => ["pre_tool", "prompt"].includes(event) ? "b
   : "continue";
 /** The agent's hooks' dispatcher's command line on `event`, as a hook file names it. */
 const dispatcherLine = (event: string) => expect.stringMatching(new RegExp(
-  `^ta_hooks\\(\\) .* --no-warnings ${RUNNERS}/[0-9a-f]{64}/runner\\.mjs hooks "\\$1"; \\}; ` +
+  `^ta_hooks\\(\\) .* --no-warnings ${RUNNERS}/[0-9a-f]{64}/hooks\\.cjs hooks "\\$1"; \\}; ` +
   `ta_hooks ${event}$`));
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
@@ -486,7 +487,7 @@ describe("the agent's own hooks (D5)", () => {
       `JSON.parse("${JSON.stringify(["pre_tool", "prompt"]).replaceAll("\"", "\\\"")}")`);
     expect(pi.files.get("/s/hooks.mjs")).toContain(
       JSON.stringify(JSON.stringify([process.execPath, "--no-warnings",
-                                     `${RUNNERS}/${DIGEST}/runner.mjs`, "hooks"])));
+                                     hookProgram(DIGEST), "hooks"])));
     expect(pi.argv.join(" ")).toContain("-e /s/decide.mjs -e /s/hooks.mjs");
     const bare = call("pi", {});
     expect([bare.files.has("/s/hooks.mjs"), bare.argv.includes("/s/hooks.mjs")])
@@ -506,6 +507,20 @@ describe("the agent's own hooks (D5)", () => {
       expect(box.ran(engine), engine).toHaveLength(before);
       expect((await run(engine, { hooks: { prompt: [{ run: ["true"] }] } })).end, engine)
         .toEqual({ exit_code: 0 });
+    }
+  });
+
+  it("runs the hook commands from the hook program the run's start writes beside the " +
+     "runner, root's, and from it alone", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    expect((await run("claude-code", { hooks: { prompt: [{ run: ["true"] }] } })).end)
+      .toEqual({ exit_code: 0 });
+    const program = lstatSync(box.path(hookProgram(box.digest)));
+    expect([program.isFile(), program.uid, program.gid, program.mode & 0o7777])
+      .toEqual([true, 0, 0, 0o644]);
+    for (const command of HOOK_COMMANDS) {
+      expect(box.exec([LOADER, box.digest, command]).stderr, command)
+        .toBe(`ta-runner: no command ${command}\n`);
     }
   });
 

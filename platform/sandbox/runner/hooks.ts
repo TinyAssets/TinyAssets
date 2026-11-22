@@ -1,11 +1,11 @@
 /**
- * The agent's own hooks' dispatcher (D5, `agent_definition_research.md` §4.2): `ta-runner hooks
- * <event>`, which a run's CLI runs as the run's user from the root-owned hook file its record
- * names (`definition.hooks`, in the layer its decide hook is in), on each event that file
- * carries, through a shell's check that starts it only where the run has hooks on the event
- * (`engine.ts` `dispatcherCommand`). It knows its run by its user: the one system directory
- * root made for a run of its group (`withRunUser`, `ownRun`), so it reads no variable the agent
- * could set. There it reads the run's own hooks on the event (`hooksFile`, rendered at the
+ * The agent's own hooks' dispatcher (D5, `agent_definition_research.md` §4.2): the hook
+ * program's `hooks <event>` (`hook-entry.ts`), which a run's CLI runs as the run's user from
+ * the root-owned hook file its record names (`definition.hooks`, in the layer its decide hook
+ * is in), on each event that file carries, through a shell's check that starts it only where
+ * the run has hooks on the event (`engine.ts` `dispatcherCommand`). It knows its run by its
+ * user: the one system directory root made for a run of its group (`withRunUser`, `ownRun`),
+ * so it reads no variable the agent could set. There it reads the run's own hooks on the event (`hooksFile`, rendered at the
  * start from the agent's `hooks.json`, `runHooks`; none there, none on it), runs
  * each hook the event's call matches, in parallel, as the same user, in the agent's directory,
  * with the event as JSON on stdin (`HookInput`), and answers in the one shape every engine here
