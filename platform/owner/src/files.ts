@@ -106,7 +106,7 @@ import {
 import { printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import {
-  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
+  DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE,
 } from "../../contract/src/sync-ignore";
 import type { Backups } from "./backup";
 import type { Collections } from "./collections";
@@ -3355,17 +3355,9 @@ function syncIgnoreChanged(o: SyncIgnoreTold, present: boolean, now: number,
       held = " Its new lines may hold back files you keep from syncing their changes; " +
         "each sandbox sync reports the files they hold back.";
     }
-    // Lines past a ceiling are not applied: said here, never in silence.
-    const raw = o.files.inlineOf(change.content_id);
-    const past = raw === null ? [] : unappliedLines(new TextDecoder().decode(raw).split("\n"));
-    const states = past.filter((each) => each.reason === "states");
-    if (states.length > 0) {
-      held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${
-        AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
-        `may take together, so not applied: the files they name go on syncing (${
-          states.slice(0, 3).map((each) => each.line).join(", ")}${states.length > 3
-          ? ", …" : ""}).`;
-    }
+    // The list past its bytes is not applied: said here, never in silence. Automaton lines
+    // past their states are the run's report's alone: the most read here, an inline list,
+    // takes at most a state a byte, far under `AUTOMATON_STATES`.
     if (change.size > LIST_BYTES) {
       held += ` The list past its ${LIST_BYTES.toLocaleString("en")} bytes is not applied: ` +
         "the files those lines name go on syncing.";
