@@ -929,14 +929,6 @@ describe("an engine's own pre-tool hook", () => {
       at(s, "decide")["template"] = "{\"apiKeyHelper\": \"{decide}\", \"m\": \"{matcher}\"}"; })],
     ["a kind acts.json does not define", cli((s) => { at(s, "decide.kinds")["browser"] = ["B"]; })],
     ["a kind with no tool", cli((s) => { at(s, "decide.kinds")["shell"] = []; })],
-    ["a pinned settings file outside the home", cli((s) => {
-      at(s, "decide")["pins"] = { "/etc/claude/settings.json": "{\"a\": 1}" }; })],
-    ["a pinned settings file with a credential key", cli((s) => {
-      at(s, "decide")["pins"] = { "{home}/.claude/settings.json": "{\"apiKeyHelper\": \"x\"}" };
-    })],
-    ["a pinned settings file with the hook's placeholder", cli((s) => {
-      at(s, "decide")["pins"] = { "{home}/.claude/settings.json": "{\"a\": \"{matcher}\"}" };
-    })],
     ["a refused file, which the definition's native layers hold now", cli((s) => {
       at(s, "decide")["refuses"] = [".gemini/settings.json"]; })],
     ["a hook that neither fails open nor closed", cli((s) => {

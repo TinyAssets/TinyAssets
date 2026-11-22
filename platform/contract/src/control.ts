@@ -20,10 +20,10 @@
  *   serves nothing unless it is on);
  * - **the tier numbers** (`tiers`, ADR-034 decision 8);
  * - **each source's vendor sign-in switch** (`signins`);
- * - **the sandbox's platform numbers** and **its scratch retention**.
+ * - **the sandbox's platform numbers**.
  *
  * Every field but the gates is optional, and a record any part of which is malformed is
- * malformed whole: never a guess. A flip reaches every location within KV's 60 s; no revoke
+ * malformed whole: never a guess, and never a key dropped unread. A flip reaches every location within KV's 60 s; no revoke
  * depends on it.
  */
 
@@ -104,13 +104,6 @@ export interface Control {
    * Worker reads at each start: null when the record holds none, and it then starts nothing.
    */
   readonly sandbox: SandboxCeilings | null;
-  /**
-   * How many days an agent's sandbox scratch may go unused before it is deleted
-   * (`scratch_retention_days`; `sandbox/runner/scratch.ts`): a chosen retention, refusing
-   * nothing, which the sandbox Worker hands each run's runner. Null when the record names
-   * none: then only the disk's own pressure lets scratch go.
-   */
-  readonly scratch_retention_days: number | null;
   /**
    * Each source's vendor sign-in, on or off, by source id: a source the record
    * does not name takes its record's verdict on the vendor's terms for hosted use
@@ -235,7 +228,7 @@ const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ord
                                                        "outside"]);
 const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
   "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
-  "sandbox_renewal_window_s", "scratch_retention_days", "signins"]);
+  "sandbox_renewal_window_s", "signins"]);
 
 /** The tier numbers exactly, or `invalid`. */
 export function parseTiers(value: unknown): Tiers {
@@ -278,9 +271,7 @@ export function parseControl(value: unknown): Control | null {
     return null;
   }
   const sandbox = SANDBOX_KEYS.map((key) => value[key]);
-  const retention = value["scratch_retention_days"];
-  if ((retention !== undefined && !whole(retention, 1))
-      || (outside !== "on" && outside !== "off")
+  if ((outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
       || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY
       || !(sandbox.every((part) => part === undefined)
@@ -293,8 +284,7 @@ export function parseControl(value: unknown): Control | null {
              signins: signins === undefined ? null
                : Object.freeze({ ...(signins as Record<string, boolean>) }),
              sandbox: sandbox[0] === undefined ? null
-               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]),
-             scratch_retention_days: retention === undefined ? null : retention };
+               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]) };
   } catch {
     return null;
   }

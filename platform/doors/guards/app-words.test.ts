@@ -41,7 +41,7 @@ describe("the runner's events, in the app's words", () => {
 
   it("names what scratch went and that the owner's storage is unaffected, never an upgrade",
      () => {
-    const shown = eventShown({ type: "ta.scratch_cleared", evicted: ["builder"], expired: [],
+    const shown = eventShown({ type: "ta.scratch_cleared", evicted: ["builder"],
                                freed_bytes: 3_100_000_000, free_bytes: 4_000_000_000,
                                total_bytes: 15_000_000_000 }) as { type: string; text: string };
     expect(shown).toEqual({ type: "ta.scratch_cleared", text: "The sandbox's working disk was " +

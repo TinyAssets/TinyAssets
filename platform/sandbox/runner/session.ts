@@ -258,7 +258,7 @@ export async function keepHome(home: string, rec: Served, signin = false): Promi
  * trust; a directory in the home that holds nothing but them is root's too. One that holds
  * what the CLI keeps as well (its home, its sessions, its secrets) is root's, writable by the
  * run's group and sticky, so the CLI writes its own files there and never removes or replaces
- * a config file (R5 P-hooks: a settings layer a hooked run pins is never the agent's). In
+ * a config file (R5 P-hooks: a settings layer the record writes is never the agent's). In
  * `{system}`, root's, readable by the run's own group alone.
  */
 function configOwned(rec: Served, home: string, system: string,

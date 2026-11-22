@@ -373,39 +373,30 @@ describe("a start", () => {
     expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com", EGRESS_HOST]);
     expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "launch"]);
-    // No scratch retention in the record: the runner deletes no agent's scratch by age.
+    // Protocol 4's scratch retention, which the record no longer holds: null, no age.
     const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
     expect(JSON.parse(doc).scratch_retention_days).toBeNull();
   });
 
-  it("hands the control record's scratch retention to the runner", async () => {
-    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
-    const who = owner();
-    expect(await stub(who).start(start(ON_KEY)))
-      .toEqual({ started: true });
-    const state = await seen();
-    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
-    expect(JSON.parse(doc).scratch_retention_days).toBe(30);
-  });
-
   it("starts on the copy of the record it last read, by any read, while KV can't be read",
      async () => {
-    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
-    const who = owner();
-    expect(await stub(who).start(start(ON_KEY)))
-      .toEqual({ started: true });
-    // A renewal look reads the record as it is now: that read is the copy kept.
-    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 7 });
-    await e2b("/age", { id: (await seen()).sandboxes[0]!.id, s: CEILING - WINDOW + 5 });
-    await runDurableObjectAlarm(stub(who));
-    await outage(who);
-    const second = `run_${hex(32, "2")}`;
-    expect(await stub(who).start(start({ run: second, ...ON_KEY,
-                                        tokens: null, network: null })))
-      .toEqual({ started: true });
-    const state = await seen();
-    const doc = state.files[`${state.sandboxes.at(-1)!.id}:${inboxDoc(second)}`]!;
-    expect(JSON.parse(doc).scratch_retention_days).toBe(7);
+    const [kept, looked] = [owner(), owner()];
+    for (const who of [kept, looked]) {
+      expect(await stub(who).start(start(ON_KEY))).toEqual({ started: true });
+    }
+    // A renewal look reads the record as it is now, its numbers taken out: that read is the
+    // copy `looked` keeps, while `kept` keeps its start's.
+    await control(OPEN);
+    const box = (await seen()).sandboxes.at(-1)!;
+    await e2b("/age", { id: box.id, s: CEILING - WINDOW + 5 });
+    await runDurableObjectAlarm(stub(looked));
+    const again = (who: string, n: string) => stub(who).start(start({
+      run: `run_${hex(32, n)}`, ...ON_KEY, tokens: null, network: null }));
+    for (const who of [kept, looked]) {
+      await outage(who);
+    }
+    expect(await again(kept, "2")).toEqual({ started: true });
+    expect(await again(looked, "3")).toEqual({ started: false, code: "sandbox_unconfigured" });
   });
 
   it("starts nothing while KV can't be read and no copy was ever kept", async () => {

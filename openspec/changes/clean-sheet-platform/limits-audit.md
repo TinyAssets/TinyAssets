@@ -167,17 +167,26 @@ the sandbox's days). The platform's recovery copies are bounded by the vendor's 
 (`RECOVERY_WINDOW_S`, below). Each term's share and its reason are under "Why each share
 is what it is", above.
 
-Not yet in one of the kinds, each owed:
-- the control record's `scratch_retention_days` (`sandbox/runner/scratch.ts`): an agent's
-  sandbox scratch unused that long is deleted at its sandbox's next run. Scratch is a cache
-  on the sandbox's own disk, never counted in the owner's storage, and with none in the
-  record only the disk's own pressure lets it go. A number in the control record outside the
-  tier's runs and storage, it leaves the record (`untangle/fact15-defaults-2`).
-- `sources/records/claude-code.json` `cli.decide.pins`, `cleanupPeriodDays` 30: the hooked
-  run's pinned user settings keep Claude Code's own transcript retention at its default, so
-  the engine lets a session idle 30 days go from its home; the owner's files keep the synced
-  copy. Researched first, then off, with the other engine records' unpinned defaults read
-  the same way (`untangle/fact15-defaults-2`).
+Nothing lets a session go before the owner's data does (`untangle-2026-11/fact15-defaults-2.md`).
+An engine's sessions are the owner's files (`session_paths`, synced out), so each CLI's own
+retention is off, in its record, on every run:
+- Claude Code, `{home}/.claude/settings.json` (`cli.files`, root's in every run):
+  `cleanupPeriodDays` 100000000. The CLI has no off (0 is refused, minimum 1; it deletes a
+  transcript, its subagents' and its tool results once older than the period, at each start).
+  100000000 days is the ECMAScript time range (8.64e15 ms either side of the epoch), so the
+  cutoff the CLI takes, now less the period, is a valid date before any file at every time
+  since the epoch, and the period in ms stays under 2^53: a technical ceiling, its value
+  meaning never. Its default was 30, and the hooked runs alone pinned even that.
+- Gemini CLI, its system settings (`cli.mcp.template`): `general.sessionRetention.enabled`
+  false. Its default deletes chats and tool outputs older than 30 days at each start.
+- Codex and pi keep every session at their defaults: Codex 0.166.0 compresses a rollout
+  older than 7 days in place (`codex-rs/rollout/src/compression.rs`) and deletes none; pi
+  1.4.0 deletes a session only from its interactive picker.
+
+The sandbox's scratch has no retention by age: it is a cache on the sandbox's own disk, never
+counted in the owner's storage, and only the disk's own pressure lets it go (`LOW_WATER_SHARE`,
+under "Not listed"). The control record holds only the tier's runs and storage, the sandbox's
+numbers, the gates and the sign-in switches.
 
 The requests held for the owner (registration cards, held calls and their yeses, pending
 policy proposals) have no life of their own (`untangle-2026-11/fact15-caps.md`): each

@@ -1239,7 +1239,7 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   }
   const fields = check.keys(value, "cli.decide", ["file", "template", "runs", "kinds", "mcp",
                                                   "fails", "cite", "read"],
-                            ["argv", "alterable", "pins"]);
+                            ["argv", "alterable"]);
   const runs = (object(fields["runs"]) ? fields["runs"] : {}) as Record<string, unknown>;
   const way = Object.keys(runs).length === 1 ? Object.keys(runs)[0] : undefined;
   const http = runs["http"];
@@ -1287,22 +1287,6 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   if (loads !== undefined && own && !loads.includes(file as string)) {
     check.fail("cli.decide.argv loads the run's own hook file, under {system}");
   }
-  const pins = fields["pins"];
-  if (pins !== undefined) {
-    if (!object(pins) || Object.keys(pins).length === 0 || Object.keys(pins).length > 4) {
-      check.fail("cli.decide.pins maps 1 to 4 settings files in the home to their templates");
-    }
-    for (const [path, text] of Object.entries(pins as Record<string, unknown>)) {
-      const what = `cli.decide.pins.${path}`;
-      if (homePath(path, false) === null || !path.endsWith(".json")) {
-        check.fail(`${what} is a .json path under {home}, with no *, . or .. segment`);
-      }
-      const read = settingsOf(path, template(text, what));
-      if (read === null || read.keys.some((key) => CREDENTIAL_KEY.test(key))) {
-        check.fail(`${what} is a settings file read whole, with no credential key`);
-      }
-    }
-  }
   const kinds = fields["kinds"];
   if (!object(kinds) || Object.keys(kinds).length === 0 || !Object.entries(kinds).every(
     ([kind, names]) => isHookKind(kind) && Array.isArray(names) && names.length > 0
@@ -1323,7 +1307,6 @@ function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   check.text(fields["read"], DATE, "cli.decide.read");
   return Object.freeze({
     ...fields, ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
-    ...(pins === undefined ? {} : { pins: Object.freeze({ ...pins as Record<string, string> }) }),
     kinds: Object.freeze(Object.fromEntries(Object.entries(kinds as Record<string, string[]>)
       .map(([kind, names]) => [kind, Object.freeze([...names])]))),
     mcp: Object.freeze(mcp),
