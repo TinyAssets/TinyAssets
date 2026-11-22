@@ -55,6 +55,11 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "ALTER TABLE sandboxes ADD COLUMN kill_at REAL",
   ]),
+  // 6 (`untangle-2026-11/look-resume-loop.md`): whether its runner answered since the sandbox
+  // last came running, so the look resumes a paused one for its lease only on that word.
+  Object.freeze([
+    "ALTER TABLE sandboxes ADD COLUMN heard INTEGER NOT NULL DEFAULT 0",
+  ]),
 ]);
 
 /** `SandboxSlots`'s, the one line for the platform. */
