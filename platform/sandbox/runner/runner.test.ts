@@ -2349,6 +2349,25 @@ describe("the engines' stores on the sandbox's disk", () => {
     expect(box.ran("claude-code").at(-1)!.dumps[dumps[0]!]).toBe("edited\n");
   });
 
+  it("send a store copy holding a turn of its own though the owner's files changed it " +
+     "since, resumed from it, never dropped nor fetched over", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    // The next run's turn is refused at a full storage: the store holds it, unsent.
+    const full = "storage_full: your storage is full: 25.0 GB of 25.0 GB used. {}";
+    doors.refuse = (path) => path === owners(dumps[0]!) ? full : null;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
+                             writes: { [dumps[0]!]: "first\nand a turn\n" } });
+    await run("claude-code", { session_id: "cs-1" });
+    doors.refuse = () => null;
+    doors.files.set(owners(dumps[0]!), { text: "edited\n", version: 99 });
+    const before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code", { session_id: "cs-1" });
+    expect(box.ran("claude-code").at(-1)!.dumps[dumps[0]!]).toBe("first\nand a turn\n");
+    expect(doors.ops().slice(before).map((op) => op.path)).toContain(owners(dumps[0]!));
+  });
+
   it("let the copies the owner's files hold go on a low disk, never the resumed one, say " +
      "the disk is still low, and fetch a copy let go again for its resume", async () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
