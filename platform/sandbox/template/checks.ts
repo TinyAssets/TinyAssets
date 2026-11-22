@@ -131,7 +131,6 @@ function entry(template: string, runner: Bundle, probes: Bundle, outcomes: reado
                install: Installed): Record<string, unknown> {
   const of = (check: PlanStep["check"]) => outcomes.filter((each) => each.step.check === check)
     .map((each) => each.result);
-  const matcher = of("matcher")[0]!;
   return {
     tag: template.slice(template.lastIndexOf(":") + 1),
     runner: runner.sha,
@@ -142,8 +141,6 @@ function entry(template: string, runner: Bundle, probes: Bundle, outcomes: reado
     routes: of("route").map((r) => ({ engine: r["engine"], provider: r["provider"], ok: r["ok"],
                                       turns: r["turns"] ?? null,
                                       compacted: r["compacted"] ?? null })),
-    matcher: { step_ns: Math.round(Number(matcher["step_ns"]) * 1000) / 1000,
-               ceiling_ns: matcher["ceiling_ns"], ok: matcher["ok"] },
     install,
   };
 }
@@ -210,9 +207,8 @@ export async function main(argv: readonly string[]): Promise<number> {
     for (const each of plan.sandboxes) {
       const ran = await sandbox(e2b, template, plan, each, runner, probes);
       outcomes.push(...ran.outcomes);
-      if (ran.outcomes.some((outcome) => outcome.step.check === "matcher")) {
-        measured = ran.install;
-      }
+      // Every sandbox installs the runner before anything else runs in it.
+      measured ??= ran.install;
     }
     const failed = outcomes.filter((outcome) => !outcome.ok);
     if (failed.length > 0 || measured === null) {

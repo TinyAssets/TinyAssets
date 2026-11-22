@@ -240,19 +240,17 @@ interface Passed {
   readonly probes?: string;
   readonly logins: readonly { readonly ok: boolean }[];
   readonly routes: readonly { readonly ok: boolean }[];
-  readonly matcher?: { readonly ok: boolean };
 }
 
 /**
  * Whether a record says every check passed. Each check's `ok` is its probe's own verdict
- * (`runner/probes.ts`: a route's two turns, its resume; the matcher's step within `STEP_NS`),
+ * (`runner/probes.ts`: a sign-in's shape; a route's two turns, its resume),
  * and `checks.ts` records only a pair whose every step passed, so this reads the verdicts and
  * judges none again.
  */
 function passing(entry: Passed): boolean {
   return entry.logins.length > 0 && entry.logins.every((each) => each.ok)
-    && entry.routes.length > 0 && entry.routes.every((each) => each.ok)
-    && entry.matcher?.ok === true;
+    && entry.routes.length > 0 && entry.routes.every((each) => each.ok);
 }
 
 /**
@@ -371,7 +369,7 @@ describe("the pair", () => {
     expect(built.runner.inputs).not.toContain("contract/identity.json");
     expect(built.probes.inputs).not.toContain("contract/identity.json");
     const text = built.runner.bytes.toString("utf8");
-    for (const name of ["sandboxEnv", "egressBaseUrl", "runEnv", "stepNanos", "bundledRecords",
+    for (const name of ["sandboxEnv", "egressBaseUrl", "runEnv", "bundledRecords",
                         "routeVerdict"]) {
       // The name as a declaration of any form (`function`, `const`, an arrow) would bind it,
       // and esbuild renames a clash by a numeric suffix.
@@ -450,7 +448,7 @@ describe("the pair", () => {
     const passed = JSON.parse(readFileSync(join(TEMPLATE, "passed.json"), "utf8")) as Passed[];
     expect(pinProblems(passed, pinned(), tag())).toEqual([]);
     // What it finds, each on records planted beside the pin's.
-    const ok = { logins: [{ ok: true }], routes: [{ ok: true }], matcher: { ok: true } };
+    const ok = { logins: [{ ok: true }], routes: [{ ok: true }] };
     const pin = { ...ok, tag: "spinned" };
     const sha64 = "a".repeat(64);
     const found = (records: Passed[], tree = "stree") =>
@@ -460,7 +458,6 @@ describe("the pair", () => {
     expect(found([])).toBe(1);
     expect(found([pin, { ...pin, routes: [{ ok: false }] }])).toBe(1);
     expect(found([{ ...pin, logins: [] }])).toBe(1);
-    expect(found([{ ...pin, matcher: { ok: false } }])).toBe(1);
     expect(found([pin, { ...ok, tag: "stree" }])).toBe(1);
     expect(found([pin, { ...ok, tag: "stree", logins: [{ ok: false }] }])).toBe(0);
     expect(found([{ ...pin, runner: sha64, probes: sha64 }])).toBe(0);
