@@ -13,7 +13,10 @@ three jobs:
 3. **`apply`** runs the mode with `--yes`, in the main-only `production` environment, held
    to that plan: before any change it makes the plan job's plan again from the live state,
    and stops, naming each difference, if anything changed between the jobs (the dispatch,
-   a repository variable, or the account's state). It applies only its own run's plan.
+   a repository variable, or the account's state). It applies only its own run's plan. Then
+   each line its own steps say, as each says it and before its change, must be that plan's
+   line, or one the plan job left to it ("checked by the apply job before any change")
+   with its answer in place of those words; any other line stops it there.
 
 Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
 to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
@@ -116,9 +119,13 @@ It never counts as "absent".
    once). Values come from the environment's secrets: each
    Worker's `secrets.required` (its `wrangler.jsonc`), and on the doors, if set, each shared
    app's signing secret (`platform/doors/shared-apps.json`). A secret two Workers require
-   (the routing key, the doors' and the owner's) is set on both or neither.
+   (the routing key, the doors' and the owner's) is set on both or neither. The plan job
+   holds no secret, so for an optional one the doors lack (a shared app's, the canary
+   clock's) it says "if the run is given it", and the apply job says whether it is; so does
+   the doors' rollout line, since a secret the run sets makes them forward-only (step 4).
 
-   A held secret is never replaced unless `rotate` names it. A held keyring is never
+   A held secret is never replaced unless `rotate` names it, so a run that changes no
+   secret sets none, and leaves every Worker one a rollback can take back. A held keyring is never
    generated, and its old kids leave it only by mode `retire` (below). It is rotated only by
    adding a key: run `keyring-add` on your copy
    of the stored keyring, store the result, then run with `rotate` naming it. The
@@ -158,10 +165,12 @@ It never counts as "absent".
 7. **E2B's lifecycle webhook** (`tinyassets-lifecycle`, found by its name, listed with the
    checks before any change): registered **disabled** at the doors' `hook` in
    `identity.json` if E2B's listing lacks it, its URL moved to that one when the identity's
-   host has changed, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
-   `production` too, so the two start equal. After that its secret changes only with the
-   doors' (`rotate` naming `E2B_WEBHOOK_SECRET`): E2B never shows a hook's secret, so the kit
-   cannot compare them. It is never disabled or deleted.
+   host has changed, with production's `E2B_WEBHOOK_SECRET`, the value a first deploy sets on
+   the doors, so the two start equal. If E2B holds none while the doors hold the secret, the
+   apply job stops before any secret or Worker: dispatch again with `rotate` naming
+   `E2B_WEBHOOK_SECRET`, which sets both. After that its secret changes only with the
+   doors' (`rotate` naming it): E2B never shows a hook's secret, so the kit cannot compare
+   them. It is never disabled or deleted.
 8. **The platform's canary** (Fact 11, `deploy/canary.ts`) runs against
    `tinyassets.io/mcp`. No route moves, so the old stack still answers: it reads the platform
    dark, checks that the old stack still answers `/mcp` and that E2B holds the pinned
