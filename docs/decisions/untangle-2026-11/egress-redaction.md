@@ -80,7 +80,7 @@ allowed on a sealed path; (3) the egress receipt kept the sandbox's query string
 
 - **Headers stay a denylist** (`forward.ts` `CREDENTIAL_HEADERS`): engines send many headers a
   provider needs (`anthropic-version`, `anthropic-beta` on a sign-in, SDK telemetry), so an
-  allowlist needs each engine's headers read first. Owed below.
+  allowlist needs each engine's headers read first. Since done (`egress-headers.md`).
 - **A secret that is itself an encoding** (an owner's `Basic` key, base64 of `user:pass`) is
   redacted as given and in its encodings, not decoded.
 - **Receipts written before this change** keep their query until they age out (the newest 2,000
@@ -90,8 +90,9 @@ allowed on a sealed path; (3) the egress receipt kept the sandbox's query string
 
 ## Owed
 
-- [ ] `untangle/egress-headers`: research each engine's request headers, then decide whether a
-  sealed call's headers become an allowlist per API, as its query now is.
+- [x] `untangle/egress-headers`: research each engine's request headers, then decide whether a
+  sealed call's headers become an allowlist per API, as its query now is. Done
+  (`egress-headers.md`): a shared base plus each API's additions, as data.
 - [ ] live: at the dark redeploy, Claude Code's `?beta=true`, Gemini CLI's `?alt=sse` and Codex's
   `?client_version=` (where it lists its models on a key) each reach their provider through
   the egress door. No provider quotes a key back on purpose, so the redaction is the fake
