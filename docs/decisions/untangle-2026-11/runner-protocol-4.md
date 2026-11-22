@@ -26,3 +26,4 @@ deploys, not a check.
 ## Owed
 
 - [x] `untangle/agent-hooks`: protocol 4's second deploy (the runner speaks 4 and takes `hooks`, the Worker 3 and 4), with D5's admission, records and dispatcher. Done (`agent-hooks.md`).
+- [x] `untangle/runner-protocol-contract`: protocol 4's contract, the Worker speaking 4 alone, and a start never going on, unchecked, under a runner it does not speak. Done (`runner-protocol-contract.md`).

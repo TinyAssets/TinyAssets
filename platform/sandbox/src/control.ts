@@ -619,11 +619,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * answers alike: when nothing lives in it (no run, no sign-in) and `adoptable`, this
    * Worker's is installed, `adopt`ed (the disk held to its format; nothing deleted) and
    * committed to its row, its caller then running the adopted runner's `prepare`, which drops
-   * the other runners' bytes. A runner kept (a live run's, a rebooted sandbox's, or one whose
-   * adoption failed) must speak a protocol this Worker speaks, or it is refused
-   * (`sandbox_runner_protocol`). An adoption that fails on the way keeps the runner it has
-   * (logged loudly, asked again at the next start): an adoption is never what fails a start.
-   * Only a refusal (the runner's, by its code) is thrown from it. Whether it adopted.
+   * the other runners' bytes. A runner kept (a live run's, a rebooted sandbox's, a renewal's,
+   * or one whose adoption failed) must speak a protocol this Worker speaks, or it is refused
+   * (`sandbox_runner_protocol`); one whose `state` fails is a fault, thrown, never gone on
+   * with. An adoption that fails on the way keeps the runner it has (logged loudly, asked
+   * again at the next start), so an adoption alone never fails a start. Whether it adopted.
    */
   async #speaking(authority: string, box: Box, adoptable: boolean):
       Promise<{ box: Box; adopted: boolean }> {
