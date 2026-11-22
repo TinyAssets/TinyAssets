@@ -105,6 +105,11 @@ Read from the run's log (names only; GitHub masks the values) and the kit at `b6
 - **What follows the last approved line is not held:** the operator modes' answers and the
   handback's read-back come only from the change, and `retire`'s sets follow its one plan line,
   gated by its words. No deploy step says a line there.
+- **The hook's stop is not reached by a routine run:** the first deploy holds no doors (so it
+  sets both), and the hook is never deleted after (a handback disables it). It is reached
+  when E2B's hook was deleted, or the team changed. In `routes` it comes after the route
+  record and the host's DNS record; the dispatch again with `rotate` records the host as
+  held, so the stopped run's own handback is the one that deletes that DNS record.
 - **The redirect URI and the hook say their line once their call returns**, since only it
   names the outcome, which the plan job left to the apply job. Their subjects are fixed, so a
   stop there is only a line before them the apply job did not say: its change not made, and
