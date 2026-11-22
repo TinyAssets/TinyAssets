@@ -103,7 +103,6 @@ export function runHooks(engine: string, names: ToolNames, cwd: string,
   };
 }
 
-
 /**
  * Where one run's own home is made (`{home}`): a fresh directory a run, owned by the run's
  * own user, filled from its engine's store and emptied back into it (`runner.ts`); and its
