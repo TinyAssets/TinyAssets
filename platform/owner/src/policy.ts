@@ -91,6 +91,8 @@ import {
 } from "./door";
 import { type ActionReceipt, type Actions, type RuleNote, ruleNotes } from "./actions";
 import type { Egress } from "./egress";
+import type { Files } from "./files";
+import { narrows } from "./network";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
 
@@ -558,12 +560,13 @@ export interface CardRequest {
 // scope and the fields.
 
 /**
- * What the `policy` doors reach: the policy, the sandbox egress a write ends, and the action
- * rules' receipts, listed beside the policy's own.
+ * What the `policy` doors reach: the policy, the sandbox egress a write ends, the live leases
+ * a narrowing write marks, and the action rules' receipts, listed beside the policy's own.
  */
 export interface PolicyDoorNeeds extends Pick<DoorUnits, "door" | "synced"> {
   readonly policy: Policy;
   readonly egress: Pick<Egress, "end">;
+  readonly files: Pick<Files, "leasesNarrowed">;
   readonly actions: Pick<Actions, "receipts">;
 }
 
@@ -589,15 +592,24 @@ export const policyDoors = Object.freeze({
   /**
    * The owner's write, in its session; with `proposal`, a held card's one apply. A new
    * files retention is applied to rows already kept by housekeeping, so the schedule is
-   * synced after it (the `files` lane re-applies it). Once it committed, it ends the
-   * sandbox's in-flight egress streams; a call opened after it is admitted under the new
-   * generation.
+   * synced after it (the `files` lane re-applies it). A write that lets out less marks every
+   * live lease in its unit (`leasesNarrowed`): each sandbox's network is wider than the
+   * policy until a re-apply lands, and its lease is given back if none lands in time
+   * (`Launcher.reapply`). Once it committed, it ends the sandbox's in-flight egress streams;
+   * a call opened after it is admitted under the new generation.
    */
   async policyWrite(o: PolicyDoorNeeds, door: Door<PolicyWriteRequest, "session">):
       Promise<Projection> {
-    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) =>
-      projected(owner, o.policy.write(session, r["expected_generation"], r["policy"],
-                                      r["proposal"] ?? null, clock()))));
+    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
+      const before = o.policy.read().document.egress;
+      const now = clock();
+      const written = o.policy.write(session, r["expected_generation"], r["policy"],
+                                     r["proposal"] ?? null, now);
+      if (narrows(before, written.document.egress)) {
+        o.files.leasesNarrowed(o.policy.egressGeneration(), now);
+      }
+      return projected(owner, written);
+    }));
     await o.door(() => o.egress.end("policy"));
     return done;
   },

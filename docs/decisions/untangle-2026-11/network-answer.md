@@ -61,7 +61,7 @@ reach the sandbox".
 
 ## Owed
 
-- [ ] A narrowed egress policy not yet in force on a live sandbox: research first what bounds
+- [x] A narrowed egress policy not yet in force on a live sandbox: research first what bounds
   it and how the owner is told (the lease's `network_generation` behind, the write's answer or
   status naming it; past a bound with a recorded reason, the lease's runs stopped), then build
   it (`untangle/network-narrow-bound`).

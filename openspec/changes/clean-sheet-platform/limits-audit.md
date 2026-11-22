@@ -48,12 +48,14 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,630,230,699.75 bytes, 46.30% of the 10 GB: 369.8 MB under
+**The worst case that ships is 4,632,789,949.75 bytes, 46.33% of the 10 GB: 367.2 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 The rooms as rows (`rooms`, `room_members`, and `archive_purges` by room; owner migration 19,
 `untangle-2026-11/shapes.md`) take 27.2 MB of it at `maxRooms`.
 R5 P-decide's held calls and their decisions' receipts (`action_requests`, `action_receipts`)
 take 26.0 MB of it.
+A lease's re-apply columns and the narrowing it owes (`sandbox_leases`, migrations 5 and 21,
+`untangle-2026-11/network-narrow-bound.md`) take 2.6 MB of it.
 Untangle 3b deleted the ledger's receipts (`ledger_receipts`, 309.6 MB), each fact on the row
 it describes; a recipient row's read time and failure reason take 6.4 MB more, and the room
 freed is held for the files index (d3 §P item 5).
@@ -179,6 +181,7 @@ Not yet in one of the kinds, each owed:
 | `sandbox/runner/scratch.ts` `RESERVE_BYTES` | 256 MiB | the runner's own room on the sandbox disk | nothing: a ballast the runner lets go on `ENOSPC`, and before sync-out on a full disk | technical ceiling | What a run stages: only the sessions the owner's files do not hold yet (never the engine's whole history), in the common case the one it changed, at most the largest engine transcript measured (86 MB), with the run's state and room to spare. The reserve is let go before that staging whenever the disk has less free than it, so the worst case (a full disk and an 86 MB session) still stages. Staging happens before the sync agent's lock, so runs that end together stage together; beyond the reserve, ext4 keeps 320 MB for root, which stages. |
 | `contract/src/limits.ts` `EGRESS_DEADLINE_S` | 86,400 s | one streamed sandbox model call | a stream past a day is cut `deadline`, settled `unknown` | vendor limit | An E2B Pro sandbox lives at most 24 hours (`engines-replan.md` §3); a subrequest has no time limit while its client stays connected (Workers limits). `LOST_AFTER_S` follows. |
 | `gateway/src/forward.ts` `FORWARD_DEADLINE_MS` | 24 hours | one forwarded request | as `EGRESS_DEADLINE_S` | vendor limit | `EGRESS_DEADLINE_S` in ms. |
+| `owner/src/launch.ts` `NARROWED_WITHIN_S` | 60 s (`LEASE_TTL_S`) | how long a live sandbox may owe a narrowed egress policy, its older network still letting out a host the owner dropped | its lease is given back: its runs settled `failed` (`network_unconfirmed`), its sign-ins ended, its CLIs stopped, the owner told by a notice | technical ceiling | One lease's TTL, the time the platform already lets a sandbox run unconfirmed (a runner unheard that long is settled lost). It holds the write's own re-apply and one retry, each answered within `LANE_CALL_MS` (30 s + 15 s, held by a test), so a re-apply that lands is never cut short. A widening owes nothing (`untangle-2026-11/network-narrow-bound.md`). |
 | `owner/src/owner-do.ts` `fittedCode` | one answer (`PAGE_BYTES`, 49,936 bytes of JSON) | a `code` script's answer (value and output) | its output past it cut at a character, said so (`output_cut`); a value past it alone answered `answer_too_large`, its calls and what landed kept | technical ceiling | One tool answer, `RESULT_CHARS` less the page's slack: the script's answer is one tool result, sent once as text (review M6). |
 | `contract/src/policy-document.ts` `CODEMODE_DEFAULTS.on` | off | whether code mode scripts run for the owner | `code` withheld from every profile, its call refused `code_mode_off`, saying why, until the owner turns it on | owner setting | Off by default until code mode's isolation probe passes (H2, `tasks.md` §5; founder call 10, `untangle-2026-11/codemode-off.md`): in workerd one owner's looping script starved other owners' objects. Only H2's pass turns the default on. |
 | `owner/src/codemode.ts` `CODEMODE_TIMEOUT_MS` | 300 s | one code mode script's wall time | a longer script ends `timeout` | vendor limit | The codemode Worker's `cpu_ms`, Workers Paid's most, 5 minutes (Workers limits). |
