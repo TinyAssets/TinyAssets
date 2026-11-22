@@ -265,11 +265,11 @@
           "pre_compact": "PreCompact"
         },
         "file": "/etc/claude-code/managed-settings.json",
-        "each": "{\"hooks\": {\"{native}\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"{dispatcher} {event}\", \"shell\": \"bash\", \"timeout\": 600}]}]}}",
+        "each": "{\"hooks\": {\"{native}\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"{dispatcher} {event}\", \"shell\": \"bash\", \"timeout\": 600, \"onFailure\": \"{on_failure}\"}]}]}}",
         "runs": {"shell": ["bash", "-c"]},
-        "fails": "open",
+        "fails": "closed",
         "cite": "https://code.claude.com/docs/en/hooks",
-        "read": "2026-11-21"
+        "read": "2026-11-22"
       }
     },
     "mcp": {

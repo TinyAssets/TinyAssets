@@ -15,8 +15,10 @@ What the research left open, from each pinned version's own docs or source:
   matcher omitted matches every event; exit 2 blocks `PreToolUse` and `UserPromptSubmit` (its
   stderr the reason) and also refuses a `Stop`, blocks a `PreCompact` and shows stderr on a
   `PostToolUse`; `hookSpecificOutput.additionalContext`, under the event's `hookEventName`,
-  adds context on `UserPromptSubmit` and `SessionStart`; a hook that cannot start or times out
-  is a non-blocking error unless `onFailure: "block"`, which would also refuse a stop.
+  adds context on `UserPromptSubmit` and `SessionStart`; a hook that cannot start, times out
+  or exits another code is a non-blocking error unless its entry sets `onFailure: "block"`
+  (v2.1.295 on), which then does what exit 2 does on the event: it blocks a call or a prompt,
+  does nothing on a `Stop`, and would block a `PreCompact` (review, read 2026-11-22).
 - **Codex CLI 0.166.0** (`codex-rs/hooks/src/events/*.rs`, `engine/output_parser.rs`,
   `schema.rs`, `config/src/hook_config.rs`, `features/src/lib.rs`): managed hooks are the
   requirements file's `[[hooks.<Event>]]` groups, each matcher optional; exit 2 with stderr
@@ -28,7 +30,9 @@ What the research left open, from each pinned version's own docs or source:
   `BeforeAgent` but hides an `AfterTool` result and retries an `AfterAgent`;
   `hookSpecificOutput.additionalContext` (its types name `hookEventName` too) adds context on
   `BeforeAgent` and `SessionStart`; hooks of one event run in parallel unless one is
-  `sequential`; the default timeout is 60 000 ms.
+  `sequential`; the default timeout is 60 000 ms. A hook with an empty stdout has its stderr
+  read as its answer, JSON included, whatever its exit (`hookRunner.ts`), and no setting makes a
+  hook that fails block (review, read 2026-11-22).
 - **pi 1.4.0** (`docs/extensions.md`, `dist/core/extensions/types.d.ts`): `tool_call` blocks
   by `{block, reason}`, and a handler that throws blocks too; `input` answers `continue`,
   `transform` or `handled` (consumed, never run); context goes in as `before_agent_start`'s
@@ -58,8 +62,8 @@ and pi's template maps it onto its own events.
    (a shell, or `exec` for the record's own `.mjs`), `fails`, `alterable`. The checker holds
    each settings part read whole once filled, with no credential key; an `.mjs` template
    carrying `{dispatcher_argv}` and `{hook_events}` and naming each event's own name; argv only
-   for a run's own file; the placeholders only in that file, `{event}` and `{native}` only in
-   `each`. Codex's `[features] hooks = true` moved from the decide template to the hooks
+   for a run's own file; the placeholders only in that file, `{event}`, `{native}` and
+   `{on_failure}` only in `each`. Codex's `[features] hooks = true` moved from the decide template to the hooks
    template, the part its shared file always holds, so the table is written once.
 4. **The rendering (`engine.ts`)**: every run whose record has a decide hook gets
    `{system}/hooks.json` (`runHooks`: each hook's argv, its timeout, its `match` as the
@@ -76,7 +80,8 @@ and pi's template maps it onto its own events.
    and an agent hook's match by one rule.
 6. **The dispatcher (`sandbox/runner/hooks.ts`, `ta-runner hooks <event>`, protocol 4's
    `hooks`)**: it finds its run by its group (the one root-owned directory under `/etc/ta/runs`
-   of its gid, `withRunUser`'s), reads the run's file, runs each hook the call matches in
+   of its gid, `withRunUser`'s, which removes any other of that group a dead runner left), reads
+   the run's file, runs each hook the call matches in
    parallel through `spawnBounded` (the session's one way to start a process), as the same
    user, in the agent's directory, with `{event, engine, session_id, tool?, prompt?}` on stdin,
    each stopped past its timeout or past `HOOK_ANSWER_BYTES` of answer (1 MiB, a technical
@@ -84,7 +89,9 @@ and pi's template maps it onto its own events.
    context). A hook's exit 2 or `{"block"}` blocks where the event takes one; `{"context"}`
    adds context where it takes one; every other field (`allow`, `updatedInput`, `decision`,
    `tool_input`, any engine's words) is dropped, since the dispatcher writes only its own
-   shapes. A hook that fails on a blocking event blocks, with why (Fact 8); elsewhere the
+   shapes, each block's reason after its hook's label, so its stderr is never JSON, which
+   Gemini would read as an answer (review). A hook that fails on a blocking event blocks, with
+   why (Fact 8); elsewhere the
    dispatcher exits 1, which every engine shows as a hook's error.
 7. **The start check (`runner.ts` `hooksCheck`)**: where the agent has a hook, `hooks check`
    is run as the CLI runs the dispatcher (its shell, or by argv), as the run's user, in the
@@ -95,7 +102,9 @@ and pi's template maps it onto its own events.
    neighbour: the agents' own hooks run at each engine with the layer (`holds_at`), never for a
    main agent (`main_agent`), not held at Codex (its dispatcher runs through the login shell
    the agent writes, `alterable`), and, mid-run, let a call through where a dispatcher that
-   cannot start fails open (`claude-code.fails_open`, `gemini.fails_open`).
+   cannot start fails open (`gemini.fails_open`). Claude Code's entries set `onFailure` by the
+   event (`{on_failure}`: `block` on a call or a prompt, else `continue`, so no compaction is
+   blocked), so there a dispatcher that cannot start or runs past 600 s blocks (review).
 9. **Runner protocol 4**: the runner speaks 4, the Worker 3 and 4. With 2 no longer spoken,
    the sign-in document's `region` goes from `SigninDoc` and `signinDocument`: what
    `runner-protocol-3.md` owed to `untangle/runner-protocol-3-contract`, done here.
@@ -105,7 +114,7 @@ and pi's template maps it onto its own events.
 The dispatcher's answer is never an allow or a rewrite, so whatever an agent's hook says, the
 decide hook beside it decides the call: on Claude Code `deny` outranks no decision; on Codex
 any block wins and no other `updatedInput` exists; on Gemini and pi nothing merges a changed
-input. The runner test holds both halves on every engine: the decide hook's entries are unchanged
+input (the dispatcher's stdout is only its context, its stderr never JSON). The runner test holds both halves on every engine: the decide hook's entries are unchanged
 beside the dispatcher's, and a silent hook's dispatch is no decision.
 
 ## Departures from the research
@@ -121,7 +130,8 @@ beside the dispatcher's, and a silent hook's dispatch is no decision.
 - **A hook's timeout past what the engine gives the dispatcher's entry** (600 s on Claude
   Code and Codex, 600 000 ms on Gemini, none on pi; Codex's `SessionEnd` is held to 3 s and
   Claude Code's to 60 s whatever the entry says) is cut by the engine: a vendor's limit, and on
-  a blocking event the call goes on where the engine fails open, as the note says.
+  a blocking event the call goes on where the engine fails open (Gemini, Codex), as the note
+  says; Claude Code blocks it (`onFailure`).
 - **A blocked prompt on pi is `handled`**: pi runs none of it, and its JSON mode carries no
   reason; the owed check below says what the owner sees.
 
@@ -142,3 +152,4 @@ beside the dispatcher's, and a silent hook's dispatch is no decision.
 - [ ] live: at the dark redeploy, Gemini's and pi's loading order puts R5's hook first: Gemini's `BeforeTool` list holds R5's entry before the dispatcher's, and pi's `-e decide.mjs` runs before `-e hooks.mjs`, so a call R5 holds files its card whatever the agent's hook says.
 - [ ] live: at the dark redeploy, what a run shows when pi's `input` handler consumes a blocked prompt (`handled`); if nothing, the template sends the reason as a message too.
 - [ ] `untangle/definition-commands`: whether a rule on `workspace.shell` should hold over the commands the agent's own definition files run (`mcp.json` stdio servers, `hooks.json`), researched first.
+- [ ] `untangle/hooks-shared-cost`: a shared hook file (Claude Code, Codex) carries the dispatcher only once a run of the sandbox has an agent hook, written under `writeShared`'s lock and kept while the sandbox lives, so an owner whose agents have none pays no dispatcher start (about 65 ms here) per event; today every run pays it on every event, two per tool call.

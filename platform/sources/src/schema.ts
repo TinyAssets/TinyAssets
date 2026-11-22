@@ -129,7 +129,9 @@ export interface Instructions {
  * - `file`: where the dispatcher's entries go: `decide.file` (a shared one is that alone), or
  *   another file of the run's own under `{system}`.
  * - `template`: what the file holds once; `each`: what it holds for each event it carries,
- *   `{event}` the event, `{native}` the engine's name of it. A file every run shares carries
+ *   `{event}` the event, `{native}` the engine's name of it, `{on_failure}` what a dispatcher
+ *   that fails does to it (`block` where the event takes a block, else `continue`, by
+ *   `HOOK_EVENTS`). A file every run shares carries
  *   every event (any run's agent may have a hook on it); a run's own carries the events the
  *   run's agent has hooks on, and is written only when there is one. `{dispatcher}` is the
  *   dispatcher's command line before its event, `{dispatcher_argv}` its argv as JSON, and

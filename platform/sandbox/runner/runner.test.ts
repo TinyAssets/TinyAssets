@@ -28,7 +28,7 @@ import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
 
 import { DECIDE_ENV } from "./decide";
-import { fill, invocation } from "./engine";
+import { fill, invocation, SYSTEM } from "./engine";
 import { dispatch } from "./hooks";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
@@ -44,6 +44,9 @@ const sources = bundledSources();
 /** Claude Code's own name of each engine-neutral hook event (`definition.hooks.events`). */
 const CLAUDE_EVENTS = (served().get("claude-code")!.cli.definition.hooks as
   { events: Record<string, string> }).events;
+/** What Claude Code does to `event` if the dispatcher fails: blocks a call or a prompt. */
+const onFailure = (event: string) => ["pre_tool", "prompt"].includes(event) ? "block"
+  : "continue";
 /** The agent's hooks' dispatcher's command line on `event`, as a hook file names it. */
 const dispatcherLine = (event: string) => expect.stringMatching(new RegExp(
   `^\\S+ --no-warnings ${RUNNERS}/[0-9a-f]{64}/runner\\.mjs hooks ${event}$`));
@@ -438,7 +441,7 @@ describe("the agent's own hooks (D5)", () => {
       JSON.parse(call("claude-code", hooks, tools).shared!.text!);
     const entries = Object.fromEntries(Object.entries(CLAUDE_EVENTS).map(([event, native]) =>
       [native, [{ hooks: [{ type: "command", command: dispatcher(event), shell: "bash",
-                            timeout: 600 }] }]]));
+                            timeout: 600, onFailure: onFailure(event) }] }]]));
     // With no owner hooks either: the file is shared, so another run's agent may have one.
     for (const hooks of [HOOKS, {}]) {
       expect(managed([], hooks)).toEqual({ hooks: entries });
@@ -501,6 +504,17 @@ describe("the agent's own hooks (D5)", () => {
     }
   });
 
+  it("finds the run by its user's group though a dead runner left a run's directory of it",
+     async () => {
+    for (const gid of POOL_GIDS) {
+      mkdirSync(box.path(`${SYSTEM}/dead-${gid}`), { recursive: true });
+      chownSync(box.path(`${SYSTEM}/dead-${gid}`), 0, gid);
+    }
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    expect((await run("claude-code", { hooks: { prompt: [{ run: ["true"] }] } })).end)
+      .toEqual({ exit_code: 0 });
+  });
+
   it("refuses a start whose hooks no dispatcher would run, never runs it without them", () => {
     expect(() => invocation(served().get("gemini")!, pureStart("gemini", { hooks: HOOKS }), {},
                             { home: "/h", system: "/s", skills: [] }))
@@ -550,7 +564,7 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
   /** The agent's hooks' dispatcher's entry on each event, in the same file (D5). */
   const dispatchers = Object.fromEntries(Object.entries(CLAUDE_EVENTS).map(([event, native]) =>
     [native, [{ hooks: [{ type: "command", shell: "bash", timeout: 600,
-                          command: dispatcherLine(event) }] }]]));
+                          onFailure: onFailure(event), command: dispatcherLine(event) }] }]]));
 
   it("is Claude Code's own post to the door, from the root-owned file, for the tools the " +
      "owner's rules name, after its start check", async () => {

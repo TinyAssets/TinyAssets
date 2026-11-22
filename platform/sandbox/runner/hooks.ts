@@ -8,9 +8,10 @@
  * each hook the event's call matches, in parallel, as the same user, in the agent's directory,
  * with the event as JSON on stdin (`HookInput`), and answers in the one shape every engine here
  * reads (`definition.hooks`):
- * - **block** (`pre_tool`, `prompt`): exit 2, each reason on stderr. A hook blocks by exit 2 (its
- *   stderr the reason) or by `{"block": "<reason>"}`; one that fails (cannot start, past its
- *   timeout, another exit, an answer that is no JSON object) blocks too, with why (Fact 8).
+ * - **block** (`pre_tool`, `prompt`): exit 2, each reason on stderr after its hook's label. A
+ *   hook blocks by exit 2 (its stderr the reason) or by `{"block": "<reason>"}`; one that fails
+ *   (cannot start, past its timeout, another exit, an answer that is no JSON object) blocks
+ *   too, with why (Fact 8).
  * - **context** (`session_start`, `prompt`): exit 0, `hookSpecificOutput.additionalContext`
  *   under the engine's own name of the event (`hook_event_name`), from `{"context": "<text>"}`.
  * - **nothing**: exit 0 and no output, so the engine's own flow goes on; a hook that failed on
@@ -161,8 +162,11 @@ export async function dispatch(file: RunHooks, event: HookEvent, native: unknown
   const outcomes = await Promise.all(hooks.map(async (hook) => ({
     label: `the agent's ${event} hook ${hook.run[0]!}`,
     outcome: outcomeOf(event, await runOne(hook, file.cwd, env, JSON.stringify(input))) })));
+  // Each reason under its hook's label, so the stderr is never JSON: Gemini takes a hook's
+  // stderr as its answer when its stdout is empty (`hookRunner.ts`), a `tool_input` there a
+  // rewrite.
   const blocks = outcomes.flatMap(({ label, outcome }) => "block" in outcome
-    ? [outcome.block] : "failed" in outcome && HOOK_EVENTS[event].block
+    ? [`${label} blocked it: ${outcome.block}`] : "failed" in outcome && HOOK_EVENTS[event].block
       ? [`${label} failed, so it holds: ${outcome.failed}`] : []);
   if (blocks.length > 0) {
     return { code: BLOCK, out: "", err: `${blocks.join("\n")}\n` };

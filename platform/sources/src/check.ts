@@ -173,16 +173,17 @@ const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{run_secret}", "{system}",
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}",
   "{skill}", "{dispatcher}", "{dispatcher_argv}", "{hook_events}", "{event}", "{native}",
+  "{on_failure}",
 ]);
 /** The placeholders only the hook's template takes (`cli.decide.template`). */
 const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze([
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}"]);
 /**
- * The placeholders only the dispatcher's file takes (`cli.definition.hooks`), `{event}` and
- * `{native}` only its `each`.
+ * The placeholders only the dispatcher's file takes (`cli.definition.hooks`), `{event}`,
+ * `{native}` and `{on_failure}` only its `each`.
  */
 const DISPATCH_PLACEHOLDERS: readonly string[] = Object.freeze([
-  "{dispatcher}", "{dispatcher_argv}", "{hook_events}", "{event}", "{native}"]);
+  "{dispatcher}", "{dispatcher_argv}", "{hook_events}", "{event}", "{native}", "{on_failure}"]);
 /** What each way a CLI runs its hook carries in its template, beside `{matcher}`. */
 const RUNS_CARRY = Object.freeze({
   http: Object.freeze(["{decide_url}", "{decide_header}", "{decide_env}"]),
@@ -676,7 +677,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
         check.fail(`${what} uses ${found}, which only cli.decide.template carries`);
       }
       if (DISPATCH_PLACEHOLDERS.includes(found) && (!["cli.definition.hooks.template",
-        "cli.definition.hooks.each"].includes(what) || (["{event}", "{native}"].includes(found)
+        "cli.definition.hooks.each"].includes(what) || (["{event}", "{native}", "{on_failure}"].includes(found)
           && what !== "cli.definition.hooks.each"))) {
         check.fail(`${what} uses ${found}, which only cli.definition.hooks's file carries`);
       }

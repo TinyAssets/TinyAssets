@@ -365,7 +365,7 @@ describe("the honest note (d3 §N5)", () => {
     // dispatcher cannot start, the call goes on; a main agent runs none.
     expect((await o.stub.policyRead(o.owner)).hooks).toEqual({
       holds_at: ["claude-code", "gemini", "pi"],
-      not_enforced: ["main_agent", "claude-code.fails_open", "codex", "gemini.fails_open"] });
+      not_enforced: ["main_agent", "codex", "gemini.fails_open"] });
   });
 });
 

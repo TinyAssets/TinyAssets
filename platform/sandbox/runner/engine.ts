@@ -419,7 +419,8 @@ export function invocation(record: Served, start: StartDoc,
     ...(hooks!.template === undefined ? []
       : [fill(hooks!.template, dispatchValues, quoted(hookPath!))]),
     ...(hooks!.each === undefined ? [] : carried.map((event) => fill(hooks!.each!, {
-      ...dispatchValues, event, native: hooks!.events[event] }, quoted(hookPath!))))];
+      ...dispatchValues, event, native: hooks!.events[event],
+      on_failure: HOOK_EVENTS[event].block ? "block" : "continue" }, quoted(hookPath!))))];
   for (const [path, template] of Object.entries(cli.files ?? {})) {
     write(path, template);
   }
