@@ -35,9 +35,8 @@
  *   call as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
- * - at most `openPerRun` open at once for each of the tier's simultaneous runs
- *   (`egress_rate`; the tier's numbers as kept, `admission.ts`): each open call is a row the
- *   owner-bound guard costs;
+ * - at most `EGRESS_LIMITS.open` open at once, whichever runs opened them (`egress_rate`):
+ *   each open call is a row the owner-bound guard costs;
  * - and a model call's API has the rules the gateway meters it by (`egress_unmetered`).
  *   Then one open row, uncharged, the blob at its version and the stream's end signal. A
  *   refusal is kept as a receipt row, the newest `refusalsKept` of them.
@@ -71,7 +70,7 @@
  * `lost` past `LOST_AFTER_S` without one, its charge `unknown`, and any open one past its
  * door's own deadline (`EGRESS_DEADLINE_S`) is too.
  *
- * Every row lives in `egress_reservations` (migration 11): at most `open` open, the newest
+ * Every row lives in `egress_reservations` (migration 11): at most `EGRESS_LIMITS.open` open, the newest
  * `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
  *
  * Declared difference from research §6, which let a sandbox response already streaming
@@ -104,20 +103,23 @@ import { clock, clockMs } from "./clock";
 
 
 /**
- * How much egress one owner holds: for each of its tier's simultaneous runs, 16 calls open
- * at once (an engine's clients stream a few; free 80, paid 160, at the founder's numbers),
- * each open call a row the owner-bound guard costs at the most runs a tier may give; and
- * the newest 2,000 admitted and 500 refused rows kept as receipts.
+ * How much egress one owner holds: 16,000 calls open at once, whichever of its runs opened
+ * them, each a row the owner-bound guard costs (`egress_reservations`), the object's 10 GB
+ * the ceiling. One owner holds far fewer: the paid tier's 10 runs of Claude Code, each its
+ * main loop and the 20 subagents it runs at once (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`'s
+ * default in 2.1.309), stream 210. It is the room the guard held before, 16 a run at the
+ * most runs a tier may give, as one count, so a busy run is never refused while the
+ * others idle. And the newest 2,000 admitted and 500 refused rows kept as receipts.
  */
 interface EgressLimits {
-  readonly openPerRun: number;
+  readonly open: number;
   readonly receiptsKept: number;
   readonly refusalsKept: number;
   readonly receiptsListed: number;
 }
 
 export const EGRESS_LIMITS: EgressLimits = Object.freeze({
-  openPerRun: 16,
+  open: 16_000,
   receiptsKept: 2_000,
   refusalsKept: 500,
   receiptsListed: 50,
@@ -245,8 +247,6 @@ interface EgressDeps {
   readonly reaches: (url: string) => boolean;
   /** `run`'s requests, tokens and cost so far (its `runs` row). */
   readonly runUsage: (run: string) => { requests: number; tokens: number; cost: number };
-  /** The owner's tier's simultaneous runs, as last handed (`admission.ts`); null if none are. */
-  readonly tierRuns: () => number | null;
   readonly generation: () => number;
   /**
    * The connection's blob at its version, or null for one that is not the owner's, not
@@ -450,11 +450,8 @@ export class Egress {
     if (!free && (request.bytes_hint === null || request.bytes_hint === 0)) {
       return refuse("egress_length_required");
     }
-    // The tier's runs as kept; none kept, and no number of ours stands in for them.
-    const runs = this.#deps.tierRuns();
-    if (runs === null
-        || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'")
-          >= EGRESS_LIMITS.openPerRun * runs) {
+    if (this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'")
+        >= EGRESS_LIMITS.open) {
       return refuse("egress_rate");
     }
     // A model call's API must have rules the gateway meters it by; its charge waits for the

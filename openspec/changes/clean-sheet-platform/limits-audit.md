@@ -30,6 +30,17 @@ Not listed, since none refuses or truncates what a user does:
 - the SQLite layout constants (`manifest.ts`), hashes and key sizes, and the ids we mint;
 - the owner app's own protocol frames, and the HTTP status of each fixed code.
 
+**Left to the engines** (vendor limits, the engines' own, so no number of ours): how long a
+model answer may be silent. Each engine's client ends a stream that sends nothing for 300 s
+or less, and its leaving cancels the call at the egress door, which ends the provider's
+request and settles the call `aborted`: Claude Code 2.1.309's byte-stream idle (300 s, 180 s
+first-party), Codex's `DEFAULT_STREAM_IDLE_TIMEOUT_MS` (300 s, read at #5497), Gemini CLI
+0.66.0's fetch `bodyTimeout` (300 s) and pi 1.4.0's `httpIdleTimeoutMs` (300 s), the rest
+read 2026-11-22. The
+gateway's own 300 s cut (`IDLE_CUT_MS`), a copy of theirs, is deleted
+(`untangle-2026-11/fact15-caps-2.md`); any other caller's silent call ends with its run's
+lease, a policy write or the egress door's day.
+
 ## The ceiling behind most bounds
 
 **The 10 GB**: a SQLite-backed Durable Object stores at most 10 GB, and a string, BLOB or
@@ -94,10 +105,10 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 
 ## Summary
 
-- **tier**: 3
+- **tier**: 2
 - **owner setting**: 13
-- **vendor limit**: 14
-- **technical ceiling**: 183
+- **vendor limit**: 13
+- **technical ceiling**: 185
 - **default**: 1
 - **total**: 214
 
@@ -161,7 +172,7 @@ Not yet in one of the kinds, each owed:
 |---|---|---|---|---|---|
 | control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, edited in the record with no deploy. |
 | `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | every byte of user content the owner stores, wherever it lives (slice P, the founder's one storage number of 2026-11-03): file chunks live and in history, small files kept inline, and the collections' rows, their history and mail, inline or placed in R2 (`file_space.stored`); never the platform's bookkeeping (indexes, receipts, counters) | refused `storage_full`, nothing let go to admit a write (ADR-036; untangle F1): used, total, what to free (old versions of files among it), the upgrade; 507 at the doors; `storage-full.ts`; `file_share` past an outside writer's share); with no tier numbers kept, `tier_unread`. The owner reads used and left (`storageUsage`, the app's `storage`) | tier | The control record's figure, kept from every door's binding. |
-| `owner/src/egress.ts` `EGRESS_LIMITS.openPerRun` | 16 a run (free 80, paid 160) | sandbox model calls streaming at once | a call refused `egress_rate` | tier | Scaled by the tier's runs. Guard term `egress_reservations`, 89.4 MB, costed at `RUNS_CEILING`. |
+| `owner/src/egress.ts` `EGRESS_LIMITS.open` | 16,000 | the owner's sandbox calls open at once, whichever of its runs opened them | a call refused `egress_rate` (429, `Retry-After: 1`) | technical ceiling | The 10 GB: each open call is a row of guard term `egress_reservations` (89.4 MB with its receipts). One owner holds far fewer: the paid tier's 10 runs of Claude Code, each its main loop and the 20 subagents it runs at once (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`' default in 2.1.309, read from its binary 2026-11-22), stream 210. It replaced `openPerRun`, 16 a run of the tier's runs, which nothing derived and one Claude Code run's own 21 streams passed; its rows are the room the guard held for that (16 at each of `RUNS_CEILING`'s runs), so the term is unchanged (`untangle-2026-11/fact15-caps-2.md`). |
 | `owner/src/policy.ts` files `max_bytes` | none (the owner may set 0 to 1 PiB) | the owner's own file quota | only below the tier's storage | owner setting | Off by default: the tier's figure binds. |
 | `contract/src/file-defaults.ts` `FILE_DEFAULTS.max_file_bytes` | 40 GiB, its most | one file's size | only the owner's own lower cap | owner setting | Off by default: the most one upload holds (`MAX_INTENT_CHUNKS`). |
 | `contract/src/file-defaults.ts` `FILE_DEFAULTS.retention_days` | off (high 3,650 days) | how long a version past `keep_versions` is kept after it was written | nothing until the owner sets it; then such versions pruned at that age | owner setting | Off by default (Fact 15; untangle F1): every version is kept until the owner deletes it or sets a retention. |
@@ -181,7 +192,7 @@ Not yet in one of the kinds, each owed:
 | `owner/src/launch.ts` `NARROWED_WITHIN_S` | 60 s (`LEASE_TTL_S`) | how long a live sandbox may owe a narrowed egress policy, its older network still letting out a host the owner dropped | its lease is given back: its runs settled `failed` (`network_unconfirmed`), its sign-ins ended, its CLIs stopped, the owner told by a notice | technical ceiling | One lease's TTL, the time the platform already lets a sandbox run unconfirmed (a runner unheard that long is settled lost). It holds the write's own re-apply and one retry, each answered within `LANE_CALL_MS` (30 s + 15 s, held by a test), so a re-apply that lands is never cut short. A widening owes nothing (`untangle-2026-11/network-narrow-bound.md`). |
 | `owner/src/owner-do.ts` `fittedCode` | one answer (`PAGE_BYTES`, 49,936 bytes of JSON) | a `code` script's answer (value and output) | its output past it cut at a character, said so (`output_cut`); a value past it alone answered `answer_too_large`, its calls and what landed kept | technical ceiling | One tool answer, `RESULT_CHARS` less the page's slack: the script's answer is one tool result, sent once as text (review M6). |
 | `contract/src/policy-document.ts` `CODEMODE_DEFAULTS.on` | off | whether code mode scripts run for the owner | `code` withheld from every profile, its call refused `code_mode_off`, saying why, until the owner turns it on | owner setting | Off by default until code mode's isolation probe passes (H2, `tasks.md` §5; founder call 10, `untangle-2026-11/codemode-off.md`): in workerd one owner's looping script starved other owners' objects. Only H2's pass turns the default on. |
-| `owner/src/codemode.ts` `CODEMODE_TIMEOUT_MS` | 300 s | one code mode script's wall time | a longer script ends `timeout` | vendor limit | The codemode Worker's `cpu_ms`, Workers Paid's most, 5 minutes (Workers limits). |
+| `owner/src/codemode.ts` `CODEMODE_TIMEOUT_MS` | 300 s | one code mode script's wall time, its tool calls included | a longer script ends `timeout`, its output and calls kept | technical ceiling | The only end of a script whose caller has left: the door's call into the owner's object carries no cancel, and until the script ends its VM holds memory in the codemode isolate, which other owners' VMs share, and its tool calls go on. 5 minutes, the longest the connectors are reported to wait for one tool call (`SLOT_WAIT_MS`'s row); the MCP SDK's and pi's MCP clients wait 60 s, Gemini CLI's 10 minutes (`MCP_DEFAULT_TIMEOUT_MSEC`, 0.66.0). It was rowed a vendor limit, the Worker's `cpu_ms`, which bounds CPU, not wall time; the value was pi-codemode's own default (`DEFAULT_TIMEOUT_MS`, 1.4.0). |
 | `codemode/wrangler.jsonc` `limits.cpu_ms` | 300,000 ms | the codemode Worker's CPU an invocation | a script past it resets its sandbox | vendor limit | Workers Paid's most, 5 minutes (Workers limits). |
 | `owner/wrangler.jsonc` `limits.subrequests` | 10,000,000 | the owner object's calls an invocation | the platform's error past it | technical ceiling | Workers Paid's most (Workers limits: "10,000 (up to 10M)"). P1 probed 1,000,000; a live check at the most is owed. |
 | `contract/src/control.ts` `RUNS_CEILING` | 1,000 | the most simultaneous runs a tier record may give | a record past it is malformed | technical ceiling | The 10 GB: each live run's row, grant, lease and egress calls are costed at it. Far past any tier. |
@@ -314,8 +325,8 @@ Not yet in one of the kinds, each owed:
 | `gateway/src/oauth.ts` token answer | 64 KiB | a provider's token endpoint answer | the connect fails | technical ceiling | It must fit the sealed blob it becomes (`BLOB_MAX`). |
 | `gateway/src/credential.ts` limits | 16 KiB secret; 16 endpoints of 64 paths; 64 declared models; 2,048-character URLs | a pasted credential and its declared endpoints | a larger record refused at seal | technical ceiling | Inside the 64 KiB sealed blob (`contract/src/limits.ts` `CONNECTION_BLOB_MAX`, which `keyring.ts` seals within). |
 | `contract/src/model-record.ts` numbers | as the owner's | a declared model record | refused past them | technical ceiling | As the owner's model numbers. |
-| `codemode/src/codemode.ts` `CODEMODE_INTERRUPT_BUDGET` | 1,000,000 polls (about 100 s) | a script's CPU | a compute-bound script ends `timeout` | technical ceiling | Within the codemode Worker's `cpu_ms`. |
-| `codemode/src/codemode.ts` `CODEMODE_MEMORY_BYTES` | 32 MiB | a script's VM memory | a script past it fails | technical ceiling | The isolate's 128 MB, shared by its VMs. |
+| `codemode/src/codemode.ts` `CODEMODE_INTERRUPT_BUDGET` | 1,000,000 polls (about 100 s) | a script's CPU | a compute-bound script ends `timeout` | technical ceiling | Under the codemode Worker's `cpu_ms` (300 s, Workers Paid's most), since a script reaching it resets the object instead of failing alone. pi-codemode measured 100,000 polls at about 10 s of a tight loop on Cloudflare (its README's "Limits on Cloudflare", 1.4.0), so this is about 100 s, a third of `cpu_ms`: a production rate three times slower still ends the script first. H2's probe 1 measures it live, before code mode turns on (`tasks.md` §5). |
+| `codemode/src/codemode.ts` `CODEMODE_MEMORY_BYTES` | 32 MiB | a script's VM memory | a script past it fails inside itself (`out of memory`) | technical ceiling | The isolate's 128 MB (Workers limits), which every VM Cloudflare places in it shares: a VM past its own cap fails alone, where the isolate past its 128 MB would fail every VM in it. A quarter of the isolate, pi-codemode's own default; how many objects of one class an isolate runs at once is not documented, so H2's probe 6 holds eight scripts at the cap at once, twice what one isolate fits, before code mode turns on. |
 | control record `sandbox_runtime_ceiling_s` (`contract/src/control.ts`) | the E2B plan's: Hobby 3,600 s, Pro 86,400 s | how long one sandbox runs at a stretch | nothing ends: its runs are renewed (paused and resumed with their memory) at a quiet moment before it | vendor limit | E2B's continuous runtime per plan (docs.e2b.dev, sandbox lifetime), which a pause resets (probed, `sandbox-probe.md`); edited in the record with no deploy. |
 | control record `sandbox_concurrency_ceiling` (`contract/src/control.ts`) | the E2B plan's: Hobby 20, Pro 100 | sandboxes the E2B team runs at once | a run waits `sandbox_waiting` in the platform's line, never refused | vendor limit | E2B's concurrent sandboxes per plan; E2B's own refusal (`429`) holds it regardless. |
 | `sandbox/runner/guards.ts` `ATOM_MIN` | 39 characters | the shortest value or line of a `secret_paths` file the content backstop matches | a synced file or transcript line holding one refused | vendor limit | A Google API key, 39 characters: the shortest credential any record's provider issues. |

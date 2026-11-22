@@ -71,8 +71,9 @@ end.
   code mode Worker; whether pi-codemode's own deadline fires in production while a script calls
   tools back to back; and, while a script loops tool calls, whether a revoke, an owner app read
   and the alarm reach the owner object promptly and the script's next call is refused (in
-  workerd every other call starved, other owners' objects too). Mode `h2` is cutover-only
-  (d3 §A5).
+  workerd every other call starved, other owners' objects too); and eight scripts at the VM
+  memory cap at once, each ending by its own value or memory alone (`fact15-caps-2.md`).
+  Mode `h2` is cutover-only (d3 §A5).
 - [ ] 0c (live, slice L): the dark deploy. The first `dark` ran and stopped at the sandbox
   Worker; the migration lock holds its `first_deploy`. What is left is the dark redeploy of the
   untangled build (§10 step 7).
@@ -935,8 +936,9 @@ account, the founder's own test (§8) too.
     only; `--session {sid}`; `PI_CODING_AGENT_DIR`; `models.json` `baseUrl`; the pi-ai key
     variables; `.pi/skills` under `--approve`; `--tools`; the user-level `mcp.json` over
     streamable HTTP; the prompt on stdin;
-  - Gemini CLI's and pi's idle cuts, researched (the 300 s cut follows Claude Code's and
-    Codex's; d3 §I); each CLI's real concurrency against a run's cost cap, and whether
+  - each engine's own idle cut reaching the egress door, the gateway having none (each 300 s or
+    less, read for every engine, `fact15-caps-2.md`): a stream its provider stalls past it
+    settles `aborted` and ends the provider's request; each CLI's real concurrency against a run's cost cap, and whether
     frontier-model calls serialize under the default caps.
 - [ ] 4. The egress door's live probes (G4): E2B filters CIDRs, so 127.0.0.1, 10.0.0.1 and
   169.254.169.254 are unreachable; whether code in the sandbox can read its own transform

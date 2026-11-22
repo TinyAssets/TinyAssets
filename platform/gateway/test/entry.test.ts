@@ -10,7 +10,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import { guarded } from "../src/failure";
-import { IDLE_CUT_MS } from "../src/forward";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { GATEWAY_POOL_SLOTS, gatewaySlots } from "../src/held";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
@@ -355,7 +354,7 @@ describe("the gateway Worker", () => {
       .toEqual([500, { error: { code: "internal", message: "internal" } }]);
   });
 
-  it("cuts a metered answer its provider goes silent on, the provider's request ended",
+  it("leaves a metered answer its provider goes silent on to its caller, whose leaving ends it",
      async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await connect.seal("alice", C2, 1, "sk-good", ANTHROPIC)).blob;
@@ -369,40 +368,20 @@ describe("the gateway Worker", () => {
         new ReadableStream());
       const reader = answer.response.body!.getReader();
       expect((await reader.read()).done).toBe(false);
-      const next = reader.read().then(() => "read on", (error: Error) => error.message);
-      await vi.advanceTimersByTimeAsync(IDLE_CUT_MS);
-      expect(await next).toBe("deadline");
+      let ended: string | undefined;
+      void reader.read().then(() => "read on", (error: Error) => error.message)
+        .then((how) => {
+          ended = how;
+        });
+      // An hour of silence, past every engine's own cut: the gateway cuts nothing.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(ended).toBeUndefined();
+      await reader.cancel();
     } finally {
       vi.useRealTimers();
     }
     // The meter's own reads of the answer end with it: the provider's request is cut.
     await cut("idle-metered");
-  });
-
-  it("never cuts a metered answer whose every byte comes inside the idle cut", async () => {
-    const egress = new EgressGateway(createExecutionContext(), env);
-    const blob = (await connect.seal("alice", C2, 1, "sk-good", ANTHROPIC)).blob;
-    const model = await anthropicModel();
-    const stop = new IdentityTransformStream();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const answer = await egress.forward("alice", C2, 1, blob, posted("/v1/messages",
-        JSON.stringify({ model: model.id, max_tokens: 50, stream: true,
-                         messages: [{ role: "user", content: "cmd:slow-steady" }] })),
-        granting(), stop.readable);
-      const reader = answer.response.body!.getReader();
-      expect((await reader.read()).done).toBe(false);
-      // Three gaps of just under the cut each: past it in all, never within one gap.
-      for (let gap = 0; gap < 3; gap++) {
-        const next = reader.read().then((chunk) => chunk.done ? "done" : "byte",
-                                        (error: Error) => error.message);
-        await vi.advanceTimersByTimeAsync(IDLE_CUT_MS - 1_000);
-        expect(await next).toBe("byte");
-      }
-      await stop.writable.getWriter().close();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("ends an answer its caller stopped mid-stream cleanly, the provider's request cut",

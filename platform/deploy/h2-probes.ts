@@ -18,6 +18,10 @@
  * 5. While A's script loops tool calls: an owner app read's latency, and a revoke's reach
  *    (the script's next call refused); the alarm's reach is read from the owner Worker's
  *    logs for that minute.
+ * 6. The VM memory cap against the isolate's 128 MB (run before 5, which revokes A's key):
+ *    eight of A's scripts at once, each holding just under its cap, and B's one call
+ *    meanwhile. Each ends with its own value or its own `out of memory`, never another's
+ *    reset, or the cap is too high for how many VMs an isolate holds.
  */
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +80,14 @@ async function main(): Promise<void> {
   row("4 tool calls back to back past the deadline", await code(a,
     "const t = Date.now(); let n = 0; while (Date.now() - t < 600000) " +
     "{ await tools.agents_list({}); n++; } return { n, ms: Date.now() - t };"));
+  const held = Array.from({ length: 8 }, () => code(a,
+    "const kept = []; for (let i = 0; i < 30; i++) { kept.push(new Uint8Array(1 << 20)); } " +
+    "for (let i = 0; i < 20; i++) { await tools.agents_list({}); } return kept.length;"));
+  await new Promise((done) => setTimeout(done, 1000));
+  row("6 another owner's call while eight scripts hold memory", await code(b, "return 1;"));
+  for (const [i, answer] of (await Promise.all(held)).entries()) {
+    row(`6 the memory script ${i + 1}`, answer);
+  }
   const token = process.env[INPUTS.token];
   const keyId = process.env[INPUTS.keyId];
   if (!token || !keyId) {

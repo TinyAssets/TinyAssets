@@ -16,7 +16,7 @@ import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { serviceSource, type Source } from "../../contract/src/egress-scope";
-import { forwardMetered, forwardRead, IDLE_CUT_MS, verify } from "../src/forward";
+import { forwardMetered, forwardRead, verify } from "../src/forward";
 import { redaction } from "../src/redact";
 import { seal, type Binding } from "../src/keyring";
 import { steer } from "./fake-upstream";
@@ -233,7 +233,7 @@ describe("forward", () => {
     }
   });
 
-  it("cuts an answer its provider goes silent on for the idle cut, and ends its request",
+  it("leaves an answer its provider goes silent on to its caller, whose leaving ends it",
      async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
@@ -250,10 +250,11 @@ describe("forward", () => {
       void next.then((how) => {
         ended = how;
       });
-      await vi.advanceTimersByTimeAsync(IDLE_CUT_MS - 1_000);
+      // An hour of silence, past every engine's own cut: the gateway cuts nothing.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
       expect(ended).toBeUndefined();
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(await next).toBe("deadline");
+      // The engine gives up: its leaving reaches the provider.
+      await reader.cancel();
     } finally {
       vi.useRealTimers();
     }

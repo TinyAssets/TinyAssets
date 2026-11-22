@@ -167,7 +167,7 @@ function inline(module: string, pattern: RegExp): number {
 
 const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConnections",
                                    "maxRevokedKept", "maxModels", "maxFlowRows");
-const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "openPerRun", "receiptsKept",
+const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "open", "receiptsKept",
                                "refusalsKept");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
                               "maxScopesBytes");
@@ -558,12 +558,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                      model_reservations_open: key(10) } },
     model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
     // The sandbox's egress: its lease is `file_space`'s one row; each request a row.
-    egress_reservations: { rows: E.receiptsKept + E.refusalsKept
-                                  + E.openPerRun * RUNS_CEILING,
+    egress_reservations: { rows: E.receiptsKept + E.refusalsKept + E.open,
                            bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
                              + 256 + 25 + 7 + 64 + 30 + 17 * 8 + RUN_ID_CHARS,
-                           by: "receiptsKept admitted, refusalsKept refused and openPerRun at " +
-                             "once for each of the most runs a tier may give, " +
+                           by: "receiptsKept admitted, refusalsKept refused and open at once, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +
                              "charge, rule, periods, served model and numbers",
                            indexes: { sqlite_autoindex_egress_reservations_1: key(32),

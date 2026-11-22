@@ -42,9 +42,13 @@ type CodemodeTools = NonNullable<
   ConstructorParameters<typeof RemoteCodemodeSandbox>[0]["tools"]>;
 
 /**
- * How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. Its
- * compute is the codemode Worker's own interrupt budget, which no owner sets
- * (`codemode/src/codemode.ts`, tested in `codemode/test/`).
+ * How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. It
+ * is the only end of a script whose caller has left, since the door's call into this object
+ * carries no cancel: until then its VM holds memory in the codemode isolate, which other
+ * owners' VMs share, and its tool calls go on. 5 minutes, the longest the connectors are
+ * reported to wait for one tool call (`SLOT_WAIT_MS`'s row, `limits-audit.md`); the MCP
+ * SDK's and pi's own clients wait 60 s. Its compute is the codemode Worker's own interrupt
+ * budget, which no owner sets (`codemode/src/codemode.ts`, tested in `codemode/test/`).
  */
 export const CODEMODE_TIMEOUT_MS = 300_000;
 
