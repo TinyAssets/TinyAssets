@@ -1889,11 +1889,11 @@ function deployLine(rolled: Rolled, setting: readonly Setting[], reach: Reach): 
  * the share rises; then at 100%. Each is `wrangler versions deploy`, which leaves the Worker's
  * routes as they are and syncs the settings its config gives that no version carries
  * (logpush, tail consumers, observability). At each share below 100 the doors, once they hold
- * their routes (`routed`), are held `soak_s`, then
- * smoked (`canary.ts --smoke`); a failed smoke stops the run there, every request but an
- * override's still served by their version before, which a rollback takes them back to. A
- * Worker that cannot serve beside its version before goes to 100% at once (`atOnce`), in its
- * place in the order. Wrangler 4.154 refuses a versions upload with a pending Durable Object
+ * their routes (`routed`), are held `soak_s`, then smoked (`canary.ts --smoke`); a failed
+ * smoke stops the run there, every request but an override's still served by their version
+ * before, which a rollback takes them back to. Worker by Worker, so each is uploaded only once
+ * the Workers it binds serve their new versions. A Worker that cannot serve beside its version
+ * before goes to 100% at once (`atOnce`), in its place in the order. Wrangler 4.154 refuses a versions upload with a pending Durable Object
  * migration: `--migrate <worker>` deploys it whole. The secrets the run sets on a Worker go up
  * with its version (`--secrets-file`; one the file omits is kept from the version before),
  * never by `wrangler secret put`, which deploys the code already there at once; each version

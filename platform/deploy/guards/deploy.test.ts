@@ -38,7 +38,8 @@ import { OWNER_ENTRY } from "../../contract/src/ids";
 import { IMPORT_KEY } from "../../contract/src/import-message";
 import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/envelope";
 import {
-  APP_RESOURCE, HOST, ORIGIN, routeTakes, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT, ZONE,
+  APP_RESOURCE, HOST, ORIGIN, routeTakes, UPSTREAM_CALLBACK, VERSION_HEADER, WEB_CLIENT,
+  WEB_REDIRECT, ZONE,
 } from "../../contract/src/identity";
 import {
   answerKey, answerOf, LOCATE_PAGE, macHolds, type OperatorMessage, operatorMessage,
@@ -4983,15 +4984,15 @@ const RECORDED = `record each Worker's version as this run's rollout record in $
 const MADE_ID = (n: number) => `0f7e3a3c-1b2d-4e5f-8a9b-${String(n).padStart(12, "0")}`;
 
 /** A deployment read back, as the run reports it once made. */
-const READ_BACK = /^tinyassets-[a-z]+ serves .+, read back$/;
+const READ_BACK = new RegExp(`^(${Object.values(NAMES).join("|")}) serves .+, read back$`);
 const readBack = (worker: string, ...serving: [string, number][]) =>
   `${NAMES[worker]} serves ${serving.map(([version, share]) => `${version} at ${share}%`)
     .join(" and ")}, read back`;
 
 /** The doors' smoke, as a plan names it. */
-const SMOKED = "held 30 s and smoked there (the canary's doors checks, each request with " +
-  "Cloudflare's version override for it and each answer held to name it in " +
-  "x-tinyassets-version)";
+const SMOKED = `held ${STAGES.soakMs / 1000} s and smoked there (the canary's doors checks, ` +
+  "each request with Cloudflare's version override for it and each answer held to name it in " +
+  `${VERSION_HEADER})`;
 /** What a plan says of a Worker no smoke reaches at 0%: the doors before their routes, or RPC. */
 const UNSMOKED = (worker: string) => worker === "doors"
   ? "not smoked: the doors do not hold their routes yet, so no request reaches them"

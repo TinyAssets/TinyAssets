@@ -29,7 +29,10 @@ fetched 2026-11-22: `workers/versions-and-deployments/version-overrides.mdx`,
    (`maybePatchSettings`). So the schema's 0.01 minimum (#5788 research 9) is not what the
    server takes from wrangler [I: the docs' own smoke-test example deploys a version at 0%
    with `wrangler versions deploy`]. The run's stages stay wrangler's, for the settings sync
-   (#5782 research 8); the first `dark` run's 0% stage shows the server's answer live.
+   (#5782 research 8); the first `dark` run's 0% stage shows the server's answer live. A
+   split also needs every version's declarative Durable Object `exports` identical (its error
+   100405, `inconsistent-exports.ts`); the platform declares none (its configs' `migrations`),
+   and a class change goes whole (`--migrate`).
 2. **What each command prints.** `versions upload` logs `Worker Version ID: <id>`
    (`versions-upload.ts`), `deploy` logs `Current Version ID: <id>` (`deploy.ts`). The kit
    read only the first, and never read a whole deploy's version.
