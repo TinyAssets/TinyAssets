@@ -318,7 +318,7 @@ describe("the run's MCP servers (D4)", () => {
              urls: { mcp: DOOR, mcp_bare: BARE,
                      events: `https://egress.tinyassets.io/r/${RUN}/events`,
                      signin: "https://egress.tinyassets.io/signin" },
-             mcp_servers };
+             mcp_servers, hooks: {} };
   }
   const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
     home: "/h", system: "/s", skills: [] });
@@ -1219,7 +1219,7 @@ describe("an API-key run's base URL", () => {
                      mcp_bare: `https://egress.tinyassets.io/r/${RUN}/mcp`,
                      events: `https://egress.tinyassets.io/r/${RUN}/events`,
                      signin: "https://egress.tinyassets.io/signin" },
-             mcp_servers: {} };
+             mcp_servers: {}, hooks: {} };
   }
   const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
     home: "/h", system: "/s", skills: [] });

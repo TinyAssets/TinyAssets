@@ -257,6 +257,7 @@ describe("a start", () => {
     expect(JSON.parse(doc)).not.toHaveProperty("network");
     expect(JSON.parse(doc).prompt).toBe("hello");
     expect(JSON.parse(doc).mcp_servers).toEqual(AGENT_SERVERS);
+    expect(JSON.parse(doc).hooks).toEqual({});
     // The look is armed a lease's TTL on, for the idle reap, before its renewal window.
     const look = await alarmOf(who);
     expect(look!).toBeGreaterThanOrEqual(began + LEASE_TTL_S * 1000);
