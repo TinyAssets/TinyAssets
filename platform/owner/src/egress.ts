@@ -57,9 +57,9 @@
  *
  * **Ending** (`end`): a policy write, a suspension, the owner's erasure, the connection's
  * revoke and the lease's close or replacement each end the in-flight streams they cover,
- * once their own unit committed: the object closes each one's end signal (the door stops the
- * stream on it) and marks its row with why. An end signal that errors (this instance gone)
- * is an end too.
+ * once their own unit committed: the object errors each one's end signal (`#release`; the
+ * door stops the stream on it) and marks its row with why. An end signal that errors because
+ * this instance went is an end the same way.
  *
  * **Settle** (`settle`, `reduce`): the door reports each reservation's end once, with the
  * provider's status, the bytes it streamed and the gateway's metered outcome, which settles
@@ -105,14 +105,13 @@ import { clock, clockMs } from "./clock";
 /**
  * How much egress one owner holds: 16,000 calls open at once, whichever of its runs opened
  * them, each a row the owner-bound guard costs (`egress_reservations`), the object's 10 GB
- * the ceiling. Each open call also holds its end signal (`#live`) in the object's isolate,
- * about 400 B of heap in workerd (read 2026-11-22), so 6.1 MiB at 16,000: inside the counts
- * test's room, not yet one of its terms (`guards/memory-counts.test.ts`, `UNCOUNTED`).
- * One owner holds far fewer: the paid tier's 10 runs of Claude Code, each its
- * main loop and the 20 subagents it runs at once (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`'s
- * default in 2.1.309), stream 210. It is the room the guard held before, 16 a run at the
- * most runs a tier may give, as one count, so a busy run is never refused while the
- * others idle. And the newest 2,000 admitted and 500 refused rows kept as receipts.
+ * the ceiling, and each its end signal in the object's isolate (`OPEN_CALL_BYTES`), which
+ * the counts test counts 16,000 of for each owner object. One owner holds far fewer: the
+ * paid tier's 10 runs of Claude Code, each its main loop and the 20 subagents it runs at once
+ * (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`'s default in 2.1.309), stream 210. It is the room
+ * the guard held before, 16 a run at the most runs a tier may give, as one count, so a busy
+ * run is never refused while the others idle. And the newest 2,000 admitted and 500 refused
+ * rows kept as receipts.
  */
 interface EgressLimits {
   readonly open: number;
@@ -127,6 +126,16 @@ export const EGRESS_LIMITS: EgressLimits = Object.freeze({
   refusalsKept: 500,
   receiptsListed: 50,
 });
+
+/**
+ * What one open call holds in the owner isolate: its end signal (`#live`'s entry, the writer
+ * of the stream its door reads and that stream's pipe over RPC). What it covers is its
+ * row's, never copied beside it. The workerd memory leg opens `EGRESS_LIMITS.open` of them
+ * through `open`, each read from another isolate as the door reads it, and holds what they
+ * hold within this (`memory/leg.mjs`); the counts test counts `EGRESS_LIMITS.open` of them
+ * for each owner object (`guards/memory-counts.test.ts`).
+ */
+export const OPEN_CALL_BYTES = 256;
 
 /**
  * An open reservation with no beat for this long was its door's lost invocation's: three
@@ -364,8 +373,11 @@ function settleRequest(value: unknown): SettleRequest {
 export class Egress {
   readonly #storage: OwnerStorage;
   readonly #deps: EgressDeps;
-  /** Each open reservation's end signal, by reservation, with what it covers. */
-  readonly #live = new Map<string, LiveStream & {
+  /**
+   * Each open reservation's end signal, by reservation: the one thing its row cannot hold
+   * (`OPEN_CALL_BYTES`), beside the one fact it does not keep.
+   */
+  readonly #live = new Map<string, {
     readonly end: WritableStreamDefaultWriter<Uint8Array>;
     /** An admitted model call whose charge waits for the gateway's parse (`reserve`). */
     reserving: boolean }>();
@@ -459,9 +471,7 @@ export class Egress {
     const reservation = this.#record(sandbox, request, lease, generation, now,
                                      { version: credential.version });
     const { readable, writable } = new IdentityTransformStream();
-    this.#live.set(reservation, { connection: request.connection, lease: lease.lease_id,
-                                  run: request.run, end: writable.getWriter(),
-                                  reserving: !free });
+    this.#live.set(reservation, { end: writable.getWriter(), reserving: !free });
     return { ok: true, reservation, connection: request.connection, blob: credential.blob,
              version: credential.version, generation, metered: !free, ended: readable };
   }
@@ -640,24 +650,29 @@ export class Egress {
 
   /**
    * In a unit, once the change that ends them committed: every open stream `covers` takes
-   * (all of them by default) ended, its signal closed and its row marked `why`.
+   * (all of them by default) ended, its signal errored and its row marked `why`.
    */
-  end(why: EndedBy, covers: (live: LiveStream) => boolean = () => true): number {
-    let ended = 0;
-    for (const [reservation, live] of [...this.#live]) {
-      if (!covers(live)) {
-        continue;
+  end(why: EndedBy, covers: (live: LiveStream) => boolean = () => true): void {
+    // What each covers is its open row's: a reservation's ids never change (the schema's
+    // `egress_reservations_kept`).
+    const ending: string[] = [];
+    for (const row of this.#sql.exec<{ id: string; connection_id: string; lease_id: string;
+                                       run: string }>(
+      "SELECT id, connection_id, lease_id, run FROM egress_reservations WHERE state = 'open' " +
+        "AND ended IS NULL")) {
+      if (this.#live.has(row.id)
+          && covers({ connection: row.connection_id, lease: row.lease_id, run: row.run })) {
+        ending.push(row.id);
       }
-      this.#sql.exec("UPDATE egress_reservations SET ended = ? WHERE id = ? AND state = 'open' " +
-                       "AND ended IS NULL", why, reservation);
-      this.#release(reservation);
-      ended++;
     }
-    return ended;
+    for (const reservation of ending) {
+      this.#sql.exec("UPDATE egress_reservations SET ended = ? WHERE id = ?", why, reservation);
+      this.#release(reservation);
+    }
   }
 
   /**
-   * Every end signal closed, writing nothing: the owner's erasure, whose wipe takes the
+   * Every end signal errored, writing nothing: the owner's erasure, whose wipe takes the
    * rows. Each door then settles into a refusal, and its stream is over.
    */
   drop(): void {
@@ -704,11 +719,16 @@ export class Egress {
     return id;
   }
 
-  /** Its end signal closed and forgotten; the door sees the close as the end. */
+  /**
+   * Its end signal errored and forgotten; the door takes the error as the end. An abort, not
+   * a close: in workerd the closes of many such streams at once reach their readers in time
+   * growing as the square of their count (4,000 in 5.7 s, 8,000 in 23.6 s, 16,000 in about
+   * 110 s), the aborts in time linear in it (8,000 in 0.5 s, 16,000 in 1.1 s; 2026-11-22).
+   */
   #release(reservation: string): void {
     const live = this.#live.get(reservation);
     this.#live.delete(reservation);
-    live?.end.close().catch(() => undefined);  // a door that stopped reading is gone already
+    live?.end.abort("ended").catch(() => undefined);  // a door that stopped reading is gone
   }
 
   /**

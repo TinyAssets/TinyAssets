@@ -9,6 +9,9 @@
  * - the relay's per-object terms (each object's events posts, its sockets' attachments, its
  *   told sign-outs, its tails' own objects: `relay-memory.ts`), once for each owner object
  *   the isolate holds;
+ * - each owner object's open egress calls' end signals (`EGRESS_LIMITS.open` times
+ *   `OPEN_CALL_BYTES`, within which the leg holds what that many open calls hold), once for
+ *   each owner object too;
  * - the Worker's resting baseline (`OWNER_BASELINE_BYTES`), which the leg measures with an
  *   owner object built and served and holds within its figure.
  *
@@ -24,6 +27,7 @@ import { describe, expect, it } from "vitest";
 import * as holds from "../src/holds";
 import { IMPORT_BATCH_BYTES } from "../../contract/src/import-message";
 import { CHUNK_BYTES, EGRESS_BODY_MAX, MCP_BODY_MAX } from "../../contract/src/limits";
+import { EGRESS_LIMITS, OPEN_CALL_BYTES } from "../src/egress";
 import { MOVE_RECORDS } from "../src/segments";
 import { UNIT_BYTES } from "../../contract/src/slots";
 import { ISOLATE_BYTES, memoryTerms } from "./relay-memory";
@@ -53,8 +57,6 @@ export const UNCOUNTED = Object.freeze({
     "an export's chunks, as its answer": "PR 4",
     "sync's raw chunk bytes": "PR 4",
     "an inbound event's body (EGRESS_BODY_MAX)": "PR 4",
-    "each open egress call's end signal (EGRESS_LIMITS.open an object, about 400 B each)":
-      "untangle/egress-open-memory",
   }),
 });
 
@@ -69,6 +71,7 @@ export function counts(objects = 1): Record<string, number> {
     tails: 2 * tailUnits,
     relay_per_object: objects * (relay.events! + relay.attachments! + relay.signed_out!
                                  + relay.tails! - 2 * tailUnits),
+    egress_per_object: objects * EGRESS_LIMITS.open * OPEN_CALL_BYTES,
     baseline: holds.OWNER_BASELINE_BYTES,
   };
 }
@@ -92,11 +95,11 @@ describe("an owner isolate's counts", () => {
     const terms = counts();
     const total = sum(terms);
     const room = ISOLATE_BYTES - total;
-    const perObject = counts(2).relay_per_object! - terms.relay_per_object!;
+    const perObject = sum(counts(2)) - total;
     console.log(`an owner isolate's live counts: ${total} bytes (${(total / MIB).toFixed(1)} ` +
                 `MiB) of ${ISOLATE_BYTES}: ${JSON.stringify(terms)}; ${(room / MIB).toFixed(1)} ` +
-                `MiB left, ${Math.floor(room / perObject) + 1} owner objects' relay terms in ` +
-                `all; uncounted: ${JSON.stringify(UNCOUNTED)}`);
+                `MiB left, ${Math.floor(room / perObject) + 1} owner objects' terms in all; ` +
+                `uncounted: ${JSON.stringify(UNCOUNTED)}`);
     expect(total).toBeLessThanOrEqual(ISOLATE_BYTES);
   });
 
@@ -157,7 +160,7 @@ describe("an owner isolate's counts", () => {
 
   it("names every uncounted hold's owner", () => {
     for (const owed of Object.values(UNCOUNTED.holds)) {
-      expect(owed).toMatch(/^(PR 3b|PR 4|STORE item 2|untangle\/egress-open-memory)$/);
+      expect(owed).toMatch(/^(PR 3b|PR 4|STORE item 2)$/);
     }
   });
 });
