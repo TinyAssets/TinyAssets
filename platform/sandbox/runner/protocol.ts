@@ -21,8 +21,8 @@
  * new one alone, dropping what only the old one read. The two deploys keep a run that lives
  * across one, or across its rollback, on a Worker that speaks its runner's protocol; where no
  * run can (no owner has a sandbox before the cutover's routes), one deploy carries all three,
- * and a run that did would be refused by name at its sandbox's next start until it ended
- * (`control.ts` `#speaking`).
+ * and a sandbox whose runner outlived it would be refused by name at its next start while
+ * anything lives on it, or for good once rebooted (`control.ts` `#speaking`).
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 

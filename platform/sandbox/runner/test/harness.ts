@@ -413,8 +413,9 @@ export interface FakeCli {
                                  /** Made only when one of its arguments holds this. */
                                  readonly if?: string }[];
   /**
-   * A file (`~/...`, under one of the record's session paths) its prompts are kept in, as a
-   * CLI keeps its conversation: `{history}` in a request is what it held before this run.
+   * A file (`~/...`, one a resume of its session reads, the record's `resume_paths`) its
+   * prompts are kept in, as a CLI keeps its conversation: `{history}` in a request is what it
+   * held before this run.
    */
   readonly history?: string;
   /**

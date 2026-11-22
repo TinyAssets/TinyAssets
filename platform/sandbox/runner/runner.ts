@@ -401,10 +401,17 @@ async function storeResume(rec: Served, authority: string, session: string | nul
   const store = join(STORE, rec.id);
   const prefix = `${SESSIONS}/${authority}/${rec.id}/`;
   const resumed = resumePaths(rec, session);
-  const done = await fetch(existsSync(store) ? [...sortedWalk(store)]
-    .filter((rel) => isKept(resumed, rel)).map((rel) => `${prefix}${rel}`) : []);
+  // Read under the store's lock, as a let-go deletes (`sessionsRoom`): a copy it lets go
+  // after this is one it sees this run resume.
+  const done = await fetch(await withStore(rec, () => existsSync(store)
+    ? [...sortedWalk(store)].filter((rel) => isKept(resumed, rel))
+      .map((rel) => `${prefix}${rel}`) : []));
   if (done.code === FENCED) {
     throw new SyncFenced("the sync door fenced the lease");
+  }
+  if (done.code !== OK || done.report === null) {
+    throw new Error(`the sync agent fetched no files for the resume of ${session} ` +
+                    `(exit ${done.code}): the run does not start on a store it cannot trust`);
   }
   const { gone } = done.report as { gone: string[] };
   const staged = `${SYNC_HOME}/in/${rec.id}`;
@@ -1011,24 +1018,41 @@ function scratchFor(start: StartDoc, live: readonly StartDoc[]):
 /**
  * The disk still low after scratch (`scratch.ts`): the engines' stores' copies of sessions the
  * owner's files hold as they are (`known`, the mirror's hashes) let go, least recently changed
- * first, never one a live run resumes (`live`: a resume fetches its own again); still low,
- * what the run says of it, with the stores' bytes left, or null.
+ * first, never one a live run resumes (a resume fetches its own again); still low, what the
+ * run says of it, with the stores' bytes left, or null. The let-go holds every store's lock,
+ * the live runs read again under it and each copy still the one hashed: a run that began
+ * since, or a home kept since (a newer copy, not sent yet), keeps its files.
  */
-async function sessionsRoom(authority: string, live: readonly StartDoc[],
+async function sessionsRoom(start: StartDoc, run: string,
                             known: (paths: readonly string[]) =>
                               Promise<Record<string, string | null>>): Promise<DiskLow | null> {
   if (!low(diskOf(STATE))) {
     return null;
   }
-  const { sessions, seen } = storeSessions(authority);
+  const { sessions, seen } = storeSessions(start.authority);
   keepSeen(seen);
   const held = sessions.length === 0 ? {} : await known(sessions.map((each) => each.path));
-  const resumed = (session: StoreSession) => live.some((each) => each.engine === session.rec.id
-    && isKept(resumePaths(session.rec, each.session_id), session.rel));
-  const freed = letGoSessions(STATE, sessions.filter((each) =>
-    held[each.path] === each.digest && !resumed(each)).map((each) => ({
-    local: join(STORE, each.rec.id, each.rel), size: each.size, mtime_ms: each.mtime_ms })));
+  const local = (session: StoreSession) => join(STORE, session.rec.id, session.rel);
+  const freed = await withStores([...served().values()], () => {
+    const live = liveStarts(start, run);
+    const resumed = (session: StoreSession) => live.some((each) =>
+      each.engine === session.rec.id
+      && isKept(resumePaths(session.rec, each.session_id), session.rel));
+    const hashed = (session: StoreSession) => {
+      const stat = lstatSync(local(session), { throwIfNoEntry: false });
+      return stat?.size === session.size && stat.mtimeMs === session.mtime_ms;
+    };
+    return letGoSessions(STATE, sessions.filter((each) => held[each.path] === each.digest
+      && hashed(each) && !resumed(each)).map((each) => ({
+      local: local(each), size: each.size, mtime_ms: each.mtime_ms })));
+  });
   return diskLow(sessions.reduce((sum, each) => sum + each.size, 0) - freed, diskOf(STATE));
+}
+
+/** `act` holding every store's lock in `recs`, each taken in their order. */
+async function withStores<T>(recs: readonly Served[], act: () => T): Promise<T> {
+  return recs.length === 0 ? act()
+    : await withStore(recs[0]!, async () => await withStores(recs.slice(1), act));
 }
 
 /** Each shared hook file's policy generation, as the start that last wrote it asked it. */
@@ -1190,7 +1214,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     if (scratch.notice !== null) {
       outbox.push(scratch.notice);
     }
-    const pressed = await sessionsRoom(start.authority, live, known);
+    const pressed = await sessionsRoom(start, run, known);
     if (pressed !== null) {
       outbox.push(pressed);
     }

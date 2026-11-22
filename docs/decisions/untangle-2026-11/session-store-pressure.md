@@ -98,8 +98,27 @@ before cannot follow; a rollback here meets only that loud refusal, so it takes 
    the Worker 5 alone, in one deploy, which `protocol.ts`'s rule now says when it may (no run
    can live across it). The start document no longer carries the field.
 
+## Review (2026-11-22)
+
+- The route probe's fake CLIs (`runner.test.ts` `honest`) kept their conversation at a
+  `history.txt` no resume reads, so the large route-probe tests failed once a home held the
+  resume's files alone (CI's runner sizes leg); each keeps it where its record's
+  `resume_paths` name.
+- The let-go (`runner.ts` `sessionsRoom`) read the live runs before its `known` call and deleted
+  without the stores' locks: a run started meanwhile could resume from a home missing its own
+  file, and a home kept meanwhile (a newer copy, unsent) could go. It deletes under every
+  store's lock, the live runs read again, each copy held to the size and time it was hashed
+  at; a resume reads which of its files the store holds under its store's lock.
+- A fetch the sync agent did not answer stops the run by name (`storeResume`).
+
 ## Found and left
 
+- **A staged session sent after a sync-in marked it changed**: sync-out's base is the mirror's
+  version, the owner's newer one, so the staged copy lands over it. The same held before this
+  change (a fetched row's version); it needs two writers of one transcript, as above.
+- **A rebooted sandbox whose runner speaks 4** (a filesystem pause, which `#speaking` never
+  adopts over) is refused by a Worker speaking 5 for as long as it lives. No owner sandbox
+  exists before the cutover's routes, and the pair check's are killed.
 - **An owner's edit of a transcript while its sandbox holds unsent changes to it**: a resume
   fetches the owner's version over the store's. Before, the store's was sent over the owner's
   as a conflict. Both need two writers of one transcript (an edit through the files door while

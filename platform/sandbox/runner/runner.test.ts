@@ -1665,15 +1665,19 @@ describe("the route probe", () => {
     .replaceAll("all done", "OK").replaceAll("\"all \"", "\"O\"")
     .replaceAll("\"done\"", "\"K\"")) as unknown[];
   const CODEX_COMPACT = sources.get("codex")!.cli!.compaction!;
+  const CODEX_HISTORY = "~/.codex/sessions/2026/11/22/rollout-t-th-1.jsonl";
 
-  /** Each keyed engine's fake CLI calling its door the way its record hands it over. */
+  /**
+   * Each keyed engine's fake CLI calling its door the way its record hands it over, its
+   * conversation kept where a resume of its session (`SHAPES`) reads (`resume_paths`).
+   */
   function honest(): void {
     box.cli("claude-code", { lines: said("claude-code"),
-                             history: "~/.claude/projects/p/history.txt", requests: [{
+                             history: "~/.claude/projects/p/cs-1.jsonl", requests: [{
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages", body: "{history}",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+    box.cli("codex", { lines: said("codex"), history: CODEX_HISTORY,
                        requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }, {
@@ -1686,7 +1690,7 @@ describe("the route probe", () => {
                         requests: [{
       url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent", body: "{history}",
       headers: { "x-goog-api-key": "{env:GEMINI_API_KEY}" } }] });
-    box.cli("pi", { lines: said("pi"), history: "~/.pi/agent/sessions/history.txt",
+    box.cli("pi", { lines: said("pi"), history: "~/.pi/agent/sessions/p/t_p-1.jsonl",
                     requests: [{
       url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
       body: "{history}", headers: { authorization: "Bearer {placeholder}" } }] });
@@ -1758,7 +1762,7 @@ describe("the route probe", () => {
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+    box.cli("codex", { lines: said("codex"), history: CODEX_HISTORY,
                        requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
