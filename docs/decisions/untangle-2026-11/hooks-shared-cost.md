@@ -72,6 +72,10 @@ engine already starts reads it.
   in the box), most of it the runner bundle's load, not Node's. Owed below.
 - **No per-run root-owned hook file on Claude Code or Codex**: neither pinned version reads a
   managed hook from a path a run can name (research above); a vendor's limit.
+- **The start check (`runner.ts` `hooksCheck`) runs the dispatcher's `check` past the shell's
+  skip**, by its argv through the CLI's shell: through `dispatcherCommand` it would skip, no
+  event being `check`. The skip's own text is held by the runner test's box test, on `bash -c`
+  and on `sh -lc`, as each CLI runs it.
 
 ## Owed
 

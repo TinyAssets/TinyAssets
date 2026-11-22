@@ -1124,7 +1124,8 @@ async function startCheck(as: { uid: number; gid: number }, call: Invocation,
 }
 
 /**
- * The agent's hooks' start check (D5): the dispatcher's `check` run as its CLI runs it
+ * The agent's hooks' start check (D5): the dispatcher's `check` run as its CLI runs the
+ * dispatcher, past `dispatcherCommand`'s skip, which no `check` would pass
  * (`definition.hooks.runs`: through the CLI's shell, or by its argv as the record's own file
  * starts it), as the run's user, in the CLI's own environment, so a hook whose program is not
  * there, or a dispatcher that cannot read the run's hooks, fails the run loudly before its CLI.
