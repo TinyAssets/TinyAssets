@@ -117,18 +117,16 @@ technical ceilings, each with its reason. Research first (Fact 14), read at `c21
 
 ## Found and left
 
-- `tasks.md` item 11 and `fact15-caps.md`'s owed line for this branch are #5781's text, not
-  on main yet; ticked here once it merges (owed below). So is #5781's `RUNS_CEILING` row's
-  `Share:` clause, which names `egress_reservations`' live rows among the per-run terms.
 - The refusal code `egress_rate` names a rate where it is a count: kept, a wire code.
 - `pass-gateway.md` and `untangle-2026-11-remaining-build.md` name `IDLE_CUT_MS`: shared
   logs of what was built then, only corrected.
 
 ## Owed
 
-- [ ] Tick `tasks.md` item 11's `fact15-caps-2` clause and `fact15-caps.md`'s owed line, and
+- [x] Tick `tasks.md` item 11's `fact15-caps-2` clause and `fact15-caps.md`'s owed line, and
   drop `egress_reservations` from the `RUNS_CEILING` row's per-run terms, once #5781 merges
-  (`untangle/fact15-caps-2`).
+  (`untangle/fact15-caps-2`): done after merging main with #5781; the `open` row gains its
+  `Share:` clause.
 - [ ] A code mode script's caller leaving reaches it (a stop across the door's call into the
   owner's object, as the egress door's end signal), so the wall bound becomes each caller's
   own wait, researched first (`untangle/code-caller-leaves`).
