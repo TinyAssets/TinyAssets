@@ -2405,6 +2405,44 @@ describe("the engines' stores on the sandbox's disk", () => {
   });
 });
 
+describe("a resume's fetch, when another run keeps a newer copy in the store meanwhile", () => {
+  const rel = "~/.claude/projects/main/cs-1.jsonl";
+  const owners = "/workspace/.sessions/owner/claude-code/.claude/projects/main/cs-1.jsonl";
+  const sessionOps = (from: number) => (doors.ops().slice(from) as { path: string;
+    base?: number | null }[]).filter((op) => op.path === owners);
+
+  it("sends that copy against the base it was made on, never over the owner's; one the store " +
+     "took is never sent back", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: { [rel]: "first\n" } });
+    await run("claude-code");
+    const mirror = new DatabaseSync(box.path(`${SYNC_HOME}/mirror.db`));
+    const base = (mirror.prepare("SELECT version FROM files WHERE path = ?").get(owners) as
+      { version: number }).version;
+    mirror.close();
+    // The owner edits it; while this resume fetches theirs, another run keeps its turn.
+    doors.files.set(owners, { text: "edited\n", version: 99 });
+    doors.onRead = (path) => {
+      if (path === owners) {
+        writeFileSync(box.path("/var/lib/ta/store/claude-code/.claude/projects/main/cs-1.jsonl"),
+                      "first\nkept meanwhile\n");
+      }
+    };
+    let before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [rel] });
+    await run("claude-code", { session_id: "cs-1" });
+    doors.onRead = () => undefined;
+    expect([box.ran("claude-code").at(-1)!.dumps[rel], sessionOps(before).map((op) => op.base)])
+      .toEqual(["first\nkept meanwhile\n", [base]]);
+    // Taken: the store's copy is the owner's, so no run sends it.
+    doors.files.set(owners, { text: "edited again\n", version: 200 });
+    before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [rel] });
+    await run("claude-code", { session_id: "cs-1" });
+    expect([box.ran("claude-code").at(-1)!.dumps[rel], sessionOps(before)])
+      .toEqual(["edited again\n", []]);
+  });
+});
+
 describe("the posts", () => {
   it("post again after events_busy, the same frames, never twice", async () => {
     doors.busy = 2;
