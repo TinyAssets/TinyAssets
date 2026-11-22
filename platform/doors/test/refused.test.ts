@@ -115,10 +115,40 @@ describe("the inbound hooks' answer", () => {
   });
 });
 
+/** A tool's error result's text, each line. */
+function toolText(refusal: Refusal): string[] {
+  const result = asTool(refusal);
+  expect(result.isError).toBe(true);
+  expect(result.content).toHaveLength(1);
+  return (result.content[0] as { text: string }).text.split("\n");
+}
+
 describe("an MCP tool's answer", () => {
-  it("is the tool's error result, its text the refusal's message", () => {
-    expect(asTool(new Refusal("refused", "agent not found")))
-      .toEqual({ isError: true, content: [{ type: "text", text: "agent not found" }] });
+  it("is the tool's error result: the refusal's message, then that it is final", () => {
+    expect(asTool(new Refusal("refused", "agent not found"))).toEqual({ isError: true,
+      content: [{ type: "text", text: "agent not found\nThis refusal is final: the same call " +
+                                      "is refused again until what it names changes." }] });
+    expect(toolText(new Refusal("storage_full", "storage_full: used 9 of 9",
+                                { retryAfterS: 2 })))
+      .toEqual(["storage_full: used 9 of 9", "This refusal is final: the same call is " +
+                "refused again until what it names changes."]);
+    expect(toolText(new Refusal("invalid", "a room is room:<app>:<room>")))
+      .toEqual(["a room is room:<app>:<room>", "This refusal is final: the call is malformed, " +
+                "and is refused again until it is corrected."]);
+  });
+
+  it("tells the model to call again, and in how many seconds, for any refusal for the moment",
+     () => {
+    for (const [refusal, wait] of [[new Refusal("unavailable", MAINTENANCE), "60 seconds"],
+                                   [new Refusal("restoring", "restoring"), "60 seconds"],
+                                   [new Refusal("storage_busy", "full", { retryAfterS: 7 }),
+                                    "7 seconds"],
+                                   [refusalOf(Object.assign(new Error("overloaded"),
+                                                            { overloaded: true }))!, "1 second"],
+                                  ] as const) {
+      expect(toolText(refusal)).toEqual(
+        [refusal.message, `This refusal is temporary: try the same call again in ${wait}.`]);
+    }
   });
 });
 
@@ -147,6 +177,9 @@ describe("every MCP request's answer but a tool call's", () => {
     }
     expect(rpcError(asRequest, new Refusal("refused", "no agent here")))
       .toEqual([-32603, "no agent here", { reason: "no agent here" }]);
+    // A final refusal names no wait to a client, as it tells a model none (`asTool`).
+    expect(rpcError(asRequest, new Refusal("storage_full", "full", { retryAfterS: 2 })))
+      .toEqual([-32603, "full", { reason: "full" }]);
   });
 
   it("is a recoverable failure with its reason and wait for any refusal for the moment, on " +

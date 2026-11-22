@@ -434,16 +434,16 @@ export class Egress {
     }
     // A connector's server only while the owner's egress lets it out, as at the run's
     // admission (`agentServers`): a narrowed policy holds a live run's server too.
-    if (egressTarget(scope, request.method, request.path) === null
-        || (connector && !this.#deps.reaches(scope.base_url))) {
+    const target = egressTarget(scope, request.method, request.path);
+    if (target === null || (connector && !this.#deps.reaches(scope.base_url))) {
       return refuse("egress_endpoint_refused");
     }
     // A service's call reaches no model; nor does a read of a sealed endpoint, or a call its
     // API's rules cite as free (a token count); every other call must be the source's model
     // call as pi-ai makes it, which the gateway meters.
     const free = "kind" in scope
-      || freeCall(apiRules(scope.api), connection.provider, request.method, request.path);
-    if (!free && (!meteredCall(scope, request.method, request.path)
+      || freeCall(apiRules(scope.api), connection.provider, request.method, target.pathname);
+    if (!free && (!meteredCall(scope, request.method, target.pathname)
                   || connection.models.length === 0)) {
       return refuse("egress_unmetered");
     }
@@ -509,7 +509,7 @@ export class Egress {
     // The model the call names, where its API's rules read it (the body, as the gateway's
     // parse read it, or the path), and its tier: the call is reserved for them alone.
     const path = rules.model === null
-      ? meteredModel(scope.meter, row.method, row.path.split("?")[0]!, {}) : null;
+      ? meteredModel(scope.meter, row.method, row.path, {}) : null;
     const model = connection.models.find((entry) => entry.id === request.model);
     if (model === undefined || (rules.model === null && path !== request.model)) {
       return refuse("egress_unknown_model");
@@ -673,13 +673,16 @@ export class Egress {
           generation: number, now: number,
           fields: { code?: EgressCode; version?: number }): string {
     const id = randomHex(16);
-    // Uncharged: a model call's charge is set once the gateway's parse reserved it.
+    // Uncharged: a model call's charge is set once the gateway's parse reserved it. Its path
+    // is kept without its query: a receipt says what was called, never what the sandbox
+    // wrote in the parameters.
     this.#sql.exec(
       "INSERT INTO egress_reservations (id, lease_id, epoch, run, token, connection_id, " +
         "version, method, path, generation, bytes_hint, opened_at, state, code, settled_at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       id, lease?.lease_id ?? null, lease?.epoch ?? null, request.run, sandbox.token,
-      request.connection, fields.version ?? null, request.method, request.path, generation,
+      request.connection, fields.version ?? null, request.method,
+      request.path.split("?")[0]!, generation,
       request.bytes_hint, now, fields.code === undefined ? "open" : "refused",
       fields.code ?? null, fields.code === undefined ? null : now);
     this.#prune();

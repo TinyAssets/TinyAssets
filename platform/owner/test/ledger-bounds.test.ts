@@ -20,7 +20,7 @@ import { OWNER } from "../src/authority";
 import { sqlIn } from "../../ci/workerd";
 import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
-import { type Refusal, STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
+import type { Refusal } from "../../contract/src/refusal";
 import type { OwnerDO } from "../src/owner-do";
 import { MOVE_BYTES, RECORD_TRAILER_BYTES } from "../src/segments";
 import { ballast, counters, DOT, MUSE, origin, registerOn, rig, dm } from "./ledger-support";
@@ -42,8 +42,7 @@ function refusal(act: () => unknown): string {
 
 const ANY_FULL = new RegExp("^ledger_full: too much mail is unread \\(\\d+ messages wait " +
   "for their readers; the most for .+\\); reading and acking mail makes room$");
-const BUSY = "storage_busy: your storage is catching up, moving older mail out; try again in " +
-  "30 seconds.";
+const BUSY = "storage_busy: your storage is catching up, moving older mail out";
 
 describe("the ledger's limits", () => {
   it("leave the hot ceiling a segment to move past the unread ceiling", () => {
@@ -427,7 +426,7 @@ describe("the ledger at its production limits (rs_cap §2.2)", () => {
                 `${filled.hot} hot: ${JSON.stringify(filled.last)}`);
     expect(filled.hot).toBe(maxMessages - 1);
     expect(filled.last).toEqual(filled.first);
-    expect(filled.refused).toEqual({ message: BUSY, retryAfter: STORAGE_BUSY_RETRY_S });
+    expect(filled.refused).toEqual({ message: BUSY, retryAfter: 30 });
     // The doors' post: busy alike, nothing deleted; it rings the lane, which may move mail
     // out at once, so hot and archived are counted together, in one read.
     expect((await failure(() => r.post(null, room, { cmid: "past", body: BODY }))).message)

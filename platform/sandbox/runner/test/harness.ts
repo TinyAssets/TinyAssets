@@ -418,6 +418,13 @@ export interface FakeCli {
    */
   readonly history?: string;
   /**
+   * Hook commands it runs as a CLI runs a hook, after its requests: each argv as itself, with
+   * `input` written to its stdin and closed, or, without one, its stdin left open; its exit
+   * code, stdout and stderr in its record (`hooks`), one still running after 10 s stopped
+   * (exit null).
+   */
+  readonly hooks?: readonly { readonly argv: readonly string[]; readonly input?: string }[];
+  /**
    * A sign-in (its record's `login.argv`): `lines` printed at once (stdout, or stderr with
    * `stderr`); with `code`, one line read from stdin, then `writes` made and exit 0; without
    * it, `writes` made at once, then it stays up (a CLI that does not exit once signed in)
@@ -478,7 +485,21 @@ const request = async () => {
     fs.mkdirSync(path.dirname(where(plan.history)), { recursive: true });
     fs.appendFileSync(where(plan.history), stdin + "\n");
   }
+  for (const hook of plan.hooks || []) {
+    hooks.push(await new Promise((answer) => {
+      const child = spawn(hook.argv[0], hook.argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (d) => { out += d; });
+      child.stderr.on("data", (d) => { err += d; });
+      child.stdin.on("error", () => {});
+      if (hook.input !== undefined) { child.stdin.end(hook.input); }
+      const stop = setTimeout(() => child.kill("SIGKILL"), 10000);
+      child.on("close", (code) => { clearTimeout(stop); answer({ code, out, err }); });
+    }));
+  }
 };
+const hooks = [];
 const done = () => {
   const dumps = {};
   for (const file of plan.dumps || []) {
@@ -501,7 +522,7 @@ const done = () => {
   fs.writeFileSync(seen + ".part",
     JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), stdin,
                      uid: process.getuid(), gid: process.getgid(), groups: process.getgroups(),
-                     dumps, owners }));
+                     dumps, owners, hooks }));
   fs.renameSync(seen + ".part", seen);
   if (process.argv.includes("status")) {
     const status = plan.status || { out: "", exit: 1 };
@@ -821,7 +842,8 @@ export class Sandbox extends Box {
   seen(engine: string): { argv: string[]; env: Record<string, string>; cwd: string;
                           stdin: string; uid: number; gid: number; groups: number[];
                           dumps: Record<string, string | null>;
-                          owners: Record<string, { path: string; uid: number }[]> }[] {
+                          owners: Record<string, { path: string; uid: number }[]>;
+                          hooks: { code: number | null; out: string; err: string }[] }[] {
     const bin = SERVED.get(engine)!.cli.install.bin;
     const dir = this.path("/fake-seen");
     return readdirSync(dir).filter((name) => name.startsWith(`${bin}.`) && name.endsWith(".json"))

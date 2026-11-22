@@ -186,7 +186,7 @@ describe("E2B's lifecycle webhook", () => {
       sandboxBilled: () => Promise.reject(busy) }) as never);
     const answer = await deliver(JSON.stringify(event(who))).finally(() => stub.mockRestore());
     expect([answer.status, answer.headers.get("Retry-After"), await answer.json()])
-      .toEqual([429, "1", { error: "this account is busy; try again shortly" }]);
+      .toEqual([429, "1", { error: "this account is busy" }]);
   });
 
   it("seals a route only the routing key opens, and checks E2B's signature exactly", () => {

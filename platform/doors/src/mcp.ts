@@ -17,7 +17,8 @@
  * object answers from the caller's grant (`toolProfile`) before any tool is listed; a
  * caller the object refuses (no grant, a revoked one, an ended run) is answered that
  * refusal, and no tool. An owner refusal or invalid request is the tool's error result,
- * with its reason; anything else is a bug, logged in full and failing the call as
+ * with its reason and whether to call again, and when (`refused.ts` `asTool`); anything
+ * else is a bug, logged in full and failing the call as
  * `internal error`. The `Origin` and credential checks (an owner's key or an OAuth token) run
  * before this (`doors.ts`); the handler is deliberately validation-free.
  *

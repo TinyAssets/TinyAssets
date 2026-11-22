@@ -67,8 +67,10 @@ describe("the engines' own calls against the API rules", () => {
   it("lets Claude Code count tokens unmetered, on the page that says the count is free", () => {
     const rules = apiRules("anthropic-messages")!;
     expect(freeCall(rules, "anthropic", "POST", "/v1/messages/count_tokens")).toBe(true);
-    expect(freeCall(rules, "anthropic", "POST", "/v1/messages/count_tokens?beta=true"))
-      .toBe(true);
+    // Claude Code's own count, `?beta=true`, is judged by its target's path.
+    const counted = egressTarget(scopeOf("anthropic"), "POST",
+                                 "/v1/messages/count_tokens?beta=true")!;
+    expect(freeCall(rules, "anthropic", "POST", counted.pathname)).toBe(true);
     expect(freeCall(rules, "anthropic", "POST", "/v1/messages")).toBe(false);
     // A read is free by its method, whatever its path (`READS`).
     expect(freeCall(rules, "anthropic", "GET", "/v1/messages/count_tokens")).toBe(true);
@@ -201,7 +203,7 @@ describe("the meter pi-ai's adapter teaches", () => {
     const path = "/v1beta/models/model-a:streamGenerateContent";
     expect(meteredModel(meter, "POST", path, {})).toBe("model-a");
     expect(meteredCall({ api: GOOGLE.upstream.api, base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter },
-                       "POST", `${path}?alt=sse`)).toBe(true);
+                       "POST", path)).toBe(true);
     expect(meteredModel(meter, "POST", "/v1beta/models/a/b:streamGenerateContent", {})).toBeNull();
     // The owner's open holds the path to one model segment too, as the gateway reads it.
     const scope = { api: GOOGLE.upstream.api, base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter };

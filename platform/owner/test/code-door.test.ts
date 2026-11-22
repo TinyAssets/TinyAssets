@@ -35,6 +35,9 @@ import { MUSE, rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
 import { failure, gateFor, spaceOf } from "./support";
 
+/** What a script's refused call says after its message when the refusal is final. */
+const FINAL = "This refusal is final: the same call is refused again until what it names changes.";
+
 /** The owner turns code mode on or off, and names its own `custom` tools, in its session. */
 async function setPolicy(r: Rig, codemode: boolean, custom?: string[]): Promise<void> {
   const { generation, policy } = await r.stub.policyRead(r.bind(null));
@@ -184,8 +187,9 @@ describe("the code door", () => {
       "} catch (error) { seen.push(error.message); }",
       "seen.push((await tools.collection_get({ collection: 'board', row_id: 'x' })).row);",
       "return seen;") });
+    // A refused call throws into the script as an MCP tool's error result reads: final.
     expect(result).toMatchObject({ ok: true, value: [false, false, false, "TypeError",
-      "outside client capability not granted", null], calls: { ok: 1, error: 1 } });
+      `outside client capability not granted\n${FINAL}`, null], calls: { ok: 1, error: 1 } });
   });
 
   it("refuses a revoked client and a call bound to another owner", async () => {
@@ -246,15 +250,18 @@ describe("the code door", () => {
     // past the freshness of its last read: the calls after it read the record again.
     const r = await onRig();
     const result = await switchedMidScript(r, () => later(CONTROL_FRESH_MS / 1000 + 1));
-    expect(result).toMatchObject({ ok: true,
-      value: ["ok", "ok", OUTSIDE_OFF, OUTSIDE_OFF, OUTSIDE_OFF] });
+    // Each refused call throws into the script with its wait: a closed gate's, for the moment.
+    const off = `${OUTSIDE_OFF}\nThis refusal is temporary: try the same call again in 60 ` +
+      "seconds.";
+    expect(result).toMatchObject({ ok: true, value: ["ok", "ok", off, off, off] });
     expect(result.landed).toEqual([{ name: "collection_write", status: "ok", count: 2 },
                                    { name: "collection_write", status: "error", count: 3 }]);
     expect((await r.stub.collectionGet(r.bind(null), { collection: "board", row_id: "w2" }))
       .row).toBeNull();
-    // The record off at the start refuses the call itself.
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
-      .message).toBe(OUTSIDE_OFF);
+    // The record off at the start refuses the call itself, for the moment, as a closed gate
+    // is refused at every door.
+    const closed = await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }));
+    expect([closed.code, closed.message]).toEqual(["unavailable", OUTSIDE_OFF]);
   });
 
   it("holds the owner's own script to the maintenance gate alone, never to outside access",
@@ -272,8 +279,8 @@ describe("the code door", () => {
       .message).toBe(OUTSIDE_OFF);
     // The maintenance gate closed refuses the owner's own.
     await writeControl(env.CONTROL, JSON.stringify({ ...OPEN, ordinary: "none" }));
-    expect((await failure(() => r.stub.codeRun(r.bind(null), { script }))).message)
-      .toBe(MAINTENANCE);
+    const closed = await failure(() => r.stub.codeRun(r.bind(null), { script }));
+    expect([closed.code, closed.message]).toEqual(["unavailable", MAINTENANCE]);
   });
 
   it("serves the object's gates from its own kept copy while KV can't be read", async () => {

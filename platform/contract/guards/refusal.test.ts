@@ -56,6 +56,8 @@ describe("a refusal", () => {
                                      503, 1, { held_bytes: 3 }]);
     expect(new Refusal("storage_busy").retryAfter).toBe(30);  // its code's
     expect(new Refusal("refused").retryAfter).toBeUndefined();
+    // A terminal refusal names no wait, even one it carries: no door says to try it again.
+    expect(new Refusal("storage_full", "full", { retryAfterS: 2 }).retryAfter).toBeUndefined();
     expect(new Refusal("unknown_model").message).toBe("unknown_model");  // the gateway's
   });
 

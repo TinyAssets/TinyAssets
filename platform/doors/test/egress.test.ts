@@ -270,7 +270,7 @@ describe("the egress door", () => {
     const box = await sandbox();
     const body = bodyOf(box);
     const response = await send(egressRequest(
-      box, `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph&stream=true`));
+      box, `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph`));
     expect(response.status).toBe(200);
     expect(response.headers.get("x-upstream")).toBe("fake");
     expect(response.headers.get("x-ta-resealed")).toBeNull();
@@ -278,7 +278,7 @@ describe("the egress door", () => {
     expect(text).toBe(EGRESS_CHUNKS.join(""));
     const [sent, ...more] = await forwarded();
     expect(more).toEqual([]);
-    expect(sent!.url).toBe(`https://api.groq.com${COMPLETIONS}?stream=true`);
+    expect(sent!.url).toBe(`https://api.groq.com${COMPLETIONS}`);
     expect(sent!.headers["authorization"]).toBe(`Bearer ${box.key}`);
     for (const stripped of ["x-api-key", "cookie", SANDBOX_HEADER, GENERATION_HEADER]) {
       expect(sent!.headers[stripped]).toBeUndefined();
@@ -297,7 +297,8 @@ describe("the egress door", () => {
     expect(await reservations(box.owner)).toEqual([{
       state: "settled", code: null, ended: null, outcome: "complete", status: 200,
       bytes: new TextEncoder().encode(text).byteLength,
-      path: `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph&stream=true`, method: "POST" }]);
+      // Its receipt keeps the path alone, never the query the sandbox wrote.
+      path: COMPLETIONS, method: "POST" }]);
     // The open carried the body's length; the settle, pi-ai's own reading of the stream as
     // the gateway metered it (its price is the gateway's test, `gateway/test/meter.test.ts`).
     const calls = await env.OWNER_GATE.seen(box.owner);
@@ -684,6 +685,8 @@ describe("a refused call", () => {
       [egressRequest(box, "/openai/v1/chat/completions%2F..%2Fadmin"), 403,
        "egress_endpoint_refused"],
       [egressRequest(box, "/openai/v1/models", { body: "{}" }), 403, "egress_endpoint_refused"],
+      // A query parameter the API's rules do not allow (chat completions allow none).
+      [egressRequest(box, `${COMPLETIONS}?stream=true`), 403, "egress_endpoint_refused"],
       [egressRequest(box, COMPLETIONS, { headers: { "content-length": "" } }), 411,
        "egress_length_required"],
     ] as const) {
@@ -691,6 +694,11 @@ describe("a refused call", () => {
       expect([response.status, await codeOf(response)]).toEqual([status, code]);
     }
     expect(await forwarded()).toEqual([]);
+    // The refused query's receipt keeps its path alone.
+    expect((await receipts(box.owner)).filter(({ code }) => code === "egress_endpoint_refused")
+      .map(({ path }) => path)).toEqual(["/openai/v1/files",
+                                         "/openai/v1/chat/completions%2F..%2Fadmin",
+                                         "/openai/v1/models", COMPLETIONS]);
   });
 
   it("past the owner's spend caps is refused before any forward, its receipt kept",
@@ -748,7 +756,7 @@ describe("a refused call", () => {
     const response = await send(egressRequest(box));
     expect([response.status, response.headers.get("Retry-After"), await response.json()])
       .toEqual([429, "1", { error: { code: "object_overloaded",
-                                     message: "this account is busy; try again shortly" } }]);
+                                     message: "this account is busy" } }]);
     expect(await forwarded()).toEqual([]);
   });
 
