@@ -404,14 +404,16 @@ describe("a changed or revoked grant ends its agents' wakes", () => {
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
   });
 
-  it("rings an agent as the owner's agent its grant names, where its triples hold",
+  it("rings a board follower as the owner's agent its grant names, where its triples hold",
      async () => {
     const r = await rig();
     const dot = await r.register(DOT, "Dot", "mcp_event", { batch_window_s: 0 });
     await ownAgent(r, "work");
     await scopedAs(r, DOT, [{ ...READ, agent: "work" }], "work");
-    await r.subscribe(DOT);
-    await r.post(null, dm(dot), { cmid: "c1" });
+    await r.subscribe(DOT, "alpha", { board: true });
+    await r.stub.collectionWrite(r.bind(null), { collection: "board", row_id: "t1", body: "x",
+                                                 expected_etag: "", private: false });
+    expect((await r.table("ledger_wakes")).map((wake) => wake["agent_id"])).toEqual([dot]);
     expect(await r.tick(clock() + 1)).toBe(1);
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
   });
