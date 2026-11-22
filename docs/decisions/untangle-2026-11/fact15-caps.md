@@ -125,4 +125,4 @@ approval is not given within 30 days (docs.github.com, reviewing deployments).
 - [ ] Keep the spend counters' current and previous periods alone, `SPEND_KEPT` derived from
   them, with its migration (`untangle/spend-periods`).
 - [x] `openPerRun`, code mode's limits taken from pi's defaults and the 300 s idle cut, each
-  in one of Fact 15's kinds, researched first (`untangle/fact15-caps-2`; `fact15-caps-2.md`).
+  in one of Fact 15's kinds, researched first (`untangle/fact15-caps-2`).
