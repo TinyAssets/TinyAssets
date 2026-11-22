@@ -9,10 +9,11 @@ allowed on a sealed path; (3) the egress receipt kept the sandbox's query string
 
 1. **What an upstream can echo.** A key comes back in the spellings the upstream handed it or
    made of it: as it is, in a JSON string (a writer may escape `/` as `\/`, PHP's default, or
-   `<`, `>`, `&` as `<`, Go's `encoding/json` default), URL-encoded (a redirect's
-   `Location` or an error quoting the request URL, as a URL component or as a form writes it,
-   in upper-case hex or lower-case, .NET's `HttpUtility.UrlEncode`), and base64 (an error or a
-   debug field echoing an `Authorization` header in `Basic` form, a token carried as base64url).
+   `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026`, Go's `encoding/json` default), URL-encoded
+   (a redirect's `Location` or an error quoting the request URL, as a URL component or as a
+   form writes it, in upper-case hex or lower-case, .NET's `HttpUtility.UrlEncode`), and
+   base64 (an error or a debug field echoing an `Authorization` header in `Basic` form, a
+   token carried as base64url).
    A key inside a longer base64 text is spelled one of three ways by where it starts
    (its offset modulo 3), and the characters at its two ends mix in its neighbours' bits.
 2. **What others do.** GitHub Actions' log masker
@@ -39,6 +40,14 @@ allowed on a sealed path; (3) the egress receipt kept the sandbox's query string
      session rides `Mcp-Session-Id`, and the contract already refuses a sealed URL with a query
      (`serviceSource`). No query.
    - Azure's `api-version` is no API the gateway runs (`api-rules.ts` `APIS`).
+   - Checked in the pinned packages (review, 2026-11-22): `@anthropic-ai/sdk` 0.129.0
+     (`resources/beta/messages/messages.js`: `/v1/messages?beta=true`,
+     `/v1/messages/count_tokens?beta=true`); Claude Code 2.1.309's binary
+     (`models.list({betas, limit: 1000})`, the gateway's `/v1/models?limit=1000`);
+     `@google/genai` 2.21.0 (`requestStream` sets `alt=sse`; `pageSize`, `pageToken` and
+     `filter` only on `models.list`, which neither Gemini CLI 0.66.0's bundle nor pi-ai 1.4.0
+     calls); Codex 0.166.0's binary (`client_version=` in `models-manager`); pi-ai 1.4.0's
+     Mistral, chat-completions and Responses calls send none.
    A query can change what a call does: Google's system parameters include `alt` (the answer's
    format, which the meter reads), `fields` (a partial answer, its usage dropped) and
    `userProject` (the project billed). So the rule is an allowlist, never a denylist.
@@ -84,5 +93,6 @@ allowed on a sealed path; (3) the egress receipt kept the sandbox's query string
 - [ ] `untangle/egress-headers`: research each engine's request headers, then decide whether a
   sealed call's headers become an allowlist per API, as its query now is.
 - [ ] live: at the dark redeploy, Claude Code's `?beta=true`, Gemini CLI's `?alt=sse` and Codex's
-  `?client_version=` each reach their provider through the egress door, and an answer quoting
-  the key comes back redacted.
+  `?client_version=` (where it lists its models on a key) each reach their provider through
+  the egress door. No provider quotes a key back on purpose, so the redaction is the fake
+  upstream's test (`gateway/test/forward.test.ts`), not a live check.

@@ -3,7 +3,7 @@
  * replaced by `[redacted]`, for every sealed key alike (a model source's or a service's).
  *
  * An upstream may write a secret back in any spelling it was handed or makes: as it is, in
- * JSON (a writer may escape `/` as `\/`, Go's `<`, `>` and `&` as `<`), URL-encoded (a
+ * JSON (a writer may escape `/` as `\/`, Go's `<`, `>` and `&` as `\u003c`), URL-encoded (a
  * redirect's `Location` or an error quoting the request URL, its hex in either case), and
  * base64 (a `Basic` credential echoed back, a token or body carried as base64). A secret
  * inside a base64 text takes one of three spellings by where it starts, so each is redacted
