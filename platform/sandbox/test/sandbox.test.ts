@@ -1294,6 +1294,11 @@ describe("the runner, by digest", () => {
       } else {
         expect(answer).toBe("sandbox_runner_protocol");
         expect(commands).toEqual([["state", old]]);
+        // Resumed, so its row says it runs, and the look is armed for it.
+        expect((await seen()).sandboxes[0]!.state).toBe("running");
+        expect(await runInDurableObject(stub(who), (_instance, state) =>
+          state.storage.sql.exec("SELECT paused FROM sandboxes").one().paused)).toBe(0);
+        expect(await alarmOf(who)).not.toBeNull();
       }
     });
   }

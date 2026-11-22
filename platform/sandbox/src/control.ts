@@ -688,6 +688,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (resumed === null) {
       return null;
     }
+    // Running from here, so its row says so: a fault or refusal on the way leaves it to the
+    // look (armed by `#launch`), never billed unseen as a paused one to its ceiling.
+    if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
+      this.#log(row.authority, "resume");
+    }
+    this.#sql.exec("UPDATE sandboxes SET paused = 0 WHERE authority = ?", row.authority);
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
                         runner: row.runner };
@@ -708,11 +714,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       await this.#run(handle, [COMMAND.renewed]);
     }
     const after = await e2b.info(resumed.sandboxID);
-    if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
-      this.#log(row.authority, "resume");
-    }
-    this.#sql.exec("UPDATE sandboxes SET renewing = 0, paused = 0, retry_at = NULL, tries = 0, " +
-                     "end_at = ? WHERE authority = ?",
+    this.#sql.exec("UPDATE sandboxes SET renewing = 0, retry_at = NULL, tries = 0, end_at = ? " +
+                     "WHERE authority = ?",
                    after === null ? Date.now() : Date.parse(after.endAt), row.authority);
     this.#owe(resumed.sandboxID);
     await this.#giveBack();

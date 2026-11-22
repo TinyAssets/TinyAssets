@@ -87,3 +87,15 @@ What a Worker of this tree could still meet that speaks or holds an older protoc
   tests are parametric on `SPEAKS`, and the guard bounds it to protocols one either side
   of `PROTOCOL`. Putting `[3, 4]` back passes, as the rule allows. A test pinning `[4]` would
   repeat the constant.
+
+## Review
+
+- **A sandbox a start's resume refused was left running, unseen.** `#resume` marked its row
+  running (`paused = 0`, the meter's `resume`) only at its end, so a refusal from `#speaking`
+  (or any fault after E2B's resume) left a running sandbox whose row said paused: `#arm`
+  skips a paused row with no launched job, so no look came, and it ran billed to E2B's own
+  timeout at the runtime ceiling, the gap `sandbox-start-fault.md` item 4 closed for the
+  other paths. The row now says it runs, and the meter logs the resume, as soon as E2B has
+  resumed it. The look then takes it: a speaking runner's idle sandbox is reaped, and one
+  that speaks another protocol is refused by name at each look, as on the running path
+  (the rebooted refusal test reads the row and the alarm).
