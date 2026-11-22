@@ -16,11 +16,14 @@ import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { serviceSource, type Source } from "../../contract/src/egress-scope";
-import { forwardMetered, forwardRead, IDLE_CUT_MS, redact, verify } from "../src/forward";
+import { forwardMetered, forwardRead, IDLE_CUT_MS, verify } from "../src/forward";
+import { redaction } from "../src/redact";
 import { seal, type Binding } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
 
 const SECRET = "sk-alice-forward-0123456789";
+/** A secret every encoding writes another way: `/`, `+`, `=`, and what only a form encodes. */
+const ODD = "sk-a/b+c=d~e!f(0123456789)";
 
 /** Anthropic, with its token count sealed: the one free call that carries a body. */
 const COUNTING: Source = Object.freeze({ ...ANTHROPIC, endpoints: [...ANTHROPIC.endpoints, {
@@ -44,7 +47,7 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request(
-      "https://egress.tinyassets.io/v1/models?key=placeholder&api_key=p&stream=true", {
+      "https://egress.tinyassets.io/v1/models?key=placeholder&api_key=p&KEY=p&client_version=0.162.1", {
         headers: {
           authorization: "Bearer ta_ph_c1_placeholder", "x-api-key": "ta_ph_c1_placeholder",
           "x-goog-api-key": "ta_ph", "api-key": "ta_ph", cookie: "session=s",
@@ -60,7 +63,7 @@ describe("forward", () => {
     expect(echo.method).toBe("GET");
     expect(echo.host).toBe("api.openai.com");
     expect(echo.path).toBe("/v1/models");
-    expect(echo.query).toBe("?stream=true");
+    expect(echo.query).toBe("?client_version=0.162.1");
     expect(echo.digests["authorization"]).toBe(await sha256(`Bearer ${SECRET}`));
     for (const stripped of ["x-api-key", "x-goog-api-key", "api-key", "cookie",
                             "proxy-authorization", "x-ta-envelope", "x-ta-sandbox",
@@ -105,6 +108,13 @@ describe("forward", () => {
     ["an encoded dot", "POST", "https://egress/v1/%2e%2e/admin"],
     ["a prefix of a sealed path", "POST", "https://egress/v1/responses-admin"],
     ["a path naming another host", "POST", "https://egress//evil.test/v1/responses"],
+    ["a query parameter its API's rules do not allow", "GET", "https://egress/v1/models?stream=true"],
+    ["an allowed parameter's name spelled another way", "GET",
+     "https://egress/v1/models?Client_Version=0.162.1"],
+    ["a value its parameter's rule does not take", "GET",
+     "https://egress/v1/models?client_version=latest"],
+    ["an allowed parameter beside one not allowed", "GET",
+     "https://egress/v1/models?client_version=0.162.1&include=all"],
   ])("refuses %s, before anything is sent", async (_what, method, url) => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
@@ -250,6 +260,24 @@ describe("forward", () => {
     expect(await response.text()).toBe('{"k":"[redacted]"}');
   });
 
+  it.each(["base64", "base64url", "uri", "form", "plain"])(
+    "redacts the secret written back as %s, wherever it starts, from a JSON body and a Location",
+    async (encoding) => {
+      const env = ring("k1");
+      const blob = await sealed(env, ALICE, ODD, OPENAI);
+      // Each start in a base64 text: the secret after 0, 1 and 2 bytes, and after `Bearer `.
+      for (const before of ["", "x", "xy", "Bearer "]) {
+        const response = await call(blob, new Request("https://egress/v1/models", {
+          headers: { "x-fake-mode": "encoded", "x-fake-encoding": encoding,
+                     "x-fake-before": before } }), env);
+        for (const said of [await response.text(), response.headers.get("location")!]) {
+          expect(said.split("[redacted]"), `${encoding} after "${before}": ${said}`)
+            .toHaveLength(2);
+          expect(said).not.toContain(ODD);
+        }
+      }
+    });
+
   it("redacts the refresh token and a client secret, not only the access token", async () => {
     const env = ring("k1");
     const plaintext = {
@@ -313,7 +341,7 @@ describe("redact", () => {
         controller.close();
       },
     });
-    return new Response(redact(body, secrets)).text();
+    return new Response(redaction(secrets).stream(body)).text();
   }
 
   it("redacts a secret split across every chunk boundary", async () => {
@@ -337,6 +365,24 @@ describe("redact", () => {
     expect(await through(["head ", "short"], ["a-much-longer-secret-value", "short"]))
       .toBe("head [redacted]");
     expect(await through(["short"], ["a-much-longer-secret-value", "short"])).toBe("[redacted]");
+  });
+
+  it("redacts each encoded spelling split across every chunk boundary", async () => {
+    const bytes = (text: string) => String.fromCharCode(...new TextEncoder().encode(text));
+    for (const written of [btoa(bytes(`xy${ODD}|tail`)), encodeURIComponent(`x${ODD}`),
+                           new URLSearchParams({ v: ODD }).toString(),
+                           JSON.stringify(btoa(bytes(`x${ODD}`))).split("/").join("\\/")]) {
+      const text = `a ${written} b`;
+      const whole = await through([text], [ODD]);
+      expect(whole.split("[redacted]"), written).toHaveLength(2);
+      for (let size = 1; size <= 9; size++) {
+        const chunks: string[] = [];
+        for (let at = 0; at < text.length; at += size) {
+          chunks.push(text.slice(at, at + size));
+        }
+        expect(await through(chunks, [ODD]), `${written} in chunks of ${size}`).toBe(whole);
+      }
+    }
   });
 
   it("passes a body with no secret through unchanged", async () => {
@@ -436,7 +482,7 @@ describe("a service's key", () => {
     const env = ring("k1");
     const blob = await service(env);
     for (const method of ["POST", "GET", "DELETE"]) {
-      const response = await call(blob, new Request("https://egress/mcp/?session=1", {
+      const response = await call(blob, new Request("https://egress/mcp/", {
         method, headers: { authorization: "Bearer ph", "x-fake-mode": "echo" },
         ...(method === "POST" ? { body: "{}" } : {}) }), env);
       expect(response.status).toBe(200);
@@ -457,6 +503,7 @@ describe("a service's key", () => {
     ["its path but for its slash", "POST", "https://egress/mcp"],
     ["a method the transport never sends", "PUT", "https://egress/mcp/"],
     ["a path naming another host", "POST", "https://egress//evil.test/mcp/"],
+    ["its URL with a query", "POST", "https://egress/mcp/?session=1"],
   ])("is never sent to %s", async (_what, method, url) => {
     const env = ring("k1");
     const response = await call(await service(env), new Request(url, {

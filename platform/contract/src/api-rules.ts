@@ -48,6 +48,10 @@
  *   page does not say is free is never here, so it is refused `unmetered`. Gemini's
  *   `countTokens` is not here: its page (ai.google.dev) could not be read when this list
  *   was made, so no page says it is free.
+ * - `query`: the query parameters a call may carry, each name with the values it may take,
+ *   each one an engine's or pi-ai's own, cited where it is sent. Any other is refused
+ *   `endpoint_refused` (`egress-scope.ts` `egressTarget`): a parameter can change what a
+ *   call does past what its endpoint was sealed for. A credential parameter is stripped.
  *
  * Every key the rules read is read under its one spelling, so a body that spells one another
  * way is refused `egress_aliased_key` (`aliased`): ProtoJSON parsers take
@@ -111,6 +115,8 @@ export interface ApiRules {
   readonly betas: readonly string[];
   /** Calls the provider does not bill, each on its cited page: forwarded unmetered. */
   readonly free: readonly FreeCall[];
+  /** The query parameters a call may carry, by name: the values each may take. */
+  readonly query: Readonly<Record<string, RegExp>>;
 }
 
 const COMPLETIONS: ApiRules = Object.freeze({
@@ -135,6 +141,7 @@ const COMPLETIONS: ApiRules = Object.freeze({
                           priced: Object.freeze(["default", "on_demand"]) }),
   betas: Object.freeze([]),
   free: Object.freeze([]),
+  query: Object.freeze({}),
 });
 
 const RESPONSES: ApiRules = Object.freeze({
@@ -166,6 +173,9 @@ const RESPONSES: ApiRules = Object.freeze({
                                                  "response.incomplete"]) }),
   betas: Object.freeze([]),
   free: Object.freeze([]),
+  // Codex lists its models as `GET /models?client_version=<major.minor.patch>`
+  // (learn.chatgpt.com/codex/model-catalogs, as searched 2026-11-22).
+  query: Object.freeze({ client_version: /^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$/ }),
 });
 
 const GOOGLE: ApiRules = Object.freeze({
@@ -190,6 +200,8 @@ const GOOGLE: ApiRules = Object.freeze({
   served: null,
   betas: Object.freeze([]),
   free: Object.freeze([]),
+  // `@google/genai`, pi-ai's and Gemini CLI's client, streams as `?alt=sse`.
+  query: Object.freeze({ alt: /^sse$/ }),
 });
 
 const ANTHROPIC: ApiRules = Object.freeze({
@@ -223,6 +235,10 @@ const ANTHROPIC: ApiRules = Object.freeze({
     read: "2026-11-02",
     says: "Token counting is free to use but subject to requests per minute rate limits",
   })]),
+  // The SDK's beta client (pi-ai's, Claude Code's) sends `?beta=true`; Claude Code lists its
+  // models as `GET /v1/models?limit=1000` (code.claude.com/docs/en/llm-gateway-protocol,
+  // read 2026-11-22).
+  query: Object.freeze({ beta: /^true$/, limit: /^[0-9]{1,4}$/ }),
 });
 
 /**
@@ -304,17 +320,16 @@ export const READS: readonly string[] = Object.freeze(["GET", "HEAD"]);
 /**
  * Whether a call is one its provider does not bill (`free`), the one rule the owner's
  * object admits by and the gateway forwards by: a read (`READS`), which carries no model
- * use, or a call whose `provider`, `method` and bare `path` (from the origin, its query
- * dropped) are exactly a listed call's (a token count).
+ * use, or a call whose `provider`, `method` and `path` (its target's, `egressTarget`) are
+ * exactly a listed call's (a token count).
  */
 export function freeCall(rules: ApiRules | null, provider: string, method: string,
                          path: string): boolean {
   if (READS.includes(method)) {
     return true;
   }
-  const bare = path.split("?")[0]!;
   return rules !== null && rules.free.some((call) => call.provider === provider
-    && call.method === method && call.path === bare);
+    && call.method === method && call.path === path);
 }
 
 /** Whether the request asks for more than one choice. */

@@ -15,7 +15,8 @@
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  *
  * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
- * `say`, `decoded`, `hdr`, `jsonesc`, `stall` (some bytes, then silence), and `held`: the
+ * `say`, `decoded`, `hdr`, `jsonesc`, `encoded` (the credential written back as
+ * `x-fake-encoding` names), `stall` (some bytes, then silence), and `held`: the
  * body read to its end, its length answered once the test lets it go,
  * `https://status.test/release?id=<x-fake-id>`, as a provider holds its answer until its
  * first token). A request with an `x-fake-id` is recorded as it arrives, read back from
@@ -289,6 +290,18 @@ async function forwardEcho(request: Request): Promise<Response> {
   }
   if (mode === "say") {
     return new Response(request.headers.get("x-fake-say") ?? "", { status: 200 });
+  }
+  if (mode === "encoded") {
+    // The credential it was sent, inside `x-fake-before` and a tail, written back encoded:
+    // in a JSON body escaping `/` as `\/`, and in a redirect's `Location`.
+    const text = `${request.headers.get("x-fake-before") ?? ""}${credentialOf(request)}|tail`;
+    const base64 = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+    const written = {
+      base64, base64url: base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+      uri: encodeURIComponent(text), form: new URLSearchParams({ v: text }).toString().slice(2),
+    }[request.headers.get("x-fake-encoding") ?? ""] ?? text;
+    return new Response(`{"echo":"${written.split("/").join("\\/")}"}`, {
+      status: 401, headers: { location: `https://login.test/?next=${written}` } });
   }
   if (mode === "decoded") {
     // A body the runtime has already decoded keeps its Content-Encoding header.
