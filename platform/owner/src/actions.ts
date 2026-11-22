@@ -14,8 +14,9 @@
  *   `shownChars`), the card's digest, which the owner's answer names, and the call's, which a
  *   yes admits once: the door, the request as asked (its bytes by their digest), the actor
  *   and, for a run's call, its conversation. The same call held again answers the same card.
- *   A yes keeps the row as the call's once-approval for `approvalTtlS`, which its one use
- *   deletes; a no deletes it.
+ *   A yes keeps the row as the call's once-approval, which its one use deletes; a no deletes
+ *   it. Neither a card nor a yes has a life of its own (Fact 15): each waits as a held
+ *   approval waits in its conversation on Claude, ChatGPT or an agents SDK's run state.
  * - **A run's CLI's own tool calls are decided too** (R5 P-hooks): its pre-tool hook, where its
  *   engine's record has one (`schema.ts` `Decide`), asks the decide door of each call it
  *   matches (`runDecide`). A call is each act whose hook kinds name the tool (`acts.json`) or
@@ -36,9 +37,11 @@
  *   call is retried when its user says so.
  * - **Generation-bound**: a row asked under another policy generation is neither shown,
  *   answered nor admitted, so a change of the owner's rules decides every held call afresh.
- * - **Bounded and swept**: `held` rows in all, `perClient` of them one outside client's; at
- *   each decision and each answer, rows past their life (`cardTtlS` pending, `approvalTtlS`
- *   approved) and rows of another generation go first.
+ * - **Bounded and swept**: `held` rows in all, `perClient` of them one outside client's; a
+ *   call held at a bound lets the oldest row go to make its room (the client's own at its
+ *   share, else the oldest of its class's: an outside client's never pushes out the owner's
+ *   agents'), refused only when its class has none. At each decision and each answer, rows
+ *   of another generation go first.
  * - **Receipted** in a bucket of their own, `action_receipts`, kept to the policy's
  *   `receiptsPerBucket` as its other buckets are, only where a rule decided: `denied`, `held`
  *   (once a card), `admitted`, and the owner's `approved` and `refused`. A call no rule
@@ -65,25 +68,19 @@ import type { OwnerStorage } from "./gate";
 import type { Notices } from "./notices";
 
 /**
- * How many calls wait, and how long. A pending card waits 30 days: Claude Code keeps a
- * session that long (`cleanupPeriodDays`), which bounds the resume an answer starts (P-resume).
- * A yes admits its call within a day: a main agent retries when its user says so. 200 rows in
- * all, pending or approved, and 50 of them one outside client's, so no client fills the set
- * the owner's own agents ask in; each card shows at most 8,000 code points of its request.
+ * How many calls wait: 200 rows in all, pending or approved, and 50 of them one outside
+ * client's, so no client's asks push out the set the owner's own agents ask in; each card
+ * shows at most 8,000 code points of its request.
  */
 interface ActionLimits {
   readonly held: number;
   readonly perClient: number;
-  readonly cardTtlS: number;
-  readonly approvalTtlS: number;
   readonly shownChars: number;
 }
 
 export const ACTION_LIMITS: ActionLimits = Object.freeze({
   held: 200,
   perClient: 50,
-  cardTtlS: 30 * 86_400,
-  approvalTtlS: 86_400,
   shownChars: 8_000,
 });
 
@@ -241,7 +238,6 @@ export interface ActionCard {
   readonly cut: boolean;
   readonly generation: number;
   readonly filed_at: number;
-  readonly expires_at: number;
 }
 
 /** A decision a rule made, or the owner's answer to a held call, as `policyReceipts` lists it. */
@@ -365,11 +361,9 @@ export class Actions {
     }
   }
 
-  /** Rows past their life, and rows asked under another generation, deleted. */
-  #sweep(generation: number, now: number): void {
-    this.#sql.exec("DELETE FROM action_requests WHERE generation != ? OR (approved_at IS NULL " +
-                     "AND filed_at < ?) OR approved_at < ?", generation,
-                   now - ACTION_LIMITS.cardTtlS, now - ACTION_LIMITS.approvalTtlS);
+  /** Rows asked under another generation, deleted. */
+  #sweep(generation: number): void {
+    this.#sql.exec("DELETE FROM action_requests WHERE generation != ?", generation);
   }
 
   /** One receipt; the bucket keeps its newest `receiptsPerBucket`. */
@@ -421,7 +415,7 @@ export class Actions {
     }
     const sql = this.#sql;
     const held = this.#storage.transactionSync((): string | null => {
-      this.#sweep(generation, now);
+      this.#sweep(generation);
       const row = sql.exec<Row>("SELECT * FROM action_requests WHERE call_digest = ?", call)
         .toArray()[0];
       if (row !== undefined && row.approved_at !== null) {
@@ -432,7 +426,7 @@ export class Actions {
       if (row !== undefined) {
         return row.card_id;
       }
-      this.#room(actor.client);
+      this.#room(actor.client, now);
       const cardId = "act_" + randomHex(16);
       const shown = [...request];
       const card: ActionCard = {
@@ -440,7 +434,6 @@ export class Actions {
         client: actor.client, conversation,
         request: shown.slice(0, ACTION_LIMITS.shownChars).join(""),
         cut: shown.length > ACTION_LIMITS.shownChars, generation, filed_at: now,
-        expires_at: now + ACTION_LIMITS.cardTtlS,
       };
       sql.exec("INSERT INTO action_requests (card_id, digest, call_digest, card, client, " +
                  "generation, filed_at, run, family) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", cardId,
@@ -458,34 +451,47 @@ export class Actions {
     }
   }
 
-  /** Room for one more held call: `held` in all, `perClient` of them `client`'s. */
-  #room(client: string | null): void {
+  /**
+   * Room for one more held call: at `perClient` of `client`'s, its oldest row goes; else at
+   * `held` in all, the oldest of its asker's class (outside clients', or the owner's own
+   * agents'), so an outside client's ask never pushes out the owner's; with none, refused.
+   * The owner is told whose call went (`held_request_evicted`), once while that notice stands.
+   */
+  #room(client: string | null, now: number): void {
     const sql = this.#sql;
-    if (client !== null && sql.exec<{ n: number }>(
+    const own = client !== null && sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM action_requests WHERE client = ?", client).one().n
-        >= ACTION_LIMITS.perClient) {
-      throw new Refusal("refused", "this client's calls held for the owner are at their limit");
+        >= ACTION_LIMITS.perClient;
+    if (!own && sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM action_requests").one().n
+        < ACTION_LIMITS.held) {
+      return;
     }
-    if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM action_requests").one().n
-        >= ACTION_LIMITS.held) {
+    const gone = sql.exec<{ client: string | null; agent: string | null }>(
+      "DELETE FROM action_requests WHERE card_id = (SELECT card_id FROM action_requests WHERE " +
+        `${own ? "client = ?" : `client IS ${client === null ? "" : "NOT "}NULL`} ORDER BY ` +
+        "filed_at, rowid LIMIT 1) RETURNING client, json_extract(card, '$.agent') AS agent",
+      ...(own ? [client] : [])).toArray()[0];
+    if (gone === undefined) {
       throw new Refusal("refused", "too many calls held for the owner");
     }
+    this.#notices.once("held_request_evicted", `a held call of ${gone.agent ?? gone.client} ` +
+                       "was let go to make room for a newer one", now);
   }
 
-  /** The pending card under `cardId`, of the policy's generation and unexpired, or null. */
-  #pending(cardId: unknown, generation: number, now: number): Row | null {
+  /** The pending card under `cardId`, of the policy's generation, or null. */
+  #pending(cardId: unknown, generation: number): Row | null {
     if (typeof cardId !== "string" || !CARD_ID.test(cardId)) {
       return null;
     }
     return this.#sql.exec<Row>(
       "SELECT * FROM action_requests WHERE card_id = ? AND approved_at IS NULL AND " +
-        "generation = ? AND filed_at >= ?", cardId, generation, now - ACTION_LIMITS.cardTtlS,
+        "generation = ?", cardId, generation,
     ).toArray()[0] ?? null;
   }
 
   /** The pending card under `cardId`, and the digest its answer names, or null. */
-  card(cardId: unknown, now: number): { card: ActionCard; digest: string } | null {
-    const row = this.#pending(cardId, this.#policy().generation, now);
+  card(cardId: unknown): { card: ActionCard; digest: string } | null {
+    const row = this.#pending(cardId, this.#policy().generation);
     return row === null ? null : { card: JSON.parse(row.card) as ActionCard, digest: row.digest };
   }
 
@@ -526,8 +532,8 @@ export class Actions {
     proven(session, "session");
     return this.#storage.transactionSync(() => {
       const { generation } = this.#policy();
-      this.#sweep(generation, now);
-      const row = this.#pending(cardId, generation, now);
+      this.#sweep(generation);
+      const row = this.#pending(cardId, generation);
       if (row === null || typeof shown !== "string" || row.digest !== shown) {
         throw new Refusal("refused", "action request is not the pending card shown");
       }
@@ -579,15 +585,15 @@ export const actionsDoors = Object.freeze({
   /** The pending card the owner is shown, and the digest its answer names. */
   actionRequest(o: ActionsDoorNeeds, { r }: Call<ActionCardRequest>):
       { card: ActionCard; digest: string } {
-    const held = o.actions.card(r["card_id"], clock());
+    const held = o.actions.card(r["card_id"]);
     if (held === null) {
       throw new Refusal("refused", "no pending action request for this card");
     }
     return held;
   },
   /**
-   * The owner's yes, in its session: the held call admitted once, within a day, and a run's
-   * call's conversation resumed (the run that resumes it, or null), its lane synced.
+   * The owner's yes, in its session: the held call admitted once, whenever it is made, and a
+   * run's call's conversation resumed (the run that resumes it, or null), its lane synced.
    */
   actionApprove(o: ActionsDoorNeeds, { session, r }: Call<ActionAnswerRequest, "session">):
       { card_id: string; approved: true; run: string | null } {

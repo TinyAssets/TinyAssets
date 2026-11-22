@@ -825,9 +825,10 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     switch off by default, `code` withheld and refused saying why (`codemode-off.md`).
   - [ ] 11. Fact 15: each retention an owner setting, off keeping forever, or a ceiling with its
     derivation, and `client_share` and `owner_reserve` off by default
-    (`untangle/fact15-defaults`); `openPerRun`, code mode's limits taken from pi's defaults and
-    the 300 s idle cut (each engine record's data) put in one of Fact 15's kinds, and the 10 GB
-    guard's shares recorded as technical ceilings (`untangle/fact15-caps`); a guard holding every
+    (`untangle/fact15-defaults`); the 10 GB guard's shares recorded as technical ceilings and
+    the held requests' lives gone (`untangle/fact15-caps`); `openPerRun`, code mode's limits
+    taken from pi's defaults and the 300 s idle cut (each engine record's data) put in one of
+    Fact 15's kinds (`untangle/fact15-caps-2`); a guard holding every
     cap in Worker and runner source to `limits-audit.md` (`untangle/limits-guard`).
   - [ ] 12. A run past E2B's ceiling waits with a clear message (`untangle/runs-wait-message`).
   - [ ] 13. An unreadable control record served from the last good copy, only the writes that

@@ -3331,7 +3331,7 @@ export interface LedgerDoorNeeds extends Pick<DoorUnits, "door" | "sync">,
             request: unknown, rule: string, now: number): number;
   };
   readonly registrations: {
-    take(session: LiveSession, cardId: unknown, shown: unknown, now: number):
+    take(session: LiveSession, cardId: unknown, shown: unknown):
         { readonly origin: Origin; readonly source: Source;
           readonly request: Readonly<Record<string, unknown>> };
   };
@@ -3592,7 +3592,7 @@ export const ledgerDoors = Object.freeze({
                   Call<Registration | CardApply, "session">): Agent {
     if (origin === null) {
       return o.storage.transactionSync(() => {
-        const card = o.registrations.take(session, r["card_id"], r["digest"], clock());
+        const card = o.registrations.take(session, r["card_id"], r["digest"]);
         return o.ledger.register(card.origin, card.source,
                                      card.request as unknown as Registration);
       });
