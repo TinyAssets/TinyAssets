@@ -22,8 +22,9 @@ import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,
-  NAVIGATE, OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveDocument,
+  OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveDocument,
   serveFirstPartyDocument, setControl, signInApp, tokenCall, upstreamReturns, url, admitOwner } from "./support";
+import { NAVIGATE } from "../../contract/src/navigation";
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;

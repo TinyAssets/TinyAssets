@@ -25,6 +25,7 @@ import { authorizationServer } from "../src/oauth";
 import { callDoor, type DoorName } from "../src/tools";
 import type { Sources } from "../../sources/src/schema";
 import { signInCode } from "./fake-providers";
+import { NAVIGATE } from "../../contract/src/navigation";
 
 
 /**
@@ -57,7 +58,6 @@ export async function failNextForget(subject: string): Promise<void> {
 }
 export const doorsEnv = env as unknown as DoorsEnv;
 export { DARK, OPEN, TIERS } from "../../ci/fixtures";
-export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
 /**
  * One request through the doors' own entry, its waitUntil work finished; or through their

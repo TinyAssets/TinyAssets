@@ -63,6 +63,7 @@ import { keyed } from "../../contract/src/checks";
 import {
   secret, SECRET_MAX, SERVICE_PROVIDER, serviceSource,
 } from "../../contract/src/egress-scope";
+import { navigation } from "../../contract/src/navigation";
 import { checkDestination } from "../../contract/src/policy-document";
 import { SOURCE_ID } from "../../contract/src/text";
 import type { Verified } from "../../contract/src/gateway";
@@ -71,7 +72,6 @@ import {
 } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
-import { navigation } from "./authorize";
 import {
   CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, now,
 } from "./config";

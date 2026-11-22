@@ -15,6 +15,7 @@ import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { DISPATCH, PAGER } from "../../contract/src/canary";
 import { EGRESS_HOST } from "../../contract/src/egress";
+import { navigation } from "../../contract/src/navigation";
 import { E2B_API } from "../../sandbox/e2b/transport";
 import { TOKEN } from "../actions";
 import { alarm, LABEL, pageDue } from "../alarm";
@@ -93,7 +94,8 @@ function world(p: Platform, env: Record<string, string> = KEYED,
       sent.push(`${method} ${url}`);
       const at = new URL(url);
       if (!p.reachable && (at.host === new URL(ORIGIN).host || at.host === ZONE)) {
-        throw new TypeError("fetch failed");
+        throw new TypeError("fetch failed",
+                            { cause: new Error(`getaddrinfo ENOTFOUND ${at.host}`) });
       }
       // The doors serve their host; the old stack the zone; and a host under the zone that the
       // doors do not serve answers nothing (no DNS record): the throw at the end. On the zone
@@ -129,6 +131,9 @@ function world(p: Platform, env: Record<string, string> = KEYED,
         return json({ keys: [] });
       }
       if (url.startsWith(`${ORIGIN}/authorize?`)) {
+        if (!navigation(new Request(url, init))) {
+          return new Response("Open this page in your browser to sign in.", { status: 403 });
+        }
         return new Response(null, { status: 302, headers: { Location: `${WORKOS_AUTHORIZE}?${
           new URLSearchParams({ client_id: "client_test", redirect_uri: UPSTREAM_CALLBACK })}` } });
       }
@@ -220,6 +225,9 @@ describe("the platform canary", () => {
     const result = await canary(world(platform({ reachable: false })), AUTO);
     expect([result.side, states(result), exitOf(result)]).toEqual([null,
       [["the side", "failed"]], 2]);
+    // Named with its cause: which of DNS, the connection or TLS failed.
+    expect(result.outcomes[0]!.line).toBe(`unreachable GET ${OLD_DOCUMENT}: fetch failed ` +
+                                          `(getaddrinfo ENOTFOUND ${ZONE})`);
   });
 
   it("fails an enabled hook that E2B sends anywhere but the doors' hook", async () => {
