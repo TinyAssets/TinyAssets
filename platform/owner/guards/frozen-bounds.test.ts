@@ -172,6 +172,8 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
                       ...TABLE("platform_signins", (n) => `length(engines) <= ${n} `)],
   SIGNIN_URL_MAX: TABLE("sandbox_signins", (n) => `url IS NULL OR length(url) <= ${n})`),
   SIGNIN_CODE_MAX: TABLE("sandbox_signins", (n) => `code IS NULL OR length(code) <= ${n})`),
+  RUN_CONNECTORS_CHARS: [["ALTER TABLE run_grants ADD COLUMN connectors", 1,
+                          (n) => `CHECK (length(connectors) <= ${n})`]],
   // The bounds the old builder never interpolated: the SQL spelled each as a plain number,
   // its twin in code a constant of its own, now one bound.
   INLINE_BYTES: TABLE("file_contents", (n) => `CHECK (inline IS NULL OR size <= ${n})`),
@@ -442,7 +444,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(638);
+    expect(places).toBe(639);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

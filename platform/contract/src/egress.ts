@@ -367,6 +367,22 @@ export function egressBaseUrl(connection: string, egress: EgressScope | null, ru
 }
 
 /**
+ * Where a run reaches its agent's MCP server at `url` through its connector `connection`:
+ * the run's own path on the egress door, then the server's own path and query exactly, so the
+ * gateway sends each call to that URL with the connector's key put in, and the engine holds
+ * only this URL, never the key.
+ */
+export function connectorUrl(connection: string, run: string, secret: string,
+                             url: string): string {
+  if (!CONNECTION_ID.test(connection)) {
+    throw new Refusal("invalid", "invalid connection");
+  }
+  const server = new URL(url);
+  return `${EGRESS_ORIGIN}${runPath(run, secret)}/${CONNECTION_SEGMENT}/${connection}${
+    server.pathname}${server.search}`;
+}
+
+/**
  * One engine run's environment (`run`), from the owner's egress-able `connections`:
  * nothing on the vendor's own sign-in; on an API key, its one connection's base URL on the
  * door and a placeholder key, `random()` making the placeholder's random part (hex), under

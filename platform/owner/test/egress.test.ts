@@ -3,8 +3,9 @@
  * owner-internal; each call admitted at open (`egressOpen`) by every check in order, a model call
  * charged against its run's, the owner's and the source's caps and nothing else, on counters none
  * of them pi's; a refusal kept as a receipt; the streams a change ends; and each charge settled
- * once (`egressSettle`) at the cost the gateway's meter read, or kept whole when it could not. The
- * egress door itself is the doors' tests'.
+ * once (`egressSettle`) at the cost the gateway's meter read, or kept whole when it could not;
+ * and a connector's calls held to its run's grant and its one URL, unmetered, until its revoke.
+ * The egress door itself is the doors' tests'.
  */
 import { createHash } from "node:crypto";
 
@@ -16,7 +17,9 @@ import { verifyToken } from "../../contract/src/routing-mac";
 import type { Metering } from "../../contract/src/gateway";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { EgressOpened, EgressRefusal } from "../../contract/src/owner";
-import { EGRESS_BEAT_S, egressTokenOf, generationOf } from "../../contract/src/egress";
+import {
+  EGRESS_BEAT_S, EGRESS_ORIGIN, egressTokenOf, generationOf,
+} from "../../contract/src/egress";
 import {
   EGRESS_LIMITS, egressPrice,
   LOST_AFTER_S,
@@ -32,11 +35,14 @@ import {
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
 import { admittedOwner, drainDue, failure, gateFor, TIERS, unseededObject } from "./support";
-import { NETWORK_RETRY_S, type SandboxRun } from "../src/launch";
+import {
+  NARROWED_WITHIN_S, NETWORK_RETRY_S, NETWORK_UNCONFIRMED, type SandboxRun,
+} from "../src/launch";
 import { LANE_CALL_MS } from "../src/schedule";
 import {
-  defineAgent, hashed, later, ownerRun, recorder, runnerBinding, runnerSandbox, scripted,
-  whileOut,
+  defineAgent, hashed, later, ownerFile, ownerRun, recorder, runnerBinding, runnerSandbox,
+  sandboxOf,
+  scripted, whileOut,
 } from "./runs-support";
 import { secretOf } from "../../ci/workerd";
 import {
@@ -1668,6 +1674,96 @@ describe("a live lease's network re-applied after an egress write", () => {
                                            tried: 0 }]);
   });
 
+  /** The lease's narrowing owed (1) or not (0), as the object holds it. */
+  function narrowedRow(r: Gated) {
+    return r.sql("SELECT narrowed_at IS NOT NULL AS owed FROM sandbox_leases");
+  }
+
+  it.each([["no answer", "throw"], ["a lost sandbox", { state: "lost" }]] as const)(
+    "gives its lease back when a narrowing is not in force within its bound (%s): its runs " +
+    "and sign-ins stopped, the owner told", async (_name, answer) => {
+      const r = await gated();
+      const connection = await r.connect("sk-good");
+      await capped(r, ROOMY);
+      await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: [] });
+      // A sign-in opens the owner's lease, and a run on the vendor's sign-in joins it: the
+      // login and the CLI whose direct calls never cross the egress door.
+      const { id } = await r.stub.signinStart(r.bind(), { engine: "claude-code" }) as
+        { id: string };
+      const { start } = await ownerRun(r.stub, r.bind());
+      const signin = (await recorder(r.stub)).signins.at(-1)! as unknown as SandboxStart;
+      // The two runners' doors, by the lease's runner secret: open while the lease lives.
+      const runner = runnerSandbox(r, signin);
+      const runRunner = runnerBinding(r, start);
+      await r.stub.runEvents(runRunner, { frames: [] });
+      await scripted(r.stub, { networkAnswer: answer as never });
+      // The default policy is open: an allowlist lets out less, a narrowing.
+      await egressWrite(r);
+      expect(await narrowedRow(r)).toEqual([{ owed: 1 }]);
+      // Within its bound the lease lives, its re-apply tried again; the lane comes back at
+      // the bound, sooner than the retry clock (10 s of it left here).
+      await r.sql("UPDATE sandbox_leases SET network_tried_at = network_tried_at - ?, " +
+                    "narrowed_at = narrowed_at - ?", NETWORK_RETRY_S, NARROWED_WITHIN_S - 10);
+      await laneNow(r);
+      expect((await recorder(r.stub)).networks).toHaveLength(2);
+      expect(await r.sql("SELECT state FROM runs WHERE id = ?", start.run))
+        .toEqual([{ state: "running" }]);
+      const [job] = await r.sql("SELECT time FROM cf_agents_jobs WHERE id = " +
+                                  "'owner-schedule/runs'");
+      expect(job!["time"]).toBeLessThanOrEqual(Date.now() + 10_000);
+      // Past it, unconfirmed still: the lease is given back whole.
+      await r.sql("UPDATE sandbox_leases SET narrowed_at = narrowed_at - 10");
+      await laneNow(r);
+      expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+      expect(await r.sql("SELECT state, code FROM runs WHERE id = ?", start.run))
+        .toEqual([{ state: "failed", code: NETWORK_UNCONFIRMED }]);
+      expect(await r.sql("SELECT id FROM sandbox_signins")).toEqual([]);
+      const seen = await recorder(r.stub);
+      expect(seen.cancels).toContainEqual({ run: start.run });
+      expect(seen.signinCancels).toContainEqual({ authority: "owner", id });
+      expect(seen.releases).toContainEqual({ lease_id: start.lease.lease_id });
+      // The runners' next posts are refused, so each stops its CLI inside the sandbox
+      // whatever the sandbox Worker does; the lease's egress token admits nothing.
+      for (const refused of [
+        await failure(() => r.stub.runEvents(runRunner, { frames: [] })),
+        await failure(() => r.stub.signinEvents(runner, { id, frames: [] }))]) {
+        expect(refused.message).toMatch(/^run_ended: /);
+      }
+      expect(await refusedWith(r, sandboxOf(r, start, { secret: hashed(secretOf(start)) }),
+                               connection, { run: start.run })).toBe("egress_lease_closed");
+      const { notices } = await r.stub.noticeList(r.bind());
+      expect(notices).toContainEqual(expect.objectContaining({
+        type: NETWORK_UNCONFIRMED,
+        detail: expect.stringMatching(/your own sandbox within 60 s.*1 run\(s\) and 1 sign-in/),
+      }));
+    });
+
+  it("keeps a lease whose narrowing landed in time, and stops nothing for a widening that " +
+     "never lands", async () => {
+    const r = await gated();
+    const lease = await leased(r);
+    await scripted(r.stub, { networkAnswer: { state: "applied" } });
+    await egressWrite(r);
+    expect(await narrowedRow(r)).toEqual([{ owed: 0 }]);
+    // Back to open lets out more: the old network is the narrower, so nothing is owed.
+    await scripted(r.stub, { networkAnswer: "throw" });
+    await egressWrite(r, "open");
+    expect(await narrowedRow(r)).toEqual([{ owed: 0 }]);
+    await r.sql("UPDATE sandbox_leases SET network_tried_at = network_tried_at - ?",
+                NARROWED_WITHIN_S);
+    await laneNow(r);
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases"))
+      .toEqual([{ lease_id: lease.lease_id }]);
+    expect(await r.sql("SELECT state FROM runs WHERE id = ?", lease.run))
+      .toEqual([{ state: "running" }]);
+    expect((await r.stub.noticeList(r.bind())).notices.map((each) => each.type))
+      .not.toContain(NETWORK_UNCONFIRMED);
+  });
+
+  it("bounds a narrowing past two whole tries: the write's own and one retry", () => {
+    expect(NETWORK_RETRY_S + LANE_CALL_MS / 1000).toBeLessThan(NARROWED_WITHIN_S);
+  });
+
   it("leaves the policy write to answer at once, whatever the sandbox Worker does",
      async () => {
     const r = await gated();
@@ -1682,5 +1778,107 @@ describe("a live lease's network re-applied after an egress write", () => {
     // here, since the re-apply then reaches the gate and stays held, never let go.
     expect(await written).toMatchObject({ policy: { egress: { mode: "allowlist" } } });
     expect(await sandbox.held("network")).toHaveLength(1);
+  });
+});
+
+describe("a connector", () => {
+  const SERVER = "https://mcp.example.com/mcp/";
+  const KEY = "sk-server-connector-0123";
+
+  /** The agent's servers: one at the connector's URL, one at the same path on another host. */
+  async function served(r: Gated): Promise<void> {
+    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: [] });
+    await ownerFile(r.stub, r.bind(), "/workspace/agents/main/mcp.json", JSON.stringify({
+      mcpServers: { docs: { url: SERVER }, other: { url: "https://other.example.com/mcp/" } } }));
+  }
+
+  /** A call of the lease's run on `connection` at `path`, as the egress door opens it. */
+  const call = (connection: string, path = "/mcp/", method = "POST") =>
+    ({ run: RUN, connection, method, path, bytes_hint: 2 });
+
+  it("binds the agent's server at its URL to the run, reached through the egress door, its " +
+     "key nowhere in the run's start", async () => {
+    const r = await gated();
+    const connector = await r.connectService(KEY, SERVER);
+    await served(r);
+    const lease = await leased(r, true, SIGNED_IN);
+    const secret = secretOf(lease.start);
+    expect(lease.start.mcp_servers).toEqual({
+      docs: { url: `${EGRESS_ORIGIN}/r/${lease.run}/${secret}/c/${connector}/mcp/` },
+      other: { url: "https://other.example.com/mcp/" } });
+    expect(await r.sql("SELECT connection, connectors FROM run_grants"))
+      .toEqual([{ connection: null, connectors: JSON.stringify([connector]) }]);
+    // Never in what the sandbox is handed: its start, its environment, its servers.
+    expect(JSON.stringify(lease.start)).not.toContain(KEY);
+    expect(JSON.stringify(await recorder(r.stub))).not.toContain(KEY);
+  });
+
+  it("admits the run's calls on its own URL unmetered, and no other path, connector or role",
+     async () => {
+    const r = await gated();
+    const connector = await r.connectService(KEY, SERVER);
+    // Another server's key, which this agent names no server for.
+    const elsewhere = await r.connectService("sk-elsewhere-0123",
+                                             "https://other2.example.com/mcp/");
+    await served(r);
+    const lease = await leased(r, true, SIGNED_IN);
+    for (const method of ["POST", "GET", "DELETE"]) {
+      const opened = await r.stub.egressOpen(lease.as(), call(connector, "/mcp/", method));
+      expect(opened).toMatchObject({ ok: true, connection: connector, metered: false });
+    }
+    // Its key only where it was sealed, by the gateway's own rule.
+    expect(await refusedWith(r, lease.as(), connector, call(connector, "/admin")))
+      .toBe("egress_endpoint_refused");
+    expect(await refusedWith(r, lease.as(), connector, call(connector, "/mcp/", "PUT")))
+      .toBe("egress_endpoint_refused");
+    // A connector the run's grant does not hold, though the owner's.
+    expect(await refusedWith(r, lease.as(), elsewhere, call(elsewhere)))
+      .toBe("egress_run_connection");
+    // A model connection named among the connectors is still no connector.
+    const model = await r.connect("sk-good");
+    await r.sql("UPDATE run_grants SET connectors = ?", JSON.stringify([connector, model]));
+    expect(await refusedWith(r, lease.as(), model, call(model, "/v1/models", "GET")))
+      .toBe("egress_run_connection");
+  });
+
+  it("is held to the owner's egress policy as it stands, so a narrowed one stops a live run's " +
+     "calls", async () => {
+    const r = await gated();
+    const connector = await r.connectService(KEY, SERVER);
+    await served(r);
+    const lease = await leased(r, true, SIGNED_IN);
+    const egress = async (destinations: { host: string; port: number }[]) => {
+      const { generation, policy } = await r.stub.policyRead(r.bind());
+      await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
+        ...policy, egress: { mode: "allowlist", destinations } } });
+      await drainDue(r.stub);
+    };
+    await egress([]);
+    expect(await refusedWith(r, lease.as(2), connector, call(connector)))
+      .toBe("egress_endpoint_refused");
+    await egress([{ host: "mcp.example.com", port: 443 }]);
+    expect(await r.stub.egressOpen(lease.as(3), call(connector)))
+      .toMatchObject({ ok: true, connection: connector });
+  });
+
+  it("stops at its revoke: its open streams end, and no call is admitted after", async () => {
+    const r = await gated();
+    const connector = await r.connectService(KEY, SERVER);
+    await served(r);
+    const lease = await leased(r, true, SIGNED_IN);
+    const opened = await r.stub.egressOpen(lease.as(), call(connector));
+    if (!opened.ok) {
+      throw new Error(`refused ${opened.code}`);
+    }
+    await r.stub.connectionRevoke(r.session(), { connection: connector });
+    expect(await ended(opened)).toBe(true);
+    expect(await r.sql("SELECT count(*) AS n FROM connection_secrets WHERE connection_id = ?",
+                       connector)).toEqual([{ n: 0 }]);
+    expect(await refusedWith(r, lease.as(), connector, call(connector)))
+      .toBe("egress_connection_refused");
+    // The next run's server is not bound to it: it goes straight to the server, keyless.
+    await over(r, lease);
+    const next = await leased(r, true, SIGNED_IN);
+    expect(next.start.mcp_servers["docs"]).toEqual({ url: SERVER });
   });
 });

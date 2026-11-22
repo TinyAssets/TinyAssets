@@ -2543,6 +2543,23 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE control_kept (only INTEGER PRIMARY KEY CHECK (only = 1), text TEXT NOT NULL, " +
       "read_at INTEGER NOT NULL)",
   ]),
+  // 21 (`untangle-2026-11/network-narrow-bound.md`): a live lease's sandbox owing a narrowed
+  // egress policy, the latest narrowing's egress generation and since when it is owed
+  // (`Launcher.reapply` gives the lease back past `NARROWED_WITHIN_S`). `sandbox_leases` is
+  // kept out of the export, so no capture trigger.
+  Object.freeze([
+    "ALTER TABLE sandbox_leases ADD COLUMN narrowed_generation INTEGER CHECK " +
+      "(narrowed_generation IS NULL OR narrowed_generation >= 1)",
+    "ALTER TABLE sandbox_leases ADD COLUMN narrowed_at REAL",
+  ]),
+  // 22 (`runs.ts`, `egress.ts`; `untangle-2026-11/connector-credentials.md`): a run grant's
+  // connectors, the services' keys its agent's MCP servers are bound to, which its calls may
+  // name beside its model connection. A grant from before holds none. Not exported, so no
+  // generation's line changes.
+  Object.freeze([
+    "ALTER TABLE run_grants ADD COLUMN connectors TEXT NOT NULL DEFAULT '[]' " +
+      "CHECK (length(connectors) <= 2048)",
+  ]),
 ]);
 
 /**
@@ -2589,6 +2606,8 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 18
   ROOMS_BACKFILLED,  // 19
   null,  // 20
+  null,  // 21
+  null,  // 22
 ]);
 
 /**

@@ -18,7 +18,7 @@
  * (`metering`, `doorbellInput`, `ringRequest`), so its builder and its reader hold one rule.
  */
 import { keyed, object, whole } from "./checks.ts";
-import type { EgressScope, Source } from "./egress-scope.ts";
+import type { EgressScope, ServiceSource, Source } from "./egress-scope.ts";
 import type { ModelRecord } from "./model-record.ts";
 import { Refusal } from "./refusal.ts";
 import { AUTH_HEADER } from "./wake-records.ts";
@@ -227,9 +227,12 @@ export interface GatewayService {
  * forwarding, no keyring). Every failure is one of its fixed codes.
  */
 export interface ConnectService {
-  /** A pasted API key, sealed for the connection with its source record's values. */
-  seal(owner: string, connection: string, version: number, key: string, record: Source):
-    Promise<Sealed>;
+  /**
+   * A pasted API key, sealed for the connection with its source record's values, or a
+   * service's (`serviceSource`).
+   */
+  seal(owner: string, connection: string, version: number, key: string,
+       record: Source | ServiceSource): Promise<Sealed>;
   /** An authorization code exchanged, and what it buys sealed. */
   exchange(owner: string, connection: string, version: number, grant: AuthorizationGrant,
            record: Source): Promise<Exchanged>;

@@ -37,10 +37,11 @@
  * client's own, so runs of different authority never share a VM), and the run grant
  * minted: the stamp and origin, the scopes (the agent's, or for a client's run their
  * intersection with what that client's grant holds where it acts), the run's own
- * connection (none on the vendor's own sign-in) and the SHA-256 of the run's own 256-bit
- * secret, which only its CLI's environment holds (its URLs carry it). Every call of a run's
- * (its MCP door, its model calls) presents that secret, so a run id alone authorizes
- * nothing, and the egress door holds each call to its own run's connection (`egress.ts`).
+ * connection (none on the vendor's own sign-in), its connectors (the services' keys its
+ * agent's MCP servers are bound to) and the SHA-256 of the run's own 256-bit secret, which
+ * only its CLI's environment holds (its URLs carry it). Every call of a run's (its MCP door,
+ * its model and server calls) presents that secret, so a run id alone authorizes nothing,
+ * and the egress door holds each call to its own run's connections (`egress.ts`).
  * The runner's own doors (its events, the sign-in report) take the runner's secret, which
  * no CLI holds.
  *
@@ -253,6 +254,8 @@ export interface Ask {
   readonly prompt: string;
   /** The mail it answers, and its thread's conversation id, when mail started it; else null. */
   readonly mail: { readonly message: string; readonly conversation: string } | null;
+  /** The connectors its agent's MCP servers are bound to (`network.ts` `connectorsOf`). */
+  readonly connectors: readonly string[];
 }
 
 /** An admitted run, as the object starts it. */
@@ -344,6 +347,8 @@ interface RunGrant {
   readonly origin: { readonly client: string; readonly family: string } | null;
   readonly scopes: readonly RunCapability[];
   readonly connection: string | null;
+  /** The connectors its calls may name (`egress.ts`), each a service's key. */
+  readonly connectors: readonly string[];
 }
 
 /**
@@ -392,7 +397,8 @@ type RunRow = {
 type GrantRow = {
   run: string; agent: string; conversation: string; lease_id: string; epoch: number;
   stamp: string | null;
-  origin: string | null; scopes: string; connection: string | null; secret: string;
+  origin: string | null; scopes: string; connection: string | null; connectors: string;
+  secret: string;
 };
 
 type ScheduleRow = {
@@ -588,6 +594,7 @@ function grantOf(row: GrantRow): RunGrant {
     stamp: row.stamp === null ? null : JSON.parse(row.stamp) as Stamped,
     origin: row.origin === null ? null : JSON.parse(row.origin) as RunGrant["origin"],
     scopes: JSON.parse(row.scopes) as RunCapability[], connection: row.connection,
+    connectors: JSON.parse(row.connectors) as string[],
   };
 }
 
@@ -748,11 +755,11 @@ export class Runs {
     }
     const scopes = ask.file.scopes.filter((scope) => held(scope));
     this.#sql.exec(
-      "INSERT INTO run_grants (run, secret, stamp, origin, scopes, connection, created_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO run_grants (run, secret, stamp, origin, scopes, connection, connectors, " +
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       runId, sha256Hex(secret), ask.stamp === null ? null : JSON.stringify(ask.stamp),
       ask.origin === null ? null : JSON.stringify(ask.origin), JSON.stringify(scopes),
-      chosen.connection, now);
+      chosen.connection, JSON.stringify(ask.connectors), now);
     this.#prune();
     return { run: runId, conversation: conversationId, existing: false, engine: chosen.engine,
              credential: chosen.credential, connection: chosen.connection, model: chosen.model,
@@ -900,7 +907,7 @@ export class Runs {
    * A waiting run's admission as it was asked, its input kept: the lane admits it again
    * whole (`admit` with its id) when its turn comes. Null when it no longer waits. A read.
    */
-  waitingAsk(runId: string): Omit<Ask, "file" | "ranking" | "tiers"> | null {
+  waitingAsk(runId: string): Omit<Ask, "file" | "ranking" | "tiers" | "connectors"> | null {
     const row = this.#sql.exec<RunRow & { prompt: string; origin: string | null }>(
       "SELECT r.*, i.prompt, i.origin FROM runs r JOIN run_inputs i ON i.run = r.id " +
         "WHERE r.id = ? AND r.state = 'waiting'", runId).toArray()[0];
@@ -1448,6 +1455,21 @@ export class Runs {
     }
     this.#sql.exec("DELETE FROM run_schedules WHERE client = ?", client);
     return ended.filter((row) => row.state !== "waiting").map((row) => row.id);
+  }
+
+  /**
+   * In a unit: every live run under the lease `leaseId` settled `failed` with `code` at once,
+   * its grant gone, so its runner's next post is refused and stops its CLI; the lease given
+   * back with the last unless a sign-in holds it. Their ids, to stop in the sandbox.
+   */
+  endLease(leaseId: string, code: string, now: number): string[] {
+    const ended = this.#sql.exec<{ id: string }>(
+      `SELECT id FROM runs WHERE lease_id = ? AND ${LIVE} ORDER BY seq`, leaseId).toArray()
+      .map(({ id }) => id);
+    for (const run of ended) {
+      this.settle(run, "failed", code, null, now);
+    }
+    return ended;
   }
 
   /** Every live run's id. A read. */

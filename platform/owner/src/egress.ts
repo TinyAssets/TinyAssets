@@ -13,9 +13,11 @@
  * - the run the call's path names is live under that lease, its grant standing (a cancel
  *   revokes it at once) and the call presenting that run's own secret, which only its CLI's
  *   environment holds (`egress_run_closed`): a run id alone authorizes nothing, so no
- *   process in the sandbox spends as another run; and the connection is the one its run
- *   grant holds (`egress_run_connection`, `runs.ts`): a run never spends on a connection it
- *   was not given, and a run on the vendor's own sign-in may call none;
+ *   process in the sandbox spends as another run; and the connection is one its run grant
+ *   holds (`egress_run_connection`, `runs.ts`): its model connection (none for a run on the
+ *   vendor's own sign-in), or one of its connectors, a service's key the run's admission
+ *   bound to one of its agent's MCP servers by that server's URL (`launch.ts`), each only in
+ *   its own role, so a run never calls on a connection it was not given;
  * - the egress generation the request's transform carries is the current one
  *   (`egress_policy_stale`), and so is the one the sandbox's network was last applied
  *   under or the one a re-apply is out with (`egress_network_stale`): a write that
@@ -25,8 +27,10 @@
  *   sets the new generation;
  * - the connection is the owner's, active, its credential usable and its scope stored
  *   (`egress_connection_refused`), and the method and path are among its sealed endpoints,
- *   by the gateway's own rule (`egress_endpoint_refused`);
- * - a read (`GET`, `HEAD`: a model list) is free, as is a call its API's rules cite as free
+ *   by the gateway's own rule, and a connector's server one the owner's egress policy still
+ *   lets out (`egress_endpoint_refused`);
+ * - a service's every call on its sealed URL is free (it reaches no model), a read (`GET`,
+ *   `HEAD`: a model list) is free, as is a call its API's rules cite as free
  *   (`freeCall`: a token count); any other call must be its source's model
  *   call as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
@@ -228,12 +232,17 @@ interface EgressDeps {
   /** The live lease whose egress token's hash is `token`, or null. */
   readonly lease: (token: string, now: number) => SandboxLease | null;
   /**
-   * The connection of `run`'s grant, when `run` is live under the lease, its grant standing
-   * and `secret` the hash of its own secret (`undefined` otherwise); null for a run on the
-   * vendor's own sign-in.
+   * The connections of `run`'s grant, when `run` is live under the lease, its grant standing
+   * and `secret` the hash of its own secret (`undefined` otherwise): its model connection
+   * (null for a run on the vendor's own sign-in) and its connectors.
    */
-  readonly runConnection: (run: string, secret: string | undefined, lease: SandboxLease) =>
-    string | null | undefined;
+  readonly runConnections: (run: string, secret: string | undefined, lease: SandboxLease) =>
+    { readonly connection: string | null; readonly connectors: readonly string[] } | undefined;
+  /**
+   * Whether the owner's egress policy, as it stands, lets the sandbox reach the server at
+   * `url` (`network.ts` `serverUnreached`).
+   */
+  readonly reaches: (url: string) => boolean;
   /** `run`'s requests, tokens and cost so far (its `runs` row). */
   readonly runUsage: (run: string) => { requests: number; tokens: number; cost: number };
   /** The owner's tier's simultaneous runs, as last handed (`admission.ts`); null if none are. */
@@ -396,13 +405,14 @@ export class Egress {
     if (lease === null || sandbox.kind !== "egress") {
       return refuse("egress_lease_closed");
     }
-    // A run spends only on the connection its own grant holds; a signed-in run on none, and
-    // never on another simultaneous run's.
-    const runConnection = this.#deps.runConnection(request.run, sandbox.secret, lease);
-    if (runConnection === undefined) {
+    // A run calls only on the connections its own grant holds, never another simultaneous
+    // run's: its model connection (a signed-in run's none) and its connectors.
+    const granted = this.#deps.runConnections(request.run, sandbox.secret, lease);
+    if (granted === undefined) {
       return refuse("egress_run_closed");
     }
-    if (runConnection === null || runConnection !== request.connection) {
+    const connector = granted.connectors.includes(request.connection);
+    if (granted.connection !== request.connection && !connector) {
       return refuse("egress_run_connection");
     }
     if (sandbox.generation !== generation) {
@@ -416,15 +426,24 @@ export class Egress {
     if (credential === null || connection === null) {
       return refuse("egress_connection_refused");
     }
-    if (egressTarget(connection.scope, request.method, request.path) === null) {
+    // Each in its own role: a connector is a service's key, the model connection a model
+    // source's, so no grant makes either the other.
+    const scope = connection.scope;
+    if (connector !== ("kind" in scope)) {
+      return refuse("egress_run_connection");
+    }
+    // A connector's server only while the owner's egress lets it out, as at the run's
+    // admission (`agentServers`): a narrowed policy holds a live run's server too.
+    if (egressTarget(scope, request.method, request.path) === null
+        || (connector && !this.#deps.reaches(scope.base_url))) {
       return refuse("egress_endpoint_refused");
     }
-    // A read of a sealed endpoint carries no model use, nor does a call its API's rules
-    // cite as free (a token count); every other call must be the source's model call as
-    // pi-ai makes it, which the gateway meters.
-    const free = freeCall(apiRules(connection.scope.api), connection.provider, request.method,
-                          request.path);
-    if (!free && (!meteredCall(connection.scope, request.method, request.path)
+    // A service's call reaches no model; nor does a read of a sealed endpoint, or a call its
+    // API's rules cite as free (a token count); every other call must be the source's model
+    // call as pi-ai makes it, which the gateway meters.
+    const free = "kind" in scope
+      || freeCall(apiRules(scope.api), connection.provider, request.method, request.path);
+    if (!free && (!meteredCall(scope, request.method, request.path)
                   || connection.models.length === 0)) {
       return refuse("egress_unmetered");
     }
@@ -440,7 +459,7 @@ export class Egress {
     }
     // A model call's API must have rules the gateway meters it by; its charge waits for the
     // gateway's parse of its body (`reserve`).
-    if (!free && apiRules(connection.scope.api) === null) {
+    if (!free && !("kind" in scope) && apiRules(scope.api) === null) {
       return refuse("egress_unmetered");
     }
     const reservation = this.#record(sandbox, request, lease, generation, now,
@@ -482,14 +501,15 @@ export class Egress {
       return { ok: false, code, receipt: row.id };
     };
     const connection = this.#deps.connection(row.connection_id);
-    const rules = connection === null ? null : apiRules(connection.scope.api);
-    if (connection === null || rules === null || connection.scope.meter === null) {
+    const scope = connection === null || "kind" in connection.scope ? null : connection.scope;
+    const rules = scope === null ? null : apiRules(scope.api);
+    if (connection === null || scope === null || rules === null || scope.meter === null) {
       return refuse("egress_connection_refused");
     }
     // The model the call names, where its API's rules read it (the body, as the gateway's
     // parse read it, or the path), and its tier: the call is reserved for them alone.
     const path = rules.model === null
-      ? meteredModel(connection.scope.meter, row.method, row.path.split("?")[0]!, {}) : null;
+      ? meteredModel(scope.meter, row.method, row.path.split("?")[0]!, {}) : null;
     const model = connection.models.find((entry) => entry.id === request.model);
     if (model === undefined || (rules.model === null && path !== request.model)) {
       return refuse("egress_unknown_model");

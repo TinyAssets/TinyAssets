@@ -29,7 +29,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { builtinCatalog } from "./catalog";
 import { type Credential } from "./credential";
-import { secret, source } from "../../contract/src/egress-scope";
+import { keySource, secret } from "../../contract/src/egress-scope";
 import {
   type ConnectService, type DoorbellVerified, type EgressService, type Exchanged,
   type GatewayService, type MeterOutcome, outcomeLine, type Refreshed, type Resealed,
@@ -54,7 +54,7 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> implements Conn
              record: unknown): Promise<Sealed> {
     return guarded(async () => {
       const bound = binding(owner, connection, version);
-      const checked = source(record, false);
+      const checked = keySource(record);
       const plaintext: Credential = { kind: "api_key", secret: secret(key),
                                       upstream: checked.upstream, endpoints: checked.endpoints,
                                       sealed_at: Date.now() };
