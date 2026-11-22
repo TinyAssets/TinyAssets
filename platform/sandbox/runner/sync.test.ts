@@ -31,7 +31,7 @@ import {
 import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
   from "../../contract/src/limits";
 import { served } from "../../sources/src/served";
-import { resumePaths } from "./engine";
+import { isKept, resumePaths } from "./engine";
 import { AGENT_PEAK, HEAP_PER_LIST_BYTE, SANDBOX_HEAP } from "./sizing";
 import { fetchSessions, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
          UNREAD } from "./sync";
@@ -894,5 +894,26 @@ describe("the engines' sessions from the owner's files", () => {
     expect(await fetch(both)).toEqual({ fetched: [`${at}/s1.jsonl`],
                                         gone: [`${at}/s1/subagents/a.jsonl`] });
     expect(mirror.get(`${at}/s1/subagents/a.jsonl`)).toBeUndefined();
+  });
+});
+
+describe("what a resume reads of an engine's store", () => {
+  const rec = (id: string) => served().get(id)!;
+  it("is the resumed session's own files, by each record's names, the id matched as it is",
+     () => {
+    const reads = (id: string, sid: string, rel: string) => isKept(resumePaths(rec(id), sid), rel);
+    const rollout = ".codex/sessions/2026/11/22/rollout-2026-11-22T10-00-00-";
+    const pi = ".pi/agent/sessions/--workspace--/2026-11-22_";
+    expect([reads("codex", "t-1", `${rollout}t-1.jsonl`),
+            reads("codex", "t-1", `${rollout}t-1.jsonl.zst`),
+            reads("codex", "t-1", `${rollout}t-2.jsonl`),
+            reads("pi", "p-1", `${pi}p-1.jsonl`), reads("pi", "p-1", `${pi}p-10.jsonl`),
+            reads("codex", "t.1", `${rollout}tx1.jsonl`),
+            reads("gemini", "g-1", ".gemini/tmp/main/chats/session-2026-11-22T10-00-ab.jsonl")])
+      .toEqual([true, true, false, true, false, false, true]);
+    expect(resumePaths(rec("pi"), null)).toEqual([]);
+    for (const sid of ["a/b", "*", ""]) {
+      expect(() => resumePaths(rec("pi"), sid)).toThrow("is not one name");
+    }
   });
 });

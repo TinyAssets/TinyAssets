@@ -978,7 +978,7 @@ function roomForEnd(): void {
   }
 }
 
-/** This run's start, then every other live run's, as each one's job holds it. */
+/** This run's start and every other live run's, as each one's job holds it. */
 function liveStarts(start: StartDoc, run: string): StartDoc[] {
   return [start, ...liveRuns().filter((each) => each.id !== run).flatMap((each) => {
     try {
@@ -991,12 +991,12 @@ function liveStarts(start: StartDoc, run: string): StartDoc[] {
 
 /**
  * The run's agent's scratch (`scratch.ts`): made (root's at the top, group `ta`'s below), old
- * scratch let go first (least recently used while the disk is low, never a live run's agent,
- * `live` this run's start first), and the agent's marked used now. What went, in plain words
- * for the agent and the user, or null.
+ * scratch let go first (least recently used while the disk is low, never a `live` run's
+ * agent), and the agent's marked used now. What went, in plain words for the agent and the
+ * user, or null.
  */
-function scratchFor(live: readonly StartDoc[]): { dir: string; notice: ScratchCleared | null } {
-  const start = live[0]!;
+function scratchFor(start: StartDoc, live: readonly StartDoc[]):
+    { dir: string; notice: ScratchCleared | null } {
   const dir = `${SCRATCH}/${start.agent}`;
   safeDirs("/", SCRATCH, 0o755);
   const index = readIndex(SCRATCH_INDEX);
@@ -1014,13 +1014,13 @@ function scratchFor(live: readonly StartDoc[]): { dir: string; notice: ScratchCl
  * first, never one a live run resumes (`live`: a resume fetches its own again); still low,
  * what the run says of it, with the stores' bytes left, or null.
  */
-async function sessionsRoom(live: readonly StartDoc[],
+async function sessionsRoom(authority: string, live: readonly StartDoc[],
                             known: (paths: readonly string[]) =>
                               Promise<Record<string, string | null>>): Promise<DiskLow | null> {
   if (!low(diskOf(STATE))) {
     return null;
   }
-  const { sessions, seen } = storeSessions(live[0]!.authority);
+  const { sessions, seen } = storeSessions(authority);
   keepSeen(seen);
   const held = sessions.length === 0 ? {} : await known(sessions.map((each) => each.path));
   const resumed = (session: StoreSession) => live.some((each) => each.engine === session.rec.id
@@ -1186,11 +1186,11 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
     }
     const live = liveStarts(start, run);
-    const scratch = scratchFor(live);
+    const scratch = scratchFor(start, live);
     if (scratch.notice !== null) {
       outbox.push(scratch.notice);
     }
-    const pressed = await sessionsRoom(live, known);
+    const pressed = await sessionsRoom(start.authority, live, known);
     if (pressed !== null) {
       outbox.push(pressed);
     }
