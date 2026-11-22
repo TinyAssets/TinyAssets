@@ -215,7 +215,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    * are the effects of the tools it calls. Only while the owner's policy turns code mode on; a
    * script past its time or compute bound is stopped.
    */
-  codeRun(binding: Binding, request: DoorRequest<"codeRun">): Promise<DoorAnswer<"codeRun">>;
+  codeRun(binding: Binding, request: DoorRequest<"codeRun">, stop: ReadableStream<Uint8Array>):
+    Promise<DoorAnswer<"codeRun">>;
   sessionOpen(binding: Binding): Promise<DoorAnswer<"sessionOpen">>;
   sessionExtend(binding: Binding): Promise<DoorAnswer<"sessionExtend">>;
   sessionClose(binding: Binding): Promise<DoorAnswer<"sessionClose">>;

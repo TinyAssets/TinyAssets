@@ -3,8 +3,9 @@
  * whole and of known parts, so the doors' tool table and the object's runner read it alone.
  * A row with no argument schema, an unknown class or capability, a runner's step (the
  * owner's, `owner/doors.json`, held by `owner/guards/doors.test.ts`), a tool missing a hint,
- * a tool named twice, a door named twice or one named as RPC reserves is refused when the
- * object's class loads, and here.
+ * a tool named twice, a door named twice, one named as RPC reserves, or a stop (`stop`) not
+ * true or on a door that takes no binding or no request is refused when the object's class
+ * loads, and here.
  *
  * And the door classes the spec names (`owner-object/spec.md`, admission): a billing
  * suspension refuses only `work`, an abuse suspension every door.
@@ -61,6 +62,9 @@ describe("the door table", () => {
     ["a door named twice", [...raw.doors, row("fileStat")]],
     ["a key of no part", changed("fileStat", { owner: "alice" })],
     ["a runner's step, the owner's", changed("fileStat", { gate: "door" })],
+    ["a stop that is not true", changed("codeRun", { stop: false })],
+    ["a stop on a door that takes no binding", changed("sandboxRung", { stop: true })],
+    ["a stop on a door that takes no request", changed("keyList", { stop: true })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
   });

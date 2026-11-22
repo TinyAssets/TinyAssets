@@ -5,11 +5,12 @@
  * `string`. Node runs this file as it is (type stripping). It writes:
  *
  * - `DoorRows`: each door's module, caller and gate (its steps'), which type its handler
- *   (`owner-do.ts`, `DoorsOf`);
+ *   (`owner-do.ts`, `DoorsOf`), and `StopDoors`, those that take their caller's stop;
  * - `DoorMethods`: each door as the object's method, which the object's loop defines on its
  *   prototype from the row at module load: its binding unless its caller is `none`, its
  *   request unless it takes none (optional where the row says an omitted one is empty), its
- *   request and answer its handler's, and its doc the row's tool description.
+ *   caller's stop where its row takes one, its request and answer its handler's, and its doc
+ *   the row's tool description.
  *
  * A door of either half with no match in the other is refused here, as the object's loop
  * refuses it when the class loads.
@@ -31,6 +32,7 @@ function method(row: OwnerRow): string[] {
     ...row.args === "none" ? []
       : [`request${row.args !== "loose" && "omitted" in row.args ? "?" : ""}: ` +
          `RequestIn<H, "${row.door}">`],
+    ...row.stop === true ? ["stop: ReadableStream<Uint8Array>"] : [],
   ];
   const line = `  ${row.door}(${parts.join(", ")}): Promise<AnswerIn<H, "${row.door}">>;`;
   return [...row.tool === undefined ? [] : docLines(row.door, row.tool.description, "  "),
@@ -55,6 +57,13 @@ function mapSource(rows: readonly OwnerRow[]): string {
       `    { readonly module: "${row.handler}"; readonly caller: "${row.caller}"; ` +
         `readonly gate: "${row.gate}" };`]),
     "}",
+    "",
+    "/**",
+    " * The doors that take their caller's stop after their request (their rows' `stop`), each",
+    " * handler handed it as its door's `left`.",
+    " */",
+    `export type StopDoors = ${rows.filter((row) => row.stop === true)
+      .map((row) => `"${row.door}"`).join(" | ") || "never"};`,
     "",
     "/** The handler of `door` in a map of modules' handlers `H`, by its row's module. */",
     "type HandlerIn<H, D extends keyof DoorRows> = DoorRows[D][\"module\"] extends infer M",

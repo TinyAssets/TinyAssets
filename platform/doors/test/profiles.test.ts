@@ -3,13 +3,20 @@
  * the real codemode Worker: each client is served exactly its own grant's profile (`custom`,
  * the owner's own choice, until the owner names `directory`), `code` only while the owner's
  * policy has code mode on (off by default); one `code` call runs a script of several tool
- * calls, and its calls stop once outside access is switched off; a revoked client is
+ * calls, and its calls stop once outside access is switched off; a script is stopped once its
+ * caller stops waiting (an `/api` caller's request aborted, a 2025-11-25 client past
+ * `LEGACY_WAIT_MS` on the fake clock), each while its call is held at the owner gate, so the
+ * stop the doors hand is closed before the object reads it; a revoked client is
  * refused before any tool is listed; an API key is held to its profile at `/api` and `/mcp`
  * as a client is at `/mcp`, and its `code` call at `/api` refused, saying why, while code mode
  * is off.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { until } from "../../ci/workerd";
+import { LEGACY_WAIT_MS } from "../src/mcp";
 
 import { apiKeyOrigin } from "../../contract/src/binding";
 import type { Binding } from "../../contract/src/binding";
@@ -45,6 +52,19 @@ async function listed(tokens: Pick<Tokens, "access_token">): Promise<string[]> {
   const { tools } = await client.listTools();
   await client.close();
   return tools.map((tool) => tool.name);
+}
+
+/** A script of tool calls that ends with its value unless it is stopped first. */
+const FIFTY_CALLS = "for (let n = 0; n < 50; n++) { await tools.agents_list({}); } return 'ran';";
+
+/** The held `codeRun` call at the owner gate, once it is there. */
+async function heldCode(): Promise<number> {
+  let id: number | undefined;
+  await until(async () => {
+    id = (await env.OWNER_GATE.held()).find((held) => held.method === "codeRun")?.id;
+    return id !== undefined;
+  }, "the code call at the gate");
+  return id!;
 }
 
 /** A signed-in owner, and what it changes in its own session. */
@@ -189,6 +209,35 @@ describe("the MCP door's tool profiles", () => {
     await client.close();
   });
 
+  it("stops a 2025-11-25 client's script once its wait is past, its cancel unable to reach",
+     async () => {
+    const o = await signedIn();
+    await o.policy(true);
+    const tokens = await connect(await registerClient(), { owner: o.who });
+    const client = new Client({ name: "test-agent", version: "1.0.0" },
+                              { versionNegotiation: { mode: "legacy" } });
+    await client.connect(new StreamableHTTPClientTransport(new URL(url("/mcp")), {
+      fetch: (input, init) => call(new Request(input, init)),
+      requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } },
+    }));
+    await env.OWNER_GATE.arm({ method: "codeRun", name: o.who, hold: "before" });
+    // The doors' clock is faked: the legacy caller's wait passes while its call is held.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const asked = client.callTool({ name: "code", arguments: { script: FIFTY_CALLS } },
+                                    { timeout: 2 * LEGACY_WAIT_MS });
+      const id = await heldCode();
+      vi.advanceTimersByTime(LEGACY_WAIT_MS);
+      vi.useRealTimers();
+      await env.OWNER_GATE.release(id);
+      expect(answerOf(await asked)).toMatchObject({ ok: false, error: { kind: "stopped" },
+                                                    calls: { ok: 0 } });
+    } finally {
+      vi.useRealTimers();
+      await client.close();
+    }
+  });
+
   it("refuses a revoked client before any tool is listed", async () => {
     const o = await signedIn();
     const registered = await registerClient();
@@ -230,5 +279,30 @@ describe("a key's tool profiles", () => {
     await o.policy(true, ["code"]);
     expect((await api("agents_list", {})).status).toBe(404);
     expect(await listed({ access_token: key })).toEqual(["code"]);
+  });
+
+  it("stops a key's script once its request is aborted", async () => {
+    const o = await signedIn();
+    await o.policy(true);
+    const minted = await appPost("keys", o.app.access_token, o.app.session, {
+      name: "laptop", scopes: [{ universe: "cc", agent: "main", capability: "read_graph" }] });
+    const { key } = await minted.json<{ key: string }>();
+    const ran = (signal: AbortSignal) => call(new Request(url("/api/tools/code"), {
+      method: "POST", body: JSON.stringify({ script: FIFTY_CALLS }), signal,
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" } }));
+    // A caller that waits: its script runs to its value.
+    const waited = await ran(new AbortController().signal);
+    expect(await waited.json()).toMatchObject({ ok: true, value: "ran" });
+    // One that leaves while its call is held on its way to the object: stopped before it
+    // makes a call, answered so (the doors answer once the object does).
+    await env.OWNER_GATE.arm({ method: "codeRun", name: o.who, hold: "before" });
+    const leave = new AbortController();
+    const answered = ran(leave.signal);
+    const id = await heldCode();
+    leave.abort();
+    await env.OWNER_GATE.release(id);
+    expect(await (await answered).json()).toMatchObject({ ok: false, error: {
+      kind: "stopped", message: "the script's caller stopped waiting, so it was stopped" },
+      calls: { ok: 0 } });
   });
 });

@@ -291,6 +291,12 @@ export interface DoorRows {
     { readonly module: "import"; readonly caller: "discard"; readonly gate: "units" };
 }
 
+/**
+ * The doors that take their caller's stop after their request (their rows' `stop`), each
+ * handler handed it as its door's `left`.
+ */
+export type StopDoors = "codeRun";
+
 /** The handler of `door` in a map of modules' handlers `H`, by its row's module. */
 type HandlerIn<H, D extends keyof DoorRows> = DoorRows[D]["module"] extends infer M
   ? M extends keyof H ? D extends keyof H[M] ? H[M][D] : never : never : never;
@@ -513,7 +519,8 @@ export interface DoorMethods<H> {
    * are the effects of the tools it calls. Only while the owner's policy turns code mode on; a
    * script past its time or compute bound is stopped.
    */
-  codeRun(binding: Binding, request: RequestIn<H, "codeRun">): Promise<AnswerIn<H, "codeRun">>;
+  codeRun(binding: Binding, request: RequestIn<H, "codeRun">, stop: ReadableStream<Uint8Array>):
+    Promise<AnswerIn<H, "codeRun">>;
   sessionOpen(binding: Binding): Promise<AnswerIn<H, "sessionOpen">>;
   sessionExtend(binding: Binding): Promise<AnswerIn<H, "sessionExtend">>;
   sessionClose(binding: Binding): Promise<AnswerIn<H, "sessionClose">>;

@@ -68,9 +68,10 @@ end.
   and `CODE_MODE_OFF`, changed together). It probes a script past its
   interrupt budget against the Worker's `cpu_ms`; 10 s of one owner's script compute against
   another owner's; whether `exchange` calls count as subrequests of the owner object or of the
-  code mode Worker; whether pi-codemode's own deadline fires in production while a script calls
-  tools back to back; and, while a script loops tool calls, whether a revoke, an owner app read
-  and the alarm reach the owner object promptly and the script's next call is refused (in
+  code mode Worker; whether a script whose caller waits runs 10 minutes of tool calls back to
+  back, no clock of ours ending it, and whether the owner object's limit on one invocation then
+  binds; whether a script whose caller leaves stops (the owner Worker's log); and, while a
+  script loops tool calls, whether a revoke, an owner app read and the alarm reach the owner object promptly and the script's next call is refused (in
   workerd every other call starved, other owners' objects too); and eight scripts at the VM
   memory cap at once, each ending by its own value or memory alone (`fact15-caps-2.md`).
   Mode `h2` is cutover-only (d3 §A5).

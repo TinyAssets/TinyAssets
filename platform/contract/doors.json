@@ -559,7 +559,7 @@
       }
     },
     {
-      "door": "codeRun", "class": "work", "capability": null,
+      "door": "codeRun", "class": "work", "capability": null, "stop": true,
       "args": {
         "refused": "invalid code request",
         "required": {

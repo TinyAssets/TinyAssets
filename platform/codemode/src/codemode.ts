@@ -4,9 +4,9 @@
  * or engine calls it) runs here, in a Durable Object of a separately deployed Worker, so a
  * script that computes never holds the owner's object (pi measured 10 s in the session
  * object or a Dynamic Worker it loads, about 50 ms here). The owner's `RemoteCodemodeSandbox`
- * keeps the tools, the journal, the deadline and the abort; this object only runs the VM,
- * with pi-codemode's `serveCodemodeRemote`, calling back into the owner through `exchange`
- * for every tool call.
+ * keeps the tools, the journal and the abort (its caller's leaving); this object only runs
+ * the VM, with pi-codemode's `serveCodemodeRemote`, calling back into the owner through
+ * `exchange` for every tool call.
  *
  * Its limits apply to every request, whatever the owner asks, each a ceiling of the Worker's
  * own (`limits-audit.md`). It keeps no state and never touches its storage.

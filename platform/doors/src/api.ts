@@ -51,6 +51,7 @@ export async function serveApi(request: Request, env: DoorsEnv, sources: Sources
     if (args instanceof Response) {
       return args;
     }
-    return answerJson(tool.name, await callDoor(held.stub, held.binding, tool.door, args));
+    return answerJson(tool.name, await callDoor(held.stub, held.binding, tool.door, args,
+                                                request.signal));
   });
 }

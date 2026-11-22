@@ -434,7 +434,8 @@ export function ownBinding(owner: string): Binding {
  */
 export async function ownDoor<D extends DoorName>(owner: string, door: D,
                                                   request?: unknown): Promise<DoorAnswer<D>> {
-  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request);
+  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request,
+                        new AbortController().signal);
 }
 
 /** `owner`'s grants, as its `grantList` door answers them to its own binding. */
@@ -488,7 +489,8 @@ export async function registerAgent(tokens: Tokens, owner: string, delivery_meth
   const { session } = await stub.sessionOpen({ ...ownBinding(owner),
                                                authenticated_at: now() - 5 });
   const registered = await callDoor(stub, { ...ownBinding(owner), session }, "registerAgent",
-                                    { card_id: filed.card_id, digest: filed.digest });
+                                    { card_id: filed.card_id, digest: filed.digest },
+                                    new AbortController().signal);
   return registered.agent_id;
 }
 

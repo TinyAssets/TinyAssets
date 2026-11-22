@@ -135,9 +135,9 @@ technical ceilings, each with its reason. Research first (Fact 14), read at `c21
   drop `egress_reservations` from the `RUNS_CEILING` row's per-run terms, once #5781 merges
   (`untangle/fact15-caps-2`): done after merging main with #5781; the `open` row gains its
   `Share:` clause.
-- [ ] A code mode script's caller leaving reaches it (a stop across the door's call into the
+- [x] A code mode script's caller leaving reaches it (a stop across the door's call into the
   owner's object, as the egress door's end signal), so the wall bound becomes each caller's
-  own wait, researched first (`untangle/code-caller-leaves`).
+  own wait, researched first (`untangle/code-caller-leaves`): done, `code-caller-leaves.md`.
 - [ ] live: H2's probes 1 and 6 hold the interrupt budget's and the VM memory's derivations
   (a tight loop ends `timeout`, never an object reset; eight scripts at the cap each end
   alone), before code mode turns on.

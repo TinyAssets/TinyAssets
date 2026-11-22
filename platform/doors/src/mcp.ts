@@ -47,11 +47,41 @@ import { callDoor } from "./tools";
 
 const SERVER_INFO = Object.freeze({ name: "tinyassets", version: "1.0.0" });
 
-async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallToolResult> {
+/**
+ * How long a 2025-11-25 caller is taken to wait for one tool call, in ms, since its leaving
+ * cannot reach a stateless server: that revision's cancel is a `notifications/cancelled` sent
+ * in a request of its own, which no instance here can match to the call (no session, and
+ * request ids repeat across a grant's clients), and its client's own timeout sends only that,
+ * keeping the call's stream open (MCP SDK 2.4.0's client, probed 2026-11-22). 10 minutes, the
+ * longest a client that may speak it is known to wait (Gemini CLI 0.66.0's
+ * `MCP_DEFAULT_TIMEOUT_MSEC`; the SDK's and pi's 60 s, the connectors' about 5 minutes as
+ * reported), so no such caller is cut while it waits. A 2026-07-28 caller's leaving is its
+ * request's stream closing, which that revision makes its cancel ("Cancellation") and which
+ * reaches the call (`mcpReq.signal`), so its wait is its own.
+ */
+export const LEGACY_WAIT_MS = 600_000;
+
+/**
+ * The caller's leaving, for one tool call (`callDoor`'s `left`): its request ending (the
+ * client's disconnect, or a 2026-07-28 client's cancel), and, for a 2025-11-25 request (the
+ * legacy fallback's, which has no per-request envelope), `LEGACY_WAIT_MS` past its start.
+ */
+function leaving(request: { readonly signal: AbortSignal; readonly envelope?: unknown }):
+    AbortSignal {
+  if (request.envelope !== undefined) {
+    return request.signal;
+  }
+  const waited = new AbortController();
+  setTimeout(() => waited.abort(), LEGACY_WAIT_MS);
+  return AbortSignal.any([request.signal, waited.signal]);
+}
+
+async function called(bound: Bound, tool: Tool, args: unknown, left: AbortSignal):
+    Promise<CallToolResult> {
   let result: unknown;
   try {
     const refused = await answered<CallToolResult | null>(asTool, async () => {
-      result = await callDoor(bound.stub, bound.binding, tool.door, args);
+      result = await callDoor(bound.stub, bound.binding, tool.door, args, left);
       return null;
     });
     if (refused !== null) {
@@ -86,7 +116,7 @@ function server(bound: Bound, tools: readonly Tool[], env: DoorsEnv,
         idempotentHint: tool.idempotentHint,
         openWorldHint: tool.openWorldHint,
       },
-    }, (args: Record<string, unknown>) => called(bound, tool, args));
+    }, (args: Record<string, unknown>, ctx) => called(bound, tool, args, leaving(ctx.mcpReq)));
   }
   serveEvents(mcp, bound, env);
   serveDefinition(mcp, bound);

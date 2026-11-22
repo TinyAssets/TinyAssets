@@ -112,15 +112,15 @@ import { rehearsalRun } from "../../contract/src/import-message";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import { fields, takesRequest } from "../../contract/src/doors";
+import { fields, takesRequest, takesStop } from "../../contract/src/doors";
 import type { DoorMethods } from "./door-map";
 import {
   type Binds, CALLER_BINDINGS, type CallerKind, type OwnerRow, ownerRow, ownerRows, type TakenBy,
 } from "./door-steps";
 import {
   type Account, type Bound, type Call, type Door, type DoorsOf, type DoorUnits, type ImportLine,
-  type LiveSession, type Module, namedOwner, type ObjectReads, type OwnerSelf, type PlatformLine,
-  type Readable, type Units,
+  type Leaving, type LiveSession, type Module, namedOwner, type ObjectReads, type OwnerSelf,
+  type PlatformLine, type Readable, type Units,
 } from "./door";
 import { type Lease, mintProof } from "./proof-mint";
 import type { RunCapability } from "../../contract/src/capabilities";
@@ -916,8 +916,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
           ? function (this: OwnerDO, request: unknown) {
             return this.#leased(row, undefined, request, handler);
           }
-          : function (this: OwnerDO, binding: unknown, request: unknown) {
-            return this.#leased(row, binding, request, handler);
+          : function (this: OwnerDO, binding: unknown, request: unknown, stop?: unknown) {
+            return this.#leased(row, binding, request, handler, stop);
           },
       });
     }
@@ -928,14 +928,29 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * checked in one unit of that gate, or the door, which its handler checks in each unit it
    * makes. A row that takes no request is handed none, whatever came.
    */
-  #leased(row: OwnerRow, binding: unknown, request: unknown, handler: Handled): Promise<unknown> {
+  #leased(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
+          stop?: unknown): Promise<unknown> {
     // Each proof the call's steps mint is live while the call runs, and none once it settled.
     const lease: Lease = { live: true };
+    let leaving: ReadableStreamDefaultReader<Uint8Array> | null = null;
     const end = () => {
       lease.live = false;
+      leaving?.cancel().catch(() => undefined);  // a caller gone has nothing left to read
     };
     try {
-      return this.#call(row, binding, request, handler, lease).finally(end);
+      let left: AbortSignal | null = null;
+      if (takesStop(row)) {
+        // A door that runs while its caller waits: its caller's leaving is its stop's end,
+        // closed by the doors, or broken when their side of the call is gone.
+        if (!(stop instanceof ReadableStream)) {
+          throw new Refusal("invalid", `${row.door} takes its caller's stop`);
+        }
+        const stopped = new AbortController();
+        leaving = stop.getReader();
+        leaving.read().then(() => stopped.abort(), () => stopped.abort());
+        left = stopped.signal;
+      }
+      return this.#call(row, binding, request, handler, lease, left).finally(end);
     } catch (error) {
       end();
       throw error;
@@ -951,17 +966,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    * (`tasks.md`; `r5-decide.md` item 3).
    */
   #call(row: OwnerRow, binding: unknown, request: unknown, handler: Handled,
-        lease: Lease): Promise<unknown> {
+        lease: Lease, left: AbortSignal | null): Promise<unknown> {
     // The request's type is its handler's, held to the row's fields by the runner's fields
     // step at run time, as `tsc` holds the handler to its row at `HANDLERS`.
     const asked = (takesRequest(row) ? request : undefined) as never;
     const act = row.act;
     if (act === undefined || (row.caller !== "account" && row.caller !== "visitors")
         || !this.#actions.ruled(act.name)) {
-      return this.#handled(row, binding, asked, handler, lease);
+      return this.#handled(row, binding, asked, handler, lease, left);
     }
     return this.#door(() => this.#decide(row, act, binding, asked, lease))
-      .then(() => this.#handled(row, binding, asked, handler, lease));
+      .then(() => this.#handled(row, binding, asked, handler, lease, left));
   }
 
   /**
@@ -989,11 +1004,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
   }
 
-  /** The door's handler on its call, by its row's gate. */
+  /**
+   * The door's handler on its call, by its row's gate; a door that takes its caller's stop is
+   * handed its leaving (`left`, a units door: `door-steps.ts`).
+   */
   #handled(row: OwnerRow, binding: unknown, asked: never, handler: Handled,
-           lease: Lease): Promise<unknown> {
+           lease: Lease, left: AbortSignal | null): Promise<unknown> {
     if (row.gate === "units") {
-      const door: Door<never> = {
+      const door: Door<never> & Partial<Leaving> = {
+        ...left === null ? {} : { left },
         request: asked,
         check: () => this.#within(row, binding, asked, lease, (call) => call),
         within: (inner) => this.#within(row, binding, asked, lease, inner),

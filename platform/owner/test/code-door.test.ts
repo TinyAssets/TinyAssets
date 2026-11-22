@@ -6,9 +6,11 @@
  * script calls several tools, each the caller's own door, admitted again against its grant and the
  * control record's gates (the record flipped while a call is held at the FILES gate, the object's
  * clock moved by a fake `Date`); no tool outside the profile and no capability outside the grant; a
- * revoked client and another owner's binding refused; a script past its wall time
- * (`CODEMODE_TIMEOUT_MS`, under a clock that moves a second at each reading) stopped, saying which
- * calls landed; output past one answer cut and said so, a value past it refused `answer_too_large`.
+ * revoked client and another owner's binding refused; a script whose caller stopped waiting (its
+ * stop closed while a call is held at the FILES gate) stopped, saying which calls landed; a call
+ * without its caller's stop refused; output past one answer cut and said so, a value past it
+ * refused `answer_too_large`. That no clock stops a script whose caller waits is the executor's
+ * (`codemode.test.ts`).
  * A script past its compute is the codemode Worker's to stop (`codemode/test/`).
  */
 import { runInDurableObject } from "cloudflare:test";
@@ -19,10 +21,10 @@ import { OPEN_GATES, writeControl } from "../../ci/fixtures";
 import { type ControlStore, MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
 
 import { profileNames } from "../../contract/src/doors";
-import type { Origin } from "../../contract/src/binding";
+import type { Binding, Origin } from "../../contract/src/binding";
 import { jsonBytes } from "../../contract/src/encoded";
 import { PLACE_BYTES } from "../../contract/src/limits";
-import { CODE_ANSWER_TOO_LARGE, CODE_NOT_SERVED, CODEMODE_TIMEOUT_MS } from "../src/codemode";
+import { CODE_ANSWER_TOO_LARGE, CODE_NOT_SERVED } from "../src/codemode";
 import { CONTROL_FRESH_MS, ControlGate, objectKeeper } from "../src/control-gate";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
@@ -66,6 +68,15 @@ async function profiled(r: Rig, origin: Origin, profile: string, mode = "full",
 
 const lines = (...script: string[]): string => script.join("\n");
 
+/**
+ * `codeRun` called as the doors call it, with its caller's stop (`stop`): by default one the
+ * doors never close, a caller that waits for the script's end.
+ */
+function ran(r: Rig, binding: Binding, request: { script: string },
+             stop: ReadableStream<Uint8Array> = new IdentityTransformStream().readable) {
+  return r.stub.codeRun(binding, request, stop);
+}
+
 /** The platform's control record, outside access on, as the founder's admin path writes it. */
 const OPEN = OPEN_GATES;
 
@@ -89,7 +100,7 @@ async function switchedMidScript(r: Rig, meanwhile: () => void) {
     body: "é".repeat(PLACE_BYTES), expected_etag: "", private: false });
   const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
   await files.arm("putChunks", { hold: "before" });
-  const running = r.stub.codeRun(r.bind(MUSE), { script: lines(
+  const running = ran(r, r.bind(MUSE), { script: lines(
     "const seen = [];",
     "for (let n = 0; n < 5; n++) {",
     "  try {",
@@ -116,17 +127,17 @@ describe("the code door", () => {
     const off = { profile: "custom", withheld: ["code"],
                   tools: profileNames("custom").filter((name) => name !== "code") };
     for (const caller of [r.bind(null), r.bind(MUSE)]) {
-      expect((await failure(() => r.stub.codeRun(caller, { script: "return 1;" }))).message)
+      expect((await failure(() => ran(r, caller, { script: "return 1;" }))).message)
         .toBe(CODE_MODE_OFF);
       expect(await r.stub.toolProfile(caller)).toEqual(off);
     }
     await setPolicy(r, true);
     expect(await r.stub.toolProfile(r.bind(MUSE)))
       .toEqual({ profile: "custom", tools: profileNames("custom"), withheld: [] });
-    expect(await r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }))
+    expect(await ran(r, r.bind(MUSE), { script: "return 1;" }))
       .toMatchObject({ ok: true, value: 1 });
     await setPolicy(r, false);
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+    expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(CODE_MODE_OFF);
   });
 
@@ -136,19 +147,19 @@ describe("the code door", () => {
     await profiled(r, MUSE, "directory");
     expect(await r.stub.toolProfile(r.bind(MUSE)))
       .toEqual({ profile: "directory", tools: profileNames("directory"), withheld: [] });
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+    expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(CODE_NOT_SERVED);
     // Code mode off withholds nothing it does not hold: turning it on would not serve it.
     await setPolicy(r, false);
     expect((await r.stub.toolProfile(r.bind(MUSE))).withheld).toEqual([]);
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+    expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(CODE_NOT_SERVED);
     // The owner's custom choice leaves code out.
     await profiled(r, MUSE, "custom");
     await setPolicy(r, true, ["agents_list", "collection_get"]);
     expect((await r.stub.toolProfile(r.bind(MUSE))).tools)
       .toEqual(["agents_list", "collection_get"]);
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+    expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(CODE_NOT_SERVED);
   });
 
@@ -156,7 +167,7 @@ describe("the code door", () => {
     const r = await onRig();
     await r.stub.outsideAgents(r.bind(MUSE));
     await profiled(r, MUSE, "custom");
-    const result = await r.stub.codeRun(r.bind(MUSE), { script: lines(
+    const result = await ran(r, r.bind(MUSE), { script: lines(
       "const put = await tools.collection_write({ collection: 'board', row_id: 'task-1',",
       "  body: 'ship it', expected_etag: '', private: false });",
       "const got = await tools.collection_get({ collection: 'board', row_id: 'task-1' });",
@@ -178,7 +189,7 @@ describe("the code door", () => {
     await setPolicy(r, true, ["code", "collection_get", "collection_write"]);
     await profiled(r, MUSE, "custom", "scoped",
                    [{ universe: "alpha", agent: "main", capability: "read_graph" }]);
-    const result = await r.stub.codeRun(r.bind(MUSE), { script: lines(
+    const result = await ran(r, r.bind(MUSE), { script: lines(
       "const seen = ['file_usage' in tools, 'code' in tools, 'room_post' in tools];",
       "try { tools.file_usage; } catch (error) { seen.push(error.name); }",
       "try {",
@@ -197,41 +208,54 @@ describe("the code door", () => {
     await r.stub.outsideAgents(r.bind(MUSE));
     await profiled(r, MUSE, "custom");
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
-    for (const door of [() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }),
+    for (const door of [() => ran(r, r.bind(MUSE), { script: "return 1;" }),
                         () => r.stub.toolProfile(r.bind(MUSE))]) {
       expect((await failure(door)).message).toBe("outside client revoked");
     }
     const stranger = { ...r.bind(null), owner: "someone-else", caller: "someone-else" };
-    for (const door of [() => r.stub.codeRun(stranger, { script: "return 1;" }),
+    for (const door of [() => ran(r, stranger, { script: "return 1;" }),
                         () => r.stub.toolProfile(stranger)]) {
       expect((await failure(door)).code).toBe("refused");
     }
   });
 
-  it("stops a script past its wall time", async () => {
+  it("stops a script whose caller stopped waiting, saying which calls landed", async () => {
     const r = await onRig();
-    // The object runs in this isolate, so it reads this clock, which moves a second at every
-    // reading: the script's tool calls take it past production's wall time in moments. A
-    // clock that never moved would hold no deadline; one moved by the test could not be,
-    // since a script calling back to back leaves the test's own turn no time to run.
-    let now = Date.now();
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => (now += 1000));
-    const before = Date.now();
-    const looped = await r.stub.codeRun(r.bind(null), { script: lines(
+    await r.stub.collectionWrite(r.bind(null), { collection: "board", row_id: "first",
+      body: "é".repeat(PLACE_BYTES), expected_etag: "", private: false });
+    const files = gateFor(env.FILES_GATE, await spaceOf(r.stub));
+    await files.arm("putChunks", { hold: "before" });
+    const { readable, writable } = new IdentityTransformStream();
+    const running = ran(r, r.bind(null), { script: lines(
       "for (let n = 0; n < 3; n++) {",
       "  await tools.collection_write({ collection: 'board', row_id: 'r' + n, body: 'b',",
       "    expected_etag: '', private: false });",
       "}",
-      "for (;;) { await tools.agents_list({}); }") }).finally(() => clock.mockRestore());
-    // Wall time is the property: the script ran to its deadline, never stopped early, and
-    // was stopped by it, the deadline the code enforces. A script that ran on would hit
-    // this test's class budget instead; no hand number stands in for either.
-    expect(now - before).toBeGreaterThanOrEqual(CODEMODE_TIMEOUT_MS);
-    expect(looped).toMatchObject({ ok: false, error: {
-      kind: "timeout", message: new RegExp(`timed out after ${CODEMODE_TIMEOUT_MS} ms`) } });
-    expect(looped.calls.ok).toBeGreaterThan(1);
-    // Which writes landed before the stop; the reads are only counted.
-    expect(looped.landed).toEqual([{ name: "collection_write", status: "ok", count: 3 }]);
+      "await tools.collection_write({ collection: 'board', row_id: 'placed',",
+      `  body: 'è'.repeat(${PLACE_BYTES}), expected_etag: '', private: false });`,
+      "for (let n = 0; n < 50; n++) { await tools.agents_list({}); }", "return 'ran';") },
+      readable);
+    await files.held("putChunks");
+    // The caller stops waiting while the fourth call is held: the doors close its stop.
+    await writable.getWriter().close();
+    await files.release("putChunks");
+    const stopped = await running;
+    // Stopped by its caller's leaving, never run on: the fifty calls after it were not made.
+    expect(stopped).toMatchObject({ ok: false, error: { kind: "stopped",
+      message: "the script's caller stopped waiting, so it was stopped" },
+      calls: { ok: 3, error: 0, cancelled: 1 } });
+    // The three writes landed; the held one the script stopped waiting for is said so.
+    expect(stopped.landed).toEqual([{ name: "collection_write", status: "ok", count: 3 },
+                                    { name: "collection_write", status: "cancelled", count: 1 }]);
+  });
+
+  it("refuses a call that carries no caller's stop, before any script runs", async () => {
+    const r = await onRig();
+    const stub = r.stub as unknown as { codeRun(...args: unknown[]): Promise<unknown> };
+    for (const stop of [undefined, "stop", {}]) {
+      expect(await failure(() => stub.codeRun(r.bind(null), { script: "return 1;" }, stop)))
+        .toMatchObject({ code: "invalid", message: "codeRun takes its caller's stop" });
+    }
   });
 
   it("takes the owner's custom tools only as distinct names of the door's tools", () => {
@@ -260,7 +284,7 @@ describe("the code door", () => {
       .row).toBeNull();
     // The record off at the start refuses the call itself, for the moment, as a closed gate
     // is refused at every door.
-    const closed = await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }));
+    const closed = await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" }));
     expect([closed.code, closed.message]).toEqual(["unavailable", OUTSIDE_OFF]);
   });
 
@@ -273,13 +297,13 @@ describe("the code door", () => {
       "await tools.collection_write({ collection: 'board', row_id: 'own', body: 'b',",
       "  expected_etag: '', private: false });",
       "return 1;");
-    expect(await r.stub.codeRun(r.bind(null), { script })).toMatchObject({ ok: true, value: 1,
+    expect(await ran(r, r.bind(null), { script })).toMatchObject({ ok: true, value: 1,
       landed: [{ name: "collection_write", status: "ok", count: 1 }] });
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+    expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
     // The maintenance gate closed refuses the owner's own.
     await writeControl(env.CONTROL, JSON.stringify({ ...OPEN, ordinary: "none" }));
-    const closed = await failure(() => r.stub.codeRun(r.bind(null), { script }));
+    const closed = await failure(() => ran(r, r.bind(null), { script }));
     expect([closed.code, closed.message]).toEqual(["unavailable", MAINTENANCE]);
   });
 
@@ -300,14 +324,14 @@ describe("the code door", () => {
     expect(await gates(env.OWNER.getByName(unread), unread))
       .toEqual([OUTSIDE_OFF, MAINTENANCE, undefined]);
     const r = await onRig();
-    expect(await r.stub.codeRun(r.bind(MUSE), { script: "return 1;" }))
+    expect(await ran(r, r.bind(MUSE), { script: "return 1;" }))
       .toMatchObject({ ok: true, value: 1 });
     // The door's read kept: the copy admits as the record did, and hands no switches to keep.
     expect(await gates(r.stub, r.owner)).toEqual([null, null, undefined]);
     // A kill flipped before the outage holds through it.
     await writeControl(env.CONTROL, { ...OPEN, outside: "off" });
     later(CONTROL_FRESH_MS / 1000 + 1);
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+    expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
     expect(await gates(r.stub, r.owner)).toEqual([OUTSIDE_OFF, null, undefined]);
   });
@@ -323,14 +347,14 @@ describe("the code door", () => {
     expect(result).toMatchObject({ ok: true, value: ["ok", "ok", "ok", "ok", "ok"],
       landed: [{ name: "collection_write", status: "ok", count: 5 }] });
     later(CONTROL_FRESH_MS / 1000 + 1);
-    expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
+    expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
   });
 
   it("cuts output past one answer, saying so, and refuses only a value past it", async () => {
     const r = await onRig();
     // A value past one answer alone: refused, its calls and what landed kept.
-    const value = await r.stub.codeRun(r.bind(null), { script: lines(
+    const value = await ran(r, r.bind(null), { script: lines(
       "await tools.collection_write({ collection: 'board', row_id: 'big', body: 'b',",
       "  expected_etag: '', private: false });",
       `return '\\u0001'.repeat(${Math.ceil(PAGE_BYTES / 6)});`) });
@@ -339,13 +363,13 @@ describe("the code door", () => {
                             output: [], calls: { ok: 1, error: 0, cancelled: 0 },
                             landed: [{ name: "collection_write", status: "ok", count: 1 }] });
     // Output past it: the value whole, the output's first item cut at a character, said so.
-    const output = await r.stub.codeRun(r.bind(null), { script: lines(
+    const output = await ran(r, r.bind(null), { script: lines(
       `text('x'.repeat(${PAGE_BYTES}));`, "text('after');", "return 1;") });
     expect(output).toMatchObject({ ok: true, value: 1, output_cut: { items: 2, kept: 0 } });
     expect(jsonBytes(output)).toBeLessThanOrEqual(PAGE_BYTES);
     expect((output as { output: { text: string }[] }).output[0]!.text.length)
       .toBeGreaterThan(PAGE_BYTES - 1000);
-    const within = await r.stub.codeRun(r.bind(null), { script:
+    const within = await ran(r, r.bind(null), { script:
       `return 'x'.repeat(${PAGE_BYTES - 1000}).length;` });
     expect(within).toMatchObject({ ok: true, value: PAGE_BYTES - 1000 });
     expect(within).not.toHaveProperty("output_cut");
