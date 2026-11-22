@@ -101,6 +101,9 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
   its own key grammar (`KEY_MIN_BYTES`, base64url) beside the rings'.
 - `tokenShaped` had no caller (dead code).
 - The sandbox Worker's list of an owner's sandboxes held E2B's paging; the kit had none.
+- Found merging #5782: `--rotate` took a name no Worker holds and did nothing (a swallowed
+  input), so `rotate: ROUTING_MAC_KEY` after this rename, or any typo, deployed with no secret
+  set and no word of it; #5782's own rollback test rotated the old name so.
 
 ### The fix
 
@@ -121,7 +124,8 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
    the deployed ring's kids. Mode `rotation` refuses it by name. `keyring-stage` adds a kid
    without making it active and `keyring-activate` makes the newest active, for the two-deploy
    rotation (research 5). The E2B list with its paging is the transport's (`sandboxes`), read by
-   the sandbox Worker's erasure and the kit.
+   the sandbox Worker's erasure and the kit. `parse` refuses a `--rotate` name no Worker holds
+   (`SECRETS`), before any step.
 4. **Docs:** the checklist's rotation and retirement steps for `ROUTING_KEYRING`; the workflow's
    notes and dispatch descriptions; the doors spec's token format.
 

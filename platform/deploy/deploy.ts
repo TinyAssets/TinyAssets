@@ -29,6 +29,11 @@
  *   the record. Each is held to the record before any
  *   change too: anything changed since `routes` stops it, named. The handles canary follows
  *   the old stack's restart, so the run ends saying where it runs.
+ * - `rollback`: the rollout record `--record` names, which `dark` and `routes` keep before
+ *   their first Worker deploy (`RolloutRecord`): the run's Workers taken back to the versions
+ *   they served before it, callers first, each read back, stopping at the first the run made
+ *   forward-only (`forwardOnly`); each held to the record before any change. Its routes are
+ *   `handback`'s.
  * - `h2`: H2's probes alone, once a probe owner exists.
  * - `pair`: the pinned template with the runner this checkout ships and the probes beside
  *   it, checked together on throwaway sandboxes unless E2B already holds their pair's tag
@@ -112,6 +117,8 @@
  * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it,
  *   which never touches a route; `--migrate` names a Worker with a pending Durable Object
  *   migration to deploy whole; each version is tagged with the commit and its locks' counts;
+ *   nothing is deployed, and no secret set by `retire`, on a Worker serving two versions (a
+ *   split), and a deploy records the one each serves first (`rollout`);
  * - a retired Worker (`platform.json`) is deleted, with its Durable Objects, only after every
  *   Worker is deployed and only when the account's Workers listing holds it, never forced:
  *   Cloudflare refuses while another Worker still references it. It is the one way the kit
@@ -173,7 +180,7 @@ import {
 import { type JobRun, maskLine, runOf, set, summarize, TOKEN } from "./actions.ts";
 import {
   BATCH, Cloudflare, describeBack, describeStep, type DnsRecord, drift, handback, handover, type Kept,
-  type LockRule, type Moved, narrower, type Route, type RouteChange, unlike,
+  type LockRule, type Moved, narrower, type Route, type RouteChange, type Serving, unlike,
 } from "./cloudflare.ts";
 import {
   AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, FILES_BUCKET,
@@ -246,8 +253,8 @@ export const IO: Io = Object.freeze({
   sleep: (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }),
 });
 
-export type Mode = "plan" | "dark" | "routes" | "h2" | "pair" | "handback" | "control"
-  | "owner" | "restore" | "copyback" | "recover" | "erase" | "rotation" | "retire";
+export type Mode = "plan" | "dark" | "routes" | "h2" | "pair" | "handback" | "rollback"
+  | "control" | "owner" | "restore" | "copyback" | "recover" | "erase" | "rotation" | "retire";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -265,7 +272,10 @@ export interface Run {
   readonly plan: string | null;
   /** The workflow run this is (`actions.ts` `runOf`), read once, as the run began. */
   readonly job: JobRun;
-  /** `--record`: the id of the route record `handback` hands back. */
+  /**
+   * `--record`: the run id of the route record `handback` hands back, or of the rollout record
+   * `rollback` rolls back.
+   */
   readonly record: string | null;
   /** `--set`: `control`'s edits of the control record, in order. */
   readonly edits: readonly Edit[];
@@ -456,9 +466,29 @@ export function lockCounts(worker: string, run: Run): Record<string, number> {
  * message, the whole commit.
  */
 function versionFlags(commit: string, counts: Readonly<Record<string, number>>): string[] {
-  const pinned = Object.keys(counts).sort().map((path) => counts[path]);
-  return ["--tag", `${commit.slice(0, 12)}${pinned.length === 0 ? "" : `-m${pinned.join(".")}`}`,
+  const pinned = pinnedCounts(counts);
+  return ["--tag", `${tagCommit(commit)}${pinned.length === 0 ? "" : `-m${pinned.join(".")}`}`,
           "--message", commit];
+}
+
+/** The part of `commit` a version's tag names it by: its first 12 digits. */
+function tagCommit(commit: string): string {
+  return commit.slice(0, 12);
+}
+
+/** Each lock's count, in its path's order: a tag's `-m` part. */
+function pinnedCounts(counts: Readonly<Record<string, number>>): number[] {
+  return Object.keys(counts).sort().map((path) => counts[path]!);
+}
+
+/**
+ * A version's tag as `versionFlags` writes it, read back: the commit's digits it names, and
+ * the counts after its `-m` (null when it names none). Null for a tag it did not write.
+ */
+function taggedAs(tag: string | null): { commit: string; counts: number[] | null } | null {
+  const parts = tag === null ? null : /^([0-9a-f]{12})(?:-m(\d+(?:\.\d+)*))?$/.exec(tag);
+  return parts === null ? null
+    : { commit: parts[1]!, counts: parts[2] === undefined ? null : parts[2].split(".").map(Number) };
 }
 
 // --- WorkOS and the owner issuer --------------------------------------------------------
@@ -1062,6 +1092,130 @@ async function placedBefore({ cloudflare, zone: id }: Pick<Values, "cloudflare" 
   return records;
 }
 
+// --- The rollout record -----------------------------------------------------------------
+
+/**
+ * What a deploy (`dark`, `routes`) keeps before its first Worker deploy, so mode `rollback`
+ * can take the run's Workers back: each Worker in the run's deploy order with the version it
+ * served before (none for a first deploy) and that version's tag, and what the run's version
+ * of it carries that a version before cannot take back (`forwardOnly`): its locks' counts, a
+ * whole deploy (`--migrate`), and the names of the secrets the run sets on it. The run's own
+ * versions are known by their tag, the run's commit (`versionFlags`). It holds no secret and
+ * not the account id, beside the route record in the control namespace, under the run's id,
+ * which a re-run attempt keeps; the job summary names it.
+ */
+export interface RolloutRecord {
+  readonly kind: typeof ROLLOUT_KIND;
+  readonly run: string;
+  readonly attempt: string | null;
+  readonly at: string;
+  readonly commit: string;
+  readonly workers: readonly Rolled[];
+}
+
+/** One Worker of a rollout record (`RolloutRecord`). */
+export interface Rolled {
+  /** Its script name. */
+  readonly name: string;
+  /** The version it served before the run, and that version's tag; null for a first deploy. */
+  readonly before: { readonly version: string; readonly tag: string | null } | null;
+  /** The run's version's locks' counts, by lock path (`lockCounts`). */
+  readonly counts: Readonly<Record<string, number>>;
+  /** Whether the run deployed it whole (`--migrate`). */
+  readonly whole: boolean;
+  /** The secrets the run set on it, by name. */
+  readonly secrets: readonly string[];
+}
+
+const ROLLOUT_KIND = "tinyassets-rollout";
+/** A rollout record's key in the control namespace, after its run's id. */
+const ROLLOUT_PREFIX = "deploy:rollout:";
+
+/**
+ * Why a rollback may not take `rolled` back to the version it served before the run, or null
+ * when it may: the version before is none (a first deploy); the run deployed it whole (a
+ * Durable Object class change, which Cloudflare rolls back across never); the run set its
+ * secrets, which the version before holds otherwise (Cloudflare refuses that deployment, 10220,
+ * and the kit never forces one); or the run's locks pin more migrations than the version
+ * before's tag names, so every object the newer one migrated would refuse to start on it
+ * (`contract/src/migrate.ts`), or its tag names none to hold them to: unknown.
+ */
+export function forwardOnly(rolled: Rolled): string | null {
+  if (rolled.before === null) {
+    return "the run deployed it first: no version comes before it";
+  }
+  if (rolled.whole) {
+    return "the run deployed it whole (--migrate), and Cloudflare rolls back across no " +
+           "Durable Object class change";
+  }
+  if (rolled.secrets.length > 0) {
+    return `the run set ${rolled.secrets.join(", ")} on it, which its version before holds ` +
+           "otherwise (Cloudflare refuses that rollback, and the kit never forces one)";
+  }
+  const pinned = pinnedCounts(rolled.counts);
+  if (pinned.length === 0) {
+    return null;
+  }
+  const tagged = taggedAs(rolled.before.tag)?.counts ?? null;
+  if (tagged === null || tagged.length !== pinned.length) {
+    return `its version before is tagged ${rolled.before.tag ?? "with nothing"}, which names no ` +
+           `migration counts to hold the run's -m${pinned.join(".")} to: unknown`;
+  }
+  return pinned.some((count, at) => count > tagged[at]!)
+    ? `the run's version pins -m${pinned.join(".")} and its version before -m${
+      tagged.join(".")}: every object the newer one migrated would refuse to start on it`
+    : null;
+}
+
+/** What `rolled`'s line of a deploy's plan says: where it stands, and where a rollback stops. */
+function rolledLine(rolled: Rolled): string {
+  if (rolled.before === null) {
+    return `${rolled.name}: deployed by this run first, so a rollback stops at it`;
+  }
+  const reason = forwardOnly(rolled);
+  return `${rolled.name}: serving ${rolled.before.version} (${rolled.before.tag ?? "untagged"}); ` +
+         `a rollback ${reason === null ? "takes it back there" : `stops at it: ${reason}`}`;
+}
+
+/** Whether `value` is a list of strings, each once. */
+function onceEach(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((each) => typeof each === "string")
+    && new Set(value).size === value.length;
+}
+
+/**
+ * `value`, as KV holds the record `key`, read as a rollout record: its every field in shape,
+ * each Worker once. Anything else throws: a bad record is never rolled back.
+ */
+export function rolloutOf(value: unknown, key: string): RolloutRecord {
+  const bad = (why: string) => new Error(`the record ${key} ${why}: nothing is changed`);
+  const held = value as Partial<Record<keyof RolloutRecord, unknown>> | null;
+  if (typeof held !== "object" || held === null || held.kind !== ROLLOUT_KIND) {
+    throw bad("is not a rollout record");
+  }
+  if (typeof held.run !== "string" || typeof held.at !== "string"
+      || !(held.attempt === null || typeof held.attempt === "string")
+      || typeof held.commit !== "string" || !/^[0-9a-f]{40}$/.test(held.commit)
+      || !Array.isArray(held.workers)) {
+    throw bad("is out of shape");
+  }
+  for (const each of held.workers as Partial<Record<keyof Rolled, unknown>>[]) {
+    const before = each?.before as Partial<Record<"version" | "tag", unknown>> | null | undefined;
+    const counts = each?.counts as Record<string, unknown> | null | undefined;
+    if (typeof each?.name !== "string" || typeof each.whole !== "boolean" || !onceEach(each.secrets)
+        || !(before === null || (typeof before === "object" && typeof before.version === "string"
+          && (before.tag === null || typeof before.tag === "string")))
+        || typeof counts !== "object" || counts === null
+        || !Object.values(counts).every((count) => Number.isInteger(count) && Number(count) >= 0)) {
+      throw bad(`holds a Worker out of shape (${JSON.stringify(each)})`);
+    }
+  }
+  if (!onceEach((held.workers as Rolled[]).map((each) => each.name))) {
+    throw bad("holds a Worker twice");
+  }
+  return held as RolloutRecord;
+}
+
 // --- The steps --------------------------------------------------------------------------
 
 /** No Worker deploys a migration its lock does not pin, checked before anything is changed. */
@@ -1419,6 +1573,55 @@ const secrets = step<Secrets | "hook", "deployed" | "setting">((ctx, got) =>
     ? new Set([...ctx.run.rotate, E2B_HOOK.secret]) : ctx.run.rotate));
 const secretsLater = step<Secrets, "deployed" | "setting">((ctx, got) =>
   setSecrets(ctx, got, null, ctx.run.rotate));
+
+/**
+ * The rollout record (`RolloutRecord`), kept before the first Worker deploy: each Worker the
+ * account's Workers listing holds read as the one version it serves, and that version's tag.
+ * A Worker that serves two (a split) stops the run before any deploy (`Cloudflare.serving`).
+ * Written on an applied run when the run's record is not there yet, and kept as it is when it
+ * is (a re-run attempt keeps the versions its first attempt read); a refused write stops the
+ * run before any deploy. The plan names, Worker by Worker, where a rollback of the run stops.
+ */
+const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" | "migrations">(
+  async ({ run, say, summarize: add }, got) => {
+    const title = NAMESPACES["CONTROL"]!;
+    const key = `${ROLLOUT_PREFIX}${run.job.id}`;
+    const namespace = got.ids["CONTROL"];
+    const workers: Rolled[] = [];
+    for (const worker of WORKERS) {
+      const name = NAMES[worker]!;
+      let before: Rolled["before"] = null;
+      if (got.deployed.includes(name)) {
+        const version = await got.cloudflare.serving(got.account, name);
+        before = { version, tag: await got.cloudflare.tag(got.account, name, version) };
+      }
+      workers.push({ name, before, counts: got.migrations[worker] ?? {},
+                     whole: run.migrate.has(worker),
+                     secrets: got.setting.filter((each) => each.worker === worker)
+                       .map((each) => each.name) });
+    }
+    // Read after the split check, so a re-run attempt stops on a split as its first would.
+    const held = namespace === undefined ? undefined
+      : await got.cloudflare.value(got.account, namespace, key);
+    if (held !== undefined) {
+      const record = rolloutOf(held, key);
+      say(`keep this run's rollout record as attempt ${record.attempt ?? "-"} wrote it at ` +
+          `${record.at}, before its first deploy: roll back with --mode rollback --record ` +
+          "<this run's id>");
+      return;
+    }
+    say(`record each Worker's version as this run's rollout record in ${title}, before its ` +
+        "first deploy: roll back with --mode rollback --record <this run's id>",
+        ...workers.map(rolledLine));
+    if (!run.apply) {
+      return;
+    }
+    const record: RolloutRecord = { kind: ROLLOUT_KIND, run: run.job.id, attempt: run.job.attempt,
+                                    at: run.io.now().toISOString(), commit: run.io.commit(),
+                                    workers };
+    await putOrStop(got, namespace!, key, JSON.stringify(record));
+    add(`Rollout record ${key}:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
+  });
 
 /**
  * Each Worker deployed, bound first, touching no route. A first deploy (the account's Workers
@@ -2214,6 +2417,8 @@ const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say 
       throw new Error(`${NAMES[worker]} holds no ${name}: retire only shrinks a deployed ring; ` +
                       "nothing is changed");
     }
+    // `wrangler secret put` deploys the version it makes at once: a holder mid-split stops it.
+    await got.cloudflare.serving(got.account, NAMES[worker]!);
   }
   if (run.confirm === null) {
     say(`retire ${retiring} from ${name} only with its words: keep the old ring file ` +
@@ -2554,6 +2759,114 @@ const canaryAfter = step(({ run }) => {
              "(handles-canary.yml), the old stack's own check of its handle set.");
 });
 
+/** The versions a Worker serves, as a rollback's plan names them: each id, tag and share. */
+function versionLine(serving: readonly (Serving & { readonly tag: string | null })[]): string {
+  return serving.map((each) => `${each.version} (${each.tag ?? "untagged"}) at ${
+    each.percentage}%`).join(" and ");
+}
+
+/**
+ * Mode `rollback`: the rollout record `--record` names (`RolloutRecord`), its run's Workers
+ * taken back to the versions they served before it, in the reverse of its deploy order, each
+ * a deployment of that version alone (`Cloudflare.deploy`), read back. So, as in the middle of
+ * every deploy, the Workers a caller binds are never older than it. It stops at the first
+ * Worker the run made forward-only (`forwardOnly`): that one and every Worker before it stay
+ * on the run's versions, each named, and with none to take back the run stops before any
+ * change. Each is held to the record first: every version it serves is the one before or one
+ * tagged with the run's commit (a split of the two, which a run stopped mid-rollout leaves,
+ * included), and anything else (a deploy since) stops it, named, with nothing changed; so
+ * does a record whose tag before or counts are not Cloudflare's tags.
+ */
+const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const title = NAMESPACES["CONTROL"]!;
+  const key = `${ROLLOUT_PREFIX}${run.record}`;
+  const namespace = await controlNamespace(got.cloudflare, got.account);
+  const value = namespace === undefined ? undefined
+    : await got.cloudflare.value(got.account, namespace, key);
+  if (value === undefined) {
+    throw new Error(`there is no rollout record ${key} in ${title}: name the id a dark or ` +
+                    "routes run's job summary gives; nothing is changed");
+  }
+  const record = rolloutOf(value, key);
+  const ours = tagCommit(record.commit);
+  const back: Rolled[] = [];
+  const lines: string[] = [];
+  const drifted: string[] = [];
+  let stop: { name: string; reason: string } | null = null;
+  for (const rolled of [...record.workers].reverse()) {
+    const serving = [];
+    for (const each of await got.cloudflare.deployment(got.account, rolled.name)) {
+      serving.push({ ...each, tag: await got.cloudflare.tag(got.account, rolled.name,
+                                                            each.version) });
+    }
+    const unknown = serving.filter((each) => each.version !== rolled.before?.version
+      && taggedAs(each.tag)?.commit !== ours);
+    if (serving.length === 0 || unknown.length > 0) {
+      drifted.push(`${rolled.name} serves ${serving.length === 0 ? "no deployment"
+        : versionLine(serving)}, neither its version before the run nor one of commit ${ours}`);
+      continue;
+    }
+    // What `forwardOnly` reads, held to Cloudflare's tags, which only the deploy's token
+    // writes: the record's namespace is bound, writable, by the doors, owner and sandbox.
+    const pinned = pinnedCounts(rolled.counts).join(".");
+    const tagBefore = rolled.before === null ? null
+      : serving.find((each) => each.version === rolled.before!.version)?.tag
+        ?? await got.cloudflare.tag(got.account, rolled.name, rolled.before.version);
+    if (tagBefore !== (rolled.before?.tag ?? null) || serving.some((each) =>
+      each.version !== rolled.before?.version
+        && (taggedAs(each.tag)?.counts ?? []).join(".") !== pinned)) {
+      throw new Error(`the record ${key} holds ${rolled.name} as before ${
+        rolled.before?.tag ?? "untagged"}, counts -m${pinned}, and Cloudflare tags its version ` +
+        `before ${tagBefore ?? "untagged"} and serves ${versionLine(serving)}: nothing is changed`);
+    }
+    if (serving.length === 1 && serving[0]!.version === rolled.before?.version) {
+      lines.push(`${rolled.name} serves its version before the run already, ${
+        versionLine(serving)}`);
+      continue;
+    }
+    if (stop === null) {
+      const reason = forwardOnly(rolled);
+      stop = reason === null ? null : { name: rolled.name, reason };
+    }
+    if (stop !== null) {
+      lines.push(`leave ${rolled.name} on ${versionLine(serving)}: ${rolled.name === stop.name
+        ? stop.reason : `it comes before ${stop.name} in the deploy order, and ${stop.name} ` +
+          "stays on the run's version"}`);
+      continue;
+    }
+    back.push(rolled);
+    lines.push(`roll ${rolled.name} back to ${rolled.before!.version} (${
+      rolled.before!.tag ?? "untagged"}) at 100%, from ${versionLine(serving)}`);
+  }
+  if (drifted.length > 0) {
+    throw new Error(`deployed since run ${record.run}, so nothing is rolled back: ${
+      drifted.join("; ")}`);
+  }
+  say(`the rollout record ${key}: the ${record.workers.length} Workers run ${record.run} ` +
+      `deployed at ${record.at}, taken back in the reverse of its deploy order`, ...lines);
+  if (back.length === 0 && stop !== null) {
+    throw new Error(`nothing can be rolled back: ${stop.name} stays on run ${record.run}'s ` +
+                    `version (${stop.reason}). Roll forward with a fix, or close the control ` +
+                    "record's gates (--mode control); nothing is changed");
+  }
+  if (!run.apply) {
+    return;
+  }
+  for (const rolled of back) {
+    await got.cloudflare.deploy(got.account, rolled.name, rolled.before!.version);
+    const now = await got.cloudflare.deployment(got.account, rolled.name);
+    if (now.length !== 1 || now[0]!.version !== rolled.before!.version
+        || now[0]!.percentage !== 100) {
+      throw new Error(`${rolled.name}'s deployment read back as ${now.map((each) =>
+        `${each.version} at ${each.percentage}%`).join(" and ") || "none"}, not ${
+        rolled.before!.version} at 100%: the rollback stops here`);
+    }
+  }
+  say(back.length === 0 ? "every Worker serves its version before the run already"
+    : `read each Worker's deployment back: ${back.map((each) => each.name).join(", ")} ` +
+      "serve their versions before the run");
+});
+
 // --- The modes --------------------------------------------------------------------------
 
 /**
@@ -2592,13 +2905,16 @@ const READS_LATER = Steps.none.then(locks).then(zone).then(upstream).then(templa
 const READS = Steps.none.then(locks).then(zone).then(upstream).then(e2b).then(templateReady)
   .then(pairReady).then(hookListed);
 
-/** A dark run: the checks and WorkOS's, then storage, secrets, Workers and the control record. */
+/**
+ * A dark run: the checks and WorkOS's, then storage, secrets, the rollout record, Workers and
+ * the control record.
+ */
 const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(workers).then(retired)
-  .then(control).then(hookLater);
+  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(workers)
+  .then(retired).then(control).then(hookLater);
 const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secrets).then(workers).then(retired)
-  .then(control).then(hook(false, ""));
+  .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(workers)
+  .then(retired).then(control).then(hook(false, ""));
 
 /**
  * A routes run: the route plan read and its record kept before the first change, then the
@@ -2607,12 +2923,12 @@ const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
  */
 const ROUTES_LATER = READS_LATER.then(routePlan).then(recordedLater).then(hostRecord)
   .then(redirectLater).then(authorize).then(namespaces).then(buckets).then(bucketLocks)
-  .then(queues).then(staged).then(secretsLater).then(workers).then(retired).then(control)
-  .then(hookLater).then(handOver).then(customDomain);
+  .then(queues).then(staged).then(secretsLater).then(rollout).then(workers).then(retired)
+  .then(control).then(hookLater).then(handOver).then(customDomain);
 const ROUTED = READS.then(routePlan).then(recorded).then(hostRecord).then(redirect)
   .then(authorize).then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged)
-  .then(secrets).then(workers).then(retired).then(control).then(handOver).then(customDomain)
-  .then(hook(true, ", after the routes"));
+  .then(secrets).then(rollout).then(workers).then(retired).then(control).then(handOver)
+  .then(customDomain).then(hook(true, ", after the routes"));
 
 /** A handback: a routes run's record read, held to the zone, handed back and read back. */
 const HANDBACK_LATER = Steps.none.then(zone).then(recordRead).then(backPlan).then(hookBackLater)
@@ -2629,6 +2945,7 @@ const RECOVER = Steps.none.then(zone).then(recoverAsk).list;
 const ERASE = Steps.none.then(zone).then(eraseAsk).list;
 const ROTATION = Steps.none.then(zone).then(rotationSweep).list;
 const RETIRE = Steps.none.then(zone).then(retireAsk).list;
+const ROLLBACK = Steps.none.then(zone).then(rollbackAsk).list;
 
 /** What the plan job holds: the Cloudflare token, its one `production` secret, and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
@@ -2672,6 +2989,13 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     deploys: false, applies: true, own: ["--record"],
     steps: { public: HANDBACK_LATER.list, secrets: HANDBACK.list },
     report: { unchanged: NOTHING, after: [canaryAfter] },
+  },
+  // Read and deployed with the Cloudflare token alone; the canary follows, as after a deploy.
+  rollback: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [], optional: [] },
+    deploys: false, applies: true, own: ["--record"],
+    steps: { public: ROLLBACK, secrets: ROLLBACK },
+    report: { unchanged: NOTHING, after: [canary()] },
   },
   // The control record, read and written with the Cloudflare token alone: the plan job reads
   // it too.
@@ -2919,8 +3243,9 @@ function names(argv: readonly string[], name: string): ReadonlySet<string> {
  * that reads it needs it.
  */
 const OWN = Object.freeze({
-  "--record": { names: "the routes run's record to hand back, by the run id its job summary " +
-                       "names (letters, digits and -)", needed: true },
+  "--record": { names: "the record to hand back (a routes run's) or roll back (a dark or " +
+                       "routes run's), by the run id its job summary names (letters, digits " +
+                       "and -)", needed: true },
   "--set": { names: "the control record's edits", needed: false },
   "--replace": { names: "the whole control record, as JSON, that the edits start from in " +
                         "place of the live one", needed: false },
@@ -3042,6 +3367,12 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
       if (!MIGRATES.includes(worker)) {
         throw new Error(`${worker} holds no Durable Object migration: --migrate names only ${
           MIGRATES.join(", ")}`);
+      }
+    }
+    const held = new Set(Object.values(SECRETS).flat());
+    for (const name of run.rotate) {
+      if (!held.has(name)) {
+        throw new Error(`no Worker holds ${name}: --rotate names only ${[...held].join(", ")}`);
       }
     }
     if (!row.deploys && (run.rotate.size > 0 || run.migrate.size > 0)) {

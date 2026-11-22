@@ -116,6 +116,11 @@ describe("a sealed route", () => {
     for (const held of [ring("k2", ["k1", "k2"]), ring("k1", ["k1"])]) {
       expect(await openRoute(held, sealed)).toEqual({ owner: "user_a", authority: "owner" });
     }
+    const newer = await sealRoute(ring("k2", ["k1", "k2"]), { owner: "user_a",
+                                                               authority: "owner" });
+    expect(newer.split(".")[1]).toBe("k2");
+    expect(await openRoute(ring("k2", ["k2"]), newer)).toEqual({ owner: "user_a",
+                                                                 authority: "owner" });
     // A ring that no longer holds its kid, or holds another key under it, opens nothing.
     expect(await openRoute(ring("k2", ["k2"]), sealed)).toBeNull();
     expect(await openRoute(ringText({ active: "k1", keys: new Map([["k1",

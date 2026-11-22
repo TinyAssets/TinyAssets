@@ -140,6 +140,13 @@ It never counts as "absent".
    path, `-m2.1`), its message the whole commit: a rollback to a version whose counts are
    lower strands every object the newer one migrated. The doors name the version serving each
    answer in `x-tinyassets-version`.
+
+   Before the first of them, the run keeps a **rollout record**, `deploy:rollout:<run id>` in
+   the control namespace (a copy in the job summary): each Worker's version before the run
+   and that version's tag, and what the run's version carries that the one before cannot
+   take back. Its plan says, Worker by Worker, where a `rollback` of the run would stop. A
+   Worker serving two versions (a split, which only the dashboard makes today) stops the
+   run before any deploy: end the split first.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
@@ -281,6 +288,38 @@ It never counts as "absent".
 
   It leaves what `dark` made: storage, secrets, the Workers, the control record and the
   WorkOS redirect URI. They serve no one without the routes, the domain and the hook.
+- **Mode `rollback`: a deploy's Workers taken back.** Dispatch it with `record` set to the
+  id a `dark` or `routes` run's summary names. Its plan job reads the rollout record and
+  each Worker's deployment and changes nothing. The apply job takes the Workers back to the
+  versions they served before the run, callers first (the doors, then the owner, ...), each
+  a deployment of that one version, read back, then runs the canary. It touches no route
+  (that is `handback`'s), no secret and no storage. It stops at the first Worker the run made
+  **forward-only**, which stays on the run's version with every Worker before it in the
+  deploy order, each named:
+  - the run deployed it first, or whole (`migrate`): there is no version to go back to, or
+    Cloudflare rolls back across no Durable Object class change;
+  - the run set its secrets: its version before holds the old values, and Cloudflare
+    refuses that deployment (10220) unless forced, which the kit never does;
+  - its version's `-m` counts are higher than its version before's tag names, or that tag
+    names none: every object the newer version migrated would refuse to start.
+
+  With no Worker to take back it changes nothing. Then roll forward with a fix, or close
+  the gates (mode `control`). Before any change it holds each Worker to the record: a
+  version neither the one before nor one tagged with the run's commit (a deploy since)
+  stops it, named, and so does a record whose tags or counts differ from Cloudflare's.
+
+  **What it cannot see: read the run's diff before you approve the apply job.** A version
+  that writes a shape its version before cannot read, with no migration (a KV value, an R2
+  object, a queue message, Durable Object storage outside `migrate.ts`, JSON in a column),
+  or that sandboxes it started or open browsers speak to in a way the version before cannot,
+  is forward-only too, and nothing marks it yet. Roll forward instead. Hold each version the
+  plan names to the run's job summary copy of the record: other Workers can write the KV one.
+
+  **A rollback by hand** (the dashboard's Deployments, Rollback, from a phone) follows the
+  same rules, which Cloudflare cannot know: never to a version whose tag's `-m` counts are
+  lower than the live version's, nor past a run that set the Worker's secrets (the dashboard
+  asks to confirm changed secrets: refuse), and callers first, the doors before the owner.
+  The run's rollout record names each version before.
 - **The platform's canary** (Fact 11, d3 §J2): `deploy/canary.ts`, run by **Platform canary**
   (`platform-canary.yml`) and by the kit after each mode. It checks the platform from
   outside, through the public routes, and changes nothing but one file in the canary owner's
@@ -642,7 +681,11 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
    printf %s "$k" | npx wrangler secret put IMPORT_KEY --config doors/wrangler.jsonc
    unset k
    ```
-   Without the doors' copy, the consumer drops every import message.
+   Without the doors' copy, the consumer drops every import message. `secret put` deploys at
+   once: run it only while the doors serve one version (their Deployments in the dashboard),
+   and while no deploy runs. A version uploaded before a secret changes keeps the secrets of
+   the version before it, so a deploy running across the put, or across the window's close,
+   undoes it; the close itself refuses while the doors are split.
 8. **`IMPORT_DOORS_API_TOKEN`.** Manage Account → Account API Tokens → Create Token → Custom
    token, named `tinyassets-import-window-doors`: Workers · Editor, resources Specified Workers
    → the Worker named by `doors` alone (Cloudflare's per-Worker roles, 2026-09-15; Editor

@@ -513,11 +513,13 @@ export async function close(window: Window, print: (line: string) => void):
  * The window closed: the doors' `IMPORT_KEY` deleted with the doors' own token, then their
  * secret listing read back without it, so the kit's rotation may run (`deploy.ts`
  * `rotationNamespaces`). The workflow runs it on its runner, for the real window alone, once
- * the host's `close` passed.
+ * the host's `close` passed. The delete deploys the version it makes at once, so doors serving
+ * two versions (a split) stop it before it (`Cloudflare.serving`).
  */
 export async function unkey(cloudflare: Cloudflare, account: string, doors: string,
                             print: (line: string) => void): Promise<void> {
   if ((await cloudflare.secrets(account, doors)).includes(IMPORT_KEY)) {
+    await cloudflare.serving(account, doors);
     await cloudflare.deleteSecret(account, doors, IMPORT_KEY);
     if ((await cloudflare.secrets(account, doors)).includes(IMPORT_KEY)) {
       throw new Error(`${doors} still lists ${IMPORT_KEY} after its deletion: the window is open`);

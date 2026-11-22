@@ -279,9 +279,14 @@ describe("a sandbox token", () => {
     }
     expect(verifyToken(retired, "egress", older)).toBeNull();
     expect(verifyToken(KEY, "egress", newer)).toBeNull();
-    // The kid is in the MAC: a token's kid named another the ring holds is refused.
+    // The kid is in the MAC: a token's kid named another the ring holds is refused, even one
+    // under the same key bytes.
     const [routing, at, secret, , mac] = older.split(".");
     expect(verifyToken(rotated, "egress", `${routing}.${at}.${secret}.k2.${mac}`)).toBeNull();
+    const k1 = (JSON.parse(staged) as { keys: Record<string, string> }).keys["k1"];
+    const twins = JSON.stringify({ active: "k1", keys: { k1, k9: k1 } });
+    expect(verifyToken(twins, "egress", older)).toMatchObject({ owner: "user_01HZ" });
+    expect(verifyToken(twins, "egress", `${routing}.${at}.${secret}.k9.${mac}`)).toBeNull();
   });
 
   it("fails loudly on a Worker without a usable routing keyring", () => {
