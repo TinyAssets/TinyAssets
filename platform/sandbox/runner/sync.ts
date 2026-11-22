@@ -194,7 +194,7 @@ export async function stageSessions(
   const refused: string[] = [];
   for (const session of sessions) {
     const store = `${STORE}/${session.rec.id}`;
-    const row = held[session.path] ?? null;
+    const row = held[session.path];
     if (row?.sha256 === session.digest) {
       if (row.unread) {
         await withStore(session.rec, () => {
@@ -513,29 +513,20 @@ function same(now: Stats | null, was: Stats | null): boolean {
 }
 
 /**
- * Whether the sandbox's file at `path` (`stat`, as just read) holds changes sync-out sends
- * (`sends`) that the owner's files lack: bytes other than `sent`'s, the identity the owner's
- * files hold of its bytes (none: any file holds them).
- */
-async function unsent(place: Place, select: () => Selection, path: string, stat: Stats,
-                      sent: Identity | undefined): Promise<boolean> {
-  return select().sends(path) && await differs(place, path, stat, sent);
-}
-
-/**
  * The owner's state of a workspace path (`kind`: a file, a folder, or null when gone) into the
- * sandbox, unless the sandbox's file there holds changes not sent (`unsent`, against `sent`):
- * one that does is left as it is, its row too, so sync-out sends it against the base it was
- * read at. A file's bytes are fetched beside it and put in place only while the sandbox's
- * copy is still the one looked at (a run's write meanwhile is left the same way); a folder
- * gone goes but for the files under it holding unsent changes.
+ * sandbox, unless the sandbox's file there holds changes not sent: changes sync-out sends
+ * (`sends`), bytes other than `sent`'s (the identity the owner's files hold of its bytes;
+ * none: any bytes). One that does is left as it is, its row too, so sync-out sends it against
+ * the base it was read at. A file's bytes are fetched beside it and put in place only while
+ * the sandbox's copy is still the one looked at (a run's write meanwhile is left the same
+ * way); a folder gone goes but for the files under it holding unsent changes.
  */
 async function theirs(client: SyncClient, place: Place, mirror: Mirror,
                       select: () => Selection, path: string, kind: string | null,
                       sent: Identity | undefined): Promise<void> {
   const local = localOf(place, path);
   const was = fileStat(local);
-  if (was !== null && await unsent(place, select, path, was, sent)) {
+  if (was !== null && select().sends(path) && await differs(place, path, was, sent)) {
     return;
   }
   const readOnly = place.authority !== "owner" && clientReadOnly(path);
