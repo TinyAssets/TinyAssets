@@ -17,6 +17,7 @@ import {
 } from "../../contract/src/identity";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
+import { VERSION_HEADER } from "../src/doors";
 import { revokeClient } from "../src/revoke";
 import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
@@ -305,6 +306,22 @@ describe("two devices stay signed in together", () => {
     const first = await connect(client, { owner: alice });
     await connect(client, { owner: alice });
     expect((await refresh(client, first.refresh_token)).status).toBe(400);
+  });
+});
+
+describe("every answer names the version that served it", () => {
+  it("on a static file, a refusal and a path nothing serves", async () => {
+    const version = { id: crypto.randomUUID(), tag: "c0ffee111111", timestamp: "" };
+    const environment: DoorsEnv = { ...doorsEnv, CF_VERSION_METADATA: version };
+    for (const [request, status] of [
+      [new Request(url("/app/static/app.js")), 200],
+      [new Request(url("/mcp"), { method: "POST" }), 401],
+      [new Request(url("/nothing-here")), 404],
+    ] as const) {
+      const answer = await call(request, environment);
+      expect([request.url, answer.status, answer.headers.get(VERSION_HEADER)])
+        .toEqual([request.url, status, version.id]);
+    }
   });
 });
 

@@ -29,7 +29,7 @@
   "preview_urls": false,
   "build": { "command": "node build/bundle.mjs dist/runner.mjs dist/probes.mjs" },
   "rules": [{ "type": "Data", "globs": ["**/dist/runner.mjs"], "fallthrough": false }],
-  "vars": { "E2B_TEMPLATE": "tinyassets-sandbox:s85528cdd2cd74efa" },
+  "vars": { "E2B_TEMPLATE": "tinyassets-sandbox:s8661fc8113e20662" },
   "secrets": { "required": ["E2B_API_KEY"] },
   "durable_objects": {
     "bindings": [

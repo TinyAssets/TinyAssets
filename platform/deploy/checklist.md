@@ -113,7 +113,9 @@ It never counts as "absent".
    R2 buckets and the queues the Workers' configs name (a queue its producer's), each listed
    to its last page and made over Cloudflare's API (`deploy/cloudflare.ts`).
 3. **Secrets, set only when the Worker's secret listing answered and lacks them** (or the
-   account's Workers listing lacks the Worker). Values come from the environment's secrets: each
+   account's Workers listing lacks the Worker), and only with the version step 4 deploys
+   (`--secrets-file`, never `wrangler secret put`, which deploys the code already there at
+   once). Values come from the environment's secrets: each
    Worker's `secrets.required` (its `wrangler.jsonc`), and on the doors, if set, each shared
    app's signing secret (`platform/doors/shared-apps.json`). A secret two Workers require
    (the routing key, the doors' and the owner's) is set on both or neither.
@@ -135,7 +137,11 @@ It never counts as "absent".
    upload`, then `versions deploy`), which never touches a route. Wrangler refuses a version
    upload with a pending Durable Object migration (read in wrangler 4.154's source). Name that
    Worker in `migrate` to deploy it whole; `migrate` takes only a Worker whose config declares
-   Durable Object migrations.
+   Durable Object migrations. Each version is tagged with the commit's first 12 digits and, on
+   a Worker with migration locks, `-m` and each lock's count (`-m3`; the sandbox's, by lock
+   path, `-m2.1`), its message the whole commit: a rollback to a version whose counts are
+   lower strands every object the newer one migrated. The doors name the version serving each
+   answer in `x-tinyassets-version`.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the

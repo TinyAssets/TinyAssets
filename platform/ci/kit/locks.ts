@@ -19,7 +19,8 @@
  *   fails, naming each lock that does not. The deploy kit refuses to deploy on its failure.
  * - `node ci/kit/locks.ts pin <worker> <commit>` marks each lock's first deploy once (the
  *   pins already there are checked first: a changed one refuses the pin) and pins every
- *   migration the code holds; the deploy commits the locks with the code it deployed.
+ *   migration the code holds; its locks land on `main` by pull request before the deploy
+ *   that first runs them (`deploy/checklist.md`).
  *
  * Node runs this file as it is (type stripping), so its own imports name their `.ts` files.
  */

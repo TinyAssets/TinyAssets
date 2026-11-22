@@ -19,7 +19,9 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -54,7 +56,7 @@ import {
 import {
   authorizeCheck, deployedConfig, firstPartyLink,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
-  lifecycleHook, lockRefusal, type Mode, MODES, parse,
+  lifecycleHook, lockCounts, type Mode, MODES, parse,
   perform, PUBLIC_INPUTS, registerRedirect, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
 } from "../deploy";
@@ -109,6 +111,13 @@ const PROBE_BUNDLE = "the probes";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const bundled = (text: string): Bundle => ({ bytes: Buffer.from(text), sha: sha(text) });
 const PAIR = pairTag(TEMPLATE, sha(RUNNER), sha(PROBE_BUNDLE));
+/** The commit the fake checkout is at. */
+const COMMIT = "c0ffee".padEnd(40, "1");
+/** Each migrated Worker's locks as they pin it, by path: what the locks' command line prints. */
+const PINNED: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> =
+  Object.fromEntries(await Promise.all(migrated().map(async (worker) =>
+    [worker, Object.fromEntries(Object.keys(await locksOf(worker))
+      .map((path) => [path, readLock(path).deployed]))])));
 
 /** A Cloudflare answer, as a fake gives it: its status and its JSON body. */
 interface CfAnswer {
@@ -191,6 +200,8 @@ interface WorldOptions {
   readonly image?: string;
   /** The migration locks' command line refuses every Worker so. */
   readonly lockRefused?: string;
+  /** What the locks pin, by Worker and lock path, in place of the checked-in locks. */
+  readonly pinned?: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
   /** A wrangler command that fails. */
   readonly failing?: string;
   /** A Cloudflare listing the API refuses (500), by its path from the account. */
@@ -244,6 +255,8 @@ function world(options: WorldOptions = {}) {
   const events: string[] = [];
   const logs: string[] = [];
   const secretsPut: Record<string, string> = {};
+  /** Each `--secrets-file` wrangler was given: its Worker, path, mode and names. */
+  const secretFiles: { worker: string; path: string; mode: number; names: string[] }[] = [];
   /** The account each wrangler command was given, in order. */
   const accounts: (string | undefined)[] = [];
   let pairPassed = options.paired !== false;
@@ -540,9 +553,20 @@ function world(options: WorldOptions = {}) {
                   options_: { env?: Record<string, string>; input?: string } = {}) => {
     if (argv[0] === WRANGLER) {
       accounts.push(options_.env?.["CLOUDFLARE_ACCOUNT_ID"]);
-      const args = argv.slice(1).map((arg) => arg.endsWith(".json")
-        ? `${basename(join(arg, ".."))}/${basename(arg)}` : arg);
+      const file = argv.indexOf("--secrets-file");
+      const args = argv.slice(1).map((arg, at) => at === file ? "<file>"
+        : arg.endsWith(".json") ? `${basename(join(arg, ".."))}/${basename(arg)}` : arg);
       events.push(`wrangler ${args.join(" ")}`);
+      if (file >= 0) {
+        const path = argv[file + 1]!;
+        const worker = basename(join(argv[argv.indexOf("--config") + 1]!, ".."));
+        const values = JSON.parse(readFileSync(path, "utf8")) as Record<string, string>;
+        secretFiles.push({ worker, path, mode: statSync(path).mode & 0o777,
+                           names: Object.keys(values) });
+        for (const [name, value] of Object.entries(values)) {
+          secretsPut[`${worker}:${name}`] = value;
+        }
+      }
       if (options.failing !== undefined && args.join(" ").startsWith(options.failing)) {
         return { status: 1, stdout: "", stderr: "the API refused it" };
       }
@@ -580,7 +604,8 @@ function world(options: WorldOptions = {}) {
     }
     if (String(argv[0]).endsWith(join("ci", "kit", "locks.ts")) && argv[1] === "digests") {
       events.push(`locks ${argv[2]}`);
-      return options.lockRefused === undefined ? { status: 0, stdout: "{}", stderr: "" }
+      return options.lockRefused === undefined
+        ? { status: 0, stdout: JSON.stringify((options.pinned ?? PINNED)[argv[2]!]), stderr: "" }
         : { status: 1, stdout: "", stderr: `${options.lockRefused}\n` };
     }
     if (command === "rclone") {
@@ -617,9 +642,9 @@ function world(options: WorldOptions = {}) {
   };
   // The clock moves on only while the kit waits for an answer.
   let clock = NOW.getTime();
-  const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, log,
+  const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, commit: () => COMMIT, log,
                    now: () => new Date(clock), sleep: async (ms) => { clock += ms; } };
-  return { io, events, logs, secretsPut, routes, hooks, accounts, kv, tables, kill, domains,
+  return { io, events, logs, secretsPut, secretFiles, routes, hooks, accounts, kv, tables, kill, domains,
            inert, dns, created, sent };
 }
 
@@ -990,15 +1015,15 @@ describe("a dark run", () => {
       "e2b GET /events/webhooks", "workos GET redirect_uris", "workos POST redirect_uris",
       "workos authorize", "cf GET /accounts", `cf POST /accounts/${ACCOUNT}/storage/kv/namespaces`,
       `cf POST /accounts/${ACCOUNT}/r2/buckets`, `cf POST /accounts/${ACCOUNT}/queues`,
-      `cf POST /accounts/${ACCOUNT}/queues`, "wrangler secret put ROUTING_MAC_KEY",
+      `cf POST /accounts/${ACCOUNT}/queues`,
       "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
       "e2b POST /events/webhooks", "log Run ", "node canary.ts"]);
     const first = w.events.findIndex((event) =>
       /^(cf POST|wrangler secret|cf PUT)/.test(event));
     expect(at[11]).toBeLessThan(first);
     // The webhook is registered disabled, with the doors' secret, after the doors hold it.
-    expect(w.events[at[21]!]).toContain('"enabled":false');
-    expect(w.events[at[21]!]).toContain('"signatureSecret":"hook-secret"');
+    expect(w.events[at[20]!]).toContain('"enabled":false');
+    expect(w.events[at[20]!]).toContain('"signatureSecret":"hook-secret"');
     // The plan is reported whole, every step's line in it, before the canary.
     expect(work.plan).toEqual([HELD, ...DARK_FRESH]);
     expect(w.logs).toEqual([summary("changed", [HELD, ...DARK_FRESH])]);
@@ -1138,17 +1163,53 @@ describe("a dark run", () => {
       true, `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
   });
 
-  it("deploys a held Worker as a version, and a named migration whole", async () => {
-    const w = world({ held: true });
+  it("deploys a held Worker as a version, and a named migration whole, each tagged with the " +
+     "commit and its locks' counts", async () => {
+    // The sandbox's locks listed out of their paths' order: the tag counts in that order.
+    const w = world({ held: true, pinned: {
+      owner: { "owner/migrations.json": ["a", "b", "c"] },
+      sandbox: { "sandbox/migrations/SandboxSlots.json": ["d"],
+                 "sandbox/migrations/SandboxControl.json": ["e", "f"] } } });
     await runMode(w, "dark", ["--yes", "--migrate", "owner"]);
+    const tagged = (tag: string) => `--tag ${tag} --message ${COMMIT}`;
     expect(w.events.filter((event) => event.startsWith("wrangler deploy")
       || event.startsWith("wrangler versions upload"))).toEqual([
-      ...["codemode", "files", "gateway", "sandbox"].map((worker) =>
-        `wrangler versions upload --config ${worker}/wrangler.json`),
-      "wrangler deploy --config owner/wrangler.json",
-      "wrangler versions upload --config doors/wrangler.json"]);
+      ...["codemode", "files", "gateway"].map((worker) =>
+        `wrangler versions upload --config ${worker}/wrangler.json ${tagged("c0ffee111111")}`),
+      `wrangler versions upload --config sandbox/wrangler.json ${tagged("c0ffee111111-m2.1")}`,
+      `wrangler deploy --config owner/wrangler.json ${tagged("c0ffee111111-m3")}`,
+      `wrangler versions upload --config doors/wrangler.json ${tagged("c0ffee111111")}`]);
     // Nothing held is made again, and the control record is left alone.
     expect(w.events.filter((event) => /create|cf PUT|secret put/.test(event))).toEqual([]);
+  });
+
+  it("sets each secret only with the version it deploys, from a file of its names alone, " +
+     "mode 0600, removed after the run", async () => {
+    // A fresh account: every Worker's secrets, each with its first deploy.
+    const w = world();
+    await runMode(w, "dark", ["--yes"]);
+    expect(w.events.filter((event) => /^wrangler (versions )?secret/.test(event))).toEqual([]);
+    expect(w.secretFiles.map(({ worker, names }) => [worker, names])).toEqual(
+      WORKERS.filter((worker) => worker in SECRETS).map((worker) => [worker, [...SECRETS[worker]!]]));
+    expect(w.events.filter((event) => event.includes("--secrets-file")).map((event) =>
+      event.split(" ")[3])).toEqual(w.secretFiles.map(({ worker }) => `${worker}/wrangler.json`));
+    for (const { path, mode } of w.secretFiles) {
+      expect([path, mode.toString(8), existsSync(path)]).toEqual([path, "600", false]);
+    }
+    // A held account rotating the routing key: the doors' and the owner's versions carry it,
+    // alone, and no other Worker's carries a file.
+    const rotated = world({ held: true });
+    await runMode(rotated, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY"]);
+    expect(rotated.secretFiles.map(({ worker, names }) => [worker, names])).toEqual([
+      ["owner", ["ROUTING_MAC_KEY"]], ["doors", ["ROUTING_MAC_KEY"]]]);
+    expect(rotated.secretsPut).toEqual({ "owner:ROUTING_MAC_KEY": ENV["ROUTING_MAC_KEY"],
+                                         "doors:ROUTING_MAC_KEY": ENV["ROUTING_MAC_KEY"] });
+    // An upload that fails stops the run, its file removed all the same.
+    const failed = world({ held: true, failing: "versions upload --config owner/" });
+    await expect(runMode(failed, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY"]))
+      .rejects.toThrow("wrangler versions upload --config failed (exit 1)");
+    expect(failed.secretFiles.map(({ worker, path }) => [worker, existsSync(path)]))
+      .toEqual([["owner", false]]);
   });
 
   it("stops before any change when a migration lock does not pin what the code ships",
@@ -2282,18 +2343,24 @@ describe("the parts of a run", () => {
   });
 
   it("refuses to deploy unless each migration lock pins every migration it ships, in order, " +
-     "by the locks' own command line", async () => {
+     "by the locks' own command line, and counts what each pins", async () => {
     // The real command line's answer, whatever the checked-in locks pin: the kit's own.
     const run = parse(["--mode", "dark"], ENV, { ...world().io, spawn: spawnSync });
     for (const worker of migrated()) {
       const locks = await locksOf(worker);
       const refused = deployProblems(worker, locks, Object.fromEntries(Object.keys(locks)
         .map((path) => [path, readLock(path)])));
-      expect(lockRefusal(worker, run), worker).toBe(refused.length === 0 ? null
-        : `${worker}'s migration locks refuse the deploy (exit 1): ${refused.join("\n")}`);
+      if (refused.length === 0) {
+        expect(lockCounts(worker, run), worker).toEqual(Object.fromEntries(Object.keys(locks)
+          .map((path) => [path, readLock(path).deployed.length])));
+      } else {
+        expect(() => lockCounts(worker, run), worker).toThrow(
+          `${worker}'s migration locks refuse the deploy (exit 1): ${refused.join("\n")}`);
+      }
     }
     // A Worker that states no lock is refused, never read as nothing to check.
-    expect(lockRefusal("doors", run)).toMatch(/^doors's migration locks refuse the deploy \(exit 1\)/);
+    expect(() => lockCounts("doors", run))
+      .toThrow(/^doors's migration locks refuse the deploy \(exit 1\)/);
   });
 
   it("lists the account's Workers, and deletes one unforced, never reading a failure as " +
@@ -4082,7 +4149,7 @@ const DARK_FRESH = [
   `lock every object of the R2 bucket ${OPERATOR_NAMES.bucket} for 365 days`,
   ...QUEUES.map((name) => `create the queue ${name}`),
   ...Object.entries(SECRETS).flatMap(([worker, names]) =>
-    names.map((name) => `set the secret ${name} on ${NAMES[worker]}`)),
+    names.map((name) => `set the secret ${name} on ${NAMES[worker]} with its version`)),
   ...WORKERS.map((worker) => `deploy ${NAMES[worker]}, touching no route`),
   "write the control record closed (outside off, canary none, inbound off, the founder's " +
   "tier numbers): the API answered there is none",

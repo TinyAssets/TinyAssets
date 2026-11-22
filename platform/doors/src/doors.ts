@@ -85,6 +85,19 @@ function outsideMcp(request: Request, env: DoorsEnv, bound: Bound<AccountBinding
     serveMcp(request, await outsideAccount(env, bound, sources), env));
 }
 
+/** The header naming the version that served an answer: its id (`CF_VERSION_METADATA`). */
+export const VERSION_HEADER = "x-tinyassets-version";
+
+/**
+ * `answer`, naming `version`: Cloudflare ignores a version override for a version outside
+ * the deployment and still answers, so a check reads which version served it here.
+ */
+export function versioned(answer: Response, version: WorkerVersionMetadata): Response {
+  const named = new Response(answer.body, answer);
+  named.headers.set(VERSION_HEADER, version.id);
+  return named;
+}
+
 /** Serve one request through the doors, over the source records `sources`. */
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                             sources: Sources): Promise<Response> {
