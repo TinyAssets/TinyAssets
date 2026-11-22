@@ -115,14 +115,14 @@ export function decidedActor(account: Account): Actor | null {
 }
 
 /** A run, as its calls are decided: its id, its agent and its conversation. */
-interface RunOf {
+interface DecidedRun {
   readonly id: string;
   readonly agent: string;
   readonly conversation: string;
 }
 
 /** The actor of `run`'s calls: its agent, under the client `origin` names when one started it. */
-function runActor(run: RunOf, origin: Origin | null): Actor {
+function runActor(run: DecidedRun, origin: Origin | null): Actor {
   return { agent: run.agent, client: origin?.client ?? null,
            run: { id: run.id, conversation: run.conversation, family: origin?.family ?? null } };
 }
@@ -345,7 +345,7 @@ export class Actions {
    * `COMMAND_KIND`, as `decideTool` decides a tool call of that kind. No tool call starts it,
    * so no hook would see it.
    */
-  decideCommand(run: RunOf, origin: Origin | null, asked: Asked, now: number): void {
+  decideCommand(run: DecidedRun, origin: Origin | null, asked: Asked, now: number): void {
     const { document } = this.#policy();
     this.#decideAs(document, (act) => actNamed(act)?.hook.includes(COMMAND_KIND) === true,
                    runActor(run, origin), asked, now);
