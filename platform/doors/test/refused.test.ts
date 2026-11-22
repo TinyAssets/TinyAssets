@@ -12,8 +12,8 @@ import { describe, expect, it } from "vitest";
 import { MAINTENANCE } from "../../contract/src/control";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import {
-  answered, asEgress, asEgressFault, asEvent, asInbound, asJson, asRedirect, asShared, asTool,
-  EVENT_ERRORS,
+  answered, asEgress, asEgressFault, asEvent, asInbound, asJson, asRedirect, asRequest, asShared,
+  asTool, EVENT_ERRORS,
 } from "../src/refused";
 
 async function said(response: Response): Promise<[number, string | null, unknown]> {
@@ -122,48 +122,67 @@ describe("an MCP tool's answer", () => {
   });
 });
 
-describe("MCP Events' answer", () => {
-  function thrown(refusal: Refusal): ProtocolError {
-    try {
-      asEvent(refusal);
-    } catch (error) {
-      return error as ProtocolError;
-    }
-    throw new Error("asEvent answered nothing");
+function thrown(surface: (refusal: Refusal) => never, refusal: Refusal): ProtocolError {
+  try {
+    surface(refusal);
+  } catch (error) {
+    return error as ProtocolError;
   }
+  throw new Error("the surface answered nothing");
+}
 
-  it("is the design sketch's error: exhausted, invalid params, or forbidden", () => {
-    // The owner's limit, as its refusal carries it: never the doors' own figure.
-    const limit = { limit: "subscriptions", max: 3 };
-    const full = thrown(new Refusal("subscription_limit", "subscription_limit: 3",
-                                    { facts: limit }));
-    expect([full.code, full.data]).toEqual([EVENT_ERRORS.exhausted, limit]);
-    const bad = thrown(new Refusal("invalid", "a room is room:<app>:<room>"));
-    expect([bad.code, bad.message]).toEqual([EVENT_ERRORS.invalidParams,
-                                             "a room is room:<app>:<room>"]);
-    const no = thrown(new Refusal("refused", "no agent here"));
-    expect([no.code, no.data]).toEqual([EVENT_ERRORS.forbidden, { reason: "no agent here" }]);
+/** A JSON-RPC error as the SDK sends it: its code, message and data. */
+function rpcError(surface: (refusal: Refusal) => never, refusal: Refusal): unknown[] {
+  const error = thrown(surface, refusal);
+  return [error.code, error.message, error.data];
+}
+
+describe("every MCP request's answer but a tool call's", () => {
+  it("is invalid params for an invalid request, else an internal error, with its reason",
+     () => {
+    for (const surface of [asRequest, asEvent]) {
+      expect(rpcError(surface, new Refusal("invalid", "a room is room:<app>:<room>")))
+        .toEqual([-32602, "a room is room:<app>:<room>",
+                  { reason: "a room is room:<app>:<room>" }]);
+    }
+    expect(rpcError(asRequest, new Refusal("refused", "no agent here")))
+      .toEqual([-32603, "no agent here", { reason: "no agent here" }]);
   });
 
-  it("is a recoverable failure with its reason and wait for any refusal for the moment, " +
-     "never Forbidden, which a client stops on", () => {
+  it("is a recoverable failure with its reason and wait for any refusal for the moment, on " +
+     "MCP Events too, never Forbidden, which a client stops on", () => {
     for (const [refusal, ms] of [[new Refusal("unavailable", MAINTENANCE), 60_000],
                                  [new Refusal("restoring", "restoring"), 60_000],
                                  [new Refusal("storage_busy", "full", { retryAfterS: 7 }), 7_000],
                                  [refusalOf(Object.assign(new Error("overloaded"),
                                                           { overloaded: true }))!, 1_000],
                                 ] as const) {
-      const busy = thrown(refusal);
-      expect([busy.code, busy.message, busy.data]).toEqual(
-        [-32603, refusal.message, { reason: refusal.message, retryAfterMs: ms }]);
+      for (const surface of [asRequest, asEvent]) {
+        expect(rpcError(surface, refusal)).toEqual(
+          [-32603, refusal.message, { reason: refusal.message, retryAfterMs: ms }]);
+      }
+    }
+  });
+});
+
+describe("MCP Events' answer", () => {
+  it("is the design sketch's error for any other refusal: exhausted, or forbidden", () => {
+    // The owner's limit, as its refusal carries it: never the doors' own figure.
+    const limit = { limit: "subscriptions", max: 3 };
+    const full = thrown(asEvent, new Refusal("subscription_limit", "subscription_limit: 3",
+                                             { facts: limit }));
+    expect([full.code, full.data]).toEqual([EVENT_ERRORS.exhausted, limit]);
+    for (const code of ["refused", "owner_suspended"] as const) {
+      expect(rpcError(asEvent, new Refusal(code, "no agent here")))
+        .toEqual([EVENT_ERRORS.forbidden, "Forbidden", { reason: "no agent here" }]);
     }
   });
 
   it("throws a full agent's refusal that carries no limit, a bug, rather than answer it", () => {
     for (const facts of [undefined, {}, { limit: "subscriptions" }, { max: 3 },
                          { limit: "subscriptions", max: "3" }]) {
-      const missing = thrown(new Refusal("subscription_limit", "subscription_limit: 3",
-                                         facts === undefined ? {} : { facts }));
+      const missing = thrown(asEvent, new Refusal("subscription_limit", "subscription_limit: 3",
+                                                  facts === undefined ? {} : { facts }));
       expect(missing).not.toBeInstanceOf(ProtocolError);
       expect(missing.message).toBe("a subscription_limit refusal carries no {limit, max}");
     }
