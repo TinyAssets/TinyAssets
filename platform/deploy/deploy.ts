@@ -77,7 +77,10 @@
  * The apply job runs the plan it was approved on (`Plan`). The plan job writes its plan to
  * the file `--plan` names, which the workflow hands the apply job as the run's artifact. Before
  * any change, the apply job makes the plan job's plan again from the live state and stops,
- * naming each difference, unless it is that file's plan, of this same run.
+ * naming each difference, unless it is that file's plan, of this same run. Then its own steps,
+ * which the plan job could not run without the production secrets, are held to that plan line
+ * by line as they say each line (`holding`): a line the plan job left to the apply job
+ * (`checked`) takes its answer, and any other difference stops the run there.
  *
  * Every lookup is checked: a failed listing or read stops the kit loudly, never reads as
  * "absent". So:
@@ -99,7 +102,8 @@
  * - E2B's lifecycle webhook is listed and checked before any change, found by its name,
  *   registered disabled only when E2B's listing lacks it, its URL set to the identity's when
  *   it differs, its secret changed only with the doors' copy, and enabled only by `routes`
- *   after the handover; the run that registers it sets the doors' copy too;
+ *   after the handover; a run that registers it while the doors hold their copy goes on only
+ *   with `--rotate` naming it, which sets both;
  * - the doors' host's DNS record is made only for a host under the zone whose listing
  *   answered and holds none, and a host holding any address record but the placeholder
  *   (`PLACEHOLDER`) stops `routes` before any change;
@@ -207,6 +211,30 @@ export const E2B_HOOK = Object.freeze({
 });
 /** What the plan job says of a check that needs a production secret. */
 const LATER = "checked by the apply job before any change";
+
+/**
+ * A line whose end only the apply job can read: `subject`, then `outcome`, or in the plan job
+ * (`outcome` null) `LATER`. The apply job holds its line to the plan job's by everything
+ * before that end (`resolves`).
+ */
+function checked(subject: string, outcome: string | null): string {
+  return `${subject}: ${outcome ?? LATER}`;
+}
+
+/**
+ * Whether `said`, a line of the apply job, is the plan's `approved` line: the same, or the
+ * same subject with the outcome the plan job left to the apply job (`checked`), which the apply
+ * job always reads.
+ */
+function resolves(approved: string, said: string): boolean {
+  const later = `: ${LATER}`;
+  if (said.endsWith(later)) {
+    return false;
+  }
+  const subject = approved.slice(0, -LATER.length);
+  return said === approved || (approved.endsWith(later) && said.length > subject.length
+    && said.startsWith(subject));
+}
 
 // --- The run ----------------------------------------------------------------------------
 
@@ -323,8 +351,8 @@ export interface Values {
   readonly stage: Stage;
   /** The account's Workers, by name, as its listing answered before any deploy. */
   readonly deployed: readonly string[];
-  /** The secrets the run sets, each on its Worker, with the version the run deploys. */
-  readonly setting: readonly { worker: string; name: string }[];
+  /** The secrets the run's plan sets, each on its Worker, with the version the run deploys. */
+  readonly setting: readonly Setting[];
   /** Each migrated Worker's locks' counts, by lock path (`lockCounts`). */
   readonly migrations: Readonly<Record<string, Readonly<Record<string, number>>>>;
   /** The route record `handback` reads, and its handback on the zone as it stands. */
@@ -339,8 +367,16 @@ export interface Values {
  * `actions.ts`, which holds what is GitHub's.
  */
 export interface Reporter {
-  /** Adds lines to the run's plan. */
+  /**
+   * Adds lines to the run's plan, each said before the change it names: on the apply job each
+   * is held to the approved plan's as it is said (`holding`).
+   */
   readonly say: (...lines: string[]) => void;
+  /**
+   * Adds lines of what a change showed once made, which no plan can hold (a line naming the
+   * run's own record, or what Cloudflare made): reported with the plan, never held to it.
+   */
+  readonly did: (...lines: string[]) => void;
   /**
    * Masks `value` in the job's log from here on: not a credential, but once a secret, and a
    * wrangler error the kit quotes names `/accounts/<id>/...` in a public log.
@@ -396,10 +432,52 @@ function input(run: Run, name: string): string | undefined {
   return set(run.env, name);
 }
 
-/** The reporter of `run`, its plan's lines gathered in `plan`. */
-function reporterOf(run: Run, plan: string[]): Reporter {
+/**
+ * The apply job's hold on its own plan: each line its steps say, as it is said and so before
+ * the change it names, is the approved plan's next line, or that line with the outcome the plan
+ * job left to the apply job (`resolves`); once every approved line is said, what the run says
+ * after it is what it did (an operator mode's answers, a handback's read-back). Any other line
+ * stops the run there, and a run that ends before the approved plan's last line stops loudly.
+ */
+export interface Hold {
+  readonly next: (line: string) => void;
+  readonly done: () => void;
+}
+
+export function holding(approved: readonly string[]): Hold {
+  let at = 0;
   return Object.freeze({
-    say: (...lines: string[]) => { plan.push(...lines); },
+    next: (line: string) => {
+      if (at === approved.length) {
+        return;
+      }
+      if (!resolves(approved[at]!, line)) {
+        throw new Error(`this job's line ${at + 1} is not the approved plan's, so it stops before ` +
+                        `that change${at === 0 ? "" : ", having made no change but what the " +
+                          "approved lines before it name"}: ` +
+                        `approved "${approved[at]}", and this job's "${line}"`);
+      }
+      at += 1;
+    },
+    done: () => {
+      if (at < approved.length) {
+        throw new Error(`this job ended before the approved plan's line ${at + 1} ("${
+          approved[at]}"): what it applied is not the plan approved`);
+      }
+    },
+  });
+}
+
+/** The reporter of `run`, its plan's lines gathered in `plan`, each held by `hold` when given. */
+function reporterOf(run: Run, plan: string[], hold: Hold | null = null): Reporter {
+  return Object.freeze({
+    say: (...lines: string[]) => {
+      for (const line of lines) {
+        hold?.next(line);
+        plan.push(line);
+      }
+    },
+    did: (...lines: string[]) => { plan.push(...lines); },
     mask: (value: string) => {
       const line = maskLine(run.env, value);
       if (line !== null) {
@@ -546,7 +624,8 @@ const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
  *
  * `unlisted`: `UPSTREAM_CALLBACK` is not known to be on the client's list yet (the plan job cannot
  * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
- * is reported as `dark`'s to register, not a stop; every other refusal still stops.
+ * is left to the apply job (`checked`), which registers it and then checks again, not a stop;
+ * every other refusal still stops.
  */
 export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
                                      fetcher: Fetch): Promise<string> {
@@ -566,17 +645,16 @@ export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean
     throw new Error("WorkOS's authorize redirected to no URL");
   }
   const host = new URL(upstream.issuer).host;
+  const subject = `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}`;
   if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
-    return `WorkOS's authorize does not take ${UPSTREAM_CALLBACK} yet: dark registers it, ` +
-           "then checks the client and it again";
+    return checked(subject, null);
   }
   if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
       || /error/i.test(to.pathname)) {
     throw new Error(`WorkOS's authorize refused the doors' client or ${UPSTREAM_CALLBACK}: it ` +
                     `sent the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
   }
-  return `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the ` +
-         `browser to ${host}'s sign-in`;
+  return checked(subject, `it takes them, sending the browser to ${host}'s sign-in`);
 }
 
 /**
@@ -621,11 +699,10 @@ function shippedPair(io: Io): string {
 
 /**
  * Whether this run sets E2B's copy of the webhook secret: only when it sets the doors' copy
- * (missing on the doors, named in `--rotate`, or the hook missing at E2B), so the two never
- * drift apart.
+ * (missing on the doors, or named in `--rotate`), so the two never drift apart.
  */
-export function hookSetsSecret(setting: readonly { worker: string; name: string }[]): boolean {
-  return setting.some((each) => each.name === E2B_HOOK.secret);
+export function hookSetsSecret(setting: readonly Setting[]): boolean {
+  return setting.some((each) => each.name === E2B_HOOK.secret && each.sets === true);
 }
 
 /**
@@ -1154,14 +1231,31 @@ export function forwardOnly(rolled: Rolled): string | null {
     : null;
 }
 
-/** What `rolled`'s line of a deploy's plan says: where it stands, and where a rollback stops. */
-function rolledLine(rolled: Rolled): string {
+/**
+ * What `rolled`'s line of a deploy's plan says: where it stands, and where a rollback stops.
+ * `setting` is the plan's secrets on it: when only optional ones the plan job cannot tell of
+ * (`Setting`) decide the stop, the line ends in what the apply job reads (`checked`).
+ */
+function rolledLine(rolled: Rolled, setting: readonly Setting[]): string {
   if (rolled.before === null) {
     return `${rolled.name}: deployed by this run first, so a rollback stops at it`;
   }
-  const reason = forwardOnly(rolled);
-  return `${rolled.name}: serving ${rolled.before.version} (${rolled.before.tag ?? "untagged"}); ` +
-         `a rollback ${reason === null ? "takes it back there" : `stops at it: ${reason}`}`;
+  const at = `${rolled.name}: serving ${rolled.before.version} (${rolled.before.tag ??
+    "untagged"}); a rollback`;
+  const unsure = setting.filter((each) => OPTIONAL.includes(each.name));
+  const reason = forwardOnly({ ...rolled, secrets: setting.filter((each) =>
+    !OPTIONAL.includes(each.name)).map((each) => each.name) });
+  if (reason !== null) {
+    return `${at} stops at it: ${reason}`;
+  }
+  if (unsure.length === 0) {
+    return `${at} takes it back there`;
+  }
+  const set = unsure.filter((each) => each.sets === true).map((each) => each.name);
+  return checked(`${at} takes it back there unless the run sets ${unsure.map((each) =>
+    each.name).join(", ")} on it`, unsure.some((each) => each.sets === null) ? null
+    : set.length === 0 ? "it sets none of them" : `it sets ${set.join(", ")}, so it stops at ` +
+      `it: ${forwardOnly(rolled)}`);
 }
 
 /** Whether `value` is a list of strings, each once. */
@@ -1259,21 +1353,26 @@ const templateReady = step<"e2b">(async (ctx, { e2b: admin }) => {
   if (!await admin.ready(pin)) {
     throw new Error(`E2B has no ready build of ${pin}: build it (sandbox-template.yml)`);
   }
+  ctx.say(checked(`E2B's ready build of ${pin}`, "present"));
 });
 
 /** The plan job's: the pinned template is this tree's image; its build is the apply job's. */
 const templateLater = step((ctx) => {
-  ctx.say(`E2B's ready build of ${pinnedTree(ctx)}: ${LATER}`);
+  ctx.say(checked(`E2B's ready build of ${pinnedTree(ctx)}`, null));
 });
+
+/** What a plan says of the pair's standing checks in the deploy's E2B team. */
+const pairLine = (pair: string, outcome: string | null) =>
+  checked(`the pair ${pair}'s standing checks in this E2B team`, outcome);
 
 /** The pair this deploy makes (`shippedPair`), passed. */
 const pairReady = step<"e2b">(async ({ run, say }, { e2b: admin }) => {
   const pair = shippedPair(run.io);
   if (await admin.ready(pair)) {
-    say(`the pair ${pair} passed its standing checks in this E2B team`);
+    say(pairLine(pair, "passed"));
   } else if (!run.apply) {
-    say(`the pair ${pair} has not passed in this E2B team: the pair job runs its check ` +
-        "(--mode pair) before the apply job");
+    say(pairLine(pair, "not passed yet: the pair job runs its check (--mode pair) before the " +
+                       "apply job"));
   } else {
     throw new Error(`the pair ${pair} has not passed its standing checks in this E2B team: ` +
                     "run the pair job (--mode pair) first; nothing is deployed");
@@ -1281,7 +1380,7 @@ const pairReady = step<"e2b">(async ({ run, say }, { e2b: admin }) => {
 });
 
 const pairLater = step(({ run, say }) => {
-  say(`the pair ${shippedPair(run.io)} passed its standing checks: ${LATER}`);
+  say(pairLine(shippedPair(run.io), null));
 });
 
 /** E2B's lifecycle webhook, listed and checked before anything is changed. */
@@ -1294,12 +1393,12 @@ const hookListed = step<"e2b", "hook">(async (_ctx, { e2b: admin }) => ({
  */
 const redirect = step<never, "listed">(async ({ run, say }) => {
   const state = await registerRedirect(input(run, "WORKOS_API_KEY")!, run.apply, run.io.fetch);
-  say(`WorkOS redirect URI ${UPSTREAM_CALLBACK}: ${state}`);
+  say(checked(`WorkOS redirect URI ${UPSTREAM_CALLBACK}`, state));
   return { listed: state !== "missing" };
 });
 
 const redirectLater = step<never, "listed">(({ say }) => {
-  say(`WorkOS redirect URI ${UPSTREAM_CALLBACK}: ${LATER}`);
+  say(checked(`WorkOS redirect URI ${UPSTREAM_CALLBACK}`, null));
   return { listed: false };
 });
 
@@ -1367,15 +1466,14 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
   const earlier = got.table.filter((route) => route.script === DOORS
     && ROUTES.includes(route.pattern))
     .map((route) => route.pattern);
-  const word = hook === undefined ? LATER : hook === null ? "absent"
-    : hook["enabled"] === true ? "enabled" : "disabled";
-  say(`record the zone's ${got.table.length} routes and the handover's ${got.changes.length} ` +
-      `changes, the egress domain (${domain ?? "none"}) and E2B's lifecycle webhook (${word}) ` +
-      `as this run's route record in ${title}, before any change: hand back with --mode ` +
-      `handback --record <this run's id>${
-        earlier.length === 0 ? "" : `; ${DOORS} holds ${earlier.join(", ")} already: the ` +
-        "record of the routes run that moved them is the one to hand back, and it covers this " +
-        "run's changes too"}`);
+  say(checked(`record the zone's ${got.table.length} routes and the handover's ${
+    got.changes.length} changes, the egress domain (${domain ?? "none"}) and E2B's lifecycle ` +
+    `webhook as this run's route record in ${title}, before any change: hand back with --mode ` +
+    `handback --record <this run's id>${
+      earlier.length === 0 ? "" : `; ${DOORS} holds ${earlier.join(", ")} already: the ` +
+      "record of the routes run that moved them is the one to hand back, and it covers this " +
+      "run's changes too"}; the webhook it records`, hook === undefined ? null
+    : hook === null ? "absent" : hook["enabled"] === true ? "enabled" : "disabled"));
   // The plan job (no listing of the hook) never applies.
   if (!run.apply || hook === undefined) {
     return { kept: null };
@@ -1407,7 +1505,7 @@ function named(records: readonly Omit<DnsRecord, "id">[], name: string): string 
  * run with only the route record written. The route record it makes is the run's from here.
  */
 const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "kept">(
-  async ({ run, say }, got) => {
+  async ({ run, say, did }, got) => {
     if (got.placed === null) {
       return { kept: got.kept };
     }
@@ -1441,7 +1539,7 @@ const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "
       throw new Error(`writing the DNS record made on ${HOST} into ${key} failed (${status}): ` +
                       "run routes again, which reads and writes it once more");
     }
-    say(`record in ${key} the DNS record made on ${HOST}: ${named(made, HOST)}`);
+    did(`record in ${key} the DNS record made on ${HOST}: ${named(made, HOST)}`);
     return { kept: { record: written, namespace, key } };
   });
 
@@ -1529,15 +1627,42 @@ const staged = step<"ids" | "upstream", "stage">((ctx, got) => ({
 type Secrets = "cloudflare" | "account";
 
 /**
+ * A secret the run's plan sets on a Worker. Whether it does is known to both jobs, from the
+ * Workers' listings and `--rotate`, except for an optional one (`OPTIONAL`: a shared app's,
+ * the canary clock's), which it sets only when the run is given it: only the apply job holds
+ * the values, so the plan job plans it as the apply job's to tell (`sets` null).
+ */
+export interface Setting {
+  readonly worker: string;
+  readonly name: string;
+  /** Whether the run sets it: null in the plan job for an optional secret. */
+  readonly sets: boolean | null;
+}
+
+/** What a plan says of `each`: an optional secret's line ends in what only the apply job reads. */
+function settingLine(each: Setting): string {
+  const line = `set the secret ${each.name} on ${NAMES[each.worker]} with its version`;
+  return OPTIONAL.includes(each.name)
+    ? checked(`${line} if the run is given it`, each.sets === null ? null
+      : each.sets ? "it is" : "it is not, so it stays unset")
+    : line;
+}
+
+/**
  * Each Worker's missing secrets (and the rotated), which ride the version the run deploys
  * (`workers`): `secrets.required` refuses a deploy without them. Whether a Worker exists is
  * the account's Workers listing's word: a missing one holds none. `values` is the run's
- * secrets, or null in the plan job, which holds none: an optional secret (a shared app's, the
- * canary clock's) the run is not given is left unset.
+ * secrets, or null in the plan job, which holds none. A held secret is never set again unless
+ * `--rotate` names it, so a run sets only what it planned from the listings.
+ *
+ * `hook` is E2B's listing of the lifecycle hook, or undefined in the plan job. With none at
+ * E2B the run registers one with production's E2B_WEBHOOK_SECRET, which a held copy on the
+ * doors may not be: that run goes on only with `--rotate` naming it, which sets both, so
+ * nothing the plan job cannot list decides what the run sets.
  */
-async function setSecrets({ say }: Context, got: Pick<Values, Secrets>,
+async function setSecrets({ run, say }: Context, got: Pick<Values, Secrets>,
                           values: ((name: string) => string | undefined) | null,
-                          rotate: ReadonlySet<string>):
+                          hook: Json | null | undefined):
     Promise<Pick<Values, "deployed" | "setting">> {
   const deployed = await got.cloudflare.workers(got.account);
   const held: Record<string, string[]> = {};
@@ -1545,21 +1670,24 @@ async function setSecrets({ say }: Context, got: Pick<Values, Secrets>,
     held[worker] = deployed.includes(NAMES[worker]!)
       ? await got.cloudflare.secrets(got.account, NAMES[worker]!) : [];
   }
-  const setting = secretPlan(held, rotate, values)
-    .filter(({ name }) => values === null || values(name) !== undefined);
-  for (const { worker, name } of setting) {
-    say(`set the secret ${name} on ${NAMES[worker]} with its version${values !== null ? ""
-      : ` (its value, or its absence if optional: ${LATER})`}`);
+  const holders = Object.keys(held).filter((worker) => held[worker]!.includes(E2B_HOOK.secret));
+  if (hook === null && holders.length > 0 && !run.rotate.has(E2B_HOOK.secret)) {
+    throw new Error(`E2B holds no lifecycle webhook, and ${holders.map((worker) =>
+      NAMES[worker]).join(" and ")} ${holders.length === 1 ? "holds" : "hold"} ${
+      E2B_HOOK.secret}, which the webhook this run registers must match: dispatch again with ` +
+      `--rotate ${E2B_HOOK.secret} to set both; no secret is set and no Worker deployed`);
   }
+  const setting = secretPlan(held, run.rotate, values).map(({ worker, name }): Setting => ({
+    worker, name, sets: !OPTIONAL.includes(name) || (values === null ? null
+      : values(name) !== undefined) }));
+  say(...setting.map(settingLine));
   return { deployed, setting };
 }
 
-/** The secrets, the hook's with them when E2B holds no hook: its register takes production's. */
 const secrets = step<Secrets | "hook", "deployed" | "setting">((ctx, got) =>
-  setSecrets(ctx, got, (name) => input(ctx.run, name), got.hook === null
-    ? new Set([...ctx.run.rotate, E2B_HOOK.secret]) : ctx.run.rotate));
+  setSecrets(ctx, got, (name) => input(ctx.run, name), got.hook));
 const secretsLater = step<Secrets, "deployed" | "setting">((ctx, got) =>
-  setSecrets(ctx, got, null, ctx.run.rotate));
+  setSecrets(ctx, got, null, undefined));
 
 /**
  * The rollout record (`RolloutRecord`), kept before the first Worker deploy: each Worker the
@@ -1575,6 +1703,7 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
     const key = `${ROLLOUT_PREFIX}${run.job.id}`;
     const namespace = got.ids["CONTROL"];
     const workers: Rolled[] = [];
+    const lines: string[] = [];
     for (const worker of WORKERS) {
       const name = NAMES[worker]!;
       let before: Rolled["before"] = null;
@@ -1582,10 +1711,13 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
         const version = await got.cloudflare.serving(got.account, name);
         before = { version, tag: await got.cloudflare.tag(got.account, name, version) };
       }
-      workers.push({ name, before, counts: got.migrations[worker] ?? {},
-                     whole: run.migrate.has(worker),
-                     secrets: got.setting.filter((each) => each.worker === worker)
-                       .map((each) => each.name) });
+      const setting = got.setting.filter((each) => each.worker === worker);
+      const rolled: Rolled = { name, before, counts: got.migrations[worker] ?? {},
+                               whole: run.migrate.has(worker),
+                               secrets: setting.filter((each) => each.sets === true)
+                                 .map((each) => each.name) };
+      workers.push(rolled);
+      lines.push(rolledLine(rolled, setting));
     }
     // Read after the split check, so a re-run attempt stops on a split as its first would.
     const held = namespace === undefined ? undefined
@@ -1598,8 +1730,7 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
       return;
     }
     say(`record each Worker's version as this run's rollout record in ${title}, before its ` +
-        "first deploy: roll back with --mode rollback --record <this run's id>",
-        ...workers.map(rolledLine));
+        "first deploy: roll back with --mode rollback --record <this run's id>", ...lines);
     if (!run.apply) {
       return;
     }
@@ -1649,7 +1780,8 @@ const workers = step<"wrangler" | "deployed" | "stage" | "setting" | "migrations
  */
 function secretsFile(run: Run, scratch: () => string, worker: string,
                      setting: Values["setting"]): string[] {
-  const names = setting.filter((each) => each.worker === worker).map((each) => each.name);
+  const names = setting.filter((each) => each.worker === worker && each.sets === true)
+    .map((each) => each.name);
   if (names.length === 0) {
     return [];
   }
@@ -2380,14 +2512,16 @@ function hook(enable: boolean, where: string): Step<"e2b" | "setting", never> {
     const result = await lifecycleHook(got.e2b, {
       secret: input(run, E2B_HOOK.secret)!, setSecret: hookSetsSecret(got.setting), enable,
     }, run.apply);
-    say(`E2B lifecycle webhook ${E2B_HOOK.url}${where}: ${result}`);
+    say(checked(`E2B lifecycle webhook ${E2B_HOOK.url}${where}`, result));
   });
 }
 
-/** The plan job's word on E2B's lifecycle webhook, which it cannot reach. */
-const hookLater = step(({ say }) => {
-  say(`E2B lifecycle webhook ${E2B_HOOK.url}: ${LATER}`);
-});
+/** The plan job's word on E2B's lifecycle webhook, which it cannot reach, where `hook` says it. */
+function hookLater(where: string): Step<never, never> {
+  return step(({ say }) => {
+    say(checked(`E2B lifecycle webhook ${E2B_HOOK.url}${where}`, null));
+  });
+}
 
 /** The doors' routes handed over one at a time, no path ever served by nothing. */
 const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, got) => {
@@ -2399,7 +2533,7 @@ const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, go
 
 /** The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`). */
 const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stage" | "kept">(
-  async ({ run, say }, got) => {
+  async ({ run, say, did }, got) => {
     say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy)`);
     if (!run.apply) {
       return;
@@ -2419,7 +2553,7 @@ const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stag
         throw new Error(`writing the custom domain's DNS records into ${key} failed (${
           status}): run routes again, which reads and writes them once more`);
       }
-      say(`record in ${key} the DNS records the custom domain made: ${
+      did(`record in ${key} the DNS records the custom domain made: ${
         created.length === 0 ? "none" : created.map((each) => each.type).join(", ")}`);
     }
   });
@@ -2528,17 +2662,17 @@ const hookBack = step<"e2b" | "hook" | "record">(async ({ run, say }, got) => {
   const before = got.record.hook;
   const url = before.url;
   const disable = !before.enabled && got.hook?.["enabled"] === true ? String(got.hook["id"]) : null;
-  say(before.enabled ? `E2B lifecycle webhook ${url}: enabled before routes, left`
-    : disable === null ? `E2B lifecycle webhook ${url}: not enabled already`
-    : `disable E2B lifecycle webhook ${url}, as it was ${before.present ? "before routes"
-      : "absent before routes (a disabled hook sends nothing)"}`);
+  say(checked(`E2B lifecycle webhook ${url}`, before.enabled ? "enabled before routes, left"
+    : disable === null ? "not enabled already"
+    : `disable it, as it was ${before.present ? "before routes"
+      : "absent before routes (a disabled hook sends nothing)"}`));
   if (run.apply && disable !== null) {
     await got.e2b.changeWebhook(disable, { enabled: false });
   }
 });
 
 const hookBackLater = step<"record">(({ say }, got) => {
-  say(`E2B lifecycle webhook ${got.record.hook.url}: ${LATER}`);
+  say(checked(`E2B lifecycle webhook ${got.record.hook.url}`, null));
 });
 
 /**
@@ -2839,7 +2973,7 @@ const READS = Steps.none.then(locks).then(zone).then(upstream).then(e2b).then(te
  */
 const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(namespaces).then(buckets)
   .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(workers)
-  .then(retired).then(control).then(hookLater);
+  .then(retired).then(control).then(hookLater(""));
 const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
   .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(workers)
   .then(retired).then(control).then(hook(false, ""));
@@ -2849,14 +2983,15 @@ const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
  * host's DNS record and WorkOS's redirect, then a dark run's, then the handover, the custom
  * domain and the hook enabled.
  */
+const ROUTED_HOOK = ", after the routes";
 const ROUTES_LATER = READS_LATER.then(routePlan).then(recordedLater).then(hostRecord)
   .then(redirectLater).then(authorize).then(namespaces).then(buckets).then(bucketLocks)
   .then(queues).then(staged).then(secretsLater).then(rollout).then(workers).then(retired)
-  .then(control).then(hookLater).then(handOver).then(customDomain);
+  .then(control).then(handOver).then(customDomain).then(hookLater(ROUTED_HOOK));
 const ROUTED = READS.then(routePlan).then(recorded).then(hostRecord).then(redirect)
   .then(authorize).then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged)
   .then(secrets).then(rollout).then(workers).then(retired).then(control).then(handOver)
-  .then(customDomain).then(hook(true, ", after the routes"));
+  .then(customDomain).then(hook(true, ROUTED_HOOK));
 
 /** A handback: a routes run's record read, held to the zone, handed back and read back. */
 const HANDBACK_LATER = Steps.none.then(zone).then(recordRead).then(backPlan).then(hookBackLater)
@@ -3059,11 +3194,13 @@ function planFile(file: string): PlanFile {
 /**
  * The apply job's hold, before any change: the plan job's plan, made again from the live
  * state, is the one the plan job of this same run wrote to `run.plan`. Anything else stops it,
- * each difference named.
+ * each difference named. Its lines, which this job's own steps are then held to as they say
+ * each (`holding`): the plan job runs other steps, without the production secrets.
  */
-async function approved(row: Row, run: Run, ctx: Context): Promise<void> {
+async function approved(row: Row, run: Run, ctx: Context): Promise<readonly string[]> {
   const planJob: Run = Object.freeze({ ...run, reach: "public", apply: false });
-  const live: Plan = { asked: askedOf(run), lines: await stepsOf(row, planJob, ctx.scratch) };
+  const live: Plan = { asked: askedOf(run),
+                       lines: await stepsOf(row, planJob, ctx.scratch, null) };
   const file = planFile(run.plan!);
   if (file.run !== run.job.id) {
     throw new Error(`the plan at ${run.plan} is run ${file.run}'s, not this run's (${
@@ -3074,7 +3211,9 @@ async function approved(row: Row, run: Run, ctx: Context): Promise<void> {
     throw new Error(`the live state no longer plans what was approved, so nothing is changed: ${
       differences.join("; ")}. Dispatch the mode again for a new plan`);
   }
-  ctx.say("the plan job's plan, made again from the live state, is the one approved");
+  ctx.say("the plan job's plan, made again from the live state, is the one approved, and each " +
+          "line below is held to its line there as it is said");
+  return file.plan.lines;
 }
 
 // --- The keyring tools ------------------------------------------------------------------
@@ -3298,14 +3437,20 @@ function given({ inputs }: Row, run: Run): void {
   }
 }
 
-/** The lines `row`'s steps for `run` report, run in order, each given what the ones before made. */
-async function stepsOf(row: Row, run: Run, scratch: () => string): Promise<string[]> {
+/**
+ * The lines `row`'s steps for `run` report, run in order, each given what the ones before made;
+ * on the apply job each held to the `approved` plan as it is said (`holding`).
+ */
+async function stepsOf(row: Row, run: Run, scratch: () => string,
+                       approved: readonly string[] | null): Promise<string[]> {
   const lines: string[] = [];
-  const ctx: Context = { ...reporterOf(run, lines), run, scratch };
+  const hold = approved === null ? null : holding(approved);
+  const ctx: Context = { ...reporterOf(run, lines, hold), run, scratch };
   const values: Partial<Values> = {};
   for (const each of row.steps[run.reach]) {
     Object.assign(values, await each.run(ctx, values as Pick<Values, never>));
   }
+  hold?.done();
   return lines;
 }
 
@@ -3324,10 +3469,8 @@ export async function perform(run: Run): Promise<{ readonly plan: readonly strin
   };
   try {
     given(row, run);
-    if (run.apply) {
-      await approved(row, run, ctx);
-    }
-    plan.push(...await stepsOf(row, run, ctx.scratch));
+    const lines = run.apply ? await approved(row, run, ctx) : null;
+    plan.push(...await stepsOf(row, run, ctx.scratch, lines));
     if (!run.apply && run.plan !== null) {
       const file: PlanFile = { kind: PLAN_KIND, run: run.job.id,
                                plan: { asked: askedOf(run), lines: plan } };
