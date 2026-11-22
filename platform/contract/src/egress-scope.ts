@@ -623,6 +623,15 @@ const BASE_HEADERS: Readonly<Record<string, RegExp>> = Object.freeze({
   "user-agent": HEADER_TEXT,
 });
 
+/**
+ * The header that says how a body's bytes are coded, which goes with the body when the body
+ * goes as it came: a free call's, which streams through unread. A metered call's body is the
+ * gateway's own, uncoded (a coded one is refused before it is read, `forward.ts`).
+ */
+const BODY_HEADERS: Readonly<Record<string, RegExp>> = Object.freeze({
+  "content-encoding": HEADER_TEXT,
+});
+
 /** The value rule `rules` keeps a header named `name` by (an exact name, or a `*` prefix). */
 function headerRule(rules: Readonly<Record<string, RegExp>>, name: string): RegExp | undefined {
   if (Object.hasOwn(rules, name)) {
@@ -635,12 +644,13 @@ function headerRule(rules: Readonly<Record<string, RegExp>>, name: string): RegE
 /**
  * The headers of `sent`, a sandbox request, that go on with it: HTTP's own (`BASE_HEADERS`),
  * its API's (`ApiRules.headers`; a service's, the transport's) and, on a `free` call, its
- * API's betas, each with a value its rule takes. Every other is dropped, every credential
- * header among them, since no list names one: the sealed one is the gateway's to set.
+ * API's betas and its body's coding (`BODY_HEADERS`), each with a value its rule takes. Every
+ * other is dropped, every credential header among them, since no list names one: the sealed
+ * one is the gateway's to set.
  */
 export function egressHeaders(scope: EgressScope, free: boolean, sent: Headers): Headers {
   const rules = callRules(scope);
-  const lists = [BASE_HEADERS, rules.headers, ...(free ? [rules.betas] : [])];
+  const lists = [BASE_HEADERS, rules.headers, ...(free ? [rules.betas, BODY_HEADERS] : [])];
   const kept = new Headers();
   for (const [name, value] of sent) {
     if (lists.some((list) => headerRule(list, name)?.test(value) === true)) {

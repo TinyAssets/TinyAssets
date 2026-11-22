@@ -15,7 +15,7 @@
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  *
  * The word `mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
- * `say`, `decoded`, `hdr`, `jsonesc`, `encoded` (the credential written back as the word
+ * `say` (the word `say`, at the word `status`), `decoded`, `hdr`, `jsonesc`, `encoded` (the credential written back as the word
  * `encoding` names), `stall` (some bytes, then silence), and `held`: the
  * body read to its end, its length answered once the test lets it go,
  * `https://status.test/release?id=<id>`, as a provider holds its answer until its
@@ -303,7 +303,8 @@ async function forwardEcho(request: Request): Promise<Response> {
     return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });
   }
   if (mode === "say") {
-    return new Response(word(request, "say") ?? "", { status: 200 });
+    return new Response(word(request, "say") ?? "",
+                        { status: Number(word(request, "status") ?? 200) });
   }
   if (mode === "encoded") {
     // The credential it was sent, after the word `before`, then a tail, written back encoded:

@@ -4,7 +4,7 @@
  * answer cut, and the secret redacted from what comes back. And the connection's setup check
  * (`verify`).
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { until } from "../../ci/workerd";
 
@@ -132,6 +132,46 @@ describe("forward", () => {
                                  "content-type": "application/json; charset=utf-16" });
     expect(dropped["anthropic-version"]).toBeUndefined();
     expect(dropped["content-type"]).toBeUndefined();
+  });
+
+  it("sends a free call's coded body with its coding, as it came", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, COUNTING);
+    const coded = new Uint8Array(await new Response(new Blob(['{"messages":[]}']).stream()
+      .pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+    const response = await call(blob, new Request(COUNT, {
+      method: "POST", body: coded,
+      headers: { "content-encoding": "gzip", ...steer({ mode: "echo" }) } }), env);
+    const echo = await response.json() as { headers: Record<string, string>; body: string };
+    expect(echo.headers["content-encoding"]).toBe("gzip");
+    expect(echo.body).toBe(new TextDecoder().decode(coded));
+  });
+
+  it("names the request headers it dropped, never a value, when the provider refuses the " +
+     "call as sent, and logs nothing when it serves it or fails itself", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    const logged = vi.spyOn(console, "warn");
+    onTestFinished(() => logged.mockRestore());
+    const answered = async (status: number) => (await call(blob, new Request(
+      "https://egress/v1/models", { headers: {
+        authorization: "Bearer ta_ph_placeholder", "openai-project": "proj_secret_value",
+        "x-stainless-lang": "js-lang-value", [`x-${"n".repeat(64)}`]: "long-name-value",
+        "cf-ray": "edge-value",
+        ...steer({ mode: "say", status: String(status) }) } }), env)).status;
+    expect(await answered(200)).toBe(200);
+    expect(await answered(503)).toBe(503);
+    // A rate limit is the provider's own state, not a refusal of the call as sent.
+    expect(await answered(429)).toBe(429);
+    expect(logged).not.toHaveBeenCalled();
+    expect(await answered(400)).toBe(400);
+    expect(logged).toHaveBeenCalledTimes(1);
+    // The placeholder's header was replaced by the sealed one, and Cloudflare's is not the
+    // sandbox's, so neither is a drop; a name past the bound is counted, not shown.
+    expect(logged.mock.calls[0]).toEqual([
+      "a sealed openai-responses call its provider refused (400) had 3 request headers " +
+      "dropped: openai-project x-stainless-lang ..."]);
+    expect(JSON.stringify(logged.mock.calls)).not.toMatch(/proj_secret|placeholder|value/);
   });
 
   it.each([
