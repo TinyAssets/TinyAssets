@@ -453,7 +453,8 @@ export function holding(approved: readonly string[]): Hold {
       }
       if (!resolves(approved[at]!, line)) {
         throw new Error(`this job's line ${at + 1} is not the approved plan's, so it stops before ` +
-                        `that change${at === 0 ? "" : ", the approved lines before it applied"}: ` +
+                        `that change${at === 0 ? "" : ", having made no change but what the " +
+                          "approved lines before it name"}: ` +
                         `approved "${approved[at]}", and this job's "${line}"`);
       }
       at += 1;
@@ -623,7 +624,8 @@ const REDIRECT_UNLISTED = "https://error.workos.com/redirect-uri-invalid";
  *
  * `unlisted`: `UPSTREAM_CALLBACK` is not known to be on the client's list yet (the plan job cannot
  * list it, and a run without `--yes` leaves it missing), so a `redirect-uri-invalid` answer
- * is reported as `dark`'s to register, not a stop; every other refusal still stops.
+ * is left to the apply job (`checked`), which registers it and then checks again, not a stop;
+ * every other refusal still stops.
  */
 export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean,
                                      fetcher: Fetch): Promise<string> {
@@ -643,17 +645,16 @@ export async function authorizeCheck(upstream: UpstreamValues, unlisted: boolean
     throw new Error("WorkOS's authorize redirected to no URL");
   }
   const host = new URL(upstream.issuer).host;
+  const subject = `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}`;
   if (unlisted && `${to.origin}${to.pathname}` === REDIRECT_UNLISTED) {
-    return `WorkOS's authorize does not take ${UPSTREAM_CALLBACK} yet: dark registers it, ` +
-           "then checks the client and it again";
+    return checked(subject, null);
   }
   if (to.protocol !== "https:" || to.host !== host || to.searchParams.has("error")
       || /error/i.test(to.pathname)) {
     throw new Error(`WorkOS's authorize refused the doors' client or ${UPSTREAM_CALLBACK}: it ` +
                     `sent the browser to ${to.origin}${to.pathname}, not ${host}'s sign-in`);
   }
-  return `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the ` +
-         `browser to ${host}'s sign-in`;
+  return checked(subject, `it takes them, sending the browser to ${host}'s sign-in`);
 }
 
 /**

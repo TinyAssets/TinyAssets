@@ -1095,6 +1095,30 @@ describe("the plan the apply job runs", () => {
     }
   });
 
+  it("applies a first deploy whose WorkOS client lacks the callback: the plan job leaves the " +
+     "early sign-in check to it", async () => {
+    // WorkOS refuses the callback until the apply job registers it.
+    const w = world();
+    const fetch = w.io.fetch;
+    let registered = false;
+    Object.assign(w.io, { fetch: async (url: string, init?: RequestInit) => {
+      const at = new URL(url).pathname;
+      registered ||= at === "/user_management/redirect_uris" && init?.method === "POST";
+      return at === "/user_management/authorize" && !registered
+        ? new Response(null, { status: 302, headers: {
+          Location: "https://error.workos.com/redirect-uri-invalid?redirect_uri=x" } })
+        : fetch(url, init);
+    } });
+    const plan = await planned(w, "dark");
+    const subject = `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}`;
+    expect((JSON.parse(readFileSync(plan, "utf8")) as { plan: { lines: string[] } }).plan.lines)
+      .toContain(`${subject}: checked by the apply job before any change`);
+    const work = await perform(parse(["--mode", "dark", "--yes", "--plan", plan], RUN, w.io));
+    rmSync(join(plan, ".."), { recursive: true, force: true });
+    expect(work.plan).toContain(`${subject}: it takes them, sending the browser to auth.test's ` +
+                                "sign-in");
+  });
+
   it("holds each line to the approved one, a line left to it by its subject, and ends with it",
      () => {
     const LATER = "checked by the apply job before any change";
@@ -1134,7 +1158,8 @@ describe("the plan the apply job runs", () => {
     } });
     const { why, changed } = await refused(w, "dark", plan);
     expect(why).toMatch(new RegExp(`^this job's line \\d+ is not the approved plan's, so it ` +
-      "stops before that change, the approved lines before it applied: approved \"record " +
+      "stops before that change, having made no change but what the approved lines before it " +
+      "name: approved \"record " +
       "each Worker's version as this run's rollout record"));
     expect(why).toContain(`and this job's "set the secret WORKOS_API_KEY on ${DOORS} with its ` +
                           'version"');
@@ -2711,13 +2736,13 @@ describe("the parts of a run", () => {
     }
   });
 
-  it("reports an unlisted callback as dark's to register while it cannot be listed, and " +
+  it("leaves an unlisted callback to the apply job while it cannot be listed, and " +
      "stops on every other refusal", async () => {
     const answering = (location: string) => async () =>
       new Response(null, { status: 302, headers: { Location: location } });
     expect(await authorizeCheck(UPSTREAM, true, answering(
       "https://error.workos.com/redirect-uri-invalid?redirect_uri=x")))
-      .toMatch(/dark registers it/);
+      .toMatch(/: checked by the apply job before any change$/);
     expect(await authorizeCheck(UPSTREAM, true, answering("https://auth.test/bootstrap")))
       .toMatch(/auth\.test's sign-in/);
     for (const location of ["https://error.workos.com/sso/client-id-invalid",
@@ -4617,8 +4642,8 @@ const DARK_FRESH = [
   `E2B's ready build of ${TEMPLATE}: present`,
   `the pair ${PAIR}'s standing checks in this E2B team: passed`,
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: registered`,
-  `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the browser to ` +
-  "auth.test's sign-in",
+  `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}: it takes them, sending ` +
+  "the browser to auth.test's sign-in",
   ...Object.entries(NAMESPACES).map(([binding, title]) =>
     `create the KV namespace ${title} (${binding})`),
   ...BUCKETS.map((name) => `create the R2 bucket ${name}`),
@@ -4647,8 +4672,8 @@ const ROUTES_HELD = [
   `${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
   "<this run's id>; the webhook it records: disabled",
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: present`,
-  `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the browser to ` +
-  "auth.test's sign-in",
+  `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}: it takes them, sending ` +
+  "the browser to auth.test's sign-in",
   RECORDED,
   ...WORKERS.map((worker) => `${NAMES[worker]}: serving before-${worker} (${
     HELD_SERVING[NAMES[worker]!]![0]!.tag}); a rollback takes it back there`),

@@ -103,8 +103,8 @@ It never counts as "absent".
    the callback, with a throwaway challenge; not the doors' own `/authorize`) must answer a
    302 to AuthKit's sign-in on `OWNER_ISSUER`'s host. A `client-id-invalid` or
    `redirect-uri-invalid` page stops the kit, naming it. Mode `plan` cannot list the
-   callback, so there a `redirect-uri-invalid` answer reads "dark registers it"; every
-   other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
+   callback, so there a `redirect-uri-invalid` answer is left to the apply job, which
+   registers the callback and answers that line; every other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
    `auth_time` only a real sign-in shows: the stage's first sign-in settles them (d3 §H).
    If its `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS
    value (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in
@@ -125,7 +125,10 @@ It never counts as "absent".
    the doors' rollout line, since a secret the run sets makes them forward-only (step 4).
 
    A held secret is never replaced unless `rotate` names it, so a run that changes no
-   secret sets none, and leaves every Worker one a rollback can take back. A held keyring is never
+   secret sets none, and leaves every Worker one a rollback can take back. **A value changed
+   in `production` alone is never deployed:** Cloudflare lists a secret's name, never its
+   value, and the kit keeps no hash, so it cannot tell the value changed. After changing one
+   (a rotated `WORKOS_API_KEY`), dispatch with `rotate` naming it. A held keyring is never
    generated, and its old kids leave it only by mode `retire` (below). It is rotated only by
    adding a key: run `keyring-add` on your copy
    of the stored keyring, store the result, then run with `rotate` naming it. The
