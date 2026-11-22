@@ -68,6 +68,8 @@ agent run on it.
 
 - [ ] `untangle/runner-protocol-3`: runner protocol 3 drops the sign-in document's `region`
   (`protocol.json`, `SigninDoc`, `signinDocument`), shipped in a protocol change's two deploys.
+  Its record is `agent-mcp.md`'s (item 4), with D4's start document; what is left is the expand
+  deploy before D4's and `SigninDoc` and `signinDocument` once no runner speaks 2.
 - [ ] `untangle/drop-signin-models`: its owner migration also drops `sandbox_signins.region`
   (the baseline's, written by nothing now), with its bound in `owner-bound.test.ts` and the
   comment in `signins.ts`'s `begin`: one migration and one pin for both sign-in columns.

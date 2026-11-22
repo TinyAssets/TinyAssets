@@ -330,8 +330,8 @@ export class Launcher implements RunHost {
     const servers = await this.#whole(agentPath(agent, AGENT_FILES.mcp));
     return { file: agentFile(definitionText(agent, AGENT_FILES.agent, read.bytes)),
              etag: read.etag, ranking: await this.#ranking(),
-             mcp: agentMcp(servers === null ? '{"mcpServers": {}}'
-               : definitionText(agent, AGENT_FILES.mcp, servers.bytes)) };
+             mcp: servers === null ? { servers: {} }
+               : agentMcp(definitionText(agent, AGENT_FILES.mcp, servers.bytes)) };
   }
 
   async #ranking(): Promise<Ranking> {
