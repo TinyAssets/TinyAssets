@@ -624,6 +624,8 @@ export interface GrantsDoorNeeds extends Pick<ObjectReads, "storage"> {
     suppressClient(client: string, now: number): void;
     /** One of the owner's live agents by name, else refused (`no_agent`, `agent_retired`). */
     liveNative(agent: string): unknown;
+    /** The owner's live agents (`all` false). */
+    natives(all: false): readonly { readonly agent: string }[];
   };
   readonly registrations: { endClient(client: string): void };
   readonly launcher: Pick<Launcher, "endClient">;
@@ -648,8 +650,16 @@ function evictRevoked(o: GrantsDoorNeeds): void {
 }
 
 export const grantsDoors = Object.freeze({
-  grantList(o: GrantsDoorNeeds, _call: Call<undefined>): { clients: Client[] } {
-    return { clients: o.grants.list() };
+  /**
+   * Every grant, each with whether the agent it names is one of the owner's live agents
+   * (`agent_live`): one that is not has its definition refused (`no_agent`, `agent_retired`)
+   * until the owner names another or its `agent.json` is back.
+   */
+  grantList(o: GrantsDoorNeeds, _call: Call<undefined>):
+      { clients: (Client & { agent_live: boolean })[] } {
+    const live = new Set(o.ledger.natives(false).map((native) => native.agent));
+    return { clients: o.grants.list().map((client) =>
+      ({ ...client, agent_live: live.has(client.agent) })) };
   },
   /**
    * The owner's widening, in its session, against the grant's revision. A set that moves

@@ -754,8 +754,8 @@ function serverKey() {
 
 async function apps(arg = null) {
   const turn = turnOf("apps", arg);
-  const [policy, { clients }, { tools }, { agents: mains, apps: known }, { kinds }] =
-    await Promise.all([
+  const [policy, { clients }, { tools }, { agents: mains, owner_agents: owned, apps: known },
+         { kinds }] = await Promise.all([
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
     call("agent/doorbell/kinds")]);
   const document_ = policy.policy;
@@ -824,26 +824,34 @@ async function apps(arg = null) {
          h("h2", {}, "Apps you connected"),
          outside.length === 0 ? h("p", { class: "muted" }, "No app is connected.")
            : h("div", { class: "scroll" }, h("table", {},
-             h("thead", {}, h("tr", {}, ["App", "Access", "Tools", "Last used", ""].map((t) =>
-               h("th", {}, t)))),
+             h("thead", {}, h("tr", {}, ["App", "Access", "Tools", "Agent", "Last used", ""]
+               .map((t) => h("th", {}, t)))),
              h("tbody", {}, outside.map((c) => {
                const profile = h("select", {},
                  h("option", { value: "custom", selected: c.profile === "custom" }, "Your choice above"),
                  h("option", { value: "directory", selected: c.profile === "directory" },
                    "The public directory's set (no code mode)"));
+               // Its own agent always among the choices, so a save never moves it unasked.
+               const agent = h("select", {}, [...new Set([c.agent, ...owned
+                 .filter((a) => a.retired_at === null).map((a) => a.agent)])].map((a) =>
+                 h("option", { value: a, selected: a === c.agent },
+                   a === c.agent && !c.agent_live ? `${a} (deleted)` : a)));
                return h("tr", {}, h("td", {}, named(c),
                  c.vendor !== null && c.vendor_verified === 0 && c.name === ""
                    ? h("span", { class: "muted" }, " (its own name, not verified)") : null),
                  h("td", {}, c.mode === "full" ? "Everything" : `${c.scopes.length} scopes`),
-                 h("td", {}, profile, action("Save", async () => {
+                 h("td", {}, profile),
+                 h("td", {}, agent, c.agent_live ? null : h("p", { class: "muted" },
+                   "This agent was deleted, so the app cannot read its instructions. Choose " +
+                   "another, or put its agent.json back.")),
+                 h("td", {}, when(c.last_seen)),
+                 h("td", {}, action("Save", async () => {
                    await call("grants/set", { client: c.client, source: c.source, mode: c.mode,
                      scopes: c.scopes, expected_revision: c.revision, name: c.name,
-                     profile: profile.value });
+                     profile: profile.value, agent: agent.value });
                    say("Saved.");
                    await apps();
-                 }, report, { class: "quiet" })),
-                 h("td", {}, when(c.last_seen)),
-                 h("td", {}, action("Disconnect", async () => {
+                 }, report, { class: "quiet" }), action("Disconnect", async () => {
                    await call("grants/revoke", { client: c.client });
                    say(`Disconnected ${named(c)}.`);
                    await apps();

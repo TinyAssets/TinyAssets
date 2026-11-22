@@ -196,9 +196,13 @@ export function mailInput(mail: Pick<Delivery, "sender_id" | "sender_kind" | "se
   return header + body + footer;
 }
 
-/** New mail to or from an agent whose `agent.json` is gone. */
-export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed; its mail " +
-  "is kept, and new mail to or from it is refused";
+/**
+ * An agent whose `agent.json` is gone, whatever reached it: mail to or from it, a grant
+ * naming it, or its definition read as it.
+ */
+export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed, so nothing " +
+  "acts as it and no new mail goes to or from it; its mail is kept, and it is back when the " +
+  "file is";
 export const NO_AGENT = "no_agent: no such agent of the owner's";
 const DELIVERY_METHODS: readonly string[] =
   Object.freeze(["mcp_event", "routine_fire", "webhook", "a2a", "pull"]);
@@ -1112,14 +1116,19 @@ export class Ledger {
         `${all ? "" : "WHERE retired_at IS NULL "}ORDER BY agent`).toArray();
   }
 
-  #nativeNamed(agent: string): StoredNative | undefined {
-    return this.#sql.exec<StoredNative>("SELECT * FROM native_agents WHERE agent_id = ?",
-                                        nativeId(agent)).toArray()[0];
+  #native(id: string): StoredNative | undefined {
+    return this.#sql.exec<StoredNative>("SELECT * FROM native_agents WHERE agent_id = ?", id)
+      .toArray()[0];
   }
 
   /** A live own agent by name, or refused: gone (`AGENT_RETIRED`) or never one (`NO_AGENT`). */
   liveNative(agent: string): StoredNative {
-    const row = this.#nativeNamed(agent);
+    return this.#live(nativeId(agent));
+  }
+
+  /** `liveNative` by the agent's id. */
+  #live(id: string): StoredNative {
+    const row = this.#native(id);
     if (row === undefined) {
       throw new Refusal("no_agent", NO_AGENT);
     }
@@ -1157,7 +1166,7 @@ export class Ledger {
     }
     const sql = this.#sql;
     this.#storage.transactionSync(() => {
-      const row = this.#nativeNamed(agent);
+      const row = this.#native(nativeId(agent));
       if (row !== undefined && row.retired_at === null) {
         return;
       }
@@ -1509,15 +1518,7 @@ export class Ledger {
       }
       return { kind: "outside", id, agent };
     }
-    const native = this.#sql.exec<StoredNative>(
-      "SELECT * FROM native_agents WHERE agent_id = ?", id).toArray()[0];
-    if (native === undefined) {
-      throw new Refusal("no_agent", NO_AGENT);
-    }
-    if (native.retired_at !== null) {
-      throw new Refusal("agent_retired", AGENT_RETIRED);
-    }
-    return { kind: "native", id, native };
+    return { kind: "native", id, native: this.#live(id) };
   }
 
   /**
