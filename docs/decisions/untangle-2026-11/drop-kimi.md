@@ -66,8 +66,9 @@ agent run on it.
 
 ## Owed
 
-- [ ] `untangle/runner-protocol-3`: runner protocol 3 drops the sign-in document's `region`
+- [x] `untangle/runner-protocol-3`: runner protocol 3 drops the sign-in document's `region`
   (`protocol.json`, `SigninDoc`, `signinDocument`), shipped in a protocol change's two deploys.
+  #5757 recorded it in `protocol.json`; the rest is owed in `runner-protocol-3.md`.
 - [ ] `untangle/drop-signin-models`: its owner migration also drops `sandbox_signins.region`
   (the baseline's, written by nothing now), with its bound in `owner-bound.test.ts` and the
   comment in `signins.ts`'s `begin`: one migration and one pin for both sign-in columns.
