@@ -956,6 +956,7 @@ export function startDoc(doors: Doors, engine: string, over: Partial<StartDoc> =
     urls: { mcp: `${doors.origin}/r/${run}/${"e".repeat(64)}/mcp`,
             mcp_bare: `${doors.origin}/r/${run}/mcp`, events: `${doors.origin}/r/${run}/events`,
             signin: `${doors.origin}/signin` },
+    mcp_servers: {},
     ...over,
   };
 }

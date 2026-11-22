@@ -69,3 +69,34 @@ export function sample(shape: Shape, over: Record<string, unknown> = {}): Record
     [key, key in over ? over[key] : typeof types === "string" ? first[types.split("|")[0]!]
       : sample(types)]));
 }
+
+/**
+ * A document as the Worker writes it (`protocol.ts`): every field each protocol it speaks
+ * (`speaks`) records, of the types every one recording it reads, so a runner of each reads it.
+ */
+export function spokenShape(kind: keyof Protocol["documents"], speaks: readonly number[]):
+    Shape {
+  return speaks.map((protocol) => PROTOCOLS[String(protocol)]!.documents[kind])
+    .reduce(joined);
+}
+
+function joined(a: Shape, b: Shape): Shape {
+  const out: Record<string, string | Shape> = { ...a };
+  for (const [key, types] of Object.entries(b)) {
+    const had = out[key];
+    if (had === undefined) {
+      out[key] = types;
+    } else if (typeof had === "string" && typeof types === "string") {
+      const both = had.split("|").filter((type) => types.split("|").includes(type));
+      if (both.length === 0) {
+        throw new Error(`${key} has no type every protocol reads: ${had}, ${types}`);
+      }
+      out[key] = both.join("|");
+    } else if (typeof had !== "string" && typeof types !== "string") {
+      out[key] = joined(had, types);
+    } else {
+      throw new Error(`${key} is a field in one protocol and an object in another`);
+    }
+  }
+  return out;
+}
