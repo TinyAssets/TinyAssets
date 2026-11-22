@@ -114,9 +114,10 @@ async function shaped(o: Owner): Promise<void> {
   const sql = (text: string, ...args: SqlStorageValue[]) => sqlIn(o.stub, text, ...args);
   await sql("INSERT INTO owner_notices (at, type, detail) VALUES (1, 'x', ?)", `${PLAIN} n`);
   for (const [id, cost] of [["1".repeat(32), 5], ["2".repeat(32), 3]] as const) {
-    await sql("INSERT INTO egress_reservations (id, run, token, connection_id, method, path, " +
-              "generation, opened_at, state) VALUES (?, ?, ?, ?, 'POST', '/v1/messages', 1, 1, " +
-              "'open')", id, "r".repeat(36), "t".repeat(64), "c".repeat(25));
+    await sql("INSERT INTO egress_reservations (id, lease_id, epoch, run, token, connection_id, " +
+              "method, path, generation, opened_at, state) VALUES (?, ?, 1, ?, ?, ?, 'POST', " +
+              "'/v1/messages', 1, 1, 'open')", id, "l".repeat(32), "r".repeat(36), "t".repeat(64),
+              "c".repeat(25));
     await sql("UPDATE egress_reservations SET charge = 'held', source = 'src', " +
               "max_output_tokens = 10, est_tokens = 10, est_cost = 7, day = '20261101', " +
               "month = '202611' WHERE id = ?", id);
