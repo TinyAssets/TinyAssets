@@ -698,7 +698,7 @@ export class LegOwner extends OwnerDO {
     return this.#gate.write(() => egress.open(LEG_SANDBOX, request, clock()));
   }
 
-  /** Every open call's end signal closed, as an erasure closes them (`Egress.drop`). */
+  /** Every open call's end signal ended, as an erasure ends them (`Egress.drop`). */
   legEnd(): void {
     this.#egress?.drop();
   }

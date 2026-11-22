@@ -68,8 +68,9 @@ door when the object closed it, at every size.
    as a live lease's connector call passes, each lease id fresh as `leaseByToken` reads it),
    each signal held with a read waiting; sampled while all are held; then `Egress.drop`, and
    every read must end. Checks: the case within `EGRESS_LIMITS.open` x `OPEN_CALL_BYTES`, and
-   all 16,000 ends. Measured: 2.35 and 2.39 MiB (154 and 157 B a call). One run in the leg, at
-   the bound: each open reads the open rows (below), so the case takes about two minutes.
+   all 16,000 ends within a beat (review, below). Measured: 2.35 and 2.39 MiB (154 and 157 B a
+   call). One run in the leg, at the bound: each open reads the open rows (below), so the
+   opens are the case's time, about 35 s.
 4. **`limits-audit.md`**: the `open` row's reason names `OPEN_CALL_BYTES` and the leg's figure;
    the live terms list it.
 
@@ -77,7 +78,8 @@ door when the object closed it, at every size.
 
 - **An open reads every open row, twice** (`#count`, and `#recover`'s lost rows through the
   `by_state` index), so the open's SQL grows with the calls open: near the bound, several ms
-  an open (the leg's 16,000 opens about two minutes in workerd). Inside a request's CPU, and
+  an open (0.8 ms at the start, 3.3 ms near the bound: the leg's 16,000 opens about 35 s in
+  workerd). Inside a request's CPU, and
   one owner opens far fewer (210 at the paid tier's most): left.
 - **`end`'s `#live.has` check** keeps a row left open by an earlier instance unmarked, as
   before: its signal errored when that instance went, and its door settles it `ended`.
@@ -94,9 +96,52 @@ door when the object closed it, at every size.
   locally. The whole case, 135 to 148 s, is one `/run` fetch, whose headers come at its end,
   against Node fetch's 300 s headers timeout. CI's slower runner takes it past both.
 
+### The ends' square, researched (2026-11-22)
+
+A scratch workerd harness: an owner object holding `n` writers, their readables returned over
+RPC to a door isolate, each read waiting; then the owner ends them all, and the time until the
+last read ends. The owner issues every end in O(n) (12 ms for 2,000, 67 ms for 16,000).
+
+| How the owner ends them | 2,000 | 4,000 | 8,000 | 16,000 |
+|---|---|---|---|---|
+| `writer.close()`, not awaited (as `#release` did) | 1.2 s | 5.7 s | 23.6 s | about 110 s (the leg) |
+| `writer.close()`, every close awaited in the call | 1.5 s | 6.4 s | 29.2 s | |
+| `writer.close()` of half of 8,000 (4,000 ends) | | | 6.4 s | |
+| `writer.abort()` | | 0.27 s | 0.53 s | 1.1 s |
+| a JS `ReadableStream`'s `controller.close()` | | 0.14 s | 0.28 s | 0.62 s |
+
+- **The square is the closes', in workerd, not the reader's:** spreading the reads over 4, 40,
+  400 or 800 door invocations (each its own request) changed nothing (5.6 to 7.0 s at 4,000,
+  26.6 to 29.5 s at 8,000), and closing 4,000 of 8,000 costs what closing 4,000 of 4,000 does:
+  it grows with the closes in flight at once, not with the reads held. So it is the owner's
+  path, and production's: a policy write, a suspension or an erasure at the bound would reach
+  its doors over about two minutes, past a beat.
+- **The stand-in is faithful as it was:** one isolate holding every read is not what made it
+  slow, so it stays.
+- **The fix: an abort.** `#release` aborts the writer (`abort("ended")`): the door's read
+  rejects, which it already takes as the end (`doors/src/egress.ts` `signal.read().then(stop,
+  stop)`; the owner tests' readers too), and linear in the count. A JS stream is faster still,
+  but would change what `OPEN_CALL_BYTES` measures, for half a second at the bound: not taken.
+
+### Fitted (2026-11-22, `1ed458fb6`)
+
+- **The leg's ends check** is its time, not only its count: the 16,000 ends reach their reads
+  within a beat (`EGRESS_BEAT_S`, 60 s, times the runner's speed), since a door not stopped by
+  then beats as if nothing ended. The store fails at once past the lane wait (120 s).
+- **Measured, the case alone:** ends 1.26 s, the whole case 36.2 s. With `close()` put back:
+  ends 109.9 s, the case 145.1 s, and the leg fails ("past a beat"). No owner test holds the
+  time: a test would need thousands of real opens to see the square, and one asserting an
+  abort rather than a close would hold the implementation, not the behaviour; the leg holds
+  the behaviour, at the bound, in workerd.
+
 ## Owed
 
-- [ ] Research where the ends' square lies (the owner isolate closing every writer at once,
+- [x] Research where the ends' square lies (the owner isolate closing every writer at once,
   or the one reader isolate holding all 16,000 reads, which no door does) and whether a
   prompt stop at `EGRESS_LIMITS.open` holds in production; then fit the case's ends to its
   ceilings with room, or the cost, before merge (`untangle/egress-open-memory`).
+  Done (above): the square was the owner's closes, in production's path too; `#release`
+  aborts. Three full `test:memory` runs (`1ed458fb6`, 200 to 204 s each): ends 1.16 to
+  1.19 s against a beat's 60 s (2% of it; 3.2 s at CI's 2.7 times, 5%) and the store's
+  120 s; the case 36.5 to 38.0 s against Node fetch's 300 s headers timeout (13%; 103 s at
+  2.7 times, 34%); 2.21 to 2.23 MiB, 145 to 146 B a call, against 3.91 MiB.

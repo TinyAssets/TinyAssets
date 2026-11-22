@@ -216,7 +216,7 @@ async function refusedWith(r: Gated, binding: Binding, connection: string,
 const signals = new WeakMap<ReadableStream<Uint8Array>, Promise<boolean>>();
 
 /**
- * Whether the end signal closed within 2 s, once the test ended its stream. That a stream
+ * Whether the end signal ended within 2 s, once the test ended its stream. That a stream
  * was not ended is read from its row instead: the object marks the row of each stream it
  * ends, and a later end marks only a stream still open.
  */
