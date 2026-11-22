@@ -2,9 +2,11 @@
  * The agent's own hooks' dispatcher (D5, `agent_definition_research.md` §4.2): `ta-runner hooks
  * <event>`, which a run's CLI runs as the run's user from the root-owned hook file its record
  * names (`definition.hooks`, in the layer its decide hook is in), on each event that file
- * carries. It knows its run by its user: the one system directory root made for a run of its
- * group (`withRunUser`), so it reads no variable the agent could set. There it reads the run's
- * own hooks (`HOOKS_FILE`, rendered at the start from the agent's `hooks.json`, `runHooks`), runs
+ * carries, through a shell's check that starts it only where the run has hooks on the event
+ * (`engine.ts` `dispatcherCommand`). It knows its run by its user: the one system directory
+ * root made for a run of its group (`withRunUser`, `ownRun`), so it reads no variable the agent
+ * could set. There it reads the run's own hooks on the event (`hooksFile`, rendered at the
+ * start from the agent's `hooks.json`, `runHooks`; none there, none on it), runs
  * each hook the event's call matches, in parallel, as the same user, in the agent's directory,
  * with the event as JSON on stdin (`HookInput`), and answers in the one shape every engine here
  * reads (`definition.hooks`):
@@ -30,7 +32,7 @@ import { delimiter, join, resolve } from "node:path";
 import type { HookKind } from "../../contract/src/acts";
 import { HOOK_EVENTS, type HookEvent, isHookEvent } from "../../contract/src/agent-definition";
 
-import { HOOKS_FILE, type RunHook, type RunHooks } from "./engine";
+import { hooksFile, type RunHook, type RunHooks } from "./engine";
 import { spawnBounded } from "./session";
 
 /**
@@ -157,7 +159,7 @@ export async function dispatch(file: RunHooks, event: HookEvent, native: unknown
                          name: name ?? "", input: call["tool_input"] ?? null } } : {}),
     ...(event === "prompt" ? { prompt: text(call["prompt"]) ?? "" } : {}),
   };
-  const hooks = file.hooks[event].filter((hook) => !tool || hook.matcher === null
+  const hooks = file.hooks.filter((hook) => !tool || hook.matcher === null
     || (name !== null && new RegExp(hook.matcher).test(name)));
   const outcomes = await Promise.all(hooks.map(async (hook) => ({
     label: `the agent's ${event} hook ${hook.run[0]!}`,
@@ -182,33 +184,31 @@ export async function dispatch(file: RunHooks, event: HookEvent, native: unknown
            err: failed.length === 0 ? "" : `${failed.join("\n")}\n` };
 }
 
-/** Each of the run's hooks whose program is not found, or not executable, as the run's user. */
-export function unrunnable(file: RunHooks, env: Readonly<Record<string, string | undefined>>):
-    string[] {
-  return (Object.entries(file.hooks) as [HookEvent, readonly RunHook[]][]).flatMap(
-    ([event, hooks]) => hooks.flatMap((hook) => {
-      const program = hook.run[0]!;
-      const candidates = program.includes("/") ? [resolve(file.cwd, program)]
-        : (env["PATH"] ?? "").split(delimiter).filter((dir) => dir !== "")
-          .map((dir) => join(dir, program));
-      const found = candidates.some((path) => {
-        try {
-          accessSync(path, constants.X_OK);
-          return statSync(path).isFile();
-        } catch {
-          return false;
-        }
-      });
-      return found ? [] : [`the agent's ${event} hook ${program} is no program it can run`];
-    }));
+/** Each of the run's hooks on `event` whose program is not found or not executable, as its user. */
+export function unrunnable(event: HookEvent, file: RunHooks,
+                           env: Readonly<Record<string, string | undefined>>): string[] {
+  return file.hooks.flatMap((hook) => {
+    const program = hook.run[0]!;
+    const candidates = program.includes("/") ? [resolve(file.cwd, program)]
+      : (env["PATH"] ?? "").split(delimiter).filter((dir) => dir !== "")
+        .map((dir) => join(dir, program));
+    const found = candidates.some((path) => {
+      try {
+        accessSync(path, constants.X_OK);
+        return statSync(path).isFile();
+      } catch {
+        return false;
+      }
+    });
+    return found ? [] : [`the agent's ${event} hook ${program} is no program it can run`];
+  });
 }
 
 /**
- * The run's own hooks file: in the one directory under `system` root owns that is of this
- * process's group (a run's system directory, `withRunUser`), root's too; any other finding
- * fails loudly.
+ * The run's own directory: the one directory under `system` root owns that is of this
+ * process's group (a run's system directory, `withRunUser`); any other finding fails loudly.
  */
-export function ownHooks(system: string, gid: number): RunHooks {
+export function ownRun(system: string, gid: number): string {
   const dirs = readdirSync(system).map((name) => join(system, name)).filter((path) => {
     const stat = lstatSync(path);
     return stat.isDirectory() && stat.uid === 0 && stat.gid === gid;
@@ -216,8 +216,16 @@ export function ownHooks(system: string, gid: number): RunHooks {
   if (dirs.length !== 1) {
     throw new Error(`no one run's directory is this user's (${dirs.length} are)`);
   }
-  const path = join(dirs[0]!, HOOKS_FILE);
-  const stat = lstatSync(path);
+  return dirs[0]!;
+}
+
+/** The run's own hooks on `event`, in its directory `run`, root's file; null, it has none. */
+export function eventHooks(run: string, event: HookEvent): RunHooks | null {
+  const path = join(run, hooksFile(event));
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat === undefined) {
+    return null;
+  }
   if (!stat.isFile() || stat.uid !== 0) {
     throw new Error(`${path} is not root's file`);
   }
@@ -238,16 +246,23 @@ export async function hooksCommand(args: readonly string[], system: string,
   if (rest.length > 0 || (event !== "check" && !isHookEvent(event))) {
     return fail("the agent's hooks: the hook names no event", BLOCK);
   }
-  let file: RunHooks;
+  const events = event === "check" ? Object.keys(HOOK_EVENTS) as HookEvent[] : [event];
+  let files: [HookEvent, RunHooks | null][];
   try {
-    file = ownHooks(system, process.getgid!());
+    const run = ownRun(system, process.getgid!());
+    files = events.map((each) => [each, eventHooks(run, each)]);
   } catch (error) {
     return fail(`the agent's hooks could not be read: ${String(error)}`,
                 event !== "check" && HOOK_EVENTS[event].block ? BLOCK : FAILED);
   }
   if (event === "check") {
-    const problems = unrunnable(file, env);
+    const problems = files.flatMap(([each, file]) => file === null ? []
+      : unrunnable(each, file, env));
     return problems.length === 0 ? NOTHING : fail(problems.join("\n"), FAILED);
+  }
+  const file = files[0]![1];
+  if (file === null) {
+    return NOTHING;
   }
   let text = "";
   for await (const chunk of stdin) {

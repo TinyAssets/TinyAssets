@@ -319,7 +319,7 @@ export async function withRunUser<T>(rec: Served, name: string,
     safeDirs("/", SYSTEM, 0o755);
     remove(system);
     // The one directory of the user's group, by which the dispatcher finds its run
-    // (`hooks.ts` `ownHooks`): one a dead runner left for this user's last run goes.
+    // (`hooks.ts` `ownRun`): one a dead runner left for this user's last run goes.
     for (const left of readdirSync(SYSTEM)) {
       if (lstatSync(join(SYSTEM, left), { throwIfNoEntry: false })?.gid === as.gid) {
         remove(join(SYSTEM, left));

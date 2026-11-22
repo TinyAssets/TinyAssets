@@ -126,7 +126,10 @@ beside the dispatcher's, and a silent hook's dispatch is no decision.
   dispatcher start (about 65 ms on this host) per hooked event and tool call**, an agent with no
   hooks too: a file one sandbox's runs share cannot hold one run's events, and writing only
   the union of live runs' events would have to be ordered against R5's generation-ordered
-  writes. A run's own file (Gemini, pi) carries only its agent's events.
+  writes. A run's own file (Gemini, pi) carries only its agent's events. (Corrected by
+  `hooks-shared-cost.md`: the shared file still carries every event, but its entry's shell
+  starts the dispatcher only where its own run has hooks on the event, otherwise costing the
+  shell's start: about 2 ms, 5 on Codex's login shell.)
 - **A hook's timeout past what the engine gives the dispatcher's entry** (600 s on Claude
   Code and Codex, 600 000 ms on Gemini, none on pi; Codex's `SessionEnd` is held to 3 s and
   Claude Code's to 60 s whatever the entry says) is cut by the engine: a vendor's limit, and on
@@ -152,4 +155,4 @@ beside the dispatcher's, and a silent hook's dispatch is no decision.
 - [ ] live: at the dark redeploy, Gemini's and pi's loading order puts R5's hook first: Gemini's `BeforeTool` list holds R5's entry before the dispatcher's, and pi's `-e decide.mjs` runs before `-e hooks.mjs`, so a call R5 holds files its card whatever the agent's hook says.
 - [ ] live: at the dark redeploy, what a run shows when pi's `input` handler consumes a blocked prompt (`handled`); if nothing, the template sends the reason as a message too.
 - [ ] `untangle/definition-commands`: whether a rule on `workspace.shell` should hold over the commands the agent's own definition files run (`mcp.json` stdio servers, `hooks.json`), researched first.
-- [ ] `untangle/hooks-shared-cost`: a shared hook file (Claude Code, Codex) carries the dispatcher only once a run of the sandbox has an agent hook, written under `writeShared`'s lock and kept while the sandbox lives, so an owner whose agents have none pays no dispatcher start (about 65 ms here) per event; today every run pays it on every event, two per tool call.
+- [x] `untangle/hooks-shared-cost`: a shared hook file (Claude Code, Codex) carries the dispatcher only once a run of the sandbox has an agent hook, written under `writeShared`'s lock and kept while the sandbox lives, so an owner whose agents have none pays no dispatcher start (about 65 ms here) per event; today every run pays it on every event, two per tool call. Done another way (#5768, `hooks-shared-cost.md`): the shared file keeps every event, and each entry's shell starts the dispatcher only where its own run has hooks on the event.

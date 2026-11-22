@@ -28,7 +28,7 @@ import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
 
 import { DECIDE_ENV } from "./decide";
-import { fill, invocation, SYSTEM } from "./engine";
+import { dispatcherCommand, fill, invocation, SYSTEM } from "./engine";
 import { dispatch } from "./hooks";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
@@ -49,7 +49,8 @@ const onFailure = (event: string) => ["pre_tool", "prompt"].includes(event) ? "b
   : "continue";
 /** The agent's hooks' dispatcher's command line on `event`, as a hook file names it. */
 const dispatcherLine = (event: string) => expect.stringMatching(new RegExp(
-  `^\\S+ --no-warnings ${RUNNERS}/[0-9a-f]{64}/runner\\.mjs hooks ${event}$`));
+  `^ta_hooks\\(\\) .* --no-warnings ${RUNNERS}/[0-9a-f]{64}/runner\\.mjs hooks "\\$1"; \\}; ` +
+  `ta_hooks ${event}$`));
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
 const SHAPES: Record<string, { lines: unknown[]; session: string; text: string }> = {
@@ -408,8 +409,7 @@ describe("the agent's own hooks (D5)", () => {
   const call = (engine: string, hooks: StartDoc["hooks"] = HOOKS, tools: string[] = []) =>
     invocation(served().get(engine)!, pureStart(engine, { hooks }), {}, {
       home: "/h", system: "/s", skills: [], hook: { tools, digest: DIGEST } });
-  const dispatcher = (event: string) =>
-    `${process.execPath} --no-warnings ${RUNNERS}/${DIGEST}/runner.mjs hooks ${event}`;
+  const dispatcher = (event: string) => `${dispatcherCommand(DIGEST)} ${event}`;
   const recordOf = (engine: string) => served().get(engine)!.cli;
   const shellOf = (engine: string) => (recordOf(engine).decide as unknown as
     { kinds: { shell: string[] } }).kinds.shell;
@@ -421,17 +421,21 @@ describe("the agent's own hooks (D5)", () => {
         holds((outer as Record<string, unknown>)[key], item))
       : outer === inner;
 
-  it("writes each run the dispatcher's own file of the agent's hooks, each match in its " +
-     "CLI's own names", () => {
+  it("writes each run the dispatcher's own file of the agent's hooks on each event it has " +
+     "them on, each match in its CLI's own names", () => {
     for (const engine of ENGINES) {
-      const made = JSON.parse(call(engine).files.get("/s/hooks.json")!);
-      expect(made, engine).toMatchObject({ engine, cwd: "/workspace/agents/main" });
-      expect(made.kinds[shellOf(engine)[0]!], engine).toBe("shell");
-      expect(made.hooks, engine).toEqual({
-        pre_tool: [{ run: ["./hooks/guard.sh"], timeout_s: 30,
-                     matcher: `^(?:${shellOf(engine).join("|")})$` }],
-        post_tool: [], prompt: [{ run: ["./hooks/context.sh"], timeout_s: 60, matcher: null }],
-        session_start: [], stop: [], session_end: [], pre_compact: [] });
+      const made = call(engine).files;
+      expect([...made.keys()].filter((path) => path.startsWith("/s/hooks.")).sort(), engine)
+        .toEqual(["/s/hooks.mjs", "/s/hooks.pre_tool.json", "/s/hooks.prompt.json"]
+          .filter((path) => engine === "pi" || !path.endsWith(".mjs")));
+      const [pre, prompt] = ["pre_tool", "prompt"].map((event) =>
+        JSON.parse(made.get(`/s/hooks.${event}.json`)!));
+      expect(pre, engine).toMatchObject({ engine, cwd: "/workspace/agents/main" });
+      expect(pre.kinds[shellOf(engine)[0]!], engine).toBe("shell");
+      expect([pre.hooks, prompt.hooks], engine).toEqual([
+        [{ run: ["./hooks/guard.sh"], timeout_s: 30,
+           matcher: `^(?:${shellOf(engine).join("|")})$` }],
+        [{ run: ["./hooks/context.sh"], timeout_s: 60, matcher: null }]]);
     }
   });
 
@@ -457,7 +461,8 @@ describe("the agent's own hooks (D5)", () => {
     for (const [event, native] of Object.entries((recordOf("codex").definition.hooks as
       { events: Record<string, string> }).events)) {
       expect(codex([])).toContain(`[[hooks.${native}.hooks]]\ntype = "command"\n` +
-                                  `command = "${dispatcher(event)}"\ntimeout = 600\n`);
+                                  `command = ${JSON.stringify(dispatcher(event))}\n` +
+                                  "timeout = 600\n");
     }
     // R5's own block first, the features table once.
     expect(codex(["Bash"])).toMatch(/^\[\[hooks\.PreToolUse\]\]\nmatcher = "\^\(\?:Bash\)\$"/);
@@ -504,6 +509,52 @@ describe("the agent's own hooks (D5)", () => {
     }
   });
 
+  it("starts the dispatcher from a file every run shares only on the events the run's agent " +
+     "has hooks on", async () => {
+    // As the CLI runs its shared file's entries: an event with none answers nothing, having
+    // started nothing past the shell (run in an address space too small for any Node to start
+    // in: V8 reserves gigabytes of it at its start) and read nothing (its stdin never closed);
+    // one with a hook reaches the dispatcher.
+    const HELD: StartDoc["hooks"] = { pre_tool: [{ run: ["sh", "-c", "echo held >&2; exit 2"] }] };
+    for (const engine of ["claude-code", "codex"]) {
+      const hooks = recordOf(engine).definition.hooks as unknown as
+        { file: string; events: Record<string, string>; runs: { shell: string[] } };
+      box.cli(engine, { lines: SHAPES[engine]!.lines });
+      await run(engine, { hooks: HELD });
+      // The dispatcher's entry on each event, the last of the event's in the file (a TOML
+      // basic string read as the JSON string it is spelled as).
+      const text = readFileSync(box.path(hooks.file), "utf8");
+      const command = (event: string): string => {
+        const native = hooks.events[event]!;
+        if (hooks.file.endsWith(".json")) {
+          return JSON.parse(text).hooks[native].at(-1).hooks[0].command;
+        }
+        const entries = [...text.matchAll(new RegExp(`\\[\\[hooks\\.${native}\\.hooks\\]\\]\\n` +
+          'type = "command"\\ncommand = ("(?:[^"\\\\]|\\\\.)*")', "g"))];
+        return JSON.parse(entries.at(-1)![1]!);
+      };
+      const on = (event: string) => [...hooks.runs.shell, command(event)];
+      const starved = (event: string) => ["sh", "-c", 'ulimit -v 262144 && exec "$@"', "sh",
+                                          ...on(event)];
+      box.cli(engine, { lines: SHAPES[engine]!.lines, hooks: [
+        { argv: starved("post_tool") }, { argv: starved("stop") },
+        { argv: on("pre_tool"), input: JSON.stringify({ tool_name: shellOf(engine)[0],
+                                                        tool_input: {} }) }] });
+      expect((await run(engine, { hooks: HELD })).end, engine).toEqual({ exit_code: 0 });
+      const [post, stop, pre] = box.ran(engine).at(-1)!.hooks;
+      expect([post, stop], engine).toEqual([{ code: 0, out: "", err: "" },
+                                            { code: 0, out: "", err: "" }]);
+      expect([pre!.code, pre!.out, pre!.err], engine).toEqual([
+        2, "", "the agent's pre_tool hook sh blocked it: held\n"]);
+      // A user with no run's directory (its run over) is never let through: the dispatcher
+      // starts, and holds the call.
+      const lost = box.exec(["setpriv", `--reuid=${POOL_UIDS[0]}`, `--regid=${POOL_GIDS[0]}`,
+                             "--clear-groups", ...on("pre_tool")], "{}");
+      expect([lost.status, lost.stderr], engine).toEqual([2, expect.stringMatching(
+        /^the agent's hooks could not be read: .*no one run's directory is this user's \(0/)]);
+    }
+  });
+
   it("finds the run by its user's group though a dead runner left a run's directory of it",
      async () => {
     for (const gid of POOL_GIDS) {
@@ -538,7 +589,7 @@ describe("the agent's own hooks (D5)", () => {
         expect(decide.endsWith(".json") ? holds(JSON.parse(mine), JSON.parse(r5)) : mine === r5,
                engine).toBe(true);
       }
-      const file = { ...JSON.parse(withOwn.files.get("/s/hooks.json")!), cwd: "/" };
+      const file = { ...JSON.parse(withOwn.files.get("/s/hooks.pre_tool.json")!), cwd: "/" };
       expect(await dispatch(file, "pre_tool", { tool_name: tools[0], tool_input: {} },
                             { PATH: process.env["PATH"] }), engine)
         .toEqual({ code: 0, out: "", err: "" });

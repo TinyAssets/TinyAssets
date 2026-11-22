@@ -122,7 +122,8 @@ export interface Instructions {
  * How the agent's own hooks (`hooks.json`) reach the engine: through the runner's dispatcher
  * (`sandbox/runner/hooks.ts`, `<runner> hooks <event>`), which the engine runs from a file in
  * the root-owned layer its `decide` hook is in, and which runs each of the agent's hooks the
- * event's call matches from the run's own `{system}/hooks.json`. The dispatcher answers in the
+ * event's call matches from the run's own file of the event's (`{system}/hooks.<event>.json`,
+ * there only where its agent has hooks on it). The dispatcher answers in the
  * one shape every engine here reads: exit 2 and the reason on stderr blocks, exit 0 and
  * `hookSpecificOutput.additionalContext` (under the event's `hookEventName`) adds context.
  * - `events`: the engine's own name of each engine-neutral event (`HOOK_EVENTS`), every one.
@@ -134,7 +135,8 @@ export interface Instructions {
  *   `HOOK_EVENTS`). A file every run shares carries
  *   every event (any run's agent may have a hook on it); a run's own carries the events the
  *   run's agent has hooks on, and is written only when there is one. `{dispatcher}` is the
- *   dispatcher's command line before its event, `{dispatcher_argv}` its argv as JSON, and
+ *   dispatcher's shell command line before its event, which starts the dispatcher only where
+ *   the run has hooks on the event (`dispatcherCommand`), `{dispatcher_argv}` its argv as JSON, and
  *   `{hook_events}` the run's events as JSON. Several parts of one JSON file merge, lists
  *   joined; of any other file, their texts are joined.
  * - `argv`: what loads a file of the run's own, added whenever the file is written.
