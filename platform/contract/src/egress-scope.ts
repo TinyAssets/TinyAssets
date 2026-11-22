@@ -198,7 +198,8 @@ function supported(api: string): string {
 /** How a secret is sent, checked. */
 function authTemplate(value: unknown): AuthTemplate {
   const auth = shape(value, ["header", "scheme"]);
-  return Object.freeze({ header: text(auth["header"], HEADER), scheme: text(auth["scheme"], SCHEME) });
+  return Object.freeze({ header: text(auth["header"], HEADER),
+                         scheme: text(auth["scheme"], SCHEME) });
 }
 
 /**
@@ -236,7 +237,10 @@ export function upstream(value: unknown, endpoints: readonly Endpoint[]):
     : modelUpstream(value, endpoints);
 }
 
-/** A model source's upstream; a declared endpoint (`custom`) only on an API with a declared adapter. */
+/**
+ * A model source's upstream; a declared endpoint (`custom`) only on an API with a declared
+ * adapter.
+ */
 function modelUpstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
   const fields = shape(value, ["provider", "api", "base_url", "auth"], ["verify_url", "models"]);
   const provider = text(fields["provider"], ID);

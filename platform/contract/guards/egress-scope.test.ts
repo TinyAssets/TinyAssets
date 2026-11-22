@@ -1,7 +1,8 @@
 /**
  * Where a sealed credential may go (`src/egress-scope.ts`): `allows`, on hand-written
- * endpoints, and a service's key bound to its one URL (`serviceSource`, `egressScope`). The source values sealed with a credential are the gateway's
- * (`gateway/test/credential.test.ts`), on the records it seals.
+ * endpoints, and a service's key bound to its one URL (`serviceSource`, `egressScope`). The
+ * source values sealed with a credential are the gateway's (`gateway/test/credential.test.ts`),
+ * on the records it seals.
  */
 import { describe, expect, it } from "vitest";
 

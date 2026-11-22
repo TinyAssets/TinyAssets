@@ -8,10 +8,11 @@
  *   with the ranking its `auto` ranks by (the owner's `/workspace/model-ranking.json`, else the
  *   platform's), its run admitted in one unit against the file still at the etag it was
  *   read at, with the agent's own MCP servers the owner's egress lets out (`agentServers`; the
- *   owner told of each left out), then started through the
- *   sandbox Worker (`SANDBOX`), and what came of it recorded (`running`, `failed` with the
- *   sandbox's code or for an answer out of its shape, `unknown` when its answer never came,
- *   or `waiting` for a sandbox to free);
+ *   owner told of each left out), each one an owner's connector is sealed for bound to it on
+ *   the run's grant and reached through the egress door (`connectorsOf`), then started
+ *   through the sandbox Worker (`SANDBOX`), and what came of it recorded (`running`,
+ *   `failed` with the sandbox's code or for an answer out of its shape, `unknown` when its
+ *   answer never came, or `waiting` for a sandbox to free);
  *   a door's bounded wait for its run to settle (`settledWithin`), woken on this instance;
  * - **the `runs` lane's pass** (`pass`): runs whose runner was lost settled, waiting runs
  *   started on their turn, mail no run took delivered as its agent's run (`#deliver`), and due
