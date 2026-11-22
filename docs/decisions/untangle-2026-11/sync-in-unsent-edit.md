@@ -69,7 +69,8 @@ it by name (`formatStep`), so a rollback meets only that, and takes no forward e
    conflict and its take sends the copy again: a second copy, never a loss.
 3. **A folder gone** from the owner's files goes but for the files under it holding unsent
    changes, each kept with its row (a conflict there, then removed); with none, it goes
-   whole, as before.
+   whole, as before. (Since `gone-folder-late-file.md`: an entry at a time, each folder by
+   `rmdir`, so a file a run makes after the walk keeps its folder and is sent.)
 4. **Sessions** keep their hash under the mark (`Known.unread`, format 2). Staging drops a
    marked copy only while it is the one synced and still the one hashed; one holding changes
    is sent, a conflict copy at the owner's files. A session's conflict leaves its row on its

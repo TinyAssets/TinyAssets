@@ -81,3 +81,17 @@ UTF-8, an entry a sync-ignore line keeps out), and, where a file was kept, it le
 - A run's write between the walk's look at a file and its removal is removed with it: the
   window `theirs` has too (`sync-in-unsent-edit.md` decision 2), the narrowest a filesystem
   without a compare-and-remove allows.
+
+## Review (2026-11-22)
+
+- **The folder made again is the owner's outcome for any new file**, not a conflict: the late
+  file has no base, so `#syncOp` commits it with `parents` true (`files.ts` `#commit`,
+  `#parents`, a recorded `mkdir`), as it would a file a run made just after sync-in, which
+  the runner cannot tell apart. Only a kind change is a conflict, reported
+  (`ta.sync_conflicts`, the second test). Nothing is lost on either side (#5798's rule).
+- **What sync-out never sends going beside a kept file** is decision 5 of
+  `sync-in-unsent-edit.md` (the owner's version: none). Default lines are rebuilt trees,
+  custom lines the owner's, a link goes as a link (its target untouched), and the sessions'
+  tree is never under a gone folder (`/workspace/.sessions`, a root's child). A folder with
+  no kept file always lost them; now the two cases agree.
+- `sync-in-unsent-edit.md` decision 3 now points here.
