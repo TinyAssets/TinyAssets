@@ -181,7 +181,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
     usable(): readonly Usable[];
     egressible(): readonly Egressible[];
   };
-  readonly egress: Pick<Egress, "end">;
+  readonly egress: Pick<Egress, "end" | "spent">;
   readonly files: Pick<Files, "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
     | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "openFile" | "range"
     | "sandboxLease" | "stat">;
@@ -200,7 +200,6 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
   readonly relay: Pick<Relay, "settled">;
   readonly signins: Pick<Signins, "end" | "holds" | "list">;
   readonly starter: Pick<Starter, "seeded" | "version">;
-  readonly usage: { spent(period: string, source: string | null): number };
 }
 
 export class Launcher implements RunHost {
@@ -248,7 +247,7 @@ export class Launcher implements RunHost {
   }
 
   spent(period: string, source: string | null): number {
-    return this.#o.usage.spent(period, source);
+    return this.#o.egress.spent(period, source);
   }
 
   lease(now: number, authority: string): LiveLease | null {

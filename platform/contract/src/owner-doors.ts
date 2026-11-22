@@ -296,7 +296,6 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   connectionList(binding: Binding): Promise<DoorAnswer<"connectionList">>;
   flowFinish(binding: Binding, ...request: DoorLoose<"flowFinish">):
     Promise<DoorAnswer<"flowFinish">>;
-  usageReceipts(binding: Binding): Promise<DoorAnswer<"usageReceipts">>;
   noticeList(binding: Binding): Promise<DoorAnswer<"noticeList">>;
   starterReceipts(binding: Binding): Promise<DoorAnswer<"starterReceipts">>;
   admissionSet(binding: Binding, ...request: DoorLoose<"admissionSet">):

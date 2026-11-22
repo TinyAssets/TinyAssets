@@ -102,7 +102,8 @@ is a caller that stops waiting without leaving: a 2025-11-25 client past its own
    of a client that may speak it (Gemini CLI's), so none is cut while it waits. A 2026-07-28
    caller, `/api` and the owner app have none: their leaving is their request's end.
    `limits-audit.md`: the `CODEMODE_TIMEOUT_MS` row is replaced by `TIMER_MOST_MS` and
-   `LEGACY_WAIT_MS`, and the summary recounted (186 technical ceilings, 215 rows).
+   `LEGACY_WAIT_MS`, and the summary recounted (183 technical ceilings, 212 rows, after
+   merging main).
 5. **Tests.** Owner: a script whose stop closes while its fourth call is held at the FILES gate,
    fifty calls after it, is answered `stopped`, three writes landed and the fourth
    `cancelled`, no call after; a call without its caller's stop refused `invalid`

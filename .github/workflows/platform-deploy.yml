@@ -39,7 +39,7 @@ name: Platform deploy (manual, founder-approved)
 # their first deploy, under the run's id; `rollback` takes that id as
 # `record` and takes the run's Workers back to those versions, callers first,
 # stopping at a Worker the run made forward-only (its migrations, its secrets,
-# a whole deploy).
+# a whole deploy, its forward mark).
 # The operator path (deploy/operator.ts): `control` edits the control record
 # in KV itself (`set`, from `replace` in place of the live one), never through
 # the doors; `owner` asks the doors `act` for `owner` through the operator

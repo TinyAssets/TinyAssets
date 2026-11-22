@@ -123,6 +123,33 @@ export function retiredWorkers(retired: readonly string[],
  */
 export const RETIRED = retiredWorkers(platform.retired.workers, NAMES);
 
+/**
+ * Each Worker's count of `changes` naming it, by folder (`platform.json` `forward`): what its
+ * version's tag carries as `-f<n>`, which a rollback below it cannot follow. Each change names
+ * Workers `names` holds, each once, and why; anything else throws.
+ */
+export function forwardCounts(changes: readonly unknown[],
+                              names: Readonly<Record<string, string>>):
+    Readonly<Record<string, number>> {
+  const counts = Object.fromEntries(Object.keys(names).map((worker) => [worker, 0]));
+  for (const [at, change] of changes.entries()) {
+    const { workers, why } = (change ?? {}) as { workers?: unknown; why?: unknown };
+    if (!Array.isArray(workers) || workers.length === 0 || new Set(workers).size !== workers.length
+        || !workers.every((worker) => typeof worker === "string" && Object.hasOwn(counts, worker))
+        || typeof why !== "string" || why.trim() === "") {
+      throw new Error(`platform.json's forward change ${at + 1} names no Worker of this tree, ` +
+                      "each once, with why");
+    }
+    for (const worker of workers as string[]) {
+      counts[worker]! += 1;
+    }
+  }
+  return Object.freeze(counts);
+}
+
+/** Each Worker's forward count, by folder (`forwardCounts`). */
+export const FORWARD = forwardCounts(platform.forward.changes, NAMES);
+
 /** The R2 buckets the kit makes: the ones the Workers bind, then the unbound (`platform.json`). */
 export const BUCKETS: readonly string[] = Object.freeze([...new Set([
   ...named((config) =>

@@ -55,7 +55,6 @@ const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   registrations: Object.freeze([OWNER_DO]),
   admission: Object.freeze([OWNER_DO]),
   connections: Object.freeze([OWNER_DO]),
-  usage: Object.freeze([OWNER_DO]),
 });
 const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   owner_sessions: Object.freeze(["owner/src/sessions.ts", SCHEMA]),
@@ -77,8 +76,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   owner_erasure: Object.freeze(["owner/src/erasure.ts", SCHEMA]),
   connection_secrets: Object.freeze(["owner/src/connections.ts", SCHEMA]),
   connection_flows: Object.freeze(["owner/src/connections.ts", SCHEMA]),
-  model_reservations: Object.freeze(["owner/src/usage.ts", SCHEMA]),
-  model_spend: Object.freeze(["owner/src/usage.ts", SCHEMA]),
+  model_spend: Object.freeze(["owner/src/egress.ts", SCHEMA]),
   egress_reservations: Object.freeze(["owner/src/egress.ts", SCHEMA]),
   run_grants: Object.freeze(["owner/src/runs.ts", SCHEMA]),
   run_schedules: Object.freeze(["owner/src/runs.ts", SCHEMA]),
@@ -383,7 +381,7 @@ export function runtimeReach(sources: ReadonlyMap<string, string>, roots: readon
 
 /** What the sandbox's spend may not run: pi's engine, in our modules or its packages. */
 function engine({ modules, packages }: { modules: string[]; packages: string[] }): string[] {
-  return [...modules.filter((path) => /\/(usage|thread-host|thread-store|agent|turns)\.ts$/
+  return [...modules.filter((path) => /\/(thread-host|thread-store|agent|turns)\.ts$/
     .test(path)),
           ...packages.filter((name) => name.startsWith("@earendil-works/")
                                        && !name.startsWith("@earendil-works/pi-ai"))];

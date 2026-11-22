@@ -206,7 +206,6 @@ export function loadOrder(): readonly Load[] {
     { table: "archive_segments" },
     { table: "archive_purges" },
     { table: "ledger_ids" },
-    { table: "model_reservations" },
     { table: "egress_reservations" },
     { table: "model_spend" },
     { table: "runs" },
