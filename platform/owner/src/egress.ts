@@ -106,9 +106,9 @@ import { clock, clockMs } from "./clock";
  * How much egress one owner holds: 16,000 calls open at once, whichever of its runs opened
  * them, each a row the owner-bound guard costs (`egress_reservations`), the object's 10 GB
  * the ceiling, and each its end signal in the object's isolate (`OPEN_CALL_BYTES`), which
- * the counts test counts 16,000 of for each owner object. One owner holds far fewer: the paid tier's 10 runs of Claude Code, each its
- * main loop and the 20 subagents it runs at once (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`'s
- * default in 2.1.309), stream 210. It is the room the guard held before, 16 a run at the
+ * the counts test counts 16,000 of for each owner object. One owner holds far fewer: the
+ * paid tier's 10 runs of Claude Code, each its main loop and the 20 subagents it runs at once
+ * (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`'s default in 2.1.309), stream 210. It is the room the guard held before, 16 a run at the
  * most runs a tier may give, as one count, so a busy run is never refused while the
  * others idle. And the newest 2,000 admitted and 500 refused rows kept as receipts.
  */

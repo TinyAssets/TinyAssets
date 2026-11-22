@@ -655,8 +655,8 @@ export class LegOwner extends OwnerDO {
 
   /**
    * One sandbox call admitted by the real `Egress.open`, over the object's own storage and
-   * rows: its reads (the leg's, the one piece of the object it builds) answer every check as a live
-   * lease's run passes a connector's call, the lease's id read fresh each time as
+   * rows: its reads (the leg's, the one piece of the object it builds) answer every check as
+   * a live lease's run passes a connector's call, the lease's id read fresh each time as
    * `leaseByToken` reads it from its row. The call's end signal, which the caller reads from
    * its own isolate, as the egress door does.
    */
