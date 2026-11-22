@@ -119,7 +119,7 @@ describe("an append (file_append)", () => {
     }
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/dir", expected_etag: null });
     expect((await failure(() => r.stub.fileAppend(r.bind(MUSE), {
-      path: "/workspace/dir", content: "x" }))).message).toBe("/workspace/dir is a directory");
+      path: "/workspace/dir", content: "x" }))).message).toBe("/workspace/dir is not a file");
   });
 });
 
