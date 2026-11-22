@@ -368,6 +368,13 @@ export interface SandboxLease {
    * retry clock. */
   readonly network_tried_at: number | null;
   readonly network_tried_generation: number | null;
+  /**
+   * Since when its sandbox may hold a network wider than the egress policy (s): set by a
+   * write that narrowed the policy (`leasesNarrowed`), cleared once a re-apply at or past that
+   * write's generation is applied; the lease is given back `NARROWED_WITHIN_S` on
+   * (`Launcher.reapply`). Null while it owes none.
+   */
+  readonly narrowed_at: number | null;
   /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
   readonly signins: readonly string[];
 }
@@ -386,7 +393,8 @@ type LeaseRow = {
   authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
   egress_token: string; sync_token: string; runner_token: string;
   network_generation: number | null; network_pending: number | null;
-  network_tried_at: number | null; network_tried_generation: number | null; signins: string;
+  network_tried_at: number | null; network_tried_generation: number | null;
+  narrowed_at: number | null; signins: string;
 };
 
 function leaseOf(row: LeaseRow): SandboxLease {
@@ -396,6 +404,7 @@ function leaseOf(row: LeaseRow): SandboxLease {
            network_generation: row.network_generation, network_pending: row.network_pending,
            network_tried_at: row.network_tried_at,
            network_tried_generation: row.network_tried_generation,
+           narrowed_at: row.narrowed_at,
            signins: row.signins === "" ? [] : row.signins.split(",") };
 }
 
@@ -2268,11 +2277,21 @@ export class Files {
   }
 
   /**
+   * In a unit: an egress write at `generation` narrowed the policy, so every live lease's
+   * sandbox, whose network is older, may let out a host it dropped: each owes it from `now`,
+   * or from the narrowing it already owed.
+   */
+  leasesNarrowed(generation: number, now: number): void {
+    this.#sql.exec("UPDATE sandbox_leases SET narrowed_generation = ?, narrowed_at = " +
+                     `COALESCE(narrowed_at, ?) WHERE ${LIVE_LEASE}`, generation, now, now);
+  }
+
+  /**
    * A re-apply's answer, fenced by the lease: `applied` confirms its generation (never an
-   * older one over a newer) and clears it from out; `at_resume` keeps it out (its sandbox
-   * paused, the Worker applies it as it resumes), its retry clock from `now`; a failure
-   * (`lost`, no answer) clears it, so its calls are refused again, and the lane tries again
-   * once its retry clock passes.
+   * older one over a newer), clears it from out, and clears a narrowing it covers; `at_resume`
+   * keeps it out (its sandbox paused, the Worker applies it as it resumes), its retry clock
+   * from `now`; a failure (`lost`, no answer) clears it, so its calls are refused again, and
+   * the lane tries again once its retry clock passes.
    */
   networkAnswered(leaseId: string, epoch: number, generation: number,
                   answer: "applied" | "at_resume" | "failed", now: number): void {
@@ -2283,8 +2302,12 @@ export class Files {
           "UPDATE sandbox_leases SET network_generation = MAX(COALESCE(network_generation, " +
             "0), ?), network_pending = CASE WHEN network_pending <= ? THEN NULL ELSE " +
             "network_pending END, network_tried_at = CASE WHEN network_pending <= ? THEN " +
-            `NULL ELSE network_tried_at END ${fence}`,
-          generation, generation, generation, leaseId, epoch, now);
+            "NULL ELSE network_tried_at END, narrowed_at = CASE WHEN narrowed_generation <= " +
+            "MAX(COALESCE(network_generation, 0), ?) THEN NULL ELSE narrowed_at END, " +
+            "narrowed_generation = CASE WHEN narrowed_generation <= " +
+            "MAX(COALESCE(network_generation, 0), ?) THEN NULL ELSE narrowed_generation END " +
+            fence,
+          generation, generation, generation, generation, generation, leaseId, epoch, now);
       } else if (answer === "at_resume") {
         this.#sql.exec(`UPDATE sandbox_leases SET network_tried_at = ? ${fence} AND ` +
                          "network_pending = ?", now, leaseId, epoch, now, generation);
@@ -2362,8 +2385,10 @@ export class Files {
     return before !== null;
   }
 
-  /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
-  /** Each lapsed lease's row gone: the ids of those that went. */
+  /**
+   * In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`); the ids
+   * of those that went.
+   */
   leasesLapsed(now: number): string[] {
     const gone = this.#sql.exec<{ lease_id: string }>(
       `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now).toArray();
