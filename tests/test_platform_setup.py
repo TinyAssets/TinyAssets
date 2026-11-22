@@ -174,6 +174,7 @@ def test_the_made_values_are_the_shapes_the_platform_reads() -> None:
     assert ring["active"] == "k1" and list(ring["keys"]) == ["k1"]
     assert len(base64.b64decode(ring["keys"]["k1"])) == 32
     assert setup.make_keyring() != setup.make_keyring()
+    assert setup.MADE["ROUTING_KEYRING"] is setup.make_keyring
 
 
 # --- WorkOS -----------------------------------------------------------------------------

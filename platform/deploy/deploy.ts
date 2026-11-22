@@ -170,7 +170,7 @@ import {
 import {
   authorizeUrl, SECRET_ORIGIN, SIGN_IN_MAX_AGE_S, type UpstreamConfig, upstreamConfig,
 } from "../contract/src/signin.ts";
-import { openRoute } from "../contract/src/routing-mac.ts";
+import { openRoute, ROUTE_METADATA } from "../contract/src/routing-mac.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import type { Listed } from "../sandbox/e2b/transport.ts";
@@ -2324,9 +2324,6 @@ export async function retirement({ keyring: name, stored, record, copy, now }: R
   }
   return { kids, words: `retire-${name}-${kids.join(",")}`, lines };
 }
-
-/** The metadata key a platform sandbox's sealed route is under (`sandbox/src/control.ts`). */
-const ROUTE_METADATA = "ta_route";
 
 /**
  * A sandboxed keyring's retirement (`platform.json` `keyrings`), or a loud stop naming why not:

@@ -92,7 +92,7 @@ import {
 } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
-import { routeShaped } from "../../contract/src/routing-mac";
+import { ROUTE_METADATA, routeShaped } from "../../contract/src/routing-mac";
 import {
   METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkDocument, type NetworkReapply,
   type SandboxSignin, type SandboxStart, type Started,
@@ -838,7 +838,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         // An opaque name, so E2B's own list shows whose it is to us and to no one else.
         metadata: { ta_owner: ownerTag(this.#owner),
                     // Sealed, so only the doors open it: the route of E2B's lifecycle events.
-                    ta_route: route },
+                    [ROUTE_METADATA]: route },
       });
       const info = await e2b.info(created.sandboxID);
       const digest = this.#digest;

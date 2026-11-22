@@ -152,6 +152,12 @@ function routeMax(): number {
 const ROUTE: Domain = Object.freeze({ salt: "tinyassets/route/v1", info: "route",
                                       context: "ta-e2b-route/v2" });
 
+/**
+ * The E2B metadata key a sandbox's sealed route is under: the sandbox Worker writes it at the
+ * create, the doors read it from each lifecycle event, and mode retire from E2B's list.
+ */
+export const ROUTE_METADATA = "ta_route";
+
 /** Whether `sealed` has a sealed route's form, unopened: what the sandbox Worker checks. */
 export function routeShaped(sealed: unknown): boolean {
   return parseBlob(sealed, routeMax()) !== null;

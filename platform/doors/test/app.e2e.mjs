@@ -109,7 +109,7 @@ async function doors() {
             : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       }, "test/e2e-entry.ts"),
       // The owner Worker, its SANDBOX the owner suite's fake sandbox Worker.
-      await auxiliary(join(PLATFORM, "owner"), { bindings: { ROUTING_KEYRING: routingKey },
+      await auxiliary(join(PLATFORM, "owner"), { bindings: { ROUTING_KEYRING: routing },
                                                  serviceBindings: { SANDBOX: sandbox.name } }),
       await auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
                                                    outboundService: providers.name }),

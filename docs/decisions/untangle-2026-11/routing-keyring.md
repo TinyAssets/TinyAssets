@@ -84,12 +84,22 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
   keyrings whose values live in sandboxes; `retire` of one lists E2B's sandboxes and stops while
   any route does not open under the stored ring (`routesHeld`). Opening, not reading the kid,
   also proves the stored key is the one that sealed them.
-- **No founder-free migration exists that is not an alias.** The kit cannot read the old key's
-  value, nor write a GitHub secret; converting `ROUTING_MAC_KEY` into a ring on every run would
-  be a permanent alias, and the founder could still never hold a ring that contains the old key
-  to rotate it with. Pre-cutover nothing public reaches the doors, so the one break of live
-  values is now, not later (Direction 5). So the name changes and the founder runs one command
-  (below).
+- **No founder-free migration exists that is not an alias** (weighed again in review, asked
+  for a path with no founder step). The kit's input check could build a one-kid ring from
+  `ROUTING_MAC_KEY` (32 bytes) when `production` lacks `ROUTING_KEYRING`, in about 20 lines, but:
+  - **It keeps no live value working.** The old token is kid-less under `ta-sandbox-token-v2`
+    and the old route is AES-GCM under HMAC(key, its domain), with no HKDF and no kid in its
+    additional data. Keeping either needs `verifyToken`/`openRoute` to take the kid-less
+    format: a downgrade path. So it saves only the founder's one command.
+  - **It leaves two names for one secret, then a silent split.** The workflow would pass both
+    names. The kit sets a held secret only when `--rotate` names it, so once `ROUTING_KEYRING`
+    is in `production` (the setup makes any `made` secret it lacks, on any later run) it differs
+    from the ring both Workers hold, with no word of it. The next `--rotate` of it then breaks
+    every live value, past the cutover too. Or the alias stays for good.
+
+  The kit cannot write a GitHub secret, nor read a held one. Pre-cutover nothing public
+  reaches the doors, so the one break of live values is now, not later (Direction 5). So the
+  name changes and the founder runs one command (below).
 
 ## As built
 
@@ -128,6 +138,11 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
    (`SECRETS`), before any step.
 4. **Docs:** the checklist's rotation and retirement steps for `ROUTING_KEYRING`; the workflow's
    notes and dispatch descriptions; the doors spec's token format.
+5. **Review:** the route's E2B metadata key is one export, `ROUTE_METADATA` (`routing-mac.ts`).
+   The sandbox Worker writes it and the doors and `routesHeld` read it. The kit had its own
+   copy of `"ta_route"`: renamed at the writer, `retire` would have seen every sandbox as
+   carrying no route and passed. The doors' app harness sets the ring on the owner too, and the
+   setup's shape test checks that `ROUTING_KEYRING` is made as a keyring.
 
 ### Behaviour changed on purpose
 
@@ -145,7 +160,10 @@ first (Fact 14), on `origin/main` at `c21c166d0`.
   held secret, so it cannot tell a staged ring from an activated one; the checklist and the kit's
   notes say it. A record of the ring each run set (kid to key hash) would let the kit check it,
   and the checklist's residual of a rotated ring that dropped the deployed key, for every
-  keyring: owed below.
+  keyring: owed below. No cheaper check exists now (review): the rollout record holds the
+  names of the secrets a run set, not their kids. A skipped stage is loud and recoverable: the
+  owner's new tokens are refused and its new routes go unrouted only until the doors take the
+  ring in the same run.
 - **A routing kid can stay in the ring for good.** Keeping one costs a ring entry; retiring it
   waits until every sandbox created before the activation is killed, by the owner's erasure or
   by hand. No sweep exists to bring a route under a new kid (research 3).
