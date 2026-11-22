@@ -20,8 +20,9 @@
  *   fetched by the feed: a session path it names is marked changed in the mirror (`unread`),
  *   and a resume fetches its own files (`fetchSessions`, the record's `resume_paths`), only
  *   under that engine's own `session_paths`, into the sync agent's own directory, for the
- *   root runner to put in that engine's store; never into the shared workspace, where every
- *   engine's user could reach them.
+ *   root runner to put in that engine's store (the rows moved only for what it took,
+ *   `tookSessions`); never into the shared workspace, where every engine's user could reach
+ *   them.
  * - **Unsent changes, for every path:** a copy whose bytes are not the ones the mirror last
  *   synced, and that sync-out sends (`Selection`), is never replaced, removed or dropped by
  *   the owner's newer version: it goes out against the base it was read at, so the owner's
@@ -30,7 +31,9 @@
  *   takes the owner's version: a workspace file at once (`theirs`), where it is still the
  *   copy sent; a session at its next staging (the store's copy let go) and a resume's fetch.
  *   So the race ends in one conflict copy, and a copy changed again since it was sent is a
- *   change of its own, sent again.
+ *   change of its own, sent again. A path whose kind changed (the owner's file where the
+ *   sandbox holds a folder, or the reverse) is taken the same way: the sandbox's unsent files
+ *   go out beside the owner's, then it takes the owner's kind.
  * - **Out:** each engine's sessions the root runner staged first (`stageSessions`, from the
  *   engines' stores, which only root reads), in commits of their own; then
  *   every regular file under `/workspace` whose bytes differ from what was last synced
@@ -50,7 +53,7 @@
 import { sha256Hex } from "../../contract/src/digest";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, type Stats } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { type Served, served } from "../../sources/src/served";
@@ -291,7 +294,8 @@ export class SyncClient {
  * its next write; null where it has read none), its bytes' identity (the bytes it last read
  * or wrote, or saved beside the owner's as a conflict copy; a size of 0 and no hash where it
  * holds none), and whether the owner's files hold a version of it this sandbox has not read
- * (`unread`: a session the feed named, or a reset no longer lists, kept for a resume to fetch).
+ * (`unread`: a session the feed named, or a reset no longer lists, kept for a resume to fetch;
+ * a workspace file the sandbox's own unsent files stood in the way of, `theirs`).
  */
 interface Known {
   readonly version: number | null;
@@ -506,8 +510,13 @@ const NOTHING: Known = { version: null, size: 0, mtime_ms: 0, sha256: "", unread
  */
 function unread(place: Place, mirror: Mirror, path: string): void {
   if (sessionOf(place, path) !== null) {
-    mirror.put(path, { ...(mirror.get(path) ?? NOTHING), unread: true });
+    mark(mirror, path);
   }
+}
+
+/** `path` marked as holding a version in the owner's files this sandbox has not read. */
+function mark(mirror: Mirror, path: string): void {
+  mirror.put(path, { ...(mirror.get(path) ?? NOTHING), unread: true });
 }
 
 /** Whether `path` is the sessions' tree or under it, which the feed never writes locally. */
@@ -529,6 +538,13 @@ function same(now: Stats | null, was: Stats | null): boolean {
  * the base it was read at. A file's bytes are fetched beside it and put in place only while
  * the sandbox's copy is still the one looked at (a run's write meanwhile is left the same
  * way); a folder gone goes but for the files under it holding unsent changes.
+ *
+ * Where the path changed kind, the sandbox's kind goes the same way: a file of its own where
+ * the owner's files hold a folder is replaced by one, and a folder where they hold a file
+ * goes but for its files holding unsent changes. A file the sandbox cannot take yet, its
+ * folder holding such files or a file holding them standing on its way, is marked (`mark`):
+ * those go out against their bases, the owner's commit keeps them beside its own, and the
+ * sync-out after takes each marked path (`syncOut`'s scan).
  */
 async function theirs(client: SyncClient, place: Place, mirror: Mirror,
                       select: () => Selection, path: string, kind: string | null,
@@ -538,19 +554,38 @@ async function theirs(client: SyncClient, place: Place, mirror: Mirror,
   if (was !== null && select().sends(path) && await differs(place, path, was, sent)) {
     return;
   }
+  if (onFile(place, local)) {
+    if (kind === "file") {
+      mark(mirror, path);
+    }
+    return;
+  }
   const readOnly = place.authority !== "owner" && clientReadOnly(path);
   const dirMode = readOnly ? 0o2755 : 0o2775;
   if (kind === "dir") {
+    if (was !== null) {
+      if (!same(fileStat(local), was)) {
+        return;
+      }
+      remove(local);
+    }
+    mirror.drop(path);
     safeDirs(place.local, local, dirMode);
     return;
   }
+  const folder = was === null
+    && lstatSync(local, { throwIfNoEntry: false })?.isDirectory() === true;
   if (kind === null) {
-    if (was === null && lstatSync(local, { throwIfNoEntry: false })?.isDirectory() === true) {
+    if (folder) {
       await goneFolder(place, mirror, select, path);
     } else if (same(fileStat(local), was)) {
       remove(local);
       mirror.dropUnder(path);
     }
+    return;
+  }
+  if (folder && !await goneFolder(place, mirror, select, path)) {
+    mark(mirror, path);
     return;
   }
   const got = await fetchInto(client, path, place.local, local, (mode) => readOnly
@@ -570,16 +605,18 @@ async function theirs(client: SyncClient, place: Place, mirror: Mirror,
 
 /**
  * A folder gone from the owner's files, gone from the sandbox but for the files under it that
- * hold unsent changes, each kept with its row (sent against its base, a conflict there).
+ * hold unsent changes, each kept with its row (sent against its base, a conflict there):
+ * whether it went whole. Its tree is walked an entry at a time, whatever a folder lists: a
+ * file is removed only once the walk has read it, and a directory read as it changes still
+ * gives every entry neither made nor removed since once (POSIX `readdir`), so none is missed.
  */
 async function goneFolder(place: Place, mirror: Mirror, select: () => Selection,
-                          path: string): Promise<void> {
+                          path: string): Promise<boolean> {
   const local = localOf(place, path);
   const under = `${path.slice(`${WORKSPACE}/`.length)}/`;
   let kept = false;
   if (select().sends(path, true)) {
-    for (const rel of walkFiles(local, { sorted: true,
-                                         skip: (each, isDir) => select().skip(under + each,
+    for (const rel of walkFiles(local, { skip: (each, isDir) => select().skip(under + each,
                                                                               isDir) })) {
       const each = `${path}/${rel}`;
       const stat = fileStat(join(local, rel));
@@ -594,6 +631,30 @@ async function goneFolder(place: Place, mirror: Mirror, select: () => Selection,
   if (!kept) {
     remove(local);
     mirror.dropUnder(path);
+  }
+  return !kept;
+}
+
+/**
+ * Whether a regular file of the sandbox's stands on `local`'s way, where the owner's files
+ * hold a folder (a link there is left to `fsafe.ts`'s refusal).
+ */
+function onFile(place: Pick<Place, "local">, local: string): boolean {
+  const parent = dirname(local);
+  if (parent === place.local) {
+    return false;
+  }
+  try {
+    return lstatSync(parent).isFile();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOTDIR") {
+      return onFile(place, parent);
+    }
+    if (code === "ENOENT") {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -687,21 +748,33 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
 }
 
 /**
+ * A resume's session as fetched (`fetchSessions`): the owner's version of it (`got`, null
+ * where their files no longer hold it), and the base and hash of the row it was fetched
+ * against, which it moves only once the store took it (`tookSessions`).
+ */
+export interface Fetch {
+  readonly path: string;
+  readonly got: { readonly version: number; readonly size: number; readonly sha256: string }
+    | null;
+  readonly against: Pick<Known, "version" | "sha256">;
+}
+
+/**
  * A resume's files (`resumed`, from the engine's home: its record's `resume_paths`, the sid
  * filled) that the owner's files hold, by the mirror's rows, fetched into the sync agent's
  * own directory where the store lacks one (`have`: the store's copies among them, each by its
  * hash) or holds one the owner's files changed since (`unread`) that holds no change of its
  * own (its hash the row's). One holding changes stays for the resume, and is sent at the
- * run's staging, a conflict copy at the owner's files. One gone from the owner's files has
- * its row dropped and is named, for the root runner to drop the store's copy.
+ * run's staging, a conflict copy at the owner's files. One gone from the owner's files is
+ * named with no bytes, for the root runner to drop the store's copy. No row moves here: the
+ * root says what the store took (`tookSessions`), and with it the feed's cursor (`cursor`).
  */
 export async function fetchSessions(client: SyncClient, place: Place, mirror: Mirror,
                                     engine: string, resumed: readonly string[],
                                     have: ReadonlyMap<string, string>):
-    Promise<{ fetched: string[]; gone: string[] }> {
+    Promise<{ fetched: Fetch[]; cursor: number }> {
   const prefix = `${SESSIONS}/${place.authority}/${engine}/`;
-  const fetched: string[] = [];
-  const gone: string[] = [];
+  const fetched: Fetch[] = [];
   for (let after = prefix, paths = mirror.page(after, PAGE);
        paths.length > 0 && paths[0]!.startsWith(prefix); paths = mirror.page(after, PAGE)) {
     for (const path of paths.filter((each) => each.startsWith(prefix))) {
@@ -715,19 +788,43 @@ export async function fetchSessions(client: SyncClient, place: Place, mirror: Mi
       const got = await fetchInto(client, path, place.sessionsIn,
                                   join(place.sessionsIn, engine, session.rel), () => 0o600,
                                   0o700);
-      if (got === null) {
-        mirror.drop(path);
-        gone.push(path);
-      } else {
-        got.put();
-        mirror.put(path, { version: got.version, size: got.size, mtime_ms: 0,
-                           sha256: got.sha256, unread: false });
-        fetched.push(path);
-      }
+      got?.put();
+      fetched.push({ path, against: { version: row.version, sha256: row.sha256 },
+                     got: got === null ? null
+                       : { version: got.version, size: got.size, sha256: got.sha256 } });
     }
     after = paths.at(-1)!;
   }
-  return { fetched, gone };
+  return { fetched, cursor: mirror.cursor() };
+}
+
+/**
+ * The rows of a resume's sessions the root runner put in the store, or whose store copy it
+ * let go where the owner's files no longer hold them (`took`, from `fetchSessions` with the
+ * feed's `cursor` then): each moved to the owner's state as fetched, only while it is still
+ * the row fetched against, and marked again where it was marked and a sync-in since may have
+ * named a newer version (the cursor moved on). One the root did not take (a run kept a newer
+ * copy in the store meanwhile) stays on the base that copy was made on, so it is sent against
+ * it: a conflict copy at the owner's files, never one over theirs.
+ */
+export function tookSessions(mirror: Mirror, took: readonly Fetch[], cursor: number): void {
+  const named = mirror.cursor() !== cursor;
+  mirror.batch(() => {
+    for (const each of took) {
+      const row = mirror.get(each.path);
+      if (row === undefined || row.version !== each.against.version
+          || row.sha256 !== each.against.sha256) {
+        continue;
+      }
+      const unread = named && row.unread;
+      if (each.got === null && !unread) {
+        mirror.drop(each.path);
+      } else {
+        mirror.put(each.path, { ...(each.got === null ? NOTHING : { ...each.got, mtime_ms: 0 }),
+                                unread });
+      }
+    }
+  });
 }
 
 export interface SyncReport {
@@ -1200,8 +1297,12 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
     await offer(path, place.local, localOf(place, path));
   }
+  // The walk's files land (their conflicts taken) before the scan, so a path marked behind
+  // them is taken by this sync.
+  await send();
   // What the mirror knows and the workspace no longer holds goes, page by page; a path a
-  // custom line keeps out is never removed (the owner keeps it as it was).
+  // custom line keeps out is never removed (the owner keeps it as it was); a path marked
+  // (`mark`: the owner's file this sandbox could not take) is taken, where it now can be.
   for (let after = "", known = mirror.page(after, PAGE); known.length > 0;
        known = mirror.page(after, PAGE)) {
     for (const path of known) {
@@ -1221,8 +1322,18 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
         }
         continue;
       }
-      if (fileStat(localOf(place, path)) === null) {
-        await add({ op: "remove", path, base: mirror.get(path)!.version });
+      if (fileStat(localOf(place, path)) !== null) {
+        continue;
+      }
+      const row = mirror.get(path);
+      if (row === undefined) {
+        continue;  // gone with a folder a take on this page let go
+      }
+      if (row.unread) {
+        mirror.drop(path);
+        await theirs(client, place, mirror, select, path, "file", undefined);
+      } else {
+        await add({ op: "remove", path, base: row.version });
       }
     }
     after = known.at(-1)!;

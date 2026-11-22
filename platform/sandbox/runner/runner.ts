@@ -101,9 +101,9 @@ import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
-  fetchSessions, type Held, keepSeen, openMirror, SESSIONS, SESSIONS_SEEN, stageSessions,
-  stillHashed, storeSessions, type StoreSession, SyncClient, SyncFenced, syncIn, syncOut,
-  type SyncReport,
+  type Fetch, fetchSessions, type Held, keepSeen, openMirror, SESSIONS, SESSIONS_SEEN,
+  stageSessions, stillHashed, storeSessions, type StoreSession, SyncClient, SyncFenced, syncIn,
+  syncOut, type SyncReport, tookSessions,
 } from "./sync";
 import { sha256Hex } from "../../contract/src/digest";
 import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, type HookCommand, hookProgram,
@@ -393,11 +393,13 @@ class Job {
  * sync agent fetches those the store lacks or holds stale (`fetchSessions`), each moved from
  * its directory into the store, which keeps no second copy; one the owner's files no longer
  * hold leaves the store. A store copy holding changes of its own is never replaced: the
- * resume reads it, and the run's staging sends it.
+ * resume reads it, and the run's staging sends it. The sync agent then moves the mirror's
+ * rows of what the store took, and only those (`tookSessions`): a copy a run kept meanwhile
+ * is sent against the base it was made on.
  */
 async function storeResume(rec: Served, authority: string, session: string | null,
-                           fetch: (have: Readonly<Record<string, string>>) => Promise<SyncAnswer>):
-    Promise<void> {
+                           sync: (job: Pick<SyncJob, "direction" | "have" | "took">) =>
+                             Promise<SyncAnswer>): Promise<void> {
   if (session === null) {
     return;
   }
@@ -424,32 +426,45 @@ async function storeResume(rec: Served, authority: string, session: string | nul
     return was === undefined ? lstatSync(join(store, rel), { throwIfNoEntry: false }) === undefined
       : stillHashed(join(store, rel), was);
   };
-  const done = await fetch(Object.fromEntries([...hashed].map(([rel, each]) =>
-    [`${prefix}${rel}`, each.sha256])));
-  if (done.code === FENCED) {
-    throw new SyncFenced("the sync door fenced the lease");
-  }
-  if (done.code !== OK || done.report === null) {
-    throw new Error(`the sync agent fetched no files for the resume of ${session} ` +
-                    `(exit ${done.code}): the run does not start on a store it cannot trust`);
-  }
-  const { gone } = done.report as { gone: string[] };
+  const answered = async (job: Pick<SyncJob, "direction" | "have" | "took">) => {
+    const done = await sync(job);
+    if (done.code === FENCED) {
+      throw new SyncFenced("the sync door fenced the lease");
+    }
+    if (done.code !== OK || done.report === null) {
+      throw new Error(`the sync agent's ${job.direction} for the resume of ${session} failed ` +
+                      `(exit ${done.code}): the run does not start on a store it cannot trust`);
+    }
+    return done.report;
+  };
+  const { fetched, cursor } = await answered({ direction: "fetch", have: Object.fromEntries(
+    [...hashed].map(([rel, each]) => [`${prefix}${rel}`, each.sha256])) }) as
+    { fetched: Fetch[]; cursor: number };
   const staged = `${SYNC_HOME}/in/${rec.id}`;
+  const took: Fetch[] = [];
   await withStore(rec, () => {
-    for (const rel of existsSync(staged) ? sortedWalk(staged) : []) {
+    for (const each of fetched) {
+      const rel = each.path.slice(prefix.length);
+      if (!each.path.startsWith(prefix) || !isKept(resumed, rel) || !still(rel)) {
+        continue;
+      }
+      if (each.got === null) {
+        remove(join(store, rel));
+        took.push(each);
+        continue;
+      }
       const bytes = safeRead(staged, join(staged, rel));
-      if (bytes !== null && isKept(keptPaths(rec).sessions, rel) && still(rel)) {
+      if (bytes !== null) {
         safeDirs("/", store, 0o700);
         safeWrite(store, join(store, rel), bytes, 0o600);
+        took.push(each);
       }
     }
     remove(staged);
-    for (const path of gone) {
-      if (still(path.slice(prefix.length))) {
-        remove(join(store, path.slice(prefix.length)));
-      }
-    }
   });
+  if (took.length > 0) {
+    await answered({ direction: "took", took: { fetched: took, cursor } });
+  }
 }
 
 /** Every secret's atoms, from every engine's store (its `secret_paths` files). */
@@ -747,11 +762,12 @@ async function recover(): Promise<number> {
 
 interface SyncJob {
   /**
-   * In, out, `known` (the mirror's hash and mark of each of `paths`), or `fetch` (the files a
+   * In, out, `known` (the mirror's hash and mark of each of `paths`), `fetch` (the files a
    * resume of `session` reads, those the store holds (`have`) only where the owner's changed
-   * and the store's holds no change of its own), each under the lock.
+   * and the store's holds no change of its own), or `took` (the rows of those the store took,
+   * `took`), each under the lock.
    */
-  readonly direction: "in" | "out" | "known" | "fetch";
+  readonly direction: "in" | "out" | "known" | "fetch" | "took";
   readonly origin: string;
   readonly token: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
@@ -764,6 +780,8 @@ interface SyncJob {
   readonly session?: string;
   /** A fetch's store copies of the resume's files, each by its hash. */
   readonly have?: Readonly<Record<string, string>>;
+  /** What the store took of a fetch, and the feed's cursor at it (`tookSessions`). */
+  readonly took?: { readonly fetched: readonly Fetch[]; readonly cursor: number };
 }
 
 /** The sync agent's report (null when it printed none) and its exit. */
@@ -862,6 +880,11 @@ async function syncLocked(job: SyncJob): Promise<number> {
         process.stdout.write(JSON.stringify(await fetchSessions(
           client, place, mirror, job.engine, resumePaths(record(job.engine), job.session!),
           new Map(Object.entries(job.have ?? {})))));
+        return OK;
+      }
+      if (job.direction === "took") {
+        tookSessions(mirror, job.took!.fetched, job.took!.cursor);
+        process.stdout.write(JSON.stringify({ ok: true }));
         return OK;
       }
       const report = await syncOut(client, place, mirror, job.lease, job.atoms);
@@ -1241,8 +1264,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     if (pressed !== null) {
       outbox.push(pressed);
     }
-    await storeResume(rec, start.authority, start.session_id, (have) =>
-      syncAgent({ ...job("fetch"), session: start.session_id!, have }, work));
+    await storeResume(rec, start.authority, start.session_id, (part) =>
+      syncAgent({ ...job(part.direction), session: start.session_id!, ...part }, work));
     const home = homeOf(run);
     const system = systemOf(run);
     // The tools the owner's rules name that the CLI's own hook matches, asked first: its

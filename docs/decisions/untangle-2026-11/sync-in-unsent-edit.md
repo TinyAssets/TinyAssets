@@ -126,10 +126,11 @@ it by name (`formatStep`), so a rollback meets only that, and takes no forward e
 
 ## Owed
 
-- [ ] `untangle/sync-resume-took`: a resume's fetched session moves the mirror's row to the
+- [x] `untangle/sync-resume-took`: a resume's fetched session moves the mirror's row to the
   owner's version only once the store took its bytes (a second sync job after the import,
   applied only to a row unchanged since the fetch), so a copy kept meanwhile is sent against
-  its own base, a conflict copy.
-- [ ] `untangle/sync-kind-change`: a path whose kind changes in the owner's files while the
+  its own base, a conflict copy. Done (`sync-resume-took.md`).
+- [x] `untangle/sync-kind-change`: a path whose kind changes in the owner's files while the
   sandbox holds the other kind is taken by the same rule (the sandbox's unsent files sent
-  beside, then the owner's kind), never a sync-in that fails every time.
+  beside, then the owner's kind), never a sync-in that fails every time. Done in
+  `untangle/sync-resume-took` (`sync-resume-took.md`).
