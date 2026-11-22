@@ -32,7 +32,7 @@ import {
   CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES, HISTORY_BYTES,
   SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
-import { OWNER } from "../src/authority";
+import { MAIN_AGENT, OWNER } from "../src/authority";
 import type { Migration } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { SEGMENT_LEAST_BYTES } from "../src/segments";
@@ -93,8 +93,8 @@ const ID = (column: string) => (n: number) => `length(${column}) = ${n}`;
 const CAPTURE = /^CREATE TRIGGER \w+_logged_(?:insert|update|delete) /;
 const CAPTURE_UPDATE = /^CREATE TRIGGER \w+_logged_update /;
 /** The capture triggers the migrations make, and the updates among them. */
-const CAPTURES = 147;
-const UPDATES = 50;
+const CAPTURES = 149;
+const UPDATES = 51;
 /** The triggers that count a content's chunk list's rows from its size. */
 const CHUNK_LIST = new RegExp("^CREATE TRIGGER (?:file_contents_(?:added|removed)|" +
   "file_scope_contents_(?:added|removed)|file_content_chunks_planned) ");
@@ -235,6 +235,7 @@ export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze
   ["INSERT INTO file_shares", 1, `VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}, 0), ` +
     `('${OWNER}', 0, 0, 0, 0, ${SHARE_BYTES}, 0)`],
   ["CREATE TABLE archive_segments", 1, `filer = '${OWNER}'`],
+  ["ALTER TABLE outside_clients ADD COLUMN agent", 1, `DEFAULT '${MAIN_AGENT}'`],
   ["CREATE TRIGGER file_entries_added", 2, ENTRY_BYTES("NEW")],
   ["CREATE TRIGGER file_entries_removed", 2, ENTRY_BYTES("OLD")],
   ["CREATE TRIGGER file_history_added", 2, HISTORY_BYTES("NEW")],
@@ -444,7 +445,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(639);
+    expect(places).toBe(647);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

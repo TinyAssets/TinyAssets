@@ -150,7 +150,7 @@ const account: Route = async ({ owner: { binding, stub }, gate }) => {
                        usage: await stub.fileUsage(binding) });
 };
 
-/** `grants/set`: a client's mode, scopes or profile; never a revoke, which is `grants/revoke`. */
+/** `grants/set`: a client's mode, scopes, profile or agent; never a revoke (`grants/revoke`). */
 const grantSet: Route = async ({ owner: { binding, stub }, body: request }) => {
   if (request["mode"] === "revoked") {
     return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");

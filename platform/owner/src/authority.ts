@@ -107,6 +107,8 @@ export interface Grant extends StandingGrant {
   readonly generation: number;
   /** The tool profile the client is served (`directory` or `custom`). */
   readonly profile: ProfileName;
+  /** The owner's agent the client is (`actingAgent`), `MAIN_AGENT` until the owner names one. */
+  readonly agent: string;
 }
 
 /** What holds capabilities: a grant, or a run's own scopes (its grant's, at admission). */
@@ -235,8 +237,21 @@ export class Authority {
   }
 }
 
-/** The agent a scoped client acts as when its call names none. */
+/**
+ * The owner's default agent: the one a grant is until the owner names another, and the
+ * owner's own calls act as. Frozen: the owner's schema spells it (the frozen-bounds guard
+ * holds the two equal).
+ */
 export const MAIN_AGENT = "main";
+
+/**
+ * The owner's agent a call acts as where it names none, whose definition an outside client
+ * reads (`definitionRead`) and where a scoped grant's triples are held: a run's own agent;
+ * an outside client's, the one its grant names; the owner's, `MAIN_AGENT`.
+ */
+export function actingAgent(account: Pick<Account, "run" | "grant">): string {
+  return account.run?.agent ?? account.grant?.agent ?? MAIN_AGENT;
+}
 
 /**
  * Whose files scope a door's rows count in (ADR-035): the owner's, an outside client's

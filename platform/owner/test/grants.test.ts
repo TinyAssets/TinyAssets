@@ -34,6 +34,22 @@ async function grant(r: Rig, origin: Origin, mode: string, scopes: object[] = []
     expected_revision: row?.revision ?? 0, name: "" });
 }
 
+/** One of the owner's own agents, `name`, made in its session as its app makes one. */
+async function ownAgent(r: Rig, name: string) {
+  const dir = `/workspace/agents/${name}`;
+  await r.stub.fileMkdir(r.session(null), { path: dir, expected_etag: null });
+  await r.stub.fileWrite(r.session(null), { path: `${dir}/agent.json`, expected_etag: "",
+    content: new TextEncoder().encode(JSON.stringify({ engine: "auto" })) });
+}
+
+/** The owner scopes a client's grant to `scopes`, as `agent` when it names one. */
+async function scopedAs(r: Rig, origin: Origin, scopes: object[], agent?: string) {
+  const row = (await clients(r)).find((c) => c.client === origin.client)!;
+  return r.stub.grantSet(r.session(null), {
+    client: origin.client, source: row.source, mode: "scoped", scopes: scopes as never,
+    expected_revision: row.revision, name: "", ...(agent === undefined ? {} : { agent }) });
+}
+
 /** The owner renames a client's grant: the same mode and scopes, against its revision. */
 async function rename(r: Rig, origin: Origin, name: string) {
   const row = (await clients(r)).find((c) => c.client === origin.client)!;
@@ -170,7 +186,7 @@ describe("an outside client's grant", () => {
     const named = await r.stub.grantSet(r.session(null), { ...change, mode: "scoped",
                                                            scopes: [READ], name: "ChatGPT" });
     expect(named).toEqual({ client: CHATGPT.client, mode: "scoped", scopes: [READ],
-                            profile: "custom", generation: 2, revision: 2 });
+                            profile: "custom", agent: "main", generation: 2, revision: 2 });
     await grant(r, CHATGPT, "full");  // an empty name keeps the one given
     expect((await clients(r))[0]!.name).toBe("ChatGPT");
     expect((await kindsOf(r, "outside_grant")).map((row) => [
@@ -178,10 +194,10 @@ describe("an outside client's grant", () => {
       row["request_digest"]])).toEqual([
       [true, CHATGPT.client, "scoped", 2, policyDigest({
         client: CHATGPT.client, mode: "scoped", scopes: [READ], name: "ChatGPT", revision: 2,
-        profile: "custom" })],
+        profile: "custom", agent: "main" })],
       [true, CHATGPT.client, "full", 3, policyDigest({
         client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 3,
-        profile: "custom" })]]);
+        profile: "custom", agent: "main" })]]);
   });
 
   it("is revoked by the owner's account without a session, as a key's revoke is",
@@ -385,6 +401,20 @@ describe("a changed or revoked grant ends its agents' wakes", () => {
     await r.subscribe(DOT);
     await r.post(null, dm(dot), { cmid: "c2" });
     expect(await r.tick(clock() + 2)).toBe(1);
+    expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
+  });
+
+  it("rings a board follower as the owner's agent its grant names, where its triples hold",
+     async () => {
+    const r = await rig();
+    const dot = await r.register(DOT, "Dot", "mcp_event", { batch_window_s: 0 });
+    await ownAgent(r, "work");
+    await scopedAs(r, DOT, [{ ...READ, agent: "work" }], "work");
+    await r.subscribe(DOT, "alpha", { board: true });
+    await r.stub.collectionWrite(r.bind(null), { collection: "board", row_id: "t1", body: "x",
+                                                 expected_etag: "", private: false });
+    expect((await r.table("ledger_wakes")).map((wake) => wake["agent_id"])).toEqual([dot]);
+    expect(await r.tick(clock() + 1)).toBe(1);
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
   });
 
@@ -757,8 +787,8 @@ describe("a grant's revision apart from its authority", () => {
                                          scopes: scopes as never, expected_revision: expected,
                                          name });
     expect(await set("full", [], "ChatGPT", 1)).toEqual({
-      client: CHATGPT.client, mode: "full", scopes: [], profile: "custom", generation: 1,
-      revision: 2 });
+      client: CHATGPT.client, mode: "full", scopes: [], profile: "custom", agent: "main",
+      generation: 1, revision: 2 });
     expect(await set("scoped", [READ, WRITE], "", 2))
       .toMatchObject({ generation: 2, revision: 3 });
     // The same triples, reordered and repeated, hold the same: a rename.
@@ -778,8 +808,29 @@ describe("a grant's revision apart from its authority", () => {
     expect(receipts.map((row) => row["generation"])).toEqual([1, 2, 2, 3, 4, 5, 5]);
     expect(receipts[0]!["request_digest"]).toBe(policyDigest({
       client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 2,
-      profile: "custom" }));
+      profile: "custom", agent: "main" }));
     expect(new Set(receipts.map((row) => row["request_digest"])).size).toBe(7);
+  });
+
+  it("names the owner's agent the client is: main until the owner names a live one, which " +
+     "moves the generation and is where its triples hold", async () => {
+    const r = await rig();
+    await r.register(CHATGPT);  // its one enabled agent, registered in alpha
+    await ownAgent(r, "work");
+    const set = (agent?: string) => scopedAs(r, CHATGPT, [{ ...READ, agent: "work" }], agent);
+    const digest = () => r.stub.boardDigest(r.bind(CHATGPT), { limit: 10, after: 0 });
+    expect((await clients(r))[0]!.agent).toBe("main");
+    // A scoped grant holds its triples as the agent it names: as `main`, `work`'s are none.
+    expect(await set()).toMatchObject({ agent: "main", generation: 2 });
+    expect((await failure(digest)).code).toBe("not_granted");
+    expect(await set("work")).toMatchObject({ agent: "work", generation: 3 });
+    await expect(digest()).resolves.toBeDefined();
+    // Kept by a set that names none; refused when no live agent of the owner's.
+    expect(await set()).toMatchObject({ agent: "work", generation: 3 });
+    for (const [agent, code] of [["ghost", "no_agent"], ["../main", "invalid"]] as const) {
+      expect((await failure(() => set(agent))).code).toBe(code);
+    }
+    expect((await clients(r))[0]).toMatchObject({ agent: "work", generation: 3 });
   });
 
   it("moves the generation by one when a scope is added", async () => {

@@ -53,11 +53,10 @@ import {
   windowedAll,
 } from "./pages";
 import { codePoints, name, utf8Bytes } from "../../contract/src/text";
-import type { Scope } from "./authority";
 import type { Account, Call, Door, DoorUnits } from "./door";
 import { clock } from "./clock";
 import { jsonBytes } from "../../contract/src/encoded";
-import { filerOf, MAIN_AGENT, OWNER } from "./authority";
+import { filerOf, OWNER } from "./authority";
 import type { Heads } from "./pages";
 
 interface Limits {
@@ -821,7 +820,7 @@ export interface CollectionsDoorNeeds extends Pick<DoorUnits, "sync"> {
         { agent_id: string; client: string; command_center_id: string }[];
     changed(change: "board" | "rooms", after: number, agentIds: readonly string[]): void;
   };
-  readonly grants: { reads(client: string, scope: Scope): boolean };
+  readonly grants: { reads(client: string, universe: string, capability: string): boolean };
 }
 
 /**
@@ -841,8 +840,7 @@ function ring(o: CollectionsDoorNeeds, account: Account, collection: string, aft
     return;
   }
   const agents = o.ledger.followers(collection, change === "board", clock())
-    .filter((agent) => o.grants.reads(agent.client, {
-      universe: agent.command_center_id, agent: MAIN_AGENT, capability: "read_graph" }));
+    .filter((agent) => o.grants.reads(agent.client, agent.command_center_id, "read_graph"));
   if (agents.length) {
     o.ledger.changed(change, after, agents.map((agent) => agent.agent_id));
   }

@@ -130,7 +130,9 @@ import {
   IMPORT_PENDING_ONLY, IMPORT_PLATFORM_ONLY, OWNER_ERASED, OwnerAdmission, PLATFORM_ONLY,
   PLATFORM_RESERVED, PLATFORM_TIER_ONLY, tombstoned, writeTombstone,
 } from "./admission";
-import { AUTHORITY_CHANGED, type Grant, MAIN_AGENT, may, NOT_GRANTED, OWNER } from "./authority";
+import {
+  actingAgent, AUTHORITY_CHANGED, type Grant, may, NOT_GRANTED, OWNER,
+} from "./authority";
 import { Actions, actionsDoors, decidedActor } from "./actions";
 import type { Condition } from "../../contract/src/acts";
 import { agentId } from "../../contract/src/text";
@@ -547,9 +549,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     const sandbox = boundSandbox(env.SANDBOX, ctx.id);
     this.#sender = new Doorbell({
       ledger: this.#ledger, live: (client) => this.#grants.live(client), write,
-      reads: (client, center) => this.#grants.reads(client, { universe: center,
-                                                               agent: MAIN_AGENT,
-                                                               capability: "read_graph" }),
+      reads: (client, center) => this.#grants.reads(client, center, "read_graph"),
       touched: (rooms, after) => this.#collections.touched(rooms, after),
       notice: (type, detail) => write(() => this.#notices.add(type, detail, clock())),
       // The kill switch: the control record, read once a pass, as the doors read it.
@@ -1217,7 +1217,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
    */
   #scoped(row: OwnerRow, account: Account, r: Record<string, unknown> | null):
       { universe: string | null; agent: string } {
-    const none = { universe: null, agent: MAIN_AGENT };
+    const none = { universe: null, agent: actingAgent(account) };
     if ((row.caller !== "account" && row.caller !== "visitors") || row.scope === "handler") {
       return none;
     }
@@ -1225,7 +1225,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       const agent = r === null || row.agent === undefined ? null
         : agentId(r[row.agent.field] ?? row.agent.default);
       return { universe: this.#runDoor(account, row.capability as RunNeed, agent),
-               agent: agent ?? MAIN_AGENT };
+               agent: agent ?? none.agent };
     }
     if (row.capability !== null) {
       this.#scope(account, row.capability);
@@ -1247,13 +1247,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   }
 
   /**
-   * `capability` held as `agent` (the `main` agent by default), in `center` (default: the
-   * command center a scoped client's one enabled agent is registered in): a run holds its
-   * grant's scopes, which admission already held to its initiator's; a scoped grant its
-   * triples there (`authority.may`); a full grant, and the owner, everything.
+   * `capability` held as `agent` (default: the agent its grant names, `actingAgent`), in
+   * `center` (default: the command center a scoped client's one enabled agent is registered
+   * in): a run holds its grant's scopes, which admission already held to its initiator's; a
+   * scoped grant its triples there (`authority.may`); a full grant, and the owner, everything.
    */
   #scope(account: Account, capability: RunCapability, center?: unknown,
-         agent: string = MAIN_AGENT): void {
+         agent: string = actingAgent(account)): void {
     if (account.run === null && account.grant?.mode !== "scoped") {
       return;
     }
