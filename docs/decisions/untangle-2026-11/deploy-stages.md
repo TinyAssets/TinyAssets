@@ -199,6 +199,11 @@ fetched 2026-11-22), the kit at `475c51e5a`. `[I]` marks inference.
   back, the direction every deploy takes. Cloudflare's own refusal is the hold.
 - **Only the template is found by the guard.** Every other kind of change the list names is
   invisible in the tree (research 5): the author marks it, the reviewer finds it missing.
+  A recorder's `Recorders-Differ:` line is no tie (review): the recorders hold answers, which
+  go back with the version, never a shape written; a forced mark there would stop every
+  rollback past an additive answer.
+- **A Worker a forward change names cannot retire under the append-only rule** (review):
+  `forwardCounts` throws on a folder the tree lacks. Loud; the retiring PR changes the rule.
 - **A rollback across a tree that added or retired a Worker** stops at the order check: the
   workflow runs from `main`, so such a rollback is by hand (the checklist's rules).
 - **The stages, the soak, the health check and the 0% smoke:** A2b-2 and A2b-3, below.

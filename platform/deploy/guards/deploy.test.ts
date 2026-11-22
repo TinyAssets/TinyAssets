@@ -2668,6 +2668,15 @@ describe("the rollout record and mode rollback", () => {
       `Cloudflare's deployments listing has no deployment of it alone followed by one of ` +
       `commit ${OURS}: nothing is changed (a rollback by hand follows checklist.md)`);
     expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    // Nor by one Cloudflare served only in a split just before a deployment of the commit.
+    const ours = [...w.deployments.get(gateway)!];
+    w.deployments.set(gateway, [{ version: older.version, percentage: 50 },
+                                { version: "before-gateway", percentage: 50 }]);
+    w.deployments.set(gateway, ours);
+    plant(held.workers.map((each) => each.name === gateway ? { ...each, before: older } : each));
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+      `the record ${ROLLOUT} holds ${gateway} as serving ${older.version} before the run, and `);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
     // A Worker left out, or the order turned, so a callee would go back before its caller.
     const names = WORKERS.map((worker) => NAMES[worker]).join(", ");
     for (const workers of [held.workers.filter((each) => each.name !== DOORS),
