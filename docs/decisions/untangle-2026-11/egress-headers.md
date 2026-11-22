@@ -101,7 +101,11 @@ sent went on to the provider unless a denylist in the gateway's code named it
    transport versions' names, `mcp-param-*` as a prefix.
 3. **One filter (`egress-scope.ts` `egressHeaders`)**: the base (`BASE_HEADERS`), the scope's
    API's `headers` (a service's: the transport's), and on a free call its `betas`; every other
-   header dropped, the credential headers among them, since no list names one.
+   header dropped, the credential headers among them, since no list names one. Which rules a
+   scope's call is held to, its query's and its headers', is one function's (`callRules`: a
+   service's `SERVICE_RULES`, else its API's), read by `egressTarget` and `egressHeaders`
+   alike (review: the two had each read the scope's kind, and fallen back to no rules for an
+   API `supported` never lets a scope name; that now throws).
 4. **The gateway (`gateway/src/forward.ts`)** sends what `egressHeaders` keeps, then sets the
    sealed header and `accept-encoding`. `CREDENTIAL_HEADERS` is gone; `HOP_HEADERS` and the
    `x-ta-`/`cf-` rule are the answer's alone.
