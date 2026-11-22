@@ -118,4 +118,74 @@ fetched 2026-11-22), wrangler's source at its pinned tag (`cloudflare/workers-sd
 
 ## A2a as built
 
-(Filled in below as it is built.)
+### The problems found
+
+- Nothing recorded which version each Worker served before a run, so nothing could take a
+  run back; `handback` gives back routes, the egress domain and the webhook only.
+- A1's tags (`-m` counts) were written and read by nothing, and no rule said which way back is
+  safe: Cloudflare's rollback knows neither our app-level migrations (fact 3) nor that the
+  kit's secrets ride versions (fact 4).
+- Mode `retire` (`wrangler secret put`) and the window's close (`unkey`, `DELETE .../secrets`)
+  each deploy at once, with no check of what the Worker serves (fact 5); a deploy started on
+  a Worker serving two versions would record half of it.
+- The tag's format was written in one place (`versionFlags`) with no reader beside it.
+
+### The fix
+
+1. **One split check** (`deploy/cloudflare.ts` `serving`, over `deployment`): the one version
+   serving all of a Worker's traffic, or a loud stop naming the split. The deploy's rollout
+   step, `retire` (for each holder, before its `secret put`) and the window's close (before
+   its delete) call it.
+2. **The rollout record** (`deploy.ts` `rollout`, `RolloutRecord`), a step of `dark` and
+   `routes` after the secrets and before the first Worker deploy: each Worker the account
+   holds, read as its one version and that version's tag (`Cloudflare.tag`); the run's lock
+   counts, `--migrate`, and the secret names it sets. Written to `deploy:rollout:<run id>` in
+   the control namespace (`putOrStop`), a copy in the job summary; a re-run attempt keeps its
+   first attempt's. The plan names, Worker by Worker, where a rollback of the run stops.
+3. **Forward-only, one function** (`forwardOnly`) over the record's facts: a first deploy, a
+   whole one, secrets the run set, or the run's `-m` counts above the version before's tag (or
+   a tag naming none: unknown). The tag is read beside where it is written (`taggedAs`,
+   `tagCommit`, `pinnedCounts` beside `versionFlags`).
+4. **Mode `rollback`** (`rollbackAsk`, `--record`): each Worker held to the record first (every
+   version it serves is the one before, or tagged with the run's commit; a split of the two
+   is taken back), then, callers first, each deployed back alone over Cloudflare's API
+   (`Cloudflare.deploy`, never forced) and read back, stopping at the first forward-only
+   Worker, which stays with every Worker before it in the deploy order: so, as in the middle
+   of every deploy, the Workers a caller binds are never older than it. With none to take back
+   it stops before any change; the canary follows. The plan job reads and plans it with the
+   token alone.
+5. The workflow offers `rollback` with `record`; the checklist says what it does, its stops,
+   the same rules for a rollback by hand in the dashboard, and the `IMPORT_KEY` step's.
+
+### Behaviour changed on purpose
+
+- `dark` and `routes` stop before any deploy while a Worker serves two versions, and their
+  plans gain the record's lines; each run writes one KV key more.
+- `retire` and the window's close stop while a holder (the doors) is split.
+
+### Left, each with its reason
+
+- **The run's own versions are deployed by `wrangler versions deploy`**, a rollback's by the
+  REST call: wrangler also syncs each config's non-versioned settings (fact 8), which a
+  rollback must not change. Two callers of one API, each for its own reason.
+- **Rollout records are never deleted.** One small key a deploy run; a version older than 30
+  days may be gone (fact 6), and then the rollback's deployment is refused loudly.
+- **A deploy across a secret change.** An upload keeps the secrets of the version before it,
+  so a `secret put` or the window's close between a Worker's upload and its deployment is
+  undone. `retire` shares the deploy's concurrency group; the window's close does not (its
+  workflow's group), so the checklist says no deploy runs across it. Holding the close to
+  the deploy's group would hold every deploy for each window job's six hours.
+- The stages, the health check and the 0% smoke: the series, below.
+
+## Owed
+
+- [ ] `untangle/routing-keyring`: `ROUTING_MAC_KEY` a keyring (fact 9): tokens minted and
+  routes sealed under the active kid, verified and opened under any kid the ring holds, made
+  as a keyring (`platform.json` `made`), rotated by `keyring-add`, and its old kid retired only
+  once no lease or sandbox minted under it lives; before any split.
+- [ ] `untangle/deploy-stages`: A2b, the stages, soak, health check and the doors' 0% smoke, as
+  "The series" item 3 lists them.
+- [ ] live: the next `dark` run's summary shows its rollout record, each Worker's version before
+  equal to its Deployments in the dashboard and that version's tag; a `rollback` dispatch of
+  that run's id, its plan job alone (it changes nothing), names each Worker's way back as the
+  record's lines said.

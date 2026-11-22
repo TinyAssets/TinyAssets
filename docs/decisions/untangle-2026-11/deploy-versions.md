@@ -78,12 +78,16 @@ of gradual deploys that changes nothing at 100%. The rollout itself is A2.
 
 ## Owed
 
-- [ ] A2, the rollout: the rollout record, the stages, the soak and health check, the reverse
+- [x] A2, the rollout: the rollout record, the stages, the soak and health check, the reverse
   rollback and the forward-only refusal that reads each version's `-m` counts, mode `rollback`,
   the doors' 0% smoke reading `x-tinyassets-version`; and mode `retire`'s and the import
   window's `secret put` during a split (`untangle/deploy-rollout`); and a rotated
   `ROUTING_MAC_KEY` under a split, where the doors' and the owner's versions disagree for the
-  split's length unless rotation runs at 100% or the key becomes a keyring.
+  split's length unless rotation runs at 100% or the key becomes a keyring. Done in part in
+  `untangle/deploy-rollout` (`deploy-rollout.md`: the record, the reverse rollback, the
+  forward-only refusal, mode `rollback`, and `retire`'s and the window's close held to one
+  version); the stages, soak, health check and 0% smoke are owed there as
+  `untangle/deploy-stages`, and the routing key as `untangle/routing-keyring`, a keyring.
 - [ ] live: the next `dark` run shows each Worker's version tagged with the commit and its
   locks' counts, its message the commit, a secret set by it present after it, and a doors
   answer carrying `x-tinyassets-version` equal to the deployed version's id.
