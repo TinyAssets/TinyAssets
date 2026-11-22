@@ -2,7 +2,7 @@
  * The sandbox sync's ignore list, read by both sides: the runner's sync agent
  * (`sandbox/runner/sync.ts`), which keeps what it names in the sandbox, and the owner's
  * object, which tells the owner what each change to it holds back (`owner-do.ts`): both
- * compile its lines (`ruleLines`, `unappliedLines`), so it is the contract's. Pure, so the
+ * read its lines (`ruleLines`, `LIST_BYTES`), so it is the contract's. Pure, so the
  * runner's bundle takes it whole.
  *
  * The sync-ignore file: what the sync never offers. Regenerable trees (dependencies, build
@@ -55,11 +55,14 @@ export function defaultSyncIgnore(): readonly string[] {
 /**
  * The most states the automaton's lines take together (a line's: its tokens, each a byte, a
  * `?` or a class, plus one), each distinct line once, in file order: a technical ceiling,
- * the matcher's time: a byte of text costs at most ⌈S/32⌉ word steps, so the list slows a
- * sync-out's matching by at most that much a byte. Its value's derivation is owed
- * (`limits-audit.md`). Lines an index takes cost none of it.
+ * the matcher's memory in the sync agent's heap. Each folder of the path last asked keeps the
+ * path automaton's state, two 32-bit words for each 32 states, so at the deepest path (2,043
+ * folders in `MAX_PATH_BYTES`) a state takes 511 bytes, in the room `LIST_BYTES` leaves
+ * (`limits-audit.md`; `sandbox/runner/sync.test.ts` holds it there). Lines an index takes cost
+ * none of it. A byte of text costs at most ⌈S/32⌉ word steps, which bounds nothing: a slow
+ * match is said in the run's report, never refused.
  */
-export const AUTOMATON_STATES = 8_192;
+export const AUTOMATON_STATES = 98_304;
 /**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
  * memory in the sync agent's heap, 7.8 MiB with the worst class's heads diverging, so 6 MiB
@@ -925,11 +928,6 @@ function compile(lines: readonly string[]): Compiled {
            pathAutomaton: new Automaton(automata.path, counted.path), unapplied };
 }
 
-/** The list's lines not applied, in file order, each with the ceiling it is past. */
-export function unappliedLines(lines: readonly string[]): Unapplied[] {
-  return compile(lines).unapplied;
-}
-
 /** What one line takes of `AUTOMATON_STATES`: its states, or 0 when an index takes it. */
 export function automatonStates(line: string): number {
   const parsed = parse(line);
@@ -953,10 +951,10 @@ export function automatonStates(line: string): number {
  *   looked up a segment at a time, `Segments`), never a different answer.
  * - **Names:** at most `REMEMBERED_NAME_BYTES`, each name counted at what it really takes
  *   (`NAME_ENTRY_BYTES` beside its characters at two bytes each, its key a string of its
- *   own, `own`); past it the memory starts again. The time budget (limits-audit.md,
- *   `AUTOMATON_STATES`) counts no names memory, so this buys speed alone: 256 KiB holds 1,200
- *   to 1,500 names, many more than a tree's repeated names (`index.ts`, `package.json`), and
- *   matched a 20,000-folder tree as fast as 1 MiB did (and faster than none).
+ *   own, `own`); past it the memory starts again. No ceiling counts on it, so this buys speed
+ *   alone: 256 KiB holds 1,200 to 1,500 names, many more than a tree's repeated names
+ *   (`index.ts`, `package.json`), and matched a 20,000-folder tree as fast as 1 MiB did (and
+ *   faster than none).
  *
  * Refuses nothing.
  */

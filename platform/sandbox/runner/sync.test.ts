@@ -9,10 +9,11 @@
  * - lines past the matcher's ceilings keep their files syncing, and are said (the matcher
  *   itself, as git reads a .gitignore, is `contract/guards/sync-ignore.test.ts`);
  * - memory stays bounded both ways: sync-in of a file larger than the sandbox's memory, and
- *   sync-out over many paths; the matcher's, at `LIST_BYTES` of any class, within what the
- *   sandbox's heap leaves beside the agent (`sizing.ts`).
+ *   sync-out over many paths; the matcher's, at `LIST_BYTES` of any class and
+ *   `AUTOMATON_STATES` at the deepest path, within what the sandbox's heap leaves beside the
+ *   agent (`sizing.ts`).
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync,
+import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -28,10 +29,12 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   AUTOMATON_STATES, ignoredBy, LIST_BYTES, REMEMBERED_NAME_BYTES, SYNC_IGNORE,
 } from "../../contract/src/sync-ignore";
-import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
-  from "../../contract/src/limits";
+import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_PATH_BYTES, MAX_SYNC_OPS,
+         SYNC_BODY_MAX } from "../../contract/src/limits";
+import { WORKSPACE } from "../../contract/src/paths";
 import { served } from "../../sources/src/served";
 import { isKept, resumePaths } from "./engine";
+import { walkFiles } from "./fsafe";
 import { AGENT_PEAK, HEAP_PER_LIST_BYTE, SANDBOX_HEAP } from "./sizing";
 import { fetchSessions, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
          UNREAD } from "./sync";
@@ -670,18 +673,19 @@ describe("the matcher's memory in the sync agent's heap", () => {
     anywhereDiverging: (i) => `**/${head(i)}/${i.toString(36)}`,
   };
 
+  const used = () => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers;
+  // Two full collections settle what a collection leaves for the next (weak maps, the
+  // code a first call compiles), so a sample is the matcher's own heap.
+  const settled = () => {
+    gc();
+    gc();
+    return used();
+  };
+
   it("holds, at `LIST_BYTES` of any class (each measured at a quarter of it, a list byte's " +
      "heap), what the sandbox's heap leaves beside the agent",
      { tags: ["large"] }, () => {
     expect(LIST_BYTES * HEAP_PER_LIST_BYTE).toBeLessThanOrEqual(SANDBOX_HEAP - AGENT_PEAK);
-    const used = () => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers;
-    // Two full collections settle what a collection leaves for the next (weak maps, the
-    // code a first call compiles), so a sample is the matcher's own heap.
-    const settled = () => {
-      gc();
-      gc();
-      return used();
-    };
     for (const [label, shape] of Object.entries(shapes)) {
       // The least of three samples: a sample is the matcher's heap plus whatever else the
       // process held for a moment (its own lazily made structures, measured once in a
@@ -702,6 +706,55 @@ describe("the matcher's memory in the sync agent's heap", () => {
         expect(lines.length + (typeof matcher === "function" ? 0 : 1)).toBeGreaterThan(0);
       }
       expect(perByte, label).toBeLessThanOrEqual(HEAP_PER_LIST_BYTE);
+    }
+  });
+
+  it("holds `AUTOMATON_STATES` at the deepest path, the walk's own folders beside it, in the " +
+     "room `LIST_BYTES` leaves", { tags: ["large"] }, () => {
+    // A chain of folders as deep as a path here reaches (`MAX_PATH_BYTES`, Linux's
+    // `PATH_MAX`), against the most a workspace path's folders reach, a byte and a `/` each.
+    const root = mkdtempSync(join(tmpdir(), "deep-"));
+    const local = join(root, "w");
+    const levels = Math.floor((MAX_PATH_BYTES - 1 - `${local}/f`.length) / 2);
+    const deepest = Math.floor((MAX_PATH_BYTES - `${WORKSPACE}/`.length + 1) / 2);
+    const folders = (depth: number) => join(local, ...Array.from({ length: depth }, () => "-"));
+    mkdirSync(folders(levels), { recursive: true });
+    writeFileSync(join(folders(levels), "f"), "the deepest file");
+    try {
+      const base = settled();
+      // Path lines of a state a list byte (a head, `/` and `?`, each a state, and the line's
+      // own), the automaton's worst: each folder of a path keeps the path automaton's state.
+      const line = (i: number) => `${i.toString(36)}/?`;
+      const lines: string[] = [];
+      let bytes = 0;
+      for (let i = 0; bytes + line(i).length + 1 <= AUTOMATON_STATES; i++) {
+        lines.push(line(i));
+        bytes += line(i).length + 1;
+      }
+      // They fill the states: all applied, and one line more is past them.
+      const matcher = ignoredBy(lines);
+      expect(matcher.unapplied).toEqual([]);
+      const next = line(lines.length);
+      expect(ignoredBy([...lines, next]).unapplied).toEqual([{ line: next, reason: "states" }]);
+      let deep = 0;
+      let walked = 0;
+      const skip = (each: string, isDir: boolean) => matcher(each, isDir) !== null;
+      for (const rel of walkFiles(local, { skip })) {
+        walked = rel.split("/").length - 1;
+        deep = settled() - base;
+      }
+      expect(walked).toBe(levels);
+      // This list at its own heap and the rest of `LIST_BYTES` at the worst class's, beside the
+      // agent's own; the folders' share taken to the sandbox's deepest path.
+      expect(deep * deepest / levels)
+        .toBeLessThanOrEqual(SANDBOX_HEAP - AGENT_PEAK - HEAP_PER_LIST_BYTE * (LIST_BYTES - bytes));
+    } finally {
+      // From the bottom up: a recursive removal takes a stack frame a folder.
+      rmSync(join(folders(levels), "f"));
+      for (let depth = levels; depth >= 0; depth--) {
+        rmdirSync(folders(depth));
+      }
+      rmdirSync(root);
     }
   });
 });

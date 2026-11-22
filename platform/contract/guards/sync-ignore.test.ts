@@ -21,7 +21,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   AUTOMATON_STATES, automatonStates, defaultSyncIgnore, ignoredBy, LIST_BYTES,
-  REMEMBERED_NAME_BYTES, unappliedLines,
+  REMEMBERED_NAME_BYTES,
 } from "../src/sync-ignore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -191,44 +191,29 @@ describe("the sync-ignore, as git reads a .gitignore", () => {
 });
 
 describe("its ceilings, each line past one said in file order", () => {
-  it("applies each of GitHub's templates whole, on the defaults; all 310 together say " +
-     "the automaton lines past its states", () => {
+  it("applies each of GitHub's templates whole, on the defaults, and all 310 together", () => {
     const files = templates();
     for (const file of files) {
-      expect(unappliedLines([...defaultSyncIgnore(), ...readFileSync(file, "utf8").split("\n")]),
-             file).toEqual([]);
+      expect(ignoredBy([...defaultSyncIgnore(), ...readFileSync(file, "utf8").split("\n")])
+        .unapplied, file).toEqual([]);
     }
-    // Together they need more than `AUTOMATON_STATES`: the later automaton lines, in file
-    // order, each said.
-    const all = [...defaultSyncIgnore(), ...files.flatMap((file) =>
-      readFileSync(file, "utf8").split("\n"))];
-    const past = unappliedLines(all);
-    expect(past.length).toBeGreaterThan(0);
-    expect(past.every((each) => each.reason === "states")).toBe(true);
-    const states = new Set<string>();
-    let used = 0;
-    for (const line of all) {
-      if (!states.has(line.trim()) && automatonStates(line) > 0
-          && !past.some((each) => each.line === line.trim())) {
-        states.add(line.trim());
-        used += automatonStates(line);
-      }
-    }
-    expect(used).toBeLessThanOrEqual(AUTOMATON_STATES);
+    expect(ignoredBy([...defaultSyncIgnore(), ...files.flatMap((file) =>
+      readFileSync(file, "utf8").split("\n"))]).unapplied).toEqual([]);
   });
 
   it("stops the automaton at its states, every later automaton line said, index lines kept", () => {
     const line = (i: number) => `*${"a".repeat(150)}b${i}c*`;  // about 156 states each
-    const lines = [...Array.from({ length: 200 }, (_, i) => line(i)), "*.log", "node_modules"];
-    const past = unappliedLines(lines);
-    const applied = 200 - past.length;
+    const count = Math.ceil(AUTOMATON_STATES / 150) + 10;
+    const lines = [...Array.from({ length: count }, (_, i) => line(i)), "*.log", "node_modules"];
+    const matcher = ignoredBy(lines);
+    const past = matcher.unapplied;
+    const applied = count - past.length;
     const used = Array.from({ length: applied }, (_, i) => automatonStates(line(i)))
       .reduce((sum, each) => sum + each, 0);
     expect(used).toBeLessThanOrEqual(AUTOMATON_STATES);
     expect(used + automatonStates(line(applied))).toBeGreaterThan(AUTOMATON_STATES);
     expect(past.map((each) => each.line)).toEqual(
       Array.from({ length: past.length }, (_, i) => line(applied + i)));
-    const matcher = ignoredBy(lines);
     expect(matcher("x.log")).toBe("custom");
     expect(matcher(`${"a".repeat(150)}b${applied - 1}c`)).toBe("custom");
     expect(matcher(`${"a".repeat(150)}b${applied}c`)).toBeNull();
@@ -238,7 +223,7 @@ describe("its ceilings, each line past one said in file order", () => {
     const line = "*.ext-0123456789";
     const lines = Array.from({ length: Math.ceil(LIST_BYTES / (line.length + 1)) + 3 },
                              (_, i) => `${line}${i}`);
-    const past = unappliedLines(lines);
+    const past = ignoredBy(lines).unapplied;
     expect(past.length).toBeGreaterThan(0);
     expect(past.every((each) => each.reason === "bytes")).toBe(true);
     let bytes = 0;
@@ -255,7 +240,7 @@ describe("its ceilings, each line past one said in file order", () => {
     // the unit after it, the line would fit.
     const last = "a\ud800一";
     const filler = `#${"x".repeat(LIST_BYTES - 8)}`;
-    expect(unappliedLines([filler, last])).toEqual([{ line: last, reason: "bytes" }]);
+    expect(ignoredBy([filler, last]).unapplied).toEqual([{ line: last, reason: "bytes" }]);
   });
 });
 
@@ -310,7 +295,8 @@ describe("the hostile lists", () => {
   it.each([...HOSTILE, DEEP])("%s: git's answers with the lines that fit, at the automaton's cost",
                    { tags: ["large"] }, (label, list, path) => {
     const lines = [...defaultSyncIgnore(), ...list];
-    const past = new Set(unappliedLines(lines).map((each) => each.line));
+    const matcher = ignoredBy(lines);
+    const past = new Set(matcher.unapplied.map((each) => each.line));
     const applied = lines.filter((each) => !past.has(each.trim()));
     // Answered as git answers the lines that fit (non-existent paths: names past NAME_MAX).
     const asked = Array.from({ length: 60 }, (_, i) => path(i));
@@ -325,7 +311,6 @@ describe("the hostile lists", () => {
       ignored = checkIgnore(repo, asked, ["--no-index"]);
       rmSync(repo, { recursive: true, force: true });
     }
-    const matcher = ignoredBy(lines);
     expect(asked.filter((each) => ignored.has(each) !== (matcher(each) !== null))).toEqual([]);
     // Its cost a path: within the automaton's bound (`pathWork`), in this host's units.
     let states = 0;
