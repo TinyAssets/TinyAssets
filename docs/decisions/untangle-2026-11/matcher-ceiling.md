@@ -58,9 +58,10 @@ Dark deploy run 45057290524 (main `99d42771a`) stopped at its pair job: the temp
 5. **Left.**
    - **`AUTOMATON_STATES`' value.** With no deadline, what derives 8,192 is open.
      - Candidates: the matcher's memory (about 36 bytes a state, beside `LIST_BYTES`' heap per list byte), or a sync-out's matching on a stated tree against `SLOW_MATCH_MS`.
+     - Or no ceiling at all, by the same rule (Fact 15) that keeps the walk unbounded. The matching's time binds nothing, as above. A state takes at least a list byte, so `LIST_BYTES` already bounds the states. If its heap derivation (48 bytes a list byte) holds the masks past 8,192 states, then memory forces no state ceiling either. That derivation measured automaton lines at 9 bytes a list byte, but with the cap in place, so this is to be measured, not assumed (the review of #5796).
      - Until then it stays 8,192: lines past it are said, never dropped in silence.
      - Owed as `untangle/automaton-states`, below.
    - **`sizing.ts`'s note on the agent's measured peak at 500,000 entries.** It belongs to `LIST_BYTES`' heap derivation, not to this lane. It goes to `untangle/automaton-states` with the other 500,000.
 
-- [ ] untangle/automaton-states: research and derive `AUTOMATON_STATES`' value now that no session deadline or entry ceiling bounds a sync-out (memory, or the matching's latency against `SLOW_MATCH_MS`), and restate `sizing.ts`'s 500,000-entry peak with it.
+- [ ] untangle/automaton-states: research and derive `AUTOMATON_STATES`' value from a platform fact that forces it, or delete it if none does (Fact 15), now that no session deadline or entry ceiling bounds a sync-out (memory, or the matching's latency against `SLOW_MATCH_MS`), and restate `sizing.ts`'s 500,000-entry peak with it.
 - [ ] live: the next deploy's pair job passes with the new probes (pair tag `…-rfdd886565dc407f5-p311cea63a2dea235`): its log shows the sign-in and route checks and no `"check":"matcher"` line (the kit runs `checks.ts pair` without `--record`, so nothing lands in `passed.json`).
