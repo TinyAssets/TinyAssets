@@ -23,7 +23,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { canonical } from "../../contract/src/canonical";
 import { ANSWERS, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, INTERNAL_COMMANDS,
-         JOBS, LEASE_FILE, LOADER, PROTOCOL, RETIRED_IN_1, RUNNERS, SPEAKS, STATE_DIR,
+         JOBS, LEASE_FILE, LOADER, PROTOCOL, RUNNERS, SPEAKS, STATE_DIR,
          WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
          STATE_FORMAT } from "./state-format";
@@ -198,12 +198,22 @@ describe("the Worker's protocol with the runner", () => {
     expect(new Set(named).size).toBe(named.length);
     // Each the runner takes is the Worker's or the runner's own: one of them alone.
     expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS].sort()).toEqual([...named].sort());
-    // Its protocol's record names those alone; protocol 1's named the retired ones too
-    // (`RETIRED_IN_1`: the probe commands, which `probes.ts` runs, and `status`), which the
-    // runner takes none of.
-    expect(RETIRED_IN_1.filter((command) => (named as readonly string[]).includes(command)))
-      .toEqual([]);
     expect([...named].sort()).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
+  });
+
+  it("has every protocol answer `state` alike, so the Worker reads any runner's", () => {
+    // A sandbox may hold a runner of any deploy before (paused across several): the Worker
+    // asks it `state` for its protocol and whether anything lives on it, and adopts its own
+    // over one nothing lives on, whatever that one speaks.
+    for (const [protocol, record] of Object.entries(PROTOCOLS)) {
+      expect(record.commands, `protocol ${protocol}`).toContain(COMMAND.state);
+      expect(record.answers[COMMAND.state], `protocol ${protocol}`)
+        .toEqual(ANSWERS[COMMAND.state]);
+      // Asked through the template's loader, by its path and its exit codes, and answered.
+      expect({ loader: record.paths.loader, ok: record.exit.ok, absent: record.exit.absent,
+               mismatch: record.exit.mismatch }, `protocol ${protocol}`)
+        .toEqual({ loader: LOADER, ok: EXIT.ok, absent: EXIT.absent, mismatch: EXIT.mismatch });
+    }
   });
 
   it("has the Worker send only commands every protocol it speaks records", () => {
