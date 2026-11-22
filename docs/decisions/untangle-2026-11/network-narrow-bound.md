@@ -153,7 +153,7 @@ Sources: [E2B: update sandbox network](https://e2b.dev/docs/api-reference/sandbo
    - the owner gets a `network_unconfirmed` notice naming the sandbox and what ended.
    The runners' next posts are refused (`run_ended`, 403), so each stops its CLI inside the
    VM even if the Worker never answers. The lane's next time includes each lease's bound
-   (`#narrowedDue`), so the stop comes at the bound, not at the next retry.
+   (`#narrowed`, which `#unconfirmed` reads too), so the stop comes at the bound, not at the next retry.
 4. **The bound is recorded** (`limits-audit.md`, the `NARROWED_WITHIN_S` row), and the
    owner-object spec's "A change ends the egress streams it covers" states it, with a
    scenario.
@@ -195,6 +195,11 @@ Sources: [E2B: update sandbox network](https://e2b.dev/docs/api-reference/sandbo
   fails, the resume throws and the VM goes on running. The owner's bound now catches the
   failure, since the lease stays unconfirmed and is given back. The moment itself can close
   only if E2B takes a network update on a paused sandbox, which is unprobed.
+- A run or sign-in that starts while a lease owes a narrowing joins that lease, so its CLI
+  launches on the older network until a re-apply lands. It is ended at the same bound as the
+  lease's other runs: the mark keeps the write's time (`COALESCE`), and no renewal or join
+  moves it. Refusing the join would refuse every start in the round trip a re-apply takes
+  when all is well, and close nothing the bound does not (review).
 - An applied update may leave an open connection to a dropped host alive, as AWS's tracked
   connections are (research §2). Stopping the workload ends it. Whether E2B cuts it is
   unprobed.

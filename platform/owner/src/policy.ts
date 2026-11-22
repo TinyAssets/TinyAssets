@@ -602,10 +602,11 @@ export const policyDoors = Object.freeze({
       Promise<Projection> {
     const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
       const before = o.policy.read().document.egress;
+      const now = clock();
       const written = o.policy.write(session, r["expected_generation"], r["policy"],
-                                     r["proposal"] ?? null, clock());
+                                     r["proposal"] ?? null, now);
       if (narrows(before, written.document.egress)) {
-        o.files.leasesNarrowed(o.policy.egressGeneration(), clock());
+        o.files.leasesNarrowed(o.policy.egressGeneration(), now);
       }
       return projected(owner, written);
     }));

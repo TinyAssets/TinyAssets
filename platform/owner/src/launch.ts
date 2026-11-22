@@ -589,7 +589,7 @@ export class Launcher implements RunHost {
     }
     const times = [this.runs.next(now, admitted),
                    ...(admitted ? this.#behind(now).map((each) => each.due) : []),
-                   ...this.#narrowedDue(now)]
+                   ...this.#narrowed(now).map((each) => each.due)]
       .filter((time): time is number => time !== null);
     return times.length === 0 ? null : Math.min(...times);
   }
@@ -863,12 +863,12 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * In a unit: when each live lease owing a narrowed egress policy is given back, if no
-   * re-apply confirms it first (`#unconfirmed`).
+   * In a unit: each live lease owing a narrowed egress policy, with when it is given back if
+   * no re-apply confirms it first (`#unconfirmed`).
    */
-  #narrowedDue(now: number): number[] {
+  #narrowed(now: number): { lease: SandboxLease; due: number }[] {
     return this.#o.files.liveLeases(now).flatMap((lease) => lease.narrowed_at === null
-      ? [] : [lease.narrowed_at + NARROWED_WITHIN_S]);
+      ? [] : [{ lease, due: lease.narrowed_at + NARROWED_WITHIN_S }]);
   }
 
   /**
@@ -881,8 +881,8 @@ export class Launcher implements RunHost {
    * Worker as well; and the owner told. Whatever the owner's admission: a stop is never held.
    */
   #unconfirmed(now: number): void {
-    const due = this.#o.files.liveLeases(now).filter((lease) => lease.narrowed_at !== null
-      && lease.narrowed_at + NARROWED_WITHIN_S <= now);
+    const due = this.#narrowed(now).filter(({ due: at }) => at <= now)
+      .map(({ lease }) => lease);
     const held = due.length === 0 ? [] : this.#o.signins.list();
     for (const lease of due) {
       const signins = held.filter((row) => row.lease_id === lease.lease_id);
