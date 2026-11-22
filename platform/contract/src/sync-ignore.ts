@@ -56,18 +56,20 @@ export function defaultSyncIgnore(): readonly string[] {
  * The most states the automaton's lines take together (a line's: its tokens, each a byte, a
  * `?` or a class, plus one), each distinct line once, in file order: a technical ceiling,
  * the matcher's time. A byte of text costs ⌈S/32⌉ word steps, so at the files plane's own
- * ceilings a sync-out's matching stays well inside the sandbox's shortest session
- * (`limits-audit.md`: the arithmetic, with `STEP_NS` measured in the sandbox). Lines an
- * index takes cost none of it.
+ * ceilings a sync-out's matching fits in the sandbox's shortest session on any sandbox
+ * whose step is within `STEP_NS` (`limits-audit.md`: the arithmetic). Lines an index takes
+ * cost none of it.
  */
 export const AUTOMATON_STATES = 8_192;
 /**
  * The most nanoseconds one automaton step (a byte of text, a 32-state word) may take in the
- * sandbox: the constant `AUTOMATON_STATES` is derived from, measured there (`stepNanos`) by
- * the template's standing check (`sandbox/runner/probes.ts`'s `matcher-probe`), which fails
- * the pair past it.
+ * sandbox: the slowest step at which `AUTOMATON_STATES`' worst sync-out matching, every
+ * term slowed alike, still fits in the sandbox's shortest session (`limits-audit.md`: the
+ * arithmetic), so the two change together. Measured there (`stepNanos`) by the template's
+ * standing check (`sandbox/runner/probes.ts`'s `matcher-probe`), which fails the pair past
+ * it: a sandbox too slow for that promise, not one slower than usual.
  */
-export const STEP_NS = 6;
+export const STEP_NS = 14;
 /**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
  * memory in the sync agent's heap, 7.8 MiB with the worst class's heads diverging, so 6 MiB
@@ -1160,8 +1162,9 @@ export function ignoredBy(lines: readonly string[]): Matcher {
  * reads and writes its passed states too), and text of `/` bytes (the branch that re-arms
  * as well), with `*\/**\/…` and `**\/` lines keeping states alive throughout; the median of
  * five runs of `ms` each after a warm-up, so a neighbour's moment on the sandbox's CPU moves
- * it little; the slower of the two texts (`/` and none). The template's standing check runs
- * it in the sandbox and holds it to `STEP_NS`.
+ * it little, while a slow host shows (a sync-out runs at the host's sustained wall-clock
+ * pace, so neither the least run nor CPU time); the slower of the two texts (`/` and none).
+ * The template's standing check runs it in the sandbox and holds it to `STEP_NS`.
  */
 export function stepNanos(ms = 600): number {
   const lines: AutomatonLine[] = [];
