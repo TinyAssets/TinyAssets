@@ -29,6 +29,7 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, later, ownerFile, ownerRun, recorder, runBinding,
   runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
 import { RANKING } from "../../contract/src/paths";
+import { ADMITTED_FILE_BYTES } from "../src/holds";
 import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, spaceOf } from "./support";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
@@ -770,10 +771,13 @@ describe("auto and the owner's sign-ins", () => {
     const stronger = await r.connect("sk-good", OPENAI, "Stronger",
                                      [{ ...base!, id: "gpt-6.1-sol" }]);
     expect(await helper()).toMatchObject(plan);
-    // The owner's own ranking, whole in place of the platform's: OpenAI's a tier above.
-    const own = (tiers: unknown) => ownerFile(r.stub, r.bind(), RANKING,
-                                              JSON.stringify({ version: 2, tiers }));
-    await own([[{ provider: "*", model: "gpt-6*" }], [{ provider: "*", model: "claude-*" }]]);
+    // The owner's own ranking, whole in place of the platform's: OpenAI's a tier above, in a
+    // file past the inline bytes, so read from its chunks.
+    const own = (tiers: unknown, about = "") => ownerFile(r.stub, r.bind(), RANKING,
+                                                          JSON.stringify({ version: 2, about,
+                                                                           tiers }));
+    await own([[{ provider: "*", model: "gpt-6*" }], [{ provider: "*", model: "claude-*" }]],
+              "x".repeat(INLINE_BYTES));
     const strongest = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(strongest.run).toMatchObject({ credential: "api_key", model: "gpt-6.1-sol" });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?",
@@ -790,7 +794,10 @@ describe("auto and the owner's sign-ins", () => {
     // A file that is no ranking refuses the run, never a silent fall back to the platform's.
     for (const [text, message] of [
       ["{\"version\": 1}", `${RANKING}: a model ranking holds only version 2`],
-      ["not json", `${RANKING} is not JSON text`]] as const) {
+      ["not json", `${RANKING} is not JSON text`],
+      [JSON.stringify({ version: 2, about: "x".repeat(ADMITTED_FILE_BYTES),
+                        tiers: [[{ provider: "*", model: "*" }]] }),
+       `${RANKING} is past the ${ADMITTED_FILE_BYTES} bytes`]] as const) {
       await ownerFile(r.stub, r.bind(), RANKING, text);
       expect(await failure(() => helper()))
         .toMatchObject({ code: "invalid", message: expect.stringContaining(message) });
