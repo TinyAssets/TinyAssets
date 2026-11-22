@@ -35,5 +35,9 @@
     "secrets": { "ROUTING_MAC_KEY": "mac", "E2B_WEBHOOK_SECRET": "token",
                  "GATEWAY_KEYRING": "keyring", "FILES_KEYRING": "keyring",
                  "OPERATOR_KEYRING": "keyring" }
+  },
+  "forward": {
+    "why": "The changes a Worker's version before cannot follow, which no config, migration or lock shows, each naming the Workers it binds, by folder, and why: a shape it writes that its version before cannot read, with no migration (a KV value, an R2 object or its layout, a queue message, Durable Object storage outside contract/src/migrate.ts, JSON in a column), or callers outside the binding graph that speak to it in a way its version before cannot (a sandbox started from the sandbox's E2B_TEMPLATE, the doors' app in an open page, a message it queued). Each Worker's count of the changes naming it rides its version's tag (-f<n>, deploy.ts versionFlags), and a rollback stops at a Worker whose count is above its version before's (forwardOnly). A change shipped reader first, then writer (expand, then contract, as the runner's format is), needs no entry: the writer's version before reads it. Append only, held against the base branch (deploy/guards/forward.test.ts), where a change of the sandbox's pinned template adds one naming the sandbox; every other kind is the author's to add and the reviewer's to find missing.",
+    "changes": []
   }
 }
