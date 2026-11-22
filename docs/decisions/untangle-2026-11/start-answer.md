@@ -63,7 +63,7 @@ start. #5733 (`owner-shape.md`) gave it its own code and log line, but the run s
 
 ## Owed
 
-- [ ] `owner/src/launch.ts` network re-apply: an answer out of `NetworkApplied`'s shape is
+- [x] `owner/src/launch.ts` network re-apply: an answer out of `NetworkApplied`'s shape is
   logged with its cause and read as `failed` (`untangle/network-answer`).
 - [ ] `sandbox/src/control.ts` `#launch`: research first whether every fault before the runner's
   `launch` command is refused by a terminal code, so the object settles it `failed` instead of

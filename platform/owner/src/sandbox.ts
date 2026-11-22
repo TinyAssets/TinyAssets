@@ -102,8 +102,8 @@ export function vendorHosts(engine: string, credential: CredentialKind): string[
  *   `cause` names it: a refusal's code, or the contract's own `fields` as they came and only
  *   the names of the answer's keys, since a bug's answer is no place a log can trust to hold
  *   nothing secret;
- * - `lost`: the call threw a plain error, its answer lost on the way or the sandbox Worker's
- *   own fault, which crosses as a plain error the object cannot tell from a loss.
+ * - `unanswered`: the call threw a plain error, its answer lost on the way or the sandbox
+ *   Worker's own fault, which crosses as a plain error the object cannot tell from a loss.
  *
  * The answer is read outside the call's catch, so one out of shape is never taken for a lost
  * one. Each call's own reader says what each means for its job (`startOutcome`,
@@ -112,7 +112,7 @@ export function vendorHosts(engine: string, credential: CredentialKind): string[
 type SandboxAnswer<T> = { readonly kind: "answered"; readonly answer: T }
   | { readonly kind: "refused"; readonly refusal: Refusal }
   | { readonly kind: "malformed"; readonly cause: string }
-  | { readonly kind: "lost"; readonly error: unknown };
+  | { readonly kind: "unanswered"; readonly error: unknown };
 
 async function sandboxAnswer<T>(call: () => Promise<unknown>, fields: readonly string[],
                                 read: (value: unknown) => T | undefined):
@@ -127,7 +127,7 @@ async function sandboxAnswer<T>(call: () => Promise<unknown>, fields: readonly s
     }
     return namedRefusal(error)
       ? { kind: "malformed", cause: `a refusal of code ${String((error as { code?: unknown }).code)}` }
-      : { kind: "lost", error };
+      : { kind: "unanswered", error };
   }
   const answer = read(value);
   if (answer !== undefined) {
@@ -152,7 +152,7 @@ const START_MALFORMED = "start_malformed";
  *   of an object (`object_overloaded`) is thrown before the call runs, so nothing started;
  * - `started: null`: no answer the object can read, so the job may have launched, and is
  *   stopped in case it did. Its `state` says what the job's start came to:
- *   - `unknown` (`START_LOST`): the call was `lost`;
+ *   - `unknown` (`START_LOST`): the call was `unanswered`;
  *   - `failed` (`START_MALFORMED`): it was `malformed`. The call is over, but an answer out of
  *     the contract says nothing of what the sandbox Worker launched.
  */
@@ -196,7 +196,7 @@ export async function startOutcome(job: "a run" | "a sign-in", start: () => Prom
         got.cause}), a sandbox Worker bug: it failed, and is stopped in case it launched`);
       return { started: null, code: START_MALFORMED, state: "failed" };
     }
-    if (got.kind === "lost") {
+    if (got.kind === "unanswered") {
       console.error(`${job}'s start did not answer: whether it launched is unknown`, got.error);
       return { started: null, code: START_LOST, state: "unknown" };
     }
@@ -218,12 +218,12 @@ export async function startOutcome(job: "a run" | "a sign-in", start: () => Prom
 /**
  * What came of `reapply`, a call to the sandbox Worker's `network` for a live lease, as the
  * lease's record takes it (`Files.networkAnswered`): `applied` or `at_resume` as answered,
- * else `failed`, each cause logged as itself. A re-apply launches nothing and replaces the
- * sandbox's network whole, never with an older one (the Worker's own check), so whatever a
- * failed one did, sending it again is safe: the lane does, past its retry clock, and nothing
- * is stopped. Until one lands, the lease's calls under the new generation stay refused, which
- * is fail-closed: `lost` (no sandbox of that lease), a refusal, an answer out of the
- * contract's shape (the sandbox Worker's bug), or no answer at all.
+ * else `failed`: `lost` (no sandbox of that lease), a refusal, an answer out of the
+ * contract's shape (the sandbox Worker's bug) or a plain throw, each cause but `lost` logged
+ * as itself. A re-apply launches nothing and replaces the sandbox's network whole, never with
+ * an older one (the Worker's own check), so whatever a failed one did, sending it again is
+ * safe: the lane does, past its retry clock, and nothing is stopped. Until one lands, the
+ * lease's calls under the new generation are refused: fail-closed.
  */
 export async function networkOutcome(reapply: () => Promise<unknown>):
     Promise<"applied" | "at_resume" | "failed"> {
