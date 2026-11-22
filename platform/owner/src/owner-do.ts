@@ -328,8 +328,8 @@ export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail
 export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   const { storage, write } = units;
   const admission = new OwnerAdmission(storage);
-  const policy = new Policy(storage);
   const notices = new Notices(storage);
+  const policy = new Policy(storage, notices);
   const log = new ChangeLog(storage);
   // The files byte bound is the tier's storage (ADR-034 decision 8), as last handed.
   // Nothing is let go to make room at it (ADR-036): the owner deletes what it chooses.
@@ -367,7 +367,7 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   ]);
   return { admission, policy, notices, files, bodies, collections, grants,
            sessions: new Sessions(storage), keys: new Keys(storage),
-           registrations: new Registrations(storage, grants), ledger, backups, archive,
+           registrations: new Registrations(storage, grants, notices), ledger, backups, archive,
            actions: new Actions(storage, () => policy.read(), notices) };
 }
 

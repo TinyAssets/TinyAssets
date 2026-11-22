@@ -57,7 +57,7 @@ async function widenings() {
                                  "session"),
       "policy.applyKeyRequest": refusals((proof) => policy.applyKeyRequest(proof, {}, [], now),
                                          "session"),
-      "registrations.take": refusals((proof) => registrations.take(proof, "card", "d", now),
+      "registrations.take": refusals((proof) => registrations.take(proof, "card", "d"),
                                      "session"),
       // The owner itself (`OwnerSelf`).
       "sessions.open": refusals((proof) => sessions.open(proof, Math.floor(now), now), "owner"),
