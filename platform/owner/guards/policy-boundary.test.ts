@@ -15,7 +15,7 @@
  * `auto`'s), and their tables (the connections, their
  * blobs and flows, the reservations and the spend counters) are their modules' alone, and
  * so are the sandbox's egress rows and the owner's erasure mark, and the runs' rows (slice R:
- * runs, their grants, conversations and schedules, the tier numbers kept, the socket
+ * runs, their grants, conversations and schedules, the switched-on sign-ins kept, the socket
  * tickets), each its module's and the schema's. The lists only shrink.
  *
  * One module names every table to read it, never to write it: the owner export
@@ -80,7 +80,6 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   egress_reservations: Object.freeze(["owner/src/egress.ts", SCHEMA]),
   run_grants: Object.freeze(["owner/src/runs.ts", SCHEMA]),
   run_schedules: Object.freeze(["owner/src/runs.ts", SCHEMA]),
-  platform_tiers: Object.freeze(["owner/src/admission.ts", SCHEMA]),
   platform_signins: Object.freeze(["owner/src/signins.ts", SCHEMA]),
   socket_tickets: Object.freeze(["owner/src/tickets.ts", SCHEMA]),
   run_inputs: Object.freeze(["owner/src/runs.ts", SCHEMA]),

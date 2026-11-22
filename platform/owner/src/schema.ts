@@ -2611,6 +2611,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "DROP TABLE model_reservations",
   ]),
+  // 27 (`untangle-2026-11/control-row.md`): the tier numbers the binder handed go, folded into
+  // the control record's one kept copy (`control_kept`, migration 20), which the binding now
+  // carries whole and the tiers are read from (`admission.ts`). An object that keeps no copy
+  // yet admits no run until its next read of the record (its next bind, or its `runs` lane's
+  // next pass). The platform's, not the owner's: `platform_tiers` was not exported.
+  Object.freeze([
+    "DROP TABLE platform_tiers",
+  ]),
 ]);
 
 /**
@@ -2691,6 +2699,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   TEMPS_DROPPED,  // 24
   SPEND_PERIODS,  // 25
   RESERVATIONS_DROPPED,  // 26
+  null,  // 27
 ]);
 
 /**

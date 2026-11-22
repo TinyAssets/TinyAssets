@@ -36,7 +36,7 @@ import {
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
 import {
-  admittedOwner, clockAt, drainDue, failure, gateFor, TIERS, unseededObject,
+  admittedOwner, clockAt, drainDue, failure, gateFor, OPEN_RECORD, unseededObject,
 } from "./support";
 import {
   NARROWED_WITHIN_S, NETWORK_RETRY_S, NETWORK_UNCONFIRMED, type SandboxRun,
@@ -1267,7 +1267,7 @@ describe("a lease given back", () => {
     await scripted(r.stub, { answer: { started: false, code: SANDBOX_WAITING } });
     let call: EgressOpened | EgressRefusal | null = null;
     const run = await whileOut(r.name, "start", () => r.stub.agentSubmit(
-      r.bind({ tiers: TIERS }), { message: "go", client_send_id: "q-2" }), async () => {
+      r.bind(), { message: "go", client_send_id: "q-2" }), async () => {
       const start = (await recorder(r.stub)).starts.at(-1)!;
       call = await r.stub.egressOpen({
         owner: r.name, caller: r.name, origin: null, sandbox: {
@@ -1297,7 +1297,7 @@ describe("a lease given back", () => {
     await scripted(r.stub, { answer: { started: false, code: SANDBOX_WAITING } });
     let call: EgressOpened | EgressRefusal | null = null;
     const run = await whileOut(r.name, "start", () => r.stub.agentSubmit(
-      r.bind({ tiers: TIERS }), { message: "go", client_send_id: "q-1" }), async () => {
+      r.bind(), { message: "go", client_send_id: "q-1" }), async () => {
       const start = (await recorder(r.stub)).starts.at(-1)!;
       call = await r.stub.egressOpen({
         owner: r.name, caller: r.name, origin: null, sandbox: {
@@ -1321,7 +1321,7 @@ describe("the owner's erasure", () => {
     const stub = await admittedOwner(owner);
     const bind = (extra: Partial<Binding> = {}): Binding =>
       ({ owner, caller: owner, origin: null,
-         ...("sandbox" in extra ? {} : { tiers: TIERS }), ...extra });
+         ...("sandbox" in extra ? {} : { control: OPEN_RECORD }), ...extra });
     const { session: cookie } = await stub.sessionOpen(bind({ authenticated_at: signedIn() }));
     const session = bind({ session: cookie });
     const prepared = await stub.connectionPrepare(session, {

@@ -22,7 +22,9 @@ import { CHUNK_BYTES } from "../../contract/src/limits";
 import { sha256Hex } from "../../contract/src/digest";
 import { rig, type Rig } from "./ledger-support";
 import { later } from "./runs-support";
-import { failure, inFiles, setFiles, starterSeed, text, TIERS, tiersAt } from "./support";
+import {
+  failure, inFiles, openRecord, setFiles, starterSeed, text, TIERS, tiersAt,
+} from "./support";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -32,7 +34,8 @@ afterEach(() => {
 const SEEDED = starterSeed().bytes;
 const FREE = SEEDED + 10_000;
 const PAID = SEEDED + 100_000;
-const SMALL = tiersAt(FREE, PAID);
+/** The control record with the founder's runs and these storage figures, as a binding hands it. */
+const SMALL = openRecord(tiersAt(FREE, PAID));
 const W = "/workspace";
 /** Past the 4 KiB kept inline, so each file's bytes are chunk bytes the figure counts. */
 const FILE = 6_000;
@@ -45,7 +48,7 @@ const open = async (r: Rig) =>
 const bytes = (n: number, seed: number) => text(String(seed).padEnd(n, "x"));
 
 function write(r: Rig, path: string, n: number, seed = 1) {
-  return r.stub.fileWrite(r.bind(null, { tiers: SMALL }), { path, expected_etag: null,
+  return r.stub.fileWrite(r.bind(null, { control: SMALL }), { path, expected_etag: null,
                                                            content: bytes(n, seed) });
 }
 
@@ -77,7 +80,7 @@ describe("storage_full, the one wall", () => {
   it("is what an upload's begin meets at full, the sync's large-file path", async () => {
     const r = await rig();
     await write(r, `${W}/a.bin`, FILE, 1);
-    const { facts } = await full(() => r.stub.fileUploadBegin(r.bind(null, { tiers: SMALL }),
+    const { facts } = await full(() => r.stub.fileUploadBegin(r.bind(null, { control: SMALL }),
       { size: FILE, chunks: ["ab".repeat(32)] }));
     expect(facts).toMatchObject({ used_bytes: SEEDED + FILE, needed_bytes: FILE,
                                   held_bytes: 0 });
@@ -85,7 +88,7 @@ describe("storage_full, the one wall", () => {
 
   it("keeps reads and deletes working when full", async () => {
     const r = await rig();
-    const at = r.bind(null, { tiers: SMALL });
+    const at = r.bind(null, { control: SMALL });
     const kept = await write(r, `${W}/a.bin`, FILE, 1) as { entry: { etag: string } };
     await full(() => write(r, `${W}/b.bin`, FILE, 2));
     const read = await r.stub.fileRead(at, { path: `${W}/a.bin` });
@@ -123,7 +126,7 @@ describe("storage_full, the one wall", () => {
   it("refuses a collection row's placed body at the same wall, in the same words", async () => {
     const r = await rig();
     await write(r, `${W}/a.bin`, FILE, 1);
-    const { facts } = await full(() => r.stub.collectionWrite(r.bind(null, { tiers: SMALL }), {
+    const { facts } = await full(() => r.stub.collectionWrite(r.bind(null, { control: SMALL }), {
       collection: "board", row_id: "big", body: JSON.stringify({ text: "y".repeat(6_000) }),
       expected_etag: "", private: false }));
     expect(facts.limit_bytes).toBe(FREE);
@@ -133,7 +136,7 @@ describe("storage_full, the one wall", () => {
 describe("open uploads, apart from what is stored", () => {
   it("are never a full storage nor an upgrade when they alone leave no room", async () => {
     const r = await rig();
-    const at = r.bind(null, { tiers: SMALL });
+    const at = r.bind(null, { control: SMALL });
     const begun = await r.stub.fileUploadBegin(at, { size: 8_000, chunks: ["cd".repeat(32)] });
     const { message, facts } = await refusedAs(UPLOADS_OPEN, () => write(r, `${W}/a.bin`,
                                                                           FILE, 1));
@@ -148,7 +151,7 @@ describe("open uploads, apart from what is stored", () => {
   it("leave a begin that letting history go would admit at storage_full, never uploads_open, " +
      "and let no history go", async () => {
     const r = await rig();
-    const at = r.bind(null, { tiers: SMALL });
+    const at = r.bind(null, { control: SMALL });
     // An upload open: 4,200 bytes held apart.
     await r.stub.fileUploadBegin(at, { size: 4_200, chunks: ["cd".repeat(32)] });
     // A row whose placed body (past the inline 4 KiB, so chunk bytes) only its history keeps.
@@ -159,7 +162,7 @@ describe("open uploads, apart from what is stored", () => {
     }
     await r.stub.collectionWrite(at, { collection: "board", row_id: "r", body: "{}",
                                        expected_etag: big.row.etag, private: false });
-    const stored = (await r.stub.storageUsage(r.bind(null, { tiers: SMALL }))).used_bytes;
+    const stored = (await r.stub.storageUsage(r.bind(null, { control: SMALL }))).used_bytes;
     // A begin past the wall that fits only were that history let go: nothing is let go to
     // admit a write (ADR-036), so it is refused at the storage figure, never uploads_open.
     const { facts } = await full(() => r.stub.fileUploadBegin(at, {
@@ -171,7 +174,7 @@ describe("open uploads, apart from what is stored", () => {
       .toBeLessThanOrEqual(FREE);
     // Refused whole: the history kept, the upload still the only one open.
     expect(await open(r)).toBe(1);
-    expect((await r.stub.storageUsage(r.bind(null, { tiers: SMALL }))).used_bytes).toBe(stored);
+    expect((await r.stub.storageUsage(r.bind(null, { control: SMALL }))).used_bytes).toBe(stored);
   });
 
   it("are let go when the lease whose sync began them ends", async () => {
@@ -232,7 +235,7 @@ describe("open uploads, apart from what is stored", () => {
 describe("the sync's ignore list", () => {
   it("records a receipt and one notice for the owner at each change", async () => {
     const r = await rig();
-    const at = r.bind(null, { tiers: SMALL });
+    const at = r.bind(null, { control: SMALL });
     const made = await r.stub.fileWrite(at, { path: `${W}/.ta/sync-ignore`, expected_etag: null,
                                               content: text("node_modules\n") });
     await r.stub.fileWrite(at, { path: `${W}/.ta/sync-ignore`,
@@ -328,7 +331,7 @@ describe("the sync's ignore list", () => {
   it("says a list written outside a sync may hold back kept files when it adds a line, at " +
      "the cost of reading its lines alone", async () => {
     const r = await rig();
-    const at = r.bind(null, { tiers: SMALL });
+    const at = r.bind(null, { control: SMALL });
     // The worst list an inline file holds: 2,000 one-letter lines, read as a set.
     const lines = Array.from({ length: 2_000 }, (_, i) => String.fromCharCode(97 + (i % 26)))
       .join("\n");

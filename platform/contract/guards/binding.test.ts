@@ -14,16 +14,18 @@ const HEX = (char: string, length: number) => char.repeat(length);
 const ORIGIN = { client: HEX("a", 64), family: HEX("b", 64) };
 const EGRESS = { kind: "egress", token: HEX("c", 64), generation: 3 };
 const SYNC = { kind: "sync", token: HEX("c", 64), egress: HEX("f", 64) };
+/** A control record's text, as the binder hands it read fresh (`freshRecord`). */
+const RECORD = JSON.stringify({ outside: "on", ordinary: "all", canary: [], inbound: false });
 
 /** Each kind's bindings as the binder builds them (`doors/src/binder.ts`), and `none`'s. */
 const BUILT: Readonly<Record<BindingKind, readonly unknown[]>> = {
   none: [undefined],
   account: [
     { owner: OWNER, caller: OWNER, origin: null },
-    { owner: OWNER, caller: "user_visitor", origin: null, tiers: { free: 1 }, signins: [] },
+    { owner: OWNER, caller: "user_visitor", origin: null, control: RECORD, signins: [] },
     { owner: OWNER, caller: OWNER, origin: ORIGIN, source: { kind: "mcp", ref: "client-1" },
       authenticated_at: 1_700_000_000, vendor: { id: "claude", verified: true },
-      tiers: null, signins: null },
+      control: null, signins: null },
     { owner: OWNER, caller: OWNER, origin: ORIGIN,
       source: { kind: "api_key", ref: HEX("d", 16) }, authenticated_at: 0 },
     { owner: OWNER, caller: OWNER, origin: null, grant: "grant-1", expires_at: 1_700_000_100 },
@@ -44,12 +46,15 @@ const BUILT: Readonly<Record<BindingKind, readonly unknown[]>> = {
   ],
   inbound: [
     { owner: OWNER, caller: OWNER, origin: null, inbound: { binding: HEX("3", 32), revision: 1 },
-      tiers: { free: 1 }, signins: [] },
+      control: RECORD, signins: [] },
   ],
   reserved: [{ owner: OWNER, caller: PLATFORM_CALLER, origin: null }],
   import: [
     { owner: OWNER, caller: PLATFORM_CALLER, origin: null, import: { bundle: HEX("4", 64) },
-      tiers: null },
+      control: null },
+    { owner: OWNER, caller: PLATFORM_CALLER, origin: null, import: { bundle: HEX("4", 64) },
+      control: RECORD },
+    { owner: OWNER, caller: PLATFORM_CALLER, origin: null, import: { bundle: HEX("4", 64) } },
   ],
 };
 
@@ -73,6 +78,13 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
     ["a vendor out of shape", { owner: OWNER, caller: OWNER, origin: ORIGIN,
                                 vendor: { id: "claude" } }],
     ["an untrimmed owner", { owner: " user_owner", caller: OWNER, origin: null }],
+    ["a control record that does not parse", { owner: OWNER, caller: OWNER, origin: null,
+                                               control: "{outside" }],
+    ["a control record out of shape", { owner: OWNER, caller: OWNER, origin: null,
+                                        control: JSON.stringify({ outside: "on" }) }],
+    ["a control record not its text", { owner: OWNER, caller: OWNER, origin: null,
+                                        control: JSON.parse(RECORD) }],
+    ["tier numbers beside it", { owner: OWNER, caller: OWNER, origin: null, tiers: null }],
   ],
   session: [["no session", { owner: OWNER, caller: OWNER, origin: null }]],
   egress: [
@@ -112,17 +124,19 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
   reserved: [
     ["the owner's own caller", { owner: OWNER, caller: OWNER, origin: null }],
     ["an outside origin", { owner: OWNER, caller: PLATFORM_CALLER, origin: ORIGIN }],
-    ["tiers beside it", { owner: OWNER, caller: PLATFORM_CALLER, origin: null, tiers: null }],
+    ["a control record beside it", { owner: OWNER, caller: PLATFORM_CALLER, origin: null,
+                                     control: RECORD }],
     ["a session beside it", { owner: OWNER, caller: PLATFORM_CALLER, origin: null,
                               session: "cookie" }],
   ],
   import: [
-    ["no tiers", { owner: OWNER, caller: PLATFORM_CALLER, origin: null,
-                   import: { bundle: HEX("4", 64) } }],
+    ["a control record that does not parse", { owner: OWNER, caller: PLATFORM_CALLER,
+                                               origin: null, import: { bundle: HEX("4", 64) },
+                                               control: "not json" }],
     ["a bundle out of its grammar", { owner: OWNER, caller: PLATFORM_CALLER, origin: null,
-                                      import: { bundle: "x" }, tiers: null }],
+                                      import: { bundle: "x" }, control: null }],
     ["the owner's own caller", { owner: OWNER, caller: OWNER, origin: null,
-                                 import: { bundle: HEX("4", 64) }, tiers: null }],
+                                 import: { bundle: HEX("4", 64) }, control: null }],
   ],
 };
 

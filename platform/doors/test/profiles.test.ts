@@ -26,7 +26,7 @@ import { profileNames } from "../../contract/src/doors";
 import { APP_RESOURCE } from "../../contract/src/identity";
 import { INSTRUCTIONS } from "../src/instructions";
 import {
-  answerOf, appPost, call, connect, doorsEnv, grantsOf, legacyPost, OPEN, ownDoor,
+  answerOf, appPost, call, connect, doorsEnv, grantsOf, legacyPost, OPEN, OPEN_RECORD, ownDoor,
   registerClient, serveFirstPartyDocument, setControl, signInApp, type Tokens, url,
 } from "./support";
 
@@ -154,7 +154,7 @@ describe("the MCP door's tool profiles", () => {
   it("serves search, fetch and file_read in ChatGPT's shape to a directory client", async () => {
     const o = await signedIn();
     // The owner's own write, as its app binds it: with the tier's numbers (STORE's wall).
-    await o.stub.fileWrite({ ...o.own, tiers: OPEN.tiers }, { path: "/workspace/plumber.md",
+    await o.stub.fileWrite({ ...o.own, control: OPEN_RECORD }, { path: "/workspace/plumber.md",
                                     expected_etag: null,
                                     content: new TextEncoder().encode(
                                       "---\ntype: Person\ntitle: Bo\n---\nBo fixes boilers.\n") });

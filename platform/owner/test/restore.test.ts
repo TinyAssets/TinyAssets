@@ -36,7 +36,7 @@ import {
 } from "./generation-support";
 import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
 import {
-  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
+  drainDue, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
 } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -255,7 +255,7 @@ describe("a restore", () => {
       .toBe(RESTORING);
     expect((await failure(() => stub.importNotice(
       { owner: o.name, caller: PLATFORM_CALLER, origin: null, import: { bundle: "b".repeat(64) },
-        tiers: TIERS } as Binding, { detail: "x" }))).message).toBe(RESTORING);
+        control: OPEN_RECORD } as Binding, { detail: "x" }))).message).toBe(RESTORING);
     // No lane runs while a restore is under way.
     expect(await laneJobs(stub)).toEqual({});
     const answers = await stepped(stub, o.name);

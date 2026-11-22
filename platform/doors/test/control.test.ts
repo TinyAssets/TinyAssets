@@ -110,7 +110,8 @@ describe("the control record", () => {
 
   it("opens outside work only when read on; the owner's when missing or admitting", () => {
     const read = (control: Omit<Control, "sandbox" | "signins">) =>
-      ({ kind: "read", control: { ...control, sandbox: null, signins: null } }) as const;
+      ({ kind: "read", control: { ...control, sandbox: null, signins: null },
+         text: JSON.stringify(control) }) as const;
     for (const kind of ["missing", "malformed", "unreadable"] as const) {
       expect(outsideOpen({ kind }, "a")).toBe(false);
     }

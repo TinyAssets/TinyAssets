@@ -9,7 +9,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { OPEN, writeControl } from "../../ci/fixtures";
 import { staleRefusal } from "../../contract/src/control";
 import { until } from "../../ci/workerd";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
@@ -18,7 +18,7 @@ import { NO_CODE_WANTED, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
-  defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
+  defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf,
 } from "./runs-support";
 import { drainDue, failure, gateFor } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
@@ -163,7 +163,7 @@ describe("a sign-in", () => {
     const signin = await lastSignin(r);
     await defineAgent(r.stub, r.bind(), "main", { engine: "auto", scopes: [] });
     await r.connect("sk-ant-x");
-    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message: "go",
+    const run = await r.stub.agentSubmit(r.bind(), { message: "go",
                                                                      client_send_id: "j-1" });
     const start = await startOf(r.stub, run.run_id);
     // The run joined the sign-in's lease: no tokens of its own.
@@ -186,7 +186,7 @@ describe("a sign-in", () => {
     const runner = runnerOfSignin(r, signin);
     await defineAgent(r.stub, r.bind(), "main", { engine: "auto", scopes: [] });
     await r.connect("sk-ant-x");
-    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message: "go",
+    const run = await r.stub.agentSubmit(r.bind(), { message: "go",
                                                                      client_send_id: "k-1" });
     const start = await startOf(r.stub, run.run_id);
     expect(start.lease.lease_id).toBe(signin.lease.lease_id);
@@ -528,13 +528,11 @@ describe("the per-source switch, in the owner's object", () => {
 });
 
 describe("the runs lane's own read of the switches", () => {
-  const OPEN = OPEN_GATES;
-
   /** `agent`'s schedule due now, the lane run once, with no door call handing a list. */
   async function laneRuns(r: Gated, agent: string):
       Promise<{ engine: string; credential: string }[]> {
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent, input: "nightly",
-                                                     at: Date.now() / 1000 + 3600 });
+    await r.stub.agentRun(r.bind(), { agent, input: "nightly",
+                                                              at: Date.now() / 1000 + 3600 });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
     // A door call that hands no list (`signins` undefined) syncs the schedule to the row.
@@ -550,35 +548,28 @@ describe("the runs lane's own read of the switches", () => {
     await defineAgent(r.stub, r.bind(), "main", { engine: "claude-code",
                                                   credential: "vendor_login_in_sandbox",
                                                   scopes: [] });
-    try {
-      // The founder switches Claude Code off in the control record the object reads.
-      await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": false } });
-      expect(await laneRuns(r, "main")).toEqual([]);
-      expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
-        .toContainEqual(expect.stringContaining("signin_off"));
-      // Switched on again, the lane's next schedule runs on it.
-      await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": true } });
-      expect((await laneRuns(r, "main")).map((start) => [start.engine, start.credential]))
-        .toEqual([["claude-code", "vendor_login_in_sandbox"]]);
-    } finally {
-      await writeControl(env.CONTROL, null);
-    }
+    // The founder switches Claude Code off in the control record the object reads.
+    await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": false } });
+    expect(await laneRuns(r, "main")).toEqual([]);
+    expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
+      .toContainEqual(expect.stringContaining("signin_off"));
+    // Switched on again, the lane's next schedule runs on it.
+    await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": true } });
+    expect((await laneRuns(r, "main")).map((start) => [start.engine, start.credential]))
+      .toEqual([["claude-code", "vendor_login_in_sandbox"]]);
   });
 
-  it("fails closed: a control record the lane cannot read switches every sign-in off",
-     async () => {
+  it("fails closed: a control record the lane reads malformed starts nothing, its copy and " +
+     "the tier numbers in it dropped", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", { engine: "claude-code",
                                                   credential: "vendor_login_in_sandbox",
                                                   scopes: [] });
-    try {
-      await writeControl(env.CONTROL, "{not json");
-      expect(await laneRuns(r, "main")).toEqual([]);
-      expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
-        .toContainEqual(expect.stringContaining("signin_off"));
-    } finally {
-      await writeControl(env.CONTROL, null);
-    }
+    await writeControl(env.CONTROL, "{not json");
+    expect(await laneRuns(r, "main")).toEqual([]);
+    expect(await r.sql("SELECT text FROM control_kept")).toEqual([]);
+    expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
+      .toContainEqual(expect.stringContaining("tier_unread"));
   });
 });
 
@@ -620,7 +611,7 @@ describe("the past runs", () => {
     await r.connect("sk-ant-x");
     const ids: string[] = [];
     for (let i = 0; i < 3; i += 1) {
-      const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+      const run = await r.stub.agentSubmit(r.bind(), {
         message: `go ${i}`, client_send_id: `l-${i}` });
       ids.push(run.run_id);
       const start = await startOf(r.stub, run.run_id);
@@ -642,7 +633,7 @@ describe("the past runs", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", { engine: "auto", scopes: [] });
     await r.connect("sk-ant-x");
-    const owners = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+    const owners = await r.stub.agentSubmit(r.bind(), {
       message: "mine", client_send_id: "o-1" });
     await client(r);
     const outside = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });

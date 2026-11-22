@@ -3805,7 +3805,7 @@ export const filesDoors = Object.freeze({
    * What the owner stores against its one storage number (founder, 2026-11-03): every byte
    * of user content wherever it lives (`used_bytes`: chunks in R2, small files and inline
    * bodies in the object), the bound (`limit_bytes`: the tier's storage, or the owner's own
-   * lower setting; null until the binder has handed the tier numbers), and where it is:
+   * lower setting; null while the object keeps no tier numbers), and where it is:
    * mail (`messages`), collection rows and their history (`collections`), and files, the
    * rest. Platform bookkeeping (indexes, receipts, counters) is not user content.
    */

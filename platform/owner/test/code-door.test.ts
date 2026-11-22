@@ -15,9 +15,9 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { OPEN, writeControl } from "../../ci/fixtures";
 import { type ControlStore, MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
 
 import { profileNames } from "../../contract/src/doors";
@@ -76,13 +76,6 @@ function ran(r: Rig, binding: Binding, request: { script: string },
              stop: ReadableStream<Uint8Array> = new IdentityTransformStream().readable) {
   return r.stub.codeRun(binding, request, stop);
 }
-
-/** The platform's control record, outside access on, as the founder's admin path writes it. */
-const OPEN = OPEN_GATES;
-
-beforeEach(async () => {
-  await writeControl(env.CONTROL, OPEN);
-});
 
 afterEach(() => {
   vi.useRealTimers();

@@ -16,7 +16,7 @@ import type { OwnerDO } from "../src/owner-do";
 import { QUEUE_FULL } from "../src/runs";
 import { gated } from "./gateway-support";
 import { DOT, MCP, MUSE, registerOn, rig, signedIn, dm } from "./ledger-support";
-import { ALL_SCOPES, ownerRun, recorder, runBinding, runnerBinding, startOf, TIERS }
+import { ALL_SCOPES, OPEN_RECORD, ownerRun, recorder, runBinding, runnerBinding, startOf }
   from "./runs-support";
 import { atClock, drainDue, failure, inStores } from "./support";
 
@@ -482,7 +482,7 @@ describe("a run's held call (R5 P-resume)", () => {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
       recipe_id: null });
     await r.stub.registerAgent(r.session(), { card_id: registration, digest: shown });
-    const asked = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+    const asked = await r.stub.agentSubmit({ ...client, control: OPEN_RECORD },
                                            { message: "hi", client_send_id: "c-1" });
     const start = await startOf(r.stub, asked.run_id);
     await ruled(o, [{ act: "workspace.files", do: "ask" }]);

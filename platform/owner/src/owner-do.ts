@@ -159,7 +159,7 @@ import { definitionDoors } from "./definition";
 import {
   actorOf, Ledger, ledgerDoors, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
-import { clock } from "./clock";
+import { clock, clockMs } from "./clock";
 import type { OwnerEnv } from "./env";
 import {
   type Binding, BINDING_PARSERS, type BindingKind, bindingKind, type BindingOf, type EgressBinding,
@@ -193,6 +193,7 @@ import { Backups } from "./backup";
 import { OpenExports } from "./open-exports";
 import { ChangeLog } from "./changelog";
 import { ControlGate, objectKeeper } from "./control-gate";
+import { SqlKeeper } from "../../contract/src/control";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";
 import { serverUnreached } from "./network";
@@ -330,7 +331,7 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
   const notices = new Notices(storage);
   const policy = new Policy(storage, notices);
   const log = new ChangeLog(storage);
-  // The files byte bound is the tier's storage (ADR-034 decision 8), as last handed.
+  // The files byte bound is the tier's storage (ADR-034 decision 8), as the kept record holds it.
   // Nothing is let go to make room at it (ADR-036): the owner deletes what it chooses.
   const files: Files = new Files(storage, env.FILES, () => fileLimits(
     policy.read().document,
@@ -1392,14 +1393,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     } else if (stored !== undefined && stored.owner !== owner) {
       throw new Refusal("refused", "this object belongs to another owner");
     }
-    // The tier's numbers, as the binder read them from the control record (an account's,
-    // an inbound event's and the import's bindings carry them): kept for the files byte
-    // quota and every run, written only when they changed.
-    const unread = this.#admission.tiers() === null;
-    this.#admission.keep(given.tiers, clock());
-    if (unread && this.#admission.tiers() !== null && this.#starter.version() === 0) {
-      // The first numbers a new owner's door hands: its seed, which waited for them, is due.
-      queueMicrotask(() => void this.#schedule.sync());
+    // The control record as the binder read it fresh (an account's, an inbound event's and
+    // the import's bindings carry it): the object's one copy, whose tier numbers the files byte
+    // quota and every run read, written only when it changed.
+    if (given.control !== undefined) {
+      const unread = this.#admission.tiers() === null;
+      new SqlKeeper(this.#storage.sql).keep(given.control, clockMs());
+      if (unread && this.#admission.tiers() !== null && this.#starter.version() === 0) {
+        // The first numbers a new owner's door hands: its seed, which waited for them, is due.
+        queueMicrotask(() => void this.#schedule.sync());
+      }
     }
     return held;
   }

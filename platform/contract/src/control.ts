@@ -1,7 +1,7 @@
 /**
  * The platform's control record: one record, `c:control`, in a KV namespace of its own
  * (`CONTROL`), which the founder edits with no deploy. The doors read it on every outside and
- * owner call, and hand its tier numbers and switched-on sign-ins in the binding
+ * owner call, and hand the record read fresh, and its switched-on sign-ins, in the binding
  * (`doors/src/binder.ts`, `withAccount`); the owner's object at a code-mode script's tool
  * calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start
  * and once per look (`sandbox/src/control.ts`); and a first deploy writes it closed
@@ -113,13 +113,14 @@ export interface Control {
 }
 
 /**
- * The record as read: there and well formed; kept (the namespace could not be read, and the
- * reader's keeper held the copy last read well formed, first read at `read_at`, ms); missing;
+ * The record as read: there and well formed, with the text it was read from; kept (the
+ * namespace could not be read, and the reader's keeper held the copy last read well formed,
+ * first read at `read_at`, ms); missing;
  * malformed (an operator's bad write: not JSON, too long, or out of shape); or unreadable (an
  * outage, with no copy kept). The gates tell them apart; the last three are reported.
  */
 export type ControlRead =
-  | { readonly kind: "read"; readonly control: Control }
+  | { readonly kind: "read"; readonly control: Control; readonly text: string }
   | { readonly kind: "kept"; readonly control: Control; readonly read_at: number }
   | { readonly kind: "missing" }
   | { readonly kind: "malformed" }
@@ -178,13 +179,17 @@ export class SqlKeeper implements ControlKeeper {
   }
 
   keep(text: string | null, at: number): void {
+    // Read first: an owner unit that runs any write is marked changed (`owner/src/gate.ts`).
+    if ((this.kept()?.text ?? null) === text) {
+      return;
+    }
     if (text === null) {
       this.#sql.exec("DELETE FROM control_kept");
       return;
     }
     this.#sql.exec("INSERT INTO control_kept (only, text, read_at) VALUES (1, ?, ?) " +
-                     "ON CONFLICT (only) DO UPDATE SET text = excluded.text, read_at = " +
-                     "excluded.read_at WHERE control_kept.text IS NOT excluded.text", text, at);
+                     "ON CONFLICT (only) DO UPDATE SET text = excluded.text, " +
+                     "read_at = excluded.read_at", text, at);
   }
 }
 
@@ -193,7 +198,7 @@ export class SqlKeeper implements ControlKeeper {
  * something that outlasts the outage, on a record that may have changed since the copy (a
  * switch just turned off), so it waits for the record read fresh. Writing the record's own
  * numbers into lasting state is the other such act: a read that is not fresh hands none
- * (`tiersOf`, `sources/src/signin.ts` `signinsRead`), so no reader rewrites what it keeps.
+ * (`freshRecord`, `sources/src/signin.ts` `signinsRead`), so no reader rewrites what it keeps.
  * Everything else runs on the copy.
  */
 export const FRESH_ONLY = Object.freeze({
@@ -329,8 +334,8 @@ export async function readControl(store: ControlStore,
   } catch (error) {
     console.error("the control record's last good copy could not be kept", error);
   }
-  return control !== null ? { kind: "read", control }
-    : text === null ? { kind: "missing" } : { kind: "malformed" };
+  return text === null ? { kind: "missing" }
+    : control !== null ? { kind: "read", control, text } : { kind: "malformed" };
 }
 
 /** The read an outage gives: the copy `keeper` holds, or `unreadable`. */
@@ -408,11 +413,13 @@ export function inboundGate(read: ControlRead): Control | "off" | "unavailable" 
 }
 
 /**
- * The tier numbers a read hands the owner's object to keep: the record's, or null when it holds
- * none or is malformed (the object then drops the numbers it kept, and refuses every run);
- * none (`undefined`) when it was not read fresh, so the object keeps its own (`FRESH_ONLY`).
+ * The record a read hands the owner's object to keep as its one copy (`Binding.control`, its
+ * `SqlKeeper`), which its tier numbers are read from: the text when it read well formed; null
+ * when it found none or a malformed one (the object then drops its copy, and refuses every run
+ * for want of numbers); none (`undefined`) when it was not read fresh, so the object keeps its
+ * own (`FRESH_ONLY`).
  */
-export function tiersOf(read: ControlRead): Tiers | null | undefined {
+export function freshRecord(read: ControlRead): string | null | undefined {
   return read.kind === "kept" || read.kind === "unreadable" ? undefined
-    : read.kind === "read" ? read.control.tiers : null;
+    : read.kind === "read" ? read.text : null;
 }
