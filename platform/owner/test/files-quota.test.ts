@@ -454,28 +454,16 @@ describe("file history", () => {
      async () => {
     const r = await rig();
     await inFiles(r.stub, async (files, unit) => {
-      for (let i = 0; i < 20; i++) {
-        const dir = await unit(() => files.tempDir("t-", "agent"));
-        for (let j = 0; j < 30; j++) {
-          await files.write(`${dir}/f${j}`, text(`${i}-${j}`), { expected: null,
-                                                                  writer: "agent" });
-        }
-      }
       await files.write(`${W}/a`, text("1"), { expected: null, writer: "o" });
       await unit(() => {
         files.remove(`${W}/a`, { expected: null, writer: "o" });
         files.begin(INLINE_BYTES + 1, ["a".repeat(64)], "owner");
       });
     });
-    // The temporary area keeps no history at all.
-    expect(await sqlIn(r.stub,
-                       "SELECT COUNT(*) AS n FROM file_history WHERE path GLOB '/.ta/*'"))
-      .toEqual([{ n: 0 }]);
-    await sqlIn(r.stub, "UPDATE file_temps SET expires_at = 1");
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE path = ?", `${W}/a`);
     const before = await r.stub.fileUsage(r.bind(null));
-    expect(before.entries).toBeGreaterThan(SEED.entries + 600);
+    expect(before.intents).toBe(1);
     expect(before.history).toBe(SEED.entries + 2);
     const back = await crowd(r.stub, INDEX_BYTES, 0);
     await setFiles(r, { max_bytes: 0 });
@@ -489,22 +477,46 @@ describe("file history", () => {
   });
 });
 
+/** `r`'s object made again of the migrations through `through`, `act` run on it, migrated whole. */
+function migratedFrom(r: Rig, through: number, act: (sql: SqlStorage) => void): Promise<void> {
+  return runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
+    const sql = state.storage.sql;
+    for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+        "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+        "AND name NOT GLOB 'cf_*'").toArray()) {
+      sql.exec(`DROP TABLE "${name}"`);
+    }
+    migrate(state.storage, MIGRATIONS.slice(0, through));
+    act(sql);
+    migrate(state.storage, MIGRATIONS);
+  });
+}
+
+describe("the temporary area's removal (owner migration 24)", () => {
+  it("deletes every temporary directory and every entry under one, taking back their charges",
+     async () => {
+    const r = await rig();
+    await migratedFrom(r, 23, (sql) => {
+      sql.exec("INSERT INTO file_temps (name, expires_at, writer) VALUES ('t-0', 1, 'agent')");
+      sql.exec("INSERT INTO file_entries (parent, name, kind, version, content_id, size, mode, " +
+                 "mtime_ms, writer) VALUES ('/.ta/tmp', 't-0', 'dir', 1, NULL, 0, 0, 0, " +
+                 "'agent'), ('/.ta/tmp/t-0', 'd', 'dir', 2, NULL, 0, 0, 0, 'agent')");
+    });
+    expect(await sqlIn(r.stub, "SELECT parent, name FROM file_entries WHERE parent GLOB '/.ta*'"))
+      .toEqual([]);
+    expect(await sqlIn(r.stub, "SELECT name FROM sqlite_master WHERE name GLOB 'file_temps*'"))
+      .toEqual([]);
+    await counted(r);
+  });
+});
+
 describe("the retention marks' migration (owner migration 8)", () => {
   /** An object of the migrations through migration 7, `act` run on it, then migrated whole. */
   const migrated = async (act: (sql: SqlStorage) => void, r: Rig | null = null) => {
-    return runInDurableObject((r ?? await rig()).stub, (_instance: OwnerDO, state) => {
-      const sql = state.storage.sql;
-      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
-          "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
-          "AND name NOT GLOB 'cf_*'").toArray()) {
-        sql.exec(`DROP TABLE "${name}"`);
-      }
-      migrate(state.storage, MIGRATIONS.slice(0, 7));
-      act(sql);
-      migrate(state.storage, MIGRATIONS);
-      return sql.exec("SELECT retained_keep, retained_recent, retained_days, retain_cursor " +
-                      "FROM file_space").toArray();
-    });
+    const at = r ?? await rig();
+    await migratedFrom(at, 7, act);
+    return sqlIn(at.stub, "SELECT retained_keep, retained_recent, retained_days, " +
+                          "retain_cursor FROM file_space");
   };
 
   it("leaves the marks off, and re-marks every kept row of an owner that keeps history",

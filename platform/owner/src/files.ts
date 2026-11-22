@@ -21,10 +21,10 @@
  * - Content. A content id names its kind and size with its bytes (inline, or a chunk
  *   list), so no content of one kind can name another's; content already stored under
  *   an id is reused only when it is the same content, else the write fails loudly. A
- *   content is held by every entry and every kept history row naming it, in any root,
+ *   content is held by every entry and every kept history row naming it,
  *   so content anything still names is never collected.
- * - History. Every workspace change appends a history row (`file_history`), which is
- *   also the change feed; the temporary area keeps none. Retention is the owner's, off
+ * - History. Every change appends a history row (`file_history`), which is
+ *   also the change feed. Retention is the owner's, off
  *   until it sets it (Fact 15), so every version is kept by default. Set, it keeps each live
  *   path's newest `keep_versions`, and its versions younger than `retention_days` up to
  *   `keep_recent` in all; a version past those goes in the change that pushed it out. A
@@ -101,10 +101,9 @@ import { refuseErasing } from "./erasure";
 import { heldGenerations } from "./restore";
 import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
-  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within,
-  WORKSPACE,
+  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, within, WORKSPACE,
 } from "../../contract/src/paths";
-import { isPrintable, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import {
   AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
@@ -165,8 +164,6 @@ export const INTENT_TTL_S = 86_400;
 export const PLACE_TTL_S = 600;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
-/** A temporary directory's life. */
-const TEMP_TTL_S = 7 * 86_400;
 /**
  * How late housekeeping may run after it is due, so one alarm takes everything due in
  * an hour rather than each prune or delete arming its own.
@@ -1201,17 +1198,11 @@ export class Files {
 
   // -- WRITING ------------------------------------------------------------------
 
-  /**
-   * Stamp the next version and, for a workspace path, append its history row; return
-   * the version. The temporary area keeps no history.
-   */
+  /** Stamp the next version and append its history row; return the version. */
   #record(path: string, op: string, kind: FileKind | null, contentId: string | null,
           size: number, mode: number, writer: string, now: number): number {
     const version = this.#sql.exec<{ seq: number }>(
       "UPDATE file_space SET seq = seq + 1 RETURNING seq").one().seq;
-    if (within(path, TEMP)) {
-      return version;
-    }
     this.#sql.exec(
       "INSERT INTO file_history (version, path, op, kind, content_id, size, mode, writer, at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1301,17 +1292,6 @@ export class Files {
     }
   }
 
-  /**
-   * The temporary area holds only what `tempDir` made, so every temporary entry sits in
-   * a directory that expires.
-   */
-  #temporary(path: string): void {
-    if (within(path, TEMP) && this.#sql.exec("SELECT 1 FROM file_temps WHERE name = ?",
-                                             path.split("/")[3]).toArray().length === 0) {
-      throw new Refusal("invalid", "the temporary area holds only temporary directories");
-    }
-  }
-
   /** Each missing ancestor made a directory (`parents`), or refused as missing. */
   #parents(path: string, parents: boolean, writer: string, now: number): void {
     for (const dir of ancestors(path)) {
@@ -1341,7 +1321,6 @@ export class Files {
     if (current?.kind === "dir") {
       throw new FileFault("is_directory", "is a directory");
     }
-    this.#temporary(path);
     if (size > this.#limits().max_file_bytes) {
       throw new Refusal("file_quota", FILE_TOO_LARGE);
     }
@@ -1978,7 +1957,6 @@ export class Files {
     if (current !== undefined) {
       return shown(current);
     }
-    this.#temporary(path);
     this.#parents(path, parents, writer, now);
     return shown(this.#upsert(path, "dir", this.#record(path, "mkdir", "dir", null, 0, 0,
                                                         writer, now),
@@ -2063,7 +2041,6 @@ export class Files {
       if (parent.kind !== "dir") {
         throw new FileFault("not_directory", "the destination's parent is not a directory");
       }
-      this.#temporary(target);
       const there = this.#entry(target);
       if (there !== undefined) {
         if (!options.replace) {
@@ -2081,7 +2058,7 @@ export class Files {
       }
       // The feed reads each source's leaving before its arrival, but the source entries
       // go last: each content is held by its new entry before its old one lets go, so a
-      // move never leaves content unreferenced, in any root.
+      // move never leaves content unreferenced.
       const tree = [moving, ...(moving.kind === "dir" ? this.#below(source) : [])];
       for (const entry of tree) {
         this.#record(pathOf(entry), "rename_from", null, null, 0, 0, options.writer, now);
@@ -2157,41 +2134,6 @@ export class Files {
       }
       return { purged: gone.length };
     });
-  }
-
-  /** A new temporary directory under `/.ta/tmp`, expired after a day. */
-  tempDir(prefix: unknown, writer: string): string {
-    // A prefix and the 16 hex after it make one path component (`MAX_NAME_BYTES`).
-    if (typeof prefix !== "string" || prefix.includes("/")
-        || utf8Bytes(prefix) > MAX_NAME_BYTES - 16 || !isPrintable(prefix)) {
-      throw new Refusal("invalid",
-                        `a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
-                        "printable characters, no slash");
-    }
-    const name = `${prefix}${randomHex(8)}`;
-    const path = `${TEMP}/${name}`;
-    this.#change(writer, (now) => {
-      this.#sql.exec("INSERT INTO file_temps (name, expires_at, writer) VALUES (?, ?, ?)", name,
-                     now + TEMP_TTL_S, writer);
-      this.#mkdir(path, "", false, writer, now);
-    });
-    return path;
-  }
-
-  /** Remove temporary directories now (an environment's `cleanup`). */
-  dropTemps(paths: readonly string[], writer: string): void {
-    this.#change(writer, (now) => {
-      for (const path of paths) {
-        this.#dropTemp(nameOf(path), writer, now);
-      }
-    });
-  }
-
-  #dropTemp(name: string, writer: string, now: number): void {
-    this.#sql.exec("DELETE FROM file_temps WHERE name = ?", name);
-    if (this.#entry(`${TEMP}/${name}`) !== undefined) {
-      this.#remove(`${TEMP}/${name}`, null, true, writer, now);
-    }
   }
 
   // -- THE SANDBOX LEASES ----------------------------------------------------------
@@ -2479,7 +2421,7 @@ export class Files {
         return this.#storage.transactionSync(() => {
           const before = this.#before(writer);
           const path = storedPath(op["path"]);
-          if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
+          if (isRoot(path) || seen.has(path)) {
             throw new Refusal("invalid", "a sync op names one workspace path, once");
           }
           seen.add(path);
@@ -2646,8 +2588,8 @@ export class Files {
   }
 
   /**
-   * When housekeeping is next due, never before `now`, or null: expired intents and
-   * temporary directories, due history prunes, and due chunk deletes, each with
+   * When housekeeping is next due, never before `now`, or null: expired intents, due
+   * history prunes, and due chunk deletes, each with
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
    * change still to apply, or garbage past the owner's storage figure that it may collect
    * early. Garbage waiting on a failed delete's retry is due at that retry, never at once,
@@ -2660,7 +2602,6 @@ export class Files {
     }
     const times = [
       "SELECT MIN(expires_at) AS due FROM file_intents",
-      "SELECT MIN(expires_at) AS due FROM file_temps",
       "SELECT MIN(prune_after) AS due FROM file_history WHERE prune_after IS NOT NULL",
       "SELECT MIN(gc_after) AS due FROM file_chunks WHERE gc_after IS NOT NULL",
     ].map((query) => this.#sql.exec<{ due: number | null }>(query).one().due)
@@ -2670,7 +2611,7 @@ export class Files {
 
   /**
    * One housekeeping pass, the system's own and never refused for a quota: apply a
-   * retention change to kept rows, expire intents and temporary directories, prune due
+   * retention change to kept rows, expire intents, prune due
    * history, then delete due garbage chunks, and, while the garbage in its grace is past the
    * tier's storage figure, the oldest of it too (a technical ceiling: recovery against
    * cost, `limits-audit.md`). A delete marks its chunks `deleting` (never
@@ -2689,11 +2630,6 @@ export class Files {
              "SELECT intent_id FROM file_intents WHERE expires_at <= ? ORDER BY expires_at " +
                "LIMIT ?", now, HOUSEKEEPING_BATCH).toArray()) {
         this.#release(intentId);
-      }
-      for (const { name } of sql.exec<{ name: string }>(
-             "SELECT name FROM file_temps WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
-             now, HOUSEKEEPING_BATCH).toArray()) {
-        this.#dropTemp(name, "system", now);
       }
       // Due rows go only once every path is marked by the retention in force, never by one
       // a re-mark still under way is replacing (migration 8's among them).

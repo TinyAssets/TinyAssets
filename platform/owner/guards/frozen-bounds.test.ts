@@ -30,7 +30,7 @@ import * as CONTRACT from "../../contract/src/limits";
 import { PLATFORM } from "../../ci/paths";
 import {
   CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES, HISTORY_BYTES,
-  SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
+  SCOPE_REF_BYTES, SHARE_BYTES,
 } from "../src/manifest";
 import { MAIN_AGENT, OWNER } from "../src/authority";
 import type { Migration } from "../../contract/src/migrate";
@@ -244,8 +244,6 @@ export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze
   ["CREATE TRIGGER file_contents_removed", 1, CONTENT_BYTES("OLD")],
   ["CREATE TRIGGER file_chunks_added", 1, CHUNK_ROW_BYTES()],
   ["CREATE TRIGGER file_chunks_removed", 2, CHUNK_ROW_BYTES()],
-  ["CREATE TRIGGER file_temps_added", 2, TEMP_BYTES("NEW")],
-  ["CREATE TRIGGER file_temps_removed", 2, TEMP_BYTES("OLD")],
   ["CREATE TRIGGER file_scope_contents_added", 2, SCOPE_REF_BYTES("NEW")],
   ["CREATE TRIGGER file_scope_chunks_removed", 2, SCOPE_REF_BYTES("OLD")],
   // The wide mark, in place of an image past `IMAGE_MAX`: the change log reads any line

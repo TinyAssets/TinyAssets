@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
-import { type Entry, type Files } from "../src/files";
+import { type Entry } from "../src/files";
 import { INLINE_BYTES } from "../../contract/src/limits";
 import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, passEnd, setFiles, starterSeed, text } from "./support";
@@ -81,64 +81,6 @@ describe("a directory", () => {
   });
 });
 
-/** A file's bytes as `files` reads them now. */
-async function bytesAt(files: Files, path: string): Promise<Uint8Array> {
-  const content = files.open(path);
-  if (content.inline !== undefined) {
-    return content.inline;
-  }
-  const pieces = await files.fetch((content.chunks ?? [])
-    .map((c) => ({ sha256: c.sha256 })));
-  return new Uint8Array(pieces.flatMap((piece) => [...piece]));
-}
-
-describe("a rename across the roots", () => {
-  const small = text("small");
-  const big = new Uint8Array(INLINE_BYTES + 100).fill(3);
-
-  /**
-   * Write `small` and `big` under `from`, rename each to `to`, both given two temporary
-   * directories; then read both back, before and after due garbage is collected.
-   */
-  async function crossing(from: (one: string, two: string) => string,
-                          to: (one: string, two: string) => string) {
-    const r = await rig();
-    const at = await inFiles(r.stub, async (files, unit) => {
-      const [one, two] = await unit(() => [files.tempDir("t-", "agent"),
-                                           files.tempDir("t-", "agent")]);
-      for (const [name, body] of [["s", small], ["b", big]] as const) {
-        await files.write(`${from(one, two)}/${name}`, body, { expected: null, writer: "agent" });
-        await unit(() => files.rename(`${from(one, two)}/${name}`, `${to(one, two)}/${name}`,
-                                      { expected: null, replace: false, writer: "agent" }));
-      }
-      expect(await bytesAt(files, `${to(one, two)}/s`)).toEqual(small);
-      expect(await bytesAt(files, `${to(one, two)}/b`)).toEqual(big);
-      return to(one, two);
-    });
-    const [kept, counted] = await fileCounters(r.stub);
-    expect(kept).toEqual(counted);
-    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
-    await inFiles(r.stub, async (files) => {
-      await files.run(Date.now() / 1000, passEnd());
-      expect(await bytesAt(files, `${at}/s`)).toEqual(small);
-      expect(await bytesAt(files, `${at}/b`)).toEqual(big);
-    });
-    await fileCounters(r.stub);
-  }
-
-  it("keeps the content of a file moved out of the temporary area", async () => {
-    await crossing((one) => one, () => W);
-  });
-
-  it("keeps the content of a file moved within the temporary area", async () => {
-    await crossing((one) => one, (_one, two) => two);
-  });
-
-  it("keeps the content of a file moved into the temporary area", async () => {
-    await crossing(() => W, (one) => one);
-  });
-});
-
 describe("a rename", () => {
   it("moves a directory's subtree in one transaction, with no byte moved", async () => {
     const r = await rig();
@@ -188,7 +130,6 @@ describe("a rename", () => {
       [`${W}/a`, `${W}/f/a`, true, "not_directory: the destination's parent is not a directory"],
       [`${W}/none`, `${W}/z`, true, "not_found: no such file or directory"],
       [W, `${W}/z`, true, "a root is never renamed"],
-      [`${W}/a`, "/.ta/tmp/stray", true, "the temporary area holds only temporary directories"],
     ] as const) {
       expect([from, to, (await failure(() => rename(r, from, to, replace))).message])
         .toEqual([from, to, message]);
@@ -309,12 +250,5 @@ describe("the change feed", () => {
     expect(page.changes.map((c) => c.path)).toEqual([`${W}/kept`]);
     expect((await r.stub.fileChanges(r.bind(null), { after: page.cursor, limit: 10 })).reset)
       .toBe(false);
-  });
-
-  it("leaves the temporary area out of the feed", async () => {
-    const r = await rig();
-    await inFiles(r.stub, (files, unit) => unit(() => files.tempDir("t-", "agent")));
-    expect(SEED.mine((await r.stub.fileChanges(r.bind(null), {
-      after: 0, limit: SEED.entries + 10 })).changes, (c) => c.path)).toEqual([]);
   });
 });

@@ -216,7 +216,7 @@ describe("the import's files", () => {
 
   it("writes the imported tree alone, each inline file its content id", async () => {
     const { stub, owner } = pending();
-    for (const path of ["/workspace/agents/main/AGENTS.md", "/workspace/notes.md", "/.ta/tmp/x"]) {
+    for (const path of ["/workspace/agents/main/AGENTS.md", "/workspace/notes.md"]) {
       expect((await failure(() => stub.importFiles(importing(owner),
                                                    { entries: [inline(path, "x")] }))).code)
         .toBe("refused");

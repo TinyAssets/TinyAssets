@@ -59,8 +59,8 @@
  * Claiming and settling wakes is the `wakes` lane's own, in process, with the doorbell's
  * {@link WakeSender} (`Doorbell`: each vendor's wake from its `wake-kinds.json` record, after
  * the kill switch in `CONTROL`), to the callback an agent's client stores at
- * `wakeSubscribe` or the owner at `agentDoorbell`; file housekeeping (expired uploads and
- * temporary directories, history prunes, garbage chunk deletes) is the `files` lane's. No door
+ * `wakeSubscribe` or the owner at `agentDoorbell`; file housekeeping (expired uploads,
+ * history prunes, garbage chunk deletes) is the `files` lane's. No door
  * reaches either.
  *
  * The owner's model connections (`connections.ts`) hold only blobs the gateway sealed;
