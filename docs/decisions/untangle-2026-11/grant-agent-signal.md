@@ -35,8 +35,10 @@ in the app to name another.
    the owner's live agents, the grant's own always among them (marked "(deleted)" when not
    live, with a line saying its instructions cannot be read and how to fix it), so a save never
    moves the agent unasked even when the agents list is paged. Save sends `agent` with the
-   profile; a grant still naming a deleted agent is refused on save (`agent_retired`) until
-   the owner chooses another, as Fact 8 wants.
+   profile. `grantSet` checks only an agent named anew (`Grants.set`'s `named`): keeping the
+   grant's own, deleted or not, never blocks a save, a narrowing or revoke among them; naming
+   a deleted one is refused (`agent_retired`), and its definition read stays refused, as Fact 8
+   wants (review fix: the first build refused any save of such a grant).
 
 ## Departures
 
