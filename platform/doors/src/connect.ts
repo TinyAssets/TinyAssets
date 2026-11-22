@@ -25,7 +25,8 @@
  *   for one of its agents' MCP servers, by the server's URL, and how the server takes it (its
  *   header and scheme, which differ by server: data, never a vendor's code). The same steps as
  *   a pasted model key: `connectionPrepare`, `GATEWAY.seal` with the service's values
- *   (`serviceSource`: that URL alone, its host a name by the egress table's own rule),
+ *   (`serviceSource`: that URL alone; its host a name by the egress table's own rule,
+ *   `checkDestination`, so the key is for a host the sandbox's network can name),
  *   `GATEWAY.verify` (which opens it; a service has no models to list) and
  *   `connectionCommit`. A run whose agent's server is at that URL is given the connector, and
  *   reaches the server through the egress door, where the gateway puts the key in.
@@ -62,6 +63,7 @@ import { keyed } from "../../contract/src/checks";
 import {
   secret, SECRET_MAX, SERVICE_PROVIDER, serviceSource,
 } from "../../contract/src/egress-scope";
+import { checkDestination } from "../../contract/src/policy-document";
 import { SOURCE_ID } from "../../contract/src/text";
 import type { Verified } from "../../contract/src/gateway";
 import {
@@ -227,6 +229,8 @@ async function connectConnector(context: ConnectContext): Promise<Response> {
   let sealing: ReturnType<typeof serviceSource>;
   try {
     sealing = serviceSource(body["url"], { header: body["header"], scheme: body["scheme"] });
+    const url = new URL(sealing.upstream.base_url);
+    checkDestination({ host: url.hostname, port: Number(url.port || 443) });
   } catch {
     throw new Refusal("invalid", "the url is an https URL with no query, at a host name (no " +
                                   "IP address), written as a URL parser writes it; the header " +

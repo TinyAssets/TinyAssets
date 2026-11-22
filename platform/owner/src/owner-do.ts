@@ -194,6 +194,7 @@ import { ChangeLog } from "./changelog";
 import { ControlGate, objectKeeper } from "./control-gate";
 import { storageFull, storageFullRefusal } from "./storage-full";
 import { Doorbell, type WakeSender } from "./wakes";
+import { serverUnreached } from "./network";
 
 /** Why a restore's wipe resets the instance (`ObjectReads.reset`). */
 const RESET = "the object was wiped for a restore; its next call starts it afresh";
@@ -564,6 +565,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#egress = new Egress(storage, {
       lease: (token, now) => this.#files.leaseByToken("egress", token, now),
       runConnections: (run, secret, lease) => this.#runs.grantFor(run, secret, lease) ?? undefined,
+      reaches: (url) => serverUnreached(new URL(url), this.#policy.read().document.egress)
+        === null,
       runUsage: (run) => this.#runs.usage(run),
       tierRuns: () => this.#admission.tiers()?.[this.#admission.tier()].runs ?? null,
       generation: () => this.#policy.egressGeneration(),

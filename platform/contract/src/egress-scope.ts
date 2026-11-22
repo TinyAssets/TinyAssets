@@ -19,7 +19,6 @@ import { apiRules, declaredApi } from "./api-rules.ts";
 import { list, object, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
-import { checkDestination } from "./policy-document.ts";
 
 /** One place a credential may be sent: an HTTPS origin, its paths and its methods. */
 export interface Endpoint {
@@ -317,18 +316,12 @@ const SERVICE_METHODS: readonly string[] = Object.freeze(["POST", "GET", "DELETE
 /**
  * The values a key the owner gave for the service at `url` is sealed with: that URL alone
  * (its origin, its exact path, no query), on the transport's methods, its secret sent as
- * `auth` says. Its host is held to the egress table's own rule (`checkDestination`: a name,
- * never an IP address), so a key is bound to a host the sandbox's network could name.
+ * `auth` says, at a host that is no IP address (`httpsUrl`). The door that takes the owner's
+ * URL holds its host to the egress table's own rule too (`doors/src/connect.ts`).
  */
 export function serviceSource(url: unknown, auth: unknown): ServiceSource {
   const parsed = httpsUrl(url);
   if (parsed.search !== "") {
-    throw new Refusal("invalid_source");
-  }
-  try {
-    checkDestination({ host: parsed.hostname,
-                       port: parsed.port === "" ? 443 : Number(parsed.port) });
-  } catch {
     throw new Refusal("invalid_source");
   }
   const endpoints = Object.freeze([endpoint({ origin: parsed.origin, paths: [parsed.pathname],

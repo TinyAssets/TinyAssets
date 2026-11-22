@@ -1748,6 +1748,26 @@ describe("a connector", () => {
       .toBe("egress_run_connection");
   });
 
+  it("is held to the owner's egress policy as it stands, so a narrowed one stops a live run's " +
+     "calls", async () => {
+    const r = await gated();
+    const connector = await r.connectService(KEY, SERVER);
+    await served(r);
+    const lease = await leased(r, true, SIGNED_IN);
+    const egress = async (destinations: { host: string; port: number }[]) => {
+      const { generation, policy } = await r.stub.policyRead(r.bind());
+      await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
+        ...policy, egress: { mode: "allowlist", destinations } } });
+      await drainDue(r.stub);
+    };
+    await egress([]);
+    expect(await refusedWith(r, lease.as(2), connector, call(connector)))
+      .toBe("egress_endpoint_refused");
+    await egress([{ host: "mcp.example.com", port: 443 }]);
+    expect(await r.stub.egressOpen(lease.as(3), call(connector)))
+      .toMatchObject({ ok: true, connection: connector });
+  });
+
   it("stops at its revoke: its open streams end, and no call is admitted after", async () => {
     const r = await gated();
     const connector = await r.connectService(KEY, SERVER);

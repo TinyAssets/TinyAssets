@@ -68,7 +68,9 @@ What the research left to this slice, each from the code at `d7fbb0519` or a pri
    call).
 3. **The connector door (`doors/src/connect.ts` `connections/connector`).**
    `{url, key, header, scheme, display_name?}`, a model key's steps; the source is the server's
-   host (refused past 64 characters, a connection source's grammar). The owner app has a form
+   host (refused past 64 characters, a connection source's grammar), held here to the egress
+   table's rule (`checkDestination`; the contract's `serviceSource` refuses only an IP address,
+   so the sandbox image's import graph never reaches the policy document). The owner app has a form
    for it under the model sources (`doors/app/app.js`). A commit is held to the provider and
    scope agreeing (`connections.ts`).
 4. **The run's grant (`owner/src/launch.ts`, `network.ts`, `runs.ts`).** At admission, in the
@@ -81,7 +83,9 @@ What the research left to this slice, each from the code at `d7fbb0519` or a pri
 5. **The admission (`owner/src/egress.ts`).** A call may name the run's model connection or one
    of its connectors, each only in its own role (a connector is a service's key; the model
    connection a model source's); a connector's call is free, on its sealed endpoints, counted to
-   the open-call rate.
+   the open-call rate, and only while the owner's egress policy as it stands lets its server
+   out (`network.ts` `serverUnreached`, the rule `agentServers` keeps it by), so a narrowed
+   policy stops a live run's calls through the door as the re-applied network stops direct ones.
 
 ## Departures from the research
 

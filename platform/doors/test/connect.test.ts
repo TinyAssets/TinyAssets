@@ -336,6 +336,8 @@ describe("a connector's key", () => {
     ["a URL with a query", { url: `${SERVER}?token=x` }],
     ["a plain http URL", { url: "http://mcp.example.com/mcp/" }],
     ["a URL not as a parser writes it", { url: "https://MCP.example.com/mcp/" }],
+    // A URL parser takes it; the egress table's own rule (`checkDestination`) does not.
+    ["a host label ending in a hyphen", { url: "https://mcp-.example.com/mcp/" }],
     ["a header no header name", { header: "X Api Key" }],
     ["a key with a space", { key: "sk with space" }],
   ])("is refused for %s, before any object call", async (_what, change) => {

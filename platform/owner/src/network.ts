@@ -140,8 +140,7 @@ export function agentServers(mcp: AgentMcp, egress: EgressPolicy):
   const dropped: DroppedServer[] = [];
   for (const [name, server] of Object.entries(mcp.servers)) {
     const url = "url" in server ? new URL(server.url) : null;
-    const why = url === null ? null
-      : unreached(url.hostname, url.port === "" ? 443 : Number(url.port), egress);
+    const why = url === null ? null : serverUnreached(url, egress);
     if (why === null) {
       servers[name] = server;
     } else {
@@ -149,6 +148,15 @@ export function agentServers(mcp: AgentMcp, egress: EgressPolicy):
     }
   }
   return Object.freeze({ servers: Object.freeze(servers), dropped: Object.freeze(dropped) });
+}
+
+/**
+ * Why the sandbox's network never lets the server at `url` out, or null when it does: the rule
+ * a run's servers are kept by at its admission, and a connector's calls at each open
+ * (`egress.ts`), so a narrowed policy holds a live run's servers through the egress door too.
+ */
+export function serverUnreached(url: URL, egress: EgressPolicy): string | null {
+  return unreached(url.hostname, url.port === "" ? 443 : Number(url.port), egress);
 }
 
 /** Why the sandbox's network never lets `host` out on `port`, or null when it does. */

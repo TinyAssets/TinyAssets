@@ -67,8 +67,6 @@ describe("a service's key", () => {
     ["a name ending in a number", "https://mcp.example.123/mcp"],
     ["a query", "https://mcp.example.com/mcp?k=v"],
     ["plain http", "http://mcp.example.com/mcp"],
-    // A URL parser takes it; the egress table's own rule (`checkDestination`) does not.
-    ["a label past 63 characters", `https://${"a".repeat(64)}.example.com/mcp`],
   ])("refuses a URL with %s", (_what, url) => {
     expect(() => serviceSource(url, AUTH)).toThrow("invalid_source");
   });

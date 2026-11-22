@@ -27,7 +27,8 @@
  *   sets the new generation;
  * - the connection is the owner's, active, its credential usable and its scope stored
  *   (`egress_connection_refused`), and the method and path are among its sealed endpoints,
- *   by the gateway's own rule (`egress_endpoint_refused`);
+ *   by the gateway's own rule, and a connector's server one the owner's egress policy still
+ *   lets out (`egress_endpoint_refused`);
  * - a service's every call on its sealed URL is free (it reaches no model), a read (`GET`,
  *   `HEAD`: a model list) is free, as is a call its API's rules cite as free
  *   (`freeCall`: a token count); any other call must be its source's model
@@ -237,6 +238,11 @@ interface EgressDeps {
    */
   readonly runConnections: (run: string, secret: string | undefined, lease: SandboxLease) =>
     { readonly connection: string | null; readonly connectors: readonly string[] } | undefined;
+  /**
+   * Whether the owner's egress policy, as it stands, lets the sandbox reach the server at
+   * `url` (`network.ts` `serverUnreached`).
+   */
+  readonly reaches: (url: string) => boolean;
   /** `run`'s requests, tokens and cost so far (its `runs` row). */
   readonly runUsage: (run: string) => { requests: number; tokens: number; cost: number };
   /** The owner's tier's simultaneous runs, as last handed (`admission.ts`); null if none are. */
@@ -426,7 +432,10 @@ export class Egress {
     if (connector !== ("kind" in scope)) {
       return refuse("egress_run_connection");
     }
-    if (egressTarget(scope, request.method, request.path) === null) {
+    // A connector's server only while the owner's egress lets it out, as at the run's
+    // admission (`agentServers`): a narrowed policy holds a live run's server too.
+    if (egressTarget(scope, request.method, request.path) === null
+        || (connector && !this.#deps.reaches(scope.base_url))) {
       return refuse("egress_endpoint_refused");
     }
     // A service's call reaches no model; nor does a read of a sealed endpoint, or a call its
