@@ -113,13 +113,15 @@ must be prepared.
 
 ## Found and left
 
-- `readAgent`'s `#whole` waits on the isolate's pool (`slotted`, up to `SLOT_WAIT_MS`) when the
-  lane reads a large agent file, where `gate.ts` `unitsNow` says a lane never waits on the pool
-  because the object's other lanes would wait with it. The wait is bounded and ends `busy`,
-  which (1) now holds. It is shared with the doors and is not a start, so it is owed.
+- Two of the lane's reads wait on the isolate's pool (`slotted`, up to `SLOT_WAIT_MS`), where
+  `gate.ts` `unitsNow` says a lane never waits on the pool because the object's other lanes
+  would wait with it: `readAgent`'s `#whole`, for an agent file past an inline one, and
+  `Bodies.fetch`, for a placed mail body (the mail loop's `bodies.rereading` and
+  `#mailPrompt`). Each wait is bounded and ends `busy`, which (1) now holds. Both are shared
+  with the doors and are not a start, so they are owed (found in review).
 
 ## Owed
 
-- [ ] `launch.ts` `#whole`: a lane's read of an agent file waits on the pool, where a lane takes
-  units only now (`unitsNow`). Research first whether the lane's read takes them now and holds
-  on `busy` (`untangle/lane-pool-wait`).
+- [ ] `launch.ts` `#whole` and `bodies.ts` `fetch`: a lane's read of an agent file or a placed
+  mail body waits on the pool, where a lane takes units only now (`unitsNow`). Research first
+  whether the lane's reads take them now and hold on `busy` (`untangle/lane-pool-wait`).

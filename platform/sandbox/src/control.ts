@@ -742,8 +742,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     // Running from here, so its row says so, its runner unheard until it answers and the
     // sandbox unprepared until its `prepare` ends: a fault or refusal on the way leaves it to
     // the look (armed by `#launch`), never billed unseen as a paused one to its ceiling, or to
-    // the next start, which prepares it first. A slot a renewal held for it is owed back from here too, so
-    // no fault after keeps it held.
+    // the next start, which prepares it first. A slot a renewal held for it is owed back from
+    // here too, so no fault after keeps it held.
     if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
       this.#log(row.authority, "resume");
     }
