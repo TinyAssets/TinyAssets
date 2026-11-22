@@ -804,7 +804,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
     them (`untangle/main-agent-definition`).
   - [ ] 2. One hook definition in the agent's files, rendered into each engine's format from its
     record, under R5's root-owned hooks (`untangle/agent-hooks`).
-  - [ ] 3. The agent's own MCP servers merged beside TinyAssets' door, held to the egress
+  - [x] 3. The agent's own MCP servers merged beside TinyAssets' door, held to the egress
     allowlist, each engine researched first (`untangle/agent-mcp`); and the connector credential
     path that needs no host of ours, researched from E2B's per-host header transforms (the
     cutover's bar; `untangle/connector-credentials`).

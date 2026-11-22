@@ -26,7 +26,8 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
-  type EgressScope, egressTarget, type Meter, meteredCall, meteredModel,
+  type EgressScope, egressTarget, isService, type Meter, meteredCall, meteredModel,
+  type ModelScope, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
   metering, MODEL_NAME, type MeterOutcome, type Resealed, type Reservation, type Reserve,
@@ -271,14 +272,14 @@ type Serialized = { readonly refused: GatewayCode }
  * (measured in workerd: the egress memory leg, `gateway/memory/egress.mjs`, read the tree
  * beside the text and its bytes here).
  */
-async function prepared(request: Request, length: number, credential: Credential,
+async function prepared(request: Request, length: number, upstream: Upstream,
                         meters: Meters, any: Meter, path: string, catalog: Catalog,
                         reserve: Reserve, hold: Hold, signal: AbortSignal,
                         ended: () => void): Promise<Prepared> {
   // The body, read under slots taken as it arrives; then its weight's slots, before the parse.
   const read = await weighedBody(request, length, hold, signal);
   await hold.grow(weightSlots(read.weight));
-  const call = await serialized(read, request.method, credential, meters, any, path, catalog,
+  const call = await serialized(read, request.method, upstream, meters, any, path, catalog,
                                 reserve, signal);
   if ("refused" in call) {
     return call;
@@ -293,7 +294,7 @@ async function prepared(request: Request, length: number, credential: Credential
  * bound, so a refused shape is never charged.
  */
 async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method: string,
-                          credential: Credential, meters: Meters, any: Meter, path: string,
+                          upstream: Upstream, meters: Meters, any: Meter, path: string,
                           catalog: Catalog, reserve: Reserve, signal: AbortSignal):
     Promise<Serialized> {
   let parsed: unknown;
@@ -303,7 +304,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
     return { refused: "invalid_request" };
   }
   read.text = null;
-  const rules = apiRules(credential.upstream.api);
+  const rules = apiRules(upstream.api);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
       || rules === null) {
     return { refused: "unmetered" };
@@ -319,7 +320,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   if (id === null) {
     return { refused: "unmetered" };
   }
-  const model = MODEL_NAME.test(id) ? meteredRecord(catalog, credential.upstream, id) : null;
+  const model = MODEL_NAME.test(id) ? meteredRecord(catalog, upstream, id) : null;
   if (model === null) {
     return { refused: "unknown_model" };
   }
@@ -371,7 +372,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   }
   const listed = fallbackList(rules, parsed);
   const text = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
-                                      terms.max_output_tokens, credential.upstream.api));
+                                      terms.max_output_tokens, upstream.api));
   return { text, model, listed };
 }
 
@@ -379,7 +380,8 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
  * A sandbox's free call on a sealed endpoint, forwarded unmetered: a read (`GET`, `HEAD`: a
  * model list), which carries no model use, or a call its API's rules cite as free
  * (`freeCall`: a token count). Any other is `unmetered`, so no call the owner's object did
- * not charge reaches a provider's model. Its request (its method, path, query, headers and
+ * not charge reaches a provider's model. A service's every call on its sealed URL is free:
+ * it reaches no model (`isService`). Its request (its method, path, query, headers and
  * body; its host is ignored) goes to the credential's sealed origin; the provider's own
  * answer passes through.
  */
@@ -408,6 +410,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     return refused(codeOf(error, "internal"));
   }
   const { credential, resealed } = opened;
+  // A model source's upstream; null for a service's, which is never metered.
+  const priced = isService(credential.upstream) ? null : credential.upstream;
   let incoming: URL;
   try {
     incoming = new URL(request.url);
@@ -419,8 +423,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   if (target === null) {
     return refused("endpoint_refused", resealed);
   }
-  if (metered === null && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
-                        request.method, target.pathname)) {
+  if (metered === null && priced !== null
+      && !freeCall(apiRules(priced.api), priced.provider, request.method, target.pathname)) {
     return refused("unmetered", resealed);
   }
   // Every spelling of each credential parameter, as some servers read them case-blind.
@@ -435,16 +439,19 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   let upload: Upload | null = null;
   let held: AbortSignal | null = null;
   if (metered !== null) {
+    if (priced === null) {
+      return refused("unmetered", resealed);
+    }
     const { reserve, catalog } = metered;
     // Only pi-ai's own model call for the sealed API is metered; nothing else is read. A throw
     // here sent nothing, so it is `failed`, as every end before the fetch is.
-    const meters = new Meters(catalog, credential.upstream, bearer(credential));
+    const meters = new Meters(catalog, priced, bearer(credential));
     const any = await meters.any().catch(() => undefined);
     if (any === undefined) {
       return refused("internal", resealed);
     }
-    if (any === null || !meteredCall(scopeOf(credential, any), request.method,
-                                     target.pathname)) {
+    if (any === null || !meteredCall(modelScope(priced, credential.endpoints, any),
+                                     request.method, target.pathname)) {
       return refused("unmetered", resealed);
     }
     // Its declared length, which the owner's object admitted it by: read exactly it.
@@ -458,7 +465,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     const hold = new Hold(gatewaySlots(), bound.owner, cancelled.signal);
     let ready: Prepared;
     try {
-      ready = await prepared(request, Number(declared), credential, meters, any,
+      ready = await prepared(request, Number(declared), priced, meters, any,
                              target.pathname, catalog, reserve, hold, cancelled.signal,
                              () => hold.release());
     } catch (error) {
@@ -483,7 +490,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   let signal: AbortSignal;
   try {
     // A metered call's provider beta headers go only where its API's rules account for them.
-    const betas = metered === null ? null : apiRules(credential.upstream.api)?.betas ?? [];
+    const betas = metered === null || priced === null ? null
+      : apiRules(priced.api)?.betas ?? [];
     for (const [name, value] of request.headers) {
       if (!CREDENTIAL_HEADERS.includes(name) && !HOP_HEADERS.includes(name) && !internal(name)
           && !(betas !== null && /-beta$/.test(name) && !betas.includes(name))) {
@@ -536,7 +544,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   }
   let outcome: Promise<MeterOutcome> = Promise.resolve(UNKNOWN);
   let source = upstream.body;
-  if (metered !== null && model !== null) {
+  if (metered !== null && model !== null && priced !== null) {
     if (upstream.status < 200 || upstream.status >= 300) {
       // A refusal before any output: the provider produced nothing.
       outcome = Promise.resolve(FAILED);
@@ -544,11 +552,11 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       const [toCaller, toMeters] = source.tee();
       const [toMeter, toTier] = toMeters.tee();
       source = toCaller;
-      const rules = apiRules(credential.upstream.api)!;
+      const rules = apiRules(priced.api)!;
       // An answer served at a tier pi-ai does not price is unknown, whatever pi-ai read (and
       // one whose tier cannot be read, a cut, is unknown by the rejection below).
       const tierPriced = servedPriced(rules, toTier);
-      outcome = Promise.all([meteredUsage(metered.catalog, credential.upstream,
+      outcome = Promise.all([meteredUsage(metered.catalog, priced,
                                           bearer(credential), model, upstream.status,
                                           new Headers(upstream.headers), toMeter, listed),
                              tierPriced])
@@ -619,9 +627,17 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
 }
 
 /** Where a credential may be forwarded: its sealed base URL and endpoints, no secret. */
-function scopeOf(credential: Credential, meter: Meter | null = null): EgressScope {
-  return Object.freeze({ api: credential.upstream.api, base_url: credential.upstream.base_url,
-                         endpoints: credential.endpoints, meter });
+function scopeOf(credential: Credential): EgressScope {
+  const { upstream, endpoints } = credential;
+  return isService(upstream)
+    ? Object.freeze({ kind: "service", base_url: upstream.base_url, endpoints })
+    : modelScope(upstream, endpoints, null);
+}
+
+/** A model source's scope, with pi-ai's own model call for its API (`meter`), or none. */
+function modelScope(upstream: Upstream, endpoints: Credential["endpoints"],
+                    meter: Meter | null): ModelScope {
+  return Object.freeze({ api: upstream.api, base_url: upstream.base_url, endpoints, meter });
 }
 
 /**
@@ -630,12 +646,19 @@ function scopeOf(credential: Credential, meter: Meter | null = null): EgressScop
  * models are pi-ai's catalog for its provider (or its declared models), with their
  * metadata, and its egress scope, which the binder hands the owner object's
  * `connectionCommit`. Anything else is the upstream outcome's fixed code; the answer's body
- * is never read.
+ * is never read. A service's key has no models and no check a service shares (an MCP server
+ * answers only its own protocol, with a session), so it opens and its scope is all there
+ * is: a wrong key is the server's own refusal at its first call, which the run sees.
  */
 export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
                              catalog: Catalog): Promise<Verified> {
   const { credential, resealed } = await open(env, bound, blob);
-  const url = credential.upstream.verify_url;
+  const kept = resealed === undefined ? {} : { resealed };
+  const upstream = credential.upstream;
+  if (isService(upstream)) {
+    return Object.freeze({ models: Object.freeze([]), egress: scopeOf(credential), ...kept });
+  }
+  const url = upstream.verify_url;
   if (url === undefined) {
     throw new Refusal("unsupported_source");
   }
@@ -657,8 +680,8 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
   if (answer.status < 200 || answer.status >= 300) {
     throw new Refusal(upstreamCode(answer.status));
   }
-  return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)),
-                         egress: scopeOf(credential, await new Meters(
-                           catalog, credential.upstream, bearer(credential)).any()),
-                         ...(resealed === undefined ? {} : { resealed }) });
+  return Object.freeze({ models: Object.freeze(modelInfos(catalog, upstream)),
+                         egress: modelScope(upstream, credential.endpoints, await new Meters(
+                           catalog, upstream, bearer(credential)).any()),
+                         ...kept });
 }

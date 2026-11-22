@@ -15,8 +15,8 @@ import { builtinCatalog, modelInfos, recordOf } from "../src/catalog";
 import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
-import type { Source } from "../../contract/src/egress-scope";
-import { forwardRead, IDLE_CUT_MS, redact, verify } from "../src/forward";
+import { serviceSource, type Source } from "../../contract/src/egress-scope";
+import { forwardMetered, forwardRead, IDLE_CUT_MS, redact, verify } from "../src/forward";
 import { seal, type Binding } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
 
@@ -418,5 +418,72 @@ describe("verify", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     await expect(verify(env, ALICE, blob, builtinCatalog())).rejects.toThrow("unsupported_source");
+  });
+});
+
+describe("a service's key", () => {
+  const URL_SEALED = "https://mcp.example.com/mcp/";
+  /** A key sealed for the MCP server at `URL_SEALED`, sent as `x-api-key` with no scheme. */
+  const service = (env: ReturnType<typeof ring>) => {
+    const { upstream, endpoints } = serviceSource(URL_SEALED, { header: "x-api-key",
+                                                                 scheme: "" });
+    return seal(env, ALICE, { kind: "api_key", secret: SECRET, upstream, endpoints,
+                              sealed_at: Date.now() }).then((made) => made.blob);
+  };
+
+  it("is put in by its own header on its own URL alone, on each of the transport's methods, " +
+     "and redacted from the answer", async () => {
+    const env = ring("k1");
+    const blob = await service(env);
+    for (const method of ["POST", "GET", "DELETE"]) {
+      const response = await call(blob, new Request("https://egress/mcp/?session=1", {
+        method, headers: { authorization: "Bearer ph", "x-fake-mode": "echo" },
+        ...(method === "POST" ? { body: "{}" } : {}) }), env);
+      expect(response.status).toBe(200);
+      const echo = await response.json() as { host: string; path: string; method: string;
+                                              digests: Record<string, string> };
+      expect(echo).toMatchObject({ host: "mcp.example.com", path: "/mcp/", method });
+      expect(echo.digests["x-api-key"]).toBe(await sha256(SECRET));
+      expect(echo.digests["authorization"]).toBeUndefined();
+    }
+    const quoted = await call(blob, new Request("https://egress/mcp/", {
+      headers: { "x-fake-mode": "hdr" } }), env);
+    expect(quoted.headers.get("x-echo-key")).not.toContain(SECRET);
+  });
+
+  it.each([
+    ["another path at its host", "POST", "https://egress/admin"],
+    ["a path below its own", "POST", "https://egress/mcp/x"],
+    ["its path but for its slash", "POST", "https://egress/mcp"],
+    ["a method the transport never sends", "PUT", "https://egress/mcp/"],
+    ["a path naming another host", "POST", "https://egress//evil.test/mcp/"],
+  ])("is never sent to %s", async (_what, method, url) => {
+    const env = ring("k1");
+    const response = await call(await service(env), new Request(url, {
+      method, headers: { "x-fake-mode": "echo" }, body: "{}" }), env);
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { error: { code: string } }).error.code)
+      .toBe("endpoint_refused");
+  });
+
+  it("is never metered: a metered forward of it is refused before anything is sent",
+     async () => {
+    const env = ring("k1");
+    const reserve = vi.fn();
+    const { response } = await forwardMetered(env, ALICE, await service(env), new Request(
+      "https://egress/mcp/", { method: "POST", headers: { "x-fake-mode": "echo" },
+                               body: "{}" }), reserve, new ReadableStream(), builtinCatalog());
+    expect(((await response.json()) as { error: { code: string } }).error.code)
+      .toBe("unmetered");
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it("opens to its scope at the setup check, with no models and nothing sent", async () => {
+    const env = ring("k1");
+    const verified = await verify(env, ALICE, await service(env), builtinCatalog());
+    expect(verified).toEqual({ models: [], egress: {
+      kind: "service", base_url: URL_SEALED,
+      endpoints: [{ origin: "https://mcp.example.com", paths: ["/mcp/"],
+                    methods: ["POST", "GET", "DELETE"] }] } });
   });
 });

@@ -50,10 +50,16 @@
  *
  * **The agent's own MCP servers** (`agentServers`) are held to the same rule at each run's
  * admission: one its sandbox's network would never let out is left out of the run, and the
- * owner is told which and why, so no engine is handed a server it cannot reach.
+ * owner is told which and why, so no engine is handed a server it cannot reach. A kept server
+ * whose URL one of the owner's connectors is sealed for (`connectorsOf`) is reached through the
+ * egress door instead (`throughConnectors`), where the gateway puts that connector's key in:
+ * the key is bound to its URL by the seal, so it never goes to another host.
  */
 import type { AgentMcp, McpServer } from "../../contract/src/agent-definition";
-import { closedNetwork, withGeneration } from "../../contract/src/egress";
+import {
+  closedNetwork, connectorUrl, type Egressible, withGeneration,
+} from "../../contract/src/egress";
+import { allows } from "../../contract/src/egress-scope";
 import {
   checkDestination, EGRESS_MODES, type EgressMode,
 } from "../../contract/src/policy-document";
@@ -154,8 +160,7 @@ export function agentServers(mcp: AgentMcp, egress: EgressPolicy):
   const dropped: DroppedServer[] = [];
   for (const [name, server] of Object.entries(mcp.servers)) {
     const url = "url" in server ? new URL(server.url) : null;
-    const why = url === null ? null
-      : unreached(url.hostname, url.port === "" ? 443 : Number(url.port), egress);
+    const why = url === null ? null : serverUnreached(url, egress);
     if (why === null) {
       servers[name] = server;
     } else {
@@ -163,6 +168,15 @@ export function agentServers(mcp: AgentMcp, egress: EgressPolicy):
     }
   }
   return Object.freeze({ servers: Object.freeze(servers), dropped: Object.freeze(dropped) });
+}
+
+/**
+ * Why the sandbox's network never lets the server at `url` out, or null when it does: the rule
+ * a run's servers are kept by at its admission, and a connector's calls at each open
+ * (`egress.ts`), so a narrowed policy holds a live run's servers through the egress door too.
+ */
+export function serverUnreached(url: URL, egress: EgressPolicy): string | null {
+  return unreached(url.hostname, url.port === "" ? 443 : Number(url.port), egress);
 }
 
 /** Why the sandbox's network never lets `host` out on `port`, or null when it does. */
@@ -184,4 +198,34 @@ function unreached(host: string, port: number, egress: EgressPolicy): string | n
     return "its host is not on your egress allowlist";
   }
   return null;
+}
+
+/**
+ * Each of `servers` reached by a URL one of the owner's active connectors is sealed for (its
+ * scope `allows` a `POST` there: its origin, its exact path), by name, bound to the newest
+ * such one of `connections` (oldest first): a newer key for a URL is its rotation, and the
+ * older one goes unused until the owner disconnects it.
+ */
+export function connectorsOf(servers: Readonly<Record<string, McpServer>>,
+                             connections: readonly Egressible[]):
+    Readonly<Record<string, string>> {
+  const bound: Record<string, string> = {};
+  for (const [name, server] of Object.entries(servers)) {
+    const url = "url" in server ? new URL(server.url) : null;
+    const newest = url === null ? undefined : connections.findLast(({ egress }) =>
+      "kind" in egress && allows(egress.endpoints, "POST", url));
+    if (newest !== undefined) {
+      bound[name] = newest.connection;
+    }
+  }
+  return Object.freeze(bound);
+}
+
+/** `servers`, each one `bound` names reached through the egress door on `run`'s own path. */
+export function throughConnectors(servers: Readonly<Record<string, McpServer>>,
+                                  bound: Readonly<Record<string, string>>, run: string,
+                                  secret: string): Readonly<Record<string, McpServer>> {
+  return Object.freeze(Object.fromEntries(Object.entries(servers).map(([name, server]) =>
+    [name, bound[name] === undefined || !("url" in server) ? server
+      : Object.freeze({ url: connectorUrl(bound[name], run, secret, server.url) })])));
 }

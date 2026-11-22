@@ -45,7 +45,8 @@ import {
   EGRESS_PATH_MAX, ENGINE_SIGNINS, ERROR_BYTES, IMAGE_MAX, INBOUND_ROUTE_MAX, INBOUND_SECRET_MAX,
   INPUT_BYTES, KEY_NAME_MAX, LOG_BYTES, LOG_ROW_BYTES, MANIFEST_PARTS, MAX_PATH_BYTES,
   MESSAGE_ID_CHARS, MODELS_JSON_MAX, NATIVE_ID_CHARS, NOTICE_DETAIL, PART_ENTRY, PLACE_BYTES,
-  QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
+  QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_CONNECTORS_CHARS, RUN_ID_CHARS, SCHEDULE_ID_CHARS,
+  SCHEDULES_KEPT,
   SCOPES_JSON_MAX, SEGMENT_ENTRY, SIGNIN_CODE_MAX, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
   SIGNIN_URL_MAX, SOCKET_TICKETS, SPEND_KEPT, SUBSCRIPTIONS_PER_AGENT,
 } from "../../contract/src/limits";
@@ -610,9 +611,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     engine_signins: { rows: ENGINE_SIGNINS, bytes: ROW + 64 + SIGNIN_MODELS_CHARS + 16,
                       by: "ENGINE_SIGNINS, each its engine and models (visible ASCII)" },
     run_grants: { rows: RUNS_CEILING,
-                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64,
-                  by: "one a live run, its stamp, origin, scopes, connection and secret's " +
-                    "hash" },
+                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64
+                    + RUN_CONNECTORS_CHARS,
+                  by: "one a live run, its stamp, origin, scopes, connection, connectors " +
+                    "and secret's hash" },
     // A mail thread's conversation is found by its key, the thread's digest: no index.
     conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
                      by: "CONVERSATIONS_KEPT, each its agent, source, client and session id",
@@ -1031,6 +1033,13 @@ describe("the owner's database bound", () => {
     expect(withoutRowid().has("model_reservations")).toBe(false);
     expect(withoutRowid('"CREATE TABLE a (x) WITHOUT ROWID", "CREATE TABLE b (x)", ' +
                         '"ALTER TABLE a RENAME TO c"')).toEqual(new Set(["c"]));
+  });
+
+  it("holds a grant's connectors to every live connection's id", () => {
+    // Distinct connection ids of the owner's, so at most its live connections, as JSON.
+    const every = Array.from({ length: CONNECTION_LIMITS.maxConnections },
+                             (_, at) => `c${at.toString(16).padStart(24, "0")}`);
+    expect(JSON.stringify(every).length).toBeLessThanOrEqual(RUN_CONNECTORS_CHARS);
   });
 
   it("counts the bounds the sources hold", () => {

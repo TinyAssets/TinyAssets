@@ -1,7 +1,9 @@
 /**
- * The owner's model connections (gateway research §1.4, §2.6, §7): what each
- * one is, the blob the gateway sealed its credential into, the OAuth flows that connect
- * one, the refresh lease, and the `connections` lane's housekeeping.
+ * The owner's connections (gateway research §1.4, §2.6, §7), each a model source's or a
+ * service's key (a connector, `SERVICE_PROVIDER`: no models, never metered, its scope one URL
+ * of an outside service, bound to a run by `network.ts` `connectorsOf`): what each one is,
+ * the blob the gateway sealed its credential into, the OAuth flows that connect one, the
+ * refresh lease, and the `connections` lane's housekeeping.
  *
  * **No plaintext enters the object.** The binder hands a pasted key to `GATEWAY.seal`
  * and an OAuth code to `GATEWAY.exchange`; the object stores only what comes back, the
@@ -63,7 +65,9 @@ import { sha256, sha256Hex } from "../../contract/src/digest";
 import { randomBytes } from "node:crypto";
 
 
-import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
+import {
+  egressScope, type EgressScope, SERVICE_PROVIDER,
+} from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { fields } from "../../contract/src/doors";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
@@ -389,6 +393,10 @@ export class Connections {
                                                               now));
     }
     const egress = scopeJson(r["egress"]);
+    // A service's key is committed as one, and only it: its scope and its provider say so.
+    if ((row.provider === SERVICE_PROVIDER) !== ("kind" in JSON.parse(egress))) {
+      throw new Refusal("invalid", "a service's key has a service's scope, and only it");
+    }
     return this.#storage.transactionSync(() => {
       this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", id);
       this.#sql.exec("INSERT INTO connection_secrets (connection_id, version, kid, blob) " +
