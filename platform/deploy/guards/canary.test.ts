@@ -23,7 +23,7 @@ import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World
 import identity from "../../contract/identity.json" with { type: "json" };
 import * as IDENTITY from "../../contract/src/identity";
 import { E2B_HOOK } from "../deploy";
-import { E2B_HOOK_URL } from "../facts";
+import { DOORS, E2B_HOOK_URL } from "../facts";
 import { NIGHTLY } from "../offsite";
 import { night, type Night, nightsAnswer } from "./copy-nights";
 
@@ -37,7 +37,7 @@ const WORKOS_AUTHORIZE = "https://api.workos.com/user_management/authorize";
 const KEYED: Record<string, string> = {
   TA_PROBE_KEY: "probe-key", E2B_API_KEY: "e2b-key-123", OWNER_ISSUER: ISSUER,
   WORKOS_CLIENT_ID: "client_test", [TOKEN]: "run-token" };
-const AUTO: Options = { side: null, unkeyed: false, clock: false, full: false };
+const AUTO: Options = { side: null, unkeyed: false, clock: false, full: false, smoke: null };
 const { ORIGIN, ZONE } = IDENTITY;
 /** The old stack's resource document, on the zone. */
 const OLD_DOCUMENT = `https://${ZONE}/.well-known/oauth-protected-resource/mcp`;
@@ -362,6 +362,68 @@ describe("the platform canary at a host under the zone", () => {
     expect([result.side, exitOf(result)]).toEqual(["doors", 0]);
     expect(w.sent).toContain(`POST https://${STAGE}/mcp`);
     expect(w.sent.filter((each) => each.includes(`//${ZONE}/`))).toEqual([]);
+  });
+});
+
+describe("the doors' smoke at a share below 100", () => {
+  const SMOKE: Options = { ...AUTO, smoke: "v-new" };
+  const DOORS_HOSTS = [new URL(ORIGIN).host, EGRESS_HOST];
+  /**
+   * `w` with each doors answer naming the version that served it: the override's, where it
+   * names the doors and `taken` takes the request, else the version the shares pick. Each
+   * request's override is kept, by method and URL.
+   */
+  const versioned = (w: World & { sent: string[] }, taken = (_url: string) => true) => {
+    const overrides: string[] = [];
+    return { ...w, overrides, fetch: async (url: string, init?: RequestInit) => {
+      const asked = new Headers(init?.headers).get("Cloudflare-Workers-Version-Overrides");
+      overrides.push(`${init?.method ?? "GET"} ${url} ${asked}`);
+      const answer = await w.fetch(url, init);
+      if (!DOORS_HOSTS.includes(new URL(url).host)) {
+        return answer;
+      }
+      const named = new Response(answer.body, answer);
+      named.headers.set(IDENTITY.VERSION_HEADER, asked === `${DOORS}="v-new"` && taken(url)
+        ? "v-new" : "v-old");
+      return named;
+    } };
+  };
+
+  it("sends each doors request to the version, holds each answer to it, and runs the doors' " +
+     "checks alone", async () => {
+    const w = versioned(world(platform()));
+    const result = await canary(w, SMOKE);
+    expect([result.side, states(result), exitOf(result)]).toEqual(["doors", [
+      ["the challenge", "passed"], ["the app", "passed"], ["the client document", "passed"],
+      ["the egress host", "passed"], ["the sign-in", "passed"]], 0]);
+    for (const each of w.overrides) {
+      const host = new URL(each.split(" ")[1]!).host;
+      expect([each, each.endsWith(` ${DOORS}="v-new"`)])
+        .toEqual([each, DOORS_HOSTS.includes(host)]);
+    }
+    expect(w.overrides.some((each) => each.includes(`//${EGRESS_HOST}/`))).toBe(true);
+    // No key is read, no E2B, no GitHub.
+    expect(w.sent.filter((each) => each.includes(E2B_API) || each.includes("api.github.com")
+      || each.includes("/api/"))).toEqual([]);
+  });
+
+  it("fails an answer from another version, the override ignored, as exit 16", async () => {
+    const result = await canary(versioned(world(platform()), (url) =>
+      !url.startsWith(IDENTITY.APP_RESOURCE)), SMOKE);
+    expect(exitOf(result)).toBe(16);
+    expect(result.outcomes.find((each) => each.check === "the app")).toEqual({
+      check: "the app", state: "failed", code: 16, alone: false,
+      line: `GET ${IDENTITY.APP_RESOURCE} was answered by the version v-old, not v-new: ` +
+        "Cloudflare ignored the override (a location without the deployment yet, or one that " +
+        "does not hold it)" });
+    // Ignored on the first request, the side itself is unread.
+    const ignored = await canary(versioned(world(platform()), () => false), SMOKE);
+    expect([ignored.side, exitOf(ignored)]).toEqual([null, 16]);
+  });
+
+  it("asks for the doors' side: the old stack serving fails it", async () => {
+    const result = await canary(versioned(world(platform({ side: "old" }))), SMOKE);
+    expect([result.side, exitOf(result)]).toEqual([null, 8]);
   });
 });
 

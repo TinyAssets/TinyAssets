@@ -8,6 +8,7 @@
  *
  *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--unkeyed]
  *        [--clock] [--full] [--result <file>]
+ *   node --experimental-strip-types platform/deploy/canary.ts --smoke <version id>
  *
  * It first reads which side serves: the doors, when the resource document on their host (the
  * identity's) names their own issuer, their origin; else the old stack, when the one on the
@@ -43,12 +44,20 @@
  * a waiting check is not a pass. `--result` writes the outcomes for the alarm (`alarm.ts`).
  * No credential is ever printed.
  *
+ * `--smoke` is the deploy kit's smoke of the doors' new version at a share below 100
+ * (`deploy.ts` `workers`), alone: the doors must serve, and only their checks run (the
+ * challenge, the app, the client document, the egress host and the sign-in's start), each
+ * request to the doors' host or the egress host carrying Cloudflare's version override for
+ * that version and each answer held to it (`VERSION_HEADER`). An override Cloudflare ignores
+ * still answers, from the version the shares pick: exit 16, never a pass.
+ *
  * Exit codes: 0 every check passed, or the platform dark; 2 unreachable; 4 handle drift; 5 the
  * sign-in's start; 6 an authentication boundary or a gate refused; 7 the keyed checks
  * unchecked (no `TA_PROBE_KEY`); 8 the side asked for is not serving; 9 neither side's
  * resource document; 10 a split, the doors and the old stack each serving a part; 11 E2B; 12
- * the owner's files; 13 the full run; 14 the clock stopped; 15 the off-account copy; 1 the
- * canary itself stopped. GitHub is read with the job's own token (`actions.ts` `github`).
+ * the owner's files; 13 the full run; 14 the clock stopped; 15 the off-account copy; 16 the
+ * smoke answered by another version than its own; 1 the canary itself stopped. GitHub is read
+ * with the job's own token (`actions.ts` `github`).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -63,9 +72,9 @@ import { github, type Reach, TOKEN } from "./actions.ts";
 import { authorizeCheck, firstPartyLink, heldHook, upstreamFrom } from "./deploy.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import {
-  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT, ZONE,
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, VERSION_HEADER, WEB_CLIENT, ZONE,
 } from "../contract/src/identity.ts";
-import { AUTHORIZE, E2B_HOOK_URL } from "./facts.ts";
+import { AUTHORIZE, DOORS, E2B_HOOK_URL } from "./facts.ts";
 import { watch } from "./offsite.ts";
 
 type Json = Record<string, unknown>;
@@ -83,6 +92,8 @@ export interface Options {
   readonly unkeyed: boolean;
   readonly clock: boolean;
   readonly full: boolean;
+  /** `--smoke`: the doors' version the smoke sends each request to, or null for the canary. */
+  readonly smoke: string | null;
 }
 
 /** One check's ending: its line, and its exit code when it failed. */
@@ -167,8 +178,39 @@ async function send(world: World, url: string, init: RequestInit = {}): Promise<
     return await world.fetch(url, { redirect: "manual", ...init,
                                     signal: AbortSignal.timeout(REQUEST_MS) });
   } catch (error) {
-    throw new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${(error as Error).message}`);
+    throw error instanceof Failure ? error
+      : new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${(error as Error).message}`);
   }
+}
+
+/** Cloudflare's request header that sends a request to one version in a Worker's deployment. */
+const OVERRIDE = "Cloudflare-Workers-Version-Overrides";
+/** The hosts the doors serve: their own, and the egress host (their custom domain). */
+const DOORS_HOSTS: readonly string[] = Object.freeze([new URL(ORIGIN).host, EGRESS_HOST]);
+
+/**
+ * `world` with each request to the doors sent to their version `version` by Cloudflare's
+ * override (a dictionary of the Worker's name to the version's id, as a string), and each
+ * answer held to name it: the override is ignored where the deployment at the location
+ * answering does not hold the version yet, and the answer comes from the version the shares
+ * pick (Cloudflare's version-overrides page). Every other request is sent as it is.
+ */
+function smoked(world: World, version: string): World {
+  return { ...world, fetch: async (url, init = {}) => {
+    if (!DOORS_HOSTS.includes(new URL(url).host)) {
+      return world.fetch(url, init);
+    }
+    const headers = new Headers(init.headers);
+    headers.set(OVERRIDE, `${DOORS}="${version}"`);
+    const answer = await world.fetch(url, { ...init, headers });
+    const by = answer.headers.get(VERSION_HEADER);
+    if (by !== version) {
+      throw new Failure(16, `${init.method ?? "GET"} ${url} was answered by ${by === null
+        ? "no version it names" : `the version ${by}`}, not ${version}: Cloudflare ignored the ` +
+        "override (a location without the deployment yet, or one that does not hold it)");
+    }
+    return answer;
+  } };
 }
 
 /** The world's reach, each request bounded by `send`. */
@@ -534,13 +576,15 @@ async function outcome([check, act]: Check): Promise<Outcome> {
 const waiting = (check: string, line: string): Outcome =>
   ({ check, state: "waiting", line, code: 0, alone: false });
 
-/** The canary, each check once, in order. */
-export async function canary(world: World, options: Options): Promise<Result> {
+/** The canary, each check once, in order; or the doors' smoke alone (`smoked`). */
+export async function canary(reached: World, options: Options): Promise<Result> {
+  const world = options.smoke === null ? reached : smoked(reached, options.smoke);
+  const asked = options.smoke === null ? options.side : "doors";
   let side: Side;
   try {
     side = await sideOf(world);
-    if (options.side !== null && side !== options.side) {
-      throw new Failure(8, `asked for the ${options.side} side, but the ${side} side serves ${
+    if (asked !== null && side !== asked) {
+      throw new Failure(8, `asked for the ${asked} side, but the ${side} side serves ${
         MCP_RESOURCE}`);
     }
   } catch (error) {
@@ -559,14 +603,18 @@ export async function canary(world: World, options: Options): Promise<Result> {
       waiting("the doors", "the doors' checks, the off-account copy, the keyed ones and the " +
                            "clock wait for routes: the old stack serves /mcp") ] };
   }
+  const doors: Check[] = [["the challenge", () => challenge(world)], ["the app", () => app(world)],
+                          ["the client document", () => clientDocument(world)],
+                          ["the egress host", () => egressHost(world)],
+                          ["the sign-in", () => signIn(world)]];
+  if (options.smoke !== null) {
+    return { side, outcomes: await run(doors) };
+  }
   const keyed: Check[] = [["the handle set", () => handles(world)],
                           ["the owner's files", () => ownerFiles(world)],
                           ["the full run", () => fullRun(world, options.full)]];
   return { side, outcomes: [
-    ...await run([["the challenge", () => challenge(world)], ["the app", () => app(world)],
-                  ["the client document", () => clientDocument(world)],
-                  ["the egress host", () => egressHost(world)],
-                  ["the sign-in", () => signIn(world)], ["E2B", () => sandbox(world, side)],
+    ...await run([...doors, ["E2B", () => sandbox(world, side)],
                   ["the off-account copy", () => offsiteCopy(world)]]),
     ...options.unkeyed
       ? [waiting("the keyed checks", "the handle set, the owner's files and the full run wait " +
@@ -599,11 +647,16 @@ async function main(argv: readonly string[]): Promise<number> {
   if (side !== null && side !== "doors" && side !== "old") {
     throw new Error("--side is doors or old");
   }
+  const smoke = option(argv, "--smoke");
+  if (argv.includes("--smoke") && (smoke === null || argv.length !== 2)) {
+    throw new Error("--smoke takes its version's id, and no other option");
+  }
   // A canary that stops is a red run like any other, so the alarm still reads its result.
   const result = await canary({ fetch: (url, init) => fetch(url, init), env: process.env,
                                 now: () => new Date() },
                               { side, unkeyed: argv.includes("--unkeyed"),
-                                clock: argv.includes("--clock"), full: argv.includes("--full") })
+                                clock: argv.includes("--clock"), full: argv.includes("--full"),
+                                smoke })
     .catch((error: Error): Result => ({ side: null, outcomes: [{
       check: "the canary", state: "failed", line: `it stopped: ${error.message}`, code: 1,
       alone: false }] }));

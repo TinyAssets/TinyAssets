@@ -210,11 +210,13 @@ fetched 2026-11-22), the kit at `475c51e5a`. `[I]` marks inference.
 
 ## Owed
 
-- [ ] `untangle/deploy-zero`: A2b-2 as "The series" item 2 says, the stages `0` then `100`
+- [x] `untangle/deploy-zero`: A2b-2 as "The series" item 2 says, the stages `0` then `100`
   in `platform.json`, the soak, the deployments read back, the doors' 0% smoke by the canary
   with the override header held to `x-tinyassets-version` once the doors serve, and a Worker
   the run deploys first or whole, sets a secret on, or marks with a forward change taken to
-  100% at once.
+  100% at once. Done in `untangle/deploy-zero` (`deploy-zero.md`), which departs in one
+  place: before `routes` every Worker still takes the stages, unsmoked, so the 0% path is
+  proven live before the cutover, and the soak is held only before a smoke.
 - [ ] `untangle/deploy-splits`: A2b-3 as "The series" item 3 says, after
   `untangle/routing-keyring` and the GraphQL field read live: the split stages, each
   Worker's per-version error rate with a request floor, a failed health read (Account
