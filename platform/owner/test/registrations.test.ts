@@ -104,12 +104,14 @@ describe("an MCP client's agent registration", () => {
   it("replaces the identity's card when filed again, and at a bound lets the oldest go",
      async () => {
     const r = await rig();
+    // DOT's card, the oldest of all until DOT's identity files again below and replaces it.
+    const dots = await r.stub.registerPropose(r.bind(DOT), REQUEST);
     const first = await r.stub.registerPropose(r.bind(MUSE), REQUEST);
     const second = await r.stub.registerPropose(r.bind(MUSE), { ...REQUEST,
                                                                 display_name: "Muse Two" });
-    expect((await cards(r)).map((row) => row["card_id"])).toEqual([second.card_id]);
+    expect((await cards(r)).map((row) => row["card_id"]))
+      .toEqual([dots.card_id, second.card_id]);
     expect(first.card_id).not.toBe(second.card_id);
-    await r.stub.outsideAgents(r.bind(DOT));
     const out = await inCards(r, (registry, grants) => {
       const stamp = (origin: Origin) => ({ client: origin.client, generation: 1,
                                            authenticated_at: null });
@@ -123,9 +125,12 @@ describe("an MCP client's agent registration", () => {
       /** The request whose JSON is `size` characters. */
       const sized = (size: number) => ({ ...REQUEST, display_name: "x".repeat(
         size - JSON.stringify({ ...REQUEST, display_name: "" }).length) });
-      // MUSE's other families to its share: the last, past it, lets MUSE's oldest go.
+      // MUSE's other families to its share: the last, past it, lets MUSE's oldest go, not
+      // DOT's older one.
       const mine = Array.from({ length: CARD_LIMITS.perClient }, (_, n) =>
         tried({ ...MUSE, family: filler(n, "e") }));
+      const kept = [registry.card(second.card_id), registry.card(dots.card_id)]
+        .map((card) => card !== null);
       const request = [tried(DOT, sized(CARD_LIMITS.maxRequest + 1)),
                        tried(DOT, sized(CARD_LIMITS.maxRequest))];
       // Other clients' cards, each below its share, to the set's bound and one past it,
@@ -138,9 +143,10 @@ describe("an MCP client's agent registration", () => {
           others.push(tried({ client: filler(n), family: filler(k, "e") }));
         }
       }
-      return { mine, request, others,
+      return { mine, kept, request, others,
                stranger: tried({ client: "1".repeat(64), family: "2".repeat(64) }) };
     });
+    expect(out.kept).toEqual([false, true]);
     const ids = [...out.mine, out.request[1]!, ...out.others];
     expect(ids.every((id) => /^card_[0-9a-f]{32}$/.test(id))).toBe(true);
     expect([out.request[0], out.stranger]).toEqual([

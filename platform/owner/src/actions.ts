@@ -582,8 +582,8 @@ export const actionsDoors = Object.freeze({
     return held;
   },
   /**
-   * The owner's yes, in its session: the held call admitted once, within a day, and a run's
-   * call's conversation resumed (the run that resumes it, or null), its lane synced.
+   * The owner's yes, in its session: the held call admitted once, whenever it is made, and a
+   * run's call's conversation resumed (the run that resumes it, or null), its lane synced.
    */
   actionApprove(o: ActionsDoorNeeds, { session, r }: Call<ActionAnswerRequest, "session">):
       { card_id: string; approved: true; run: string | null } {

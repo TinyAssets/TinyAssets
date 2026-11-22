@@ -156,18 +156,19 @@ describe("the held calls", () => {
      async () => {
     const { r, o } = await ledgerOwner();
     await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    const dots = await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
     const muses: string[] = [];
     for (let n = 0; n < ACTION_LIMITS.perClient; n++) {
       muses.push(await heldCard(() => mkdir(r.stub, r.bind(MUSE), `/workspace/p-${n}`)));
     }
-    // Past MUSE's share, its own oldest goes, never another's.
+    // Past MUSE's share, its own oldest goes, never another's older one.
     const more = await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"));
-    const dots = await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
     const pending = async (card: string) => (await failure(
       () => r.stub.actionRequest(o.owner, { card_id: card }))).message;
     expect(await pending(muses[0]!)).toBe("no pending action request for this card");
+    expect((await r.stub.actionRequest(o.owner, { card_id: dots })).card.card_id).toBe(dots);
     // The rest of the set, by the owner's agents' runs, to its bound and one past it, which
-    // lets the oldest of all go: MUSE's second.
+    // lets the oldest of all go: DOT's.
     const runs = ACTION_LIMITS.held - ACTION_LIMITS.perClient - 1;
     expect(await inStores(r.stub, ({ actions }) => {
       const asked = (n: number) => {
@@ -182,12 +183,12 @@ describe("the held calls", () => {
       return Array.from({ length: runs + 1 }, (_, n) => asked(n));
     })).toEqual(Array(runs + 1).fill("held for your owner's answer"));
     expect(await r.table("action_requests")).toHaveLength(ACTION_LIMITS.held);
-    expect(await pending(muses[1]!)).toBe("no pending action request for this card");
+    expect(await pending(dots)).toBe("no pending action request for this card");
     // A card and a yes have no life of their own: years on, the card is shown and answered,
     // and the yes admits its call once.
     const later = clock() + 10 * 365 * 86_400;
     await atClock(later, async () => {
-      expect(await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"))).toBe(dots);
+      expect(await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"))).not.toBe(dots);
       const shown = await r.stub.actionRequest(o.owner, { card_id: more });
       expect("expires_at" in shown.card).toBe(false);
       await r.stub.actionApprove({ ...o.session, session: (await r.stub.sessionOpen({
