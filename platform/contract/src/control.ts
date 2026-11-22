@@ -23,8 +23,8 @@
  * - **the sandbox's platform numbers**.
  *
  * Every field but the gates is optional, and a record any part of which is malformed is
- * malformed whole: never a guess, and never a key dropped unread. A flip reaches every location within KV's 60 s; no revoke
- * depends on it.
+ * malformed whole: never a guess, and never a key dropped unread. A flip reaches every
+ * location within KV's 60 s; no revoke depends on it.
  */
 
 import { keyed, object, whole } from "./checks.ts";

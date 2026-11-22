@@ -171,8 +171,8 @@ export function scratchCleared(pruned: Pruned): ScratchCleared | null {
   if (pruned.evicted.length === 0) {
     return null;
   }
-  return { type: "ta.scratch_cleared", evicted: pruned.evicted, freed_bytes: pruned.freed_bytes, free_bytes: pruned.disk.free_bytes,
-           total_bytes: pruned.disk.total_bytes };
+  return { type: "ta.scratch_cleared", evicted: pruned.evicted, freed_bytes: pruned.freed_bytes,
+           free_bytes: pruned.disk.free_bytes, total_bytes: pruned.disk.total_bytes };
 }
 
 /** The ballast that keeps the runner's own room: made when there is room for it and more. */

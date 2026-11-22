@@ -43,10 +43,10 @@ import { NODE } from "./test/layout";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
 const sources = bundledSources();
-/** Claude Code's own name of each engine-neutral hook event (`definition.hooks.events`). */
 /** Claude Code's user settings layer, the record's own file of every run, as written. */
 const CLAUDE_USER_LAYER = JSON.stringify(JSON.parse(
   served().get("claude-code")!.cli.files!["{home}/.claude/settings.json"]!));
+/** Claude Code's own name of each engine-neutral hook event (`definition.hooks.events`). */
 const CLAUDE_EVENTS = (served().get("claude-code")!.cli.definition.hooks as
   { events: Record<string, string> }).events;
 /** What Claude Code does to `event` if the dispatcher fails: blocks a call or a prompt. */

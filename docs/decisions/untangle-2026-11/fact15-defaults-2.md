@@ -74,9 +74,14 @@ when either is gone) and on the engine's session, which this change keeps.
    - **A live record still holding the key is refused, never read past.** Every reader reads it
      malformed and closes every gate (Fact 8), the kit's `control` mode names it and takes only
      `--replace`, and now a dark or routes run stops on any held record no reader takes, naming
-     it (`deploy.ts` `control`). Before, the dark run checked only that one existed, so a record
-     every gate read closed passed it silently. No migration: the record is KV, and the founder
-     edits it.
+     it (`deploy.ts` `control`); its plan job reads the record too, so it stops before any
+     change. Before, the dark run checked only that one existed, so a record every gate read
+     closed passed it silently. No migration: the record is KV, and the founder edits it.
+   - **The live record holds no such key** (review, 2026-11-22, from the code and CI's own
+     logs, KV unread): its only writers are the dark run's `deploy/control.json`, which never
+     held the key, and the `control` mode, which no `platform-deploy.yml` run has used. The
+     record was written once, by the dark run of 2026-11-06 (`f531a4fe3`), as the
+     `control.json` of today, which every reader takes; each dark run since left it.
 2. **Every engine's own session retention is off, on every run.**
    - **Claude Code:** `{home}/.claude/settings.json` moves from the hooked run's `decide.pins`
      into the record's `files`, written root's on every run (`configOwned`), holding
@@ -86,7 +91,9 @@ when either is gone) and on the engine's session, which this change keeps.
      before any file, and 8.64e15 ms stays under 2^53. A smaller round number (3650, the CLI's
      own hint) would be a chosen age. A hooked run's user layer is the same root file as before,
      so `--setting-sources user` still loads no layer the agent writes (the runner test that
-     holds it is unchanged).
+     holds it is unchanged). On an unhooked run a project or local layer in the owner's files
+     outranks the user layer and may name a shorter period: that is the owner's own setting
+     (Fact 15), and nothing it guards, since the run's user can delete its own transcripts.
    - **`decide.pins` goes** (schema, check, engine): its one use is now a file of every run.
    - **Gemini CLI:** `general.sessionRetention.enabled: false` in its system settings, the
      record's `mcp.template` that every run writes (beside `disableAutoUpdate`), the highest
@@ -118,5 +125,8 @@ when either is gone) and on the engine's session, which this change keeps.
 - [ ] The start document's `scratch_retention_days`, written null, leaves with the next runner
   protocol (`untangle/runner-protocol-5`).
 - [ ] The engine store's size on the sandbox disk, and Codex's compressed second copy
-  (`untangle/session-store-pressure`).
+  (`untangle/session-store-pressure`): until it lands, a disk the store fills shows only as
+  the engine's own `ENOSPC` once no scratch is left to free, so it owes a loud runner event
+  naming the store's size and the disk's, and a store copy let go that the next sync-in
+  fetches again.
 - [ ] `tasks.md` Step 5's call-11 line stays for `untangle/limits-guard`, which lands after this.
