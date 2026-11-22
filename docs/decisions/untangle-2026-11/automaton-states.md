@@ -29,7 +29,7 @@
    - `runner.test.ts`'s filler is sized from the ceiling.
    - `doors/guards/app-words.test.ts` passes its own figures, the words being the app's.
    - `limits-audit.md`'s row carries the arithmetic.
-   - **The bundles.** The constant is in both bundles, so the runner (`5f49f51daed781f7` to `48eec1619ebfd72b`) and the probes (`5be3b90f19131973` to `5000ffb2f4264438`) change, so the pair tag does. The next deploy builds and checks the pair as for any runner change.
+   - **The bundles.** The constant and the walk are in both bundles, so the runner and the probes change, and the pair tag with them. The next deploy builds and checks the pair as for any runner change.
    - **Cost.** A byte of text costs up to 3,073 word steps where it cost 257. The contract guards' hostile lists, sizes tests, take 3.6 to 4.1 s each locally where they took 0.5 to 1.3. The walk-cost test, a medium one, takes 1.1 s where it took 0.3 (budget 4.6 s, times 4).
      At 1.4 ns a word step at 3,072 words (this host), a byte of a name costs about 4.4 µs, so a sync-out over the disk's 3,788,096 inodes, each a distinct 255-byte name, matches for about 70 minutes, where 8,192 took about 6. It is said past `SLOW_MATCH_MS`. The sync agent is a process of its own and its requests have no timeout, so the run's heartbeats and its lease go on beside it. Paths of one short name each over 98,160 states, where the copy of a folder's D and I is most of a path's work, held the cost guard at 0.35 of its bound.
 4. **Proof.** Each mutation was run and fails.
@@ -38,6 +38,8 @@
    - 8,192 again fails "all 310 together" (56 lines said).
    - `runner.test.ts`'s old 900-line filler fails "says the sync-ignore lines past its ceilings" (no event).
    - Node's batch again (no `bufferSize`) fails "walks a folder an entry at a time" (2,924 bytes a folder against 512).
-5. **Left.** Nothing in scope.
+5. **Left.** Nothing in this PR's scope. One thing outside it was found in review, after merging #5798.
+   - `sync.ts` `goneFolder` walks a gone folder `sorted`. That reads each folder on its way whole, and holds it while the walk is under it, so sync-in's heap grows with a folder's entries: about 300 bytes a 106-byte name (14.9 MB at 50,000, Node 22.22.0), so about 1.5 million names fill the agent's heap with no list at all. The walk it does sits beside the matcher's folders at `AUTOMATON_STATES`, which this derivation counts at one entry a folder. It is owed below.
 
 - [ ] live: the next deploy's pair job passes with this PR's runner and probes (the standing checks run once on the pinned image, as for any runner change).
+- [ ] fix/gone-folder-walk: `sync.ts` `goneFolder`'s walk holds what a gone folder lists (`sorted`), so sync-in's memory grows with a folder's entries; walk it an entry at a time, or bound what it holds, and hold it in `sync.test.ts` beside the states' test.
