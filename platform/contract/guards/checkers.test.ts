@@ -101,13 +101,13 @@ describe("subscriptionId", () => {
 describe("acceptanceOf", () => {
   // The bucket keeps an acceptance record for good, and a redelivery after a deploy is held
   // to it, so its args' digest is pinned to the bytes the records already hold.
-  it("names the digest of the args' canonical JSON, keys sorted", async () => {
-    const digest = async (args: OperatorMessage["args"]) =>
-      (await acceptanceOf({ op: "owner.tier", owner: "owner", args } as OperatorMessage)).digest;
-    expect(await digest({})).toBe(
+  it("names the digest of the args' canonical JSON, keys sorted", () => {
+    const digest = (args: OperatorMessage["args"]) =>
+      acceptanceOf({ op: "owner.tier", owner: "owner", args } as OperatorMessage).digest;
+    expect(digest({})).toBe(
       "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
-    expect(await digest({ z: "é \"x\u0001", a: 1, m: false, b_2: -9007199254740991,
-                          a0: "" })).toBe(
+    expect(digest({ z: "é\u2028\"x\u0001", a: 1, m: false, b_2: -9007199254740991,
+                    a0: "" })).toBe(
       "b76a210e407d6986b350c4a07f0f5501b70e66626e6f582b5844ef5a956e53a7");
   });
 });

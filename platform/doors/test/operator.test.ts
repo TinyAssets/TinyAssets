@@ -193,7 +193,7 @@ describe("the operator channel", () => {
   it("makes the acceptance record and the answer once, a racing delivery held to them",
      async () => {
     const message = await sign(fresh(), "owner.tier", { tier: "paid" });
-    const first = await acceptanceOf(message);
+    const first = acceptanceOf(message);
     await doorsEnv.OPERATOR_LOG.put(acceptanceKey(message.ask), JSON.stringify(first));
     // Other args under the ask, by a delivery that read before the record was made: dropped.
     const logged = logs();
@@ -214,7 +214,7 @@ describe("the operator channel", () => {
      async () => {
     const message = await sign(fresh(), "owner.state", {}, RING, now() - OPERATOR_WINDOW_S - 60);
     await doorsEnv.OPERATOR_LOG.put(acceptanceKey(message.ask),
-                                    JSON.stringify(await acceptanceOf(message)));
+                                    JSON.stringify(acceptanceOf(message)));
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     expect(operatorAnswer((await held(message.ask)).answer, message))
       .toMatchObject({ result: { state: "pending" } });

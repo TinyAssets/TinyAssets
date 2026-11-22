@@ -192,7 +192,7 @@ function argsOf(value: unknown): OperatorArgs {
 }
 
 /** The SHA-256 of the args' canonical JSON, as hex: what the MAC and the acceptance name. */
-async function argsDigest(args: OperatorArgs): Promise<string> {
+function argsDigest(args: OperatorArgs): string {
   return sha256Hex(canonical(args));
 }
 
@@ -212,9 +212,9 @@ export function operatorMessage(value: unknown): OperatorMessage {
 }
 
 /** The bytes the MAC is over. */
-async function macInput(message: Omit<OperatorMessage, "v" | "kid" | "mac">): Promise<Uint8Array> {
+function macInput(message: Omit<OperatorMessage, "v" | "kid" | "mac">): Uint8Array {
   return new TextEncoder().encode([MAC_DOMAIN, message.op, message.owner,
-                                   await argsDigest(message.args), message.ask,
+                                   argsDigest(message.args), message.ask,
                                    String(message.at)].join("\0"));
 }
 
@@ -235,7 +235,7 @@ export async function signOperator(ring: Ring, op: string, owner: string, args: 
   }
   const unsigned = { op, owner, args, ask, at };
   const mac = base64url(new Uint8Array(await crypto.subtle.sign(
-    "HMAC", await macKey(key, "sign"), await macInput(unsigned))));
+    "HMAC", await macKey(key, "sign"), macInput(unsigned))));
   return operatorMessage({ v: OPERATOR_VERSION, ...unsigned, kid: ring.active, mac });
 }
 
@@ -247,7 +247,7 @@ export async function macHolds(ring: Ring, message: OperatorMessage): Promise<bo
   }
   const mac = fromBase64url(message.mac);
   return mac !== null
-    && crypto.subtle.verify("HMAC", await macKey(key, "verify"), mac, await macInput(message));
+    && crypto.subtle.verify("HMAC", await macKey(key, "verify"), mac, macInput(message));
 }
 
 /** Where the doors keep a message's acceptance record, in the operator bucket. */
@@ -256,8 +256,8 @@ export const acceptanceKey = (ask: string): string => `asks/${ask}.json`;
 export const answerKey = (ask: string): string => `answers/${ask}.json`;
 
 /** What an acceptance record holds of `message`. */
-export async function acceptanceOf(message: OperatorMessage): Promise<Acceptance> {
-  return { op: message.op, owner: message.owner, digest: await argsDigest(message.args),
+export function acceptanceOf(message: OperatorMessage): Acceptance {
+  return { op: message.op, owner: message.owner, digest: argsDigest(message.args),
            at: message.at, kid: message.kid };
 }
 

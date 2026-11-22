@@ -47,7 +47,7 @@ parsers), `admission.ts` (a sorted list of reasons), `changelog.ts` `keyOf` (SQL
 `json_array`), `doors/src/definition.ts` `canonical` (a URI, not JSON), and the tests'
 `Object.keys(...).sort()` (set comparisons).
 
-## Found and left
+## Found and fixed in review
 
-- `argsDigest` and `acceptanceOf` are async around a synchronous `sha256Hex`. Making them
-  sync changes every caller's signature for no behaviour; not this branch's shape.
+- `argsDigest`, `macInput` and `acceptanceOf` were async around a synchronous `sha256Hex`.
+  They are sync: `acceptanceOf`'s one reader in `doors/src` and its tests drop the `await`.
