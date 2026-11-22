@@ -175,10 +175,9 @@ function definitionWords({ code, path, paths, bytes, max_bytes }) {
       "AGENTS.md; move what it says into AGENTS.md and remove it";
   }
   if (code === "engine_settings_refused" && typeof path === "string") {
-    return `engine_settings_refused: ${path} is the engine's own (its settings, commands, ` +
-      "subagents or extensions), which no run loads beside the agent's definition " +
-      "(agent.json, AGENTS.md, skills, mcp.json, hooks.json); move what it does there and " +
-      "remove it";
+    return `engine_settings_refused: ${path} is the engine's own, which no run loads beside ` +
+      "the agent's definition (agent.json, AGENTS.md, skills, mcp.json, hooks.json); move " +
+      "what it does there and remove it";
   }
   if (code === "instructions_too_large" && Array.isArray(paths)
       && paths.every((each) => typeof each === "string") && whole(bytes) && whole(max_bytes)) {

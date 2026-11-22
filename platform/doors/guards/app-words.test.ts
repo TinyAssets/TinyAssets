@@ -66,12 +66,11 @@ describe("the runner's events, in the app's words", () => {
         "/workspace/CLAUDE.md instead of the agent's AGENTS.md; move what it says into " +
         "AGENTS.md and remove it" });
     expect(eventShown({ type: "ta.refused", code: "engine_settings_refused",
-                        path: "/workspace/agents/main/.gemini/settings.json" }))
+                        path: "/workspace/agents/main/.gemini/commands" }))
       .toEqual({ type: "ta.refused", reason: "engine_settings_refused: " +
-        "/workspace/agents/main/.gemini/settings.json is the engine's own (its settings, " +
-        "commands, subagents or extensions), which no run loads beside the agent's definition " +
-        "(agent.json, AGENTS.md, skills, mcp.json, hooks.json); move what it does there and " +
-        "remove it" });
+        "/workspace/agents/main/.gemini/commands is the engine's own, which no run loads " +
+        "beside the agent's definition (agent.json, AGENTS.md, skills, mcp.json, hooks.json); " +
+        "move what it does there and remove it" });
     expect(eventShown({ type: "ta.refused", code: "instructions_too_large",
                         paths: ["/workspace/agents/main/AGENTS.md"], bytes: 40000,
                         max_bytes: 32768 }))

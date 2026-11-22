@@ -28,7 +28,7 @@ ever loaded as a command.
 | Gemini | a workspace policy's external safety checker (`.gemini/policies`) | no: an external checker resolves only built-ins, and there are none (`safety/registry.ts`) | |
 | Codex | a skill's `SKILL.md` | no: `skills/src/invocation.rs` only recognises the model's own shell reads of a skill | |
 | Codex | a skill's own MCP server (`agents/openai.yaml` `dependencies.tools`, `type: mcp`, `transport: stdio`, `command`) | **yes, on a first-party client**: when the prompt names the skill, `core/src/mcp_skill_dependencies.rs` writes the server into `$CODEX_HOME/config.toml` and starts it, auto-approved under `approval_policy = "never"` with full access; feature `skill_mcp_dependency_install`, stable, on by default. `codex exec` (originator `codex_exec`) is not first-party today, and nothing the agent writes moves it (`$CODEX_HOME/.env` drops `CODEX_` keys, the run's environment is the allow-list), but the code says "for now" | **off**: `-c features.skill_mcp_dependency_install=false` in `native.argv`, the engine's own switch, on every run |
-| Codex | an agent role (`.codex/agents/*.toml`) | **yes**: a whole config layer for the subagent (`agent-roles/src/loader.rs` reads `<layer>/agents` for every layer, a bare project `.codex/` included; `core/src/agent/role.rs` applies it unsanitised), so its `mcp_servers` start with the subagent (`multi_agent`, stable, on by default), spawned by a tool call no shell kind names | **refused**: `.codex/agents` in `native.refuses` |
+| Codex | an agent role (`.codex/agents/*.toml`) | **yes**: a whole config layer for the subagent (`agent-roles/src/loader.rs` reads `<layer>/agents` for every layer, a bare project `.codex/` included; `core/src/agent/role.rs` applies it unsanitised), so its `mcp_servers` start with the subagent (`multi_agent`, stable, on by default), spawned by a tool call no shell kind names. Only from an enabled layer, though: an untrusted project's is disabled (`config/src/state.rs` `layers_low_to_high`), and no run trusts one today | **refused**: `.codex/agents` in `native.refuses`, as `.codex/config.toml` is: never loaded beside the definition, nor silently ignored (Fact 8) |
 | Codex | custom prompts (`$CODEX_HOME/prompts`) | no: the TUI's only (`tui/src/bottom_pane/custom_prompt_view.rs`); `codex exec` expands none | |
 | Codex | `.codex/rules` | no: execpolicy rules allow or forbid a command line, and run none | |
 | pi | a prompt template (`/name`) | no: positional substitutions only (`docs/prompt-templates.md`); `.pi/prompts` is refused anyway (D2) | |
@@ -58,8 +58,10 @@ or `hooks.json`, where every engine reads it and the admission decides its comma
 2. **Codex's record** `definition.native.refuses` gains `.codex/agents`, and `native.argv` is
    `-c features.skill_mcp_dependency_install=false`, added on every run.
 3. **The owner's words** (`doors/app/view.js`): `engine_settings_refused` says the path is the
-   engine's own (its settings, commands, subagents or extensions), not "its settings" alone.
-   `DefinitionNative`'s comment and the record check's message say the same.
+   engine's own, not "its settings": the path names its kind, and a closed list of kinds (the
+   build's "settings, commands, subagents or extensions", cut in review) misnamed the skills,
+   hooks, servers and system prompts the records also refuse. `DefinitionNative`'s comment and
+   the record check's message say the engine's own layers.
 4. **Tests** (`sandbox/runner/runner.test.ts`): a run is refused, before its CLI, by the folder,
    with a Gemini custom command, a Gemini subagent or a Codex agent role in the agent's folder
    (beside pi's extension, now one table); every Codex run, attended or not, carries the switch.
@@ -83,6 +85,14 @@ or `hooks.json`, where every engine reads it and the admission decides its comma
 - **Codex's plugins** come from the config layers' `[plugins]` and the vendor account's own
   installs; a repository's `.agents/plugins/marketplace.json` only lists them. Neither is the
   agent's folder.
+- **Review's further reads (2026-11-22), each found closed:** Codex 0.166.0's registry has
+  `skill_mcp_dependency_install` (stable, on by default; an unknown key would only warn), set by
+  `-c` before `exec` as `tools.deny` already is; Codex loads a project's `.codex/` (its
+  `agents`, and a linked worktree's main-checkout `hooks.json`, which no ancestor check would
+  see) only from a trusted layer, and no run trusts one; Gemini's extensions load only from the run's fresh home
+  (`new Storage(homedir())`); pi runs a value starting `!` as a command (MCP `env` and headers,
+  `resolve-config-value.js`), which `agentMcp` already refuses; Claude Code's `.claude/agents`
+  is refused and a skill's frontmatter hooks are under `allowManagedHooksOnly` (#5769).
 
 ## Owed
 
