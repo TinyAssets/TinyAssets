@@ -701,6 +701,36 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.getByText(/not kept across reloads/).waitFor();
 });
 
+test("a connected app whose agent was deleted says so on its row, and its save names the " +
+     "agent chosen", { timeout: 60_000 }, async () => {
+  // No app connects in this harness, so the doors' list is answered with one whose grant
+  // names an agent since deleted; the save goes to the real doors.
+  const gone = { client: "c".repeat(64), source: "mcp", mode: "full", scopes: [], revision: 3,
+                 revoked_at: null, vendor: null, vendor_verified: 0, name: "Muse",
+                 profile: "custom", agent: "gone", agent_live: false, first_seen: 0,
+                 last_seen: 0 };
+  const listed = (route) => route.fulfill({ json: { clients: [gone] } });
+  await page.route("**/app/api/grants", listed);
+  try {
+    await page.goto(`${ORIGIN}/app#apps`);
+    const row = page.locator("tr", { hasText: "Muse" });
+    await row.getByText(/^This agent was deleted/).waitFor();
+    const agent = row.getByRole("combobox").nth(1);
+    assert.equal(await agent.locator("option:checked").innerText(), "gone (deleted)");
+    await agent.selectOption("main");
+    const sent = page.waitForRequest((request) =>
+      request.url().endsWith("/app/api/grants/set"));
+    await row.getByRole("button", { name: "Save" }).click();
+    assert.deepEqual((await sent).postDataJSON(), {
+      client: gone.client, source: "mcp", mode: "full", scopes: [], expected_revision: 3,
+      name: "Muse", profile: "custom", agent: "main" });
+    // The real doors know no such client, and say so.
+    await page.locator("#notice .message.bad").waitFor();
+  } finally {
+    await page.unroute("**/app/api/grants", listed);
+  }
+});
+
 // -- Attacks on the app, kept as tests -----------------------------------------------------
 
 const P_IMG = `<img src=x onerror="window.__xss=(window.__xss||0)+1">`;
