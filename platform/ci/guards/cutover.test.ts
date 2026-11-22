@@ -41,15 +41,16 @@ import { workerFolders } from "../wrangler";
 const APPLY = "node --experimental-strip-types --no-warnings ci/dry-run.ts apply";
 
 /**
- * Each way `tests.yml`'s dry run could fail to gate a merge, the queue's included: a job or
- * the gate step that skips an event, a leg that runs no applied tree or not its command, or
+ * Each way `tests.yml`'s dry run could fail to gate a merge, the queue's included: a job, a
+ * step of one or the gate step that skips an event, a leg that runs no applied tree or not its command, or
  * `required-tests` passing without both its jobs' success (run as the gate step's own script).
  */
 function dryRunGateProblems(jobs: Data): string[] {
   const found: string[] = [];
   const [legs, suites, checks, agg] = ["cutover-dry-run-legs", "cutover-dry-run",
     "cutover-dry-run-checks", "required-tests"].map((name) => jobs[name] ?? {});
-  if ([legs, suites, checks].some((job) => job.if !== undefined)
+  if ([legs, suites, checks].some((job) => job.if !== undefined
+        || (job.steps ?? []).some((step: Data) => step.if !== undefined))
       || suites.needs !== "cutover-dry-run-legs") {
     found.push("the dry run's jobs run on every event, its legs after their matrix");
   }
@@ -643,6 +644,9 @@ describe("the cutover's manifest", () => {
       },
       "the checks skip the queue": (jobs) => {
         jobs["cutover-dry-run-checks"].if = "github.event_name != 'merge_group'";
+      },
+      "a leg's command skips the queue": (jobs) => {
+        jobs["cutover-dry-run"].steps.at(-1).if = "github.event_name != 'merge_group'";
       },
       "the gate skips the queue": (jobs) => {
         jobs["required-tests"].steps.find((each: Data) => "DRY_RUN_RESULT" in (each.env ?? {}))

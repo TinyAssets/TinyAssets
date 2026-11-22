@@ -62,10 +62,10 @@
 - **Scope the queue's dry run to the group's diff.** What breaks the tree is the combination of the PR's diff and `main`'s move, not the diff alone (`dry-run-required.md` item 3).
 - **Fold each dry-run leg into its `platform-tests` leg** (run the leg, apply the manifest, run it again). There would be no new runner pickups, but every `platform-tests` leg would take about twice as long. That puts about 350 s on the critical path of every PR and queue run.
 
-## Found, left
+## Found in review, fixed
 
-- **`tests.yml`'s trigger comment is stale.**
-  - It says `push` "fires on the rare human merge and never on the normal path", and that the `schedule` is the post-merge tripwire.
-  - Measured: 83 push runs for 100 merge groups in 36 hours, and 5 scheduled runs.
-  - So `main` is in fact rechecked, dry run included, by the push run after nearly every merge. The hourly slot rarely fires.
-  - That comment belongs to the trigger block, not to the dry run. Rewriting it needs its own research into why `push` now fires (the merge's actor). It is left for the coordinator to assign, and nothing here depends on it.
+- **`tests.yml`'s trigger comment was stale.** It said `push` fires only on the rare human merge, that every merge was the default token's, and that `required-tests` gates only through `pull_request`.
+  - Why `push` fires: since the queue (2026-09-26, #4061) GitHub merges as `github-merge-queue[bot]`, whose push starts runs. All 96 push runs on 2026-11-21 and 2026-11-22 are that actor's.
+  - Why fewer runs than merges: entries the queue merges together move `main` once. 96 runs for 110 commits; four groups finished at 04:23-04:26 on 2026-11-21 and one push run started, for the last.
+  - The comment now says the push run is the post-merge check, the `schedule` the hourly one and `heavy-tests`' only automatic run, and the gate is `pull_request` and `merge_group`. `tests/test_tests_workflow.py`'s copy of the old claim (its bug 2 and one message) is corrected with it.
+- **The guard missed a step-level skip.** A step of a dry-run job with an `if` (a leg's command on `!= 'merge_group'`) let the job succeed without running. `dryRunGateProblems` now refuses an `if` on any step of the three jobs, with the mutation "a leg's command skips the queue".
