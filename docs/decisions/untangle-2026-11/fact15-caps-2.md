@@ -137,7 +137,7 @@ technical ceilings, each with its reason. Research first (Fact 14), read at `c21
   `Share:` clause.
 - [x] A code mode script's caller leaving reaches it (a stop across the door's call into the
   owner's object, as the egress door's end signal), so the wall bound becomes each caller's
-  own wait, researched first (`untangle/code-caller-leaves`): done, `code-caller-leaves.md`.
+  own wait, researched first (`untangle/code-caller-leaves`).
 - [ ] live: H2's probes 1 and 6 hold the interrupt budget's and the VM memory's derivations
   (a tight loop ends `timeout`, never an object reset; eight scripts at the cap each end
   alone), before code mode turns on.
