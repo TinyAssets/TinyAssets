@@ -53,6 +53,7 @@ import type { DoorsEnv } from "./env";
 import {
   APP_RESOURCE, MCP_RESOURCE, UPSTREAM_CALLBACK, ZONE,
 } from "../../contract/src/identity";
+import { navigation } from "../../contract/src/navigation";
 import { SIGN_IN_MAX_AGE_S } from "../../contract/src/signin";
 import { outsideRead, ownerRead } from "./control";
 import { requireFresh } from "../../contract/src/control";
@@ -112,12 +113,6 @@ ${loopback}
   <p><button name="decision" value="approve">Allow</button>
      <button name="decision" value="deny">Deny</button></p>
 </form>`;
-}
-
-/** A browser's top-level navigation, as `Sec-Fetch-*` reports it. */
-export function navigation(request: Request): boolean {
-  return request.headers.get("Sec-Fetch-Mode") === "navigate"
-    && request.headers.get("Sec-Fetch-Dest") === "document";
 }
 
 /** Start the configured upstream sign-in for an approved request. */

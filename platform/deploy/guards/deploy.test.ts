@@ -106,6 +106,8 @@ const RING = ringSecret("k1");
 const ROTATED = ringSecret("k2", ["k1", "k2"]);
 const E2B_KEY = "e2b_test_key";
 const ACCOUNT = "a".repeat(32);
+/** The TLS certificate Cloudflare issues for the egress host's custom domain. */
+const CERT = "c-egress";
 const TEMPLATE = String((configOf("sandbox")["vars"] as Json)["E2B_TEMPLATE"]);
 /** The runner and probes the fake build makes, and the pair they make with the pin. */
 const RUNNER = "the runner";
@@ -216,6 +218,13 @@ interface WorldOptions {
   readonly dns?: readonly string[];
   /** Cloudflare's detach leaves the DNS record the custom domain's attach made. */
   readonly keepsDns?: boolean;
+  /**
+   * How long after the run starts Cloudflare reports the egress host's certificate active
+   * (`pending_validation` before): at once by default.
+   */
+  readonly certifiedAfterMs?: number;
+  /** The certificate packs listing the API refuses (403): a token without SSL Read. */
+  readonly refusingCertificates?: boolean;
   /** The DNS listing ignores its name filter: the zone's other records come back too. */
   readonly noisyDns?: boolean;
   /** A route change the API refuses (400): `METHOD pattern`. */
@@ -339,9 +348,10 @@ function world(options: WorldOptions = {}) {
   /** The zone's routes after each route change, in order. */
   const tables: Route[][] = [];
   /** The egress host's custom domains, by id. */
-  const domains = new Map<string, { id: string; hostname: string; service: string }>(
+  const domains = new Map<string, { id: string; hostname: string; service: string;
+                                    cert_id: string }>(
     options.egress === undefined ? []
-      : [["d0", { id: "d0", hostname: EGRESS_HOST, service: options.egress }]]);
+      : [["d0", { id: "d0", hostname: EGRESS_HOST, service: options.egress, cert_id: CERT }]]);
   /**
    * The outward changes left before the run is killed (undefined: never): a route's, the
    * custom domain's (wrangler's triggers deploy, a detach) and the webhook's.
@@ -513,6 +523,16 @@ function world(options: WorldOptions = {}) {
         }
       }
       return json({ success: true, result: null });
+    }
+    if (path === "/zones/z/ssl/certificate_packs?status=all") {
+      if (options.refusingCertificates === true) {
+        return json({ success: false, errors: [{ code: 10000 }] }, 403);
+      }
+      const status = clock - NOW.getTime() >= (options.certifiedAfterMs ?? 0) ? "active"
+        : "pending_validation";
+      return json({ success: true, result: [
+        { id: "p-universal", status: "active", certificates: [{ id: "u1" }] },
+        { id: "p-egress", status, certificates: [{ id: CERT }] }] });
     }
     const listed = /^\/zones\/z\/dns_records\?name\.exact=([^&]+)&per_page=100$/.exec(path);
     if (listed !== null) {
@@ -688,7 +708,7 @@ function world(options: WorldOptions = {}) {
         }
         // One custom domain a host: the doors' already is kept as it is.
         if (![...domains.values()].some((domain) => domain.service === DOORS)) {
-          domains.set("d1", { id: "d1", hostname: EGRESS_HOST, service: DOORS });
+          domains.set("d1", { id: "d1", hostname: EGRESS_HOST, service: DOORS, cert_id: CERT });
           if (!dns.some((record) => record.id === ATTACHED.id)) {
             dns.push({ ...ATTACHED });
           }
@@ -1170,9 +1190,9 @@ describe("the plan the apply job runs", () => {
       rmSync(join(plan, ".."), { recursive: true, force: true });
       const applied = work.plan.slice(1);
       // What a change showed once made: the custom domain's DNS record, which routes writes
-      // into its record, and each deployment read back.
+      // into its record, and its certificate; and each deployment read back.
       const did = applied.filter((line) => line.startsWith("record in deploy:routes:")
-        || READ_BACK.test(line));
+        || line.startsWith(`${EGRESS_HOST}'s certificate `) || READ_BACK.test(line));
       const said = applied.filter((line) => !did.includes(line));
       expect([mode, options, said.length]).toEqual([mode, options, approved.length]);
       said.forEach((line, at) => {
@@ -1671,6 +1691,47 @@ describe("a routes run", () => {
                         `${HOST}${identity.hook}`]) {
       expect([path, servedBy(w.routes.values(), path)]).toEqual([path, DOORS]);
     }
+  });
+
+  it("waits for Cloudflare to report the egress host's certificate active before the canary",
+     async () => {
+    const w = world({ held: true, certifiedAfterMs: 2 * 60_000 });
+    const { sleep } = w.io;
+    Object.assign(w.io, { sleep: async (ms: number) => {
+      w.events.push(`sleep ${ms}`);
+      await sleep(ms);
+    } });
+    const work = await runMode(w, "routes", ["--yes"]);
+    const read = "cf GET /zones/z/ssl/certificate_packs?status=all";
+    const after = w.events.slice(w.events.findIndex((event) =>
+      event.startsWith("wrangler triggers deploy")));
+    // Read every 15 s from the attach until it is active, two minutes on; then the canary.
+    expect(after.filter((event) => event === read)).toHaveLength(9);
+    expect(after.filter((event) => event.startsWith("sleep "))).toEqual(
+      Array(8).fill("sleep 15000"));
+    expect(after.lastIndexOf(read))
+      .toBeLessThan(after.indexOf("node canary.ts --side doors --unkeyed"));
+    expect(work.plan).toContain(`${EGRESS_HOST}'s certificate ${CERT}: active, as Cloudflare ` +
+                                "reports it");
+  });
+
+  it("stops after ten minutes of a certificate Cloudflare does not report active, naming its " +
+     "status, before the hook or the canary", async () => {
+    const w = world({ held: true, certifiedAfterMs: Number.POSITIVE_INFINITY });
+    await expect(runMode(w, "routes", ["--yes"])).rejects.toThrow(
+      `${EGRESS_HOST}'s certificate is not active after 10 minutes: Cloudflare reports ` +
+      "pending_validation. The host answers no TLS until it is; run routes again once SSL/TLS, " +
+      "Edge Certificates shows it active");
+    expect(w.events.some((event) => event.startsWith("node canary.ts"))).toBe(false);
+    expect(w.events.some((event) => event.startsWith("e2b PATCH"))).toBe(false);
+  });
+
+  it("stops routes in the plan job, before any change, when the token cannot read the zone's " +
+     "certificate packs", async () => {
+    const w = world({ held: true, refusingCertificates: true });
+    await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow(
+      "reading the zone's certificate packs failed (403, [10000])");
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
   });
 
   it("reads the zone's routes with the checks, before WorkOS's, storage or any change",
@@ -2199,7 +2260,8 @@ describe("a handback run", () => {
     }
     // A custom domain another Worker took since stops the handback before any change.
     const { w, from } = await cutOver();
-    w.domains.set("d1", { id: "d1", hostname: EGRESS_HOST, service: "someone-else" });
+    w.domains.set("d1", { id: "d1", hostname: EGRESS_HOST, service: "someone-else",
+                          cert_id: CERT });
     await expect(runMode(w, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
       `changed since routes, so nothing is handed back: ${EGRESS_HOST} is someone-else's ` +
       `custom domain, and routes attached it to ${DOORS}. Put each back as the record has it, ` +
@@ -5089,7 +5151,9 @@ const ROUTES_HELD = [
   `${HOST}/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,
   `delete tinyassets-mcp-proxy's narrower route ` +
   `${HOST}/.well-known/oauth-authorization-server*, its paths now ${DOORS}'s`,
-  `add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy)`,
+  `add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then wait up ` +
+  "to 10 minutes for Cloudflare to report its certificate active",
   "record in deploy:routes:local-20261107T120000Z the DNS records the custom domain made: AAAA",
+  `${EGRESS_HOST}'s certificate ${CERT}: active, as Cloudflare reports it`,
   `E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: present, enabled set, enabled`,
 ];

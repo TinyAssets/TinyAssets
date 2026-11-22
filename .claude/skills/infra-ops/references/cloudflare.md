@@ -87,16 +87,18 @@ Minimum scopes for the workflow uptime stack:
 
 The platform's deploy kit (`platform/deploy/deploy.ts`, `platform-deploy.yml`) uses the
 `CLOUDFLARE_API_TOKEN` secret of the `production` environment. It needs Account R2, Workers KV Storage, Queues and
-Workers Scripts edit, Zone Workers Routes edit, and Zone DNS Edit:
+Workers Scripts edit, Zone Workers Routes edit, Zone DNS Edit, and Zone SSL and
+Certificates Read:
 - mode `routes` lists the egress host's DNS records (the API reference accepts DNS Read or
-  DNS Write);
+  DNS Write), and reads the zone's certificate packs until the egress custom domain's
+  certificate is active (SSL and Certificates Read);
 - mode `handback` deletes the record the egress custom domain made (DNS Write).
 
-DNS Edit is the scope recorded above. A run has shown the read:
-`cloud-only-preflight.yml` run 35704397255 (2026-09-22) read the zone's DNS records with this
-secret, and `internal_origin_dns` passed. No run has written DNS with it yet. So nothing is
-owed while that record holds. To check without the token's value: the dashboard's My
-Profile → API Tokens page lists its permissions (`platform/deploy/checklist.md`).
+DNS Edit is the scope recorded above; the stage's first `routes` (run 45059834265,
+2026-11-22) read and wrote DNS with this secret. No record shows SSL and Certificates Read:
+it is owed before the next `routes`, whose plan job stops with nothing changed without it.
+To check without the token's value: the dashboard's My Profile → API Tokens page lists its
+permissions (`platform/deploy/checklist.md`).
 
 Token naming: `workflow-<purpose>` (e.g. `workflow-cutover`, `workflow-ci-deploy`).
 

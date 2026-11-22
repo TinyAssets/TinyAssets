@@ -22,9 +22,10 @@ import { connectCookie } from "../src/session";
 import { mintKeyFor } from "./keys";
 import { TEST_SOURCES } from "./sources";
 import {
-  call as through, connect, doorsEnv, NAVIGATE, OPEN, ownDoor, refuseOnce, registerClient,
+  call as through, connect, doorsEnv, OPEN, ownDoor, refuseOnce, registerClient,
   serveFirstPartyDocument, setControl, signInApp, url,
 } from "./support";
+import { NAVIGATE } from "../../contract/src/navigation";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 
 /** One request through the doors, over `TEST_SOURCES` (`support.ts` `call`). */

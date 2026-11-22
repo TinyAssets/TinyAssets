@@ -34,25 +34,27 @@ environment limited to `main` with no required reviewer, its secrets (made by
 `scripts/platform_setup.py`, every value set only where it is absent), the repository
 variables, and both migration locks pinned. Later runs need only what follows.
 
-**The Cloudflare token's scopes for `routes` and `handback`: nothing new is owed, if its
-record holds.**
+**The Cloudflare token's scopes for `routes` and `handback`: Zone SSL and Certificates
+Read is owed before the next `routes`, unless the token holds it.**
 - **What the kit needs.** `routes` lists the egress host's DNS records before any change.
   Cloudflare's API reference accepts either DNS Read or DNS Write (Edit) for that listing.
   On a doors' host under the zone (the stage's), `routes` also makes that host's DNS record,
   and `handback` deletes it. `handback` deletes the DNS record the custom domain made, if
   the detach leaves it. Both need DNS Write. So **DNS Edit covers all of it**. Attaching and detaching the custom domain
-  need **Workers Scripts edit** on the account, which the kit's deploys need too.
+  need **Workers Scripts edit** on the account, which the kit's deploys need too. After the
+  attach, `routes` waits until Cloudflare reports the TLS certificate it issues for the
+  custom domain active (the zone's certificate packs), which needs **SSL and Certificates
+  Read** on the zone.
 - **What the token holds.** The infra-ops reference (`.claude/skills/infra-ops/references/
   cloudflare.md`) records this secret with Zone DNS Edit and Account Workers Scripts edit,
-  and `emergency-dns.yml` writes DNS records with it. A run has shown it reading DNS:
-  `cloud-only-preflight.yml` (run 35704397255, 2026-09-22) read the zone's records with this
-  secret, and `internal_origin_dns` passed. No run has written DNS with it yet: the
-  stage's `routes` is the first (below).
+  and `emergency-dns.yml` writes DNS records with it. The stage's first `routes` (run
+  45059834265, 2026-11-22) read and wrote the zone's DNS records with it. No record shows it
+  holding SSL and Certificates Read.
 - **How to check without reading the token.**
   - In the Cloudflare dashboard, My Profile → API Tokens lists each token's permissions and
     never shows its value.
-  - The `routes` plan job's DNS listing proves the read: without it, the plan job stops with
-    nothing changed.
+  - The `routes` plan job's DNS listing and certificate packs listing prove the reads:
+    without either, the plan job stops with nothing changed.
   - If DNS Edit were missing, only the handback's last step (that one DNS delete) would fail,
     loudly, with every route already back.
 
@@ -236,7 +238,9 @@ It never counts as "absent".
   record, so on it nothing is made.
 
   It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
-  `wrangler triggers deploy`),
+  `wrangler triggers deploy`), waits up to ten minutes for Cloudflare to report the
+  certificate it issues for that domain active (the host answers no TLS before; the stage's
+  took about two minutes), and stops naming the status it last read if it is not,
   enables E2B's lifecycle webhook at the doors' path on the host now that the doors serve
   it, and runs the
   platform's canary's unkeyed checks (`--side doors --unkeyed`, below). The same

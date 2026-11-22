@@ -66,6 +66,7 @@ import { fileURLToPath } from "node:url";
 import { REPO } from "../ci/paths.ts";
 import { DISPATCH } from "../contract/src/canary.ts";
 import { EGRESS_HOST } from "../contract/src/egress.ts";
+import { NAVIGATE } from "../contract/src/navigation.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
@@ -172,14 +173,21 @@ function records(): SideRecords {
   return JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.json"), "utf8"));
 }
 
-/** One request, bounded: unreachable is exit 2, never an answer. */
+/**
+ * One request, bounded: unreachable is exit 2, never an answer, named with its cause (Node's
+ * fetch says only "fetch failed", its cause which of DNS, the connection or TLS failed).
+ */
 async function send(world: World, url: string, init: RequestInit = {}): Promise<Response> {
   try {
     return await world.fetch(url, { redirect: "manual", ...init,
                                     signal: AbortSignal.timeout(REQUEST_MS) });
   } catch (error) {
-    throw error instanceof Failure ? error
-      : new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${(error as Error).message}`);
+    if (error instanceof Failure) {
+      throw error;
+    }
+    const { message, cause } = error as Error;
+    throw new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${message}${
+      cause instanceof Error ? ` (${cause.message})` : ""}`);
   }
 }
 
@@ -349,7 +357,8 @@ async function signIn(world: World): Promise<string> {
   if (keys.status !== 200 || !Array.isArray((await json(keys, record.jwks_uri, 5))["keys"])) {
     throw new Failure(5, `the issuer's JWKS ${record.jwks_uri} answered ${keys.status}, no keys`);
   }
-  const answer = await send(world, firstPartyLink());
+  // The doors take `GET /authorize` only as a browser's top-level navigation.
+  const answer = await send(world, firstPartyLink(), { headers: NAVIGATE });
   const to = answer.headers.get("Location");
   const sent = to === null ? null : new URL(to, AUTHORIZE);
   if (answer.status !== 302 || sent === null

@@ -17,7 +17,8 @@
  *   absent, the WorkOS redirect URI and E2B's lifecycle webhook (disabled), then the handles
  *   canary.
  * - `routes`: on a host under the zone, its DNS record; then `dark`, then the doors' routes
- *   handed over one at a time, on whatever host the identity names, the egress custom domain,
+ *   handed over one at a time, on whatever host the identity names, the egress custom domain
+ *   (its certificate waited on until Cloudflare reports it active),
  *   and the webhook enabled at the identity's URL. Before any change it keeps a record of each
  *   of those as they stood (`RouteRecord`), and the job summary names its id.
  * - `handback`: the record `--record` names, handed back (the cutover's rollback): the webhook
@@ -2717,10 +2718,26 @@ const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, go
   }
 });
 
-/** The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`). */
+/**
+ * How long the kit waits for Cloudflare to report the egress host's certificate active, and
+ * how often it reads it: the stage's first issued in about two minutes (2026-11-22).
+ */
+const CERTIFICATE_MS = 10 * 60_000;
+const CERTIFICATE_EVERY_MS = 15_000;
+
+/**
+ * The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`), then
+ * Cloudflare's own report of the TLS certificate it issues for the domain, waited on until
+ * active: the host answers no TLS before, and wrangler's deploy returns without waiting. The
+ * plan job reads the zone's certificate packs too, so a token that cannot (SSL and
+ * Certificates Read) stops the run before any change.
+ */
 const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stage" | "kept">(
   async ({ run, say, did }, got) => {
-    say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy)`);
+    say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then ` +
+        `wait up to ${CERTIFICATE_MS / 60_000} minutes for Cloudflare to report its ` +
+        "certificate active");
+    await got.cloudflare.certificatePacks(got.zone);
     if (!run.apply) {
       return;
     }
@@ -2742,7 +2759,39 @@ const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stag
       did(`record in ${key} the DNS records the custom domain made: ${
         created.length === 0 ? "none" : created.map((each) => each.type).join(", ")}`);
     }
+    did(await certified(run, got));
   });
+
+/**
+ * The status Cloudflare reports for the doors' custom domain's certificate, read until it is
+ * `active`, or a throw past `CERTIFICATE_MS` naming the last one read.
+ */
+async function certified(run: Run, got: Pick<Values, "cloudflare" | "zone" | "account">):
+    Promise<string> {
+  const until = run.io.now().getTime() + CERTIFICATE_MS;
+  for (;;) {
+    const domain = (await got.cloudflare.domains(got.account, EGRESS_HOST))
+      .find((each) => each.service === DOORS);
+    if (domain === undefined) {
+      throw new Error(`${EGRESS_HOST} is no custom domain of ${DOORS} after wrangler's ` +
+                      "triggers deploy: run routes again");
+    }
+    const { cert } = domain;
+    const status = cert === null ? "no certificate named yet"
+      : (await got.cloudflare.certificatePacks(got.zone))
+        .find((pack) => pack.ids.includes(cert))?.status
+        ?? `certificate ${cert} in no certificate pack yet`;
+    if (status === "active") {
+      return `${EGRESS_HOST}'s certificate ${cert}: active, as Cloudflare reports it`;
+    }
+    if (run.io.now().getTime() >= until) {
+      throw new Error(`${EGRESS_HOST}'s certificate is not active after ${
+        CERTIFICATE_MS / 60_000} minutes: Cloudflare reports ${status}. The host answers no ` +
+        "TLS until it is; run routes again once SSL/TLS, Edge Certificates shows it active");
+    }
+    await run.io.sleep(CERTIFICATE_EVERY_MS);
+  }
+}
 
 /**
  * Fact 11: after a deploy or a route change, the platform's canary (`canary.ts`), reading
