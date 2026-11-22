@@ -221,6 +221,12 @@ export interface SandboxService {
   /** A live sign-in stopped. */
   signinCancel(owner: string, request: { readonly authority: string; readonly id: string }):
     Promise<{ readonly cancelled: boolean }>;
+  /**
+   * A run started in the authority's sandbox (`SandboxStart`); the start's answer. It, and a
+   * sign-in's start, throws a refusal (`Refusal`) only while the job has not launched: its
+   * own fault before the launch is `sandbox_start_failed`. A plain error is a lost answer or
+   * a fault at or after the launch, so the job may run.
+   */
   start(owner: string, start: SandboxStart): Promise<Started>;
   /** A run's CLI stopped, under whichever lease it was launched; whether it was live. */
   cancel(owner: string, request: { readonly run: string }):

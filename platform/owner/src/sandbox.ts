@@ -102,8 +102,9 @@ export function vendorHosts(engine: string, credential: CredentialKind): string[
  *   `cause` names it: a refusal's code, or the contract's own `fields` and only the names of
  *   the answer's keys, since a bug's answer is no place a log can trust to hold nothing
  *   secret: a code or field's value as it came only in the shape of a contract code (`shown`);
- * - `unanswered`: the call threw a plain error, its answer lost on the way or the sandbox
- *   Worker's own fault, which crosses as a plain error the object cannot tell from a loss.
+ * - `unanswered`: the call threw a plain error, its answer lost on the way or a sandbox
+ *   Worker's fault it does not refuse (a start's at or after its launch, a re-apply's), which
+ *   the object cannot tell from a loss.
  *
  * The answer is read outside the call's catch, so one out of shape is never taken for a lost
  * one. Each call's own reader says what each means for its job (`startOutcome`,
@@ -156,8 +157,9 @@ const START_MALFORMED = "start_malformed";
  * What came of a start, a run's or a sign-in's, as the object acts on it (`sandboxAnswer`):
  * - the sandbox's answer (`Started`): started, or one of the contract's start codes;
  * - a refusal it threw, by its code: the sandbox Worker refuses only before it launches
- *   anything (its runner's two alerts, `sandbox/src/control.ts`), and the runtime's overload
- *   of an object (`object_overloaded`) is thrown before the call runs, so nothing started;
+ *   anything (its runner's two alerts, and `sandbox_start_failed` its own fault there:
+ *   `SandboxService.start`), and the runtime's overload of an object (`object_overloaded`) is
+ *   thrown before the call runs, so nothing started;
  * - `started: null`: no answer the object can read, so the job may have launched, and is
  *   stopped in case it did. Its `state` says what the job's start came to:
  *   - `unknown` (`START_LOST`): the call was `unanswered`;

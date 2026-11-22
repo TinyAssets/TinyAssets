@@ -794,28 +794,31 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   async start(start: SandboxStart): Promise<Started> {
-    if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
-        || !LEASE.test(start.lease.lease_id) || (start.tokens === null) !== (start.network === null)
-        || typeof start.route !== "string" || !SEALED_ROUTE.test(start.route)
-        || !httpsDoors(start.urls) || !hostList(start.hosts)) {
-      throw new Error("a sandbox start names its run, its authority, its lease, its vendor " +
-                      "hosts and its https doors on the egress host");
-    }
-    const { ceilings, retention } = await this.#control();
-    if (ceilings === null) {
-      return { started: false, code: "sandbox_unconfigured" };
-    }
-    return this.#launch(ceilings, {
-      kind: "run", id: start.run, request: start, document: startDocument(start, retention),
-      ready: async (handle) => {
-        if (start.credential === "vendor_login_in_sandbox") {
-          const signedIn = await this.#run(handle, [COMMAND.signinCheck, start.engine]);
-          if (signedIn.code === EXIT.no) {
-            return { started: false, code: "signin_required" };
+    return this.#launch(async () => {
+      if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
+          || !LEASE.test(start.lease.lease_id)
+          || (start.tokens === null) !== (start.network === null)
+          || typeof start.route !== "string" || !SEALED_ROUTE.test(start.route)
+          || !httpsDoors(start.urls) || !hostList(start.hosts)) {
+        throw new Error("a sandbox start names its run, its authority, its lease, its vendor " +
+                        "hosts and its https doors on the egress host");
+      }
+      const { ceilings, retention } = await this.#control();
+      if (ceilings === null) {
+        return { started: false, code: "sandbox_unconfigured" };
+      }
+      return { ceilings, job: {
+        kind: "run", id: start.run, request: start, document: startDocument(start, retention),
+        ready: async (handle) => {
+          if (start.credential === "vendor_login_in_sandbox") {
+            const signedIn = await this.#run(handle, [COMMAND.signinCheck, start.engine]);
+            if (signedIn.code === EXIT.no) {
+              return { started: false, code: "signin_required" };
+            }
           }
-        }
-        return null;
-      },
+          return null;
+        },
+      } };
     });
   }
 
@@ -828,81 +831,113 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * does.
    */
   async signin(signin: SandboxSignin): Promise<Started> {
-    if (!SIGNIN_ID.test(signin.id) || !AUTHORITY.test(signin.authority)
-        || !LEASE.test(signin.lease.lease_id) || (signin.tokens === null) !== (signin.network === null)
-        || typeof signin.route !== "string" || !SEALED_ROUTE.test(signin.route)
-        || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")
-        || !hostList(signin.hosts)) {
-      throw new Error("a sign-in names its id, its authority, its lease, its route, its " +
-                      "vendor hosts and its https doors on the egress host");
-    }
-    const { ceilings } = await this.#control();
-    if (ceilings === null) {
-      return { started: false, code: "sandbox_unconfigured" };
-    }
-    return this.#launch(ceilings, { kind: "signin", id: signin.id, request: signin,
-                                    document: signinDocument(signin) });
+    return this.#launch(async () => {
+      if (!SIGNIN_ID.test(signin.id) || !AUTHORITY.test(signin.authority)
+          || !LEASE.test(signin.lease.lease_id)
+          || (signin.tokens === null) !== (signin.network === null)
+          || typeof signin.route !== "string" || !SEALED_ROUTE.test(signin.route)
+          || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")
+          || !hostList(signin.hosts)) {
+        throw new Error("a sign-in names its id, its authority, its lease, its route, its " +
+                        "vendor hosts and its https doors on the egress host");
+      }
+      const { ceilings } = await this.#control();
+      if (ceilings === null) {
+        return { started: false, code: "sandbox_unconfigured" };
+      }
+      return { ceilings, job: { kind: "signin", id: signin.id, request: signin,
+                                document: signinDocument(signin) } };
+    });
   }
 
   /**
-   * A job launched in its authority's sandbox, a run's or a sign-in's, on the serial chain:
-   * the sandbox found, resumed or made (`#ensure`), its network widened by the job's vendor
-   * hosts; a start that opened the lease hands the runner its secrets (`LEASE_FILE`); then
-   * what the job does first (`ready`), its document into the inbox, and the runner's launch
-   * of it, detached, which holds the lease until it is released.
+   * A job launched in its authority's sandbox, a run's or a sign-in's: its request checked and
+   * the control record read (`made`: the job and the ceilings, or a start code), then, on the
+   * serial chain, the sandbox found, resumed or made (`#ensure`), its network widened by the
+   * job's vendor hosts; a start that opened the lease hands the runner its secrets
+   * (`LEASE_FILE`); then what the job does first (`ready`), its document into the inbox, and
+   * the runner's launch of it, detached, which holds the lease until it is released; the look
+   * armed on every path.
+   *
+   * Until the launch command is sent, nothing of the job runs: a fault there that is not a
+   * refusal already (the runner's two alerts, the runtime's overload) is logged with its cause
+   * and refused `sandbox_start_failed`, so the owner fails the job, and stops nothing. From
+   * the launch command on, the job may run, so a fault stays a plain error: whether it
+   * launched is unknown, and the owner stops it in case.
    */
-  async #launch(ceilings: SandboxCeilings, job: Launch): Promise<Started> {
-    const { request } = job;
-    return this.#serial(async () => {
-      const e2b = this.#e2b();
-      const network = request.network === null ? null : request.network.network;
-      const { hosts } = request;
-      // The opener's network replaces the live one whole: it keeps the vendor hosts of every
-      // job launched under this lease before it (a joining job's start that ran first).
-      const kept = network === null ? []
-        : [...hosts, ...this.#launchedHosts(request.authority, request.lease.lease_id)];
-      const first = network === null ? null : widened(network, kept) ?? network;
-      const got = await this.#ensure(request.authority, first, ceilings, request.route);
-      if (got === "waiting") {
-        return { started: false, code: "sandbox_waiting" };
+  async #launch(made: () => Promise<{ ceilings: SandboxCeilings; job: Launch } | Started>):
+      Promise<Started> {
+    let launching = false;
+    try {
+      const got = await made();
+      if ("started" in got) {
+        return got;
       }
-      if (got === "lost") {
-        return { started: false, code: "sandbox_lost" };
-      }
-      const { handle } = got;
-      const lease = leaseFile(request);
-      if (lease !== null) {
-        await e2b.upload(handle, LEASE_FILE, json(lease));
-        // The lease's own network is on it now: a re-apply kept for an earlier one is moot.
-        this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0, network_due = NULL " +
-                         "WHERE authority = ?", request.lease.lease_id, request.authority);
-      } else if (hosts.length > 0) {
-        // A joining job on another engine's sign-in: its vendor's hosts added to the live
-        // network (read back whole, its transform with it, and replaced whole).
-        const live = await e2b.info(handle.sandboxID);
-        const more = live === null ? null : widened(liveNetwork(live), hosts);
-        if (more !== null) {
-          await e2b.network(handle.sandboxID, more);
+      const { ceilings, job } = got;
+      const { request } = job;
+      const launch = async (): Promise<Started> => {
+        const e2b = this.#e2b();
+        const network = request.network === null ? null : request.network.network;
+        const { hosts } = request;
+        // The opener's network replaces the live one whole: it keeps the vendor hosts of every
+        // job launched under this lease before it (a joining job's start that ran first).
+        const kept = network === null ? []
+          : [...hosts, ...this.#launchedHosts(request.authority, request.lease.lease_id)];
+        const first = network === null ? null : widened(network, kept) ?? network;
+        const ensured = await this.#ensure(request.authority, first, ceilings, request.route);
+        if (ensured === "waiting") {
+          return { started: false, code: "sandbox_waiting" };
         }
+        if (ensured === "lost") {
+          return { started: false, code: "sandbox_lost" };
+        }
+        const { handle } = ensured;
+        const lease = leaseFile(request);
+        if (lease !== null) {
+          await e2b.upload(handle, LEASE_FILE, json(lease));
+          // The lease's own network is on it now: a re-apply kept for an earlier one is moot.
+          this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0, network_due = NULL " +
+                           "WHERE authority = ?", request.lease.lease_id, request.authority);
+        } else if (hosts.length > 0) {
+          // A joining job on another engine's sign-in: its vendor's hosts added to the live
+          // network (read back whole, its transform with it, and replaced whole).
+          const live = await e2b.info(handle.sandboxID);
+          const more = live === null ? null : widened(liveNetwork(live), hosts);
+          if (more !== null) {
+            await e2b.network(handle.sandboxID, more);
+          }
+        }
+        const refused = job.ready === undefined ? null : await job.ready(handle);
+        if (refused !== null) {
+          return refused;
+        }
+        await e2b.upload(handle, inboxDoc(job.id), json(job.document));
+        launching = true;
+        const launched = await this.#run(handle, [JOBS[job.kind].launch, job.id]);
+        if (launched.code !== EXIT.ok) {
+          throw new Error(`the runner did not launch ${job.kind === "run" ? "run" : "sign-in"} ${
+            job.id}`);
+        }
+        this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id, hosts) " +
+                         "VALUES (?, ?, ?, ?)", job.id, request.authority,
+                       request.lease.lease_id, JSON.stringify(hosts));
+        this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
+                         "authority = ?", request.authority);
+        return { started: true };
+      };
+      // Whatever it came to, the look is armed: a sandbox a start resumed or made and no job
+      // launched in (its lease, if any, never written to its row) is reaped idle, not left
+      // running to its ceiling; a slot owed the line is given back.
+      return await this.#serial(() => launch().finally(() => this.#arm()));
+    } catch (error) {
+      if (launching || refusalOf(error) !== null) {
+        throw error;
       }
-      const refused = job.ready === undefined ? null : await job.ready(handle);
-      if (refused !== null) {
-        return refused;
-      }
-      await e2b.upload(handle, inboxDoc(job.id), json(job.document));
-      const launched = await this.#run(handle, [JOBS[job.kind].launch, job.id]);
-      if (launched.code !== EXIT.ok) {
-        throw new Error(`the runner did not launch ${job.kind === "run" ? "run" : "sign-in"} ${
-          job.id}`);
-      }
-      this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id, hosts) " +
-                       "VALUES (?, ?, ?, ?)", job.id, request.authority,
-                     request.lease.lease_id, JSON.stringify(hosts));
-      this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
-                       "authority = ?", request.authority);
-      await this.#arm();
-      return { started: true };
-    });
+      console.error("sandbox_start_failed: a job's start failed before its launch, so " +
+                    "nothing launched", error);
+      throw new Refusal("sandbox_start_failed",
+                        "the sandbox failed before the job launched; nothing launched");
+    }
   }
 
   /** A row's sandbox as E2B has it now (null: gone), and its handle (null: not running). */
