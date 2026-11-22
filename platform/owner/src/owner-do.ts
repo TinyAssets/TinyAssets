@@ -565,7 +565,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       reaches: (url) => serverUnreached(new URL(url), this.#policy.read().document.egress)
         === null,
       runUsage: (run) => this.#runs.usage(run),
-      tierRuns: () => this.#admission.tiers()?.[this.#admission.tier()].runs ?? null,
       generation: () => this.#policy.egressGeneration(),
       credential: (connection, nowMs) => {
         try {

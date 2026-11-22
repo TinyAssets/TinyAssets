@@ -53,6 +53,8 @@ export const UNCOUNTED = Object.freeze({
     "an export's chunks, as its answer": "PR 4",
     "sync's raw chunk bytes": "PR 4",
     "an inbound event's body (EGRESS_BODY_MAX)": "PR 4",
+    "each open egress call's end signal (EGRESS_LIMITS.open an object, about 400 B each)":
+      "untangle/egress-open-memory",
   }),
 });
 
@@ -155,7 +157,7 @@ describe("an owner isolate's counts", () => {
 
   it("names every uncounted hold's owner", () => {
     for (const owed of Object.values(UNCOUNTED.holds)) {
-      expect(owed).toMatch(/^(PR 3b|PR 4|STORE item 2)$/);
+      expect(owed).toMatch(/^(PR 3b|PR 4|STORE item 2|untangle\/egress-open-memory)$/);
     }
   });
 });
