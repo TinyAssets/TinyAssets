@@ -455,7 +455,6 @@ let references: { readonly steps: () => number; readonly lookups: () => number }
  * This host's own word step and index byte, in ns, timed as the matcher is (CPU time, the
  * least of three), so the cost bounds are the automaton's in this host's units: the bound is
  * a complexity claim, and CI's runners differ in speed by more than any fixed allowance.
- * (`STEP_NS` is the sandbox's own figure, its template build's check of `stepNanos`.)
  * - A step: a byte of text over one 32-state word on the automaton's slowest branch (a `/`:
  *   its passed states read and written, and re-armed), at `AUTOMATON_STATES`' words.
  * - An index byte: a fresh name made and encoded, each byte one step into a trie of byte maps

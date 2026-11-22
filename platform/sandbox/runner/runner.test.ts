@@ -27,7 +27,7 @@ import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { readEvent } from "../../contract/src/run-events";
-import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
+import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 
 import { DECIDE_ENV } from "./decide";
 import { dispatcherCommand, fill, invocation, SYSTEM } from "./engine";
@@ -1149,7 +1149,7 @@ describe("the vendor's own sign-in", () => {
     box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
                                                  code: true } });
     // The runner takes no probe command: the probes are a bundle of their own.
-    for (const command of ["login-probe", "route-probe", "matcher-probe"]) {
+    for (const command of ["login-probe", "route-probe"]) {
       const refused = box.runner(command, "claude-code");
       expect(refused.code, refused.why).toBe(2);
       expect(refused.err).toContain(`no command ${command}`);
@@ -1546,17 +1546,6 @@ describe("an API-key run's base URL", () => {
     expect(box.ran("codex").at(-1)!.dumps["~/.codex/auth.json"]).toBeNull();
     // ...and nothing a key run writes there becomes the store's login.
     expect(readFileSync(box.path(auth), "utf8")).toContain("a-signed-in-login");
-  });
-});
-
-describe("the matcher probe", () => {
-  it("times the sync-ignore automaton's step in the sandbox, judged against STEP_NS", () => {
-    const probed = box.probe("matcher-probe");
-    const found = JSON.parse(probed.out) as { step_ns: number; ceiling_ns: number; ok: boolean };
-    expect(found.ceiling_ns).toBe(STEP_NS);
-    expect(found.step_ns).toBeGreaterThan(0);
-    expect(found.ok).toBe(found.step_ns <= STEP_NS);
-    expect(probed.code, probed.why).toBe(found.ok ? 0 : 3);
   });
 });
 

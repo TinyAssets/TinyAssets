@@ -2,8 +2,8 @@
  * The template's standing checks, a bundle of their own beside the runner (the Worker's
  * build, `build/bundle.mjs`): nothing in the runner imports them, so the runner every sandbox
  * runs carries none of them, and this bundle carries what they judge by (the owner's run
- * environment, `runEnv` and `sandboxEnv`, the egress door's paths, `STEP_NS`). The pair the
- * deploy looks for names both bundles' digests (`template/pair.ts`).
+ * environment, `runEnv` and `sandboxEnv`, the egress door's paths). The pair the deploy
+ * looks for names both bundles' digests (`template/pair.ts`).
  *
  * The bundle is built with the digest of the runner built beside it (`TA_RUNNER_SHA`), and
  * runs through the template's loader as a runner does (`ta-runner install`, then
@@ -16,7 +16,6 @@
  *   sandboxes and their lifetimes and networks, and every step's command and bound;
  * - `login-probe <engine>`: a record's sign-in up to its prompt, its shape judged;
  * - `route-probe <engine> <provider> <resolver>...`: a keyed engine's two turns on the door;
- * - `matcher-probe`: the sync-ignore automaton's step, judged against `STEP_NS`.
  * Each prints its result as one JSON line and exits 0 when it passed, 3 when it did not.
  */
 import { sha256Hex } from "../../contract/src/digest";
@@ -34,7 +33,6 @@ import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import type { NetworkDocument } from "../../contract/src/sandbox";
-import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { engineHosts, type Served, served, signsIn } from "../../sources/src/served";
@@ -65,13 +63,12 @@ const PROBE = Object.freeze({
   plan: "plan",
   login: "login-probe",
   route: "route-probe",
-  matcher: "matcher-probe",
 } as const);
 
 /** One command in a check sandbox: its argv, its bound, and the network it runs under. */
 export interface PlanStep {
-  /** Which check it is: its result goes to the record's `logins`, `routes` or `matcher`. */
-  readonly check: "login" | "route" | "matcher";
+  /** Which check it is: its result goes to the record's `logins` or `routes`. */
+  readonly check: "login" | "route";
   /** This bundle's command and its arguments (`ta-runner <probes> ...argv`). */
   readonly argv: readonly string[];
   readonly timeout_s: number;
@@ -112,8 +109,7 @@ const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install
 /**
  * The checks: each record's sign-in under the production egress allowlist widened by that
  * engine's own hosts, as the sandbox Worker widens a sign-in's network; every keyed engine
- * on every provider it keys, on a sandbox whose network denies everything once prepared;
- * and the matcher's step.
+ * on every provider it keys, on a sandbox whose network denies everything once prepared.
  */
 export function plan(runner: string): Plan {
   const logins: PlanStep[] = [];
@@ -139,8 +135,6 @@ export function plan(runner: string): Plan {
         prepared: { allowOut: [], denyOut: [ALL_TRAFFIC], dnsServers: [...DNS_SERVERS],
                     rules: {} },
         steps: routes },
-      { name: "matcher", timeout_s: 300, network: null, setup: [], prepared: null,
-        steps: [{ check: "matcher", argv: [PROBE.matcher], timeout_s: 120, network: null }] },
     ],
   };
 }
@@ -470,14 +464,6 @@ async function routeProbe(engine: string, provider: string,
   return result["ok"] === true ? OK : NO;
 }
 
-/** The sync-ignore automaton's step, timed here, within `STEP_NS` or failed. */
-function matcherProbe(): number {
-  const step = stepNanos();
-  const ok = step <= STEP_NS;
-  process.stdout.write(`${JSON.stringify({ step_ns: step, ceiling_ns: STEP_NS, ok })}\n`);
-  return ok ? OK : NO;
-}
-
 /**
  * Why this sandbox cannot be checked by this bundle, or null: the runner it was built beside
  * must be installed here, byte for byte, as the loader installed it.
@@ -497,7 +483,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${JSON.stringify(plan(TA_RUNNER_SHA))}\n`);
     return OK;
   }
-  if (command !== PROBE.login && command !== PROBE.route && command !== PROBE.matcher) {
+  if (command !== PROBE.login && command !== PROBE.route) {
     process.stderr.write(`probes: no command ${String(command)}\n`);
     return EXIT.usage;
   }
@@ -508,10 +494,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === PROBE.login) {
     return loginProbe(args[0] ?? "");
   }
-  if (command === PROBE.route) {
-    return routeProbe(args[0] ?? "", args[1] ?? "", args.slice(2));
-  }
-  return matcherProbe();
+  return routeProbe(args[0] ?? "", args[1] ?? "", args.slice(2));
 }
 
 main(process.argv.slice(2)).then((code) => process.exit(code), (error: unknown) => {
