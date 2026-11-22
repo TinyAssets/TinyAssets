@@ -49,6 +49,12 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
       "read_at INTEGER NOT NULL)",
     "DROP TABLE known_retention",
   ]),
+  // 5 (`untangle-2026-11/foreign-runner-reap.md`): when the look kills a sandbox a job lives
+  // in on a runner this Worker does not speak, which no renewal can carry on: the end of the
+  // window it was found in.
+  Object.freeze([
+    "ALTER TABLE sandboxes ADD COLUMN kill_at REAL",
+  ]),
 ]);
 
 /** `SandboxSlots`'s, the one line for the platform. */

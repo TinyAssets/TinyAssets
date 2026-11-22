@@ -12,7 +12,10 @@
  * nothing more, an absent one is installed and asked again, bytes not their digest launch
  * nothing, and a sandbox on another runner keeps it while anything lives and adopts the
  * Worker's at the first start that finds nothing living, whatever protocol the other speaks;
- * a start goes on under a runner it keeps only where the Worker speaks its protocol.
+ * a start or a resume goes on under a runner it keeps only where the Worker speaks its
+ * protocol. The look reads any runner by its `state`: it reaps an idle sandbox on a runner of
+ * another protocol as any other, runs one a job lives on to the end of its window and kills it
+ * there, and looks at each sandbox on its own.
  */
 import {
   createExecutionContext, env, runDurableObjectAlarm, runInDurableObject,
@@ -1330,7 +1333,151 @@ describe("the runner, by digest", () => {
       } else {
         expect(answer).toBe("sandbox_runner_protocol");
         expect(commands).toEqual([["state", old]]);
+        // Nothing more goes to it: no renewal is pending on it now.
+        expect(await runInDurableObject(stub(who), (_instance, state) =>
+          state.storage.sql.exec("SELECT renewing FROM sandboxes").one().renewing)).toBe(0);
       }
+    });
+  }
+
+  /** Protocols this Worker does not speak: an older runner's, and a newer one's. */
+  const FOREIGN = [PROTOCOL - 1, PROTOCOL + 5].filter((protocol) => !SPEAKS.includes(protocol));
+  const rowOf = (who: string) => runInDurableObject(stub(who), (_instance, state) =>
+    state.storage.sql.exec<{ kill_at: number | null }>("SELECT * FROM sandboxes").toArray());
+  const failuresOf = (who: string) => runInDurableObject(stub(who), (_instance, state) =>
+    state.storage.sql.exec<{ failures: number }>("SELECT failures FROM known").one().failures);
+  const commandsSince = async (before: number) => (await seen()).commands.slice(before)
+    .map((command) => [command.argv[1], command.runner]);
+
+  for (const protocol of FOREIGN) {
+    it(`reaps an idle sandbox whose runner speaks protocol ${protocol}, as any other`,
+       async () => {
+      const who = owner();
+      const old = "0".repeat(64);
+      const id = await bornUnder(who, old);
+      await e2b("/script", { state: { live: 0, quiet: true }, protocol });
+      await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+      const before = (await seen()).commands.length;
+      await runDurableObjectAlarm(stub(who));
+      // Asked `state` alone, outside the chain and on it: no quiet-wait, nothing renewed.
+      expect(await commandsSince(before)).toEqual([["state", old], ["state", old]]);
+      expect((await seen()).sandboxes[0]!.state).toBe("paused");
+      expect(await failuresOf(who)).toBe(0);
+      expect(await alarmOf(who)).toBeNull();
+    });
+
+    it(`pauses on release a sandbox nothing lives in on a runner speaking ${protocol}`,
+       async () => {
+      const who = owner();
+      await bornUnder(who, "0".repeat(64));
+      await e2b("/script", { state: { live: 0, quiet: true }, protocol });
+      expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: true });
+    });
+
+    it(`runs a job living on a runner speaking protocol ${protocol} to its window's end, ${
+      ""}then kills it`, async () => {
+      const who = owner();
+      const old = "0".repeat(64);
+      const id = await bornUnder(who, old);
+      await e2b("/script", { state: { live: 1, quiet: true }, protocol });
+      await e2b("/age", { id, s: CEILING - WINDOW + 5 });
+      const box = (await seen()).sandboxes[0]! as unknown as { startedAt: number };
+      const endAt = box.startedAt + CEILING * 1000;
+      let before = (await seen()).commands.length;
+      // Busy: looked at again a lease's TTL on, as one before its window is, never at once.
+      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who),
+                       LEASE_TTL_S * 1000);
+      // Asked `state` alone, never renewed nor paused, and killed at its window's end.
+      expect(await commandsSince(before)).toEqual([["state", old], ["state", old]]);
+      expect((await seen()).calls.filter((call) => /pause|connect/.test(call.path)))
+        .toEqual([]);
+      expect((await rowOf(who))[0]!.kill_at).toBe(endAt);
+      // Looked at again inside its window: left running, never killed before its end.
+      before = (await seen()).commands.length;
+      await runDurableObjectAlarm(stub(who));
+      expect(await commandsSince(before)).toEqual([["state", old], ["state", old]]);
+      expect((await seen()).sandboxes[0]!.state).toBe("running");
+      // E2B's own timeout pauses it at its end, its job with it, and the owner, its run's
+      // heartbeat lapsed, releases the lease: the look, armed at once, kills it by its id.
+      await e2b("/pause", { id });
+      expect(await stub(who).release({ lease_id: LEASE.lease_id })).toEqual({ paused: true });
+      const at = await alarmOf(who);
+      expect(at === null || at <= Date.now()).toBe(true);  // or the runtime ran it already
+      await runDurableObjectAlarm(stub(who));
+      const killed = await seenOnce((state) => state.sandboxes.length === 0, "the sandbox killed");
+      expect(killed.calls.filter((call) => call.method === "DELETE").map((call) => call.path))
+        .toEqual([`/sandboxes/${id}`]);
+      expect(await rowOf(who)).toEqual([]);
+      expect(await failuresOf(who)).toBe(0);
+      expect(await alarmOf(who)).toBeNull();
+    });
+  }
+
+  it("kills one still running past its window's end, its time logged", async () => {
+    const who = owner();
+    const id = await bornUnder(who, "0".repeat(64));
+    await e2b("/script", { state: { live: 1, quiet: true }, protocol: PROTOCOL + 5 });
+    await runDurableObjectAlarm(stub(who));
+    expect((await rowOf(who))[0]!.kill_at).not.toBeNull();
+    // Its window's end passed, and E2B's own pause is not seen yet: time passing.
+    await runInDurableObject(stub(who), (_instance, state) => state.storage.sql.exec(
+      "UPDATE sandboxes SET kill_at = ?", Date.now() - 1));
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(id);
+    expect((await stub(who).meter({ after: 0 })).events.map((event) => event.kind))
+      .toEqual(["start", "kill"]);
+  });
+
+  it("asks a paused sandbox's runner before its runs go on, and kills one it does not speak",
+     async () => {
+    // Paused by E2B's own timeout past its end, before any look read its runner: a lease's
+    // run lives in it, so the look resumes it.
+    const who = owner();
+    const old = "0".repeat(64);
+    const id = await bornUnder(who, old);
+    await e2b("/script", { state: { live: 1, quiet: false }, protocol: PROTOCOL + 5 });
+    await e2b("/age", { id, s: CEILING + 5 });
+    await e2b("/pause", { id });
+    const before = (await seen()).commands.length;
+    const held = await reserved();  // the platform's line: other tests' sandboxes hold slots
+    await runDurableObjectAlarm(stub(who));
+    // Asked `state` and sent nothing more: no `prepare`, no `renewed`. The refusal is the
+    // look's failure, logged.
+    expect(await commandsSince(before)).toEqual([["state", old]]);
+    expect(await failuresOf(who)).toBe(1);
+    // The slot its resume held went back once it ran. The window it was found in is over: the
+    // next look kills it.
+    expect(await reserved()).toBe(held);
+    await runDurableObjectAlarm(stub(who));
+    expect((await seen()).sandboxes).toEqual([]);
+    expect(await alarmOf(who)).toBeNull();
+  });
+
+  for (const failing of ["before its window", "in its window"]) {
+    it(`looks at each sandbox on its own: one failing ${failing} stops no other's look`,
+       async () => {
+      await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+      const who = owner();
+      await stub(who).start(start());
+      await stub(who).start(start({ run: `run_${hex(32, "2")}`, authority: hex(64, "c"),
+                                    lease: { lease_id: hex(32, "e"), epoch: 2 } }));
+      const [broken, idle] = (await seen()).sandboxes;
+      // The first sandbox's look fails (its runner's bytes are not their digest), on the chain
+      // or, in its window, at its quiet look; the second's, idle in its window, pauses it.
+      const old = "0".repeat(64);
+      await e2b("/runners", { id: broken!.id, runners: [old] });
+      await runInDurableObject(stub(who), (_instance, state) => state.storage.sql.exec(
+        "UPDATE sandboxes SET runner = ? WHERE authority = 'owner'", old));
+      await e2b("/script", { tampered: old });
+      await e2b("/age", { id: idle!.id, s: CEILING - WINDOW + 5 });
+      if (failing === "in its window") {
+        await e2b("/age", { id: broken!.id, s: CEILING - WINDOW + 5 });
+      }
+      await armedAfter(() => runDurableObjectAlarm(stub(who)), () => alarmOf(who),
+                       RETRY_SCHEDULE_MS[0]);
+      const boxes = new Map((await seen()).sandboxes.map((box) => [box.id, box.state]));
+      expect([boxes.get(broken!.id), boxes.get(idle!.id)]).toEqual(["running", "paused"]);
+      expect(await failuresOf(who)).toBe(1);
     });
   }
 
