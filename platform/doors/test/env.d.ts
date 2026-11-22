@@ -8,7 +8,7 @@ declare namespace Cloudflare {
 
   interface Env extends Pick<DoorsBound, "OAUTH_KV" | "DIRECTORY" | "CONTROL" | "ASSETS"
                                          | "DCR_ENABLED" | "OWNER_ISSUER" | "FOREIGN_ISSUERS"
-                                         | "ROUTING_MAC_KEY"> {
+                                         | "ROUTING_KEYRING"> {
     /** The gate in front of the owner Worker's objects, which OWNER reaches (`ci/gate.ts`). */
     OWNER_GATE: import("../../ci/gate").GateControl;
     /** The fake outside world (test/fake-providers.ts), for the tests to read back. */

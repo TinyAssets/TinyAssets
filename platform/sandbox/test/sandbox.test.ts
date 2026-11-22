@@ -154,7 +154,8 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
     run: RUN, agent: "main", conversation: `cv_${hex(32, "c")}`, engine: "claude-code",
     credential: "vendor_login_in_sandbox", model: null, session_id: null, prompt: "hello",
-    unattended: false, authority: "owner", lease: LEASE, route: "r".repeat(64),
+    unattended: false, authority: "owner", lease: LEASE,
+    route: `v1.k1.${"r".repeat(16)}.${"r".repeat(43)}`,
     tokens: { sync_token: "sync", runner_token: hex(64, "d") },
     network: NETWORK as never, hosts: CLAUDE_HOSTS,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
@@ -1578,7 +1579,7 @@ describe("the runner, by digest", () => {
 
 describe("a sign-in", () => {
   const SI = `si_${"5".repeat(32)}`;
-  const ROUTE = "s".repeat(64);
+  const ROUTE = `v1.k1.${"s".repeat(16)}.${"s".repeat(43)}`;
   function signin(over: Record<string, unknown> = {}) {
     return { id: SI, engine: "codex", mode: "in" as const, authority: "owner",
              lease: LEASE, tokens: start().tokens, network: NETWORK as never,

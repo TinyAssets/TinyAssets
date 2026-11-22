@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
@@ -11,8 +10,8 @@ import { control, gate, methodsOf } from "../ci/gate";
 import { auxiliary, fake, fakeConfig, main, once, pool, workerConfig } from "../ci/workers";
 import { QUEUES } from "../contract/src/queue-names";
 
-/** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
-const ROUTING_KEY = randomBytes(32).toString("base64url");
+/** The sandbox tokens' routing keyring (`ROUTING_KEYRING`), made fresh for each run. */
+const ROUTING_RING = keyring();
 /** The gateway's keyring, made fresh for each run: a rotated ring, so `k1` is an older kid. */
 const KEYRING = keyring("k2", ["k1", "k2"]);
 /** The files Worker's data keys' ring, made fresh for each run: rotated, `k1` the older kid. */
@@ -59,8 +58,8 @@ const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
  * mid-rotation, so a test seals a credential or wraps a data key under `k1` through their own
  * front doors; GATEWAY_RETIRED is the gateway once `k1` is retired from its ring, so a test
  * sees a blob open without it. Every fetch of the gateway and the tests reaches the gateway's
- * fake outside world (`gateway/test/fake-upstream.ts`). ROUTING_MAC_KEY is the config's one
- * secret, the sandbox tokens' routing key. The test Worker and each Worker beside it have
+ * fake outside world (`gateway/test/fake-upstream.ts`). ROUTING_KEYRING is the config's one
+ * secret, the sandbox tokens' routing keyring. The test Worker and each Worker beside it have
  * every binding their configs give them (`main`, `auxiliary`), and a test states only their
  * secrets and what it changes; nothing is read from the host (`pool`). A test admits each
  * owner it names by the platform's door, as sign-up does, and waits for its seed (slice L,
@@ -68,7 +67,7 @@ const FAKE_UPSTREAM = join(PLATFORM, "gateway", "test", "fake-upstream.ts");
  */
 const OWNER = async () => main(join(PLATFORM, "owner"), {
   durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
-  bindings: { ROUTING_MAC_KEY: ROUTING_KEY },
+  bindings: { ROUTING_KEYRING: ROUTING_RING },
   // The files Worker's bucket, test-only: a test copies, deletes or plants its objects, as a
   // lost or restored bucket would hold them.
   r2Buckets: ["BLOBS"],

@@ -8,6 +8,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { keyring } from "../../ci/fixtures";
 import { mintToken } from "../../contract/src/routing-mac";
 import type { Binding } from "../../contract/src/binding";
 import {
@@ -135,7 +136,7 @@ describe("the sync doors", () => {
     for (const headers of [{}, { [SYNC_HEADER]: egressTokenOf(start.network!.network)!,
                                  [SANDBOX_HEADER]: egressTokenOf(start.network!.network)!,
                                  [GENERATION_HEADER]: String(generationOf(start.network!.network)) },
-                           { [SYNC_HEADER]: mintToken(Buffer.alloc(32, 7).toString("base64url"), "sync", who,
+                           { [SYNC_HEADER]: mintToken(keyring(), "sync", who,
                                                       Math.floor(Date.now() / 1000) + 60).token }]) {
       const refused = await door("changes", { after: 0, limit: 10 }, headers);
       expect(refused.status).toBe(401);

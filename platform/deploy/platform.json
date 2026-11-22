@@ -26,13 +26,14 @@
     "days": { "OPERATOR_LOG": 365 }
   },
   "keyrings": {
-    "why": "The keyrings the platform seals stored blobs under, each by the operator op that brings one owner's blobs under its active kid (contract/src/operator-message.ts), which mode rotation asks of every owner the directory lists, and whether the off-account copy holds blobs under it (deploy/offsite.ts copies the files bucket: every generation's root carries the data key wrapped under FILES_KEYRING), so mode retire waits out the copy's versions under a retiring kid. A keyring with no stored blob (OPERATOR_KEYRING, a MAC key) is not here: retiring one of its kids strands nothing.",
+    "why": "The keyrings the platform seals stored blobs under, each by the operator op that brings one owner's blobs under its active kid (contract/src/operator-message.ts), which mode rotation asks of every owner the directory lists, and whether the off-account copy holds blobs under it (deploy/offsite.ts copies the files bucket: every generation's root carries the data key wrapped under FILES_KEYRING), so mode retire waits out the copy's versions under a retiring kid. sandboxed: the keyrings whose values live as long as the E2B sandboxes that carry them, which no sweep can bring under a new kid: ROUTING_KEYRING seals each sandbox's route into its E2B metadata once, at its create (E2B changes no sandbox's metadata after, and keeps a paused sandbox indefinitely), and that sandbox's lease's egress and sync tokens, which live in it, are minted no earlier; a socket ticket lives 30 s. So mode retire takes its old kids out only once every route E2B holds, running or paused, opens under the stored ring alone (deploy.ts routesHeld). A keyring in neither (OPERATOR_KEYRING, the kit's MAC key) strands nothing when a kid goes.",
     "rotated": { "FILES_KEYRING": { "op": "owner.rewrap", "copied": true },
-                 "GATEWAY_KEYRING": { "op": "owner.reseal", "copied": false } }
+                 "GATEWAY_KEYRING": { "op": "owner.reseal", "copied": false } },
+    "sandboxed": ["ROUTING_KEYRING"]
   },
   "made": {
-    "why": "The platform-generated secrets by the kind of initial value each needs: mac is 32 random bytes in base64url, token a random URL-safe token, keyring a first keyring in keyring-new's shape (rotated only by adding a key). A config names a secret, not how its value is made; every other secret comes from its vendor or a shared app.",
-    "secrets": { "ROUTING_MAC_KEY": "mac", "E2B_WEBHOOK_SECRET": "token",
+    "why": "The platform-generated secrets by the kind of initial value each needs: token a random URL-safe token, keyring a first keyring in keyring-new's shape (rotated only by adding a key). A config names a secret, not how its value is made; every other secret comes from its vendor or a shared app.",
+    "secrets": { "ROUTING_KEYRING": "keyring", "E2B_WEBHOOK_SECRET": "token",
                  "GATEWAY_KEYRING": "keyring", "FILES_KEYRING": "keyring",
                  "OPERATOR_KEYRING": "keyring" }
   }

@@ -9,7 +9,7 @@
  * sign-in, the JWKS from the owner issuer's live discovery held to it exactly, and checks
  * WorkOS's authorize takes the doors' client and callback before anyone signs in; it
  * registers the WorkOS redirect URI only when missing and never deletes one; and it sets the
- * routing key on the doors and the owner together or not at all.
+ * routing keyring on the doors and the owner together or not at all.
  *
  * Each lookup is checked too: a failed one is never "absent"; a held
  * keyring is never replaced, and is rotated only by adding a key; the control record is
@@ -45,6 +45,7 @@ import {
 } from "../../contract/src/operator-message";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { QUEUES as QUEUE_NAMES } from "../../contract/src/queue-names";
+import { sealRoute } from "../../contract/src/routing-mac";
 import {
   closedToAll, CONTROL_KEY, outsideOpen, ownerOpen, parseControl,
 } from "../../contract/src/control";
@@ -55,7 +56,8 @@ import {
 } from "../cloudflare";
 import {
   authorizeCheck, deployedConfig, firstPartyLink,
-  E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
+  E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringActivate, keyringAdd, keyringNew,
+  keyringRetire, keyringStage,
   lifecycleHook, lockCounts, type Mode, MODES, parse,
   perform, PUBLIC_INPUTS, registerRedirect, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
@@ -155,7 +157,7 @@ const ok = (result: unknown): CfAnswer => ({ status: 200, body: { success: true,
 const ENV: Record<string, string> = {
   CLOUDFLARE_API_TOKEN: "cf-token", WORKOS_CLIENT_ID: "client_test",
   OWNER_ISSUER: "https://auth.test", WORKOS_API_KEY: "workos-key", E2B_API_KEY: E2B_KEY,
-  ROUTING_MAC_KEY: "mac-key", GATEWAY_KEYRING: RING, FILES_KEYRING: RING, OPERATOR_KEYRING: RING,
+  ROUTING_KEYRING: RING, GATEWAY_KEYRING: RING, FILES_KEYRING: RING, OPERATOR_KEYRING: RING,
   E2B_WEBHOOK_SECRET: "hook-secret", INBOUND_SLACK_SIGNING_SECRET: "slack-secret",
   PLATFORM_CANARY_TOKEN: "clock-token", PUSHOVER_USER_KEY: "pager-user",
   PUSHOVER_APP_TOKEN: "pager-token", PATH: "/bin", HOME: "/home/test",
@@ -239,6 +241,8 @@ interface WorldOptions {
   readonly windowOpen?: boolean;
   /** The names rclone lists under a copy back's prefix: the copy's and R2's. */
   readonly copied?: { readonly copy: readonly string[]; readonly r2: readonly string[] };
+  /** The sandboxes E2B lists, running or paused, each its id and metadata, in pages. */
+  readonly sandboxes?: readonly (readonly Json[])[];
 }
 
 /** The world's clock. */
@@ -532,6 +536,13 @@ function world(options: WorldOptions = {}) {
       }
       if (method !== "GET" && killed()) {
         throw new Error("the run was killed");
+      }
+      if (at.pathname === "/v2/sandboxes") {
+        expect(at.searchParams.get("state")).toBe("running,paused");
+        const pages = options.sandboxes ?? [[]];
+        const page = Number(at.searchParams.get("nextToken") ?? "0");
+        return new Response(JSON.stringify(pages[page]), { status: 200, headers:
+          page + 1 < pages.length ? { "x-next-token": String(page + 1) } : {} });
       }
       if (at.pathname === "/events/webhooks") {
         if (method === "POST") {
@@ -885,9 +896,9 @@ describe("the command line", () => {
     expect([...parse(["--mode", "dark", "--migrate", MIGRATES.join(",")], ENV, w.io).migrate])
       .toEqual(MIGRATES);
     const run = parse(["--mode", "routes", "--yes", "--plan", "plan.json", "--rotate",
-                       "ROUTING_MAC_KEY,FILES_KEYRING", "--migrate", "owner"], ENV, w.io);
+                       "ROUTING_KEYRING,FILES_KEYRING", "--migrate", "owner"], ENV, w.io);
     expect([run.reach, run.apply, [...run.rotate], [...run.migrate]])
-      .toEqual(["secrets", true, ["ROUTING_MAC_KEY", "FILES_KEYRING"], ["owner"]]);
+      .toEqual(["secrets", true, ["ROUTING_KEYRING", "FILES_KEYRING"], ["owner"]]);
     expect(parse(["--mode", "plan", "--public"], ENV, w.io).reach).toBe("public");
   });
 });
@@ -927,7 +938,7 @@ describe("the plan the apply job runs", () => {
     const w = world({ held: true });
     const plans = [];
     for (const id of ["7001", "7002"]) {
-      const plan = await planned(w, "routes", ["--rotate", "ROUTING_MAC_KEY"],
+      const plan = await planned(w, "routes", ["--rotate", "ROUTING_KEYRING"],
                                  { ...RUN, GITHUB_RUN_ID: id });
       plans.push(JSON.parse(readFileSync(plan, "utf8")) as Json);
       rmSync(join(plan, ".."), { recursive: true, force: true });
@@ -935,7 +946,7 @@ describe("the plan the apply job runs", () => {
     expect(plans.map((each) => each["run"])).toEqual(["7001", "7002"]);
     expect(plans[0]!["plan"]).toEqual(plans[1]!["plan"]);
     expect(plans[0]!["plan"]).toMatchObject({
-      asked: { mode: "routes", rotate: ["ROUTING_MAC_KEY"], migrate: [], record: null } });
+      asked: { mode: "routes", rotate: ["ROUTING_KEYRING"], migrate: [], record: null } });
     expect(JSON.stringify(plans[0]!["plan"])).not.toMatch(/7001|2026-11-07/);
     expect(w.logs.filter((line) => line.startsWith("Run ")).map((line) => line.split(":")[0]))
       .toEqual(["Run 7001 would change", "Run 7002 would change"]);
@@ -984,9 +995,9 @@ describe("the plan the apply job runs", () => {
 
   it("stops before any change on a dispatch or a variable the plan did not have", async () => {
     const asked = world({ held: true });
-    const plan = await planned(asked, "dark", ["--rotate", "ROUTING_MAC_KEY"]);
+    const plan = await planned(asked, "dark", ["--rotate", "ROUTING_KEYRING"]);
     const { why, changed } = await refused(asked, "dark", plan);
-    expect(why).toContain('the dispatch\'s rotate was ["ROUTING_MAC_KEY"], and is []');
+    expect(why).toContain('the dispatch\'s rotate was ["ROUTING_KEYRING"], and is []');
     expect(changed).toEqual([]);
     // The repository's variable, edited between the jobs: the doors would deploy another client.
     const varied = world({ held: true });
@@ -1196,17 +1207,18 @@ describe("a dark run", () => {
     for (const { path, mode } of w.secretFiles) {
       expect([path, mode.toString(8), existsSync(path)]).toEqual([path, "600", false]);
     }
-    // A held account rotating the routing key: the doors' and the owner's versions carry it,
-    // alone, and no other Worker's carries a file.
+    // A held account rotating the routing keyring: the doors' and the owner's versions carry
+    // it, alone, and no other Worker's carries a file.
     const rotated = world({ held: true });
-    await runMode(rotated, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY"]);
+    const staged = { ...ENV, ROUTING_KEYRING: ROTATED };
+    await runMode(rotated, "dark", ["--yes", "--rotate", "ROUTING_KEYRING"], staged);
     expect(rotated.secretFiles.map(({ worker, names }) => [worker, names])).toEqual([
-      ["owner", ["ROUTING_MAC_KEY"]], ["doors", ["ROUTING_MAC_KEY"]]]);
-    expect(rotated.secretsPut).toEqual({ "owner:ROUTING_MAC_KEY": ENV["ROUTING_MAC_KEY"],
-                                         "doors:ROUTING_MAC_KEY": ENV["ROUTING_MAC_KEY"] });
+      ["owner", ["ROUTING_KEYRING"]], ["doors", ["ROUTING_KEYRING"]]]);
+    expect(rotated.secretsPut).toEqual({ "owner:ROUTING_KEYRING": ROTATED,
+                                         "doors:ROUTING_KEYRING": ROTATED });
     // An upload that fails stops the run, its file removed all the same.
     const failed = world({ held: true, failing: "versions upload --config owner/" });
-    await expect(runMode(failed, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY"]))
+    await expect(runMode(failed, "dark", ["--yes", "--rotate", "ROUTING_KEYRING"], staged))
       .rejects.toThrow("wrangler versions upload --config failed (exit 1)");
     expect(failed.secretFiles.map(({ worker, path }) => [worker, existsSync(path)]))
       .toEqual([["owner", false]]);
@@ -2299,26 +2311,27 @@ describe("the parts of a run", () => {
     expect(calls.some((call) => call.startsWith("DELETE"))).toBe(false);
   });
 
-  it("sets the routing key on the doors and the owner together, or not at all", () => {
+  it("sets the routing keyring on the doors and the owner together, or not at all", () => {
     const none = secretPlan({ doors: [], owner: [], gateway: [], sandbox: [] }, new Set(), NONE);
-    expect(none.filter(({ name }) => name === "ROUTING_MAC_KEY").map(({ worker }) => worker)
+    expect(none.filter(({ name }) => name === "ROUTING_KEYRING").map(({ worker }) => worker)
       .sort()).toEqual(["doors", "owner"]);
-    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+    const both = secretPlan({ doors: ["ROUTING_KEYRING", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
                                       "OPERATOR_KEYRING"],
-                              owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+                              owner: ["ROUTING_KEYRING"], gateway: ["GATEWAY_KEYRING"],
                               sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] },
                             new Set(), NONE);
     // The doors' optional secrets: the shared app's and the canary clock's.
     expect(both).toEqual(OPTIONAL.map((name) => ({ worker: "doors", name })));
-    expect(() => secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(), NONE))
-      .toThrow("only one of the doors and the owner holds ROUTING_MAC_KEY: pass --rotate " +
-               "ROUTING_MAC_KEY to set both again");
-    expect(secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(["ROUTING_MAC_KEY"]),
-                      NONE).filter(({ name }) => name === "ROUTING_MAC_KEY")).toHaveLength(2);
+    expect(() => secretPlan({ doors: ["ROUTING_KEYRING"], owner: [] }, new Set(), NONE))
+      .toThrow("only one of the doors and the owner holds ROUTING_KEYRING: pass --rotate " +
+               "ROUTING_KEYRING to set both again");
+    expect(secretPlan({ doors: ["ROUTING_KEYRING"], owner: [] }, new Set(["ROUTING_KEYRING"]),
+                      () => ROTATED).filter(({ name }) => name === "ROUTING_KEYRING"))
+      .toHaveLength(2);
   });
 
   it("never replaces a held keyring, and rotates one only by adding a key", () => {
-    const held = { doors: [...SECRETS["doors"]!], owner: ["ROUTING_MAC_KEY"],
+    const held = { doors: [...SECRETS["doors"]!], owner: ["ROUTING_KEYRING"],
                    gateway: ["GATEWAY_KEYRING"], sandbox: ["E2B_API_KEY"],
                    files: ["FILES_KEYRING"] };
     const values = (ring: string) => (name: string) =>
@@ -2633,6 +2646,37 @@ describe("the parts of a run", () => {
     }
   });
 
+  it("stages a key before making it active, for a keyring two Workers hold, keeping the old",
+     () => {
+    const out = mkdtempSync(join(tmpdir(), "keyring-"));
+    const logged: string[] = [];
+    try {
+      const file = join(out, "ring.json");
+      keyringNew(file, NONE);
+      const first = keyring(readFileSync(file, "utf8"), "the keyring");
+      keyringStage(file, (line) => logged.push(line));
+      const staged = keyring(readFileSync(file, "utf8"), "the keyring");
+      expect([staged.active, [...staged.keys.keys()]]).toEqual(["k1", ["k1", "k2"]]);
+      expect(staged.keys.get("k1")).toEqual(first.keys.get("k1"));
+      keyringActivate(file, (line) => logged.push(line));
+      const active = keyring(readFileSync(file, "utf8"), "the keyring");
+      expect([active.active, [...active.keys.keys()]]).toEqual(["k2", ["k1", "k2"]]);
+      expect([...active.keys]).toEqual([...staged.keys]);
+      expect(logged).toEqual([
+        `added k2 to ${file}, k1 still active; store it as the keyring it was, run with ` +
+        "--rotate naming that keyring, then keyring-activate",
+        `made k2 active in ${file}, k1 kept; store it as the keyring it was, then run with ` +
+        "--rotate naming that keyring"]);
+      // Nothing staged past the active kid: refused, the file as it was.
+      expect(() => keyringActivate(file, NONE)).toThrow(
+        `the keyring in ${file} stages no kid past its active k2: keyring-stage first`);
+      writeFileSync(file, ringSecret("k1"));
+      expect(() => keyringActivate(file, NONE)).toThrow(/stages no kid past its active k1/);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
   it("retires a keyring's kids but its active one beside the old file, which it keeps, and " +
      "refuses a ring of one key", () => {
     const out = mkdtempSync(join(tmpdir(), "keyring-"));
@@ -2763,8 +2807,8 @@ describe("E2B's lifecycle webhook", () => {
   it("changes its secret only with the doors' copy: both or neither", async () => {
     // The doors hold E2B_WEBHOOK_SECRET and production's value was replaced: without
     // --rotate the doors keep theirs, so E2B keeps its own too.
-    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
-                   owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
+    const held = { doors: ["ROUTING_KEYRING", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
+                   owner: ["ROUTING_KEYRING"], gateway: ["GATEWAY_KEYRING"],
                    sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
     const kept = secretPlan(held, new Set(), null);
     expect(kept.some((each) => each.name === "E2B_WEBHOOK_SECRET")).toBe(false);
@@ -2784,7 +2828,7 @@ describe("E2B's lifecycle webhook", () => {
         { secret: "new", setSecret: hookSetsSecret(rotated), enable: true }, true);
     expect(both.hooks[0]!["signatureSecret"]).toBe("new");
     // The doors missing it (a first deploy) sets both as well.
-    const first = secretPlan({ ...held, doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"] },
+    const first = secretPlan({ ...held, doors: ["ROUTING_KEYRING", "WORKOS_API_KEY"] },
                              new Set(), null);
     expect(hookSetsSecret(first)).toBe(true);
   });
@@ -3789,6 +3833,65 @@ describe("modes rotation and retire", () => {
       .rejects.toThrow(`the restore record ${RESTORE_KEY} is out of shape`);
     expect(w.events.filter((event) => event.startsWith("wrangler secret"))).toEqual([]);
   });
+
+  it("never sweeps the routing keyring, which seals no stored blob", async () => {
+    for (const [flags, env] of [[["--public"], PUBLIC], [["--yes"], ENV]] as const) {
+      const w = world({ held: true, owners: OWNERS });
+      await expect(runMode(w, "rotation", [...flags, "--keyring", "ROUTING_KEYRING"], env))
+        .rejects.toThrow("ROUTING_KEYRING seals no stored blob, so no sweep brings its values " +
+                         "under a new kid");
+      expect(w.sent).toEqual([]);
+    }
+  });
+
+  it("retires a routing kid only once every route E2B holds opens under the stored ring, " +
+     "with the words naming the kid kept, then the canary", async () => {
+    const route = (ring: string) => sealRoute(ring, { owner: "user_alice", authority: "owner" });
+    // The new kid's route on one page; on the next, an older one and a sandbox with none.
+    const newer = { sandboxID: "sbxnew",
+                    metadata: { ta_owner: "a", ta_route: await route(ROTATED) } };
+    const staged = JSON.stringify({ ...JSON.parse(ROTATED) as object, active: "k1" });
+    const older = { sandboxID: "sbxold", metadata: { ta_route: await route(staged) } };
+    const bare = { sandboxID: "sbxbare", metadata: {} };
+    const env = { ...ENV, ROUTING_KEYRING: SHRUNK, GITHUB_TOKEN: "gh-token" };
+    const planned = world({ held: true });
+    const [plan] = (await runMode(planned, "retire", ["--public", "--keyring", "ROUTING_KEYRING"],
+                                  PUBLIC)).plan;
+    expect(plan).toBe("retire every kid of ROUTING_KEYRING but its active one: set the stored " +
+      `ROUTING_KEYRING on ${NAMES["doors"]} and ${NAMES["owner"]} only once every route of ` +
+      "the sandboxes E2B holds, running or paused, opens under it, and only with its words, " +
+      "which the apply job names (" + plan!.split("(").at(-1));
+    expect(planned.events.filter((event) => event.startsWith("e2b"))).toEqual([]);
+    const waiting = world({ held: true, sandboxes: [[newer], [older, bare]] });
+    await expect(runMode(waiting, "retire", ["--yes", "--keyring", "ROUTING_KEYRING"], env))
+      .rejects.toThrow("1 of the 2 sandboxes E2B holds with a route carry one the stored " +
+                       "ROUTING_KEYRING, k2 alone, does not open");
+    expect(waiting.events.filter((event) => event.startsWith("e2b"))).toEqual([
+      "e2b GET /v2/sandboxes", "e2b GET /v2/sandboxes"]);
+    // A stored ring of more than one kid is not keyring-retire's.
+    const w = world({ held: true, sandboxes: [[newer, bare]] });
+    await expect(runMode(w, "retire", ["--yes", "--keyring", "ROUTING_KEYRING"],
+                         { ...env, ROUTING_KEYRING: ROTATED }))
+      .rejects.toThrow("the stored ROUTING_KEYRING holds 2 kids: store the ring keyring-retire " +
+                       "wrote");
+    const words = "retire-ROUTING_KEYRING-but-k2";
+    const named = await runMode(w, "retire", ["--yes", "--keyring", "ROUTING_KEYRING"], env);
+    expect(named.plan.slice(-2)).toEqual([
+      "each of the 1 routes E2B holds opens under the stored ROUTING_KEYRING, k2 alone",
+      "retire every kid but k2 from ROUTING_KEYRING only with its words: keep the old ring " +
+      `file offline, then run again with --confirm ${words}`]);
+    await expect(runMode(w, "retire", ["--yes", "--keyring", "ROUTING_KEYRING", "--confirm",
+                                       "retire-ROUTING_KEYRING-k1"], env)).rejects.toThrow(
+      `is not the retirement's words for ROUTING_KEYRING: ${words}`);
+    expect(w.events.filter((event) => event.startsWith("wrangler"))).toEqual([]);
+    w.events.splice(0);
+    await runMode(w, "retire", ["--yes", "--keyring", "ROUTING_KEYRING", "--confirm", words], env);
+    expect(w.events.filter((event) => /^(wrangler|node)/.test(event))).toEqual([
+      `wrangler secret put ROUTING_KEYRING --name ${NAMES["doors"]}`,
+      `wrangler secret put ROUTING_KEYRING --name ${NAMES["owner"]}`,
+      expect.stringMatching(/^node canary\.ts/)]);
+    expect(Object.values(w.secretsPut)).toEqual([SHRUNK]);
+  });
 });
 
 describe("platform-deploy.yml", () => {
@@ -3941,7 +4044,7 @@ describe("platform-deploy.yml", () => {
   const dispatchOf = (mode: Mode): Record<string, string> => ({
     ...Object.fromEntries(DISPATCH.map((name) => [name, ""])), MODE: mode, ...NEEDED[mode] });
   /** Dispatches that give the options a mode may go without. */
-  const OPTIONS: Record<string, string>[] = [{ ...dispatchOf("dark"), ROTATE: "ROUTING_MAC_KEY", MIGRATE: "owner" },
+  const OPTIONS: Record<string, string>[] = [{ ...dispatchOf("dark"), ROTATE: "ROUTING_KEYRING", MIGRATE: "owner" },
                    { ...dispatchOf("control"), SET: "outside=on canary+=user_bob",
                      REPLACE: JSON.stringify(DARK) },
                    { ...dispatchOf("restore"), GENERATION: FROM,

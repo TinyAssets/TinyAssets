@@ -84,7 +84,7 @@ async function doors() {
   const providers = fake(join(DOORS, "test", "fake-providers.ts"));
   const sandbox = fake(join(PLATFORM, "ci", "fake-sandbox.ts"));
   const keyring = newKeyring();
-  const routingKey = randomBytes(32).toString("base64url");
+  const routing = newKeyring();
   const webClient = `${ORIGIN}/oauth/clients/web.json`;
   mf = new Miniflare(convertV4MiniflareOptions(pool({
     host: "127.0.0.1", port: 0, https: true,
@@ -93,7 +93,7 @@ async function doors() {
       // its secrets are the test's, none read from the host.
       await auxiliary(DOORS, {
         bindings: { ...AUTHKIT,
-                    ROUTING_MAC_KEY: routingKey, WORKOS_API_KEY: "test-client-secret",
+                    ROUTING_KEYRING: routing, WORKOS_API_KEY: "test-client-secret",
                     E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                     OPERATOR_KEYRING: newKeyring() },
         // SANDBOX_LOG reads back the owner's fake sandbox Worker.
@@ -109,7 +109,7 @@ async function doors() {
             : new Response(`the doors reach no ${request.url} here`, { status: 502 }),
       }, "test/e2e-entry.ts"),
       // The owner Worker, its SANDBOX the owner suite's fake sandbox Worker.
-      await auxiliary(join(PLATFORM, "owner"), { bindings: { ROUTING_MAC_KEY: routingKey },
+      await auxiliary(join(PLATFORM, "owner"), { bindings: { ROUTING_KEYRING: routingKey },
                                                  serviceBindings: { SANDBOX: sandbox.name } }),
       await auxiliary(join(PLATFORM, "gateway"), { bindings: { GATEWAY_KEYRING: keyring },
                                                    outboundService: providers.name }),

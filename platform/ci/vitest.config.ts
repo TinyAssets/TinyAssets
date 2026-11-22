@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
@@ -49,7 +48,7 @@ export default defineConfig({
               },
               workers: [
                 await auxiliary(OWNER, {
-                  bindings: { ROUTING_MAC_KEY: randomBytes(32).toString("base64url") },
+                  bindings: { ROUTING_KEYRING: keyring() },
                   serviceBindings: { FILES: FILES_GATE },
                 }),
                 await auxiliary(FILES, { bindings: { FILES_KEYRING: keyring() } }),

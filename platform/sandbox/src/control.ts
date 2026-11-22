@@ -92,7 +92,7 @@ import {
 } from "../../contract/src/egress";
 import { migrate } from "../../contract/src/migrate";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
-import { SEALED_ROUTE } from "../../contract/src/routing-mac";
+import { routeShaped } from "../../contract/src/routing-mac";
 import {
   METER_BATCH, type MeterEvent, type NetworkApplied, type NetworkDocument, type NetworkReapply,
   type SandboxSignin, type SandboxStart, type Started,
@@ -868,7 +868,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (!RUN_ID.test(start.run) || !AUTHORITY.test(start.authority)
           || !LEASE.test(start.lease.lease_id)
           || (start.tokens === null) !== (start.network === null)
-          || typeof start.route !== "string" || !SEALED_ROUTE.test(start.route)
+          || !routeShaped(start.route)
           || !httpsDoors(start.urls) || !hostList(start.hosts)) {
         throw new Error("a sandbox start names its run, its authority, its lease, its vendor " +
                         "hosts and its https doors on the egress host");
@@ -905,7 +905,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (!SIGNIN_ID.test(signin.id) || !AUTHORITY.test(signin.authority)
           || !LEASE.test(signin.lease.lease_id)
           || (signin.tokens === null) !== (signin.network === null)
-          || typeof signin.route !== "string" || !SEALED_ROUTE.test(signin.route)
+          || !routeShaped(signin.route)
           || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")
           || !hostList(signin.hosts)) {
         throw new Error("a sign-in names its id, its authority, its lease, its route, its " +

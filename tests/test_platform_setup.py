@@ -151,12 +151,12 @@ def _no_value_shown(said: list[str], out: str, values) -> None:
 def test_the_made_secrets_are_set_once_each_on_stdin_alone(capsys) -> None:
     fake, said = Fake(secrets={"production": {"GATEWAY_KEYRING"}}), []
     setup.made_secrets(_gh(fake, said))
-    assert fake.secrets["production"] == {"ROUTING_MAC_KEY", "E2B_WEBHOOK_SECRET",
+    assert fake.secrets["production"] == {"ROUTING_KEYRING", "E2B_WEBHOOK_SECRET",
                                           "GATEWAY_KEYRING", "FILES_KEYRING",
                                           "OPERATOR_KEYRING"}
     assert ("production", "GATEWAY_KEYRING") not in fake.stored
     out = capsys.readouterr().out
-    assert out.splitlines() == ["ROUTING_MAC_KEY: set", "E2B_WEBHOOK_SECRET: set",
+    assert out.splitlines() == ["ROUTING_KEYRING: set", "E2B_WEBHOOK_SECRET: set",
                                 "GATEWAY_KEYRING: already set", "FILES_KEYRING: set",
                                 "OPERATOR_KEYRING: set"]
     _no_value_shown(said, out, fake.stored.values())
@@ -169,9 +169,7 @@ def test_the_made_secrets_are_set_once_each_on_stdin_alone(capsys) -> None:
 @pytest.mark.verifies(
     "clean-sheet-platform:One keyring, held only by the gateway")
 def test_the_made_values_are_the_shapes_the_platform_reads() -> None:
-    mac = setup.make_mac()
-    assert len(base64.urlsafe_b64decode(mac + "=")) == 32 and "=" not in mac
-    assert setup.make_mac() != mac and len(setup.make_token()) >= 43
+    assert setup.make_token() != setup.make_token() and len(setup.make_token()) >= 43
     ring = json.loads(setup.make_keyring())
     assert ring["active"] == "k1" and list(ring["keys"]) == ["k1"]
     assert len(base64.b64decode(ring["keys"]["k1"])) == 32

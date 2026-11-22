@@ -313,7 +313,7 @@ export function bindSignOut({ binding, stub }: Bound, grantId: string): Bound {
  * ticket is the upgrade's credential: no bearer is read for it.
  */
 export function bindTicket(env: DoorsEnv, ticket: string): { bound: Bound; hash: string } | null {
-  const parsed = verifyToken(env.ROUTING_MAC_KEY, "socket", ticket);
+  const parsed = verifyToken(env.ROUTING_KEYRING, "socket", ticket);
   if (parsed === null || parsed.expires === LEASE_LIVED || parsed.expires <= Date.now() / 1000) {
     return null;
   }

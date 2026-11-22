@@ -262,6 +262,22 @@ export const ROTATED: Readonly<Record<string, Rotated>> = Object.freeze(Object.f
     return [name, Object.freeze({ op: op as OperatorOp, copied })];
   })));
 
+/**
+ * The keyrings whose values live as long as the sandboxes that carry them (`platform.json`
+ * `keyrings`), each a keyring no op sweeps: mode retire reads E2B's routes instead.
+ */
+export const SANDBOXED: readonly string[] = Object.freeze(
+  platform.keyrings.sandboxed.map((name) => {
+    if (!KEYRINGS.includes(name) || Object.hasOwn(ROTATED, name)) {
+      throw new Error(`platform.json reads ${name}'s values from sandboxes: a keyring no op ` +
+                      "sweeps");
+    }
+    return name;
+  }));
+
+/** The keyrings mode `retire` takes old kids out of: those swept, and those in sandboxes. */
+export const RETIRES: readonly string[] = Object.freeze([...Object.keys(ROTATED), ...SANDBOXED]);
+
 /** Where a sign-in starts. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
 

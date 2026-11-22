@@ -51,6 +51,7 @@ import { fileURLToPath } from "node:url";
 
 import { RUNNER } from "../../ci/classes.ts";
 import { installed } from "../../ci/deps.ts";
+import { keyring } from "../../ci/fixtures.ts";
 import { freePorts, ownWorkerd, WORKERD } from "../../ci/own-workerd.mjs";
 import { CPU_LIMIT_MS } from "../guards/cpu.ts";
 
@@ -93,7 +94,7 @@ const owner :Workerd.Worker = (
                (name = "DRIVER", service = "driver"),
                (name = "GATEWAY", service = "dummy"), (name = "CODEMODE_VM", service = "dummy"),
                (name = "CONTROL", kvNamespace = "dummy"),
-               (name = "ROUTING_MAC_KEY", text = "bGVnLXJvdXRpbmcta2V5LWZvci10aGUtbWVtb3J5LWxlZw") ],
+               (name = "ROUTING_KEYRING", text = ${JSON.stringify(keyring())}) ],
 );
 const files :Workerd.Worker = (
   modules = [ (name = "probe.js", esModule = embed "probe.js") ],

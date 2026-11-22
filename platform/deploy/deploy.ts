@@ -10,6 +10,8 @@
  *        [--plan <file>] [--rotate <secrets>] [--migrate <Workers>] [<the mode's own (`OWN`)>]
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-new <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-add <file>
+ *   node --experimental-strip-types platform/deploy/deploy.ts keyring-stage <file>
+ *   node --experimental-strip-types platform/deploy/deploy.ts keyring-activate <file>
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-retire <file>
  *
  * - `plan`: `dark`'s checks and plan, never a change.
@@ -59,8 +61,11 @@
  *   founder, set on its Workers, then the canary, only once its rotation's latest pass swept
  *   every owner (for a keyring the off-account copy holds, `KEEP_DAYS` + 1 days after the
  *   first night that copied the first pass begun after the latest restore from the copy), and
- *   only with `--confirm` its words, `retire-<keyring>-<kids>`, which its apply job names.
- *   Irreversible unless the old ring is kept offline.
+ *   only with `--confirm` its words, `retire-<keyring>-<kids>`, which its apply job names. A
+ *   keyring whose values live in sandboxes (`platform.json` `keyrings`, the routing keyring)
+ *   has no rotation's record: it is retired only once every route E2B holds opens under the
+ *   stored ring (`routesHeld`), its words `retire-<keyring>-but-<kid kept>`. Irreversible
+ *   unless the old ring is kept offline.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -85,8 +90,11 @@
  *   the kit never makes a secret's value (`keyring-new` makes a first keyring,
  *   `scripts/platform_setup.py` stores one). A held one is never replaced unless `--rotate`
  *   names it, a keyring only by adding a key (mode `retire` alone takes its old kids out);
- *   Cloudflare never shows a held secret, so the kit cannot check that a rotated keyring
- *   keeps the deployed key;
+ *   a keyring two Workers hold (the routing keyring, `SHARED`) only with its new key staged
+ *   first (`keyring-stage`, a deploy, then `keyring-activate`, a deploy), since its minter,
+ *   the owner, deploys before the doors, which read it. Cloudflare never shows a held secret,
+ *   so the kit cannot check that a rotated keyring keeps the deployed key, nor that a staged
+ *   kid reached both Workers before it is made active;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
  *   POST; never a delete), after the other live checks and before any Cloudflare change, and
@@ -136,7 +144,9 @@ import { WRANGLER } from "../ci/wrangler.ts";
 import { canonical } from "../contract/src/canonical.ts";
 import { closedToAll, CONTROL_KEY, controlOf } from "../contract/src/control.ts";
 import { EGRESS_HOST } from "../contract/src/egress.ts";
-import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
+import {
+  KEY_BYTES, newestKid, parseRing, type Ring, ringText, ringWith,
+} from "../contract/src/envelope.ts";
 import {
   APP_RESOURCE, E2B_HOOK_EVENTS, HOST, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT, ZONE,
 } from "../contract/src/identity.ts";
@@ -153,8 +163,10 @@ import {
 import {
   authorizeUrl, SECRET_ORIGIN, SIGN_IN_MAX_AGE_S, type UpstreamConfig, upstreamConfig,
 } from "../contract/src/signin.ts";
+import { openRoute } from "../contract/src/routing-mac.ts";
 import { principal } from "../contract/src/text.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
+import type { Listed } from "../sandbox/e2b/transport.ts";
 import {
   bundles, type Bundles, checksArgv, pairTag, pinned, treeImage,
 } from "../sandbox/template/pair.ts";
@@ -166,7 +178,8 @@ import {
 import {
   AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, FILES_BUCKET,
   IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
-  RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
+  RETIRED, RETIRES, ROTATED, ROUTES, SANDBOXED, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS,
+  WORKERS,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
@@ -1977,7 +1990,12 @@ const storedRing = (run: Run): Ring => keyring(input(run, run.keyring!), run.key
  */
 const rotationSweep = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   const name = run.keyring!;
-  const { op } = ROTATED[name]!;
+  const rotated = ROTATED[name];
+  if (rotated === undefined) {
+    throw new Error(`${name} seals no stored blob, so no sweep brings its values under a new ` +
+                    "kid: they live in the sandboxes that carry them, which mode retire reads");
+  }
+  const { op } = rotated;
   const { control, directory } = await rotationNamespaces(got);
   say(`ask the doors ${op} for every owner the directory lists, through the operator channel, ` +
       `a page of ${BATCH} at a time, keeping the pass's progress in ${NAMESPACES["CONTROL"]} ` +
@@ -2104,24 +2122,49 @@ export async function retirement({ keyring: name, stored, record, copy, now }: R
   return { kids, words: `retire-${name}-${kids.join(",")}`, lines };
 }
 
+/** The metadata key a platform sandbox's sealed route is under (`sandbox/src/control.ts`). */
+const ROUTE_METADATA = "ta_route";
+
 /**
- * Mode `retire`: `--keyring`, stored as `keyring-retire` wrote it, set on each Worker that holds
- * it, once `retirement` holds and only with `--confirm` its words; without them the run ends
- * saying them. Irreversible unless the old ring is kept offline, so the plan job only plans it,
- * and the apply job names the words before a second run applies them.
+ * A sandboxed keyring's retirement (`platform.json` `keyrings`), or a loud stop naming why not:
+ * it holds only when the stored ring is `keyring-retire`'s, its active kid alone, and every
+ * route among the sandboxes E2B holds (`listed`, running or paused) opens under it. A sandbox's
+ * lease's tokens are minted no earlier than its route was sealed, and a socket ticket lives
+ * 30 s, so then no live value is under a kid the stored ring drops. A sandbox carrying no route
+ * (a template check's throwaway) holds no value of the ring. Who retires cannot name the kids
+ * the deployed ring holds (Cloudflare never shows a secret), so its words name the kid kept.
  */
-const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say }, got) => {
-  const name = run.keyring!;
-  const holders = Object.keys(SECRETS).filter((worker) => SECRETS[worker]!.includes(name));
-  const { control } = await rotationNamespaces(got);
-  say(`retire every kid of ${name} but its active one: set the stored ${name} on ${
-    holders.map((worker) => NAMES[worker]).join(" and ")} only once its rotation's record shows ` +
-      "every owner swept to left 0 after the off-account copy's versions under the kids expired, " +
-      `and only with its words, which the apply job names (${LATER}). Irreversible unless the ` +
-      "old ring is kept offline");
-  if (run.reach === "public") {
-    return;
+export async function routesHeld(name: string, stored: string, listed: readonly Listed[]):
+    Promise<{ readonly retiring: string; readonly words: string;
+              readonly lines: readonly string[] }> {
+  const ring = keyring(stored, name);
+  if (ring.keys.size !== 1) {
+    throw new Error(`the stored ${name} holds ${ring.keys.size} kids: store the ring ` +
+                    "keyring-retire wrote, its active kid alone; nothing is changed");
   }
+  const routes = listed.filter((each) => Object.hasOwn(each.metadata, ROUTE_METADATA));
+  let closed = 0;
+  for (const each of routes) {
+    if (await openRoute(stored, each.metadata[ROUTE_METADATA]) === null) {
+      closed += 1;
+    }
+  }
+  if (closed > 0) {
+    throw new Error(`${closed} of the ${routes.length} sandboxes E2B holds with a route carry one ` +
+                    `the stored ${name}, ${ring.active} alone, does not open: a sandbox keeps ` +
+                    "its route while E2B keeps it, paused indefinitely, so retire waits until " +
+                    "each is killed; nothing is changed");
+  }
+  return { retiring: `every kid but ${ring.active}`, words: `retire-${name}-but-${ring.active}`,
+           lines: [`each of the ${routes.length} routes E2B holds opens under the stored ${
+             name}, ${ring.active} alone`] };
+}
+
+/** A swept keyring's `retirement`, its gates read from the control namespace and the copy. */
+async function rotatedRetirement(run: Run, got: Pick<Values, "cloudflare" | "account">,
+                                 name: string, control: string):
+    Promise<{ readonly retiring: string; readonly words: string;
+              readonly lines: readonly string[] }> {
   const stored = storedRing(run);
   const key = rotationKey(name, stored.active);
   const held = await got.cloudflare.value(got.account, control, key);
@@ -2134,6 +2177,35 @@ const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say 
       watch: await watch(reach, now),
       restored: restoreBegan(await got.cloudflare.value(got.account, control, RESTORE_KEY)),
       nightAfter: (at) => firstNightAfter(reach, at) } });
+  return { retiring: kids.join(", "), words, lines };
+}
+
+/**
+ * Mode `retire`: `--keyring`, stored as `keyring-retire` wrote it, set on each Worker that holds
+ * it, once its gate holds (a swept keyring's `retirement`, a sandboxed one's `routesHeld`) and
+ * only with `--confirm` its words; without them the run ends saying them. Irreversible unless
+ * the old ring is kept offline, so the plan job only plans it, and the apply job names the
+ * words before a second run applies them.
+ */
+const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say }, got) => {
+  const name = run.keyring!;
+  const holders = Object.keys(SECRETS).filter((worker) => SECRETS[worker]!.includes(name));
+  const sandboxed = SANDBOXED.includes(name);
+  const control = sandboxed ? null : (await rotationNamespaces(got)).control;
+  say(`retire every kid of ${name} but its active one: set the stored ${name} on ${
+    holders.map((worker) => NAMES[worker]).join(" and ")} only once ${sandboxed
+      ? "every route of the sandboxes E2B holds, running or paused, opens under it"
+      : "its rotation's record shows every owner swept to left 0 after the off-account " +
+        "copy's versions under the kids expired"}, ` +
+      `and only with its words, which the apply job names (${LATER}). Irreversible unless the ` +
+      "old ring is kept offline");
+  if (run.reach === "public") {
+    return;
+  }
+  const { retiring, words, lines } = control === null
+    ? await routesHeld(name, input(run, name)!,
+                       await new E2bAdmin(input(run, "E2B_API_KEY")!, run.io.fetch).sandboxes())
+    : await rotatedRetirement(run, got, name, control);
   say(...lines);
   const deployed = await got.cloudflare.workers(got.account);
   for (const worker of holders) {
@@ -2144,7 +2216,7 @@ const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say 
     }
   }
   if (run.confirm === null) {
-    say(`retire ${kids.join(", ")} from ${name} only with its words: keep the old ring file ` +
+    say(`retire ${retiring} from ${name} only with its words: keep the old ring file ` +
         `offline, then run again with --confirm ${words}`);
     return;
   }
@@ -2152,7 +2224,7 @@ const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say 
     throw new Error(`--confirm ${run.confirm} is not the retirement's words for ${name}: ${words}`);
   }
   for (const worker of holders) {
-    say(`set the secret ${name} on ${NAMES[worker]}, ${kids.join(", ")} retired`);
+    say(`set the secret ${name} on ${NAMES[worker]}, ${retiring} retired`);
     if (run.apply) {
       got.wrangler(["secret", "put", name, "--name", NAMES[worker]!], input(run, name));
     }
@@ -2161,7 +2233,7 @@ const retireAsk = step<"cloudflare" | "account" | "wrangler">(async ({ run, say 
 
 /**
  * What `--confirm` takes: a wipe's, a release's or an erasure's words, each naming the owner,
- * or a retirement's, naming the keyring and its kids.
+ * or a retirement's, naming the keyring and the kids it retires or keeps.
  */
 const CONFIRM = /^(?:wipe|release|erase|retire)-\S+$/;
 
@@ -2643,9 +2715,10 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
     deploys: false, applies: true, own: ["--keyring"],
     steps: { public: ROTATION, secrets: ROTATION }, report: { unchanged: NOTHING, after: [] },
   },
-  // The copy's nights are read with the job's own token, as the canary after it reads them.
+  // The copy's nights are read with the job's own token, as the canary after it reads them;
+  // a sandboxed keyring's routes from E2B with its key.
   retire: {
-    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [...Object.keys(ROTATED), TOKEN],
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [...RETIRES, "E2B_API_KEY", TOKEN],
               optional: [] },
     deploys: false, applies: true, own: ["--keyring", "--confirm"],
     steps: { public: RETIRE, secrets: RETIRE }, report: { unchanged: NOTHING, after: [canary()] },
@@ -2775,6 +2848,36 @@ export function keyringAdd(file: string, log: Io["log"]): void {
 }
 
 /**
+ * `keyring-stage <file>`: as `keyring-add`, the new key not yet active, for a keyring held by a
+ * Worker that uses its active kid and one deployed after it that reads every kid (`SHARED`, the
+ * routing keyring): once both hold the new kid, `keyring-activate` makes it active.
+ */
+export function keyringStage(file: string, log: Io["log"]): void {
+  const ring = keyring(readFileSync(file, "utf8"), "the keyring");
+  const added = ringWith(ring, randomBytes(KEY_BYTES));
+  writeFileSync(file, ringText({ active: ring.active, keys: added.keys }), { mode: 0o600 });
+  log(`added ${added.active} to ${file}, ${ring.active} still active; store it as the keyring ` +
+      `it was, run with --rotate naming that keyring, then keyring-activate`);
+}
+
+/**
+ * `keyring-activate <file>`: the keyring in `file` with its newest kid (`newestKid`, the one
+ * `keyring-stage` added) made active, once a deploy has set the staged ring on every Worker that
+ * holds it. A ring whose newest kid is active already is refused: nothing is staged.
+ */
+export function keyringActivate(file: string, log: Io["log"]): void {
+  const ring = keyring(readFileSync(file, "utf8"), "the keyring");
+  const newest = newestKid(ring);
+  if (newest === null || newest === ring.active) {
+    throw new Error(`the keyring in ${file} stages no kid past its active ${ring.active}: ` +
+                    "keyring-stage first");
+  }
+  writeFileSync(file, ringText({ active: newest, keys: ring.keys }), { mode: 0o600 });
+  log(`made ${newest} active in ${file}, ${ring.active} kept; store it as the keyring it was, ` +
+      "then run with --rotate naming that keyring");
+}
+
+/**
  * `keyring-retire <file>`: the keyring in `file` with its active key alone, written beside it
  * (`<file>.retire`) for the founder to store before mode `retire`; the old file is left as it is,
  * the one way back for the kids retired (a kid's name is never used again, `ringWith`). A ring
@@ -2796,7 +2899,8 @@ export function keyringRetire(file: string, log: Io["log"]): void {
 }
 
 const TOOLS: Readonly<Record<string, (file: string, log: Io["log"]) => void>> = Object.freeze({
-  "keyring-new": keyringNew, "keyring-add": keyringAdd, "keyring-retire": keyringRetire });
+  "keyring-new": keyringNew, "keyring-add": keyringAdd, "keyring-stage": keyringStage,
+  "keyring-activate": keyringActivate, "keyring-retire": keyringRetire });
 
 // --- The command line -------------------------------------------------------------------
 
@@ -2829,8 +2933,8 @@ const OWN = Object.freeze({
                         "an erasure, erase-<owner>, or a keyring's retirement, " +
                         "retire-<keyring>-<kids> as its apply job names them",
                  needed: false },
-  "--keyring": { names: `the keyring swept or retired: ${Object.keys(ROTATED).join(" or ")}`,
-                 needed: true },
+  "--keyring": { names: `the keyring swept (${Object.keys(ROTATED).join(" or ")}) or retired (${
+                   RETIRES.join(" or ")})`, needed: true },
   "--at": { names: "the time the off-account copy is read back as it stood at, " +
                    "<yyyy>-<mm>-<dd>T<hh>:<mm>:<ss>Z", needed: false },
 });
@@ -2873,7 +2977,7 @@ function ownValue(name: Own, text: string): unknown {
       }
       return text;
     case "--keyring":
-      if (!Object.hasOwn(ROTATED, text)) {
+      if (!RETIRES.includes(text)) {
         throw refused();
       }
       return text;

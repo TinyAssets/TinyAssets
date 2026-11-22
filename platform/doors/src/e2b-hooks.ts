@@ -137,7 +137,7 @@ export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Res
   if (event === "ignored") {
     return answer(200, { ignored: true });
   }
-  const route = openRoute(env.ROUTING_MAC_KEY, event.route);
+  const route = await openRoute(env.ROUTING_KEYRING, event.route);
   if (route === null) {
     console.error("an E2B lifecycle event named no sandbox of ours");  // no ids in the log
     return answer(200, { unrouted: true });
