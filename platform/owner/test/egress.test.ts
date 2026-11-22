@@ -508,24 +508,11 @@ describe("an egress call", () => {
     expect(failed.message).toMatch(/probe/);
   });
 
-  it("is held to the open calls the tier's runs give, and to no rate a minute",
+  it("is held to the owner's open calls, whichever run opened them, and to no rate a minute",
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     const lease = await leased(r);
-    const open: EgressOpened[] = [];
-    // The tier's runs scale it: the tests' control record's free tier.
-    for (let i = 0; i < EGRESS_LIMITS.openPerRun * TIERS.free.runs; i++) {
-      open.push(await admitted(r, lease, connection));
-    }
-    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_rate");
-    expect(await r.stub.egressSettle(lease.as(), settle(open[0]!.reservation)))
-      .toEqual({ settled: true });
-    await admitted(r, lease, connection);
-    await r.sql("UPDATE egress_reservations SET state = 'settled', outcome = 'complete', " +
-                  "settled_at = opened_at WHERE state = 'open'");
-    // Any number opened within the minute: only the open ones count.
-    await r.sql("DELETE FROM egress_reservations");
     const now = Date.now() / 1000;
     const fill = (count: number, at: number, state: string) => r.sql(
       "INSERT INTO egress_reservations (id, lease_id, run, token, connection_id, method, " +
@@ -533,8 +520,19 @@ describe("an egress call", () => {
         "lower(hex(randomblob(16))), ?, ?, ?, ?, 'GET', '/x', 1, ?, ?, ?, ?, ? FROM " +
         "(WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) " +
         "SELECT i FROM n)", lease.lease_id, lease.run, lease.egress, connection, at, state,
-      state === "refused" ? "egress_rate" : null, state === "settled" ? "complete" : null, at,
-      count);
+      state === "refused" ? "egress_rate" : null, state === "settled" ? "complete" : null,
+      state === "open" ? null : at, count);
+    const first = await admitted(r, lease, connection);
+    // One run's calls, far past the 16 a run of the tier's runs it once had: only the
+    // owner's count binds.
+    await fill(EGRESS_LIMITS.open - 2, now, "open");
+    await admitted(r, lease, connection);
+    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_rate");
+    expect(await r.stub.egressSettle(lease.as(), settle(first.reservation)))
+      .toEqual({ settled: true });
+    await admitted(r, lease, connection);
+    // Any number opened within the minute: only the open ones count.
+    await r.sql("DELETE FROM egress_reservations");
     await fill(5_000, now - 10, "settled");
     await fill(30, now - 30, "refused");
     await admitted(r, lease, connection);
