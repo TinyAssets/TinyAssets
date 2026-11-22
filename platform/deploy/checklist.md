@@ -142,8 +142,10 @@ It never counts as "absent".
    `wrangler deploy`. Later deploys upload a version, then deploy it in **stages**
    (`platform/deploy/platform.json` `stages`, each `wrangler versions deploy`, which never
    touches a route): first at 0% beside the version it serves, the new one listed first, then
-   at 100%. Each deployment is read back before anything follows it, and one that reads back
-   otherwise stops the run there. At 0% only a request carrying Cloudflare's version override
+   at 100%. Each deployment is read back before anything follows it, from Cloudflare's
+   deployments listing, which can lag a deployment just made: it is read again every 2 s for
+   up to a minute, never deployed again, and one that still reads back otherwise stops the run
+   there, naming what it last read. At 0% only a request carrying Cloudflare's version override
    reaches the new version, and no override reaches a call between Workers, so only the doors
    are smoked there: once they hold their routes, the kit waits `soak_s` (a deployment takes a
    few seconds to reach every location) and runs the platform canary's doors checks with the
@@ -227,11 +229,10 @@ It never counts as "absent".
   earlier `routes` run's, or yours) is left. Any other address record on the host stops
   the run before any change. A refused make (a token without DNS Edit) stops the run with
   only the route record written: add the record yourself (Cloudflare → `tinyassets.io` →
-  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and re-run
-  that run's jobs (the run → Re-run all jobs), not a new dispatch: its route record has the
-  host bare, so it keeps your record as the run's, and its handback deletes it. A new
-  dispatch keeps it as held, and no handback deletes it. The zone itself holds the site's
-  record, so on it nothing is made.
+  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and run
+  `routes` again (Re-run all jobs, or a new dispatch): the route record it keeps has the
+  host bare, so it keeps your record as the handover's, and its handback deletes it. The
+  zone itself holds the site's record, so on it nothing is made.
 
   It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
   `wrangler triggers deploy`), waits up to ten minutes for the egress door's own refusal on
@@ -255,8 +256,10 @@ It never counts as "absent".
 
   It also holds the zone, the run id and the time, and no secret. The job summary names its
   id (the run's, which heads the plan) and holds a copy. If the record cannot be written, the
-  run stops with nothing changed. A re-run attempt of the same run keeps its first attempt's
-  record. Re-run all its jobs, not the apply job alone: once an attempt has changed
+  run stops with nothing changed. The handover has one record, the state before its first
+  `routes` run: while the namespace holds a route record of the host, every `routes` run (a
+  re-run attempt, or a later dispatch) keeps the oldest as it is and writes none, and its plan
+  names the id to hand back. Re-run all its jobs, not the apply job alone: once an attempt has changed
   anything, the live state no longer plans what the first plan job showed, and the apply job
   stops before any change.
 
@@ -264,8 +267,10 @@ It never counts as "absent".
   custom domain or holds an address record (A, AAAA or CNAME). Run from the workflow,
   wrangler's custom-domain deploy replaces either, and no handback could give it back. The
   plan job shows this stop too.
-- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id
-  `routes`' summary names. Its plan job reads the record and the zone and changes nothing,
+- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id every
+  `routes` plan names, the host's first `routes` run's. A record kept after it (a kit before
+  2026-11-22 wrote one each `routes` run, holding the handover's own state as its before) is
+  refused, naming the first. Its plan job reads the record and the zone and changes nothing,
   so run it once right after `routes`, to see what a handback would do. The apply job puts
   back what `routes` changed, in reverse order:
   1. E2B's lifecycle webhook is disabled, unless the record has it enabled before. A hook
@@ -294,7 +299,9 @@ It never counts as "absent".
 
   After its changes it reads each back, and stops, naming each difference,
   unless they are the record's. A rerun changes only what is not back yet, and a killed run
-  is simply run again.
+  is simply run again. Read back, it ends the handover: it deletes every route record of the
+  host, the one it names last, each copied into its job summary first, so the next `routes`
+  records the host afresh. A handback run after that finds no record and stops.
 
   It doesn't run the handles canary. Until the old stack is up, the routes it gave back
   serve nothing, so the canary would fail a correct handback. The order is:
@@ -460,7 +467,8 @@ It never counts as "absent".
   5. **Each account signs in and mints one API key**; store the probe keys (`TA_PROBE_KEY`
      and the rest, as after `routes` above) and run the platform's canary keyed.
   6. **The end:** each stage account's own erasure in the owner app, then `handback` of the
-     stage's route record. It deletes the stage host's routes and DNS record, detaches the
+     stage's route record, the one the next `routes` plan or a refused handback names. It
+     deletes the stage host's routes and DNS record, detaches the
      egress domain and disables the hook; the old stack never stopped, so its last line's
      restart does not apply. Then empty the OAuth namespace (`OAUTH_KV` in `platform.json`'s
      titles) and close the control record. The platform's canary reads the platform dark

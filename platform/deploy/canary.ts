@@ -60,6 +60,8 @@
  * with the job's own token (`actions.ts` `github`).
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -82,8 +84,12 @@ import { watch } from "./offsite.ts";
 
 type Json = Record<string, unknown>;
 
-/** The canary's world: replaced whole by its tests. */
+/**
+ * The canary's world: replaced whole by its tests. `fetch` is Node's; `request` sends each
+ * header as given (`verbatim`), for a request setting one `fetch` overwrites (`OVERWRITTEN`).
+ */
 export interface World extends Reach {
+  readonly request: Reach["fetch"];
   readonly now: () => Date;
 }
 
@@ -175,11 +181,70 @@ function records(): SideRecords {
   return JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.json"), "utf8"));
 }
 
-/** One request, bounded: unreachable is exit 2, never an answer, named with its cause. */
+/**
+ * The request headers Node's fetch (undici, Node 22) overwrites with its own whatever the
+ * request gives: `Sec-Fetch-Mode` becomes the request's mode, `cors`, so a fetch can never
+ * present a browser's navigation (`NAVIGATE`), which the doors' `/authorize` takes alone.
+ */
+const OVERWRITTEN: readonly string[] = Object.freeze(["Sec-Fetch-Mode"]);
+
+/**
+ * The headers Node's fetch adds to a request that gives none of them, which `verbatim` adds
+ * too: so a request sent verbatim meets Cloudflare's checks in front of the doors as the
+ * canary's fetches do. Its `Accept-Encoding` is left out: `verbatim` decodes no body.
+ */
+const FETCH_DEFAULTS: Readonly<Record<string, string>> = Object.freeze({
+  Accept: "*/*", "Accept-Language": "*", "User-Agent": "node" });
+
+/** The statuses whose answer has no body (the Fetch standard's null body statuses). */
+const NO_BODY: readonly number[] = Object.freeze([101, 204, 205, 304]);
+
+/**
+ * One request over `node:http(s)`, each header sent as given (`FETCH_DEFAULTS` beside them),
+ * answered as a `Response` once its body is read whole; a redirect is never followed, and a
+ * body is text or none. The canary's `World.request`, for a request setting a header fetch
+ * overwrites (`OVERWRITTEN`).
+ */
+export function verbatim(url: string, init: RequestInit = {}): Promise<Response> {
+  const { protocol } = new URL(url);
+  const client = protocol === "https:" ? httpsRequest : protocol === "http:" ? httpRequest : null;
+  if (client === null || !(init.body === undefined || init.body === null
+                           || typeof init.body === "string")) {
+    throw new Error(`a verbatim request takes an http(s) URL and a text body or none: ${url}`);
+  }
+  const headers = new Headers(FETCH_DEFAULTS);
+  new Headers(init.headers).forEach((value, name) => { headers.set(name, value); });
+  return new Promise((resolve, reject) => {
+    const sent = client(url, { method: init.method ?? "GET", headers: Object.fromEntries(headers),
+                               signal: init.signal ?? undefined }, (answer) => {
+      const chunks: Buffer[] = [];
+      answer.on("data", (chunk: Buffer) => { chunks.push(chunk); });
+      answer.on("error", reject);
+      answer.on("end", () => {
+        const got = new Headers();
+        for (let at = 0; at < answer.rawHeaders.length; at += 2) {
+          got.append(answer.rawHeaders[at]!, answer.rawHeaders[at + 1]!);
+        }
+        const status = answer.statusCode!;
+        resolve(new Response(NO_BODY.includes(status) ? null : Buffer.concat(chunks),
+                             { status, headers: got }));
+      });
+    });
+    sent.on("error", reject);
+    sent.end(init.body ?? undefined);
+  });
+}
+
+/**
+ * One request, bounded: unreachable is exit 2, never an answer, named with its cause. One
+ * setting a header fetch overwrites goes by `world.request`.
+ */
 async function send(world: World, url: string, init: RequestInit = {}): Promise<Response> {
+  const given = new Headers(init.headers);
+  const client = OVERWRITTEN.some((name) => given.has(name)) ? world.request : world.fetch;
   try {
-    return await world.fetch(url, { redirect: "manual", ...init,
-                                    signal: AbortSignal.timeout(REQUEST_MS) });
+    return await client(url, { redirect: "manual", ...init,
+                               signal: AbortSignal.timeout(REQUEST_MS) });
   } catch (error) {
     throw error instanceof Failure ? error
       : new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${fetchFailure(error)}`);
@@ -196,16 +261,17 @@ const DOORS_HOSTS: readonly string[] = Object.freeze([new URL(ORIGIN).host, EGRE
  * override (a dictionary of the Worker's name to the version's id, as a string), and each
  * answer held to name it: the override is ignored where the deployment at the location
  * answering does not hold the version yet, and the answer comes from the version the shares
- * pick (Cloudflare's version-overrides page). Every other request is sent as it is.
+ * pick (Cloudflare's version-overrides page). Every other request is sent as it is. Both of
+ * the world's clients are held so.
  */
 function smoked(world: World, version: string): World {
-  return { ...world, fetch: async (url, init = {}) => {
+  const held = (client: World["fetch"]): World["fetch"] => async (url, init = {}) => {
     if (!DOORS_HOSTS.includes(new URL(url).host)) {
-      return world.fetch(url, init);
+      return client(url, init);
     }
     const headers = new Headers(init.headers);
     headers.set(OVERRIDE, `${DOORS}="${version}"`);
-    const answer = await world.fetch(url, { ...init, headers });
+    const answer = await client(url, { ...init, headers });
     const by = answer.headers.get(VERSION_HEADER);
     if (by !== version) {
       throw new Failure(16, `${init.method ?? "GET"} ${url} was answered by ${by === null
@@ -213,7 +279,8 @@ function smoked(world: World, version: string): World {
         "override (a location without the deployment yet, or one that does not hold it)");
     }
     return answer;
-  } };
+  };
+  return { ...world, fetch: held(world.fetch), request: held(world.request) };
 }
 
 /** The world's reach, each request bounded by `send`. */
@@ -351,7 +418,8 @@ async function signIn(world: World): Promise<string> {
   if (keys.status !== 200 || !Array.isArray((await json(keys, record.jwks_uri, 5))["keys"])) {
     throw new Failure(5, `the issuer's JWKS ${record.jwks_uri} answered ${keys.status}, no keys`);
   }
-  // The doors take `GET /authorize` only as a browser's top-level navigation.
+  // The doors take `GET /authorize` only as a browser's top-level navigation, which `send`
+  // sends verbatim.
   const answer = await send(world, firstPartyLink(), { headers: NAVIGATE });
   const to = answer.headers.get("Location");
   const sent = to === null ? null : new URL(to, AUTHORIZE);
@@ -655,7 +723,8 @@ async function main(argv: readonly string[]): Promise<number> {
     throw new Error("--smoke takes its version's id, and no other option");
   }
   // A canary that stops is a red run like any other, so the alarm still reads its result.
-  const result = await canary({ fetch: (url, init) => fetch(url, init), env: process.env,
+  const result = await canary({ fetch: (url, init) => fetch(url, init), request: verbatim,
+                                env: process.env,
                                 now: () => new Date() },
                               { side, unkeyed: argv.includes("--unkeyed"),
                                 clock: argv.includes("--clock"), full: argv.includes("--full"),
