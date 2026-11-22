@@ -120,8 +120,16 @@ technical ceilings, each with its reason. Research first (Fact 14), read at `c21
 - The refusal code `egress_rate` names a rate where it is a count: kept, a wire code.
 - `pass-gateway.md` and `untangle-2026-11-remaining-build.md` name `IDLE_CUT_MS`: shared
   logs of what was built then, only corrected.
+- Found in review: `EGRESS_LIMITS.open` bounds memory as well as rows. Each open call keeps its
+  end signal in `Egress.#live`, in the owner isolate the counts test bounds, and the old tiers
+  held that to 80 or 160. Read in workerd with a held `IdentityTransformStream` returned over
+  RPC: about 400 B of heap a call, 6.1 MiB at 16,000, inside the counts test's 51.3 MiB room
+  for one object. It is named in its `UNCOUNTED`, owed below.
 
 ## Owed
+
+- [ ] The memory leg measures an open egress call's end signal, and the counts test counts
+  `EGRESS_LIMITS.open` of them for each owner object (`untangle/egress-open-memory`).
 
 - [x] Tick `tasks.md` item 11's `fact15-caps-2` clause and `fact15-caps.md`'s owed line, and
   drop `egress_reservations` from the `RUNS_CEILING` row's per-run terms, once #5781 merges

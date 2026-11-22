@@ -70,8 +70,8 @@
  * `lost` past `LOST_AFTER_S` without one, its charge `unknown`, and any open one past its
  * door's own deadline (`EGRESS_DEADLINE_S`) is too.
  *
- * Every row lives in `egress_reservations` (migration 11): at most `EGRESS_LIMITS.open` open, the newest
- * `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
+ * Every row lives in `egress_reservations` (migration 11): at most `EGRESS_LIMITS.open` open,
+ * the newest `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
  *
  * Declared difference from research §6, which let a sandbox response already streaming
  * finish within its deadline (`EGRESS_DEADLINE_S`): here a policy write ends it, as it ends
@@ -105,7 +105,10 @@ import { clock, clockMs } from "./clock";
 /**
  * How much egress one owner holds: 16,000 calls open at once, whichever of its runs opened
  * them, each a row the owner-bound guard costs (`egress_reservations`), the object's 10 GB
- * the ceiling. One owner holds far fewer: the paid tier's 10 runs of Claude Code, each its
+ * the ceiling. Each open call also holds its end signal (`#live`) in the object's isolate,
+ * about 400 B of heap in workerd (read 2026-11-22), so 6.1 MiB at 16,000: inside the counts
+ * test's room, not yet one of its terms (`guards/memory-counts.test.ts`, `UNCOUNTED`).
+ * One owner holds far fewer: the paid tier's 10 runs of Claude Code, each its
  * main loop and the 20 subagents it runs at once (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`'s
  * default in 2.1.309), stream 210. It is the room the guard held before, 16 a run at the
  * most runs a tier may give, as one count, so a busy run is never refused while the
