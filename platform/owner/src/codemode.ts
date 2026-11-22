@@ -191,24 +191,44 @@ interface ScriptParts {
  * One script run to its end (the MCP door's `code`, `codeRun`): its tools' calls counted by
  * how each ended, the writes that landed in order, and the answer fitted to one tool answer
  * (`fittedCode`). A script whose caller stopped waiting is stopped (pi-codemode's abort: its
- * pending call cancelled and its execution ended), answered `stopped`, and logged
- * with its calls and what landed, since its answer has no reader.
+ * execution ended, a call in flight awaited and said as it ended), answered `stopped`, and
+ * logged with its calls and what landed, since its answer has no reader.
  */
 async function runScript(parts: ScriptParts): Promise<CodeResult> {
+  // A call in flight when its caller leaves goes on in its door and may land, though
+  // pi-codemode answers it `cancelled`: each is awaited, and said as it ended, in order.
+  const made: { done: boolean; ended: Promise<"ok" | "error"> }[] = [];
+  let cut: Promise<"ok" | "error">[] = [];
+  parts.left.addEventListener("abort", () => {
+    cut = made.filter((call) => !call.done).map((call) => call.ended);
+  }, { once: true });  // before pi-codemode's own listener, so it sees the calls pi cancels
   const sandbox = codemodeSandbox({
     service: parts.service,
     owner: () => parts.owner,
     tools: parts.tools.map((tool) => ({
       name: tool.name, description: tool.description, inputSchema: tool.input,
-      execute: (args: unknown) => parts.call(tool, args) })),
+      execute: (args: unknown) => {
+        const called = parts.call(tool, args);
+        // Settled here first: this reaction is registered before pi-codemode awaits the call.
+        const end = (status: "ok" | "error") => () => {
+          call.done = true;
+          return status;
+        };
+        const call = { done: false, ended: called.then(end("ok"), end("error")) };
+        made.push(call);
+        return called;
+      } })),
   });
   try {
     const result = await sandbox.execute(parts.script, { signal: parts.left });
+    const ends = await Promise.all(cut);
     const calls = { ok: 0, error: 0, cancelled: 0 };
     const landed: Landed[] = [];
     const changes = new Set(parts.tools.filter((tool) => !tool.readOnlyHint)
       .map((tool) => tool.name));
-    for (const call of result.calls) {
+    for (const entry of result.calls) {
+      const call = entry.status === "cancelled" && ends.length > 0
+        ? { name: entry.name, status: ends.shift()! } : entry;
       calls[call.status] += 1;
       const last = landed.at(-1);
       if (!changes.has(call.name)) {

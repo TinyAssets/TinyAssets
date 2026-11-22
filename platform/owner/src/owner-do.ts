@@ -929,12 +929,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     };
     try {
       let left: AbortSignal | null = null;
-      if (takesStop(row)) {
-        // A door that runs while its caller waits: its caller's leaving is its stop's end,
-        // closed by the doors, or broken when their side of the call is gone.
-        if (!(stop instanceof ReadableStream)) {
-          throw new Refusal("invalid", `${row.door} takes its caller's stop`);
-        }
+      // A door that runs while its caller waits: its caller's leaving is its stop's end,
+      // closed by the doors, or broken when their side of the call is gone. A call without
+      // one is refused where its request's fields are, after its admission (`#handled`).
+      if (takesStop(row) && stop instanceof ReadableStream) {
         const stopped = new AbortController();
         leaving = stop.getReader();
         leaving.read().then(() => stopped.abort(), () => stopped.abort());
@@ -1001,11 +999,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   #handled(row: OwnerRow, binding: unknown, asked: never, handler: Handled,
            lease: Lease, left: AbortSignal | null): Promise<unknown> {
     if (row.gate === "units") {
+      const within = <T>(inner: (call: Call<never, CallerKind>) => T) =>
+        this.#within(row, binding, asked, lease, (call) => {
+          if (takesStop(row) && left === null) {
+            throw new Refusal("invalid", `${row.door} takes its caller's stop`);
+          }
+          return inner(call);
+        });
       const door: Door<never> & Partial<Leaving> = {
         ...left === null ? {} : { left },
         request: asked,
-        check: () => this.#within(row, binding, asked, lease, (call) => call),
-        within: (inner) => this.#within(row, binding, asked, lease, inner),
+        check: () => within((call) => call),
+        within,
         bound: () => this.#bound(row, binding, asked).account,
         authorized: () => {
           const { binding: given, account } = this.#bound(row, binding, asked);

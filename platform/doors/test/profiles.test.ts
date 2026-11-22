@@ -5,8 +5,9 @@
  * policy has code mode on (off by default); one `code` call runs a script of several tool
  * calls, and its calls stop once outside access is switched off; a script is stopped once its
  * caller stops waiting (an `/api` caller's request aborted, a 2025-11-25 client past
- * `LEGACY_WAIT_MS` on the fake clock), each while its call is held at the owner gate, so the
- * stop the doors hand is closed before the object reads it; a revoked client is
+ * `LEGACY_WAIT_MS` on the fake clock, where a 2026-07-28 client's runs on), each while its
+ * call is held at the owner gate, so the stop the doors hand is closed before the object reads
+ * it; a revoked client is
  * refused before any tool is listed; an API key is held to its profile at `/api` and `/mcp`
  * as a client is at `/mcp`, and its `code` call at `/api` refused, saying why, while code mode
  * is off.
@@ -209,13 +210,17 @@ describe("the MCP door's tool profiles", () => {
     await client.close();
   });
 
-  it("stops a 2025-11-25 client's script once its wait is past, its cancel unable to reach",
-     async () => {
+  // A 2025-11-25 client's script is stopped once its wait is past, its cancel unable to reach;
+  // a 2026-07-28 client's runs on past it, its leaving its own.
+  it.each([
+    ["legacy" as const, { ok: false, error: { kind: "stopped" }, calls: { ok: 0 } }],
+    [{ pin: "2026-07-28" as const }, { ok: true, value: "ran", calls: { ok: 50 } }],
+  ])("answers a %j client's script held past LEGACY_WAIT_MS", async (mode, answer) => {
     const o = await signedIn();
     await o.policy(true);
     const tokens = await connect(await registerClient(), { owner: o.who });
     const client = new Client({ name: "test-agent", version: "1.0.0" },
-                              { versionNegotiation: { mode: "legacy" } });
+                              { versionNegotiation: { mode } });
     await client.connect(new StreamableHTTPClientTransport(new URL(url("/mcp")), {
       fetch: (input, init) => call(new Request(input, init)),
       requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } },
@@ -230,8 +235,7 @@ describe("the MCP door's tool profiles", () => {
       vi.advanceTimersByTime(LEGACY_WAIT_MS);
       vi.useRealTimers();
       await env.OWNER_GATE.release(id);
-      expect(answerOf(await asked)).toMatchObject({ ok: false, error: { kind: "stopped" },
-                                                    calls: { ok: 0 } });
+      expect(answerOf(await asked)).toMatchObject(answer);
     } finally {
       vi.useRealTimers();
       await client.close();

@@ -515,7 +515,7 @@ export interface DoorMethods<H> {
    * Run one JavaScript script that calls your other tools here as `await tools.<name>(args)`, each
    * held to your grant, and answer its return value and output: many tool calls in one. Its effects
    * are the effects of the tools it calls. Only while the owner's policy turns code mode on; a
-   * script past its time or compute bound is stopped.
+   * script is stopped once you stop waiting for it, or past its compute or memory bound.
    */
   codeRun(binding: Binding, request: RequestIn<H, "codeRun">, stop: ReadableStream<Uint8Array>):
     Promise<AnswerIn<H, "codeRun">>;

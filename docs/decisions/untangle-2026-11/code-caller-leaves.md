@@ -83,7 +83,9 @@ is a caller that stops waiting without leaving: a 2025-11-25 client past its own
    (`stop: ReadableStream<Uint8Array>`, `OwnerDoors`, `DoorMethods`) and name the doors
    (`StopDoors`). The doors hand it (`callDoor`, `takesStop`): an `IdentityTransformStream`
    whose writer closes when the caller's `left` aborts or the call ends. The owner's runner
-   reads it (`#leased`): a call without one is refused `invalid`, loudly; its read ending
+   reads it (`#leased`): a call without one is refused `invalid`, loudly, where its request's
+   fields are, after its admission (so a suspended owner's every door answers the suspension);
+   its read ending
    aborts the handler's `door.left` (`Leaving`, typed only on `StopDoors`), and the reader is
    let go when the call settles. One home: the door table says which doors, `callDoor` makes
    the stop, the runner reads it, the handler honours it.
@@ -94,7 +96,8 @@ is a caller that stops waiting without leaving: a 2025-11-25 client past its own
 3. **The wall time is the caller's own wait.** `CODEMODE_TIMEOUT_MS`, the owner's deadline
    checked at each tool call and its `late` abort go. The script runs under `door.left`; once
    it aborts the script is stopped, answered `{ kind: "stopped" }` with its calls and what
-   landed (a call in flight `cancelled`), and logged (`console.warn`) with the same, since its
+   landed (a call in flight, which pi answers `cancelled` though its door goes on, awaited
+   and said as it ended), and logged (`console.warn`) with the same, since its
    answer has no reader. pi's own deadline is set to the most a timer takes (`TIMER_MOST_MS`,
    2^31 - 1 ms), never reached by a waiting caller.
 4. **One technical ceiling stays, where its reason is:** `LEGACY_WAIT_MS`, 10 minutes, for a
@@ -105,12 +108,14 @@ is a caller that stops waiting without leaving: a 2025-11-25 client past its own
    `LEGACY_WAIT_MS`, and the summary recounted (183 technical ceilings, 212 rows, after
    merging main).
 5. **Tests.** Owner: a script whose stop closes while its fourth call is held at the FILES gate,
-   fifty calls after it, is answered `stopped`, three writes landed and the fourth
-   `cancelled`, no call after; a call without its caller's stop refused `invalid`
+   fifty calls after it, is answered `stopped`, all four writes landed (the held one said
+   so, its row read back), no call after; a call without its caller's stop refused `invalid`
    (`code-door.test.ts`); no clock ends a script (`codemode.test.ts`: pi's timers faked and
    moved ten minutes on while its one call is pending), replacing "stops a script past its
-   wall time". Doors: a 2026-07-28 client's cancel of an endless script ends it, the object's
-   answer seen at the owner gate (`profiles.test.ts`). Guards: the stop's table rules in both
+   wall time". Doors (`profiles.test.ts`), each call held at the owner gate: an `/api` caller
+   that leaves is answered `stopped` with no call made, a waiting one runs to its value; a
+   2025-11-25 client past `LEGACY_WAIT_MS` on the fake clock is answered `stopped`, a
+   2026-07-28 one runs on to its value. Guards: the stop's table rules in both
    halves. The RPC recorder hands a stop door a waiting caller's stop, as the doors do, so its
    lines are unchanged. Specs: `owner-object` (the requirement and a scenario), `doors` (the
    stop each tool call hands). H2: probe 4 is now a waiting caller's 10 minutes of calls (no
@@ -133,3 +138,22 @@ is a caller that stops waiting without leaving: a 2025-11-25 client past its own
 - [ ] live: H2's probe 4 holds that a waiting caller's 10 minutes of tool calls back to back
   ends with its value (no owner object reset), and probe 7 that a caller that leaves stops its
   script (the owner Worker's log line), before code mode turns on (`tasks.md` §5).
+
+## Review (2026-11-22)
+
+- A call in flight when the caller left was answered and logged `cancelled` while its write
+  went on in its door and landed (probed: the held row read back). `runScript` now notes the
+  calls unsettled at the abort, awaits each, and says it as it ended, so `stopped` reports
+  what landed, and the call's lease ends only after them.
+- `codeRun`'s missing-stop refusal ran before admission, so a suspended or erasing owner's
+  `codeRun` answered it instead of the suspension (`erasure.test.ts`, CI). It is now checked
+  in the door's unit after its fields, as an argument is.
+- Nothing held a 2026-07-28 client's `leaving` apart from a legacy one's: the doors' test
+  now runs both revisions past `LEGACY_WAIT_MS` (with the envelope check mutated, it fails).
+- The `code` tool's description still said "a script past its time"; it now says a script
+  stops once its caller stops waiting.
+- A long wait's cost: the VM has no timers (probed: `typeof setTimeout` is `undefined`), so a
+  waiting script computes only within its interrupt budget between calls and otherwise awaits
+  its tool calls; the owner object stays free for other calls meanwhile (no unit spans the
+  script). What a caller waiting a day keeps is the owner object and its VM awake, the cost of
+  its own open call, which it ends by leaving: stated in the `TIMER_MOST_MS` row.

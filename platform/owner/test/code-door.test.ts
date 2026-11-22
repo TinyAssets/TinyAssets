@@ -7,9 +7,9 @@
  * control record's gates (the record flipped while a call is held at the FILES gate, the object's
  * clock moved by a fake `Date`); no tool outside the profile and no capability outside the grant; a
  * revoked client and another owner's binding refused; a script whose caller stopped waiting (its
- * stop closed while a call is held at the FILES gate) stopped, saying which calls landed; a call
- * without its caller's stop refused; output past one answer cut and said so, a value past it
- * refused `answer_too_large`. That no clock stops a script whose caller waits is the executor's
+ * stop closed while a call is held at the FILES gate) stopped, saying which calls landed, the
+ * held one as it ended; a call without its caller's stop refused, after its admission; output
+ * past one answer cut and said so, a value past it refused `answer_too_large`. That no clock stops a script whose caller waits is the executor's
  * (`codemode.test.ts`).
  * A script past its compute is the codemode Worker's to stop (`codemode/test/`).
  */
@@ -243,10 +243,11 @@ describe("the code door", () => {
     // Stopped by its caller's leaving, never run on: the fifty calls after it were not made.
     expect(stopped).toMatchObject({ ok: false, error: { kind: "stopped",
       message: "the script's caller stopped waiting, so it was stopped" },
-      calls: { ok: 3, error: 0, cancelled: 1 } });
-    // The three writes landed; the held one the script stopped waiting for is said so.
-    expect(stopped.landed).toEqual([{ name: "collection_write", status: "ok", count: 3 },
-                                    { name: "collection_write", status: "cancelled", count: 1 }]);
+      calls: { ok: 4, error: 0, cancelled: 0 } });
+    // The held write went on in its door and landed, and is said so, never `cancelled`.
+    expect(stopped.landed).toEqual([{ name: "collection_write", status: "ok", count: 4 }]);
+    expect((await r.stub.collectionGet(r.bind(null), { collection: "board", row_id: "placed" }))
+      .row).not.toBeNull();
   });
 
   it("refuses a call that carries no caller's stop, before any script runs", async () => {
