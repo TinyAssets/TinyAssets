@@ -583,10 +583,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // The sandbox leases: one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,
                       bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
-                        + 16,
+                        + 16 + 5 * NUMBER,
                       by: "RUNS_CEILING, each its authority, lease id, epoch, holder, " +
                         "times, three token hashes, network generation, its sandbox's " +
-                        "own signed-in engines (visible ASCII) and its readable set's digest" },
+                        "own signed-in engines (visible ASCII), its readable set's digest, " +
+                        "the re-apply out, its retry clock and generation, and the narrowing " +
+                        "it owes and since when" },
     // The vendor's own sign-ins in progress: one a sandbox, each holding that sandbox's lease, so
     // at most RUNS_CEILING; each its prompt, a URL and a code (visible ASCII, at most
     // SIGNIN_URL_MAX and SIGNIN_CODE_MAX).

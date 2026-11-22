@@ -351,7 +351,7 @@ export const SIGNIN_URL_MAX = 8000;
  */
 export const SIGNIN_CODE_MAX = 16;
 /**
- * A run grant's connectors, as JSON (`owner/src/runs.ts`, migration 21): each a connection
+ * A run grant's connectors, as JSON (`owner/src/runs.ts`, migration 22): each a connection
  * id of the owner's, distinct, so at most the owner's live connections, whose ids' JSON the
  * owner-bound guard holds within it.
  */

@@ -77,7 +77,7 @@ What the research left to this slice, each from the code at `d7fbb0519` or a pri
    unit that makes the run's network, each server `agentServers` kept whose URL an active
    connector's scope allows (`connectorsOf`, the newest for a URL: a newer key is its rotation)
    is bound to it; the grant records the connectors (`run_grants.connectors`, owner migration
-   21), and the start carries those servers on the run's egress path (`throughConnectors`,
+   22), and the start carries those servers on the run's egress path (`throughConnectors`,
    `contract/src/egress.ts` `connectorUrl`). No runner change and no protocol change: the start's
    `mcp_servers` is protocol 3's, a URL.
 5. **The admission (`owner/src/egress.ts`).** A call may name the run's model connection or one

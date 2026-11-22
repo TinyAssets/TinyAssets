@@ -1457,6 +1457,21 @@ export class Runs {
     return ended.filter((row) => row.state !== "waiting").map((row) => row.id);
   }
 
+  /**
+   * In a unit: every live run under the lease `leaseId` settled `failed` with `code` at once,
+   * its grant gone, so its runner's next post is refused and stops its CLI; the lease given
+   * back with the last unless a sign-in holds it. Their ids, to stop in the sandbox.
+   */
+  endLease(leaseId: string, code: string, now: number): string[] {
+    const ended = this.#sql.exec<{ id: string }>(
+      `SELECT id FROM runs WHERE lease_id = ? AND ${LIVE} ORDER BY seq`, leaseId).toArray()
+      .map(({ id }) => id);
+    for (const run of ended) {
+      this.settle(run, "failed", code, null, now);
+    }
+    return ended;
+  }
+
   /** Every live run's id. A read. */
   liveRuns(): string[] {
     return this.#sql.exec<{ id: string }>(`SELECT id FROM runs WHERE ${LIVE} ORDER BY seq`)

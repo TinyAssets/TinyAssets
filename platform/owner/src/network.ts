@@ -81,15 +81,12 @@ export interface EgressPolicy {
 }
 
 /**
- * E2B's network configuration for the owner's egress policy at egress `generation`, its
- * door's transform setting the generation (`withGeneration`) and no egress token: the start
- * that opens a lease adds the lease's (`withEgressToken`), and a re-apply's goes as it is,
- * the sandbox Worker setting the live sandbox's own (`NetworkReapply`), since the object
- * holds only its hash.
+ * The names the owner's egress policy lets out of the sandbox (`*`, every name, in `open`
+ * mode), and the destinations E2B cannot express, which it never lets out.
  */
-export function networkDocument(egress: EgressPolicy, generation: number): NetworkPlan {
-  const mode = egress.mode;
-  if (!EGRESS_MODES.includes(mode)) {
+function letOut(egress: EgressPolicy):
+    { names: ReadonlySet<string>; unexpressed: readonly Unexpressed[] } {
+  if (!EGRESS_MODES.includes(egress.mode)) {
     throw new Refusal("invalid", "invalid egress policy");
   }
   const allowed = new Set<string>();
@@ -98,12 +95,35 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
     checkDestination(entry);  // an IP literal is refused here as in the policy itself
     if (!NAMED_PORTS.includes(entry.port)) {
       unexpressed.push(Object.freeze({ host: entry.host, port: entry.port, reason: "port" }));
-    } else if (mode !== "open") {
+    } else {
       allowed.add(entry.host);
     }
   }
-  // `open` lets every name out (`*`); either way the door is listed, last (`allowList`).
-  const closed = withGeneration(closedNetwork(mode === "open" ? ["*"] : allowed), generation);
+  return egress.mode === "open" ? { names: new Set(["*"]), unexpressed: [] }
+    : { names: allowed, unexpressed };
+}
+
+/**
+ * Whether `after` lets out less than `before`: a name `before`'s network lets out that
+ * `after`'s does not. Names are compared as written, so one a wider name of `after`'s covers
+ * counts as dropped: the safe side, as a narrowing is never missed.
+ */
+export function narrows(before: EgressPolicy, after: EgressPolicy): boolean {
+  const kept = letOut(after).names;
+  return !kept.has("*") && [...letOut(before).names].some((name) => !kept.has(name));
+}
+
+/**
+ * E2B's network configuration for the owner's egress policy at egress `generation`, its
+ * door's transform setting the generation (`withGeneration`) and no egress token: the start
+ * that opens a lease adds the lease's (`withEgressToken`), and a re-apply's goes as it is,
+ * the sandbox Worker setting the live sandbox's own (`NetworkReapply`), since the object
+ * holds only its hash.
+ */
+export function networkDocument(egress: EgressPolicy, generation: number): NetworkPlan {
+  const { names, unexpressed } = letOut(egress);
+  // Either way the door is listed, last (`allowList`).
+  const closed = withGeneration(closedNetwork(names), generation);
   return Object.freeze({
     network: Object.freeze({
       allowOut: Object.freeze(closed.allowOut),
@@ -111,8 +131,8 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
       dnsServers: Object.freeze(closed.dnsServers),
       rules: Object.freeze(closed.rules),
     }),
-    mode,
-    unexpressed: Object.freeze(mode === "open" ? [] : unexpressed),
+    mode: egress.mode,
+    unexpressed: Object.freeze(unexpressed),
     boundary: false,
     note: BOUNDARY_NOTE,
   });
