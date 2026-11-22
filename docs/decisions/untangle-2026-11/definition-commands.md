@@ -27,6 +27,14 @@ hooks, researched first (Fact 14).
   run's user, in the agent's directory, on every matching event of the run. The start check
   (`runner.ts` `hooksCheck`) only checks each program is there; it runs none. Again no tool call:
   R5's hook never sees it.
+- **A skill's inline command (review).** Claude Code runs a skill's or command's ``!`cmd` ``
+  as it renders, with no tool call, once its permission rules allow it (a skill's own
+  `allowed-tools` does); `allowManagedHooksOnly` and `strictPluginOnlyCustomization` stop
+  only hooks (code.claude.com/docs/en/skills; 2.1.309 reads `disableSkillShellExecution`
+  from `policySettings`, the one switch). So the managed file sets it: while a rule needs the
+  hook, each such command is Claude's placeholder, and the model can run it only as its own
+  call, which the hook decides. Whether another engine's skill or custom command runs one
+  (Gemini's `.gemini/commands` `!{...}`) is owed below.
 - **Nothing else runs a definition command.** Every engine's own settings layers that could
   (Gemini's `tools.discoveryCommand` and its workspace `mcpServers`, pi's `.pi/mcp.json` and
   `shellCommandPrefix`, Claude Code's project `.mcp.json` and settings, Codex's project
@@ -122,4 +130,5 @@ left out never lets past anything an owner's rule holds; refusing the run instea
 
 ## Owed
 
-- [ ] live: at the dark redeploy, an agent with a stdio server and a hook under a `workspace.shell` `never` rule starts neither on each engine, and the owner's `definition_command_dropped` notice names each.
+- [ ] live: at the dark redeploy, an agent with a stdio server and a hook under a `workspace.shell` `never` rule starts neither on each engine, and the owner's `definition_command_dropped` notice names each; on Claude Code, a skill's ``!`command` `` under its `allowed-tools` renders as the placeholder.
+- [ ] Whether a skill or custom command of Gemini's, Codex's or pi's can run a command as it loads, with no tool call (Gemini's `.gemini/commands` `!{...}`, which no `native.refuses` names), researched first (`untangle/skill-commands`).
