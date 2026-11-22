@@ -1016,7 +1016,7 @@ function definitionNative(check: ReturnType<typeof checker>, value: unknown, arg
   if (refuses.length === 0 || !refuses.every(relative) || new Set(refuses).size !== refuses.length
       || refuses.some((path) => rendered.some((own) =>
         overlaps(path.split("/"), own.split("/"))))) {
-    check.fail(`${what}.refuses lists the engine's own settings paths, distinct and relative ` +
+    check.fail(`${what}.refuses lists the engine's own layers' paths, distinct and relative ` +
                "to its cwd, none of them one the definition renders (its instructions, what " +
                "shadows them, its skills folders)");
   }

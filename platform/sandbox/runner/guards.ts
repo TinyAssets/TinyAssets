@@ -5,7 +5,7 @@
  * - **The definition** (`sources/src/schema.ts` `Definition`): a run reads its agent's
  *   definition and nothing beside it. It is refused while its cwd or an ancestor under
  *   `/workspace` holds a file the engine would read instead of the agent's instructions
- *   (`instructions.shadowed_by`) or as its own settings (`native.refuses`), or while the
+ *   (`instructions.shadowed_by`) or as its own layers (`native.refuses`), or while the
  *   instructions there hold more than the engine reads (`instructions.max_bytes`), which it
  *   would cut unseen.
  * - **Project env files** (tasks, "Slice S verifies each engine record live"): a run's
