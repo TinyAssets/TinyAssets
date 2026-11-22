@@ -337,6 +337,13 @@ describe("the gateway Worker", () => {
         .toMatchObject({ error: { code: "invalid_request" } });
     }
     expect(asked).toEqual([]);
+    // A coded body is not what the parse reads: refused before it is read.
+    const coded = await egress.forward("alice", C1, 1, blob, posted("/v1/responses", text, {
+      "content-encoding": "gzip", ...steer({ mode: "echo" }) }), granting(asked),
+      new ReadableStream());
+    expect([coded.response.status, await coded.response.json()]).toEqual(
+      [415, { error: { code: "egress_body_encoded", message: "egress_body_encoded" } }]);
+    expect(asked).toEqual([]);
     expect(await (await call(text, granting([], { input_bytes: text.length - 1 }))).response
       .json()).toMatchObject({ error: { code: "invalid_request" } });
     // An object that reserved another call than it was asked is the platform's bug: loud.

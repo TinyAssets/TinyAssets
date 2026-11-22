@@ -8,7 +8,7 @@
  * method, origin and path to be among the sealed endpoints, strips every credential the
  * request carried (the API-key query parameters; any other parameter its API's rules do not
  * allow is refused, `egressTarget`; every header its rules do not name is dropped,
- * `egressHeaders`), injects the sealed one by the sealed auth template, and sends it to the
+ * `egressHeaders`, and named when the provider refuses the call, `logDropped`), injects the sealed one by the sealed auth template, and sends it to the
  * sealed origin. The provider's own answer streams back, status and body, so the client sees
  * its own API; only the secret is redacted from it, in every spelling a provider could quote
  * it back in (`redact.ts`). A call is cut at `FORWARD_DEADLINE_MS`, or once its answer is
@@ -126,6 +126,33 @@ const HOP_HEADERS: readonly string[] = Object.freeze([
 /** Whether an answer's header is ours or Cloudflare's, never passed back. */
 function internal(name: string): boolean {
   return name.startsWith("x-ta-") || name.startsWith("cf-");
+}
+
+/**
+ * The most names one drop line shows, and the longest name it shows: the line stays a few
+ * kilobytes whatever a request carries; a name past either is counted, not shown.
+ */
+const DROPS_SHOWN = 64;
+const DROP_NAME_SHOWN = 64;
+
+/**
+ * Logs which of the sandbox's request headers (`sent`) were not sent on (`forwarded`: what
+ * `egressHeaders` kept and the gateway set), when the provider refused the call as sent (a
+ * 4xx). A header its API needs that its rules do not name shows only as that refusal, and
+ * this line names it, for its API's data to take (`api-rules.ts` `headers`). Names only,
+ * never a value, which may carry a secret; a call the provider served logs nothing, so an
+ * engine's telemetry headers, dropped on every call, never flood the log.
+ */
+function logDropped(sent: Headers, forwarded: Headers, status: number,
+                    scope: EgressScope): void {
+  const dropped = [...sent.keys()].filter((name) => !forwarded.has(name));
+  if (dropped.length === 0) {
+    return;
+  }
+  const shown = dropped.filter((name) => name.length <= DROP_NAME_SHOWN).slice(0, DROPS_SHOWN);
+  console.warn(`a sealed ${"kind" in scope ? "service" : scope.api} call its provider ` +
+               `refused (${status}) had ${dropped.length} request headers dropped: ` +
+               `${shown.join(" ")}${shown.length < dropped.length ? " ..." : ""}`);
 }
 
 /** The header value the sealed template makes of the credential's secret. */
@@ -371,6 +398,10 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
         || Number(declared) > EGRESS_BODY_MAX) {
       return refused("invalid_request", resealed);
     }
+    // The parse reads plain bytes: a coded body is refused before it is read.
+    if (request.headers.has("content-encoding")) {
+      return refused("egress_body_encoded", resealed);
+    }
     // Held from its first unit to its upload's last write, to its stop; its sender's deadline
     // is the read's (`readHeld`), its reserve's the pool's wait, its upload's its own.
     const hold = new Hold(gatewaySlots(), bound.owner, cancelled.signal);
@@ -428,6 +459,9 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     return { response: refusal(deadline.aborted ? "deadline" : "upstream_unreachable",
                                resealed),
              outcome: Promise.resolve(metered === null ? FAILED : UNKNOWN) };
+  }
+  if (upstream.status >= 400 && upstream.status < 500) {
+    logDropped(request.headers, headers, upstream.status, scope);
   }
   const answer = new Headers();
   const redacted = redaction(secretsOf(credential));

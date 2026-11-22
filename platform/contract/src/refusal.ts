@@ -235,10 +235,11 @@ export const REFUSALS = Object.freeze({
   // The metered path's (`forward.ts`): a key the rules read spelled another way (`aliased`);
   // the owner's object refused the call's reservation (the egress door answers the object's
   // own code and receipt in its place); a call that alone weighs more than the pool
-  // (`held.ts`).
+  // (`held.ts`); a body sent coded (`content-encoding`), which the parse cannot read.
   egress_aliased_key: Object.freeze({ status: 400 }),
   egress_reserve_refused: REFUSED,
   egress_too_large: Object.freeze({ status: 413 }),
+  egress_body_encoded: Object.freeze({ status: 415 }),
   // A pool full past its wait, the gateway's (`held.ts`) or an isolate's (`slots.ts`):
   // told, retryable after `Retry-After`, never a loss.
   busy: Object.freeze({ status: 503, retryAfterS: 1, transient: true }),
@@ -274,11 +275,12 @@ export const GATEWAY_CODES = Object.freeze([
   "invalid_request", "invalid_binding", "invalid_source", "not_found", "credential_refused",
   "endpoint_refused", "unmetered", "egress_multiple_choices", "egress_unmetered_tool",
   "egress_unpriced_option", "egress_aliased_key", "egress_reserve_refused", "egress_too_large",
-  "busy", "unknown_model", "unsupported_source", "not_refreshable", "deadline",
-  "keyring_unavailable", "internal", "upstream_unauthorized", "upstream_rate_limited",
-  "upstream_timeout", "upstream_rejected", "upstream_overloaded", "upstream_server_error",
-  "upstream_unreachable", "upstream_error", "aborted", "oauth_invalid_grant",
-  "oauth_rejected", "oauth_unavailable", "oauth_unreachable", "oauth_malformed",
+  "egress_body_encoded", "busy", "unknown_model", "unsupported_source", "not_refreshable",
+  "deadline", "keyring_unavailable", "internal", "upstream_unauthorized",
+  "upstream_rate_limited", "upstream_timeout", "upstream_rejected", "upstream_overloaded",
+  "upstream_server_error", "upstream_unreachable", "upstream_error", "aborted",
+  "oauth_invalid_grant", "oauth_rejected", "oauth_unavailable", "oauth_unreachable",
+  "oauth_malformed",
 ] as const satisfies readonly RefusalCode[]);
 export type GatewayCode = (typeof GATEWAY_CODES)[number];
 
