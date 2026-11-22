@@ -148,7 +148,7 @@ describe("forward", () => {
   });
 
   it("names the request headers it dropped, never a value, when the provider refuses the " +
-     "call, and logs nothing when it serves it", async () => {
+     "call as sent, and logs nothing when it serves it or fails itself", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const logged = vi.spyOn(console, "warn");
@@ -159,6 +159,7 @@ describe("forward", () => {
         "x-stainless-lang": "js-lang-value", [`x-${"n".repeat(64)}`]: "long-name-value",
         ...steer({ mode: "say", status: String(status) }) } }), env)).status;
     expect(await answered(200)).toBe(200);
+    expect(await answered(503)).toBe(503);
     expect(logged).not.toHaveBeenCalled();
     expect(await answered(400)).toBe(400);
     expect(logged).toHaveBeenCalledTimes(1);

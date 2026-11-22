@@ -8,11 +8,12 @@
  * method, origin and path to be among the sealed endpoints, strips every credential the
  * request carried (the API-key query parameters; any other parameter its API's rules do not
  * allow is refused, `egressTarget`; every header its rules do not name is dropped,
- * `egressHeaders`, and named when the provider refuses the call, `logDropped`), injects the sealed one by the sealed auth template, and sends it to the
- * sealed origin. The provider's own answer streams back, status and body, so the client sees
- * its own API; only the secret is redacted from it, in every spelling a provider could quote
- * it back in (`redact.ts`). A call is cut at `FORWARD_DEADLINE_MS`, or once its answer is
- * silent for `IDLE_CUT_MS`, and redirects are never followed.
+ * `egressHeaders`, and named when the provider refuses the call, `logDropped`), injects the
+ * sealed one by the sealed auth template, and sends it to the sealed origin. The provider's
+ * own answer streams back, status and body, so the client sees its own API; only the secret
+ * is redacted from it, in every spelling a provider could quote it back in (`redact.ts`). A
+ * call is cut at `FORWARD_DEADLINE_MS`, or once its answer is silent for `IDLE_CUT_MS`, and
+ * redirects are never followed.
  *
  * User CLIs speak their provider's wire format. An unmetered call (a read, a cited free
  * call) only moves bytes: its body streams through. A metered one is the one request the
@@ -143,15 +144,14 @@ const DROP_NAME_SHOWN = 64;
  * never a value, which may carry a secret; a call the provider served logs nothing, so an
  * engine's telemetry headers, dropped on every call, never flood the log.
  */
-function logDropped(sent: Headers, forwarded: Headers, status: number,
-                    scope: EgressScope): void {
+function logDropped(sent: Headers, forwarded: Headers, status: number, api: string): void {
   const dropped = [...sent.keys()].filter((name) => !forwarded.has(name));
-  if (dropped.length === 0) {
+  if (status < 400 || status >= 500 || dropped.length === 0) {
     return;
   }
   const shown = dropped.filter((name) => name.length <= DROP_NAME_SHOWN).slice(0, DROPS_SHOWN);
-  console.warn(`a sealed ${"kind" in scope ? "service" : scope.api} call its provider ` +
-               `refused (${status}) had ${dropped.length} request headers dropped: ` +
+  console.warn(`a sealed ${api} call its provider refused (${status}) had ` +
+               `${dropped.length} request headers dropped: ` +
                `${shown.join(" ")}${shown.length < dropped.length ? " ..." : ""}`);
 }
 
@@ -460,9 +460,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                                resealed),
              outcome: Promise.resolve(metered === null ? FAILED : UNKNOWN) };
   }
-  if (upstream.status >= 400 && upstream.status < 500) {
-    logDropped(request.headers, headers, upstream.status, scope);
-  }
+  logDropped(request.headers, headers, upstream.status, priced?.api ?? "service");
   const answer = new Headers();
   const redacted = redaction(secretsOf(credential));
   for (const [name, value] of upstream.headers) {
