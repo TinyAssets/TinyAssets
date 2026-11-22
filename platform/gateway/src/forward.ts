@@ -124,7 +124,7 @@ const HOP_HEADERS: readonly string[] = Object.freeze([
   "connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade", "content-length",
 ]);
 
-/** Whether an answer's header is ours or Cloudflare's, never passed back. */
+/** Whether a header is ours or Cloudflare's: never passed back, nor a sandbox's drop. */
 function internal(name: string): boolean {
   return name.startsWith("x-ta-") || name.startsWith("cf-");
 }
@@ -136,17 +136,22 @@ function internal(name: string): boolean {
 const DROPS_SHOWN = 64;
 const DROP_NAME_SHOWN = 64;
 
+/** The provider's answers that refuse the call as sent (`upstreamCode`), not its own state. */
+const AS_SENT: readonly GatewayCode[] = Object.freeze(["upstream_unauthorized",
+                                                       "upstream_rejected"]);
+
 /**
  * Logs which of the sandbox's request headers (`sent`) were not sent on (`forwarded`: what
- * `egressHeaders` kept and the gateway set), when the provider refused the call as sent (a
- * 4xx). A header its API needs that its rules do not name shows only as that refusal, and
- * this line names it, for its API's data to take (`api-rules.ts` `headers`). Names only,
- * never a value, which may carry a secret; a call the provider served logs nothing, so an
- * engine's telemetry headers, dropped on every call, never flood the log.
+ * `egressHeaders` kept and the gateway set), when the provider refused the call as sent
+ * (`AS_SENT`: a 4xx, but a timeout's or a rate limit's). A header its API needs that its
+ * rules do not name shows only as that refusal, and this line names it, for its API's data
+ * to take (`api-rules.ts` `headers`). Names only (HTTP's tokens, lower-cased), never a value,
+ * which may carry a secret; a call the provider served logs nothing, so an engine's telemetry
+ * headers, dropped on every call, never flood the log.
  */
 function logDropped(sent: Headers, forwarded: Headers, status: number, api: string): void {
-  const dropped = [...sent.keys()].filter((name) => !forwarded.has(name));
-  if (status < 400 || status >= 500 || dropped.length === 0) {
+  const dropped = [...sent.keys()].filter((name) => !forwarded.has(name) && !internal(name));
+  if (!AS_SENT.includes(upstreamCode(status)) || dropped.length === 0) {
     return;
   }
   const shown = dropped.filter((name) => name.length <= DROP_NAME_SHOWN).slice(0, DROPS_SHOWN);

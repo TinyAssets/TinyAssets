@@ -38,17 +38,22 @@ header was one a provider needed, the provider's own `4xx` was the only signal. 
    module state (`ci/guards/module-state.test.ts`) and isolates are many, so that would be the
    owner's object, a migration, for a signal the owner cannot act on. A drop matters only
    when the provider refuses the call as sent, a `4xx` (`400` a missing version or session,
-   `401`/`403` a server's second credential, `404` an unknown session).
+   `401`/`403` a server's second credential, `404` an unknown session), not a `408` or `429`,
+   the provider's own state (`upstreamCode`).
 5. **`content-encoding`, from what the forward path does with bodies.** A free call's body
    streams through unread (`forward.ts` `send`: `request.body`), so its coding still
    describes it; dropping the header sent coded bytes as plain JSON. A metered call's body
    is parsed once and re-serialized by the gateway, uncoded; a coded one failed the parse as
    `invalid_request` after being read whole under the pool's slots, its reason unsaid. The
    answer side already holds the rule (an answer the redaction rewrites loses its
-   `content-encoding`). Codex 0.166.0 can send a coded body: its binary carries
-   `enable_request_compression` and "Compressed request body with zstd" (`npm pack
-   @openai/codex@0.166.0-linux-x64`, strings); which of its sign-ins it applies to was not
-   read from the binary. Workers cannot decode zstd (`DecompressionStream` takes gzip and
+   `content-encoding`). Codex 0.166.0 can send a coded body, but not through the door: its
+   `enable_request_compression` (stable, on by default) zstd-codes a Responses body only
+   for a ChatGPT-family sign-in to the provider named `OpenAI` (`codex-rs/core/src/client.rs`
+   `responses_request_compression`, `protocol/src/auth.rs` `uses_codex_backend`: never
+   `ApiKey`; `core/tests/suite/request_compression.rs`, read at `rust-v0.166.0` by the
+   review, 2026-11-22), and its API-key run is `forced_login_method="api"` on the record's
+   own provider, `TinyAssets` (`codex.json` `per_credential`), so no `-c` is needed. Workers
+   cannot decode zstd (`DecompressionStream` takes gzip and
    deflate), and a decoded body's size is not its declared length, which the held bound and
    the owner's admission are both read by.
 
@@ -56,7 +61,8 @@ header was one a provider needed, the provider's own `4xx` was the only signal. 
 
 - **One log line, in the gateway, when the provider refuses the call (`4xx`)**: the names of
   the sandbox's request headers that were not sent on (what `egressHeaders` kept and the
-  gateway set; so the placeholder's header, which the sealed one replaced, is no drop), at most
+  gateway set; so the placeholder's header, which the sealed one replaced, is no drop, nor
+  Cloudflare's or the platform's own, `internal`), at most
   64, each at most 64 characters, the rest counted; the API id and the status. A served call
   logs nothing, so telemetry never floods it, and a refusal is where a drop shows. Not on the
   receipt: the receipt has no reader yet, needs a migration and a gateway-to-door channel, and
@@ -75,10 +81,11 @@ header was one a provider needed, the provider's own `4xx` was the only signal. 
    (`egressHeaders`).
 2. **`contract/src/refusal.ts`**: `egress_body_encoded`, `415`, one of `GATEWAY_CODES`.
 3. **`gateway/src/forward.ts`**: a metered call with a `content-encoding` is refused before
-   its slots are taken; `logDropped` writes the drop line on a provider's `4xx`.
+   its slots are taken; `logDropped` writes the drop line when the provider refuses the call
+   as sent (`AS_SENT`, by `upstreamCode`: a `4xx`, but a `408` or `429`).
 4. **Tests**: a free call's gzip body arrives with its coding and its bytes; a metered coded
    body is refused `415` with no reserve asked; a provider's `400` logs the dropped names and
-   no value, a `200` logs nothing (`gateway/test/forward.test.ts`, `entry.test.ts`; the fake's
+   no value, a `200`, `429` or `503` logs nothing (`gateway/test/forward.test.ts`, `entry.test.ts`; the fake's
    `say` mode answers at the word `status`).
 
 ## Left, with why

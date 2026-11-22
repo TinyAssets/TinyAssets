@@ -157,14 +157,17 @@ describe("forward", () => {
       "https://egress/v1/models", { headers: {
         authorization: "Bearer ta_ph_placeholder", "openai-project": "proj_secret_value",
         "x-stainless-lang": "js-lang-value", [`x-${"n".repeat(64)}`]: "long-name-value",
+        "cf-ray": "edge-value",
         ...steer({ mode: "say", status: String(status) }) } }), env)).status;
     expect(await answered(200)).toBe(200);
     expect(await answered(503)).toBe(503);
+    // A rate limit is the provider's own state, not a refusal of the call as sent.
+    expect(await answered(429)).toBe(429);
     expect(logged).not.toHaveBeenCalled();
     expect(await answered(400)).toBe(400);
     expect(logged).toHaveBeenCalledTimes(1);
-    // The placeholder's header was replaced by the sealed one, so it is no drop; a name past
-    // the bound is counted, not shown.
+    // The placeholder's header was replaced by the sealed one, and Cloudflare's is not the
+    // sandbox's, so neither is a drop; a name past the bound is counted, not shown.
     expect(logged.mock.calls[0]).toEqual([
       "a sealed openai-responses call its provider refused (400) had 3 request headers " +
       "dropped: openai-project x-stainless-lang ..."]);
