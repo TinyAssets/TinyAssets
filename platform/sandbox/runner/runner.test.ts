@@ -1785,8 +1785,8 @@ describe("each run's own user", () => {
 });
 
 describe("the agent's definition, and nothing beside it", () => {
-  it("keeps each engine's own settings out on every run, and hands pi each skill by its argv",
-     () => {
+  it("keeps each engine's own settings out on every run, hands pi each skill by its argv, and " +
+     "never lets Codex start a skill's own MCP server", () => {
     const skills = ["/workspace/agents/main/.agents/skills/mine", "/workspace/skills/owners"];
     for (const engine of ["claude-code", "codex", "gemini", "pi"]) {
       for (const unattended of [false, true]) {
@@ -1801,6 +1801,13 @@ describe("the agent's definition, and nothing beside it", () => {
             .toEqual([true, false, skills]);
         } else {
           expect(given, engine).toEqual([]);
+        }
+        if (engine === "codex") {
+          // A skill's agents/openai.yaml dependency server is installed and started as the
+          // prompt names the skill, with no tool call: only mcp.json starts a server, decided
+          // at the admission.
+          expect(argv.some((arg, at) => arg === "-c"
+            && argv[at + 1] === "features.skill_mcp_dependency_install=false")).toBe(true);
         }
       }
     }
@@ -1835,15 +1842,26 @@ describe("the agent's definition, and nothing beside it", () => {
     expect(box.ran(engine)).toEqual([]);
   });
 
-  it("refuses a run whose pi extension is in the agent's folder, by the folder", async () => {
-    doors.files.set("/workspace/agents/main/.pi/extensions/x.ts",
-                    { text: "export default () => {};\n", version: 9 });
-    box.cli("pi", { lines: SHAPES["pi"]!.lines });
-    expect((await run("pi")).end).toEqual({ exit_code: 1 });
-    expect(doors.frames().find((event) => event["type"] === "ta.refused")).toEqual({
-      type: "ta.refused", code: "engine_settings_refused",
-      path: "/workspace/agents/main/.pi/extensions" });
-    expect(box.ran("pi")).toEqual([]);
+  it.each([
+    ["a pi extension", "pi", ".pi/extensions", "x.ts", "export default () => {};\n"],
+    // Each starts a command with no tool call the decide hook sees: Gemini runs a custom
+    // command's !{...} as it expands the prompt naming it (in yolo, its policy allows it), and
+    // a subagent's or an agent role's own servers start with the subagent.
+    ["a Gemini custom command running a shell command", "gemini", ".gemini/commands", "x.toml",
+     "prompt = \"!{curl x.test}\"\n"],
+    ["a Gemini subagent with its own server", "gemini", ".gemini/agents", "x.md",
+     "---\nname: x\nmcp_servers:\n  s:\n    command: sh\n---\nx\n"],
+    ["a Codex agent role with its own server", "codex", ".codex/agents", "x.toml",
+     "developer_instructions = \"x\"\n[mcp_servers.s]\ncommand = \"sh\"\n"],
+  ])("refuses a run with %s in the agent's folder, by the folder", async (_what, engine,
+                                                                          folder, name, text) => {
+    const at = `/workspace/agents/main/${folder}`;
+    doors.files.set(`${at}/${name}`, { text, version: 9 });
+    box.cli(engine, { lines: SHAPES[engine]!.lines });
+    expect((await run(engine)).end).toEqual({ exit_code: 1 });
+    expect(doors.frames().find((event) => event["type"] === "ta.refused"))
+      .toEqual({ type: "ta.refused", code: "engine_settings_refused", path: at });
+    expect(box.ran(engine)).toEqual([]);
   });
 
   it.each([

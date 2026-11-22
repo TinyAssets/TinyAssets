@@ -68,9 +68,10 @@ describe("the runner's events, in the app's words", () => {
     expect(eventShown({ type: "ta.refused", code: "engine_settings_refused",
                         path: "/workspace/agents/main/.gemini/settings.json" }))
       .toEqual({ type: "ta.refused", reason: "engine_settings_refused: " +
-        "/workspace/agents/main/.gemini/settings.json is the engine's own settings, which no " +
-        "run loads beside the agent's definition (agent.json, AGENTS.md, skills, mcp.json, " +
-        "hooks.json); move what it sets there and remove it" });
+        "/workspace/agents/main/.gemini/settings.json is the engine's own (its settings, " +
+        "commands, subagents or extensions), which no run loads beside the agent's definition " +
+        "(agent.json, AGENTS.md, skills, mcp.json, hooks.json); move what it does there and " +
+        "remove it" });
     expect(eventShown({ type: "ta.refused", code: "instructions_too_large",
                         paths: ["/workspace/agents/main/AGENTS.md"], bytes: 40000,
                         max_bytes: 32768 }))

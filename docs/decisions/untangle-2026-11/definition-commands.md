@@ -131,4 +131,4 @@ left out never lets past anything an owner's rule holds; refusing the run instea
 ## Owed
 
 - [ ] live: at the dark redeploy, an agent with a stdio server and a hook under a `workspace.shell` `never` rule starts neither on each engine, and the owner's `definition_command_dropped` notice names each; on Claude Code, a skill's ``!`command` `` under its `allowed-tools` renders as the placeholder.
-- [ ] Whether a skill or custom command of Gemini's, Codex's or pi's can run a command as it loads, with no tool call (Gemini's `.gemini/commands` `!{...}`, which no `native.refuses` names), researched first (`untangle/skill-commands`).
+- [x] Whether a skill or custom command of Gemini's, Codex's or pi's can run a command as it loads, with no tool call (Gemini's `.gemini/commands` `!{...}`, which no `native.refuses` names), researched first (`untangle/skill-commands`).

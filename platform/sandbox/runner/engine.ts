@@ -10,8 +10,8 @@
  *   variable the run's credential forbids (`forbid_env`) fails the run loudly.
  * - The argv: the binary, then the credential's own arguments, the model (each option
  *   joined to its value, `--model=<id>`, so a reported id that starts with `-` is never a
- *   flag), the unattended flags on an unattended run, what keeps the engine's own settings
- *   layers out (`definition.native.argv`, every run), the agent's skills where the engine
+ *   flag), the unattended flags on an unattended run, what keeps the engine's own layers out
+ *   (`definition.native.argv`, every run), the agent's skills where the engine
  *   takes each by its argv (`definition.skills.argv_each`), the MCP arguments, the update
  *   switch, then the record's `argv` or `resume_argv` past its binary. The prompt goes on stdin
  *   where the record says so, or joined to its option (`--prompt={prompt}`), never bare.
