@@ -31,6 +31,8 @@ naming the path (Fact 8).
   has a meaning takes.**
   - `definitionRead`'s `one` read a folder at `AGENTS.md` or `SOUL.md` as no file.
   - #5754's `#whole` writes the same refusal inline (owed below, so it is not a copy).
+  - `fileAppend` (`files.ts`, on main) wrote it inline too, as "`<path>` is a directory"
+    (reviewer's find): it now reads through `openFile`, the message the one rule's.
 
 ## Left, decided
 
@@ -43,9 +45,14 @@ naming the path (Fact 8).
 - **`starter.ts`** reads `stat(...)?.kind === "file" ? open : null` in four places. There a
   folder at a starter file's path is the owner's own, and the starter leaves it; nothing reads
   it as the starter's file. A different rule, so not this read.
+- **`fileEdit`** refuses an absent file and a folder alike (`not_found`): an edit needs a file,
+  and no absence has a meaning there, so it is not `openFile`'s reader; nothing is read as
+  absent in silence.
 
 ## Owed
 
 - [ ] `untangle/agent-mcp`: `Launcher.#whole` takes `Files.openFile` in place of its own
   inline check, the message and code unchanged, so its tests hold. If #5754 lands first, this
   branch makes that change on merging `origin/main`.
+- [ ] #5756 (`untangle/ranking-path-dir`): whichever of #5756 and this PR lands second ticks
+  `ranking-path-dir.md`'s `untangle/definition-path-dir` line, done by this PR.

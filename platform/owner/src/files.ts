@@ -3604,11 +3604,8 @@ export const filesDoors = Object.freeze({
         }
         const read = await o.door((): { done: Entry } | { now: Content | null } => {
           authorize();
-          const entry = o.files.stat(path);
-          if (entry !== null && entry.kind !== "file") {
-            throw new Refusal("invalid", `${path} is a directory`);
-          }
-          const content = entry === null ? null : o.files.open(path);
+          const content = o.files.openFile(path);
+          const entry = content?.entry;
           const before = content === null ? new Uint8Array(0) : content.inline;
           if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
             // Small: read and written in this one unit, so nothing lands between.
