@@ -3,10 +3,9 @@
  * account's token: the zone and its account, the account's Workers, their secrets' names,
  * their deployments and their versions' tags, KV namespaces, keys and values, R2 buckets with
  * their lock rules and objects, queues with their messages and consumers, and the zone's
- * Worker routes, DNS records, Workers custom domains and certificate packs. Every call is
- * checked: a failed listing or read throws, never reads as "absent", and a body that is not
- * JSON throws. Every listing is read to its last page. The kit's other Cloudflare tool is
- * wrangler (`deploy.ts`),
+ * Worker routes, DNS records and Workers custom domains. Every call is checked: a failed
+ * listing or read throws, never reads as "absent", and a body that is not JSON throws. Every
+ * listing is read to its last page. The kit's other Cloudflare tool is wrangler (`deploy.ts`),
  * which uploads and deploys the run's versions; a rollback's deployment is this client's.
  *
  * Node runs this file as it is (type stripping), as the kit does.
@@ -188,25 +187,6 @@ export interface DnsRecord {
   readonly id: string;
   readonly type: string;
   readonly content: string;
-}
-
-/**
- * A Workers custom domain as the kit reads it: its id, the Worker it serves, and the TLS
- * certificate Cloudflare issues for it (`cert_id`), null until the domain names one.
- */
-export interface Domain {
-  readonly id: string;
-  readonly service: string;
-  readonly cert: string | null;
-}
-
-/**
- * A certificate pack as the kit reads it: the status Cloudflare reports for it, and the ids
- * it answers to, its own and each of its certificates'.
- */
-export interface CertificatePack {
-  readonly status: string;
-  readonly ids: readonly string[];
 }
 
 /**
@@ -753,35 +733,16 @@ export class Cloudflare {
 
   /**
    * The Workers custom domains on `hostname` (Cloudflare's Workers domains API, as wrangler's
-   * own SDK copy lists them). A failed read throws.
+   * own SDK copy lists them): each its id and the Worker it serves. A failed read throws.
    */
-  async domains(account: string, hostname: string): Promise<Domain[]> {
+  async domains(account: string, hostname: string): Promise<{ id: string; service: string }[]> {
     const what = `reading the custom domains on ${hostname}`;
     const found = await this.#rows(what, `/accounts/${account}/workers/domains?hostname=${hostname}`);
     if (!found.every((row) => typeof row["id"] === "string" && typeof row["service"] === "string")) {
       throw new Error(`${what} answered a domain with no id or Worker`);
     }
     return found.filter((row) => row["hostname"] === undefined || row["hostname"] === hostname)
-      .map((row) => ({ id: String(row["id"]), service: String(row["service"]),
-                       cert: typeof row["cert_id"] === "string" ? row["cert_id"] : null }));
-  }
-
-  /**
-   * The zone's certificate packs of every status (SSL/TLS's certificate packs listing, which
-   * needs the token's SSL and Certificates Read). A failed read throws.
-   */
-  async certificatePacks(zone: string): Promise<CertificatePack[]> {
-    const what = "reading the zone's certificate packs";
-    return (await this.#rows(what, `/zones/${zone}/ssl/certificate_packs?status=all`))
-      .map((pack) => {
-        const certificates = pack["certificates"] ?? [];
-        if (typeof pack["id"] !== "string" || typeof pack["status"] !== "string"
-            || !Array.isArray(certificates)) {
-          throw new Error(`${what} answered a pack with no id, status or certificates`);
-        }
-        return { status: pack["status"], ids: [pack["id"], ...certificates.map((each) =>
-          String((each as Record<string, unknown> | null)?.["id"]))] };
-      });
+      .map((row) => ({ id: String(row["id"]), service: String(row["service"]) }));
   }
 
   /**

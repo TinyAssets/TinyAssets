@@ -18,7 +18,7 @@
  *   canary.
  * - `routes`: on a host under the zone, its DNS record; then `dark`, then the doors' routes
  *   handed over one at a time, on whatever host the identity names, the egress custom domain
- *   (its certificate waited on until Cloudflare reports it active),
+ *   (waited on until it answers over HTTPS),
  *   and the webhook enabled at the identity's URL. Before any change it keeps a record of each
  *   of those as they stood (`RouteRecord`), and the job summary names its id.
  * - `handback`: the record `--record` names, handed back (the cutover's rollback): the webhook
@@ -2719,25 +2719,23 @@ const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, go
 });
 
 /**
- * How long the kit waits for Cloudflare to report the egress host's certificate active, and
- * how often it reads it: the stage's first issued in about two minutes (2026-11-22).
+ * How long the kit waits for the egress host to answer over HTTPS after its attach, how often
+ * it asks, and each request's limit: the stage's host had its own certificate about two
+ * minutes after the attach (2026-11-22).
  */
-const CERTIFICATE_MS = 10 * 60_000;
-const CERTIFICATE_EVERY_MS = 15_000;
+const ANSWER_MS = 10 * 60_000;
+const ANSWER_EVERY_MS = 15_000;
+const ANSWER_REQUEST_MS = 30_000;
 
 /**
- * The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`), then
- * Cloudflare's own report of the TLS certificate it issues for the domain, waited on until
- * active: the host answers no TLS before, and wrangler's deploy returns without waiting. The
- * plan job reads the zone's certificate packs too, so a token that cannot (SSL and
- * Certificates Read) stops the run before any change.
+ * The sandbox's egress host, the doors' custom domain (`wrangler triggers deploy`), then the
+ * host's own answer waited on (`answering`): wrangler's deploy returns without waiting, and
+ * the host had no TLS for its name for about two minutes after the stage's attach.
  */
 const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stage" | "kept">(
   async ({ run, say, did }, got) => {
     say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then ` +
-        `wait up to ${CERTIFICATE_MS / 60_000} minutes for Cloudflare to report its ` +
-        "certificate active");
-    await got.cloudflare.certificatePacks(got.zone);
+        `wait up to ${ANSWER_MS / 60_000} minutes for it to answer over HTTPS`);
     if (!run.apply) {
       return;
     }
@@ -2759,37 +2757,42 @@ const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stag
       did(`record in ${key} the DNS records the custom domain made: ${
         created.length === 0 ? "none" : created.map((each) => each.type).join(", ")}`);
     }
-    did(await certified(run, got));
+    did(await answering(run));
   });
 
 /**
- * The status Cloudflare reports for the doors' custom domain's certificate, read until it is
- * `active`, or a throw past `CERTIFICATE_MS` naming the last one read.
+ * A failed request's words: Node's fetch says only "fetch failed", and its cause which of
+ * DNS, the connection or TLS failed. The kit's wait and the canary both name a failure so.
  */
-async function certified(run: Run, got: Pick<Values, "cloudflare" | "zone" | "account">):
-    Promise<string> {
-  const until = run.io.now().getTime() + CERTIFICATE_MS;
+export function fetchFailure(error: unknown): string {
+  const { message, cause } = error as Error;
+  return `${message}${cause instanceof Error ? ` (${cause.message})` : ""}`;
+}
+
+/**
+ * The egress host answering over HTTPS, asked every `ANSWER_EVERY_MS` until it does, or a
+ * throw past `ANSWER_MS` naming the last failure. Any HTTP status is an answer: it came over
+ * a TLS connection whose certificate fetch verified for the host. A failed attempt leaves no
+ * connection to reuse, so each is a fresh one, its name resolved again, as the canary's is.
+ */
+async function answering(run: Run): Promise<string> {
+  const url = `https://${EGRESS_HOST}/`;
+  const until = run.io.now().getTime() + ANSWER_MS;
   for (;;) {
-    const domain = (await got.cloudflare.domains(got.account, EGRESS_HOST))
-      .find((each) => each.service === DOORS);
-    if (domain === undefined) {
-      throw new Error(`${EGRESS_HOST} is no custom domain of ${DOORS} after wrangler's ` +
-                      "triggers deploy: run routes again");
-    }
-    const { cert } = domain;
-    const status = cert === null ? "no certificate named yet"
-      : (await got.cloudflare.certificatePacks(got.zone))
-        .find((pack) => pack.ids.includes(cert))?.status
-        ?? `certificate ${cert} in no certificate pack yet`;
-    if (status === "active") {
-      return `${EGRESS_HOST}'s certificate ${cert}: active, as Cloudflare reports it`;
+    let failed: string;
+    try {
+      const answer = await run.io.fetch(url, { redirect: "manual",
+                                               signal: AbortSignal.timeout(ANSWER_REQUEST_MS) });
+      await answer.body?.cancel();
+      return `${url} answers over HTTPS (HTTP ${answer.status})`;
+    } catch (error) {
+      failed = fetchFailure(error);
     }
     if (run.io.now().getTime() >= until) {
-      throw new Error(`${EGRESS_HOST}'s certificate is not active after ${
-        CERTIFICATE_MS / 60_000} minutes: Cloudflare reports ${status}. The host answers no ` +
-        "TLS until it is; run routes again once SSL/TLS, Edge Certificates shows it active");
+      throw new Error(`${url} did not answer over HTTPS within ${ANSWER_MS / 60_000} minutes ` +
+                      `of the custom domain's attach: ${failed}. Run routes again once it does`);
     }
-    await run.io.sleep(CERTIFICATE_EVERY_MS);
+    await run.io.sleep(ANSWER_EVERY_MS);
   }
 }
 

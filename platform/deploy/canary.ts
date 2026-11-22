@@ -70,7 +70,9 @@ import { NAVIGATE } from "../contract/src/navigation.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
-import { authorizeCheck, firstPartyLink, heldHook, upstreamFrom } from "./deploy.ts";
+import {
+  authorizeCheck, fetchFailure, firstPartyLink, heldHook, upstreamFrom,
+} from "./deploy.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import {
   APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, VERSION_HEADER, WEB_CLIENT, ZONE,
@@ -173,21 +175,14 @@ function records(): SideRecords {
   return JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.json"), "utf8"));
 }
 
-/**
- * One request, bounded: unreachable is exit 2, never an answer, named with its cause (Node's
- * fetch says only "fetch failed", its cause which of DNS, the connection or TLS failed).
- */
+/** One request, bounded: unreachable is exit 2, never an answer, named with its cause. */
 async function send(world: World, url: string, init: RequestInit = {}): Promise<Response> {
   try {
     return await world.fetch(url, { redirect: "manual", ...init,
                                     signal: AbortSignal.timeout(REQUEST_MS) });
   } catch (error) {
-    if (error instanceof Failure) {
-      throw error;
-    }
-    const { message, cause } = error as Error;
-    throw new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${message}${
-      cause instanceof Error ? ` (${cause.message})` : ""}`);
+    throw error instanceof Failure ? error
+      : new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${fetchFailure(error)}`);
   }
 }
 

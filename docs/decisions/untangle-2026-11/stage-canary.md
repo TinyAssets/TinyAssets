@@ -20,18 +20,33 @@ fixes both, from the code and a read-only look at the stage.
 - **The egress host (exit 2).** `customDomain` runs `wrangler triggers deploy` and moves on.
   Wrangler's custom-domain publish (`workers-sdk` `deploy-helpers/src/triggers/publish-routes.ts`)
   PUTs `/workers/scripts/<name>/domains/records` and waits on nothing. The canary ran about
-  two seconds after the attach (19:19:05 to 19:19:07Z) and found the host unreachable. The
-  host now serves its own certificate (CN `tinyassets.io`, SAN `egress.tinyassets.io`, Google
-  Trust Services WE1). Its validity runs to 2027-02-20T19:21:21Z, ninety days from about
-  19:21Z, about two minutes after the attach. The stage host serves the zone's Universal
-  wildcard instead. Cloudflare's Workers domain object names the certificate it issues
-  (`cert_id`, "the TLS certificate issued for the domain", API reference) but carries no
-  status. The certificate's status is a certificate pack's
-  (`/zones/<zone>/ssl/certificate_packs`, SSL and Certificates Read). Community threads
-  describe Workers custom domains' Advanced packs stuck in validation, read through that
-  listing.
+  two seconds after the attach (19:19:05 to 19:19:07Z) and found the host unreachable.
+  - The host now serves its own certificate: CN `tinyassets.io`, SAN `egress.tinyassets.io`,
+    Google Trust Services WE1. Its validity runs to 2027-02-20T19:21:21Z, ninety days from
+    about 19:21Z, about two minutes after the attach.
+  - The stage host serves the zone's Universal wildcard instead.
 - **An unreachable line hid its cause.** `canary.ts` `send` printed Node's `fetch failed`
   alone. Its `cause` says whether DNS, the connection or TLS failed, and the line dropped it.
+
+## Can the host's own answer be read reliably from the runner?
+
+Yes, on the stage's evidence. A wildcard certificate valid for the host would have passed the
+canary's egress check: fetch verifies the certificate against the host, and the door answers
+its `404`. The check failed with `fetch failed` instead. So before the host's own certificate,
+Cloudflare served no certificate that verifies for it. A certificate it does serve that
+verifies is an HTTPS answer, which is the property the canary needs either way. The wait also
+covers DNS propagation: it resolves the name as the canary will.
+
+## Weighed and not built
+
+- **Waiting on Cloudflare's certificate status.** The Workers domain names its certificate
+  (`cert_id`) but carries no status. The status is a certificate pack's
+  (`/zones/<zone>/ssl/certificate_packs`), which needs a token scope the token is not
+  recorded to hold (SSL and Certificates Read): a founder ask before any `routes` could run.
+  It would also not cover DNS propagation. Built first, then replaced at the coordinator's
+  review (2026-11-22). Only `routes` runs `customDomain`, so `dark` was never at risk from
+  it.
+- **Retrying the canary.** It would hide a host that never answers.
 
 ## The fix
 
@@ -39,43 +54,39 @@ fixes both, from the code and a read-only look at the stage.
    a browser's top-level navigation sends, and `navigation(request)` built from them. The
    doors' `/authorize` and connect callback read the predicate; the canary's sign-in and the
    doors' tests send `NAVIGATE`. The doors' copies are deleted.
-2. **The kit waits on Cloudflare's report of the certificate** (`deploy.ts` `customDomain`,
-   `certified`; `cloudflare.ts` `domains` now returns `cert`, and `certificatePacks`). After
-   the attach, and after the DNS record is written into the route record, the kit reads the
-   doors' domain's `cert_id` and the status of the pack that is it or holds it. It reads them
-   every 15 s until `active`, up to 10 minutes. Past that it stops, naming the last status
-   read, before the hook or the canary. The plan job lists the packs too, so a token without
-   SSL and Certificates Read stops the run before any change. The canary is not retried.
-3. **The canary names a failed request's cause** (`send`): `fetch failed (getaddrinfo
-   ENOTFOUND …)`.
-4. **Docs.** `deploy/checklist.md`: the token's scopes (SSL and Certificates Read is owed) and
-   the `routes` paragraph. `.claude/skills/infra-ops/references/cloudflare.md`: the kit's
-   scopes. Both had said no run had written DNS with the token, which the stage's run did.
+2. **The kit waits on the egress host's own answer** (`deploy.ts` `customDomain`,
+   `answering`).
+   - After the attach, and after the DNS record is written into the route record, the kit
+     asks `https://<egress host>/` with fetch's own certificate check.
+   - Any HTTP status is an answer. A failed attempt leaves no connection to reuse, so each
+     is a fresh one, its name resolved again.
+   - It asks every 15 s, each request bounded at 30 s, for up to 10 minutes. Past that it
+     stops, naming the last failure's cause, before the hook or the canary.
+   - The plan job reads nothing new, and the canary is not retried.
+3. **A failed request names its cause** (`deploy.ts` `fetchFailure`, which the canary's `send`
+   uses too): `fetch failed (getaddrinfo ENOTFOUND …)`.
+4. **Docs.** `deploy/checklist.md`: the `routes` paragraph names the wait. It and
+   `.claude/skills/infra-ops/references/cloudflare.md` had said no run had written DNS with
+   the token, which the stage's run did.
 
 ## Tests
 
 - `deploy/guards/canary.test.ts`: the fake doors refuse a non-navigation `/authorize`
   through the contract's `navigation`, so every doors case proves the canary sends one. The
   unreachable case names its cause.
-- `deploy/guards/deploy.test.ts`: the fake zone serves certificate packs whose egress status
-  turns `active` at a given time. Three cases: the wait (nine reads 15 s apart, then the
-  canary), the stop after ten minutes naming `pending_validation` (no hook, no canary), and a
-  refused listing stopping the plan job (no change). `ROUTES_HELD` carries the new lines.
-- Mutations, each caught: the canary sends no `NAVIGATE` (9 cases); the cause dropped (1);
-  no wait (3); the wait taking any status (2); no plan-job listing (1); the shared predicate
-  taking either header (`doors/test/hardening.test.ts`, 3).
-
-## Left, and why
-
-- **DNS propagation is not reported.** No Cloudflare API reports when a new record answers
-  everywhere. The certificate is issued after the record, about two minutes on the stage, and
-  the wait is expected to outlast propagation. If a run
-  shows the certificate active and the canary still names a DNS cause, that is the next
-  research.
-- **The token's SSL and Certificates Read** is the founder's to add (dashboard, My Profile,
-  API Tokens). Until then the plan job stops with nothing changed, naming the 403.
+- `deploy/guards/deploy.test.ts`: the fake egress host fails its TLS until it is the doors'
+  custom domain and a given time has passed, then answers `404`. Two cases:
+  - The wait: asked only after the attach, nine asks 15 s apart, then the hook and the canary.
+  - The stop: after ten minutes, naming the TLS cause, with no hook and no canary.
+  - `ROUTES_HELD` carries the new lines.
+- Mutations, each caught:
+  - The canary sends no `NAVIGATE`: 8 cases.
+  - `fetchFailure` drops the cause: 2 cases.
+  - No wait: 3 cases.
+  - The wait taking a TLS failure as an answer: 2 cases.
+  - The shared predicate taking either header: 3 cases in `doors/test/hardening.test.ts`.
 
 ## Owed
 
-- [ ] live: the stage's next `routes` run (after the token holds SSL and Certificates Read)
-  shows the certificate line `active` and the canary's sign-in and egress checks passing.
+- [ ] live: the stage's next `routes` run shows the egress host's HTTPS answer line, and the
+  canary's sign-in and egress checks passing.
