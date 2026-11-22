@@ -10,7 +10,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
-  CALLS_OPEN, CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
+  CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
 } from "../../contract/src/limits";
 import { sqlIn } from "../../ci/workerd";
 import {
@@ -585,24 +585,11 @@ describe("deduplication in each scope", () => {
   });
 });
 
-describe("the model calls and spend counters", () => {
-  const open = (n: number, state = "reserved") =>
-    "INSERT INTO model_reservations (id, run, connection_id, source, model, state, " +
-    "max_output_tokens, est_tokens, est_cost, policy_generation, day, month, created_at) " +
-    `VALUES ('open-${n}', 'input:t${n}', 'c', 's', 'm', '${state}', 1, 1, 1, 1, ` +
-    "'2026-10-31', '2026-10', 1)";
-
-  it("keep at most CALLS_OPEN calls open and SPEND_KEPT counters", async () => {
+describe("the spend counters", () => {
+  it("are at most SPEND_KEPT", async () => {
     const r = await rig();
     await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
-      state.storage.transactionSync(() => {
-        for (let i = 0; i < CALLS_OPEN; i++) {
-          sql.exec(open(i, i % 2 === 0 ? "reserved" : "dispatched"));
-        }
-      });
-      expect(() => sql.exec(open(CALLS_OPEN))).toThrow(/model_calls_full/);
-      sql.exec(open(CALLS_OPEN + 1, "refused"));
       sql.exec("DELETE FROM model_spend");
       state.storage.transactionSync(() => {
         for (let i = 0; i < SPEND_KEPT; i++) {

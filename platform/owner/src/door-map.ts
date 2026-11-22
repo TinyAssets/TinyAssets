@@ -171,8 +171,6 @@ export interface DoorRows {
     { readonly module: "connections"; readonly caller: "session"; readonly gate: "door" };
   readonly flowFinish:
     { readonly module: "connections"; readonly caller: "session"; readonly gate: "synced" };
-  readonly usageReceipts:
-    { readonly module: "usage"; readonly caller: "owner"; readonly gate: "door" };
   readonly noticeList:
     { readonly module: "notices"; readonly caller: "owner"; readonly gate: "door" };
   readonly starterReceipts:
@@ -594,7 +592,6 @@ export interface DoorMethods<H> {
   connectionList(binding: Binding): Promise<AnswerIn<H, "connectionList">>;
   flowFinish(binding: Binding, request: RequestIn<H, "flowFinish">):
     Promise<AnswerIn<H, "flowFinish">>;
-  usageReceipts(binding: Binding): Promise<AnswerIn<H, "usageReceipts">>;
   noticeList(binding: Binding): Promise<AnswerIn<H, "noticeList">>;
   starterReceipts(binding: Binding): Promise<AnswerIn<H, "starterReceipts">>;
   admissionSet(binding: Binding, request: RequestIn<H, "admissionSet">):

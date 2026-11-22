@@ -151,8 +151,6 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
     ...TRIGGER("sandbox_signins_full", (n) => `>= ${n} BEGIN`,
                (n) => `'sandbox_signins_full: ${n} sign-ins are live'`),
   ],
-  CALLS_OPEN: TRIGGER("model_reservations_open", (n) => `'dispatched')) >= ${n} BEGIN`,
-                      (n) => `'model_calls_full: ${n} model calls are open'`),
   SPEND_KEPT: TRIGGER("model_spend_kept", (n) => `FROM model_spend) > ${n} BEGIN`,
                       (n) => `'model_spend_full: ${n} spend counters are kept'`),
   SOCKET_TICKETS: TRIGGER("socket_tickets_full", (n) => `FROM socket_tickets) >= ${n} `),
@@ -233,9 +231,11 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  *   one its pin wrote, in migrations 10, 11 and 14), a key id and a readable id,
  *   35 a sign-in's id (`si_` and 32 hex)
  *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold;
- *   36 also a collection deletion's four numbers in its charge (`collection_erasures`).
+ *   36 also a collection deletion's four numbers in its charge (`collection_erasures`);
+ * - 1000 the open model calls' bound, twice in migration 1's `model_reservations_open`, whose
+ *   table migration 26 drops: frozen text, as a dropped table's other statements are.
  */
-const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1000: 2, 1024: 5,
                                        4096: 252 });
 
 /**
@@ -463,7 +463,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(647);
+    expect(places).toBe(645);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

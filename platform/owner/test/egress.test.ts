@@ -29,12 +29,15 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { apiRules } from "../../contract/src/api-rules";
 import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
 import { SYNC_FENCED } from "../src/files";
-import { priced } from "../src/usage";
+import { largestFitting, priced, SETTLED_WITHIN_S } from "../src/money";
+import { MODEL_SETTINGS } from "../../contract/src/policy-document";
 import {
   ANTHROPIC, catalog, type Gated, gated, keySealed, OAUTH, OPENAI, scopeOf,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
-import { admittedOwner, drainDue, failure, gateFor, TIERS, unseededObject } from "./support";
+import {
+  admittedOwner, clockAt, drainDue, failure, gateFor, TIERS, unseededObject,
+} from "./support";
 import {
   NARROWED_WITHIN_S, NETWORK_RETRY_S, NETWORK_UNCONFIRMED, type SandboxRun,
 } from "../src/launch";
@@ -342,8 +345,6 @@ describe("an egress call", () => {
     expect(await r.stub.agentStatus(r.bind(), { run_id: lease.run }))
       .toMatchObject({ requests: 1, tokens: 1500, cost: 4200 });
     expect(await sourceSpend(r)).toEqual([{ p: "d", cost: 4200 }, { p: "m", cost: 4200 }]);
-    // The model reservations are untouched: the sandbox's charge is its own row.
-    expect(await r.sql("SELECT COUNT(*) AS n FROM model_reservations")).toEqual([{ n: 0 }]);
     const { receipts } = await r.stub.egressReceipts(r.bind());
     expect(receipts).toMatchObject([{ reservation: opened.reservation, connection,
                                       method: "POST", path: "/v1/messages", state: "settled",
@@ -738,7 +739,7 @@ async function pricedModels(r: Gated, connection: string) {
                                     connection)) as [{ models: string }];
   return (JSON.parse(models) as ModelRecord[]).filter((model) => model.cost.output > 0)
     .map((model) => ({ model, holds: egressPrice([model], model.contextWindow,
-                                                 model.maxTokens, priced) }))
+                                                 model.maxTokens) }))
     .sort((a, b) => a.holds - b.holds);
 }
 
@@ -960,8 +961,49 @@ describe("the spend caps", () => {
                    maxTokens: 50_000 } as ModelRecord;
     // The wide model's million input tokens at 2, its thousand output at 10; the dear one's
     // hundred thousand at 3 and its 50,000 at 20: the dearer of the two.
-    expect(egressPrice([wide, dear], 1_000_000, 50_000, priced))
+    expect(egressPrice([wide, dear], 1_000_000, 50_000))
       .toBe(Math.max(1_000_000 * 2 + 1_000 * 10, 100_000 * 3 + 50_000 * 20));
+  });
+
+  it("price a long-context tier for the whole call once its input passes the threshold, " +
+     "each price rounded up to the next µ$", () => {
+    const tiered = { cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0,
+                             tiers: [{ inputTokensAbove: 2000, input: 6, output: 30,
+                                       cacheRead: 0, cacheWrite: 0 }] },
+                     contextWindow: 1_000_000, maxTokens: 100_000 } as ModelRecord;
+    // At the threshold, the base rates: 2000 at 3 and 4000 at 15.
+    expect(egressPrice([tiered], 2000, 4000)).toBe(2000 * 3 + 4000 * 15);
+    // Past it, every token at the tier's: 2001 at 6 and 4000 at 30.
+    expect(egressPrice([tiered], 2001, 4000)).toBe(2001 * 6 + 4000 * 30);
+    // 1.5 µ$ of input.
+    expect(priced({ cost: { input: 0.5, output: 0.25, cacheRead: 0, cacheWrite: 0 } }, 3, 0))
+      .toBe(2);
+  });
+
+  it("find the most output a cost room takes by bisection, about log2 of the bound in prices",
+     () => {
+    // The steepest search: the largest output any model takes, at the policy's largest
+    // ceiling, against a cheap record of the real catalog's.
+    const record = { cost: { input: 0.029, output: 0.03, cacheRead: 0, cacheWrite: 0 } };
+    let calls = 0;
+    const fits = (output: number) => {
+      calls += 1;
+      return priced(record, 50_000, output) <= MODEL_SETTINGS.daily_cost[1];
+    };
+    expect(largestFitting(100_000_000, fits)).toBe(100_000_000);
+    expect(calls).toBeLessThanOrEqual(28);
+    calls = 0;
+    const room = 1_000_000;
+    const found = largestFitting(100_000_000, (output) => {
+      calls += 1;
+      return priced(record, 50_000, output) <= room;
+    });
+    expect(calls).toBeLessThanOrEqual(28);
+    expect(priced(record, 50_000, found)).toBeLessThanOrEqual(room);
+    expect(priced(record, 50_000, found + 1)).toBeGreaterThan(room);
+    expect(largestFitting(-1, () => true)).toBe(-1);
+    expect(largestFitting(10, () => false)).toBe(-1);
+    expect(largestFitting(0, () => true)).toBe(0);
   });
 
   it("refuse a call the caps leave fewer than the floor's output tokens", async () => {
@@ -1061,39 +1103,6 @@ describe("the spend caps", () => {
     }
   });
 
-  it("share the source's day and month with the model reservations, in both directions",
-     async () => {
-    // One whole call's charge, as a fresh owner's first call holds it.
-    const probe = await gated();
-    const probed = await probe.connect("sk-good");
-    await admitted(probe, await leased(probe), probed);
-    const [{ est_cost: one }] = (await charges(probe)) as [{ est_cost: number }];
-    const r = await gated();
-    const connection = await r.connect("sk-good");
-    // Room for that call, but not once a model reservation has spent as much.
-    const lease = await cappedLeased(r, { ...ROOMY,
-                                          sources: { anthropic: { daily_cost: one + 500_000 } } });
-    // A model call on the same source, settled, as `usage.ts` records one.
-    const day = new Date().toISOString().slice(0, 10);
-    await r.sql("INSERT INTO model_reservations (id, run, connection_id, source, model, state, " +
-                  "max_output_tokens, est_tokens, est_cost, tokens, cost, policy_generation, " +
-                  "day, month, created_at, settled_at) VALUES ('r' || lower(hex(randomblob(16))), " +
-                  "'s:t', ?, 'anthropic', 'model-x', 'reserved', 1000, 1000, ?, NULL, NULL, " +
-                  "2, ?, ?, ?, NULL)", connection, one, day, day.slice(0, 7), Date.now() / 1000);
-    await r.sql("UPDATE model_reservations SET state = 'dispatched' WHERE state = 'reserved'");
-    await r.sql("UPDATE model_reservations SET state = 'succeeded', tokens = 900, " +
-                  "cost = ?, settled_at = ? WHERE state = 'dispatched'", one, Date.now() / 1000);
-    // That spend leaves the source's day no room for the sandbox's call.
-    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_spend_refused");
-    expect((await charges(r)).at(-1)).toMatchObject({ rule: "source_daily_cost" });
-    // And the sandbox's spend is on the counters the model reservations read.
-    await capped(r, ROOMY);
-    const opened = await admitted(r, lease, connection);
-    await r.stub.egressSettle(lease.as(), settle(opened.reservation));
-    expect(await sourceSpend(r)).toEqual([{ p: "d", cost: one + 4200 },
-                                          { p: "m", cost: one + 4200 }]);
-  });
-
   it("count a run as its own: a new run starts afresh, its own counters on its receipt",
      async () => {
     const r = await gated();
@@ -1119,6 +1128,54 @@ describe("the spend caps", () => {
     await over(r, lease);
     expect(await r.stub.agentStatus(r.bind(), { run_id: lease.run }))
       .toMatchObject({ state: "succeeded", requests: 2 });
+  });
+});
+
+describe("the spend counters", () => {
+  /** The first instant of 2026-12, seconds. */
+  const DECEMBER = Date.UTC(2026, 11, 1) / 1000;
+  /** Another source's counters, by period. */
+  const others = async (r: Gated) => (await r.sql(
+    "SELECT period FROM model_spend WHERE source = 'other' ORDER BY period"))
+    .map((row) => row["period"]);
+
+  it("are kept until every charge reserved in their period has settled, and no longer, " +
+     "each reserve pruning before it adds one", async () => {
+    // The last charge reserved on 29 November may settle until a moment before this.
+    const edge = Date.UTC(2026, 10, 30) / 1000 + SETTLED_WITHIN_S;
+    clockAt(edge - 1);
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    for (const period of ["d:2026-11-28", "d:2026-11-29", "d:2026-11-30", "d:2026-12-01",
+                          "m:2026-10", "m:2026-11", "m:2026-12"]) {
+      await r.sql("INSERT INTO model_spend (period, source, cost) VALUES (?, 'other', 1)",
+                  period);
+    }
+    await admitted(r, lease, connection);
+    expect(await others(r)).toEqual(["d:2026-11-29", "d:2026-11-30", "d:2026-12-01",
+                                     "m:2026-11", "m:2026-12"]);
+    clockAt(edge);
+    await admitted(r, lease, connection);
+    expect(await others(r)).toEqual(["d:2026-11-30", "d:2026-12-01", "m:2026-11",
+                                     "m:2026-12"]);
+  });
+
+  it("hold a charge reserved before midnight until it settles, its settle moving its own " +
+     "counters", async () => {
+    clockAt(DECEMBER - 10);
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    const first = await admitted(r, lease, connection);
+    // Another call's reserve, past midnight, prunes before the first settles.
+    clockAt(DECEMBER + 5);
+    await admitted(r, lease, connection);
+    expect(await r.stub.egressSettle(lease.as(), settle(first.reservation)))
+      .toEqual({ settled: true });
+    expect(await r.sql("SELECT period, cost FROM model_spend WHERE period < 'd:2026-12' " +
+                         "OR period = 'm:2026-11' ORDER BY period"))
+      .toEqual([{ period: "d:2026-11-30", cost: 4200 }, { period: "m:2026-11", cost: 4200 }]);
   });
 });
 

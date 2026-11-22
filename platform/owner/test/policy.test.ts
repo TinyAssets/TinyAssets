@@ -23,6 +23,7 @@ import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
   policyDigest, validate,
 } from "../../contract/src/policy-document";
+import { modelSettings } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { atClock, failure, inStores, ownerObject } from "./support";
 
@@ -547,5 +548,37 @@ describe("the policy document's new shape, migration 6 (d3 §N)", () => {
       "UPDATE owner_policy SET document = ?", other));
     expect(mismatched.refused).toMatch(/the owner policy is not the old default document/);
     expect(mismatched.row).toMatchObject({ document: other });
+  });
+});
+
+describe("the models table of owner policy", () => {
+  const base = JSON.parse(DEFAULT_POLICY_JSON) as object;
+
+  it("is optional, every cap off until the owner sets it (ADR-034 decision 7)", () => {
+    expect(modelSettings(validate(base))).toEqual({
+      turn_requests: null, turn_tokens: null, turn_cost: null, daily_cost: null,
+      monthly_cost: null, sources: {} });
+    // A cap the owner turns off again, and the highest each takes.
+    expect(modelSettings(validate({ ...base, models: { turn_tokens: null } })).turn_tokens)
+      .toBeNull();
+    expect(modelSettings(validate({ ...base, models: { turn_requests: 1_000_000 } }))
+      .turn_requests).toBe(1_000_000);
+    const document = validate({ ...base, models: {
+      turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
+      sources: { anthropic: { daily_cost: 1, monthly_cost: null } } } });
+    expect(modelSettings(document)).toEqual({
+      turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
+      sources: { anthropic: { daily_cost: 1, monthly_cost: null } } });
+  });
+
+  it.each([
+    { turn_requests: 0 }, { turn_requests: 1_000_001 }, { turn_requests: 1.5 },
+    { turn_tokens: "1" }, { turn_cost: -1 }, { daily_cost: "1" }, { retries: 0 },
+    { unknown: 1 }, { sources: { Anthropic: { daily_cost: 1 } } },
+    { sources: { "-x": { daily_cost: 1 } } }, { sources: { [`a${"b".repeat(64)}`]: {} } },
+    { sources: { anthropic: { weekly_cost: 1 } } },
+    { sources: { anthropic: { daily_cost: -1 } } }, { sources: [] }, [],
+  ])("refuses %j", (models) => {
+    expect(() => validate({ ...base, models })).toThrow("invalid models policy");
   });
 });

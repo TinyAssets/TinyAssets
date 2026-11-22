@@ -23,9 +23,9 @@
  * 3. **Forward**: the request, its path after `/c/<connection>` and its body as the stream
  *    it came as, to the gateway's egress entrypoint (`EGRESS.forward`), metered: the gateway
  *    parses a model call's body once and calls back `reserve` (egress shape research, A′),
- *    which the door answers with the object's `egressReserve`, the model reservation by the
- *    loop's own rules for the model and tier that parse read; the call is then held to the
- *    reservation's output cap and the body length it was admitted by, its every inbound
+ *    which the door answers with the object's `egressReserve`, the call's charge for the
+ *    model and tier that parse read; the call is then held to the charge's output cap and
+ *    the body length it was admitted by, its every inbound
  *    credential (the placeholder with them) stripped and the sealed one injected. A refused
  *    reserve is answered with the object's own code and receipt. The provider's answer
  *    streams back as it comes, but for the gateway's own headers (`x-ta-resealed`, which goes

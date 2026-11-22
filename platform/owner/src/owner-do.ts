@@ -186,7 +186,6 @@ import { Sessions, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors, switchedOn } from "./signins";
 import { Starter, starterDoors } from "./starter";
 import { carried } from "./starter-package";
-import { priced, Usage as ModelUsage, usageDoors } from "./usage";
 import { migrate } from "../../contract/src/migrate";
 import { Archive } from "./archive";
 import { MIGRATIONS } from "./schema";
@@ -381,7 +380,6 @@ interface Built {
   readonly starter: Starter;
   readonly connections: Connections;
   readonly doorbell: Doorbell;
-  readonly usage: ModelUsage;
   readonly egress: Egress;
   readonly runs: Runs;
   readonly launcher: Launcher;
@@ -417,7 +415,7 @@ const HANDLERS = Object.freeze({
   inbound: inboundDoors, keys: keysDoors, ledger: ledgerDoors, notices: noticesDoors,
   policy: policyDoors, registrations: registrationsDoors, relay: relayDoors,
   restore: restoreDoors, runs: runsDoors, "sandbox-time": sandboxTimeDoors,
-  sessions: sessionsDoors, signins: signinsDoors, starter: starterDoors, usage: usageDoors,
+  sessions: sessionsDoors, signins: signinsDoors, starter: starterDoors,
 }) satisfies { readonly [M in Module]: DoorsOf<M, Parts> };
 
 /** A handler as the runner calls it, whatever its door: what its row's gate hands it. */
@@ -468,7 +466,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** The starter package: the default agent's files, seeded and kept current (`starter.ts`). */
   readonly #starter: Starter;
   readonly #connections: Connections;
-  readonly #usage: ModelUsage;
   /** Sandbox egress: each request admitted at open and settled once it ends (`egress.ts`). */
   readonly #egress: Egress;
   /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
@@ -594,13 +591,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
                  source_daily_cost: own?.daily_cost ?? null,
                  source_monthly_cost: own?.monthly_cost ?? null };
       },
-      spent: (period, source) => this.#usage.spent(period, source),
-      cost: priced,
-      pruned: (now) => this.#usage.spendPruned(now),
-    });
-    this.#usage = new ModelUsage(storage, () => {
-      const { generation, document } = this.#policy.read();
-      return { generation, settings: modelSettings(document) };
     });
     this.#tickets = new Tickets(storage);
     this.#signins = new Signins(storage);
@@ -620,7 +610,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       connections: this.#connections,
       egress: this.#egress, files: this.#files, grants: this.#grants, ledger: this.#ledger,
       notices: this.#notices, policy: this.#policy, relay: this.#relay, signins: this.#signins,
-      starter: this.#starter, usage: this.#usage,
+      starter: this.#starter,
     });
     this.#runs = this.#launcher.runs;
     this.#sandboxTime = new SandboxTime(storage, this.#runs.meter(), {
@@ -691,7 +681,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#parts = Object.freeze({
       ...stores, openExports: this.#exports, sandboxTime: this.#sandboxTime,
       starter: this.#starter, connections: this.#connections, doorbell: this.#sender,
-      usage: this.#usage, egress: this.#egress, runs: this.#runs, launcher: this.#launcher,
+      egress: this.#egress, runs: this.#runs, launcher: this.#launcher,
       relay: this.#relay, signins: this.#signins, tickets: this.#tickets,
       inbound: this.#inbound, erasure: this.#erasure, posts: this.#posts,
       env, storage, owner: () => this.#ownerName(), sandbox,
