@@ -936,9 +936,11 @@ describe("the engines' sessions from the owner's files", () => {
     writeFileSync(staged, "one, and this run's turn");
     await syncIn(door, p, mirror);
     const report = await syncOut(door, p, mirror, LEASE, []);
+    // Still marked, so the next staging drops the store's copy and a resume fetches the
+    // owner's: one conflict copy, never one a sync.
     expect([report.conflicts, files.get(path)!.text,
-            files.get(`${path}.ta-conflict-${LEASE.epoch}`)?.text])
-      .toEqual([[path], "one, the owner's edit", "one, and this run's turn"]);
+            files.get(`${path}.ta-conflict-${LEASE.epoch}`)?.text, mirror.get(path)?.sha256])
+      .toEqual([[path], "one, the owner's edit", "one, and this run's turn", UNREAD]);
   });
 });
 
