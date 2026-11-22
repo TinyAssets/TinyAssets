@@ -628,7 +628,7 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     const url = `${doors.origin}/decide`;
     expect(managed).toEqual({
       allowManagedHooksOnly: true, strictPluginOnlyCustomization: ["hooks"],
-      allowedHttpHookUrls: [url], httpHookAllowedEnvVars: ["TA_DECIDE"],
+      disableSkillShellExecution: true, allowedHttpHookUrls: [url], httpHookAllowedEnvVars: ["TA_DECIDE"],
       hooks: { ...dispatchers, PreToolUse: [{ matcher: "^(?:Bash|mcp__gmail__send_.*)$", hooks: [{
         type: "http", url, headers: { "x-ta-decide": "$TA_DECIDE" },
         allowedEnvVars: ["TA_DECIDE"], timeout: 60, onFailure: "block" }] },
@@ -711,10 +711,11 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     await run("claude-code");
     const seen = box.ran("claude-code").at(-1)!;
     // Managed: only the managed hook runs, and no skill's, command's or agent's frontmatter
-    // hook either; the project and local layers never load, at start or live.
+    // hook either, nor a skill's or command's inline `!` command; the project and local
+    // layers never load, at start or live.
     const managed = JSON.parse(seen.dumps[MANAGED]!);
-    expect([managed.allowManagedHooksOnly, managed.strictPluginOnlyCustomization])
-      .toEqual([true, ["hooks"]]);
+    expect([managed.allowManagedHooksOnly, managed.strictPluginOnlyCustomization,
+            managed.disableSkillShellExecution]).toEqual([true, ["hooks"], true]);
     expect(seen.argv.join(" ")).toContain("--setting-sources user");
     // The user layer is pinned: root's, in a directory the run may write but never replace
     // it in.

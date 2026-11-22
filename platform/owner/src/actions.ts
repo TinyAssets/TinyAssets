@@ -24,6 +24,10 @@
  *   then one act asked, so one card and its one yes admit the call however many acts ask.
  *   Which tools the hook matches is the owner's rules' (`hookTools`), for every agent: the
  *   decision holds each rule to its own agent.
+ * - **So are the commands a run's own definition starts** (`decideCommand`): its `mcp.json`
+ *   servers' and its `hooks.json` hooks', which no tool call starts, decided at the run's
+ *   admission as a tool call of their kind (`COMMAND_KIND`) is; the admission leaves out each
+ *   one a rule holds.
  * - **The honest note** (d3 §N5, `ruleNotes`): each rule's places it holds and can't, which
  *   `policyRead` answers beside the rules.
  * - **A yes to a run's call resumes its conversation** (R5 P-resume): the approval writes a
@@ -43,7 +47,8 @@
  * Every change runs in one `transactionSync`; a refusal is thrown once what it receipts is
  * written, in the caller's unit, so the card and its receipt stand.
  */
-import { actNamed, toolPatterns } from "../../contract/src/acts";
+import { actNamed, COMMAND_KIND, toolPatterns } from "../../contract/src/acts";
+import type { Origin } from "../../contract/src/binding";
 import { canonical } from "../../contract/src/canonical";
 import { actDoors } from "../../contract/src/doors";
 import { sha256Hex } from "../../contract/src/digest";
@@ -103,12 +108,23 @@ export interface Actor {
  */
 export function decidedActor(account: Account): Actor | null {
   if (account.run !== null) {
-    return { agent: account.run.agent, client: account.origin?.client ?? null,
-             run: { id: account.run.id, conversation: account.run.conversation,
-                    family: account.origin?.family ?? null } };
+    return runActor(account.run, account.origin);
   }
   return account.origin === null ? null
     : { agent: null, client: account.origin.client, run: null };
+}
+
+/** A run, as its calls are decided: its id, its agent and its conversation. */
+interface DecidedRun {
+  readonly id: string;
+  readonly agent: string;
+  readonly conversation: string;
+}
+
+/** The actor of `run`'s calls: its agent, under the client `origin` names when one started it. */
+function runActor(run: DecidedRun, origin: Origin | null): Actor {
+  return { agent: run.agent, client: origin?.client ?? null,
+           run: { id: run.id, conversation: run.conversation, family: origin?.family ?? null } };
 }
 
 /** The strictest of `document`'s rules on `act` that hold for `actor`, or null for none. */
@@ -143,8 +159,10 @@ export interface RuleNote {
 
 /**
  * The honest note (d3 §N5) of each of `document`'s rules, in order, from `acts.json` and the
- * engines' records. It holds at `doors` (the platform's own tools and doors that do its act)
- * and at each engine whose CLI's own hook sees it (by its kinds, or the rule's tools). It
+ * engines' records. It holds at `doors` (the platform's own tools and doors that do its act),
+ * at `definitions` (the commands the agent's own definition starts, decided at each run's
+ * admission, whatever its engine, where its act is of `COMMAND_KIND`) and at each engine whose
+ * CLI's own hook sees it (by its kinds, or the rule's tools). It
  * can't hold where `acts.json` says nothing of ours sees the act (`unseen`), at an engine
  * whose CLI holds no hook for it or one the agent can alter (`alterable`), nor, mid-run, at a
  * hook whose failure lets the call through (`<engine>.fails_open`). Every engine is named: an
@@ -153,7 +171,8 @@ export interface RuleNote {
 export function ruleNotes(document: PolicyDocument): RuleNote[] {
   return (document.actions ?? []).map((rule) => {
     const act = actNamed(rule.act)!;
-    const holds: string[] = actDoors(rule.act).length > 0 ? ["doors"] : [];
+    const holds: string[] = [...actDoors(rule.act).length > 0 ? ["doors"] : [],
+                             ...act.hook.includes(COMMAND_KIND) ? ["definitions"] : []];
     const not: string[] = [...act.unseen];
     if (act.hook.length > 0 || rule.tools !== undefined) {
       for (const engine of [...served().keys()].sort()) {
@@ -265,11 +284,16 @@ type Row = {
   run: string | null; family: string | null;
 };
 
-/** The input a run resumed on a yes starts on: the card answered, and the call to make again. */
+/**
+ * The input a run resumed on a yes starts on: the card answered, and the call to make again.
+ * A command of the agent's own definition held at its admission (`decideCommand`) is no call
+ * the agent makes: the resumed run's admission admits it.
+ */
 function resumeInput(card: ActionCard): string {
-  return `Your owner said yes to card ${card.card_id} (${card.act} at ${card.door}). Make ` +
-    "that same call again now and it goes through, once. If you made it since, do not make " +
-    "it again.";
+  return `Your owner said yes to card ${card.card_id} (${card.act} at ${card.door}), once. ` +
+    "If it was a call of yours, make that same call again now and it goes through; if you " +
+    "made it since, do not make it again. If it was a command of your own definition, it " +
+    "runs in this run.";
 }
 
 export class Actions {
@@ -310,13 +334,34 @@ export class Actions {
    */
   decideTool(actor: Actor, hook: Hook, tool: string, input: unknown, now: number): void {
     const { document } = this.#policy();
-    const acts = [...new Set((document.actions ?? []).map((rule) => rule.act))]
-      .filter((act) => actTools(document, act, hook).some((pattern) =>
-        new RegExp(`^(?:${pattern})$`).test(tool)));
+    this.#decideAs(document, (act) => actTools(document, act, hook).some((pattern) =>
+      new RegExp(`^(?:${pattern})$`).test(tool)), actor, { door: tool, request: input }, now);
+  }
+
+  /**
+   * In the caller's unit, at `run`'s admission: a command the run's own definition starts
+   * (`asked`: the definition's file as its door, the server or hook as its request), decided
+   * as the run's call (`origin`, the client that started it, if one did) of each act of
+   * `COMMAND_KIND`, as `decideTool` decides a tool call of that kind. No tool call starts it,
+   * so no hook would see it.
+   */
+  decideCommand(run: DecidedRun, origin: Origin | null, asked: Asked, now: number): void {
+    const { document } = this.#policy();
+    this.#decideAs(document, (act) => actNamed(act)?.hook.includes(COMMAND_KIND) === true,
+                   runActor(run, origin), asked, now);
+  }
+
+  /**
+   * `asked` decided as each act a rule names that `is` takes: every act a rule never lets be
+   * first, then the first act asked alone, so a call two asked acts name files one card.
+   */
+  #decideAs(document: PolicyDocument, is: (act: string) => boolean, actor: Actor,
+            asked: Asked, now: number): void {
+    const acts = [...new Set((document.actions ?? []).map((rule) => rule.act))].filter(is);
     const nevers = acts.filter((act) => ruleOn(document, act, actor) === "never");
-    const asked = acts.find((act) => ruleOn(document, act, actor) === "ask");
-    for (const act of [...nevers, ...(asked === undefined ? [] : [asked])]) {
-      this.decide(act, actor, { door: tool, request: input }, now);
+    const first = acts.find((act) => ruleOn(document, act, actor) === "ask");
+    for (const act of [...nevers, ...(first === undefined ? [] : [first])]) {
+      this.decide(act, actor, asked, now);
     }
   }
 

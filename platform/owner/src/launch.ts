@@ -9,7 +9,8 @@
  *   `/workspace/model-ranking.json`, else the platform's), its run admitted in one unit
  *   against the file still at the etag it was read at, with the agent's own MCP servers the owner's egress lets out (`agentServers`; the
  *   owner told of each left out), each one an owner's connector is sealed for bound to it on
- *   the run's grant and reached through the egress door (`connectorsOf`), then started
+ *   the run's grant and reached through the egress door (`connectorsOf`), and only the
+ *   servers' and hooks' commands the owner's rules let its run start (`#ownCommands`), then started
  *   through the sandbox Worker (`SANDBOX`), and what came of it recorded (`running`,
  *   `failed` with the sandbox's code or for an answer out of its shape, `unknown` when its
  *   answer never came, or `waiting` for a sandbox to free);
@@ -37,7 +38,7 @@ import {
 import type { PolicyDocument } from "../../contract/src/policy-document";
 import { LEASE_TTL_S, PLACE_BYTES } from "../../contract/src/limits";
 import { slotted } from "../../contract/src/slots";
-import { Refusal } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
 import { type Ranking, rankingOf, shippedRanking } from "../../sources/src/ranking";
 import { runEnv } from "../../sources/src/run-env";
@@ -45,7 +46,7 @@ import { SourceRecordError } from "../../sources/src/schema";
 
 import {
   AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, type AgentHooks, agentHooks,
-  type AgentMcp, agentMcp, agentPath,
+  type AgentMcp, agentMcp, agentPath, type McpServer,
 } from "../../contract/src/agent-definition";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
@@ -55,7 +56,7 @@ import type { OwnerEnv } from "./env";
 import { type Files, type Lease, type SandboxLease } from "./files";
 import { ADMITTED_FILE_BYTES, ADMITTED_FILE_UNITS, ownerSlots } from "./holds";
 import { type Delivery, type Ledger, type MailAuthority, mailInput } from "./ledger";
-import { nativeId } from "../../contract/src/binding";
+import { nativeId, type Origin } from "../../contract/src/binding";
 import { RANKING } from "../../contract/src/paths";
 import { clock, inTime } from "./clock";
 import { agentServers, connectorsOf, networkDocument, throughConnectors } from "./network";
@@ -146,17 +147,29 @@ export interface SandboxRun {
   readonly connection?: string;
 }
 
+/** A run as the owner's rules decide its calls (`actions.ts`): its id, agent and conversation. */
+interface DecidedRun {
+  readonly id: string;
+  readonly agent: string;
+  readonly conversation: string;
+}
+
 /**
  * What the launcher reaches of the object, handed it once by the object that builds it: the
  * files' leases and the bodies a run's mail and reply place; the mail it delivers; the
  * owner's model connections, policy, spend and grants a run is admitted against; the tier
  * and admission; the sandbox's egress, sign-ins and the app sockets a run's end tells; its
- * starter seed; and the object's units and reads.
+ * starter seed; and the object's units and reads; the owner's rules on a run's own commands.
  */
 export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
                                        Pick<ObjectReads, "owner" | "sandbox" | "storage"
                                          | "control"> {
   readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
+  /** The owner's rules on a run's own definition's commands (`actions.ts` `decideCommand`). */
+  readonly actions: {
+    decideCommand(run: DecidedRun, origin: Origin | null,
+                  asked: { readonly door: string; readonly request: unknown }, now: number): void;
+  };
   readonly admission: {
     numbers(): Tiers;
     tier(): TierName;
@@ -405,7 +418,7 @@ export class Launcher implements RunHost {
   async launch(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking" | "connectors">,
                waiting: string | null = null, taken: (run: string) => void = () => {}):
       Promise<string> {
-    const { admitted, agent, unattended, servers } = await this.#o.door(() => {
+    const admission = await this.#o.door(() => {
       const made = ask();
       if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
         throw new Refusal("agent_changed", AGENT_CHANGED);
@@ -422,19 +435,27 @@ export class Launcher implements RunHost {
                           engine: chosen.engine, credential: chosen.credential,
                           ...(chosen.connection === null ? {}
                             : { connection: chosen.connection }) }), waiting);
-      const done = { agent: made.agent, unattended: made.unattended, admitted,
-                     servers: admitted.existing ? kept.servers
-                       : throughConnectors(kept.servers, bound, admitted.run, admitted.secret) };
-      taken(done.admitted.run);  // the input it was asked on is its own now (a mail's, taken)
-      for (const { name, host, why } of done.admitted.existing ? [] : kept.dropped) {
+      taken(admitted.run);  // the input it was asked on is its own now (a mail's, taken)
+      if (admitted.existing) {
+        return admitted.run;
+      }
+      for (const { name, host, why } of kept.dropped) {
         this.#o.notices.once("mcp_server_dropped", `${made.agent}: its MCP server ${name} (${
           host}) is left out of its runs: ${why}`, clock());
       }
-      return done;
+      // Only a run that starts now decides its definition's commands, so a run retried or
+      // written waiting uses no yes. A command server is bound to no connector, so one left
+      // out changes no grant.
+      const own = this.#ownCommands({ id: admitted.run, agent: made.agent,
+                                      conversation: admitted.conversation }, made.origin,
+                                    kept.servers, read.hooks.hooks);
+      return { agent: made.agent, unattended: made.unattended, admitted, hooks: own.hooks,
+               servers: throughConnectors(own.servers, bound, admitted.run, admitted.secret) };
     });
-    if (admitted.existing) {
-      return admitted.run;
+    if (typeof admission === "string") {
+      return admission;
     }
+    const { admitted, agent, unattended, servers, hooks } = admission;
     const start: SandboxStart = {
       run: admitted.run, agent, conversation: admitted.conversation,
       engine: admitted.engine, credential: admitted.credential, model: admitted.model,
@@ -444,8 +465,7 @@ export class Launcher implements RunHost {
       hosts: vendorHosts(admitted.engine, admitted.credential),
       route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
                                                       authority: admitted.authority }),
-      urls: runUrls(admitted.run, admitted.secret), mcp_servers: servers,
-      hooks: read.hooks.hooks };
+      urls: runUrls(admitted.run, admitted.secret), mcp_servers: servers, hooks };
     const answer = await startOutcome("a run", () => this.#o.sandbox.start(start),
                                       () => this.#o.door(() =>
                                         this.runs.grant(admitted.run) !== null));
@@ -964,6 +984,44 @@ export class Launcher implements RunHost {
       await this.#o.door(() => this.#o.files.networkAnswered(
         lease.lease_id, lease.epoch, generation, answer, clock()));
     }));
+  }
+
+  /**
+   * In the admission's unit: `servers` and `hooks` less each command of them (a server started
+   * by its command, a hook) the owner's rules hold for `run` (`decideCommand`, its door the
+   * definition's file, its request the entry), the owner told once of each left out, and why.
+   * A held one's card is filed and noticed by the decision; its yes resumes the run's
+   * conversation, whose next run's admission admits it once.
+   */
+  #ownCommands(run: DecidedRun, origin: Origin | null,
+               servers: Readonly<Record<string, McpServer>>, hooks: AgentHooks["hooks"]):
+      { servers: Readonly<Record<string, McpServer>>; hooks: AgentHooks["hooks"] } {
+    const now = clock();
+    const runs = (door: string, what: string, request: object): boolean => {
+      try {
+        this.#o.actions.decideCommand(run, origin, { door, request }, now);
+        return true;
+      } catch (error) {
+        const refusal = refusalOf(error);
+        if (refusal === null) {
+          throw error;
+        }
+        const card = refusal.facts?.["card_id"];
+        this.#o.notices.once("definition_command_dropped", `${run.agent}: ${what} is left ` +
+          `out of this run: ${typeof card === "string" ? `it waits for your answer to card ${
+            card}` : refusal.message}`, now);
+        return false;
+      }
+    };
+    return {
+      servers: Object.freeze(Object.fromEntries(Object.entries(servers).filter(([name, server]) =>
+        !("command" in server) || runs(AGENT_FILES.mcp, `its MCP server ${name} (${
+          server.command})`, { server: name, ...server })))),
+      hooks: Object.freeze(Object.fromEntries(Object.entries(hooks).map(([event, list]) =>
+        [event, Object.freeze(list.filter((hook, at) => runs(AGENT_FILES.hooks,
+          `its ${event} hook ${hook.run[0]!}`, { hook: `${event}[${at}]`, ...hook })))]))) as
+        AgentHooks["hooks"],
+    };
   }
 
   /**
