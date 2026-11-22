@@ -392,11 +392,12 @@ export class Grants {
    * `outside_set`, an owner widening from its protected session: one client's mode, scopes,
    * profile, agent and name, against the revision the owner was shown; `expected_revision` 0
    * creates the row, as a key's mint does. The revision always moves; the generation only when
-   * the authority does (`moved`), which is when the caller ends the client's work.
+   * the authority does (`moved`), which is when the caller ends the client's work. `named`: the
+   * set names an agent other than the grant's own, which the caller checks is live.
    */
   set(session: LiveSession, change: GrantChange, now: number):
       { client: string; mode: string; scopes: Scope[]; profile: string; agent: string;
-        generation: number; revision: number; moved: boolean } {
+        generation: number; revision: number; moved: boolean; named: boolean } {
     proven(session, "session");
     const client = outsideClient(change.client, change.source);
     const { mode, expected_revision: expected, name } = change;
@@ -464,7 +465,8 @@ export class Grants {
                                        profile, agent }),
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
-      return { client, mode, scopes: held, profile, agent, generation, revision, moved };
+      return { client, mode, scopes: held, profile, agent, generation, revision, moved,
+               named: asked !== undefined && asked !== row?.agent };
     });
   }
 
@@ -624,6 +626,8 @@ export interface GrantsDoorNeeds extends Pick<ObjectReads, "storage"> {
     suppressClient(client: string, now: number): void;
     /** One of the owner's live agents by name, else refused (`no_agent`, `agent_retired`). */
     liveNative(agent: string): unknown;
+    /** The owner's live agents (`all` false). */
+    natives(all: false): readonly { readonly agent: string }[];
   };
   readonly registrations: { endClient(client: string): void };
   readonly launcher: Pick<Launcher, "endClient">;
@@ -648,22 +652,33 @@ function evictRevoked(o: GrantsDoorNeeds): void {
 }
 
 export const grantsDoors = Object.freeze({
-  grantList(o: GrantsDoorNeeds, _call: Call<undefined>): { clients: Client[] } {
-    return { clients: o.grants.list() };
+  /**
+   * Every grant, each with whether the agent it names is one of the owner's live agents
+   * (`agent_live`): one that is not has its definition refused (`no_agent`, `agent_retired`)
+   * until the owner names another or its `agent.json` is back.
+   */
+  grantList(o: GrantsDoorNeeds, _call: Call<undefined>):
+      { clients: (Client & { agent_live: boolean })[] } {
+    const live = new Set(o.ledger.natives(false).map((native) => native.agent));
+    return { clients: o.grants.list().map((client) =>
+      ({ ...client, agent_live: live.has(client.agent) })) };
   },
   /**
    * The owner's widening, in its session, against the grant's revision. A set that moves
    * the grant's authority (its mode, scopes, profile or agent) ends the client's agents' wakes
    * and held registrations with it, as `grantRevoke` ends them; one that moves only the
-   * revision, a rename, ends nothing: every stamp of the client's still stands. The agent it
-   * names is one of the owner's live agents, else refused (`no_agent`, `agent_retired`).
+   * revision, a rename, ends nothing: every stamp of the client's still stands. An agent it
+   * names anew is one of the owner's live agents, else refused (`no_agent`, `agent_retired`);
+   * the grant's own, kept, is not checked, so no save waits on it, a narrowing or revoke among
+   * them.
    */
   grantSet(o: GrantsDoorNeeds, { session, r }: Call<GrantChange, "session">):
       { client: string; mode: string; scopes: Scope[]; profile: string; agent: string;
         generation: number; revision: number } {
     return o.storage.transactionSync(() => {
-      const { moved, ...set } = o.grants.set(session, r as unknown as GrantChange, clock());
-      if (r["agent"] !== undefined) {
+      const { moved, named, ...set } = o.grants.set(session, r as unknown as GrantChange,
+                                                    clock());
+      if (named) {
         o.ledger.liveNative(set.agent);
       }
       if (moved) {
