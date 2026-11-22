@@ -5,7 +5,7 @@ import { holdLocks } from "../../ci/kit/locks";
 import { LOCKS } from "./locks";
 
 describe("append-only migrations", () => {
-  it("hold every deployed migration of both objects to its pinned text", () => {
+  it("hold every migration of both objects to its pin", () => {
     expect(holdLocks(LOCKS)).toEqual([]);
   });
 });

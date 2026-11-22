@@ -14,7 +14,7 @@ import { workerSources } from "../../ci/kit/sources";
 import { LOCKS } from "./locks";
 
 describe("append-only migrations", () => {
-  it("hold every deployed migration to its pinned text", () => {
+  it("hold every migration to its pin", () => {
     expect(holdLocks(LOCKS)).toEqual([]);
   });
 });

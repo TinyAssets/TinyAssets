@@ -22,12 +22,14 @@
  *   every lock of the Worker marks its first deploy and pins exactly them, in order; else it
  *   fails, naming each lock that does not. The deploy kit refuses to deploy on its failure.
  * - `node ci/kit/locks.ts pin <worker> <commit>` marks each lock's first deploy once, at
- *   `<commit>`, which is read only then, and pins every migration the code holds. The pins
- *   already there are checked first: a changed one refuses the pin. A lock's first deploy
- *   lands on `main` by pull request before that deploy (`deploy/checklist.md`).
+ *   `<commit>` as git resolves it to its full sha (`HEAD` included), and pins every migration
+ *   the code holds. The pins already there are checked first: a changed one refuses the pin.
+ *   A lock's first deploy lands on `main` by pull request before that deploy
+ *   (`deploy/checklist.md`).
  *
  * Node runs this file as it is (type stripping), so its own imports name their `.ts` files.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -171,12 +173,14 @@ export async function command(argv: readonly string[]): Promise<string> {
   }
   if (verb === "pin" && worker !== undefined && commit !== undefined && argv.length === 3) {
     const at = new Date().toISOString();
+    const sha = execFileSync("git", ["rev-parse", "--verify", `${commit}^{commit}`],
+                             { cwd: PLATFORM, encoding: "utf8" }).trim();
     const locks = await locksOf(worker);
     for (const [path, migrations] of Object.entries(locks)) {
       writeFileSync(join(PLATFORM, path),
-                    `${JSON.stringify(pin(migrations, readLock(path), commit, at), null, 2)}\n`);
+                    `${JSON.stringify(pin(migrations, readLock(path), sha, at), null, 2)}\n`);
     }
-    return `pinned ${Object.keys(locks).join(", ")} at ${commit}`;
+    return `pinned ${Object.keys(locks).join(", ")} at ${sha}`;
   }
   throw new Error("usage: node ci/kit/locks.ts digests <worker> | pin <worker> <commit>");
 }

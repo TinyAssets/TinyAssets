@@ -200,6 +200,8 @@ describe("the migration locks' kit", () => {
     }
     expect(run("digests", "doors").status).toBe(1);
     expect(run("pin", "owner").stderr).toMatch(/^usage: /);
+    // A first-deploy marker records the commit git names, never the argument's spelling.
+    expect(run("pin", "owner", "not-a-commit").status).toBe(1);
   });
 });
 
