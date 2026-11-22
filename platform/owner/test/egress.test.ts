@@ -358,7 +358,9 @@ describe("an egress call", () => {
       methods: ["POST"] }] };
     const connection = await r.connect("sk-good", counted);
     const lease = await leased(r);
-    const opened = await admitted(r, lease, connection, { path: "/v1/messages/count_tokens" });
+    // Claude Code's own count, its beta client's query on it.
+    const opened = await admitted(r, lease, connection,
+                                  { path: "/v1/messages/count_tokens?beta=true" });
     expect(opened.metering).toBeNull();
     expect(await charges(r)).toMatchObject([{ state: "open", charge: null, est_cost: null }]);
     // Any other sealed POST that is not the source's model call is still never sent.

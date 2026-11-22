@@ -6,10 +6,11 @@
  * placeholder keys; the binder admits the request at the owner's object, which hands it
  * the blob, and calls `forward`. The gateway opens the blob, requires the request's
  * method, origin and path to be among the sealed endpoints, strips every credential the
- * request carried (headers and the API-key query parameters), injects the sealed one by
- * the sealed auth template, and sends it to the sealed origin. The provider's own answer
- * streams back, status and body, so the client sees its own API; only the secret is
- * redacted from the body, in case a provider quotes it back. A call is cut at
+ * request carried (headers and the API-key query parameters; any other parameter its API's
+ * rules do not allow is refused, `egressTarget`), injects the sealed one by the sealed auth
+ * template, and sends it to the sealed origin. The provider's own answer streams back,
+ * status and body, so the client sees its own API; only the secret is redacted from it, in
+ * every spelling a provider could quote it back in (`redact.ts`). A call is cut at
  * `FORWARD_DEADLINE_MS`, or once its answer is silent for `IDLE_CUT_MS`, and redirects are
  * never followed.
  *
@@ -47,6 +48,7 @@ import {
   gatewaySlots, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
 } from "./held";
 import { timeout } from "./deadline";
+import { redaction } from "./redact";
 import { RESEALED_HEADER } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
 
@@ -123,8 +125,6 @@ const CREDENTIAL_HEADERS: readonly string[] = Object.freeze([
   // A method override would let a sealed `POST` act as a method that is not sealed.
   "x-http-method-override", "x-http-method", "x-method-override",
 ]);
-/** Query parameters that carry an API key (Google's `key` among them). */
-const CREDENTIAL_PARAMS: readonly string[] = Object.freeze(["key", "api_key", "access_token"]);
 /** Headers that belong to one hop, never forwarded either way. */
 const HOP_HEADERS: readonly string[] = Object.freeze([
   "connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade", "content-length",
@@ -139,82 +139,6 @@ function internal(name: string): boolean {
 function authValue(credential: Credential): string {
   const scheme = credential.upstream.auth.scheme;
   return scheme === "" ? bearer(credential) : `${scheme} ${bearer(credential)}`;
-}
-
-const REDACTED = "[redacted]";
-
-/**
- * Each secret as the provider could write it back: as it is, and JSON-escaped (a JSON
- * writer may escape `/` as `\/`).
- */
-function spellings(secrets: readonly string[]): string[] {
-  const all = secrets.filter((secret) => secret.length > 0).flatMap((secret) => [
-    secret, secret.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\//g, "\\/"),
-  ]);
-  return [...new Set(all)].sort((a, b) => b.length - a.length);
-}
-
-function redactText(value: string, secrets: readonly string[]): string {
-  let out = value;
-  for (const spelling of spellings(secrets)) {
-    out = out.split(spelling).join(REDACTED);
-  }
-  return out;
-}
-
-/**
- * Replaces every occurrence of each spelling of each of `secrets` in a byte stream with
- * `[redacted]`, across chunk boundaries: it holds back the last `longest - 1` bytes of
- * each chunk until the next one shows whether they start a secret.
- */
-export function redact(body: ReadableStream<Uint8Array>,
-                       secrets: readonly string[]): ReadableStream<Uint8Array> {
-  const needles = spellings(secrets).map((secret) => new TextEncoder().encode(secret));
-  const longest = Math.max(0, ...needles.map((needle) => needle.byteLength));
-  if (longest === 0) {
-    return body;
-  }
-  const mark = new TextEncoder().encode(REDACTED);
-  let held = new Uint8Array(0);
-  const scrub = (bytes: Uint8Array, final: boolean): Uint8Array[] => {
-    const out: Uint8Array[] = [];
-    let start = 0;
-    let at = 0;
-    const limit = final ? bytes.byteLength : Math.max(0, bytes.byteLength - (longest - 1));
-    while (at < limit) {
-      const hit = needles.find((needle) => needle.byteLength <= bytes.byteLength - at
-        && needle.every((byte, index) => bytes[at + index] === byte));
-      if (hit === undefined) {
-        at++;
-        continue;
-      }
-      out.push(bytes.subarray(start, at), mark);
-      at += hit.byteLength;
-      start = at;
-    }
-    out.push(bytes.subarray(start, Math.max(start, limit)));
-    held = bytes.slice(Math.max(start, limit));
-    return out;
-  };
-  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      const joined = new Uint8Array(held.byteLength + chunk.byteLength);
-      joined.set(held);
-      joined.set(chunk, held.byteLength);
-      for (const part of scrub(joined, false)) {
-        if (part.byteLength > 0) {
-          controller.enqueue(part);
-        }
-      }
-    },
-    flush(controller) {
-      for (const part of scrub(held, true)) {
-        if (part.byteLength > 0) {
-          controller.enqueue(part);
-        }
-      }
-    },
-  }));
 }
 
 /** The secrets a credential holds, each redacted from what the provider sends back. */
@@ -427,12 +351,6 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       && !freeCall(apiRules(priced.api), priced.provider, request.method, target.pathname)) {
     return refused("unmetered", resealed);
   }
-  // Every spelling of each credential parameter, as some servers read them case-blind.
-  for (const name of [...target.searchParams.keys()]) {
-    if (CREDENTIAL_PARAMS.includes(name.toLowerCase())) {
-      target.searchParams.delete(name);
-    }
-  }
   let body: BodyInit | null = READS.includes(request.method) ? null : request.body;
   let model: Model<Api> | null = null;
   let listed = false;
@@ -531,10 +449,10 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
              outcome: Promise.resolve(metered === null ? FAILED : UNKNOWN) };
   }
   const answer = new Headers();
-  const secrets = secretsOf(credential);
+  const redacted = redaction(secretsOf(credential));
   for (const [name, value] of upstream.headers) {
     if (!HOP_HEADERS.includes(name) && !internal(name)) {
-      answer.append(name, redactText(value, secrets));
+      answer.append(name, redacted.text(value));
     }
   }
   // The body is rewritten when redacted, so its encoding headers no longer describe it.
@@ -573,9 +491,9 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   if (source === null) {
     upload?.stop();
   }
-  const redacted = passed === null ? null : redact(passed, secrets);
-  return { response: new Response(redacted, { status: upstream.status,
-                                              statusText: upstream.statusText, headers: answer }),
+  return { response: new Response(passed === null ? null : redacted.stream(passed),
+                                  { status: upstream.status, statusText: upstream.statusText,
+                                    headers: answer }),
            outcome };
 }
 
