@@ -201,6 +201,14 @@ export const WINDOW_UNITS = 1;
 export const DEFINITION_UNITS = 1;
 
 /**
+ * An owner's file a run is admitted on, read whole (`Launcher`: the agent's `agent.json`, the
+ * owner's model ranking): at most `ADMITTED_FILE_BYTES`, half a unit, its read parts and
+ * their joined copy in hand at once. Past it the run is refused, never the file read.
+ */
+export const ADMITTED_FILE_UNITS = 1;
+export const ADMITTED_FILE_BYTES = ADMITTED_FILE_UNITS * UNIT_BYTES / 2;
+
+/**
  * A whole body's read (`Bodies.fetch`): per chunk, its bytes, its text (a one-byte string, or
  * UTF-16 for wider text: never more bytes than its UTF-8) and slack (measured 8.01 MiB for a
  * two-chunk body, the text taken after its parts are let go).

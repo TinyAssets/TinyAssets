@@ -34,6 +34,7 @@ import {
 } from "../../contract/src/egress";
 import type { PolicyDocument } from "../../contract/src/policy-document";
 import { PLACE_BYTES } from "../../contract/src/limits";
+import { slotted } from "../../contract/src/slots";
 import { Refusal } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
 import { type Ranking, rankingOf, shippedRanking } from "../../sources/src/ranking";
@@ -49,6 +50,7 @@ import type { DoorUnits, ObjectReads } from "./door";
 import type { Egress } from "./egress";
 import type { OwnerEnv } from "./env";
 import { type Files, type Lease, type SandboxLease } from "./files";
+import { ADMITTED_FILE_BYTES, ADMITTED_FILE_UNITS, ownerSlots } from "./holds";
 import { type Delivery, type Ledger, type MailAuthority, mailInput } from "./ledger";
 import { nativeId } from "../../contract/src/binding";
 import { RANKING } from "../../contract/src/paths";
@@ -136,8 +138,8 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
     egressible(): readonly Egressible[];
   };
   readonly egress: Pick<Egress, "end">;
-  readonly files: Pick<Files, "fetch" | "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
-    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "open"
+  readonly files: Pick<Files, "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
+    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "open" | "range"
     | "sandboxLease" | "stat">;
   readonly grants: {
     standing(client: unknown, generation: unknown, authenticatedAt: number | null):
@@ -348,17 +350,12 @@ export class Launcher implements RunHost {
     if (content === null) {
       return null;
     }
-    let bytes = content.inline;
-    if (bytes === undefined) {
-      const parts = await this.#o.files.fetch((content.chunks ?? []).map(({ sha256 }) =>
-        ({ sha256 })));
-      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let at = 0;
-      for (const part of parts) {
-        bytes.set(part, at);
-        at += part.byteLength;
-      }
+    if (content.entry.size > ADMITTED_FILE_BYTES) {
+      throw new Refusal("invalid", `${path} is past the ${ADMITTED_FILE_BYTES} bytes a run's ` +
+                        "admission reads whole");
     }
+    const bytes = content.inline ?? await slotted(ownerSlots(), ADMITTED_FILE_UNITS, () =>
+      this.#o.files.range(content.chunks ?? [], 0, content.entry.size));
     return { bytes, etag: content.entry.etag };
   }
 
