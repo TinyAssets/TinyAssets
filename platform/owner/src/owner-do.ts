@@ -131,7 +131,7 @@ import {
   PLATFORM_RESERVED, PLATFORM_TIER_ONLY, tombstoned, writeTombstone,
 } from "./admission";
 import {
-  actingAgent, AUTHORITY_CHANGED, type Grant, MAIN_AGENT, may, NOT_GRANTED, OWNER,
+  actingAgent, AUTHORITY_CHANGED, type Grant, may, NOT_GRANTED, OWNER,
 } from "./authority";
 import { Actions, actionsDoors, decidedActor } from "./actions";
 import type { Condition } from "../../contract/src/acts";
@@ -1225,7 +1225,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
       const agent = r === null || row.agent === undefined ? null
         : agentId(r[row.agent.field] ?? row.agent.default);
       return { universe: this.#runDoor(account, row.capability as RunNeed, agent),
-               agent: agent ?? MAIN_AGENT };
+               agent: agent ?? none.agent };
     }
     if (row.capability !== null) {
       this.#scope(account, row.capability);

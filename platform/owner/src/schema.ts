@@ -2589,16 +2589,16 @@ const UNREPLAYABLE = "before a restore could bring a generation forward: migrati
   "collection history by insertion order and migration 9 reads other tables' rows, neither of " +
   "which a generation holds";
 
+/** Why no generation from before migration 19 can be brought forward. */
+const ROOMS_BACKFILLED = "before a restore could bring a generation forward: migration 19 " +
+  "makes each room's rows from the mail's rows, which a generation's lines do not follow";
+
 /**
  * Why no generation from before migration 23 can be brought forward. Declared before the
  * cutover, when no owner keeps a generation (`untangle-2026-11/registered-agent.md`).
  */
 const GRANT_AGENT = "before a restore could bring a generation forward: migration 23 names " +
   "each grant's agent, which a generation's grant lines do not hold";
-
-/** Why no generation from before migration 19 can be brought forward. */
-const ROOMS_BACKFILLED = "before a restore could bring a generation forward: migration 19 " +
-  "makes each room's rows from the mail's rows, which a generation's lines do not follow";
 
 /**
  * How a generation of an older schema is brought forward across each migration, one entry a
