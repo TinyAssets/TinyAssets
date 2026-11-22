@@ -219,7 +219,7 @@
           "--no-approve"
         ],
         "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/security.md",
-        "read": "2026-11-21"
+        "read": "2026-11-22"
       },
       "hooks": {
         "events": {
@@ -231,6 +231,11 @@
           "session_end": "session_shutdown",
           "pre_compact": "session_before_compact"
         },
+        "file": "{system}/hooks.mjs",
+        "template": "import { spawn } from \"node:child_process\";\nconst [command, ...args] = JSON.parse(\"{dispatcher_argv}\");\nconst EVENTS = new Set(JSON.parse(\"{hook_events}\"));\nconst contexts = new Array(0);\nfunction dispatch(event, call, ctx) {\n  return new Promise((done) => {\n    const child = spawn(command, [...args, event], { stdio: [\"pipe\", \"pipe\", \"pipe\"] });\n    let out = \"\";\n    let reason = \"\";\n    child.stdout.on(\"data\", (chunk) => { out += chunk; });\n    child.stderr.on(\"data\", (chunk) => { reason += chunk; });\n    child.on(\"error\", (error) => done({ block: String(error) }));\n    child.on(\"close\", (code) => {\n      if (code !== 0) {\n        done({ block: reason.trim() || \"the agent's hooks could not run (exit \" + code + \")\" });\n        return;\n      }\n      let context = null;\n      try {\n        context = JSON.parse(out).hookSpecificOutput.additionalContext;\n      } catch (error) {\n        context = null;\n      }\n      done(typeof context === \"string\" ? { context } : null);\n    });\n    child.stdin.end(JSON.stringify(Object.assign(\n      { hook_event_name: event, session_id: ctx.sessionManager.getSessionId() }, call)));\n  });\n}\nconst tool = (event) => ({ tool_name: event.toolName, tool_input: event.input });\nconst keep = (answer) => {\n  if (answer !== null && answer.context !== undefined) {\n    contexts.push(answer.context);\n  }\n};\nexport default function (pi) {\n  if (EVENTS.has(\"pre_tool\")) {\n    pi.on(\"tool_call\", async (event, ctx) => {\n      const answer = await dispatch(\"pre_tool\", tool(event), ctx);\n      return answer !== null && answer.block !== undefined\n        ? { block: true, reason: answer.block } : undefined;\n    });\n  }\n  if (EVENTS.has(\"prompt\")) {\n    pi.on(\"input\", async (event, ctx) => {\n      const answer = await dispatch(\"prompt\", { prompt: event.text }, ctx);\n      keep(answer);\n      return { action: answer !== null && answer.block !== undefined ? \"handled\" : \"continue\" };\n    });\n  }\n  if (EVENTS.has(\"session_start\")) {\n    pi.on(\"session_start\", async (event, ctx) => keep(await dispatch(\"session_start\",\n      { source: event.reason }, ctx)));\n  }\n  pi.on(\"before_agent_start\", () => contexts.length === 0 ? undefined : { message: {\n    customType: \"tinyassets-hooks\", content: contexts.splice(0).join(\"\\n\\n\"), display: false } });\n  if (EVENTS.has(\"post_tool\")) {\n    pi.on(\"tool_result\", async (event, ctx) => { await dispatch(\"post_tool\", tool(event), ctx); });\n  }\n  if (EVENTS.has(\"stop\")) {\n    pi.on(\"agent_end\", async (event, ctx) => { await dispatch(\"stop\", null, ctx); });\n  }\n  if (EVENTS.has(\"session_end\")) {\n    pi.on(\"session_shutdown\", async (event, ctx) => { await dispatch(\"session_end\", null, ctx); });\n  }\n  if (EVENTS.has(\"pre_compact\")) {\n    pi.on(\"session_before_compact\", async (event, ctx) => {\n      await dispatch(\"pre_compact\", { trigger: event.reason }, ctx);\n    });\n  }\n}\n",
+        "argv": ["-e", "{system}/hooks.mjs"],
+        "runs": {"exec": true},
+        "fails": "closed",
         "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/extensions.md",
         "read": "2026-11-21"
       }

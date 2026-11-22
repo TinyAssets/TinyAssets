@@ -172,11 +172,17 @@ const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{name}",
   "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{run_secret}", "{system}",
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}",
-  "{skill}",
+  "{skill}", "{dispatcher}", "{dispatcher_argv}", "{hook_events}", "{event}", "{native}",
 ]);
 /** The placeholders only the hook's template takes (`cli.decide.template`). */
 const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze([
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}"]);
+/**
+ * The placeholders only the dispatcher's file takes (`cli.definition.hooks`), `{event}` and
+ * `{native}` only its `each`.
+ */
+const DISPATCH_PLACEHOLDERS: readonly string[] = Object.freeze([
+  "{dispatcher}", "{dispatcher_argv}", "{hook_events}", "{event}", "{native}"]);
 /** What each way a CLI runs its hook carries in its template, beside `{matcher}`. */
 const RUNS_CARRY = Object.freeze({
   http: Object.freeze(["{decide_url}", "{decide_header}", "{decide_env}"]),
@@ -477,7 +483,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   const decide = decideSpec(check, fields["decide"], argv, template, declared);
 
   const engine = engineSpec(check, fields["engine"], argv);
-  const definition = definitionSpec(check, fields["definition"], argv, decide);
+  const definition = definitionSpec(check, fields["definition"], argv, template, decide);
   const tools = check.keys(fields["tools"], "cli.tools", [], ["allow", "deny"]);
   for (const side of ["allow", "deny"] as const) {
     if (tools[side] !== undefined) {
@@ -668,6 +674,11 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
       if (HOOK_PLACEHOLDERS.includes(found) && what !== "cli.decide.template") {
         check.fail(`${what} uses ${found}, which only cli.decide.template carries`);
+      }
+      if (DISPATCH_PLACEHOLDERS.includes(found) && (!["cli.definition.hooks.template",
+        "cli.definition.hooks.each"].includes(what) || (["{event}", "{native}"].includes(found)
+          && what !== "cli.definition.hooks.each"))) {
+        check.fail(`${what} uses ${found}, which only cli.definition.hooks's file carries`);
       }
       if (found === "{mcp_config}" && mcp.file === undefined) {
         check.fail(`${what} uses {mcp_config}, which names cli.mcp.file, and there is none`);
@@ -959,11 +970,12 @@ const SERVER_CARRY = Object.freeze({
 /**
  * How the agent's definition reaches the engine (`Definition`): its instructions; its skills,
  * linked into folders relative to the agent's directory or given one argv a skill; the engine's
- * own layers it keeps out, none of them a path the definition renders; and the engine's name of
- * every hook event, its hooks held to the `decide` hook's root-owned layer, so present exactly
- * when that hook is. Its own MCP servers go where the run's door does (`mcpSpec`).
+ * own layers it keeps out, none of them a path the definition renders; and its hooks'
+ * dispatcher, held to the `decide` hook's root-owned layer, so present exactly when that hook
+ * is (`definitionHooks`). Its own MCP servers go where the run's door does (`mcpSpec`).
  */
 function definitionSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                        template: (item: unknown, what: string) => string,
                         decide: Decide): Definition {
   const fields = check.keys(value, "cli.definition", ["instructions", "skills", "native",
                                                       "hooks"]);
@@ -973,7 +985,7 @@ function definitionSpec(check: ReturnType<typeof checker>, value: unknown, argv:
     instructions, skills,
     native: definitionNative(check, fields["native"], argv,
                              [instructions.file, ...instructions.shadowed_by, ...skills.paths]),
-    hooks: definitionHooks(check, fields["hooks"], decide),
+    hooks: definitionHooks(check, fields["hooks"], argv, template, decide),
   });
 }
 
@@ -1017,7 +1029,18 @@ function definitionNative(check: ReturnType<typeof checker>, value: unknown, arg
   });
 }
 
-function definitionHooks(check: ReturnType<typeof checker>, value: unknown, decide: Decide):
+/**
+ * The agent's hooks' dispatcher (`DefinitionHooks`): the engine's own distinct name of every
+ * event; its file, the decide hook's (its only shared one) or another of the run's own under
+ * `{system}`, a `.json`, `.toml` or `.mjs` one; a settings file's `template` and `each` (each
+ * event's entry, `{event}` and `{native}` in it) read whole once filled, with no credential key,
+ * carrying `{dispatcher}`; an `.mjs` file's `template` carrying `{dispatcher_argv}` and
+ * `{hook_events}` and naming each event's own name; `argv` only for a file of the run's own, and
+ * loading it; how the engine runs it, whether it fails open, how the agent can alter it, and
+ * the page it was read from.
+ */
+function definitionHooks(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                         template: (item: unknown, what: string) => string, decide: Decide):
     DefinitionHooks {
   const what = "cli.definition.hooks";
   if (object(value) && "unsupported" in value) {
@@ -1031,17 +1054,80 @@ function definitionHooks(check: ReturnType<typeof checker>, value: unknown, deci
   if ("unsupported" in decide) {
     check.fail(`${what} is unsupported where cli.decide is: no root-owned layer holds them`);
   }
-  const fields = check.keys(value, what, ["events", "cite", "read"]);
+  const fields = check.keys(value, what, ["events", "file", "runs", "fails", "cite", "read"],
+                            ["template", "each", "argv", "alterable"]);
   const events = check.keys(fields["events"], `${what}.events`, Object.keys(HOOK_EVENTS));
-  const names = Object.values(events);
+  const names = Object.values(events) as string[];
   if (!names.every((name) => typeof name === "string" && NATIVE_KEY.test(name))
       || new Set(names).size !== names.length) {
     check.fail(`${what}.events names each event by the engine's own distinct name`);
+  }
+  const file = fields["file"];
+  const own = typeof file === "string" && file.startsWith("{system}/")
+    && runFilePath(file) !== null;
+  if (typeof file !== "string" || (!own && ("unsupported" in decide || file !== decide.file))
+      || !/\.(?:json|toml|mjs)$/.test(file)) {
+    check.fail(`${what}.file is cli.decide.file, or a .json, .toml or .mjs file of the run's ` +
+               "own under {system}");
+  }
+  const text = fields["template"] === undefined ? undefined
+    : template(fields["template"], `${what}.template`);
+  const each = fields["each"] === undefined ? undefined
+    : template(fields["each"], `${what}.each`);
+  if (String(file).endsWith(".mjs")) {
+    if (each !== undefined || text === undefined || !text.includes("{dispatcher_argv}")
+        || !text.includes("{hook_events}")
+        || names.some((name) => !text.includes(JSON.stringify(name)))) {
+      check.fail(`${what}.template is the .mjs file whole, carrying {dispatcher_argv} and ` +
+                 "{hook_events} and naming each event's own name");
+    }
+  } else {
+    const settings = [...(text === undefined ? [] : [text]),
+                      ...names.map((name, at) => each === undefined ? ""
+                        : each.replaceAll("{native}", name)
+                          .replaceAll("{event}", Object.keys(events)[at]!))];
+    if (each === undefined || !each.includes("{dispatcher}") || settings.some((part) => {
+      const read = settingsOf(String(file), part);
+      return read === null || read.keys.some((key) => CREDENTIAL_KEY.test(key));
+    })) {
+      check.fail(`${what}.template and each are settings read whole, each event's entry ` +
+                 "carrying {dispatcher}, with no credential key");
+    }
+  }
+  const loads = fields["argv"] === undefined ? undefined
+    : argv(fields["argv"], `${what}.argv`, 8);
+  if (loads !== undefined && (!own || !loads.includes(file as string))) {
+    check.fail(`${what}.argv loads the run's own file, under {system}`);
+  }
+  const runs = (object(fields["runs"]) ? fields["runs"] : {}) as Record<string, unknown>;
+  const shell = runs["shell"];
+  const exec = Object.keys(runs).length === 1 && runs["exec"] === true;
+  if (!exec && !(Object.keys(runs).length === 1 && Array.isArray(shell) && shell.length >= 1
+      && shell.length <= 4 && shell.every((arg) => typeof arg === "string"
+        && /^[A-Za-z0-9/_.-]{1,64}$/.test(arg)))) {
+    check.fail(`${what}.runs is a shell and its arguments, or exec`);
+  }
+  if (exec !== String(file).endsWith(".mjs")) {
+    check.fail(`${what}.runs is exec exactly where its file is the record's own .mjs`);
+  }
+  if (fields["fails"] !== "open" && fields["fails"] !== "closed") {
+    check.fail(`${what}.fails is open or closed`);
+  }
+  if (fields["alterable"] !== undefined) {
+    check.text(fields["alterable"], REASON, `${what}.alterable`);
   }
   check.https(fields["cite"], `${what}.cite`);
   check.text(fields["read"], DATE, `${what}.read`);
   return Object.freeze({
     events: Object.freeze({ ...events }) as Readonly<Record<HookEvent, string>>,
+    file: file as string,
+    ...(text === undefined ? {} : { template: text }),
+    ...(each === undefined ? {} : { each }),
+    ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
+    runs: Object.freeze(exec ? { exec: true as const }
+      : { shell: Object.freeze([...(shell as string[])]) }),
+    fails: fields["fails"] as "open" | "closed",
+    ...(fields["alterable"] === undefined ? {} : { alterable: fields["alterable"] as string }),
     cite: fields["cite"] as string, read: fields["read"] as string,
   });
 }

@@ -4,9 +4,9 @@
  * `runs.ts`'s rows and decisions. One `Launcher` an object, which serves Runs its one narrow
  * interface (`RunHost`) and holds:
  *
- * - **a launch** (`launch`): the agent's `agent.json` and `mcp.json` read whole (`readAgent`),
- *   with the ranking its `auto` ranks by (the owner's `/workspace/model-ranking.json`, else the
- *   platform's), its run admitted in one unit against the file still at the etag it was
+ * - **a launch** (`launch`): the agent's `agent.json`, `mcp.json` and `hooks.json` read whole
+ *   (`readAgent`), with the ranking its `auto` ranks by (the owner's
+ *   `/workspace/model-ranking.json`, else the platform's), its run admitted in one unit against the file still at the etag it was
  *   read at, with the agent's own MCP servers the owner's egress lets out (`agentServers`; the
  *   owner told of each left out), then started through the
  *   sandbox Worker (`SANDBOX`), and what came of it recorded (`running`, `failed` with the
@@ -43,7 +43,8 @@ import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
 import {
-  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, type AgentMcp, agentMcp, agentPath,
+  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, type AgentHooks, agentHooks,
+  type AgentMcp, agentMcp, agentPath,
 } from "../../contract/src/agent-definition";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
@@ -85,12 +86,16 @@ import {
  */
 export const NETWORK_RETRY_S = 30;
 
-/** What a run is admitted on (`readAgent`): its `agent.json` at its etag, and its servers. */
+/**
+ * What a run is admitted on (`readAgent`): its `agent.json` at its etag, its servers and its
+ * hooks.
+ */
 export interface AgentRead {
   readonly file: AgentFile;
   readonly etag: string;
   readonly ranking: Ranking;
   readonly mcp: AgentMcp;
+  readonly hooks: AgentHooks;
 }
 
 /** `agent`'s definition file `name`, as text: strict UTF-8, or the run is refused. */
@@ -320,7 +325,8 @@ export class Launcher implements RunHost {
   /**
    * What a run of `agent` is admitted on: its `agent.json`, read whole, the etag it was read
    * at, the ranking its `auto` ranks by (the owner's own file, `RANKING`, whole, else the
-   * platform's) and its `mcp.json` (none, no servers). An owner's file that is no ranking
+   * platform's), its `mcp.json` (none, no servers) and its `hooks.json` (none, no hooks). An
+   * owner's file that is no ranking
    * refuses the run (`invalid`), never a silent fall back to the platform's; a definition
    * file that does not fit refuses it too (`agent_file_invalid`), never half-read.
    */
@@ -330,10 +336,13 @@ export class Launcher implements RunHost {
       throw new Refusal("agent_undefined", AGENT_UNDEFINED);
     }
     const servers = await this.#whole(agentPath(agent, AGENT_FILES.mcp));
+    const hooks = await this.#whole(agentPath(agent, AGENT_FILES.hooks));
     return { file: agentFile(definitionText(agent, AGENT_FILES.agent, read.bytes)),
              etag: read.etag, ranking: await this.#ranking(),
              mcp: servers === null ? { servers: {} }
-               : agentMcp(definitionText(agent, AGENT_FILES.mcp, servers.bytes)) };
+               : agentMcp(definitionText(agent, AGENT_FILES.mcp, servers.bytes)),
+             hooks: agentHooks(hooks === null ? '{"hooks": {}}'
+               : definitionText(agent, AGENT_FILES.hooks, hooks.bytes)) };
   }
 
   async #ranking(): Promise<Ranking> {
@@ -414,7 +423,8 @@ export class Launcher implements RunHost {
       hosts: vendorHosts(admitted.engine, admitted.credential),
       route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
                                                       authority: admitted.authority }),
-      urls: runUrls(admitted.run, admitted.secret), mcp_servers: servers };
+      urls: runUrls(admitted.run, admitted.secret), mcp_servers: servers,
+      hooks: read.hooks.hooks };
     const answer = await startOutcome("a run", () => this.#o.sandbox.start(start),
                                       () => this.#o.door(() =>
                                         this.runs.grant(admitted.run) !== null));

@@ -43,7 +43,7 @@
  * Every change runs in one `transactionSync`; a refusal is thrown once what it receipts is
  * written, in the caller's unit, so the card and its receipt stand.
  */
-import { actNamed, type HookKind } from "../../contract/src/acts";
+import { actNamed, toolPatterns } from "../../contract/src/acts";
 import { canonical } from "../../contract/src/canonical";
 import { actDoors } from "../../contract/src/doors";
 import { sha256Hex } from "../../contract/src/digest";
@@ -129,27 +129,10 @@ export function hookOf(engine: string | null): Hook | null {
   return decide === undefined || "unsupported" in decide ? null : decide;
 }
 
-/**
- * A pattern of a name part a rule's `tools` matcher writes (`mcp:<server>:<tool>`): each `*`
- * any run of characters, each character but a letter, a digit or `_` any one (a CLI rewrites
- * those in its own names, each its own way), the rest itself. So the pattern holds every name
- * a CLI may give the tool, never fewer.
- */
-function partPattern(glob: string): string {
-  return [...glob].map((char) => char === "*" ? ".*" : /[A-Za-z0-9_]/.test(char) ? char : ".")
-    .join("");
-}
-
 /** The patterns of the CLI's tool names that are `act`, as `document`'s rules write it. */
 function actTools(document: PolicyDocument, act: string, hook: Hook): string[] {
-  const kinds = actNamed(act)?.hook ?? [];
-  const named = (document.actions ?? []).filter((rule) => rule.act === act)
-    .flatMap((rule) => rule.tools ?? []).map((matcher) => {
-      const [, server, tool] = matcher.split(":") as [string, string, string];
-      return `${hook.mcp.prefix}${partPattern(server)}${hook.mcp.join}${partPattern(tool)}`;
-    });
-  return [...kinds.flatMap((kind: HookKind) => (hook.kinds[kind] ?? [])
-    .map((name) => name.replaceAll(".", "\\."))), ...named];
+  return toolPatterns(hook, actNamed(act)?.hook ?? [], (document.actions ?? [])
+    .filter((rule) => rule.act === act).flatMap((rule) => rule.tools ?? []));
 }
 
 /** Where a rule holds, and where it can't (`ruleNotes`). */
@@ -188,6 +171,33 @@ export function ruleNotes(document: PolicyDocument): RuleNote[] {
     }
     return { holds_at: holds, not_enforced: not };
   });
+}
+
+/**
+ * The owner's note on its agents' own hooks (`hooks.json`), the honest note's neighbour: where
+ * each runs, and where it can't be held to what it says. It runs at each engine whose record
+ * renders it, in the root-owned layer the engine's decide hook is in, through the runner's
+ * dispatcher (`definition.hooks`). It never runs where a main agent calls the doors
+ * (`main_agent`), nor at an engine with no such layer; at an engine whose CLI runs it where the
+ * agent can change what it does (`alterable`, Codex's login shell) it runs all the same, but is
+ * not held; and, mid-run, a dispatcher that cannot start lets the call through where the engine
+ * `fails` open (`<engine>.fails_open`). Every engine is named, as for a rule.
+ */
+export function hookNote(): RuleNote {
+  const holds: string[] = [];
+  const not: string[] = ["main_agent"];
+  for (const engine of [...served().keys()].sort()) {
+    const hooks = servedRecord(engine)!.cli.definition.hooks;
+    if ("unsupported" in hooks || hooks.alterable !== undefined) {
+      not.push(engine);
+      continue;
+    }
+    holds.push(engine);
+    if (hooks.fails === "open") {
+      not.push(`${engine}.fails_open`);
+    }
+  }
+  return { holds_at: holds, not_enforced: not };
 }
 
 /** What a call asks: the door it came to, and its request as asked. */

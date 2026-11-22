@@ -225,7 +225,7 @@
           ".gemini/skills"
         ],
         "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/cli/skills.md",
-        "read": "2026-11-21"
+        "read": "2026-11-22"
       },
       "hooks": {
         "events": {
@@ -237,6 +237,11 @@
           "session_end": "SessionEnd",
           "pre_compact": "PreCompress"
         },
+        "file": "{system}/gemini-settings.json",
+        "template": "{\"hooksConfig\": {\"enabled\": true}}",
+        "each": "{\"hooks\": {\"{native}\": [{\"hooks\": [{\"name\": \"tinyassets-hooks-{event}\", \"type\": \"command\", \"command\": \"{dispatcher} {event}\", \"timeout\": 600000}]}]}}",
+        "runs": {"shell": ["bash", "-c"]},
+        "fails": "open",
         "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/hooks/reference.md",
         "read": "2026-11-21"
       }

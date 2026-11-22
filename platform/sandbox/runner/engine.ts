@@ -21,30 +21,88 @@
  *   record's entry for its transport, in the record's MCP file or as its flag's pairs.
  * - Files: the record's own templates, the credential's, the MCP servers and their file's
  *   template, each filled (a `.json`, `.toml` or `.mjs` file's values escaped as a quoted
- *   string's), several parts of one JSON file merged.
+ *   string's), several parts of one file joined (`joined`: a JSON file's merged, its lists one
+ *   after the other; any other's texts one after the other).
  * - The CLI's own pre-tool hook (R5 P-hooks), where its record has one: the run's decide
  *   credential in its environment (`DECIDE_ENV`), and, when the owner's rules name tools it
  *   matches (`hook.tools`), its file filled from the record's template (`{matcher}` those
  *   tools; the door's address, its header and the credential's variable; the helper's command
  *   line and its argv, the door their argument), what the record adds to its argv, and its
- *   pinned settings files in the home (`pins`, root's like every run config file). A file
- *   every run of the engine
- *   shares (under `/etc`) is the runner's to write, as `shared`: null text when no tool is
- *   matched, so the latest run's start leaves the owner's latest rules there; null for a call
+ *   pinned settings files in the home (`pins`, root's like every run config file).
+ * - The agent's own hooks (D5, `definition.hooks`), where its record has a decide hook: the
+ *   run's own file of them for the dispatcher (`{system}/hooks.json`, `runHooks`), and the
+ *   dispatcher's entries in the hook file (`{dispatcher}` its command line, each event's entry
+ *   its own), after the decide hook's: a file every run shares carries every event, a run's own
+ *   the events the agent has hooks on (and is loaded by the record's argv), none without one.
+ * - A file every run of the engine shares (under `/etc`) is the runner's to write, as
+ *   `shared`, the decide hook's part and the dispatcher's joined, so the latest run's start
+ *   leaves the owner's latest rules there; null text when it holds neither, null for a call
  *   given no hook.
  */
 import type { CliSpec, Mcp } from "../../sources/src/schema";
 import type { Served } from "../../sources/src/served";
-import { RUN_DOOR_SERVER } from "../../contract/src/agent-definition";
+import { type HookKind, toolPatterns, type ToolNames } from "../../contract/src/acts";
+import {
+  HOOK_EVENTS, HOOK_TIMEOUT_S, type HookEvent, RUN_DOOR_SERVER,
+} from "../../contract/src/agent-definition";
 import { object } from "../../contract/src/checks";
 import { DECIDE_HEADER, decideDoor, egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
 
 import { DECIDE_ENV, helperArgv, helperCommand, matcherOf } from "./decide";
-import type { DocMcpServer, StartDoc } from "./protocol";
+import { COMMAND, type DocHook, type DocMcpServer, RUNNERS, type StartDoc } from "./protocol";
 
 export const ENGINE_ROOT = "/opt/ta/engines";
+
+/** The run's own hooks, in its system directory. */
+export const HOOKS_FILE = "hooks.json";
+/**
+ * The dispatcher's argv before its event, as a hook file names it: the runner of `digest`, as
+ * the loader installed it, by the Node the loader runs it with, Node's own warnings off.
+ */
+export function dispatcherArgv(digest: string): string[] {
+  return [process.execPath, "--no-warnings", `${RUNNERS}/${digest}/runner.mjs`, COMMAND.hooks];
+}
+
+/** One hook, as the run's file holds it: its argv, its timeout, the calls it matches. */
+export interface RunHook {
+  readonly run: readonly string[];
+  readonly timeout_s: number;
+  /** The anchored pattern of the CLI's tool names it runs on; null, every call. */
+  readonly matcher: string | null;
+}
+
+/** The run's own hooks (`HOOKS_FILE`): its engine, the agent's directory, its tools' kinds. */
+export interface RunHooks {
+  readonly engine: string;
+  readonly cwd: string;
+  /** The kind of each of the CLI's tools that is one (`decide.kinds`, by name). */
+  readonly kinds: Readonly<Record<string, HookKind>>;
+  readonly hooks: Readonly<Record<HookEvent, readonly RunHook[]>>;
+}
+
+/**
+ * The run's own hooks file, from its start's (`hooks`, by event) and its CLI's tool names
+ * (`names`, its decide hook's): a hook's `match` made the anchored pattern of the CLI's own
+ * names of its kinds and tools (`toolPatterns`, the one rule a rule's tools take too), its
+ * timeout its own or `HOOK_TIMEOUT_S`.
+ */
+export function runHooks(engine: string, names: ToolNames, cwd: string,
+                         hooks: Readonly<Record<string, readonly DocHook[]>>): RunHooks {
+  const kinds = Object.fromEntries(Object.entries(names.kinds).flatMap(([kind, tools]) =>
+    (tools ?? []).map((tool) => [tool, kind as HookKind])));
+  return {
+    engine, cwd, kinds,
+    hooks: Object.fromEntries((Object.keys(HOOK_EVENTS) as HookEvent[]).map((event) =>
+      [event, (hooks[event] ?? []).map((hook) => ({
+        run: hook.run, timeout_s: hook.timeout_s ?? HOOK_TIMEOUT_S,
+        matcher: hook.match === undefined ? null : matcherOf(toolPatterns(
+          names, (hook.match.kinds ?? []) as HookKind[], hook.match.tools ?? [])),
+      }))])) as Record<HookEvent, RunHook[]>,
+  };
+}
+
 
 /**
  * Where one run's own home is made (`{home}`): a fresh directory a run, owned by the run's
@@ -187,8 +245,11 @@ function serverPairs(mcp: Mcp, servers: readonly [string, DocMcpServer][]): stri
       : [flag, `${mcp.servers}.${name}.${key}=${JSON.stringify(value)}`]));
 }
 
-/** Deep merge of JSON objects, `b` over `a`. */
+/** Deep merge of JSON values, `b` over `a`: objects key by key, lists one after the other. */
 function merged(a: unknown, b: unknown): unknown {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return [...a, ...b];
+  }
   if (typeof a === "object" && a !== null && !Array.isArray(a)
       && typeof b === "object" && b !== null && !Array.isArray(b)) {
     const out: Record<string, unknown> = { ...a as Record<string, unknown> };
@@ -198,6 +259,12 @@ function merged(a: unknown, b: unknown): unknown {
     return out;
   }
   return b;
+}
+
+/** Two parts of the file at `path` as one: a JSON file's merged (`merged`), another's joined. */
+function joined(path: string, a: string, b: string): string {
+  return path.endsWith(".json") ? JSON.stringify(merged(JSON.parse(a), JSON.parse(b)))
+    : `${a}${b}`;
 }
 
 export interface Invocation {
@@ -286,6 +353,17 @@ export function invocation(record: Served, start: StartDoc,
   if (env["HOME"] !== home) {
     throw new Error("a run's HOME is its engine home");
   }
+  // The agent's own hooks: the events the hook file carries (a shared file every one, the
+  // run's own those the agent has a hook on).
+  const hooks = "unsupported" in cli.definition.hooks ? null : cli.definition.hooks;
+  const used = (Object.keys(HOOK_EVENTS) as HookEvent[]).filter((event) =>
+    (start.hooks[event] ?? []).length > 0);
+  if (used.length > 0 && (hooks === null || options.hook === undefined)) {
+    throw new Error(`engine ${record.id} runs no hooks of the agent's here`);
+  }
+  const ownHooks = hooks?.file.startsWith("{system}/") === true;
+  const carried = hooks === null || options.hook === undefined ? []
+    : ownHooks ? used : Object.keys(HOOK_EVENTS) as HookEvent[];
   const resumed = start.session_id !== null;
   const base = resumed ? cli.engine.resume_argv : cli.engine.argv;
   const prompt = options.prompt ?? start.prompt;
@@ -306,6 +384,7 @@ export function invocation(record: Served, start: StartDoc,
     ...servers.flatMap(([name]) => (mcp.argv_each ?? []).map((arg) =>
       fill(arg, { ...values, name }))),
     ...(hooked ? decide!.argv ?? [] : []).map((arg) => fill(arg, values)),
+    ...(carried.length > 0 ? hooks!.argv ?? [] : []).map((arg) => fill(arg, values)),
     ...("argv" in cli.no_update ? cli.no_update.argv ?? [] : []).map((arg) => fill(arg, values)),
     ...tail,
   ];
@@ -319,21 +398,29 @@ export function invocation(record: Served, start: StartDoc,
     decide_header: DECIDE_HEADER, decide_env: DECIDE_ENV,
     decide: helperCommand(options.hook.digest, door.url),
     decide_argv: JSON.stringify(helperArgv(options.hook.digest, door.url)) };
+  const dispatchValues = options.hook === undefined ? hookValues : {
+    ...hookValues, dispatcher: dispatcherArgv(options.hook.digest).join(" "),
+    dispatcher_argv: JSON.stringify(dispatcherArgv(options.hook.digest)),
+    hook_events: JSON.stringify(used) };
   // The files: the record's, the credential's, the MCP servers and their file's template,
-  // then the run's own hook; one JSON file's parts merged in that order.
+  // then the run's own hook, then the dispatcher's entries; one file's parts joined in that
+  // order (`joined`).
   const files = new Map<string, string>();
   const put = (path: string, text: string) => {
-    const json = path.endsWith(".json");
-    if (json && files.has(path)) {
-      files.set(path, JSON.stringify(merged(JSON.parse(files.get(path)!), JSON.parse(text))));
-    } else {
-      files.set(path, json ? JSON.stringify(JSON.parse(text)) : text);
-    }
+    files.set(path, files.has(path) ? joined(path, files.get(path)!, text)
+      : path.endsWith(".json") ? JSON.stringify(JSON.parse(text)) : text);
   };
+  const quoted = (path: string) => /\.(?:json|toml|mjs)$/.test(path);
   const write = (pathTemplate: string, template: string) => {
     const path = fill(pathTemplate, values);
-    put(path, fill(template, hookValues, /\.(?:json|toml|mjs)$/.test(path)));
+    put(path, fill(template, hookValues, quoted(path)));
   };
+  const hookPath = hooks === null ? null : fill(hooks.file, values);
+  const hookParts = carried.length === 0 ? [] : [
+    ...(hooks!.template === undefined ? []
+      : [fill(hooks!.template, dispatchValues, quoted(hookPath!))]),
+    ...(hooks!.each === undefined ? [] : carried.map((event) => fill(hooks!.each!, {
+      ...dispatchValues, event, native: hooks!.events[event] }, quoted(hookPath!))))];
   for (const [path, template] of Object.entries(cli.files ?? {})) {
     write(path, template);
   }
@@ -353,8 +440,18 @@ export function invocation(record: Served, start: StartDoc,
   for (const [path, template] of Object.entries(hooked ? decide!.pins ?? {} : {})) {
     write(path, template);
   }
+  if (hooks !== null && options.hook !== undefined) {
+    put(`${system}/${HOOKS_FILE}`, JSON.stringify(runHooks(record.id, decide!, agentDir,
+                                                           start.hooks)));
+  }
+  for (const part of ownHooks ? hookParts : []) {
+    put(hookPath!, part);
+  }
+  const sharedParts = [...(hooked && !own ? [fill(decide!.template, hookValues, true)] : []),
+                       ...(ownHooks ? [] : hookParts)];
   const shared = decide === null || own || options.hook === undefined ? null : {
-    path: decide.file, text: hooked ? fill(decide.template, hookValues, true) : null };
+    path: decide.file, text: sharedParts.length === 0 ? null
+      : sharedParts.reduce((a, b) => joined(decide.file, a, b)) };
   for (const path of files.keys()) {
     if (!path.startsWith(`${home}/`) && !path.startsWith(`${system}/`)) {
       throw new Error("a record's files are under the run's home or its system directory");

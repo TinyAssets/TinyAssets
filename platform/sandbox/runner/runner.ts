@@ -32,7 +32,8 @@
  *   loads code), the CLI's own pre-tool hook where the owner's rules name tools it matches
  *   (asked of the decide door first, its file written, then its start check, the hook run as
  *   the CLI runs it: one that fails fails the run, so a hook that fails open never starts
- *   broken), the CLI as that user from the record, its events framed and posted (a batch
+ *   broken), the agent's own hooks' dispatcher where its agent has a hook (its start check
+ *   the same way, `hooks check`), the CLI as that user from the record, its events framed and posted (a batch
  *   at least every `HEARTBEAT_MS`); at its end every process of the user killed, the kept
  *   paths back into the store, the files synced out, the user given back, then the end.
  * - `cancel <run>`: SIGTERM to the CLI, a kill after `KILL_GRACE_MS`; 3 when not live.
@@ -48,6 +49,8 @@
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
  * - `decide` (internal, as a run's user, by its CLI's hook): the hook helper (`decide.ts`).
+ * - `hooks` (internal, as a run's user, by its CLI's hook file): the agent's own hooks'
+ *   dispatcher (`hooks.ts`), checked at the start as its CLI runs it (`hooks check`).
  * - `login-launch <id>`: the vendor's own sign-in (`login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
@@ -73,7 +76,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
 import { CODE_LOADING_ENV, RUN_BASICS } from "../../sources/src/run-env";
-import type { Decide, Definition } from "../../sources/src/schema";
+import type { Decide, Definition, DefinitionHooks } from "../../sources/src/schema";
 import { type Served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { DECIDE_HEADER, decideDoor, RUNNER_HEADER } from "../../contract/src/egress";
@@ -81,10 +84,12 @@ import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
-import { binPath, HOMES, type Invocation, invocation, isKept, keptPaths } from "./engine";
+import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept, keptPaths,
+         SYSTEM } from "./engine";
 import { DECIDE_ENV, DECIDE_MS, decideCommand, helperArgv, helperCommand,
          hookTools } from "./decide";
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
+import { hooksCommand } from "./hooks";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
@@ -1115,15 +1120,35 @@ async function startCheck(as: { uid: number; gid: number }, call: Invocation,
   const env = "shell" in runs ? { ...call.env }
     : Object.fromEntries([DECIDE_ENV, "NODE_EXTRA_CA_CERTS"].flatMap((name) =>
       call.env[name] === undefined ? [] : [[name, call.env[name]!]]));
+  await checkAs(as, argv, call.cwd, env, "the CLI's hook could not reach the owner's rules");
+}
+
+/**
+ * The agent's hooks' start check (D5): the dispatcher's `check` run as its CLI runs it
+ * (`definition.hooks.runs`: through the CLI's shell, or by its argv as the record's own file
+ * starts it), as the run's user, in the CLI's own environment, so a hook whose program is not
+ * there, or a dispatcher that cannot read the run's hooks, fails the run loudly before its CLI.
+ */
+async function hooksCheck(as: { uid: number; gid: number }, call: Invocation,
+                          hooks: Exclude<DefinitionHooks, { unsupported: string }>):
+    Promise<void> {
+  const argv = [...dispatcherArgv(ownDigest()), "check"];
+  await checkAs(as, "shell" in hooks.runs ? [...hooks.runs.shell, argv.join(" ")] : argv,
+                call.cwd, { ...call.env }, "the agent's hooks cannot run");
+}
+
+/** `argv` run as the run's user, in `cwd` and `env`, bounded; any exit but 0 throws `what`. */
+async function checkAs(as: { uid: number; gid: number }, argv: readonly string[], cwd: string,
+                       env: Record<string, string>, what: string): Promise<void> {
   const check = spawnBounded(asUser(as, [shared()], argv), {
-    cwd: call.cwd, env, stdio: ["ignore", "ignore", "pipe"] }, DECIDE_MS * 2);
+    cwd, env, stdio: ["ignore", "ignore", "pipe"] }, DECIDE_MS * 2);
   let stderr = "";
   check.child.stderr!.on("data", (data: Buffer) => {
     stderr = (stderr + data.toString("utf8")).slice(-FRAME_UNITS_MAX);
   });
   const code = await check.exit;
   if (code !== 0) {
-    throw new Error(`the CLI's hook could not reach the owner's rules (exit ${code}): ${stderr}`);
+    throw new Error(`${what} (exit ${code}): ${stderr}`);
   }
 }
 
@@ -1234,6 +1259,10 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         held();
         if (hooked) {
           await startCheck(as, call, decide!, door!.url);
+        }
+        if (Object.values(start.hooks).some((hooks) => hooks.length > 0)
+            && !("unsupported" in cli.definition.hooks)) {
+          await hooksCheck(as, call, cli.definition.hooks);
         }
         const events = cli.engine.events;
         for (let attempt = 0; ; attempt += 1) {
@@ -1601,6 +1630,8 @@ const HANDLERS: { readonly [C in Command]: Handler } = {
   [COMMAND.sync]: () => syncCommand(),
   [COMMAND.decide]: (args) => decideCommand(args, process.env, process.stdin, process.stdout,
                                             process.stderr),
+  [COMMAND.hooks]: (args) => hooksCommand(args, SYSTEM, process.env, process.stdin,
+                                          process.stdout, process.stderr),
 };
 
 export async function main(argv: readonly string[]): Promise<number> {

@@ -100,6 +100,6 @@ What the research left open, from each pinned version's own source or docs:
 ## Owed
 
 - [x] `untangle/runner-protocol-3`: protocol 3's expand deploy (the Worker speaking 1, 2 and 3 beside protocol 2's runner, this record as it is), merged before this branch. Done (#5757).
-- [ ] `untangle/runner-protocol-3-contract`: once no runner speaks 2, `region` dropped from `SigninDoc` and `signinDocument` (`drop-kimi.md`).
+- [x] `untangle/runner-protocol-3-contract`: once no runner speaks 2, `region` dropped from `SigninDoc` and `signinDocument` (`drop-kimi.md`). Done in `untangle/agent-hooks` (`agent-hooks.md` item 9).
 - [ ] `untangle/connector-credentials`: credentials for the agent's own MCP servers the connector way (`packages_connectors_research.md` C1): egress injects each server's sealed token, and no credential is ever in `mcp.json` or the sandbox.
 - [ ] live: at the dark redeploy, B5: one stdio server and one http server on the allowlist connect on each engine (Claude Code's `--mcp-config`, Codex's `-c` pairs, Gemini's system settings with `--allowed-mcp-server-names` repeated, pi's own `mcp.json`) and their tools are callable, and a host not on the list never reaches the CLI (the owner's `mcp_server_dropped` notice says so).

@@ -28,7 +28,8 @@ import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
 
 import { DECIDE_ENV } from "./decide";
-import { invocation } from "./engine";
+import { fill, invocation } from "./engine";
+import { dispatch } from "./hooks";
 import { HEARTBEAT_MS, lineEvent } from "./frames";
 import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { SCRATCH_ENV } from "./scratch";
@@ -40,6 +41,12 @@ import { NODE } from "./test/layout";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
 const sources = bundledSources();
+/** Claude Code's own name of each engine-neutral hook event (`definition.hooks.events`). */
+const CLAUDE_EVENTS = (served().get("claude-code")!.cli.definition.hooks as
+  { events: Record<string, string> }).events;
+/** The agent's hooks' dispatcher's command line on `event`, as a hook file names it. */
+const dispatcherLine = (event: string) => expect.stringMatching(new RegExp(
+  `^\\S+ --no-warnings ${RUNNERS}/[0-9a-f]{64}/runner\\.mjs hooks ${event}$`));
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
 const SHAPES: Record<string, { lines: unknown[]; session: string; text: string }> = {
@@ -290,36 +297,40 @@ describe("the invocation", () => {
   });
 });
 
+/** A start's run and secret where no box runs it, and its MCP door's two URLs. */
+const PURE_RUN = `run_${"5".repeat(32)}`;
+const PURE_SECRET = "6".repeat(64);
+const DOOR = `https://egress.tinyassets.io/r/${PURE_RUN}/${PURE_SECRET}/mcp`;
+const BARE = `https://egress.tinyassets.io/r/${PURE_RUN}/mcp`;
+
+/** `engine`'s start on its first credential (a key: an OpenAI connection's), for `invocation`. */
+function pureStart(engine: string, over: Partial<StartDoc> = {}): StartDoc {
+  const credential = served().get(engine)!.cli.credential[0]!;
+  const connection = `c${"3".repeat(24)}`;
+  const made = runEnv(sources, engine, credential);
+  const keyed = credential === "vendor_login_in_sandbox" ? {} : sandboxEnv(
+    [{ connection, provider: "openai",
+       egress: { api: "x", base_url: "https://api.example/v1", endpoints: [], meter: null } }],
+    () => "4".repeat(32), { ...made, run: PURE_RUN, secret: PURE_SECRET, connection });
+  return { run: PURE_RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine,
+           credential, model: null, session_id: null, prompt: "p",
+           unattended: false, authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
+           config: { generation: 1, egress: { mode: "open", destinations: [] },
+                     env: { ...made.env, ...keyed }, inherit: ["PATH"] },
+           urls: { mcp: DOOR, mcp_bare: BARE,
+                   events: `https://egress.tinyassets.io/r/${PURE_RUN}/events`,
+                   signin: "https://egress.tinyassets.io/signin" },
+           mcp_servers: {}, hooks: {}, ...over };
+}
+
 describe("the run's MCP servers (D4)", () => {
-  const RUN = `run_${"5".repeat(32)}`;
-  const SECRET = "6".repeat(64);
-  const DOOR = `https://egress.tinyassets.io/r/${RUN}/${SECRET}/mcp`;
-  const BARE = `https://egress.tinyassets.io/r/${RUN}/mcp`;
   const ARGS = ["some-mcp", "--root=/w \"x\""];
   /** The agent's own, as its admission kept them: one by URL, one by command. */
   const SERVERS: StartDoc["mcp_servers"] = {
     docs: { url: "https://mcp.example.com/mcp" },
     local: { command: "uvx", args: ARGS, env: { MODE: "ro" } },
   };
-  /** `engine`'s start on its first credential (a key: an OpenAI connection's). */
-  function startOf(engine: string, mcp_servers = SERVERS): StartDoc {
-    const credential = served().get(engine)!.cli.credential[0]!;
-    const connection = `c${"3".repeat(24)}`;
-    const made = runEnv(sources, engine, credential);
-    const keyed = credential === "vendor_login_in_sandbox" ? {} : sandboxEnv(
-      [{ connection, provider: "openai",
-         egress: { api: "x", base_url: "https://api.example/v1", endpoints: [], meter: null } }],
-      () => "4".repeat(32), { ...made, run: RUN, secret: SECRET, connection });
-    return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine,
-             credential, model: null, session_id: null, prompt: "p",
-             unattended: false, authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
-             config: { generation: 1, egress: { mode: "open", destinations: [] },
-                       env: { ...made.env, ...keyed }, inherit: ["PATH"] },
-             urls: { mcp: DOOR, mcp_bare: BARE,
-                     events: `https://egress.tinyassets.io/r/${RUN}/events`,
-                     signin: "https://egress.tinyassets.io/signin" },
-             mcp_servers, hooks: {} };
-  }
+  const startOf = (engine: string, mcp_servers = SERVERS) => pureStart(engine, { mcp_servers });
   const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
     home: "/h", system: "/s", skills: [] });
   const json = (made: ReturnType<typeof call>, path: string) =>
@@ -333,7 +344,7 @@ describe("the run's MCP servers (D4)", () => {
      "door's secret its header", () => {
     const made = call(startOf("claude-code"));
     expect(json(made, "/h/run/mcp.json")).toEqual({ mcpServers: {
-      tinyassets: { type: "http", url: BARE, headers: { "x-ta-run": SECRET } },
+      tinyassets: { type: "http", url: BARE, headers: { "x-ta-run": PURE_SECRET } },
       docs: { type: "http", url: "https://mcp.example.com/mcp" },
       local: { type: "stdio", command: "uvx", args: ARGS, env: { MODE: "ro" } } } });
     expect(made.argv.join(" ")).toContain("--mcp-config /h/run/mcp.json --strict-mcp-config");
@@ -383,6 +394,144 @@ describe("the run's MCP servers (D4)", () => {
   });
 });
 
+describe("the agent's own hooks (D5)", () => {
+  const DIGEST = "d".repeat(64);
+  /** The agent's own hooks, as its admission read them: a guard on shell calls, a context. */
+  const HOOKS: StartDoc["hooks"] = {
+    pre_tool: [{ match: { kinds: ["shell"] }, run: ["./hooks/guard.sh"], timeout_s: 30 }],
+    prompt: [{ run: ["./hooks/context.sh"] }] };
+  const ENGINES = ["claude-code", "codex", "gemini", "pi"];
+  /** `engine`'s invocation with `hooks`, and R5's decide hook on `tools` (none: no rule). */
+  const call = (engine: string, hooks: StartDoc["hooks"] = HOOKS, tools: string[] = []) =>
+    invocation(served().get(engine)!, pureStart(engine, { hooks }), {}, {
+      home: "/h", system: "/s", skills: [], hook: { tools, digest: DIGEST } });
+  const dispatcher = (event: string) =>
+    `${process.execPath} --no-warnings ${RUNNERS}/${DIGEST}/runner.mjs hooks ${event}`;
+  const recordOf = (engine: string) => served().get(engine)!.cli;
+  const shellOf = (engine: string) => (recordOf(engine).decide as unknown as
+    { kinds: { shell: string[] } }).kinds.shell;
+  /** Whether `outer` holds all of `inner`: its keys, each list of `inner` the start of outer's. */
+  const holds = (outer: unknown, inner: unknown): boolean => Array.isArray(inner)
+    ? Array.isArray(outer) && inner.every((item, at) => holds(outer[at], item))
+    : typeof inner === "object" && inner !== null
+      ? typeof outer === "object" && outer !== null && Object.entries(inner).every(([key, item]) =>
+        holds((outer as Record<string, unknown>)[key], item))
+      : outer === inner;
+
+  it("writes each run the dispatcher's own file of the agent's hooks, each match in its " +
+     "CLI's own names", () => {
+    for (const engine of ENGINES) {
+      const made = JSON.parse(call(engine).files.get("/s/hooks.json")!);
+      expect(made, engine).toMatchObject({ engine, cwd: "/workspace/agents/main" });
+      expect(made.kinds[shellOf(engine)[0]!], engine).toBe("shell");
+      expect(made.hooks, engine).toEqual({
+        pre_tool: [{ run: ["./hooks/guard.sh"], timeout_s: 30,
+                     matcher: `^(?:${shellOf(engine).join("|")})$` }],
+        post_tool: [], prompt: [{ run: ["./hooks/context.sh"], timeout_s: 60, matcher: null }],
+        session_start: [], stop: [], session_end: [], pre_compact: [] });
+    }
+  });
+
+  it("puts the dispatcher on every event in a file every run shares, beside R5's hook and " +
+     "after it", () => {
+    const managed = (tools: string[], hooks = HOOKS) =>
+      JSON.parse(call("claude-code", hooks, tools).shared!.text!);
+    const entries = Object.fromEntries(Object.entries(CLAUDE_EVENTS).map(([event, native]) =>
+      [native, [{ hooks: [{ type: "command", command: dispatcher(event), shell: "bash",
+                            timeout: 600 }] }]]));
+    // With no owner hooks either: the file is shared, so another run's agent may have one.
+    for (const hooks of [HOOKS, {}]) {
+      expect(managed([], hooks)).toEqual({ hooks: entries });
+    }
+    const hooked = managed(["Bash"]);
+    expect(hooked.allowManagedHooksOnly).toBe(true);
+    expect(hooked.hooks.PreToolUse).toEqual([
+      expect.objectContaining({ matcher: "^(?:Bash)$",
+                                hooks: [expect.objectContaining({ type: "http" })] }),
+      ...entries["PreToolUse"]!]);
+    const codex = (tools: string[]) => call("codex", HOOKS, tools).shared!.text!;
+    expect(codex([])).toMatch(/^\[features\]\nhooks = true\n\n\[\[hooks\.PreToolUse\]\]\n/);
+    for (const [event, native] of Object.entries((recordOf("codex").definition.hooks as
+      { events: Record<string, string> }).events)) {
+      expect(codex([])).toContain(`[[hooks.${native}.hooks]]\ntype = "command"\n` +
+                                  `command = "${dispatcher(event)}"\ntimeout = 600\n`);
+    }
+    // R5's own block first, the features table once.
+    expect(codex(["Bash"])).toMatch(/^\[\[hooks\.PreToolUse\]\]\nmatcher = "\^\(\?:Bash\)\$"/);
+    expect(codex(["Bash"]).split("[features]")).toHaveLength(2);
+  });
+
+  it("puts the dispatcher in a run's own file on the events its agent has hooks on, after " +
+     "R5's, loaded after R5's", () => {
+    const gemini = (hooks: StartDoc["hooks"], tools: string[] = []) =>
+      JSON.parse(call("gemini", hooks, tools).files.get("/s/gemini-settings.json")!);
+    const entry = (event: string) => ({ hooks: [{ name: `tinyassets-hooks-${event}`,
+      type: "command", command: dispatcher(event), timeout: 600000 }] });
+    expect(gemini(HOOKS).hooks).toEqual({ BeforeTool: [entry("pre_tool")],
+                                          BeforeAgent: [entry("prompt")] });
+    expect(gemini(HOOKS).hooksConfig).toEqual({ enabled: true });
+    expect(gemini({}).hooks).toBeUndefined();
+    expect(gemini(HOOKS, ["run_shell_command"]).hooks.BeforeTool).toEqual([
+      expect.objectContaining({ matcher: "^(?:run_shell_command)$" }), entry("pre_tool")]);
+    const pi = call("pi", HOOKS, ["bash"]);
+    expect(pi.files.get("/s/hooks.mjs")).toContain(
+      `JSON.parse("${JSON.stringify(["pre_tool", "prompt"]).replaceAll("\"", "\\\"")}")`);
+    expect(pi.files.get("/s/hooks.mjs")).toContain(
+      JSON.stringify(JSON.stringify([process.execPath, "--no-warnings",
+                                     `${RUNNERS}/${DIGEST}/runner.mjs`, "hooks"])));
+    expect(pi.argv.join(" ")).toContain("-e /s/decide.mjs -e /s/hooks.mjs");
+    const bare = call("pi", {});
+    expect([bare.files.has("/s/hooks.mjs"), bare.argv.includes("/s/hooks.mjs")])
+      .toEqual([false, false]);
+  });
+
+  it("checks the agent's hooks at the start as its CLI runs them, failing the run loudly " +
+     "when one cannot run", async () => {
+    for (const engine of ["claude-code", "pi"]) {
+      box.cli(engine, { lines: SHAPES[engine]!.lines });
+      const before = box.ran(engine).length;
+      const { end } = await run(engine, { hooks: { prompt: [{ run: ["./hooks/missing.sh"] }] } });
+      expect(end, engine).toEqual({ exit_code: 1 });
+      expect(doors.frames().filter((event) => event["type"] === "ta.runner_error").at(-1)!
+        ["message"], engine).toMatch(
+        /the agent's hooks cannot run .*the agent's prompt hook \.\/hooks\/missing\.sh is no program/);
+      expect(box.ran(engine), engine).toHaveLength(before);
+      expect((await run(engine, { hooks: { prompt: [{ run: ["true"] }] } })).end, engine)
+        .toEqual({ exit_code: 0 });
+    }
+  });
+
+  it("refuses a start whose hooks no dispatcher would run, never runs it without them", () => {
+    expect(() => invocation(served().get("gemini")!, pureStart("gemini", { hooks: HOOKS }), {},
+                            { home: "/h", system: "/s", skills: [] }))
+      .toThrow(/runs no hooks of the agent's here/);
+  });
+
+  it("lets R5's deny stand over an owner hook's silence, on every engine", async () => {
+    // The owner's hook answers nothing on the call R5's hook refuses: the dispatcher's answer is
+    // no decision (exit 0, no output), never an allow, beside R5's entry, which is unchanged.
+    const silent: StartDoc["hooks"] = { pre_tool: [{ run: ["true"] }] };
+    for (const engine of ENGINES) {
+      const tools = shellOf(engine);
+      const withOwn = call(engine, silent, tools);
+      const without = call(engine, {}, tools);
+      // A shared layer is the same with or without the agent's hooks; a run's own still holds
+      // all R5 wrote, its entries first.
+      expect(withOwn.shared, engine).toEqual(without.shared);
+      const decide = fill((recordOf(engine).decide as { file: string }).file, { system: "/s" });
+      if (without.files.has(decide)) {
+        const [mine, r5] = [withOwn.files.get(decide)!, without.files.get(decide)!];
+        expect(decide.endsWith(".json") ? holds(JSON.parse(mine), JSON.parse(r5)) : mine === r5,
+               engine).toBe(true);
+      }
+      const file = { ...JSON.parse(withOwn.files.get("/s/hooks.json")!), cwd: "/" };
+      expect(await dispatch(file, "pre_tool", { tool_name: tools[0], tool_input: {} },
+                            { PATH: process.env["PATH"] }), engine)
+        .toEqual({ code: 0, out: "", err: "" });
+    }
+  });
+});
+
 describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
   const MANAGED = "/etc/claude-code/managed-settings.json";
   /** The decide door's checks the run's start asked, the runner's and its start check's. */
@@ -398,6 +547,10 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
   }
   /** The run's decide credential, as its MCP URL names its run and secret. */
   const credentialOf = (start: StartDoc) => `${start.run}:${"e".repeat(64)}`;
+  /** The agent's hooks' dispatcher's entry on each event, in the same file (D5). */
+  const dispatchers = Object.fromEntries(Object.entries(CLAUDE_EVENTS).map(([event, native]) =>
+    [native, [{ hooks: [{ type: "command", shell: "bash", timeout: 600,
+                          command: dispatcherLine(event) }] }]]));
 
   it("is Claude Code's own post to the door, from the root-owned file, for the tools the " +
      "owner's rules name, after its start check", async () => {
@@ -411,14 +564,16 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     expect(managed).toEqual({
       allowManagedHooksOnly: true, strictPluginOnlyCustomization: ["hooks"],
       allowedHttpHookUrls: [url], httpHookAllowedEnvVars: ["TA_DECIDE"],
-      hooks: { PreToolUse: [{ matcher: "^(?:Bash|mcp__gmail__send_.*)$", hooks: [{
+      hooks: { ...dispatchers, PreToolUse: [{ matcher: "^(?:Bash|mcp__gmail__send_.*)$", hooks: [{
         type: "http", url, headers: { "x-ta-decide": "$TA_DECIDE" },
-        allowedEnvVars: ["TA_DECIDE"], timeout: 60, onFailure: "block" }] }] } });
+        allowedEnvVars: ["TA_DECIDE"], timeout: 60, onFailure: "block" }] },
+        ...dispatchers["PreToolUse"]!] } });
     expect(checks().map((post) => post.headers["x-ta-decide"]))
       .toEqual([credentialOf(start), credentialOf(start)]);
   });
 
-  it("is none, and its shared file gone, when no rule names a tool it matches", async () => {
+  it("is none, its shared file the dispatcher's alone, when no rule names a tool it matches",
+     async () => {
     answering(["Bash"]);
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps: [MANAGED] });
     await run("claude-code");
@@ -426,7 +581,8 @@ describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
     doors.posts.length = 0;
     const { start } = await run("claude-code");
     const seen = box.ran("claude-code").at(-1)!;
-    expect([seen.dumps[MANAGED], seen.env["TA_DECIDE"]]).toEqual([null, credentialOf(start)]);
+    expect([JSON.parse(seen.dumps[MANAGED]!), seen.env["TA_DECIDE"]])
+      .toEqual([{ hooks: dispatchers }, credentialOf(start)]);
     expect(checks()).toHaveLength(1);
   });
 

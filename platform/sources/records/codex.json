@@ -242,7 +242,7 @@
           ".codex/skills"
         ],
         "cite": "https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/loader/mod.rs",
-        "read": "2026-11-21"
+        "read": "2026-11-22"
       },
       "hooks": {
         "events": {
@@ -254,6 +254,12 @@
           "session_end": "SessionEnd",
           "pre_compact": "PreCompact"
         },
+        "file": "/etc/codex/requirements.toml",
+        "template": "[features]\nhooks = true\n",
+        "each": "\n[[hooks.{native}]]\n\n[[hooks.{native}.hooks]]\ntype = \"command\"\ncommand = \"{dispatcher} {event}\"\ntimeout = 600\n",
+        "runs": {"shell": ["sh", "-lc"]},
+        "fails": "open",
+        "alterable": "Codex runs every command hook through the run user's login shell ($SHELL -lc, codex-rs/hooks/src/engine/command_runner.rs), which reads ~/.profile in the run's home, a file the agent writes, so what the dispatcher runs can be changed (read 2026-11-22)",
         "cite": "https://github.com/openai/codex/tree/rust-v0.166.0/codex-rs/hooks/src/events",
         "read": "2026-11-21"
       }
@@ -274,7 +280,7 @@
     },
     "decide": {
       "file": "/etc/codex/requirements.toml",
-      "template": "[features]\nhooks = true\n\n[[hooks.PreToolUse]]\nmatcher = \"{matcher}\"\n\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"{decide}\"\ntimeout = 60\n",
+      "template": "[[hooks.PreToolUse]]\nmatcher = \"{matcher}\"\n\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"{decide}\"\ntimeout = 60\n",
       "runs": {
         "shell": [
           "sh",

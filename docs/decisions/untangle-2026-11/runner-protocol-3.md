@@ -48,5 +48,5 @@ deploy, as `r5-hooks-speaks.md` (#5706) was protocol 2's.
 
 ## Owed
 
-- [ ] `untangle/agent-mcp`: protocol 3's second deploy (the runner speaks 3, the Worker 2 and 3), with D4's admission and rendering.
-- [ ] `untangle/runner-protocol-3-contract`: once no deployed runner speaks 2, `region` goes from `SigninDoc` and `signinDocument`. That is what is left of `drop-kimi.md`'s `untangle/runner-protocol-3` line (`protocol.json`'s part is done here).
+- [x] `untangle/agent-mcp`: protocol 3's second deploy (the runner speaks 3, the Worker 2 and 3), with D4's admission and rendering. Done (#5754).
+- [x] `untangle/runner-protocol-3-contract`: once no deployed runner speaks 2, `region` goes from `SigninDoc` and `signinDocument`. That is what is left of `drop-kimi.md`'s `untangle/runner-protocol-3` line (`protocol.json`'s part is done here). Done in `untangle/agent-hooks` (`agent-hooks.md` item 9): its Worker speaks 3 and 4.

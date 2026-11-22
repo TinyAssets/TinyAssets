@@ -23,6 +23,7 @@ import {
   closedNetwork, EGRESS_HOST, egressTokenOf, GENERATION_HEADER, generationOf, runUrls,
   signinUrls, withEgressToken, withGeneration,
 } from "../../contract/src/egress";
+import { agentHooks } from "../../contract/src/agent-definition";
 import { sha256Hex } from "../../contract/src/digest";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import { MIGRATION_CHANGED, migrate, migrationDigest } from "../../contract/src/migrate";
@@ -121,6 +122,10 @@ const ON_KEY = { credential: "api_key", hosts: [] } as const;
 /** The agent's own MCP servers a start's admission kept, one by URL and one by command. */
 const AGENT_SERVERS = { docs: { url: "https://mcp.example.com/mcp" },
                         local: { command: "uvx", args: ["some-mcp"], env: { MODE: "ro" } } };
+/** The agent's own hooks a start's admission read: one on a tool kind, one on every prompt. */
+const AGENT_HOOKS = agentHooks(JSON.stringify({ hooks: {
+  pre_tool: [{ match: { kinds: ["shell"] }, run: ["./hooks/guard.sh"], timeout_s: 30 }],
+  prompt: [{ run: ["./hooks/context.sh"] }] } })).hooks;
 
 function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
@@ -131,7 +136,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
     network: NETWORK as never, hosts: CLAUDE_HOSTS,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
-    urls: runUrls(RUN, hex(64, "e")), mcp_servers: {},
+    urls: runUrls(RUN, hex(64, "e")), mcp_servers: {}, hooks: agentHooks("{\"hooks\": {}}").hooks,
     ...over,
   };
 }
@@ -210,7 +215,7 @@ describe("a start", () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     const began = Date.now();
-    expect(await stub(who).start(start({ mcp_servers: AGENT_SERVERS })))
+    expect(await stub(who).start(start({ mcp_servers: AGENT_SERVERS, hooks: AGENT_HOOKS })))
       .toEqual({ started: true });
     const state = await seen();
     expect(state.sandboxes).toHaveLength(1);
@@ -257,7 +262,7 @@ describe("a start", () => {
     expect(JSON.parse(doc)).not.toHaveProperty("network");
     expect(JSON.parse(doc).prompt).toBe("hello");
     expect(JSON.parse(doc).mcp_servers).toEqual(AGENT_SERVERS);
-    expect(JSON.parse(doc).hooks).toEqual({});
+    expect(JSON.parse(doc).hooks).toEqual(AGENT_HOOKS);
     // The look is armed a lease's TTL on, for the idle reap, before its renewal window.
     const look = await alarmOf(who);
     expect(look!).toBeGreaterThanOrEqual(began + LEASE_TTL_S * 1000);
@@ -1244,7 +1249,7 @@ describe("a sign-in", () => {
     expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
       ["install", await runnerDigest()], ["prepare", "1.1.1.1"], ["login-launch", SI]]);
     const doc = JSON.parse(state.files[`${box.id}:${inboxDoc(SI)}`]!);
-    expect(doc).toEqual({ id: SI, engine: "codex", region: null, mode: "in",
+    expect(doc).toEqual({ id: SI, engine: "codex", mode: "in",
                           authority: "owner", urls: signin().urls });
     expect(shapeProblems(doc, spokenShape("signin", SPEAKS))).toEqual([]);
     // A sign-in's start that opens the lease hands the runner the same two tokens, no more.

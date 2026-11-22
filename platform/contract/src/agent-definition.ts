@@ -337,18 +337,21 @@ function serverEnv(value: unknown, name: string, what: string):
 // ---- hooks.json ----
 
 /**
- * The engine-neutral events a hook runs on, and whether each is a tool call's, which a hook's
- * `match` narrows. What a hook may answer on each (block on `pre_tool` and `prompt`, context
- * on `session_start` and `prompt`) is the dispatcher's, which reads the answer.
+ * The engine-neutral events a hook runs on: whether each is a tool call's, which a hook's
+ * `match` narrows, and what a hook's answer may do on it, which the dispatcher reads
+ * (`sandbox/runner/hooks.ts`): `block` it (the call, or the prompt), or add `context` for the
+ * model. Nothing else: on every other event a hook only sees what happened, so no engine's
+ * own reading of an answer there (a stop refused, a compaction blocked, a result replaced)
+ * is ever reached.
  */
 export const HOOK_EVENTS = Object.freeze({
-  pre_tool: Object.freeze({ tool: true }),
-  post_tool: Object.freeze({ tool: true }),
-  prompt: Object.freeze({ tool: false }),
-  session_start: Object.freeze({ tool: false }),
-  stop: Object.freeze({ tool: false }),
-  session_end: Object.freeze({ tool: false }),
-  pre_compact: Object.freeze({ tool: false }),
+  pre_tool: Object.freeze({ tool: true, block: true, context: false }),
+  post_tool: Object.freeze({ tool: true, block: false, context: false }),
+  prompt: Object.freeze({ tool: false, block: true, context: true }),
+  session_start: Object.freeze({ tool: false, block: false, context: true }),
+  stop: Object.freeze({ tool: false, block: false, context: false }),
+  session_end: Object.freeze({ tool: false, block: false, context: false }),
+  pre_compact: Object.freeze({ tool: false, block: false, context: false }),
 });
 
 export type HookEvent = keyof typeof HOOK_EVENTS;
@@ -372,9 +375,12 @@ export interface HookMatch {
 export interface Hook {
   readonly match?: HookMatch;
   readonly run: readonly string[];
-  /** Whole seconds; absent, the engine's own default. */
+  /** Whole seconds; absent, `HOOK_TIMEOUT_S`. */
   readonly timeout_s?: number;
 }
+
+/** How long a hook with no `timeout_s` runs: the 60 s each record gives its decide hook. */
+export const HOOK_TIMEOUT_S = 60;
 
 /** `hooks.json`: the agent's hooks, by event, every event listed. */
 export interface AgentHooks {

@@ -648,6 +648,8 @@ export interface DoorTypes {
     readonly answer: { readonly generation: number; readonly policy: PolicyDocument;
                        readonly notes: readonly { readonly holds_at: readonly string[];
                                                   readonly not_enforced: readonly string[] }[];
+                       readonly hooks: { readonly holds_at: readonly string[];
+                                         readonly not_enforced: readonly string[] };
                        readonly codemode: { readonly on: boolean } };
   };
   readonly policyProposal: { readonly answer: { readonly digest: string } };

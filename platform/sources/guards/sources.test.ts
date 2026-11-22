@@ -1017,6 +1017,31 @@ describe("how the agent's definition reaches an engine", () => {
       s["decide"] = { unsupported: "none" }; })],
     ["no hooks on an engine whose decide hook has a layer", cli((s) => {
       at(s, "definition")["hooks"] = { unsupported: "none" }; })],
+    // Their dispatcher (D5): in the decide hook's layer, each event's entry carrying it.
+    ["a shared hooks file that is not the decide hook's", cli((s) => {
+      at(s, "definition.hooks")["file"] = "/etc/claude-code/other-settings.json"; })],
+    ["a hooks file no settings reader takes", cli((s) => {
+      at(s, "definition.hooks")["file"] = "{system}/hooks.yaml"; })],
+    ["entries that run no dispatcher", cli((s) => {
+      at(s, "definition.hooks")["each"] = (at(s, "definition.hooks")["each"] as string)
+        .replace("{dispatcher} {event}", "true"); })],
+    ["an entry that is no settings file", cli((s) => {
+      at(s, "definition.hooks")["each"] = "{dispatcher} {event}"; })],
+    ["an event's placeholder outside its entry", cli((s) => {
+      at(s, "definition.hooks")["template"] = "{\"hooksConfig\": {\"note\": \"{native}\"}}"; })],
+    ["the dispatcher outside its file", cli((s) => {
+      s["unattended_argv"] = ["--hooks={dispatcher}"]; })],
+    ["an extension that leaves an event out", cli((s) => {
+      at(s, "definition.hooks")["template"] = (at(s, "definition.hooks")["template"] as string)
+        .replaceAll("\"agent_end\"", "\"agent_stop\""); }, pi)],
+    ["an extension run through a shell", cli((s) => {
+      at(s, "definition.hooks")["runs"] = { shell: ["sh", "-c"] }; }, pi)],
+    ["a settings file run as an extension", cli((s) => {
+      at(s, "definition.hooks")["runs"] = { exec: true }; })],
+    ["argv for a file every run shares", cli((s) => {
+      at(s, "definition.hooks")["argv"] = ["--settings", "{system}/hooks.json"]; })],
+    ["a dispatcher with no failure mode", cli((s) => {
+      delete at(s, "definition.hooks")["fails"]; })],
   ])("refuses %s", (_what, record) => {
     expect(refused(record)).toMatch(/cli\.definition/);
   });
