@@ -13,25 +13,26 @@
  *   own (`PLATFORM_OPS`), the platform's reserved principal (`PLATFORM_CALLER`), which no owner
  *   is named (`addressed`);
  * - `args`, the op's own fields: a flat object of strings, safe integers and booleans, each
- *   key `ARG`, so its canonical text (`argsText`, its keys sorted) needs no general
- *   canonical JSON;
+ *   key `ARG`;
  * - `ask`, 32 hex the kit picks: the message's nonce, and the name of its acceptance record
  *   and its answer in the operator bucket (`acceptanceKey`, `answerKey`);
  * - `at`, the whole second the kit signed it;
  * - `kid`, the `OPERATOR_KEYRING` kid its MAC is under;
  * - `mac`, HMAC-SHA-256 under that kid's key over `MAC_DOMAIN`, the op, the owner, the
- *   SHA-256 of the args' canonical text, the ask and `at`, each after a NUL: base64url.
+ *   SHA-256 of the args' canonical JSON (`canonical.ts`), the ask and `at`, each after a NUL:
+ *   base64url.
  *
  * The answer (`OperatorAnswer`) is the message less its MAC, with when the doors finished it
  * (`done`) and either the op's `result` or its `refused` refusal. The bucket keeps it, and
  * the acceptance record before it, under a lock (`deploy/platform.json` `bucket_locks`): the
  * channel's audit log.
  *
- * Pure: WebCrypto's HMAC, the contract's digest (`digest.ts`, the platform's one SHA-256)
- * and its shape checks (`checks.ts`), so the kit runs it under Node's type stripping as the
- * doors bundle it.
+ * Pure: WebCrypto's HMAC, the contract's digest (`digest.ts`, the platform's one SHA-256),
+ * canonical JSON (`canonical.ts`) and shape checks (`checks.ts`), so the kit runs it under
+ * Node's type stripping as the doors bundle it.
  */
 import { PLATFORM_CALLER } from "./binding.ts";
+import { canonical } from "./canonical.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { base64url, fromBase64url, hex, KID, type Ring } from "./envelope.ts";
@@ -190,15 +191,9 @@ function argsOf(value: unknown): OperatorArgs {
   return Object.freeze({ ...value }) as OperatorArgs;
 }
 
-/** The args' canonical text: their JSON with the keys sorted (no key is integer-like). */
-export function argsText(args: OperatorArgs): string {
-  return JSON.stringify(Object.fromEntries(Object.entries(args)
-    .sort(([a], [b]) => (a < b ? -1 : 1))));
-}
-
-/** The SHA-256 of the args' canonical text, as hex: what the MAC and the acceptance name. */
-export async function argsDigest(args: OperatorArgs): Promise<string> {
-  return sha256Hex(argsText(args));
+/** The SHA-256 of the args' canonical JSON, as hex: what the MAC and the acceptance name. */
+async function argsDigest(args: OperatorArgs): Promise<string> {
+  return sha256Hex(canonical(args));
 }
 
 /** A message in its exact shape, or a throw: no field more, none missing, each its grammar. */
@@ -298,7 +293,7 @@ export function operatorAnswer(value: unknown, message: OperatorMessage): Operat
   const named = (["v", "op", "owner", "ask", "at", "kid"] as const)
     .every((field) => value[field] === message[field]);
   if (!named || !object(value["args"])
-      || argsText(value["args"] as OperatorArgs) !== argsText(message.args)) {
+      || canonical(value["args"]) !== canonical(message.args)) {
     throw new Error(`the answer to ${message.ask} names another message`);
   }
   const refused = value["refused"];

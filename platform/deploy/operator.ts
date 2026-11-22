@@ -25,6 +25,7 @@
  *
  * Node runs this file as it is (type stripping), as the kit does.
  */
+import { canonical } from "../contract/src/canonical.ts";
 import { keyed, object, whole } from "../contract/src/checks.ts";
 import { sha256Hex } from "../contract/src/digest.ts";
 import type { Ring } from "../contract/src/envelope.ts";
@@ -430,8 +431,7 @@ export async function heldRotation(cloudflare: Cloudflare, account: string, cont
   }
   const record = rotationRecord(held, key);
   if (record.keyring !== keyring || record.active !== stored.active
-      || JSON.stringify(Object.entries(record.keys).sort())
-        !== JSON.stringify(Object.entries(keys).sort())) {
+      || canonical(record.keys) !== canonical(keys)) {
     throw new Error(`the rotation record ${key} was begun with another ring under ` +
                     `${stored.active} (kids ${Object.keys(record.keys).join(", ")}): nothing is ` +
                     "asked");

@@ -17,10 +17,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HELD_WAIT_MS, keyring } from "../../ci/fixtures";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
+import { canonical } from "../../contract/src/canonical";
 import { parseRing, type Ring } from "../../contract/src/envelope";
 import type { NamespacePage } from "../../contract/src/files";
 import {
-  acceptanceKey, acceptanceOf, answerKey, argsText, LOCATE_PAGE, locateArgs, namespacesArgs,
+  acceptanceKey, acceptanceOf, answerKey, LOCATE_PAGE, locateArgs, namespacesArgs,
   type OperatorAnswer, operatorAnswer, type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S,
   type Refused, signOperator,
 } from "../../contract/src/operator-message";
@@ -56,7 +57,7 @@ const sign = (owner: string, op = "owner.state", args = {}, ring: Ring = RING, a
  * choosing.
  */
 function remac(message: OperatorMessage): OperatorMessage {
-  const digest = createHash("sha256").update(argsText(message.args)).digest("hex");
+  const digest = createHash("sha256").update(canonical(message.args)).digest("hex");
   const mac = createHmac("sha256", RING.keys.get(message.kid)!)
     .update(["tinyassets-operator-v1", message.op, message.owner, digest, message.ask,
              String(message.at)].join(String.fromCharCode(0))).digest("base64url");

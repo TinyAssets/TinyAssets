@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { doorbellInput, metering, ringRequest } from "../src/gateway";
 import { manifestLists, objectPrefix } from "../src/files";
 import { MANIFEST_PARTS } from "../src/limits";
+import { acceptanceOf, type OperatorMessage } from "../src/operator-message";
 import { refusalOf } from "../src/refusal";
 import { doorbellRequest, subscriptionId, type WakeContent } from "../src/wake-kinds";
 import { wakeKinds } from "../src/wake-records";
@@ -94,6 +95,20 @@ describe("subscriptionId", () => {
     expect(subscriptionId("owner", "https://x.test/fire", "claude_routine_fire",
                           { rooms: ["room:app:r"], board: false, agent_id: "a",
                             command_center_id: undefined })).toBe(id);
+  });
+});
+
+describe("acceptanceOf", () => {
+  // The bucket keeps an acceptance record for good, and a redelivery after a deploy is held
+  // to it, so its args' digest is pinned to the bytes the records already hold.
+  it("names the digest of the args' canonical JSON, keys sorted", async () => {
+    const digest = async (args: OperatorMessage["args"]) =>
+      (await acceptanceOf({ op: "owner.tier", owner: "owner", args } as OperatorMessage)).digest;
+    expect(await digest({})).toBe(
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    expect(await digest({ z: "é \"x\u0001", a: 1, m: false, b_2: -9007199254740991,
+                          a0: "" })).toBe(
+      "b76a210e407d6986b350c4a07f0f5501b70e66626e6f582b5844ef5a956e53a7");
   });
 });
 
