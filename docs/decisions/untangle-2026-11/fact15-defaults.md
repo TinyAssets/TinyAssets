@@ -49,7 +49,8 @@ the deploy kit's copies and the Workers' configs.
   the sync's slow-match report (`SLOW_MATCH_MS`, which lets nothing go). The operator log's
   365-day lock (`deploy/platform.json`) holds the platform's own record, not the owner's,
   and lets nothing go. Workers Logs are Cloudflare's own retention of the platform's logs.
-- **Not yet in a kind, each owed below:** `TEMP_TTL_S`, the control record's
+- **Not yet in a kind, each owed below:** `TEMP_TTL_S` (deleted with its area,
+  `untangle/drop-temp-area`), the control record's
   `scratch_retention_days`, Claude Code's pinned `cleanupPeriodDays`, and the lives of the
   requests held for the owner (`CARD_TTL_S`, `cardTtlS`, `approvalTtlS`, `proposalTtlS`).
 
@@ -86,7 +87,7 @@ the deploy kit's copies and the Workers' configs.
 
 ## Owed
 
-- [ ] `TEMP_TTL_S` and the whole temporary area (`/.ta/tmp`, `file_temps`, `tempDir`,
+- [x] `TEMP_TTL_S` and the whole temporary area (`/.ta/tmp`, `file_temps`, `tempDir`,
   `dropTemps`, its triggers, export and restore entries and guard terms) have no product
   caller, so it is deleted with a migration, its retention with it (`untangle/drop-temp-area`).
 - [ ] The control record's `scratch_retention_days` leaves the record, since the record holds

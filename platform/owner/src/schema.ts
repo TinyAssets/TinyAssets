@@ -2579,6 +2579,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'outside_clients', 'row', json_object('client', NEW.client, 'source', NEW.source, 'mode', NEW.mode, 'scopes', NEW.scopes, 'generation', NEW.generation, 'revoked_at', NEW.revoked_at, 'name', NEW.name, 'first_seen', NEW.first_seen, 'last_seen', NEW.last_seen, 'owner_set', NEW.owner_set, 'agents', NEW.agents, 'held', NEW.held, 'profile', NEW.profile, 'revision', NEW.revision, 'vendor', NEW.vendor, 'vendor_verified', NEW.vendor_verified, 'agent', NEW.agent)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
+  // 24 (`untangle-2026-11/drop-temp-area.md`): the temporary area `/.ta/tmp` goes, which no
+  // door ever made a directory in. Any entry under it and every temporary directory's row are
+  // deleted first, so their triggers take back what they charged (a dropped table's rows fire
+  // none), then the table, its index and its triggers. `file_temps` was exported, so no
+  // generation from before is brought forward (`TEMPS_DROPPED`).
+  Object.freeze([
+    "DELETE FROM file_entries WHERE parent = '/.ta/tmp' OR parent GLOB '/.ta/tmp/*'",
+    "DELETE FROM file_temps",
+    "DROP TABLE file_temps",
+  ]),
 ]);
 
 /**
@@ -2599,6 +2609,13 @@ const ROOMS_BACKFILLED = "before a restore could bring a generation forward: mig
  */
 const GRANT_AGENT = "before a restore could bring a generation forward: migration 23 names " +
   "each grant's agent, which a generation's grant lines do not hold";
+
+/**
+ * Why no generation from before migration 24 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/drop-temp-area.md`).
+ */
+const TEMPS_DROPPED = "before a restore could bring a generation forward: migration 24 drops " +
+  "the temporary directories' table, whose lines this schema has no table for";
 
 /**
  * How a generation of an older schema is brought forward across each migration, one entry a
@@ -2635,6 +2652,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 21
   null,  // 22
   GRANT_AGENT,  // 23
+  TEMPS_DROPPED,  // 24
 ]);
 
 /**

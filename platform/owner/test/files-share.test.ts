@@ -346,11 +346,8 @@ describe("an outside client's share", () => {
       await files.write(`${W}/d/b.bin`, new Uint8Array(INLINE_BYTES + 10),
                         { expected: null, writer: CLIENT });
       await files.write(`${W}/d/a.txt`, text("owner's"), { expected: null, writer: "owner" });
-      const temp = await unit(() => {
-        files.rename(`${W}/d`, `${W}/e`, { expected: null, replace: false, writer: CLIENT });
-        return files.tempDir("t-", CLIENT);
-      });
-      await files.write(`${temp}/x`, text("tmp"), { expected: null, writer: CLIENT });
+      await unit(() => files.rename(`${W}/d`, `${W}/e`, { expected: null, replace: false,
+                                                          writer: CLIENT }));
       await unit(() => {
         files.mkdir(`${W}/f`, { expected: null, writer: `client:${DOT.client}` });
         files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
@@ -358,7 +355,6 @@ describe("an outside client's share", () => {
         ] });
         files.remove(`${W}/e/b.bin`, { expected: null, writer: CLIENT });
         files.purge(`${W}/e/b.bin`);
-        files.dropTemps([temp], CLIENT);
       });
     });
     const kept = await counted(r);
@@ -644,11 +640,10 @@ describe("a random sequence of changes", () => {
     await setFiles(r, { client_share: 60, owner_reserve: 10, keep_versions: 2,
                         keep_recent: 3 });
     await inFiles(r.stub, async (files: Files, unit) => {
-      const temps: string[] = [];
       for (let step = 0; step < 120; step++) {
         const writer = pick(writers);
         const op = pick(["write", "write", "write", "mkdir", "remove", "rename", "restore",
-                         "purge", "redact", "temp", "drop", "collect"]);
+                         "purge", "redact", "collect"]);
         try {
           if (op === "write") {
             await files.write(pick(paths), pick(bodies), { expected: null, writer });
@@ -671,11 +666,6 @@ describe("a random sequence of changes", () => {
             }
           } else if (op === "purge") {
             await unit(() => files.purge(pick(paths)));
-          } else if (op === "temp") {
-            temps.push(await unit(() => files.tempDir("t-", writer)));
-            await files.write(`${temps.at(-1)}/f`, pick(bodies), { expected: null, writer });
-          } else if (op === "drop" && temps.length > 0) {
-            await unit(() => files.dropTemps([temps.pop()!], writer));
           } else if (op === "collect") {
             await files.run(Date.now() / 1000 + 40 * 86_400, passEnd());
           }

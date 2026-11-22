@@ -11,7 +11,7 @@ import type { Files } from "../src/files";
 import { type Write, WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
-  HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
+  HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES,
 } from "../src/manifest";
 import { type OwnerDO, ownerStores } from "../src/owner-do";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -354,7 +354,7 @@ const SCOPED = "scoped (writer, scope) AS (SELECT writer, writer FROM writers " 
 const RECOUNT =
   // SQLite here takes few terms in one compound SELECT, so the unions are nested.
   "WITH RECURSIVE writers (writer) AS (SELECT writer FROM (SELECT writer FROM file_entries " +
-  "UNION SELECT writer FROM file_history UNION SELECT writer FROM file_temps) UNION " +
+  "UNION SELECT writer FROM file_history) UNION " +
   "SELECT writer FROM (SELECT writer FROM file_intents UNION SELECT holder FROM file_chunks)), " +
   `${SCOPED}, ` +
   "rows_c (writer, content_id) AS (SELECT writer, content_id FROM file_entries " +
@@ -376,9 +376,7 @@ const RECOUNT =
   `SELECT s.scope, 1, 0, 0, 0, ${ENTRY_BYTES("e")} FROM file_entries e JOIN scoped s ` +
   "ON s.writer = e.writer UNION ALL " +
   `SELECT s.scope, 0, 1, 0, 0, ${HISTORY_BYTES("h")} FROM file_history h JOIN scoped s ` +
-  "ON s.writer = h.writer UNION ALL " +
-  `SELECT s.scope, 0, 0, 0, 0, ${TEMP_BYTES("t")} FROM file_temps t JOIN scoped s ` +
-  "ON s.writer = t.writer), " +
+  "ON s.writer = h.writer), " +
   "rows_held (who, entries, history, chunk_bytes, inline_bytes, manifest_bytes) AS (" +
   "SELECT r.scope, 0, 0, 0, coalesce(length(c.inline), 0), " +
   `${SCOPE_REF_BYTES("r")} + ${CONTENT_RECORD_BYTES("c")} + ${CHUNK_LIST_ROW_BYTES()} * ` +
@@ -430,7 +428,6 @@ export async function fileCounters(stub: DurableObjectStub<OwnerDO>): Promise<[R
       `(SELECT coalesce(SUM(${HISTORY_BYTES("h")}), 0) FROM file_history h) + ` +
       `(SELECT coalesce(SUM(${CONTENT_BYTES("c")}), 0) FROM file_contents c) + ` +
       `(SELECT COUNT(*) FROM file_chunks) * ${CHUNK_ROW_BYTES()} + ` +
-      `(SELECT coalesce(SUM(${TEMP_BYTES("t")}), 0) FROM file_temps t) + ` +
       `(SELECT coalesce(SUM(${SCOPE_REF_BYTES("r")}), 0) FROM refs_c r) + ` +
       `(SELECT coalesce(SUM(${SCOPE_REF_BYTES("r")}), 0) FROM refs_k r) + ` +
       `(SELECT COUNT(*) FROM shares) * ${SHARE_BYTES} AS manifest_bytes, ` +
