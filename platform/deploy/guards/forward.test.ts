@@ -32,9 +32,11 @@ function forwardProblems(base: Side, head: Side): string[] {
     found.push("a forward change was edited or taken away: a rollback reads each Worker's " +
                "count from its version's tag, so add a change instead");
   }
-  const sandbox = (side: Side) => forwardCounts(side.changes.slice(base.changes.length), NAMES)[
-    "sandbox"]!;
-  if (head.template !== base.template && sandbox(head) === 0) {
+  const sandbox = forwardCounts(head.changes.slice(base.changes.length), NAMES)["sandbox"];
+  if (sandbox === undefined) {
+    throw new Error(`this tree has no sandbox Worker, which ${SANDBOX_CONFIG} names: move both`);
+  }
+  if (head.template !== base.template && sandbox === 0) {
     found.push(`the sandbox's pinned template moves from ${base.template} to ${head.template} ` +
                "with no forward change naming the sandbox: add one (a rolled-back sandbox " +
                "Worker would resume its sandboxes with its older runner)");

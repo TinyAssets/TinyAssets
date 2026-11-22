@@ -2666,7 +2666,7 @@ describe("the rollout record and mode rollback", () => {
     await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
       `the record ${ROLLOUT} holds ${gateway} as serving ${older.version} before the run, and ` +
       `Cloudflare's deployments listing has no deployment of it alone followed by one of ` +
-      `commit ${OURS}: nothing is changed`);
+      `commit ${OURS}: nothing is changed (a rollback by hand follows checklist.md)`);
     expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
     // A Worker left out, or the order turned, so a callee would go back before its caller.
     const names = WORKERS.map((worker) => NAMES[worker]).join(", ");

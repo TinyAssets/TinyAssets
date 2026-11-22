@@ -2967,7 +2967,8 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
     if (!await servedBefore(got, rolled.name, ours, rolled.before!.version, tagOf)) {
       throw new Error(`the record ${key} holds ${rolled.name} as serving ${
         rolled.before!.version} before the run, and Cloudflare's deployments listing has no ` +
-        `deployment of it alone followed by one of commit ${ours}: nothing is changed`);
+        `deployment of it alone followed by one of commit ${ours}: nothing is changed (a ` +
+        "rollback by hand follows checklist.md)");
     }
     back.push(rolled);
     lines.push(`roll ${rolled.name} back to ${rolled.before!.version} (${
