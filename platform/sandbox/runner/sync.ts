@@ -333,12 +333,21 @@ interface Mirror {
  */
 export function openMirror(path: string): Mirror {
   const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; " +
-          "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, version INTEGER, " +
-          "size INTEGER NOT NULL, mtime_ms REAL NOT NULL, sha256 TEXT NOT NULL, " +
-          "unread INTEGER NOT NULL) WITHOUT ROWID; " +
-          "CREATE TABLE IF NOT EXISTS meta (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-          "cursor INTEGER NOT NULL); INSERT OR IGNORE INTO meta VALUES (1, 0);");
+  const files = "CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, version INTEGER, " +
+    "size INTEGER NOT NULL, mtime_ms REAL NOT NULL, sha256 TEXT NOT NULL, " +
+    "unread INTEGER NOT NULL) WITHOUT ROWID";
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+  // A format 1 mirror's rows (`state-format.json`) rebuilt as this format's: its base was
+  // never null, and its hash `""` was the mark, so a copy marked there holds no hash the
+  // store's can match, and is sent, never dropped.
+  const columns = db.prepare("SELECT name FROM pragma_table_info('files')").all();
+  if (columns.length > 0 && !columns.some((each) => each["name"] === "unread")) {
+    db.exec(`BEGIN IMMEDIATE; ALTER TABLE files RENAME TO files_1; ${files}; INSERT INTO ` +
+            "files SELECT path, version, size, mtime_ms, sha256, sha256 = '' FROM files_1; " +
+            "DROP TABLE files_1; COMMIT;");
+  }
+  db.exec(`${files}; CREATE TABLE IF NOT EXISTS meta (only INTEGER PRIMARY KEY CHECK ` +
+          "(only = 1), cursor INTEGER NOT NULL); INSERT OR IGNORE INTO meta VALUES (1, 0);");
   const get = db.prepare("SELECT version, size, mtime_ms, sha256, unread FROM files " +
                          "WHERE path = ?");
   const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?)");

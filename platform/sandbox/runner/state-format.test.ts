@@ -103,6 +103,13 @@ describe("the runner's on-disk format", () => {
   });
 
   it("reads every format's mirror it reads, as each was recorded", () => {
+    // A synced row and a marked one, as each format wrote them: format 1's mark was its hash
+    // `""`, format 2's is a column of its own, the hash kept.
+    const hash = "0".repeat(64);
+    const rows: Record<string, string> = {
+      "1": `('/workspace/a.md', 3, 5, 1, '${hash}'), ('/workspace/b.md', 4, 0, 0, '')`,
+      "2": `('/workspace/a.md', 3, 5, 1, '${hash}', 0), ('/workspace/b.md', 4, 0, 0, '', 1)`,
+    };
     for (const format of READS) {
       const path = join(temp(), "mirror.db");
       const db = new DatabaseSync(path);
@@ -111,15 +118,19 @@ describe("the runner's on-disk format", () => {
           db.exec(entry.sql);
         }
       }
-      db.exec("INSERT INTO meta VALUES (1, 7); INSERT INTO files " +
-              "(path, version, size, mtime_ms, sha256, unread) VALUES " +
-              `('/workspace/a.md', 3, 5, 1, '${"0".repeat(64)}', 1)`);
+      db.exec(`INSERT INTO meta VALUES (1, 7); INSERT INTO files VALUES ${rows[String(format)]!}`);
       db.close();
-      const mirror = openMirror(path);
-      expect(mirror.cursor()).toBe(7);
-      expect(mirror.get("/workspace/a.md")).toEqual({ version: 3, size: 5, mtime_ms: 1,
-                                                      sha256: "0".repeat(64), unread: true });
-      mirror.close();
+      // Opened twice: a mirror rebuilt once is this format's, read alike after.
+      for (let open = 0; open < 2; open += 1) {
+        const mirror = openMirror(path);
+        expect(mirror.cursor()).toBe(7);
+        expect(mirror.get("/workspace/a.md")).toEqual({ version: 3, size: 5, mtime_ms: 1,
+                                                        sha256: hash, unread: false });
+        expect(mirror.get("/workspace/b.md")).toEqual({ version: 4, size: 0, mtime_ms: 0,
+                                                        sha256: "", unread: true });
+        mirror.close();
+      }
+      expect(schema(path)).toEqual(FORMATS[String(STATE_FORMAT)]!.mirror);
     }
   });
 

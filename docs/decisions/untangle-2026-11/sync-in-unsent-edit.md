@@ -50,7 +50,7 @@ deploys so a disk living across one stays readable; no disk can today (no owner 
 sandbox before the cutover's routes, `session-store-pressure.md`, the same day), the same
 fact that let protocol 5 ship in one deploy. A runner meeting a disk it does not read refuses
 it by name (`formatStep`), so a rollback meets only that, and takes no forward entry (as
-#5794).
+#5794). (The review found the premise stale and this deploy reading format 1 too, below.)
 
 ## Decided
 
@@ -83,8 +83,9 @@ it by name (`formatStep`), so a rollback meets only that, and takes no forward e
 5. **A path sync-out never sends takes the owner's version**, as before: a held-back file's
    changes are the owner's line's, said each sync; a default line's are rebuilt; a client's
    read-only tree is never written by its sandbox.
-6. **Format 2 in one deploy** (`STATE_FORMAT` 2, `READS` [2]); `state-format.ts`'s rule says
-   when one deploy may carry a format change, as `protocol.ts` says for the protocol.
+6. **Format 2, its contract deploy alone** (`STATE_FORMAT` 2, `READS` [1, 2], format 1's
+   mirror rebuilt on open, its `""` hash read as the mark); `state-format.ts`'s rule says
+   when the expand deploy may be skipped (review, below).
 7. **The sync-ignore's defaults are written by sync-out alone** (`keepDefaults`): sync-in reads
    the list only when it meets a file that may hold changes, and must not make a local copy
    of it before the owner's arrives.
@@ -102,8 +103,33 @@ it by name (`formatStep`), so a rollback meets only that, and takes no forward e
 - **A gone folder keeping a file** leaves what sync-out never sends under it (an ignored
   tree, a link): only while a file under it holds unsent changes.
 
+## Review (2026-11-22)
+
+- **The one-deploy premise is stale.** The stage serves the routes on `stage.tinyassets.io`
+  (its gate closed, no owner admitted yet), and two stage accounts are about to be let in, so
+  a sandbox on format 1 may exist before this deploys. What each side does, read in
+  `control.ts` (`#speaking`, `#adopt`) and `sandbox.test.ts` ("starts on the runner it has"):
+  a runner's `adopt` refusing the disk is an adoption failed, so the Worker keeps the
+  sandbox's runner, logged (`sandbox_runner_adopt_failed`) at every start. So reading format
+  2 alone stranded no sandbox, but kept a format 1 one on the runner before, without this
+  fix, until killed. This deploy now reads format 1 too (decision 6), so such a sandbox
+  adopts it. A rollback of one deploy still meets format 2 with a runner that does not read
+  it: it keeps the sandbox on this runner, never stranded, so it takes no forward entry.
+- **Left, owed:** a resume's fetch moves the row to the owner's version before the root
+  puts the bytes in the store (`fetchSessions`, then `storeResume`). Where the store's copy
+  changed meanwhile (another run's `keepHome` of the same file), the fetched bytes are let
+  go but the row stays on the owner's version, so that copy, made on the older base, is sent
+  later over the owner's without a conflict (the owner's version kept in its history). It
+  needs a store copy written during one fetch of the same file, which the owner's one live
+  run per conversation all but rules out, and before this change the same race lost the
+  run's copy instead.
+
 ## Owed
 
+- [ ] `untangle/sync-resume-took`: a resume's fetched session moves the mirror's row to the
+  owner's version only once the store took its bytes (a second sync job after the import,
+  applied only to a row unchanged since the fetch), so a copy kept meanwhile is sent against
+  its own base, a conflict copy.
 - [ ] `untangle/sync-kind-change`: a path whose kind changes in the owner's files while the
   sandbox holds the other kind is taken by the same rule (the sandbox's unsent files sent
   beside, then the owner's kind), never a sync-in that fails every time.
