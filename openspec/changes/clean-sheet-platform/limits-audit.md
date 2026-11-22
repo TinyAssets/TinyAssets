@@ -59,7 +59,7 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,629,609,349.75 bytes, 46.30% of the 10 GB: 370.4 MB under
+**The worst case that ships is 4,602,022,849.75 bytes, 46.02% of the 10 GB: 398.0 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 The rooms as rows (`rooms`, `room_members`, and `archive_purges` by room; owner migration 19,
 `untangle-2026-11/shapes.md`) take 27.2 MB of it at `maxRooms`.
@@ -125,7 +125,7 @@ ceilings, each with its reason"). Each ceiling's row says which of four kinds it
   connections, exports). Each count is far past what its reader uses or one owner holds at
   once, at most about 90 MB a term (`runs`, `egress_reservations`); its row names that use.
 
-With the third kind these take 1,240.1 MB, and 367.2 MB is left under the half. The
+With the third kind these take 1,212.5 MB, and 394.8 MB is left under the half. The
 figures are the guard's print (`limits-audit.test.ts` "prints the audit's figures").
 
 ## Summary
@@ -133,9 +133,9 @@ figures are the guard's print (`limits-audit.test.ts` "prints the audit's figure
 - **tier**: 2
 - **owner setting**: 13
 - **vendor limit**: 13
-- **technical ceiling**: 185
+- **technical ceiling**: 182
 - **default**: 1
-- **total**: 214
+- **total**: 211
 
 Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-22.
 
@@ -283,12 +283,9 @@ bound lets the oldest go, the asker's own at its share, so none is refused for r
 | `contract/src/limits.ts` `CONNECTION_BLOB_MAX` | 64 KiB | a connection's sealed blob | a credential past it refused | technical ceiling | Guard term `connection_secrets`; the gateway's own bound too. |
 | `owner/src/connections.ts` model numbers | $1,000,000 a million tokens; 100,000,000 tokens; 16 tiers | a model record's prices, windows and tiers | a record past them refused | technical ceiling | A charge, price times tokens, stays an exact integer in a JavaScript number (2^53). Far past every catalog's. |
 | `owner/src/connections.ts` redirect | 2,048 characters | an OAuth redirect URI | a longer URI refused | technical ceiling | The 10 GB: inside `connection_flows`' 4 KiB a flow. |
-| `owner/src/usage.ts` `USAGE_LIMITS.minOutput` | 1,024 tokens (2,048 reasoning) | the least output a reservation is worth | refused when an owner's ceiling leaves less | technical ceiling | Only when an owner's own ceiling binds; provider thinking budgets start at 1,024. |
-| `owner/src/usage.ts` `USAGE_LIMITS.receiptsKept` | 5,000 | model-call receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `model_reservations`. Share: the newest kept, 27.6 MB with the open calls: read newest first (`receiptsListed`, 50 a read); a call's charge stays in the spend counters, so letting its receipt go loses no charge. |
-| `contract/src/limits.ts` `CALLS_OPEN` | 1,000 | model reservations open at once | refused `model_calls_full` | technical ceiling | Inside `model_reservations`; far above any tier's runs. |
 | `contract/src/limits.ts` `SPEND_KEPT`; `owner/src/money.ts` `SETTLED_WITHIN_S` | 500; a period kept a day and a minute past its end | day and month spend counters, each period kept until every charge reserved in it has settled, so at most three days and two months at once, each at a hundred sources; past that a period's counters let go | a 101st source's first call in a period refused | technical ceiling | The 10 GB: guard term `model_spend`. The budgets read the current day's and month's alone (`spent`); no view or tool reads an older one, and the export carries the rows as they stand. A charge settles into the periods it was reserved in, within its door's deadline and a beat (`EGRESS_DEADLINE_S` + `EGRESS_BEAT_S`; past them it is settled lost, which moves no counter), so each period is kept that long past its end: a late settle moves its own counter, never one made anew. Share: periods, 0.42 MB: a hundred sources at five periods. |
 | `owner/src/egress.ts` `EGRESS_LIMITS.receiptsKept`, `refusalsKept` | 2,000 settled, 500 refused | egress receipts kept | the oldest let go, never an open call's | technical ceiling | Inside `egress_reservations`. A settled call's charge is on the run and in the spending counters, so letting its receipt go refunds nothing; refusals keep their own count, so they cannot displace settled calls. Share: the newest kept, inside `egress_reservations`' 89.4 MB with the open calls (`EGRESS_LIMITS.open`). |
-| `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
+| `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | Only when a cap binds; provider thinking budgets start at 1,024. |
 | `contract/src/limits.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
 | `owner/src/network.ts` host | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound (RFC 1035). |
 | `contract/src/limits.ts` `EGRESS_BODY_MAX` | 16 MiB | one sandbox model request's body | refused `egress_too_large` | technical ceiling | The egress door streams the body and holds none of it; the gateway, which parses a metered call once, weighs it by its bytes and its tokens in its pool's slots (`gateway/src/held.ts`), so an ASCII body of 16 MiB fits and one with a non-ASCII character fits to 15 MiB. One ceiling for the egress door, the API and the owner surface (`network.ts`). Providers take more (Anthropic's Messages API, 128 MB), past what one pool holds. |

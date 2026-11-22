@@ -2601,6 +2601,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN (SELECT COUNT(*) FROM model_spend) > 500 BEGIN " +
       "SELECT RAISE(ABORT, 'model_spend_full: 500 spend counters are kept'); END",
   ]),
+  // 26 (`untangle-2026-11/model-reservations.md`): the object's own model reservations go,
+  // which nothing has made since the in-object loop was deleted (#5389); the spend counters
+  // stay, every charge now a sandbox call's (`egress.ts`). The drop takes the table's index and
+  // triggers with it, the bound on its open rows and its capture among them, and moves no
+  // counter: a row's spend outlives it, as it outlived each row the prune let go.
+  // `model_reservations` was exported, so no generation from before is brought forward
+  // (`RESERVATIONS_DROPPED`).
+  Object.freeze([
+    "DROP TABLE model_reservations",
+  ]),
 ]);
 
 /**
@@ -2635,6 +2645,13 @@ const TEMPS_DROPPED = "before a restore could bring a generation forward: migrat
  */
 const SPEND_PERIODS = "before a restore could bring a generation forward: migration 25 keeps " +
   "fewer spend counters than a generation's lines may hold";
+
+/**
+ * Why no generation from before migration 26 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/model-reservations.md`).
+ */
+const RESERVATIONS_DROPPED = "before a restore could bring a generation forward: migration " +
+  "26 drops the model reservations' table, whose lines this schema has no table for";
 
 /**
  * How a generation of an older schema is brought forward across each migration, one entry a
@@ -2673,6 +2690,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   GRANT_AGENT,  // 23
   TEMPS_DROPPED,  // 24
   SPEND_PERIODS,  // 25
+  RESERVATIONS_DROPPED,  // 26
 ]);
 
 /**

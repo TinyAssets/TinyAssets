@@ -84,7 +84,7 @@ counts toward `SPEND_KEPT` and lasts until the next prune.
 
 ## Owed
 
-- [ ] Delete the object's own model reservations, which nothing has called since #5389: the
+- [x] Delete the object's own model reservations, which nothing has called since #5389: the
   `Usage` reserve path, `model_reservations` and its triggers, `usageReceipts`, with an owner
   migration (`untangle/model-reservations`).
 - [x] Once #5781 merges, tick its `fact15-caps.md` spend-periods line and move

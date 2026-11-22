@@ -148,8 +148,6 @@
     { "door": "flowFinish", "caller": "session", "rule": "flow_finish",
       "action": "connect a model source", "receipt": { "state": "[state]" },
       "handler": "connections", "gate": "synced" },
-    { "door": "usageReceipts", "caller": "owner", "action": "read its model spend",
-      "handler": "usage", "gate": "door" },
     { "door": "noticeList", "caller": "owner", "action": "read its notices", "handler": "notices",
       "gate": "door" },
     { "door": "starterReceipts", "caller": "owner", "action": "read its starter files' receipts",
