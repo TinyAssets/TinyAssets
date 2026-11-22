@@ -19,9 +19,9 @@
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
-export const PROTOCOL = 2;
+export const PROTOCOL = 3;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([1, 2, 3]);
+export const SPEAKS: readonly number[] = Object.freeze([2, 3]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({

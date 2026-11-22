@@ -378,8 +378,8 @@ describe("the engine records", () => {
     // Its tools declared to the model directly, so a `--tools` filter of plain names keeps
     // them (pi's default exposure reaches them through codemode only).
     expect(spec.mcp).toEqual(expect.objectContaining({ file: "{home}/.pi/agent/mcp.json",
-      template: "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", " +
-                "\"exposure\": \"direct\"}}}" }));
+      http: { url: "{url}", exposure: "direct" } }));
+    expect(spec.mcp).not.toHaveProperty("template");
     // JSON mode cannot show the trust prompt, and the agent's folder is never trusted: its
     // .pi/mcp.json and extensions never load, and its skills are given by argv.
     expect(spec.definition.native.argv).toEqual(["--no-approve"]);
@@ -675,11 +675,11 @@ describe("an engine record that does not fit", () => {
     })],
     ["an MCP config flag with no file", cli((s) => {
       delete at(s, "mcp")["file"]; delete at(s, "mcp")["template"];
-      (at(s, "mcp")["argv"] as string[]).push("--url", "{mcp_url}"); })],
+      at(s, "mcp")["flag"] = "-c"; })],
     ["an MCP file inside /workspace", cli((s) => {
       at(s, "mcp")["file"] = "/workspace/agents/a/.mcp.json"; })],
     ["the engine home itself as a file", cli((s) => { at(s, "mcp")["file"] = "{home}"; })],
-    ["an MCP trust with no note", cli((s) => { delete at(s, "mcp.trust")["note"]; })],
+    ["an MCP trust with no note", cli((s) => { delete at(s, "mcp")["trust"]; })],
     ["a tool filter with no {tools}", cli((s) => {
       at(s, "tools.allow")["argv"] = ["--tools"]; })],
     ["a tool filter on a file the record does not write", cli((s) => {
@@ -901,7 +901,7 @@ describe("an engine record that does not fit", () => {
     expect(refused(record)).toMatch(/^source record "claude-code": cli(?:\.engine)? has no invoke: a CLI is an engine, never a backend/);
   });
 
-  it("takes the other pinned installs and an MCP-less engine", () => {
+  it("takes the other pinned installs", () => {
     for (const install of [
       { manager: "pip", package: "mistral-vibe", version: "1.2.3", bin: "vibe",
         verify_argv: ["{bin}", "--version"], lock_sha256: "b".repeat(64) },
@@ -910,11 +910,6 @@ describe("an engine record that does not fit", () => {
     ]) {
       expect(sourceRecord(cli((s) => { s["install"] = install; })).cli!.install).toEqual(install);
     }
-    const unsupported = { unsupported: "No MCP client: TinyAssets is reached another way." };
-    expect(sourceRecord(cli((s) => {
-      s["mcp"] = unsupported; at(s, "definition")["mcp"] = unsupported; }, pi)).cli!.mcp)
-      .toEqual(unsupported);
-    expect(claudeCli["mcp"]).toHaveProperty("file");
   });
 });
 
@@ -1011,27 +1006,6 @@ describe("how the agent's definition reaches an engine", () => {
     ["native layers with no page", cli((s) => { delete at(s, "definition.native")["cite"]; })],
     ["a native argv set to nothing", cli((s) => {
       at(s, "definition.native")["argv"] = ["--approve="]; }, pi)],
-    // The agent's own MCP servers go where the run's door does, each entry carrying the server's.
-    ["agent servers under a key the MCP file has not", cli((s) => {
-      at(s, "definition.mcp")["servers"] = "servers"; })],
-    ["agent servers in a file when the door is a flag", cli((s) => {
-      delete at(s, "definition.mcp")["flag"]; }, records.get("codex") as Json)],
-    ["agent servers by a flag the door is not given by", cli((s) => {
-      at(s, "definition.mcp")["flag"] = "--config"; }, records.get("codex") as Json)],
-    ["agent servers by a flag with a names list", cli((s) => {
-      at(s, "definition.mcp")["names"] = "mcp.allowed"; }, records.get("codex") as Json)],
-    ["agent servers on a names list that does not name the door", cli((s) => {
-      at(s, "definition.mcp")["names"] = "context.fileName"; }, records.get("gemini") as Json)],
-    ["agent servers where the door has no place", cli((s) => {
-      s["mcp"] = { unsupported: "none" }; })],
-    ["an http entry without the server's URL", cli((s) => {
-      at(s, "definition.mcp.http")["url"] = "https://example.com/mcp"; })],
-    ["an http entry carrying the URL twice", cli((s) => {
-      at(s, "definition.mcp.http")["also"] = "{url}"; })],
-    ["a stdio entry without the server's env", cli((s) => {
-      delete at(s, "definition.mcp.stdio")["env"]; })],
-    ["a stdio entry carrying an unknown value", cli((s) => {
-      at(s, "definition.mcp.stdio")["cwd"] = "{cwd}"; })],
     // The agent's own hooks: every event by the engine's name, in the decide hook's layer.
     ["hooks missing an event", cli((s) => { delete at(s, "definition.hooks.events")["stop"]; })],
     ["hooks with an event the format has not", cli((s) => {
@@ -1045,6 +1019,48 @@ describe("how the agent's definition reaches an engine", () => {
       at(s, "definition")["hooks"] = { unsupported: "none" }; })],
   ])("refuses %s", (_what, record) => {
     expect(refused(record)).toMatch(/cli\.definition/);
+  });
+
+  it.each([
+    // Every MCP server, the run's door and the agent's own, by one entry per transport, each
+    // carrying the server's own values, in one file or by one flag.
+    ["servers both in a file and by a flag", cli((s) => { at(s, "mcp")["flag"] = "-c"; })],
+    ["servers neither in a file nor by a flag", cli((s) => {
+      delete at(s, "mcp")["file"]; delete at(s, "mcp")["template"];
+      at(s, "mcp")["argv"] = []; })],
+    ["servers by a flag with a names list", cli((s) => {
+      at(s, "mcp")["names"] = "mcp.allowed"; }, records.get("codex") as Json)],
+    ["servers by a flag with a template", cli((s) => {
+      at(s, "mcp")["template"] = "{}"; }, records.get("codex") as Json)],
+    ["servers by a flag that is no option", cli((s) => {
+      at(s, "mcp")["flag"] = "c"; }, records.get("codex") as Json)],
+    ["servers in a file that is not JSON", cli((s) => {
+      at(s, "mcp")["file"] = "{home}/run/mcp.toml"; })],
+    ["a template holding a server of its own", cli((s) => {
+      at(s, "mcp")["template"] = JSON.stringify({ mcpServers: {
+        tinyassets: { headers: { "x-ta-run": "{run_secret}" } }, docs: { url: "https://x" } } });
+    })],
+    ["a template holding the names list", cli((s) => {
+      at(s, "mcp")["template"] = JSON.stringify({ mcp: { allowed: ["tinyassets"] } }); },
+                                              records.get("gemini") as Json)],
+    ["an argv a server adds that names no server", cli((s) => {
+      at(s, "mcp")["argv_each"] = ["--allowed-mcp-server-names", "tinyassets"]; },
+                                                   records.get("gemini") as Json)],
+    ["a server's name bare in the argv a server adds", cli((s) => {
+      at(s, "mcp")["argv_each"] = ["--allowed-mcp-server-names", "{name}"]; },
+                                                       records.get("gemini") as Json)],
+    ["a server's name outside the argv a server adds", cli((s) => {
+      s["unattended_argv"] = ["--allow", "{name}"]; })],
+    ["an http entry without the server's URL", cli((s) => {
+      at(s, "mcp.http")["url"] = "https://example.com/mcp"; })],
+    ["an http entry carrying the URL twice", cli((s) => {
+      at(s, "mcp.http")["also"] = "{url}"; })],
+    ["a stdio entry without the server's env", cli((s) => {
+      delete at(s, "mcp.stdio")["env"]; })],
+    ["a stdio entry carrying an unknown value", cli((s) => {
+      at(s, "mcp.stdio")["cwd"] = "{cwd}"; })],
+  ])("refuses %s", (_what, record) => {
+    expect(refused(record)).toMatch(/cli\.mcp/);
   });
 });
 

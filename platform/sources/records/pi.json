@@ -221,19 +221,6 @@
         "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/security.md",
         "read": "2026-11-21"
       },
-      "mcp": {
-        "servers": "mcpServers",
-        "http": {
-          "url": "{url}",
-          "exposure": "direct"
-        },
-        "stdio": {
-          "command": "{command}",
-          "args": "{args}",
-          "env": "{env}",
-          "exposure": "direct"
-        }
-      },
       "hooks": {
         "events": {
           "pre_tool": "tool_call",
@@ -250,12 +237,19 @@
     },
     "mcp": {
       "file": "{home}/.pi/agent/mcp.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", \"exposure\": \"direct\"}}}",
+      "servers": "mcpServers",
+      "http": {
+        "url": "{url}",
+        "exposure": "direct"
+      },
+      "stdio": {
+        "command": "{command}",
+        "args": "{args}",
+        "env": "{env}",
+        "exposure": "direct"
+      },
       "argv": [],
-      "trust": {
-        "argv": [],
-        "note": "A user-level server in the agent directory's mcp.json loads without project trust; only a project's .pi/mcp.json needs it (pi docs/mcp.md)."
-      }
+      "trust": "A user-level server in the agent directory's mcp.json loads without project trust; only a project's .pi/mcp.json needs it (pi docs/mcp.md)."
     },
     "decide": {
       "file": "{system}/decide.mjs",

@@ -254,19 +254,6 @@
         "cite": "https://code.claude.com/docs/en/settings",
         "read": "2026-11-21"
       },
-      "mcp": {
-        "servers": "mcpServers",
-        "http": {
-          "type": "http",
-          "url": "{url}"
-        },
-        "stdio": {
-          "type": "stdio",
-          "command": "{command}",
-          "args": "{args}",
-          "env": "{env}"
-        }
-      },
       "hooks": {
         "events": {
           "pre_tool": "PreToolUse",
@@ -283,16 +270,24 @@
     },
     "mcp": {
       "file": "{home}/run/mcp.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"type\": \"http\", \"url\": \"{mcp_url}\", \"headers\": {\"x-ta-run\": \"{run_secret}\"}}}}",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"headers\": {\"x-ta-run\": \"{run_secret}\"}}}}",
+      "servers": "mcpServers",
+      "http": {
+        "type": "http",
+        "url": "{url}"
+      },
+      "stdio": {
+        "type": "stdio",
+        "command": "{command}",
+        "args": "{args}",
+        "env": "{env}"
+      },
       "argv": [
         "--mcp-config",
         "{mcp_config}",
         "--strict-mcp-config"
       ],
-      "trust": {
-        "argv": [],
-        "note": "A non-bare -p run loads its --mcp-config without folder trust; --strict-mcp-config ignores every other server. Neither is restored on resume, so both go on every run."
-      }
+      "trust": "A non-bare -p run loads its --mcp-config without folder trust; --strict-mcp-config ignores every other server. Neither is restored on resume, so both go on every run."
     },
     "decide": {
       "file": "/etc/claude-code/managed-settings.json",

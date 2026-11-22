@@ -48,7 +48,11 @@
  *   key can read it back from the sandbox's info (`SandboxNetworkRuleInfo`), so that key is
  *   a platform secret with the token's custody.
  *
+ * **The agent's own MCP servers** (`agentServers`) are held to the same rule at each run's
+ * admission: one its sandbox's network would never let out is left out of the run, and the
+ * owner is told which and why, so no engine is handed a server it cannot reach.
  */
+import type { AgentMcp, McpServer } from "../../contract/src/agent-definition";
 import { closedNetwork, withGeneration } from "../../contract/src/egress";
 import {
   checkDestination, EGRESS_MODES, type EgressMode,
@@ -106,4 +110,58 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
     boundary: false,
     note: BOUNDARY_NOTE,
   });
+}
+
+/** An agent's server its runs go without, and why, for the owner's notice. */
+export interface DroppedServer {
+  readonly name: string;
+  readonly host: string;
+  readonly why: string;
+}
+
+/**
+ * The agent's own MCP servers (`mcp.json`, `agentMcp`) its runs take under the owner's egress
+ * policy, and those left out. A server started by its command is kept: it runs in the sandbox,
+ * whose network holds its traffic as it holds any other. A server reached by its URL is kept
+ * when the sandbox's network lets its host out by the rule `networkDocument` makes it by: a
+ * name (`checkDestination`, so never an IP address), on 80 or 443, the only ports E2B matches
+ * a name on, and in `allowlist` mode a destination's host on one of them.
+ */
+export function agentServers(mcp: AgentMcp, egress: EgressPolicy):
+    { readonly servers: Readonly<Record<string, McpServer>>;
+      readonly dropped: readonly DroppedServer[] } {
+  const servers: Record<string, McpServer> = {};
+  const dropped: DroppedServer[] = [];
+  for (const [name, server] of Object.entries(mcp.servers)) {
+    const url = "url" in server ? new URL(server.url) : null;
+    const why = url === null ? null
+      : unreached(url.hostname, url.port === "" ? 443 : Number(url.port), egress);
+    if (why === null) {
+      servers[name] = server;
+    } else {
+      dropped.push(Object.freeze({ name, host: url!.host, why }));
+    }
+  }
+  return Object.freeze({ servers: Object.freeze(servers), dropped: Object.freeze(dropped) });
+}
+
+/** Why the sandbox's network never lets `host` out on `port`, or null when it does. */
+function unreached(host: string, port: number, egress: EgressPolicy): string | null {
+  try {
+    checkDestination({ host, port });
+  } catch (error) {
+    if (!(error instanceof Refusal)) {
+      throw error;
+    }
+    return error.code === "egress_ip_literal" ? "the sandbox's network lets no IP address out"
+      : "its host is no name the sandbox's network can let out";
+  }
+  if (!NAMED_PORTS.includes(port)) {
+    return `the sandbox's network lets a name out on ports ${NAMED_PORTS.join(" and ")} alone`;
+  }
+  if (egress.mode === "allowlist" && !egress.destinations.some((entry) =>
+    entry.host === host && NAMED_PORTS.includes(entry.port))) {
+    return "its host is not on your egress allowlist";
+  }
+  return null;
 }

@@ -57,8 +57,8 @@ present but not a usable ranking file refuses the run, naming the file (Fact 8).
 
 ## Owed
 
-- [ ] `untangle/agent-mcp`: a folder at `RANKING` (and at `agent.json` and `mcp.json`)
-  refuses the run, so it does not read as absent.
-- [ ] `untangle/definition-path-dir`: `owner/src/definition.ts` `definitionRead` serves a
+- [x] `untangle/agent-mcp`: a folder at `RANKING` (and at `agent.json` and `mcp.json`)
+  refuses the run, so it does not read as absent. Done (#5754, through `Files.openFile`).
+- [x] `untangle/definition-path-dir`: `owner/src/definition.ts` `definitionRead` serves a
   folder at `AGENTS.md` or `SOUL.md` as an absent file (`one`), the same silent case on the
-  path that serves a main agent its definition.
+  path that serves a main agent its definition. Done (#5759).

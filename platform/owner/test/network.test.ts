@@ -13,7 +13,8 @@ import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 import { runEnv } from "../../sources/src/run-env";
 import { EGRESS_IP_LITERAL, EGRESS_MODES } from "../../contract/src/policy-document";
-import { BOUNDARY_NOTE, networkDocument } from "../src/network";
+import { agentMcp } from "../../contract/src/agent-definition";
+import { agentServers, BOUNDARY_NOTE, networkDocument } from "../src/network";
 import {
   ALL_TRAFFIC, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
   generationOf, SANDBOX_HEADER, sandboxEnv, withEgressToken,
@@ -129,6 +130,38 @@ const C5 = `c${"5".repeat(24)}`;
 const GOOGLE = { api: "google-generative-ai", base_url: "https://generativelanguage.googleapis.com/v1beta",
                  endpoints: [{ origin: "https://generativelanguage.googleapis.com",
                                paths: ["/v1beta/models/*"], methods: ["POST"] }], meter: null };
+
+describe("the agent's own MCP servers under the egress policy", () => {
+  const MCP = agentMcp(JSON.stringify({ mcpServers: {
+    listed: { url: "https://pypi.org/mcp" },
+    on80: { url: "https://example.com:80/mcp" },
+    unlisted: { url: "https://mcp.other.example/mcp" },
+    port: { url: "https://pypi.org:8443/mcp" },
+    ip: { url: "https://10.0.0.1/mcp" },
+    local: { command: "uvx", args: ["some-mcp"] },
+  } }));
+
+  it("keeps in allowlist mode a server whose host is listed on 80 or 443, and every " +
+     "command, and says why each other is left out", () => {
+    const { servers, dropped } = agentServers(MCP, { mode: "allowlist",
+                                                     destinations: DESTINATIONS });
+    expect(Object.keys(servers)).toEqual(["listed", "on80", "local"]);
+    expect(servers["local"]).toEqual({ command: "uvx", args: ["some-mcp"], env: {} });
+    expect(dropped).toEqual([
+      { name: "unlisted", host: "mcp.other.example",
+        why: "its host is not on your egress allowlist" },
+      { name: "port", host: "pypi.org:8443",
+        why: "the sandbox's network lets a name out on ports 80 and 443 alone" },
+      { name: "ip", host: "10.0.0.1", why: "the sandbox's network lets no IP address out" }]);
+  });
+
+  it("keeps in open mode every server the network can name, as networkDocument lets out",
+     () => {
+    const { servers, dropped } = agentServers(MCP, { mode: "open", destinations: [] });
+    expect(Object.keys(servers)).toEqual(["listed", "on80", "unlisted", "local"]);
+    expect(dropped.map((each) => each.name)).toEqual(["port", "ip"]);
+  });
+});
 
 describe("a sandbox token", () => {
   const EXPIRES = 2_000_000_000;
