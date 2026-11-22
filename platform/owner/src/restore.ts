@@ -274,8 +274,8 @@ function record(sql: Pick<SqlStorage, "exec">): Held | null {
  * an owner about to be wiped, then a half-loaded one, which only the restore's own doors take,
  * so nothing admits, reads or writes it before the check passes.
  */
-export const RESTORING = "this owner is held for a restore, under way or failed its check: " +
-  "only the restore's doors take it";
+export const RESTORING = "this account is held while it is restored, or while its restore " +
+  "waits for an operator's check";
 
 /**
  * Whether a restore holds the owner: pinned and not yet done, or failed. While one does, no

@@ -70,6 +70,13 @@ A tool's result SHALL be one `text` content block holding its JSON, with no `str
 - **WHEN** a door answers a result whose JSON passes `RESULT_CHARS`
 - **THEN** the call fails as `internal error` and the size is logged, and no truncated text is sent
 
+### Requirement: A refused tool call tells the model whether to call again
+On `/mcp`, a refused tool call SHALL be the tool's error result (`isError: true`), one `text` block: the refusal's message, then whether to make the call again; a `code` script's refused tool call SHALL throw into the script with the same text. A refusal for the moment SHALL say that it is temporary and the wait in seconds, its code's `Retry-After` or its own; any other SHALL say that it is final. Whether a refusal is for the moment SHALL be read as every other MCP request's error reads it, and no message SHALL say when to try again.
+
+#### Scenario: A tool call during a restore
+- **WHEN** a tool is called while a restore holds its owner
+- **THEN** its error result's text is the restore's message, then that it is temporary and to try again in 60 seconds
+
 ### Requirement: One external tool per outside-callable owner door
 Each external tool SHALL be its door's row of the owner's door table (`contract/doors.json`), the one list of the owner object's doors: it calls exactly that one owner door, which an outside client can reach, and every tool's capability and argument schema SHALL come from that row, beside its title and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and an engine's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served as ours. Each outside-callable door without a tool SHALL be named with the slice that owes it, or as the doors' own (`toolProfile`).
 

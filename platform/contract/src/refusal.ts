@@ -18,11 +18,11 @@
  * `object_overloaded`, so every caller answers or settles it as it does any transient one.
  *
  * A code is `transient` or terminal. A transient refusal says nothing of the request: the
- * same one succeeds later. Most say when, with their `Retry-After` (a pool, a ceiling or a
- * post gate full for the moment, a platform gate closed); a files root that changed under a
- * rewrap is run again at once. So a lane that settles a run, a schedule or a mail on a
- * refusal settles it only on a terminal one, and leaves the item to be tried again on a
- * transient one.
+ * same one succeeds later. Each says when, with its `Retry-After` (a pool, a ceiling or a
+ * post gate full for the moment, a platform gate closed). So a lane that settles a run, a
+ * schedule or a mail on a refusal settles it only on a terminal one, and leaves the item to
+ * be tried again on a transient one. Its message says what happened, never when to try
+ * again: that is its wait, which each door says as its protocol does (`doors/src/refused.ts`).
  *
  * A `quiet` code is one a protocol that shows a code (the egress door, the inbound hooks)
  * does not show: it shows the refusal's message in its place, or the egress door's
@@ -42,7 +42,7 @@ interface Entry {
 }
 
 /** How long a `storage_busy` refusal says to wait before trying again: about one lane pass. */
-export const STORAGE_BUSY_RETRY_S = 30;
+const STORAGE_BUSY_RETRY_S = 30;
 /** How long an inbound sender is told to wait before it delivers the event again. */
 const INBOUND_RETRY_S = 5;
 
@@ -350,6 +350,38 @@ export class Refusal extends Error {
   }
 }
 
+/**
+ * What a refusal is to whoever would make the request again, read one way by every MCP answer
+ * (`doors/src/refused.ts`) and a code-mode script's tool call (`owner/src/codemode.ts`): for the
+ * moment, with the seconds until the same request may succeed (each transient code names its
+ * wait, `contract/guards/refusal.test.ts`), a malformed request, or final.
+ */
+export type Told = { readonly kind: "temporary"; readonly waitS: number }
+  | { readonly kind: "invalid" | "final" };
+
+export function told(refusal: Refusal): Told {
+  if (refusal.transient) {
+    return { kind: "temporary", waitS: refusal.retryAfter ?? 0 };
+  }
+  return { kind: refusal.invalid ? "invalid" : "final" };
+}
+
+/**
+ * The line a model reads after a refused tool call's message: whether to make the call again,
+ * and when. MCP names no field for it, and the connectors give the model a tool result's text
+ * (`docs/decisions/untangle-2026-11/tool-transient.md`).
+ */
+export function callAgain(refusal: Refusal): string {
+  const said = told(refusal);
+  if (said.kind === "temporary") {
+    return `This refusal is temporary: try the same call again in ${said.waitS} ` +
+      `second${said.waitS === 1 ? "" : "s"}.`;
+  }
+  return said.kind === "invalid"
+    ? "This refusal is final: the call is malformed, and is refused again until it is corrected."
+    : "This refusal is final: the same call is refused again until what it names changes.";
+}
+
 function plainObject(value: unknown): value is Facts {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -364,7 +396,7 @@ export function refusalOf(error: unknown): Refusal | null {
     return error;
   }
   if (error instanceof Error && (error as { overloaded?: unknown }).overloaded === true) {
-    return new Refusal("object_overloaded", "this account is busy; try again shortly");
+    return new Refusal("object_overloaded", "this account is busy");
   }
   if (!namedRefusal(error)) {
     return null;

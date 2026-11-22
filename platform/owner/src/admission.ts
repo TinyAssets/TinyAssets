@@ -95,8 +95,7 @@ export const IMPORT_DOORS_ONLY = "an import binding reaches the import doors alo
 export const IMPORT_PENDING_ONLY = "only a pending owner is imported into";
 /** What a discarded instance answers every door: its database is gone (`importDiscard`). */
 export const DISCARDED =
-  "this object's owner was discarded for the import; it starts afresh once the runtime " +
-  "starts it again";
+  "this account was reset for its import and has not started again yet";
 
 /** The owner's admission as its row holds it. */
 export interface Admission {

@@ -13,14 +13,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MCP_RESOURCE } from "../../contract/src/identity";
 import { DEFINITION_BYTES_MAX } from "../../contract/src/limits";
+import { slotBusy } from "../../contract/src/slots";
 import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
 import { profileNames, toolTable } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
 import {
   appPost, call, connect, crossed, doorsEnv, grantsOf, legacyPost, legacyTool, OPEN, ownDoor,
-  reached, unseen, registerClient, rpcBody, serveFirstPartyDocument, setControl, type Tokens, url,
-  answerOf,
+  reached, refuseOnce, unseen, registerClient, rpcBody, serveFirstPartyDocument, setControl,
+  type Tokens, url, answerOf,
 } from "./support";
 
 function owner(): string {
@@ -169,16 +170,34 @@ describe.each([
     await client.close();
   });
 
-  it("answers an owner refusal as the tool's error, with its reason", async () => {
+  it("answers an owner refusal as the tool's error, with its reason and that it is final",
+     async () => {
     const tokens = await connect(await registerClient(), { owner: owner() });
     const client = await mcpClient(tokens, mode);
     const refused = await client.callTool({ name: "mailbox_read", arguments: { limit: 5 } });
     expect(refused.isError).toBe(true);
     expect(refused.content).toEqual([{ type: "text",
-                                       text: "this outside identity is not one enabled agent" }]);
+      text: "this outside identity is not one enabled agent\nThis refusal is final: the same " +
+            "call is refused again until what it names changes." }]);
     const invalid = await client.callTool({ name: "mailbox_read",
                                             arguments: { limit: 5, owner: "bob" } });
     expect(invalid.isError).toBe(true);
+    await client.close();
+  });
+
+  it("answers a refusal for the moment as the tool's error, telling the model when to call " +
+     "again, and the call made again succeeds", async () => {
+    const alice = owner();
+    const { key } = await mintKeyFor(alice);
+    const client = await mcpClient({ access_token: key }, mode);
+    await refuseOnce("outsideAgents", alice, slotBusy());
+    const busy = await client.callTool({ name: "agents_list", arguments: {} });
+    expect(busy.isError).toBe(true);
+    expect(busy.content).toEqual([{ type: "text", text: `${slotBusy().message}\nThis refusal ` +
+                                    "is temporary: try the same call again in 1 second." }]);
+    const again = await client.callTool({ name: "agents_list", arguments: {} });
+    expect(again.isError).toBeFalsy();
+    expect(answerOf(again)).toMatchObject({ agents: [] });
     await client.close();
   });
 
@@ -204,7 +223,7 @@ describe.each([
                                          arguments: { path: "/workspace/agents/main/AGENTS.md" } });
     expect(read.isError).toBe(true);
     await expect(client.listResources()).rejects.toThrow(
-      (read.content as { text: string }[])[0]!.text);
+      (read.content as { text: string }[])[0]!.text.split("\n")[0]!);
     const [defined] = await crossed(alice, "definitionRead");
     expect(defined!.binding).toMatchObject({ origin: apiKeyOrigin(key_id) });
     await client.close();

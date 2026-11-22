@@ -38,7 +38,7 @@ import { Refusal } from "./refusal.ts";
 /** A unit: one chunk, the files plane's own (`CHUNK_BYTES`). */
 export const UNIT_BYTES = CHUNK_BYTES;
 /** The refusal: retryable, never a loss (the doors answer it `503` with `Retry-After`). */
-export const BUSY = "busy: this server is holding as much as it may at once; try again shortly";
+export const BUSY = "busy: this server is holding as much as it may at once";
 
 /** The refusal, `busy`: the doors answer it as every refusal, by its code. */
 export function slotBusy(): Refusal {

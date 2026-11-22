@@ -105,9 +105,7 @@ import {
 import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
-import {
-  Refusal, type RefusalCode, STORAGE_BUSY_RETRY_S,
-} from "../../contract/src/refusal";
+import { Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
   agentsPage, asIs, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow,
@@ -2545,7 +2543,7 @@ export class Ledger {
       }
       throw new Refusal("storage_busy",
                         `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
-                        `out; try again in ${STORAGE_BUSY_RETRY_S} seconds.`);
+                        "out");
     }
   }
 
@@ -3300,9 +3298,8 @@ export interface AgentDoorbellRequest {
  * `READ_TRIES`: retried soon, never an internal error.
  */
 export function archiveMoving(): Refusal {
-  const retry = 1;
   return new Refusal(STORAGE_BUSY, `${STORAGE_BUSY}: the archive moved this mail under each ` +
-    `of ${READ_TRIES} reads; try again in ${retry} second.`, { retryAfterS: retry });
+    `of ${READ_TRIES} reads`, { retryAfterS: 1 });
 }
 
 /**

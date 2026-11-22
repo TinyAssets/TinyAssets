@@ -129,7 +129,7 @@ describe("the archive lane", () => {
     const refused = refusalOf(await reading)!;
     expect([refused.code, refused.message, refused.retryAfter]).toEqual([
       "storage_busy", `storage_busy: the archive moved this mail under each of ${READ_TRIES} ` +
-      "reads; try again in 1 second.", 1]);
+      "reads", 1]);
   });
 
   it("pages a chain of large bodies to one answer each, archived and hot, read on by offset",

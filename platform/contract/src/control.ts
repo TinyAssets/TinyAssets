@@ -218,7 +218,7 @@ export type FreshAct = keyof typeof FRESH_ONLY;
 /** The temporary refusal of `act` while the record can't be read fresh: a 503 to retry. */
 export function staleRefusal(act: FreshAct): Refusal {
   return new Refusal("unavailable", `${FRESH_ONLY[act]} needs the platform's control record ` +
-                     "read fresh, and it can't be read just now: try again in a few minutes");
+                     "read fresh, and it can't be read just now");
 }
 
 /** `act` refused when `read` is a kept copy (`staleRefusal`); any other read is the gates'. */
