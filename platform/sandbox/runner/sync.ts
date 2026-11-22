@@ -15,10 +15,13 @@
  * - **In:** the change feed from the mirror's cursor, each path's last change applied with
  *   no link followed (`fsafe.ts`), a file's chunks streamed into a temporary file and renamed
  *   into place (`safeStream`); a reset reads the whole tree again by listing, page by page.
- *   The engines' sessions (`/workspace/.sessions/<authority>/<engine>/...`) are never written
- *   into the shared workspace, where every engine's user could reach them: only
- *   a path under that engine's own `session_paths` is taken, into the sync agent's own
- *   directory, for the root runner to put in that engine's store.
+ *   A change at the version the mirror holds is this sandbox's own write, never fetched
+ *   back. The engines' sessions (`/workspace/.sessions/<authority>/<engine>/...`) are never
+ *   fetched by the feed: a session path it names is marked changed in the mirror (`UNREAD`),
+ *   and a resume fetches its own files (`fetchSessions`, the record's `resume_paths`), only
+ *   under that engine's own `session_paths`, into the sync agent's own directory, for the
+ *   root runner to put in that engine's store; never into the shared workspace, where every
+ *   engine's user could reach them.
  * - **Out:** each engine's sessions the root runner staged first (`stageSessions`, from the
  *   engines' stores, which only root reads), in commits of their own; then
  *   every regular file under `/workspace` whose bytes differ from what was last synced
@@ -48,7 +51,7 @@ import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeW
          walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
 import { STATE_DIR } from "./protocol";
-import { readJson, STORE } from "./session";
+import { readJson, STORE, withStore } from "./session";
 import { SYNC_HOME } from "./users";
 import { SYNC_HEADER, type SyncDoor } from "../../contract/src/egress";
 import { CLIENT_READ_ONLY, WORKSPACE } from "../../contract/src/paths";
@@ -72,6 +75,11 @@ const PAGE = 1000;
 
 /** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
 export const SESSIONS_SEEN = `${STATE_DIR}/sessions-seen.json`;
+/**
+ * A session's hash in the mirror while the owner's files hold a version of it this sandbox
+ * has not read (the feed named it, or a reset no longer lists it): no copy's hash.
+ */
+export const UNREAD = "";
 
 /** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
 interface SeenSession {
@@ -92,26 +100,28 @@ function readSeen(): Record<string, SeenSession> {
 }
 
 /**
- * The root runner's step before a run's sync-out: every engine's session the owner's files
- * do not hold as it is now (`known`: the sync mirror's hash of each path, read under the sync
- * agent's lock) staged into the sync agent's `out/<run>`: this run's, and any an earlier
- * sync-out left unsent (refused at a full storage, changed while sent, fenced, cut short), so
- * each is offered again until it lands, whether or not a later run touches it. A session the
- * files hold already is never copied. A session's hash is read again only when its size or
- * change time moved since it was last hashed (or that time was too recent to trust,
- * `RACY_MS`). One holding a secret's bytes is never staged; it is returned (as
- * `{home}/<path>`) once, until it or the secrets change.
+ * A session in an engine's store: its engine, its path in the home and in the owner's files,
+ * its bytes' hash, and its size and change time.
  */
-export async function stageSessions(
-  authority: string, run: string, secrets: readonly string[],
-  known: (paths: readonly string[]) => Promise<Record<string, string | null>>,
-): Promise<string[]> {
-  const out = `${SYNC_HOME}/out/${run}`;
-  remove(out);
+export interface StoreSession {
+  readonly rec: Served;
+  readonly rel: string;
+  readonly path: string;
+  readonly digest: string;
+  readonly size: number;
+  readonly mtime_ms: number;
+}
+
+/**
+ * Every engine's session in its store (`authority`'s paths in the owner's files), each hash
+ * read again only when its size or change time moved since it was last hashed (or that time
+ * was too recent to trust, `RACY_MS`), and the hashes to keep (`SESSIONS_SEEN`, `keepSeen`).
+ */
+export function storeSessions(authority: string):
+    { sessions: StoreSession[]; seen: Record<string, SeenSession> } {
   const seen = readSeen();
   const next: Record<string, SeenSession> = {};
-  const against = sha256Hex(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
-  const sessions: { rec: Served; rel: string; path: string; digest: string }[] = [];
+  const sessions: StoreSession[] = [];
   for (const each of served().values()) {
     const store = `${STORE}/${each.id}`;
     for (const rel of walkFiles(store)) {
@@ -134,29 +144,61 @@ export async function stageSessions(
       next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
                      ...(was?.sha256 === sha && was.refused !== undefined
                        ? { refused: was.refused } : {}) };
-      sessions.push({ rec: each, rel, digest: sha, path });
+      sessions.push({ rec: each, rel, digest: sha, path, size: stat.size,
+                      mtime_ms: stat.mtimeMs });
     }
   }
+  return { sessions, seen: next };
+}
+
+/** The sessions' hashes kept, so the next read of the store hashes only what moved. */
+export function keepSeen(seen: Record<string, SeenSession>): void {
+  safeWrite(STATE_DIR, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(seen)), 0o600);
+}
+
+/**
+ * The root runner's step before a run's sync-out: every engine's session the owner's files
+ * do not hold as it is now (`known`: the sync mirror's hash of each path, read under the sync
+ * agent's lock) staged into the sync agent's `out/<run>`: this run's, and any an earlier
+ * sync-out left unsent (refused at a full storage, changed while sent, fenced, cut short), so
+ * each is offered again until it lands, whether or not a later run touches it. A session the
+ * files hold already is never copied. One the owner's files changed since this sandbox read
+ * it (`UNREAD`) is a stale copy: it leaves the store, and a resume fetches the owner's. One
+ * holding a secret's bytes is never staged; it is returned (as `{home}/<path>`) once, until
+ * it or the secrets change.
+ */
+export async function stageSessions(
+  authority: string, run: string, secrets: readonly string[],
+  known: (paths: readonly string[]) => Promise<Record<string, string | null>>,
+): Promise<string[]> {
+  const out = `${SYNC_HOME}/out/${run}`;
+  remove(out);
+  const against = sha256Hex(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
+  const { sessions, seen } = storeSessions(authority);
   const held = sessions.length === 0 ? {} : await known(sessions.map((each) => each.path));
   const refused: string[] = [];
   for (const session of sessions) {
-    if (held[session.path] === session.digest || next[session.path]!.refused === against) {
+    const store = `${STORE}/${session.rec.id}`;
+    if (held[session.path] === UNREAD) {
+      await withStore(session.rec, () => { remove(join(store, session.rel)); });
       continue;
     }
-    const store = `${STORE}/${session.rec.id}`;
+    if (held[session.path] === session.digest || seen[session.path]!.refused === against) {
+      continue;
+    }
     const bytes = safeRead(store, join(store, session.rel));
     if (bytes === null) {
       continue;
     }
     if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
       refused.push(`{home}/${session.rel}`);
-      next[session.path] = { ...next[session.path]!, refused: against };
+      seen[session.path] = { ...seen[session.path]!, refused: against };
       continue;
     }
     safeWrite(SYNC_HOME, join(out, session.rec.id, session.rel), bytes, 0o644, undefined,
               0o755);
   }
-  safeWrite(STATE_DIR, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(next)), 0o600);
+  keepSeen(seen);
   return refused;
 }
 
@@ -399,30 +441,52 @@ async function fetchInto(client: SyncClient, path: string, base: string, local: 
   return { version: entry.version, size, sha256: hash.digest("hex") };
 }
 
-/** One path's state after the feed: gone, a directory, or a file at a version. */
+/**
+ * A session the owner's files changed, at `version`, since this sandbox read it: marked so
+ * (`UNREAD`), its bytes left where they are, for a resume to fetch (`fetchSessions`).
+ */
+function unread(place: Place, mirror: Mirror, path: string, version: number): void {
+  if (sessionOf(place, path) !== null) {
+    mirror.put(path, { version, size: 0, mtime_ms: 0, sha256: UNREAD });
+  }
+}
+
+/** Whether `path` is the sessions' tree or under it, which the feed never writes locally. */
+function inSessions(path: string): boolean {
+  return path === SESSIONS || path.startsWith(`${SESSIONS}/`);
+}
+
+/** A path the owner's files no longer hold: a session marked unread, any other removed. */
+function vanished(place: Place, mirror: Mirror, path: string, version: number): void {
+  if (inSessions(path)) {
+    unread(place, mirror, path, version);
+    return;
+  }
+  remove(localOf(place, path));
+  mirror.dropUnder(path);
+}
+
+/**
+ * One path's state after the feed: gone, a directory, or a file at a version. One at the
+ * version the mirror holds is already here (this sandbox's own write, or one it read).
+ */
 async function apply(client: SyncClient, place: Place, mirror: Mirror, path: string,
-                     kind: string | null): Promise<void> {
-  if (path === SESSIONS || path.startsWith(`${SESSIONS}/`)) {
-    const session = sessionOf(place, path);
-    if (session === null || kind !== "file") {
-      return;
-    }
-    const got = await fetchInto(client, path, place.sessionsIn,
-                                join(place.sessionsIn, session.engine, session.rel),
-                                () => 0o600, 0o700);
-    if (got !== null) {
-      mirror.put(path, { version: got.version, size: got.size, mtime_ms: 0,
-                         sha256: got.sha256 });
+                     kind: string | null, version: number): Promise<void> {
+  if (mirror.get(path)?.version === version) {
+    return;
+  }
+  if (kind === null) {
+    vanished(place, mirror, path, version);
+    return;
+  }
+  if (inSessions(path)) {
+    if (kind === "file") {
+      unread(place, mirror, path, version);
     }
     return;
   }
   const local = localOf(place, path);
   const readOnly = place.authority !== "owner" && clientReadOnly(path);
-  if (kind === null) {
-    remove(local);
-    mirror.dropUnder(path);
-    return;
-  }
   if (kind === "dir") {
     safeDirs(place.local, local, readOnly ? 0o2755 : 0o2775);
     return;
@@ -445,8 +509,8 @@ async function listApply(client: SyncClient, place: Place, mirror: Mirror,
   for (;;) {
     const page = await client.post("list", { dir, limit: MAX_LIST,
                                              ...(after === null ? {} : { after }) });
-    for (const entry of page["entries"] as { path: string; kind: string }[]) {
-      await apply(client, place, mirror, entry.path, entry.kind);
+    for (const entry of page["entries"] as { path: string; kind: string; version: number }[]) {
+      await apply(client, place, mirror, entry.path, entry.kind, entry.version);
       mirror.seen(entry.path);
       if (entry.kind === "dir") {
         await listApply(client, place, mirror, entry.path);
@@ -472,9 +536,7 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
         for (let after = "", gone = mirror.unseen(after, PAGE); gone.length > 0;
              gone = mirror.unseen(after, PAGE)) {
           for (const path of gone) {
-            if (!path.startsWith(`${SESSIONS}/`)) {
-              await apply(client, place, mirror, path, null);
-            }
+            vanished(place, mirror, path, mirror.get(path)!.version);
           }
           after = gone.at(-1)!;
         }
@@ -484,14 +546,14 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
       mirror.setCursor(page["cursor"] as number);
       continue;
     }
-    const last = new Map<string, string | null>();
+    const last = new Map<string, { kind: string | null; version: number }>();
     for (const change of changes) {
       last.delete(change.path);
-      last.set(change.path, change.kind);
+      last.set(change.path, change);
     }
-    for (const [path, kind] of last) {
+    for (const [path, { kind, version }] of last) {
       if (path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)) {
-        await apply(client, place, mirror, path, kind);
+        await apply(client, place, mirror, path, kind, version);
       }
     }
     mirror.setCursor(page["cursor"] as number);
@@ -499,6 +561,45 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
       return;
     }
   }
+}
+
+/**
+ * A resume's files (`resumed`, from the engine's home: its record's `resume_paths`, the sid
+ * filled) that the owner's files hold, by the mirror's rows, fetched into the sync agent's
+ * own directory where the store lacks one (`have`, the store's paths among them) or holds a
+ * copy the owner's files changed since (`UNREAD`). One gone from the owner's files has its row
+ * dropped and is named, for the root runner to drop the store's copy.
+ */
+export async function fetchSessions(client: SyncClient, place: Place, mirror: Mirror,
+                                    engine: string, resumed: readonly string[],
+                                    have: ReadonlySet<string>):
+    Promise<{ fetched: string[]; gone: string[] }> {
+  const prefix = `${SESSIONS}/${place.authority}/${engine}/`;
+  const fetched: string[] = [];
+  const gone: string[] = [];
+  for (let after = prefix, paths = mirror.page(after, PAGE);
+       paths.length > 0 && paths[0]!.startsWith(prefix); paths = mirror.page(after, PAGE)) {
+    for (const path of paths.filter((each) => each.startsWith(prefix))) {
+      const session = sessionOf(place, path);
+      if (session === null || !isKept(resumed, session.rel)
+          || (have.has(path) && mirror.get(path)!.sha256 !== UNREAD)) {
+        continue;
+      }
+      const got = await fetchInto(client, path, place.sessionsIn,
+                                  join(place.sessionsIn, engine, session.rel), () => 0o600,
+                                  0o700);
+      if (got === null) {
+        mirror.drop(path);
+        gone.push(path);
+      } else {
+        mirror.put(path, { version: got.version, size: got.size, mtime_ms: 0,
+                           sha256: got.sha256 });
+        fetched.push(path);
+      }
+    }
+    after = paths.at(-1)!;
+  }
+  return { fetched, gone };
 }
 
 export interface SyncReport {

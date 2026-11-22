@@ -122,11 +122,13 @@ when either is gone) and on the engine's session, which this change keeps.
 
 ## Owed
 
-- [ ] The start document's `scratch_retention_days`, written null, leaves with the next runner
-  protocol (`untangle/runner-protocol-5`).
-- [ ] The engine store's size on the sandbox disk, and Codex's compressed second copy
+- [x] The start document's `scratch_retention_days`, written null, leaves with the next runner
+  protocol (`untangle/runner-protocol-5`). Done: protocol 5, in `untangle/session-store-pressure`
+  (`session-store-pressure.md` decision 5).
+- [x] The engine store's size on the sandbox disk, and Codex's compressed second copy
   (`untangle/session-store-pressure`): until it lands, a disk the store fills shows only as
   the engine's own `ENOSPC` once no scratch is left to free, so it owes a loud runner event
   naming the store's size and the disk's, and a store copy let go that the next sync-in
-  fetches again.
+  fetches again. Done (`session-store-pressure.md`): `ta.disk_low`, the store's copies let go
+  under pressure and fetched by a resume; Codex's second copy cannot arise in a sandbox.
 - [ ] `tasks.md` Step 5's call-11 line stays for `untangle/limits-guard`, which lands after this.

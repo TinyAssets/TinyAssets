@@ -159,8 +159,8 @@ async function loginProbe(engine: string): Promise<number> {
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
   let shown: Prompt = { url: null, code: null };
-  await withRunUser(rec, `probe-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
-                    async (session) => {
+  await withRunUser(rec, `probe-${rec.id}-${process.pid}`,
+                    { signedIn: true, resumes: null, keeps: false }, async (session) => {
     const { as, home } = session;
     loginFiles(rec, session);
     // As long as a command may take: a CLI that shows no prompt by then shows none. The
@@ -234,7 +234,8 @@ interface ProbeTurn {
  * loopback capture server at the door's real path answering each model request with a
  * minimal valid reply in its sealed API's wire format, under `strace` for its connects, with
  * a fake sign-in seeded in every one of its store's `secret_paths`. Two turns: a new
- * conversation, then its resume (its home made again from the store, as the next run's is),
+ * conversation, then its resume (its home made again from the store with the files the
+ * record's `resume_paths` name alone, as the next run's is),
  * that one compacting first where the record says how (`cli.compaction`). Each turn must exit
  * 0 with its final text, the first name its session where the record resumes by one, the
  * second resume it, a compaction be seen; and every request of both is judged
@@ -337,8 +338,8 @@ async function probeRoute(rec: Served, provider: string,
         : "the first turn resumes nothing");
     }
     try {
-      return await withRunUser(rec, name, { signedIn: false, keeps: true, files: call.files },
-                               async ({ as }) => {
+      return await withRunUser(rec, name, { signedIn: false, resumes: start.session_id,
+                                            keeps: true, files: call.files }, async ({ as }) => {
         const carried = [...sortedWalk(home)].filter((rel) =>
           isKept(keptPaths(rec).secrets, rel));
         if (carried.length > 0) {

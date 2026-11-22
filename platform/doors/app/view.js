@@ -106,8 +106,8 @@ function texts(value) {
   return Array.isArray(value) && value.every((each) => typeof each === "string");
 }
 
-/** Bytes as a person reads them, decimal (as storage is sold), as the scratch notice says. */
-function scratchBytes(n) {
+/** Bytes as a person reads them, decimal (as storage is sold), as the disk's notices say. */
+function diskBytes(n) {
   const gb = n / 1e9;
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
 }
@@ -147,9 +147,20 @@ function scratchWords({ evicted, freed_bytes, free_bytes, total_bytes }) {
     return null;
   }
   return `The sandbox's working disk was running low, so old scratch was cleared (${
-    evicted.join(", ")}; ${scratchBytes(freed_bytes)} freed; ${scratchBytes(free_bytes)} of ${
-    scratchBytes(total_bytes)} free now). Scratch is a temporary cache: a cleared repository ` +
+    evicted.join(", ")}; ${diskBytes(freed_bytes)} freed; ${diskBytes(free_bytes)} of ${
+    diskBytes(total_bytes)} free now). Scratch is a temporary cache: a cleared repository ` +
     "is cloned again when needed. Your storage is unaffected.";
+}
+
+function diskLowWords({ store_bytes, free_bytes, total_bytes }) {
+  if (!whole(store_bytes) || !whole(free_bytes) || !whole(total_bytes)) {
+    return null;
+  }
+  return `The sandbox's working disk is nearly full (${diskBytes(free_bytes)} of ${
+    diskBytes(total_bytes)} free), with old scratch and the session copies your files already ` +
+    `hold cleared; the engines' sessions left here take ${diskBytes(store_bytes)}. A run may ` +
+    "stop for lack of room until some of its agent's scratch is cleared. The working disk is " +
+    "the same on every plan.";
 }
 
 function projectEnvWords({ code, path, helper, sets }) {
@@ -205,6 +216,10 @@ export function eventShown(event) {
   }
   if (type === "ta.scratch_cleared") {
     const text = scratchWords(event);
+    return text === null ? event : { type, text };
+  }
+  if (type === "ta.disk_low") {
+    const text = diskLowWords(event);
     return text === null ? event : { type, text };
   }
   if (type === "ta.refused") {

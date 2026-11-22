@@ -15,7 +15,10 @@
  *   it. Nothing goes by age alone: scratch is a cache, and only the disk's own pressure
  *   lets it go. What went is told to the agent and the user in plain words, and their
  *   storage is unaffected: a full working disk never offers an upgrade, since every tier has
- *   the same disk.
+ *   the same disk. Still low, the engines' stores' copies of sessions the owner's files hold
+ *   as they are go next (`letGoSessions`), least recently changed first, never one a live run
+ *   resumes: a resume fetches its own again. Still low after both, the run says so, loudly,
+ *   with the stores' size (`diskLow`).
  * - **The reserve.** The runner keeps `RESERVE_BYTES` of the disk as a ballast file in its own
  *   state directory. When a write of the runner's own state meets `ENOSPC`, the ballast goes
  *   and the write is tried again (`writeOrRelease`), so a full disk never leaves a run's state
@@ -136,7 +139,6 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
   }
   const before = diskOf(scratch);
   const evicted: string[] = [];
-  const low = (d: Disk) => d.free_bytes < d.total_bytes * LOW_WATER_SHARE;
   const oldest = Object.entries(index.used).filter(([agent]) => !live.has(agent))
     .sort(([, a], [, b]) => a - b).map(([agent]) => agent);
   for (const agent of oldest) {
@@ -173,6 +175,53 @@ export function scratchCleared(pruned: Pruned): ScratchCleared | null {
   }
   return { type: "ta.scratch_cleared", evicted: pruned.evicted, freed_bytes: pruned.freed_bytes,
            free_bytes: pruned.disk.free_bytes, total_bytes: pruned.disk.total_bytes };
+}
+
+/** Whether the disk's free space is under the low water. */
+export function low(disk: Disk): boolean {
+  return disk.free_bytes < disk.total_bytes * LOW_WATER_SHARE;
+}
+
+/** A store's copy of a session the owner's files hold as it is: where, its size, its time. */
+export interface HeldCopy {
+  readonly local: string;
+  readonly size: number;
+  readonly mtime_ms: number;
+}
+
+/**
+ * Store copies let go while the disk `dir` is on stays under the low water: the least
+ * recently changed first. Only copies the owner's files hold as they are, and none a live
+ * run resumes, are handed here. The bytes let go.
+ */
+export function letGoSessions(dir: string, held: readonly HeldCopy[]): number {
+  let freed = 0;
+  for (const copy of [...held].sort((a, b) => a.mtime_ms - b.mtime_ms)) {
+    if (!low(diskOf(dir))) {
+      break;
+    }
+    rmSync(copy.local, { force: true });
+    freed += copy.size;
+  }
+  return freed;
+}
+
+/**
+ * The disk still under the low water once scratch and the store's held copies have gone:
+ * the engines' stores' bytes left (sessions the owner's files lack, or a live run resumes)
+ * and the disk's free and total, which the app says in words, never with an upgrade.
+ */
+export interface DiskLow {
+  readonly type: "ta.disk_low";
+  readonly store_bytes: number;
+  readonly free_bytes: number;
+  readonly total_bytes: number;
+}
+
+/** What the run says of a disk still low, as its facts; null when it is not. */
+export function diskLow(storeBytes: number, disk: Disk): DiskLow | null {
+  return low(disk) ? { type: "ta.disk_low", store_bytes: storeBytes,
+                       free_bytes: disk.free_bytes, total_bytes: disk.total_bytes } : null;
 }
 
 /** The ballast that keeps the runner's own room: made when there is room for it and more. */

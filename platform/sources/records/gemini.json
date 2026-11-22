@@ -326,6 +326,9 @@
     "session_paths": [
       "{home}/.gemini/tmp/*/chats/"
     ],
+    "resume_paths": [
+      "{home}/.gemini/tmp/*/chats/"
+    ],
     "hosts": {
       "registry": [
         "registry.npmjs.org"

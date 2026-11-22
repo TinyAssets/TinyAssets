@@ -393,6 +393,13 @@ export interface CliSpec {
     | { readonly reason: string };
   readonly secret_paths: readonly string[];
   readonly session_paths: readonly string[];
+  /**
+   * The files of its sessions a resume of `{sid}` reads, each under one of its
+   * `session_paths` (a `*` any run of characters within a segment, a trailing `/` a tree):
+   * all a resumed run's home holds of its store, fetched from the owner's files first where
+   * the store lacks them.
+   */
+  readonly resume_paths: readonly string[];
   readonly hosts: Readonly<Record<"registry" | "login" | "provider", readonly string[]>>;
 }
 

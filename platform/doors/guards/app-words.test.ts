@@ -51,6 +51,18 @@ describe("the runner's events, in the app's words", () => {
     expect(shown.text.toLowerCase()).not.toContain("upgrade");
   });
 
+  it("names the disk still low and the sessions left on it, never an upgrade", () => {
+    const shown = eventShown({ type: "ta.disk_low", store_bytes: 9_200_000_000,
+                               free_bytes: 900_000_000, total_bytes: 14_400_000_000 }) as
+      { type: string; text: string };
+    expect(shown).toEqual({ type: "ta.disk_low", text: "The sandbox's working disk is nearly " +
+      "full (900 MB of 14.4 GB free), with old scratch and the session copies your files " +
+      "already hold cleared; the engines' sessions left here take 9.2 GB. A run may stop for " +
+      "lack of room until some of its agent's scratch is cleared. The working disk is the same " +
+      "on every plan." });
+    expect(shown.text.toLowerCase()).not.toContain("upgrade");
+  });
+
   it("says why a run or a file was refused, and why a file was skipped", () => {
     expect(eventShown({ type: "ta.refused", code: "project_env_refused", path: "/workspace/.env",
                         sets: "HTTPS_PROXY" }))
@@ -95,6 +107,7 @@ describe("the runner's events, in the app's words", () => {
                          { type: "ta.sync_refused", path: "/a", reason: "storage_full" },
                          { type: "ta.sync_unnamed", count: "1", paths: [] },
                          { type: "ta.scratch_cleared", evicted: "builder" },
+                         { type: "ta.disk_low", store_bytes: "9" },
                          { type: "ta.sync_skipped",
                            skipped: [{ path: "/a", code: "toString" }] }]) {
       expect(eventShown(event)).toBe(event);
