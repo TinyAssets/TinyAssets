@@ -34,6 +34,10 @@
 //   (`BURST_UNITS`), an owner's write during a part's put shipping a full segment inside them;
 // - a log segment shipped outside a burst: a full segment of wide lines, its build and its
 //   put within the units it holds (`SHIP_UNITS`);
+// - an owner's open egress calls: `EGRESS_LIMITS.open` of them held at once, each opened by the
+//   real `Egress.open` and its end signal read from another isolate as the egress door reads
+//   it, within `OPEN_CALL_BYTES` each, and every signal reaching its reader when the object
+//   closes them;
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
 //   `EDIT_BYTES_MAX` inside a request's CPU limit (`guards/cpu.ts`; the time is wall time, at
@@ -99,7 +103,9 @@ const files :Workerd.Worker = (
   modules = [ (name = "probe.js", esModule = embed "probe.js") ],
   compatibilityDate = "2026-10-23",
   compatibilityFlags = ["nodejs_compat"],
-  bindings = [ (name = "DRIVER", service = "driver") ],
+  bindings = [ (name = "DRIVER", service = "driver"),
+               (name = "OWNER", durableObjectNamespace = (className = "LegOwner",
+                                                          serviceName = "main")) ],
 );
 const dummy :Workerd.Worker = (
   modules = [ (name = "dummy.js", esModule = embed "dummy.js") ],
@@ -271,8 +277,11 @@ try {
       throw new Error(`${path} ${mib} MiB x ${n}: ${points} checkpoints, fewer than ${least}`);
     }
     if (path !== "hoard") {
-      check(`${path} ${mib} MiB x ${n}: live past the units held, at every hold's checkpoint`,
-            over, 0, "the units its pool held");
+      // An open egress call takes no unit of the pool (`OPEN_CALL_BYTES` is its own term).
+      if (path !== "signals") {
+        check(`${path} ${mib} MiB x ${n}: live past the units held, at every hold's checkpoint`,
+              over, 0, "the units its pool held");
+      }
       rows.push({ run: `${path} ${mib} MiB x ${n}`, answer, ends_mib: +(ends / MIB).toFixed(2),
                   peak_mib: +(most / MIB).toFixed(2),
                   at: where, closest_to_its_units: overAt });
@@ -345,6 +354,24 @@ try {
         window[8].least - window[2].least, QUARTER, "a quarter chunk");
   check("window: peak(8 MiB body), worst of two runs", window[8].most,
         costs.WINDOW_UNITS * UNIT, "WINDOW_UNITS");
+
+  // An owner's open egress calls at their most (`EGRESS_LIMITS.open`), each opened by the real
+  // `Egress.open` and its end signal read from the store's isolate as the egress door reads
+  // it: within `OPEN_CALL_BYTES` each, the case's own objects among them, and every signal
+  // reaching its reader when the object closes them all. One run: each open reads the open
+  // rows (its count, its lost ones), so the case takes minutes at the bound; a high reading
+  // fails it, and none has read within a tenth of the figure (2026-11-22, five runs).
+  const opens = costs.egress_open;
+  const signals = await peak("signals", opens);
+  check("egress: EGRESS_LIMITS.open calls' end signals held", signals,
+        opens * costs.OPEN_CALL_BYTES, "EGRESS_LIMITS.open x OPEN_CALL_BYTES");
+  rows.push({ check: "egress: bytes an open call, at EGRESS_LIMITS.open",
+              bytes: +(signals / opens).toFixed(1), most: costs.OPEN_CALL_BYTES,
+              ok: signals <= opens * costs.OPEN_CALL_BYTES });
+  if (peak.answer?.[0] !== opens) {
+    problems.push(`egress: ${peak.answer?.[0]} of ${opens} end signals reached their reader ` +
+                  "when the object closed them");
+  }
 
   // The cutover's check (`importCheck`): every chunk checked through the store, which answers
   // what it found, so the owner isolate holds none of a chunk's bytes, whatever the file's size.

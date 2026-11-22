@@ -14,6 +14,9 @@
  *   rung by an owner's post, its pass run by the object's own alarm.
  * - **The store** (`files`, `Store`) answers the files Worker's chunk calls from memory,
  *   each hash checked and a verified range read from its whole chunk, as `FILES` answers.
+ * - **The egress case** (`signals`): the store's isolate stands as the egress door's, opening
+ *   calls at an owner object (`legOpen`, the real `Egress.open`) and holding each one's end
+ *   signal with a read waiting on it, so the owner isolate holds what an open call does.
  *
  * **Checkpoints.** Every chunk call first awaits the leg's driver: the owner's path is then
  * suspended on the store, holding what it holds at that call (a chunk it sends, the chunks
@@ -37,7 +40,13 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { TIERS } from "../../ci/fixtures";
 import { bundledSources } from "../../sources/src/catalog";
 import { signinsOn } from "../../sources/src/signin";
-import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
+import {
+  type Binding, type Origin, PLATFORM_CALLER, type SandboxToken,
+} from "../../contract/src/binding";
+import type { ServiceScope } from "../../contract/src/egress-scope";
+import { randomHex } from "../../contract/src/ids";
+import type { EgressOpened, EgressRefusal, EgressRequest } from "../../contract/src/owner";
+import { Egress, EGRESS_LIMITS, OPEN_CALL_BYTES } from "../src/egress";
 import type { Located } from "../src/bodies";
 import { clock } from "../src/clock";
 import { markErasing } from "../src/erasure";
@@ -64,6 +73,12 @@ interface LegEnv extends OwnerEnv {
   readonly OWNER: DurableObjectNamespace<LegOwner>;
   readonly STORE: Service<Store>;
   readonly DRIVER: Fetcher;
+}
+
+/** The store's isolate's: the driver, and the owner objects its egress case calls. */
+interface StoreEnv {
+  readonly DRIVER: Fetcher;
+  readonly OWNER: DurableObjectNamespace<LegOwner>;
 }
 
 const MIB = 1024 * 1024;
@@ -105,9 +120,37 @@ const owned = (env: { DRIVER: Fetcher }, at: string) =>
 const STORED = new Map<string, Uint8Array>();
 
 /** The files Worker's chunk calls, answered from memory, each first a checkpoint. */
-export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements ChunkStore {
+export class Store extends WorkerEntrypoint<StoreEnv> implements ChunkStore {
   async mintKey(): Promise<{ key: string }> {
     return { key: "v1.leg" };
+  }
+
+  /**
+   * The egress case, as the egress door holds its calls (`doors/src/egress.ts`): `calls`
+   * sandbox calls opened at `name`'s object one after another, each by a run of its own, each
+   * end signal held here with a read waiting on it, sampled while all are held; then the
+   * object closes them all, and every read must end. How many did.
+   */
+  async signals(name: string, calls: number): Promise<number> {
+    const stub = this.env.OWNER.getByName(name);
+    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+    let ends = 0;
+    for (let n = 0; n < calls; n++) {
+      const opened = await stub.legOpen({ run: `run_${randomHex(16)}`, connection: LEG_CONNECTOR,
+                                          method: "POST", path: "/v1/call", bytes_hint: 1000 });
+      if (!opened.ok) {
+        throw new Error(`the egress case's call ${n} was refused ${opened.code}`);
+      }
+      const reader = opened.ended.getReader();
+      reader.read().then(() => { ends += 1; }, () => { ends += 1; });
+      readers.push(reader);
+    }
+    await checkpoint(this.env, undefined, "signals");
+    await stub.legEnd();
+    for (let n = 0; n < LANE_LOOKS && ends < readers.length; n++) {
+      await scheduler.wait(LANE_POLL_MS);
+    }
+    return ends;
   }
 
   async putChunks(ns: string, _key: string, chunks: { sha256: string; bytes: Uint8Array }[]):
@@ -315,6 +358,14 @@ const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(6
 const PAT: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
 const ORIGINS = [MUSE, DOT, PAT];
 
+/** The egress case's (`legOpen`): its sandbox's token, its connector and the service's scope. */
+const LEG_SANDBOX: SandboxToken = Object.freeze({ kind: "egress", token: "e".repeat(64),
+                                                  generation: 1 });
+const LEG_CONNECTOR = `c${"0".repeat(24)}`;
+const LEG_SERVICE: ServiceScope = Object.freeze({
+  kind: "service", base_url: "https://leg.example",
+  endpoints: [{ origin: "https://leg.example", paths: ["/v1/*"], methods: ["POST"] }] });
+
 /**
  * The real owner object, its chunk calls checkpointed in its own isolate (`received`). What a
  * leg reaches directly (the placed bodies, the ledger its archive cases' mail is set up in,
@@ -329,6 +380,8 @@ export class LegOwner extends OwnerDO {
   readonly #id: DurableObjectId;
   readonly #gate: WriteGate;
   readonly #stores: Stores;
+  /** The egress `legOpen` admits through, made at its first call. */
+  #egress: Egress | null = null;
 
   constructor(state: DurableObjectState, env: LegEnv) {
     const own = { ...env, FILES: received(env) };
@@ -598,6 +651,40 @@ export class LegOwner extends OwnerDO {
       ackMuse();
       return { dot: dotLast, pat: patLast };
     });
+  }
+
+  /**
+   * One sandbox call admitted by the real `Egress.open`, over the object's own storage and
+   * rows: its reads (the leg's, the one piece of the object it builds) answer every check as a live
+   * lease's run passes a connector's call, the lease's id read fresh each time as
+   * `leaseByToken` reads it from its row. The call's end signal, which the caller reads from
+   * its own isolate, as the egress door does.
+   */
+  async legOpen(request: EgressRequest): Promise<EgressOpened | EgressRefusal> {
+    this.#egress ??= new Egress(this.#gate.storage, {
+      lease: (token) => ({ authority: OWNER, lease_id: randomHex(16), epoch: 1,
+                           egress_token: token, sync_token: token, runner_token: token,
+                           expires_at: Number.MAX_SAFE_INTEGER, network_generation: 1,
+                           network_pending: null, network_tried_at: null,
+                           network_tried_generation: null, narrowed_at: null, signins: [] }),
+      runConnections: () => ({ connection: null, connectors: [LEG_CONNECTOR] }),
+      reaches: () => true,
+      runUsage: () => ({ requests: 0, tokens: 0, cost: 0 }),
+      generation: () => 1,
+      credential: () => ({ blob: "b".repeat(64), version: 1 }),
+      connection: () => ({ scope: LEG_SERVICE, source: "leg", provider: "leg", models: [] }),
+      caps: () => {
+        throw new Error("a connector's call is never charged");
+      },
+    });
+    const egress = this.#egress;
+    // In a unit, as the door's (`egressOpen`).
+    return this.#gate.write(() => egress.open(LEG_SANDBOX, request, clock()));
+  }
+
+  /** Every open call's end signal closed, as an erasure closes them (`Egress.drop`). */
+  legEnd(): void {
+    this.#egress?.drop();
   }
 
   /** Every message to `reader` acked, through the seq `through`. */
@@ -1000,6 +1087,10 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
       if (path === "records") {
         return await moveRecords(env, MOVE_RECORDS);
       }
+      if (path === "signals") {
+        // Its size is the calls held open at once.
+        return await env.STORE.signals(name, mib);
+      }
       if (path === "burst") {
         return await stub.legBurst();
       }
@@ -1082,7 +1173,8 @@ export default {
                              move_seal_units: holds.moveTableUnits(25_000),
                              move_most_units: holds.moveTableUnits(MOVE_RECORDS),
                              move_records: MOVE_RECORDS,
-                             move_body_units: holds.moveTableUnits(2) });
+                             move_body_units: holds.moveTableUnits(2),
+                             egress_open: EGRESS_LIMITS.open, OPEN_CALL_BYTES });
     }
     if (url.pathname === "/rest") {
       LEG.runs += 1;

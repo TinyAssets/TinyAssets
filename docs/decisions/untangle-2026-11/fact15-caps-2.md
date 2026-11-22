@@ -128,8 +128,10 @@ technical ceilings, each with its reason. Research first (Fact 14), read at `c21
 
 ## Owed
 
-- [ ] The memory leg measures an open egress call's end signal, and the counts test counts
+- [x] The memory leg measures an open egress call's end signal, and the counts test counts
   `EGRESS_LIMITS.open` of them for each owner object (`untangle/egress-open-memory`).
+  Done: `OPEN_CALL_BYTES` 256 B (157 measured at the bound, once `#live` stopped copying its
+  row's ids), `egress-open-memory.md`.
 
 - [x] Tick `tasks.md` item 11's `fact15-caps-2` clause and `fact15-caps.md`'s owed line, and
   drop `egress_reservations` from the `RUNS_CEILING` row's per-run terms, once #5781 merges
