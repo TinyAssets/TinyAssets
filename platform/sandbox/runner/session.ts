@@ -13,7 +13,7 @@ import { chmodSync, chownSync, existsSync, lchownSync, lstatSync, mkdirSync, rea
 import { dirname, join } from "node:path";
 
 import { RUN_BASICS } from "../../sources/src/run-env";
-import { type Served, served } from "../../sources/src/served";
+import { type Served, servedRecord } from "../../sources/src/served";
 
 import { HOMES, isKept, keptPaths, SYSTEM } from "./engine";
 import { HEARTBEAT_MS } from "./frames";
@@ -26,10 +26,12 @@ const STATE = STATE_DIR;
 /** Each engine's store: what a run's home is made from and kept back into. */
 export const STORE = `${STATE}/store`;
 
-export const RECORDS = served();
-
+/**
+ * The engine's CLI record, checked whole when read (`servedRecord`), never at import: so what
+ * imports this module and reads no record (the hook program, `hook-entry.ts`) checks none.
+ */
 export function record(engine: string): Served {
-  const found = RECORDS.get(engine);
+  const found = servedRecord(engine);
   if (found === undefined) {
     throw new Error(`engine ${engine} has no CLI record`);
   }

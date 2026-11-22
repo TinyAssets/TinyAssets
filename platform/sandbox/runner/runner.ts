@@ -48,9 +48,10 @@
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
- * - `decide` (internal, as a run's user, by its CLI's hook): the hook helper (`decide.ts`).
- * - `hooks` (internal, as a run's user, by its CLI's hook file): the agent's own hooks'
- *   dispatcher (`hooks.ts`), checked at the start as its CLI runs it (`hooks check`).
+ * - `decide` and `hooks` (internal, as a run's user, by its CLI's hook file): the hook helper
+ *   (`decide.ts`) and the agent's own hooks' dispatcher (`hooks.ts`), taken by the hook
+ *   program built into these bytes (`hook-entry.ts`), not here: each run's start writes it
+ *   beside the runner (`writeHookProgram`), and checks each as its CLI runs it.
  * - `login-launch <id>`: the vendor's own sign-in (`login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
@@ -77,19 +78,17 @@ import { createInterface } from "node:readline";
 
 import { CODE_LOADING_ENV, RUN_BASICS } from "../../sources/src/run-env";
 import type { Decide, Definition, DefinitionHooks } from "../../sources/src/schema";
-import { type Served, signsIn } from "../../sources/src/served";
+import { type Served, served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
 import { DECIDE_HEADER, decideDoor, RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
-import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept, keptPaths,
-         SYSTEM } from "./engine";
-import { DECIDE_ENV, DECIDE_MS, decideCommand, helperArgv, helperCommand,
-         hookTools } from "./decide";
+import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept,
+         keptPaths } from "./engine";
+import { DECIDE_ENV, DECIDE_MS, helperArgv, helperCommand, hookTools } from "./decide";
 import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
-import { hooksCommand } from "./hooks";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
@@ -106,12 +105,12 @@ import {
   openMirror, SESSIONS_SEEN, stageSessions, SyncClient, SyncFenced, syncIn, syncOut,
   type SyncReport,
 } from "./sync";
-import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc, JOB_FILES,
-         type JobKind, JOBS, INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer,
-         RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
-         STATE_DIR } from "./protocol";
+import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, type HookCommand, hookProgram,
+         inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS, INBOX, LEASE_FILE,
+         type LeaseFile, PROTOCOL, type QuietAnswer, RUNNERS, type SigninDoc, type StartDoc,
+         type StateAnswer, STATE_DIR } from "./protocol";
 import { type Bounded, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM, loginFiles,
-         nextGeneration, readJson, record, RECORDS, shared, sortedWalk, spawnBounded, STORE,
+         nextGeneration, readJson, record, shared, sortedWalk, spawnBounded, STORE,
          systemOf, withRunUser, withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
 import { asUser, E2B_USER, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER, user } from "./users";
@@ -393,9 +392,10 @@ class Job {
 /** The engines' sessions the sync agent took from the feed, into each store it lacks. */
 function importSessions(): void {
   const staged = `${SYNC_HOME}/in`;
+  const records = served();
   for (const rel of sortedWalk(staged)) {
     const [engine, ...rest] = rel.split("/");
-    const rec = RECORDS.get(engine ?? "");
+    const rec = records.get(engine ?? "");
     const inHome = rest.join("/");
     if (rec === undefined || !isKept(keptPaths(rec).sessions, inHome)) {
       continue;
@@ -415,7 +415,7 @@ function importSessions(): void {
 /** Every secret's atoms, from every engine's store (its `secret_paths` files). */
 function atoms(): string[] {
   const found: string[] = [];
-  for (const rec of RECORDS.values()) {
+  for (const rec of served().values()) {
     const store = `${STORE}/${rec.id}`;
     for (const rel of sortedWalk(store)) {
       if (isKept(keptPaths(rec).secrets, rel)) {
@@ -587,6 +587,18 @@ function ownDigest(): string {
     throw new Error("the runner is run by the loader, which names the runner's digest");
   }
   return own;
+}
+
+/** The hook program built into these bytes (`build/bundle.mjs`, from `hook-entry.ts`). */
+declare const TA_HOOK_PROGRAM: string;
+
+/**
+ * The hook program written beside this runner, root's and 0644 as the loader installs the
+ * runner, before a run's files name it (`hookProgram`): where the runner's digest names it.
+ */
+function writeHookProgram(): void {
+  safeWrite(RUNNERS, hookProgram(ownDigest()), new TextEncoder().encode(TA_HOOK_PROGRAM),
+            0o644);
 }
 
 /**
@@ -763,7 +775,7 @@ async function syncLocked(job: SyncJob): Promise<number> {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
     const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
-                    records: RECORDS };
+                    records: served() };
     safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
     // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
     // cut short keeps what it sent.
@@ -1230,6 +1242,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     const hook = asked === null ? {} : { hook: { tools: asked.tools, digest: ownDigest() } };
     const hooked = asked !== null && asked.tools.length > 0;
     const skills = [...skillsOf(WORKSPACE, start.agent).values()];
+    writeHookProgram();
     let call = invocation(rec, start, process.env, {
       home, system, skills, ...hook, ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
     await writeShared(rec.id, call.shared, asked?.generation ?? 0);
@@ -1374,7 +1387,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
 
 async function reportSignins(start: StartDoc, lease: LeaseFile): Promise<void> {
   const signins: { engine: string; signed_in: boolean }[] = [];
-  for (const rec of [...RECORDS.values()].filter(signsIn)) {
+  for (const rec of [...served().values()].filter(signsIn)) {
     signins.push({ engine: rec.id, signed_in: await safeSignedIn(rec) });
   }
   await postSignins(start.urls.signin, lease, signins);
@@ -1606,9 +1619,12 @@ async function loginRun(id: string): Promise<number> {
 /** What a run's runner restarted after a reboot (`recover`) is started with. */
 const RECOVERING = "--recover";
 
-/** Each protocol command's handler, by its name: one for every command, and no other. */
+/**
+ * Each protocol command's handler, by its name: one for every command but the hook program's
+ * (`hook-entry.ts`), and no other.
+ */
 type Handler = (args: readonly string[]) => number | Promise<number>;
-const HANDLERS: { readonly [C in Command]: Handler } = {
+const HANDLERS: { readonly [C in Exclude<Command, HookCommand>]: Handler } = {
   [COMMAND.prepare]: (args) => prepare(args),
   [COMMAND.adopt]: () => adopt(),
   [COMMAND.signinCheck]: async (args) => await signedIn(record(args[0] ?? "")) ? OK : NO,
@@ -1629,10 +1645,6 @@ const HANDLERS: { readonly [C in Command]: Handler } = {
   [COMMAND.run]: (args) => runCommand(args[0] ?? "", args[1] === RECOVERING),
   [COMMAND.loginRun]: (args) => loginRun(args[0] ?? ""),
   [COMMAND.sync]: () => syncCommand(),
-  [COMMAND.decide]: (args) => decideCommand(args, process.env, process.stdin, process.stdout,
-                                            process.stderr),
-  [COMMAND.hooks]: (args) => hooksCommand(args, SYSTEM, process.env, process.stdin,
-                                          process.stdout, process.stderr),
 };
 
 export async function main(argv: readonly string[]): Promise<number> {
@@ -1641,7 +1653,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.stderr.write(`ta-runner: no command ${String(command)}\n`);
     return EXIT.usage;
   }
-  return HANDLERS[command as Command](args);
+  return HANDLERS[command as keyof typeof HANDLERS](args);
 }
 
 if (process.argv[1] !== undefined && /runner\.(?:mjs|ts|js)$/.test(process.argv[1])) {

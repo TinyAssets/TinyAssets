@@ -1,6 +1,6 @@
 /**
- * The agent's own hooks' dispatcher (D5, `agent_definition_research.md` §4.2): `ta-runner hooks
- * <event>`, which a run's CLI runs as the run's user from the root-owned hook file its record
+ * The agent's own hooks' dispatcher (D5, `agent_definition_research.md` §4.2): the hook
+ * program's `hooks <event>` (`hook-entry.ts`), which a run's CLI runs as the run's user from the root-owned hook file its record
  * names (`definition.hooks`, in the layer its decide hook is in), on each event that file
  * carries, through a shell's check that starts it only where the run has hooks on the event
  * (`engine.ts` `dispatcherCommand`). It knows its run by its user: the one system directory
