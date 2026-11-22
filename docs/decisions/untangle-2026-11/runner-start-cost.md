@@ -96,3 +96,41 @@ CommonJS program of their own, built into the runner and written beside it.
   handler (in the program, no longer in `runner.mjs`).
 - **No shim**: `runner.mjs` no longer takes `decide` or `hooks`; nothing forwards between
   them.
+
+## What landed
+
+1. **The hook program** (`sandbox/runner/hook-entry.ts`): the handlers of `decide` and
+   `hooks` alone. `build/bundle.mjs` builds it first, as CommonJS, and hands its text to the
+   runner's build (`TA_HOOK_PROGRAM`); `build()` returns it as `hooks`.
+2. **Written at each run's start** (`runner.ts` `writeHookProgram`), before the run's files
+   name it: `/opt/ta/runner/<digest>/hooks.cjs`, root's, 0644, by `safeWrite`.
+3. **One path, one list** (`protocol.ts` `hookProgram`, `HOOK_COMMANDS`): `helperArgv` and
+   `dispatcherArgv` name the program, where each spelled the runner's path; `runner.mjs`'s
+   handlers are every command but those two. The protocol's record is unchanged: the commands,
+   their names and arguments are the runner's still, run by its program.
+4. **Records checked when read**: `session.ts`'s `RECORDS` is gone; `record` reads
+   `servedRecord`, and the runner, the sync agent and the probes read `served()` where they walk
+   every record. (`s8.md` kept that map for the runner; it is gone here.)
+5. **Guards**: the hook program carries none of the records' checks and requires only
+   `child_process`, `fs` and `path` (`guards/template.test.ts`); the run-session guard reads its
+   inputs too, since `hooks.ts` is no longer in the runner's.
+
+## Measured (this host, the real build, 61 starts each after 3 warm-ups)
+
+| what starts | before | after |
+| --- | --- | --- |
+| `decide` (no door: refused at once) | 65.8 (p95 85.1) | 30.7 (p95 37.3) |
+| `hooks` (no event: refused at once) | 65.0 (p95 70.2) | 30.2 (p95 31.4) |
+| the runner's own commands (`nosuch`) | 65.0 (p95 66.2) | 46.4 (p95 48.2) |
+| `node -e 0` | 17.6 (p95 18.3) | 17.6 |
+
+So a hook command's start past Node's own goes from about 48 ms to 13 ms.
+
+## Left, with why
+
+- **The hook program still bundles the records' data and a few contract tables it never
+  runs** (about 50 KB of its 91 KB), reached through `session.ts`'s imports: under 2 ms
+  measured. Cutting it would split `session.ts`, the one place a process starts.
+- **The runner's own commands still pay its ES loader and its built-ins** (46 ms): the Worker's
+  few commands a run, not one a call; `runner.mjs`'s name and format are the loader's (the
+  image's).
