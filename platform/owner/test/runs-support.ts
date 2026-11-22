@@ -108,7 +108,7 @@ export async function scripted(stub: DurableObjectStub<OwnerDO>, script: Partial
  * sandbox has taken it (its record holds it) and its answer is held at the gate until `act`
  * is done, as a sandbox answers late. What `call` answered.
  */
-export async function whileOut<R>(owner: string, method: "start" | "network",
+export async function whileOut<R>(owner: string, method: "start" | "signin" | "network",
                                   call: () => Promise<R>, act: () => Promise<void>):
     Promise<R> {
   const sandbox = gateFor(env.SANDBOX_GATE, owner);

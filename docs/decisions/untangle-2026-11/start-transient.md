@@ -113,16 +113,16 @@ a sign-in's start with no answer ended the sign-in but did not stop a CLI that m
 
 ## Owed
 
-- [ ] `launch.ts` `run`: a transient refusal met by a waiting, mailed or scheduled run's
+- [x] `launch.ts` `run`: a transient refusal met by a waiting, mailed or scheduled run's
   admission fails the whole pass (backed off `LANE_RETRY_S`), not its row. Research first
   whether each loop backs its row off instead (`untangle/lane-transient`).
-- [ ] `signins.ts` `signinCancel`: a stop asked while the sign-in's start is out, or waits to be
+- [x] `signins.ts` `signinCancel`: a stop asked while the sign-in's start is out, or waits to be
   sent again, does not stop it. Research first whether the stop ends the row
   (`untangle/signin-cancel-start`).
-- [ ] `sandbox/src/control.ts` `#ensure`, `#resume`: a fault (not a refusal) after a create or
+- [x] `sandbox/src/control.ts` `#ensure`, `#resume`: a fault (not a refusal) after a create or
   a resume, and before `prepare` ends, leaves a running sandbox. The next start finds it
   running and launches in it unprepared. Research first whether a row marks its sandbox
   prepared (`untangle/sandbox-unprepared-row`).
-- [ ] `owner/src/launch.ts` `launch`: a start's call is bounded by nothing, where every other
+- [x] `owner/src/launch.ts` `launch`: a start's call is bounded by nothing, where every other
   outside call a lane's row makes is bounded by `LANE_CALL_MS` (`inTime`). Research first how a
   late start stays fenced (`untangle/lane-start-bound`).

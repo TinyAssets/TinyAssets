@@ -14,11 +14,12 @@ import { staleRefusal } from "../../contract/src/control";
 import { until } from "../../ci/workerd";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import { WriteGate } from "../src/gate";
-import { NO_CODE_WANTED, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins";
+import { NO_CODE_WANTED, NO_SIGNIN, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
+  whileOut,
 } from "./runs-support";
 import { drainDue, failure, gateFor } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
@@ -206,14 +207,56 @@ describe("a sign-in", () => {
   it("is stopped by the owner, and ends with no sandbox to start in", async () => {
     const r = await gated();
     const { id } = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
+    const signin = await lastSignin(r);
     expect(await r.stub.signinCancel(r.bind(), { id })).toEqual({ cancelled: true });
     expect((await recorder(r.stub)).signinCancels).toEqual([{ authority: "owner", id }]);
+    // Ended at once, on the trusted side: its lease given back, and its runner's next post
+    // refused, whatever the sandbox did.
+    expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+    expect((await failure(() => r.stub.signinEvents(runnerOfSignin(r, signin),
+                                                    { id, frames: [] }))).message)
+      .toBeTruthy();
     const s = await gated();
     await scripted(s.stub, { signinAnswer: { started: false, code: "sandbox_waiting" } });
     expect(await s.stub.signinStart(s.bind(), { engine: "codex" }))
       .toEqual({ started: false, code: "sandbox_waiting" });
     expect((await s.stub.signinList(s.bind())).signins).toEqual([]);
     expect(await s.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+  });
+
+  it("stopped while its start is out, is stopped again once it started, and refused",
+     async () => {
+    const r = await gated();
+    const started = whileOut(r.name, "signin", () => failure(() =>
+      r.stub.signinStart(r.bind(), { engine: "codex" })), async () => {
+      const [row] = (await r.stub.signinList(r.bind())).signins;
+      expect(row).toMatchObject({ state: "starting" });
+      await r.stub.signinCancel(r.bind(), { id: row!.id });
+      expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+    });
+    expect((await started).message).toBe(NO_SIGNIN);
+    // The owner's stop, while it may not have launched yet; then its fence, once it had.
+    const id = (await lastSignin(r)).id;
+    expect((await recorder(r.stub)).signinCancels)
+      .toEqual([{ authority: "owner", id }, { authority: "owner", id }]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+  });
+
+  it("stopped while its start waits to be sent again, is never sent again", async () => {
+    const r = await gated();
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signin", { refuse: { code: "object_overloaded",
+                                         message: "this account is busy", retryAfterS: 1 } });
+    const begun = r.stub.signinStart(r.bind(), { engine: "codex" });
+    await until(async () => (await gate.calls()).some((call) => call.method === "signin"),
+                "the refused start");
+    const [row] = (await r.stub.signinList(r.bind())).signins;
+    await r.stub.signinCancel(r.bind(), { id: row!.id });
+    expect(await begun).toEqual({ started: false, code: "object_overloaded" });
+    expect((await gate.calls()).filter((call) => call.method === "signin")).toHaveLength(1);
+    expect((await recorder(r.stub)).signins).toEqual([]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
   });
 
   it("ends a start that did not answer, answered or refused out of shape, or was refused, " +

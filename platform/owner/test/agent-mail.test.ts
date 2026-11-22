@@ -25,12 +25,13 @@ import { MCP, MUSE, registerOn, rig, signedIn, dm } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
          TIERS, whileOut } from "./runs-support";
 import { clock } from "../src/clock";
-import { LANE_PASS_S } from "../src/schedule";
+import { LANE_PASS_S, LANE_RETRY_S } from "../src/schedule";
 import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
+import { slotBusy } from "../../contract/src/slots";
 import { OWNER_WAITERS, ownerSlots } from "../src/holds";
 import { writeControl } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
-import { clockAt, drainDue, failure, starterSeed } from "./support";
+import { clockAt, drainDue, failure, laneAt, starterSeed } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
@@ -381,15 +382,20 @@ describe("mail to an agent", () => {
       pool.acquire(1, "", stop.signal, true).then((slot) => slot.release(), () => undefined));
     try {
       await end(r, (await starts(r))[0]!, "done 0");
-      await drainDue(r.stub).catch(() => undefined);  // the pass fails, as a busy pool's does
+      // The pass holds the lane until the refusal's Retry-After, never failed for it.
+      const began = clock();
+      await drainDue(r.stub);
       expect(await r.sql("SELECT state, code FROM runs WHERE state NOT IN ('running', " +
                          "'succeeded')")).toEqual([{ state: "waiting", code: null }]);
+      const held = (await laneAt(r.stub, "runs"))!;
+      expect(held).toBeGreaterThanOrEqual(began + slotBusy().retryAfter!);
+      expect(held).toBeLessThan(began + LANE_RETRY_S);
     } finally {
       stop.abort();
       held.release();
       await Promise.all(queued);
     }
-    // The lane's next try, as its backoff brings it once the pool has freed.
+    // The lane's next try, as its hold brings it once the pool has freed.
     await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
     await drainDue(r.stub);
     expect(told((await starts(r)).at(-1)!).body).toBe(long);
