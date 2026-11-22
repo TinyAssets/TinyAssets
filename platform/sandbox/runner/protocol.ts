@@ -21,7 +21,7 @@ import { LEASE_TTL_S } from "../../contract/src/limits";
 /** The protocol this runner speaks. */
 export const PROTOCOL = 3;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([2, 3]);
+export const SPEAKS: readonly number[] = Object.freeze([2, 3, 4]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({
@@ -164,8 +164,9 @@ export interface DocLease {
  * the engine's record and the credential it runs on, its input, whose sandbox it runs in and
  * under which lease, the run's config, its doors (`mcp` carries the run's own secret;
  * `mcp_bare` is the one a record sending that secret in a header takes), the control
- * record's scratch retention (null when it names none; absent, the same), and the agent's own
- * MCP servers its admission kept (protocol 3).
+ * record's scratch retention (null when it names none; absent, the same), the agent's own
+ * MCP servers its admission kept (protocol 3), and its own hooks by event, an event absent
+ * holding none (protocol 4).
  */
 export interface StartDoc {
   readonly run: string;
@@ -190,6 +191,7 @@ export interface StartDoc {
                    readonly signin: string };
   readonly scratch_retention_days?: number | null;
   readonly mcp_servers: Readonly<Record<string, DocMcpServer>>;
+  readonly hooks: Readonly<Record<string, readonly DocHook[]>>;
 }
 
 /** An MCP server of the agent's own, as a start names it: by its URL, or by its command. */
@@ -197,6 +199,16 @@ export type DocMcpServer =
   | { readonly url: string }
   | { readonly command: string; readonly args: readonly string[];
       readonly env: Readonly<Record<string, string>> };
+
+/**
+ * A hook of the agent's own (`hooks.json`), as a start names it: what it runs (a program and
+ * its arguments), on which tool calls (a tool event's), and for how long.
+ */
+export interface DocHook {
+  readonly run: readonly string[];
+  readonly match?: { readonly kinds?: readonly string[]; readonly tools?: readonly string[] };
+  readonly timeout_s?: number;
+}
 
 /**
  * A sign-in's document: the engine signed in or out, whose sandbox, and its doors (its own
