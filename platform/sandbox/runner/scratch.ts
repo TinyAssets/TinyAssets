@@ -12,10 +12,10 @@
  * - **Pressure.** Before a run starts, the disk's free space is read (`statfs`). Below the
  *   low water (a tenth of the disk, past the runner's reserve), the least recently used
  *   agents' scratch goes first, never a live run's agent, until the free space is back above
- *   it; and any agent's scratch unused for `scratch_retention_days` (the control record's,
- *   handed in the start document) goes whatever the disk holds. What went is told to the
- *   agent and the user in plain words, and their storage is unaffected: a full working disk
- *   never offers an upgrade, since every tier has the same disk.
+ *   it. Nothing goes by age alone: scratch is a cache, and only the disk's own pressure
+ *   lets it go. What went is told to the agent and the user in plain words, and their
+ *   storage is unaffected: a full working disk never offers an upgrade, since every tier has
+ *   the same disk.
  * - **The reserve.** The runner keeps `RESERVE_BYTES` of the disk as a ballast file in its own
  *   state directory. When a write of the runner's own state meets `ENOSPC`, the ballast goes
  *   and the write is tried again (`writeOrRelease`), so a full disk never leaves a run's state
@@ -42,7 +42,6 @@ export const RESERVE_BYTES = 256 * 1024 * 1024;
  * (a tenth of 14.4 GB, about 1.4 GB, holds a large clone and its build) before it starts.
  */
 const LOW_WATER_SHARE = 0.1;
-const DAY_MS = 86_400_000;
 
 /** The tools' caches, pointed into an agent's scratch (their own names, as data). */
 export const SCRATCH_ENV: Readonly<Record<string, string>> = Object.freeze({
@@ -111,8 +110,6 @@ function forget(index: ScratchIndex, agent: string): void {
 }
 
 export interface Pruned {
-  /** Agents whose scratch went for being unused past the retention. */
-  readonly expired: readonly string[];
   /** Agents whose scratch went, least recently used first, to free the disk. */
   readonly evicted: readonly string[];
   readonly freed_bytes: number;
@@ -120,13 +117,12 @@ export interface Pruned {
 }
 
 /**
- * Old scratch let go under `scratch` (the area's local path): first every agent's unused
- * for `retentionDays` (none when the record names none), then, while the disk's free space
- * is under the low water, the least recently used, never one in `live`. An agent the index
+ * Old scratch let go under `scratch` (the area's local path) while the disk's free space is
+ * under the low water: the least recently used first, never one in `live`. An agent the index
  * has never seen counts as used now (its scratch came before the index did).
  */
 export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
-                             retentionDays: number | null, live: ReadonlySet<string>): Pruned {
+                             live: ReadonlySet<string>): Pruned {
   const agents = existsSync(scratch) ? readdirSync(scratch) : [];
   for (const agent of agents) {
     if (index.used[agent] === undefined) {
@@ -139,20 +135,7 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
     }
   }
   const before = diskOf(scratch);
-  const expired: string[] = [];
   const evicted: string[] = [];
-  const drop = (agent: string) => {
-    rmSync(join(scratch, agent), { recursive: true, force: true });
-    forget(index, agent);
-  };
-  if (retentionDays !== null) {
-    for (const [agent, used] of Object.entries(index.used)) {
-      if (!live.has(agent) && now - used > retentionDays * DAY_MS) {
-        drop(agent);
-        expired.push(agent);
-      }
-    }
-  }
   const low = (d: Disk) => d.free_bytes < d.total_bytes * LOW_WATER_SHARE;
   const oldest = Object.entries(index.used).filter(([agent]) => !live.has(agent))
     .sort(([, a], [, b]) => a - b).map(([agent]) => agent);
@@ -160,19 +143,19 @@ export function pruneScratch(scratch: string, index: ScratchIndex, now: number,
     if (!low(diskOf(scratch))) {
       break;
     }
-    drop(agent);
+    rmSync(join(scratch, agent), { recursive: true, force: true });
+    forget(index, agent);
     evicted.push(agent);
   }
   const after = diskOf(scratch);
-  return { expired, evicted, freed_bytes: Math.max(0, after.free_bytes - before.free_bytes),
+  return { evicted, freed_bytes: Math.max(0, after.free_bytes - before.free_bytes),
            disk: after };
 }
 
-/** When scratch went: which agents' and why, and the disk after, which the app says in words. */
+/** When scratch went: which agents', and the disk after, which the app says in words. */
 export interface ScratchCleared {
   readonly type: "ta.scratch_cleared";
   readonly evicted: readonly string[];
-  readonly expired: readonly string[];
   readonly freed_bytes: number;
   readonly free_bytes: number;
   readonly total_bytes: number;
@@ -185,12 +168,11 @@ export interface ScratchCleared {
  * went.
  */
 export function scratchCleared(pruned: Pruned): ScratchCleared | null {
-  if (pruned.evicted.length + pruned.expired.length === 0) {
+  if (pruned.evicted.length === 0) {
     return null;
   }
-  return { type: "ta.scratch_cleared", evicted: pruned.evicted, expired: pruned.expired,
-           freed_bytes: pruned.freed_bytes, free_bytes: pruned.disk.free_bytes,
-           total_bytes: pruned.disk.total_bytes };
+  return { type: "ta.scratch_cleared", evicted: pruned.evicted, freed_bytes: pruned.freed_bytes,
+           free_bytes: pruned.disk.free_bytes, total_bytes: pruned.disk.total_bytes };
 }
 
 /** The ballast that keeps the runner's own room: made when there is room for it and more. */

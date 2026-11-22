@@ -169,14 +169,6 @@ function backoff(tries: number): number {
  */
 const ALARM_WALL_MS = 15 * 60_000;
 
-/** The control record's sandbox part, as one read gave it (`#control`). */
-interface SandboxPart {
-  /** Its numbers: null when it holds none, and nothing new starts. */
-  readonly ceilings: SandboxCeilings | null;
-  /** Its scratch retention, in days: null when it names none. */
-  readonly retention: number | null;
-}
-
 interface Row {
   authority: string;
   sandbox_id: string;
@@ -299,11 +291,10 @@ function httpsDoors(urls: Readonly<Record<string, string>>): boolean {
 
 /**
  * The start's document as the runner reads it (the protocol's own, field by field): the
- * start but the lease's secrets, its network and its sealed route, with the control
- * record's scratch retention (`scratch_retention_days`, null when it names none), the
- * agent's own MCP servers, each by its URL or its command, and its own hooks by event.
+ * start but the lease's secrets, its network and its sealed route, with the agent's own MCP
+ * servers, each by its URL or its command, and its own hooks by event.
  */
-function startDocument(start: SandboxStart, retentionDays: number | null): StartDoc {
+function startDocument(start: SandboxStart): StartDoc {
   const { config, lease, urls } = start;
   return {
     run: start.run, agent: start.agent, conversation: start.conversation, engine: start.engine,
@@ -313,7 +304,9 @@ function startDocument(start: SandboxStart, retentionDays: number | null): Start
     config: { generation: config.generation, egress: config.egress, env: config.env,
               inherit: config.inherit },
     urls: { mcp: urls.mcp, mcp_bare: urls.mcp_bare, events: urls.events, signin: urls.signin },
-    scratch_retention_days: retentionDays,
+    // Protocol 4's, which every runner speaking it reads as no age (`scratch.ts`): the control
+    // record no longer holds a scratch retention (`untangle-2026-11/fact15-defaults-2.md`).
+    scratch_retention_days: null,
     mcp_servers: Object.fromEntries(Object.entries(start.mcp_servers).map(([name, server]) =>
       [name, "url" in server ? { url: server.url }
         : { command: server.command, args: server.args, env: server.env }])),
@@ -432,12 +425,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * starts. The numbers in `known` outlast a read that holds none, so the sandboxes already
    * running are renewed on them (`#look`): only new starts stop.
    */
-  async #control(): Promise<SandboxPart> {
+  async #control(): Promise<SandboxCeilings | null> {
     const read = await readControl(this.env.CONTROL, this.#kept);
     if (read.kind !== "read" && read.kind !== "kept") {
-      return { ceilings: null, retention: null };
+      return null;
     }
-    const { sandbox: ceilings, scratch_retention_days: retention } = read.control;
+    const ceilings = read.control.sandbox;
     if (read.kind === "read" && ceilings !== null) {
       this.#sql.exec("INSERT INTO known (only, runtime_s, concurrency, window_s) VALUES " +
                        "(1, ?, ?, ?) ON CONFLICT (only) DO UPDATE SET runtime_s = " +
@@ -445,7 +438,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                        "excluded.window_s", ceilings.runtime_ceiling_s,
                      ceilings.concurrency_ceiling, ceilings.renewal_window_s);
     }
-    return { ceilings, retention };
+    return ceilings;
   }
 
   /** `act`, after every change before it: one at a time, whatever awaits inside. */
@@ -873,12 +866,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         throw new Error("a sandbox start names its run, its authority, its lease, its vendor " +
                         "hosts and its https doors on the egress host");
       }
-      const { ceilings, retention } = await this.#control();
+      const ceilings = await this.#control();
       if (ceilings === null) {
         return { started: false, code: "sandbox_unconfigured" };
       }
       return { ceilings, job: {
-        kind: "run", id: start.run, request: start, document: startDocument(start, retention),
+        kind: "run", id: start.run, request: start, document: startDocument(start),
         ready: async (handle) => {
           if (start.credential === "vendor_login_in_sandbox") {
             const signedIn = await this.#run(handle, [COMMAND.signinCheck, start.engine]);
@@ -911,7 +904,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         throw new Error("a sign-in names its id, its authority, its lease, its route, its " +
                         "vendor hosts and its https doors on the egress host");
       }
-      const { ceilings } = await this.#control();
+      const ceilings = await this.#control();
       if (ceilings === null) {
         return { started: false, code: "sandbox_unconfigured" };
       }
@@ -1308,7 +1301,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * still, so no sandbox is left running for another's fault.
    */
   async #look(began: number): Promise<{ next: number; failed: number }> {
-    const ceilings = (await this.#control()).ceilings ?? this.#known();
+    const ceilings = await this.#control() ?? this.#known();
     if (ceilings === null) {
       throw new Error("no sandbox numbers were ever read, yet a sandbox is kept");
     }

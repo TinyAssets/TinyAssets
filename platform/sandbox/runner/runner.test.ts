@@ -43,6 +43,9 @@ import { NODE } from "./test/layout";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
 const sources = bundledSources();
+/** Claude Code's user settings layer, the record's own file of every run, as written. */
+const CLAUDE_USER_LAYER = JSON.stringify(JSON.parse(
+  served().get("claude-code")!.cli.files!["{home}/.claude/settings.json"]!));
 /** Claude Code's own name of each engine-neutral hook event (`definition.hooks.events`). */
 const CLAUDE_EVENTS = (served().get("claude-code")!.cli.definition.hooks as
   { events: Record<string, string> }).events;
@@ -397,6 +400,35 @@ describe("the run's MCP servers (D4)", () => {
     }
     expect(pairs(call(startOf("codex", {})).argv))
       .toEqual([`mcp_servers.tinyassets.url="${DOOR}"`]);
+  });
+});
+
+describe("an engine's own sessions, kept as long as the owner's files keep them", () => {
+  /** `engine`'s run config files, unhooked and hooked (a rule on its shell tools). */
+  const runs = (engine: string) => {
+    const rec = served().get(engine)!;
+    const shell = (rec.cli.decide as unknown as { kinds: { shell: string[] } }).kinds.shell;
+    return [undefined, shell].map((tools) => invocation(rec, pureStart(engine, { hooks: {} }),
+      {}, { home: "/h", system: "/s", skills: [],
+            ...(tools === undefined ? {} : { hook: { tools, digest: "d".repeat(64) } }) }).files);
+  };
+
+  it("never lets Claude Code's sweep reach a transcript, hooked run or not", () => {
+    for (const files of runs("claude-code")) {
+      const days = JSON.parse(files.get("/h/.claude/settings.json")!).cleanupPeriodDays;
+      // The CLI's cutoff, as 2.1.309 takes it: now less the period, as a Date. It is a valid
+      // date before the epoch, so before any file, and the period in ms is exact.
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).getTime();
+      expect([Number.isInteger(days), Number.isSafeInteger(days * 86_400_000),
+              Number.isNaN(cutoff), cutoff < 0]).toEqual([true, true, false, true]);
+    }
+  });
+
+  it("turns Gemini CLI's session cleanup off in its system settings, hooked run or not", () => {
+    for (const files of runs("gemini")) {
+      expect(JSON.parse(files.get("/s/gemini-settings.json")!).general.sessionRetention)
+        .toEqual({ enabled: false });
+    }
   });
 });
 
@@ -848,9 +880,10 @@ describe("the env files a CLI would load", () => {
       dumps: ["~/.claude/settings.json"] });
     await run("claude-code");
     await run("claude-code");
-    // The second run's home had none of it: a home keeps only the store's kept paths.
+    // Neither run's home had it: the user layer is the record's own file, root's, and a home
+    // keeps nothing else but the store's kept paths.
     expect(box.ran("claude-code").map((seen) => seen.dumps["~/.claude/settings.json"]))
-      .toEqual([null, null]);
+      .toEqual([CLAUDE_USER_LAYER, CLAUDE_USER_LAYER]);
     // A kept path (`.claude/.claude.json`, in the record's secret_paths) that sets one: refused.
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: {
       "~/.claude/.claude.json": JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://x" } }) } });
@@ -933,7 +966,7 @@ describe("root never follows a link another user planted", () => {
                                      "~/.claude/projects/main/s.jsonl"] });
     await run("claude-code");
     const seen = box.ran("claude-code").at(-1)!;
-    expect(seen.dumps["~/.claude/settings.json"]).toBeNull();
+    expect(seen.dumps["~/.claude/settings.json"]).toBe(CLAUDE_USER_LAYER);
     // Only the engine's own session paths are restored, and into its own store.
     expect(seen.dumps["~/.claude/projects/main/s.jsonl"]).toBe("{\"type\":\"user\"}\n");
     expect(() => lstatSync(box.path("/workspace/.sessions/owner/claude-code/.claude/projects")))

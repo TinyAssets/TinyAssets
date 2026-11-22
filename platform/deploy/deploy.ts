@@ -1996,15 +1996,24 @@ async function putOrStop({ cloudflare, account }: Pick<Values, "cloudflare" | "a
   }
 }
 
-/** The control record, written closed only when the API answered there is none. */
+/**
+ * The control record, written closed only when the API answered there is none. One there that
+ * no reader takes (`controlOf`: an operator's bad write, or a key the readers no longer hold)
+ * stops the run loudly, since every gate reads it closed until `control --replace` mends it.
+ */
 const control = step<"cloudflare" | "account" | "ids">(async ({ run, say }, got) => {
   const id = got.ids["CONTROL"];
-  if (id === undefined || await got.cloudflare.value(got.account, id, CONTROL_KEY) === undefined) {
+  const held = id === undefined ? undefined
+    : await got.cloudflare.text(got.account, id, CONTROL_KEY);
+  if (held === undefined) {
     say("write the control record closed (outside off, canary none, inbound off, the " +
         "founder's tier numbers): the API answered there is none");
     if (run.apply) {
       await putOrStop(got, id!, CONTROL_KEY, JSON.stringify(DARK_CONTROL));
     }
+  } else if (controlOf(held) === null) {
+    throw new Error(`the control record is one no reader takes: ${held}; every gate reads it ` +
+                    "closed until the control mode's --replace gives the whole record");
   }
 });
 

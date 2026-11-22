@@ -305,9 +305,6 @@
           "deny": "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"{reason}\"}}"
         }
       },
-      "pins": {
-        "{home}/.claude/settings.json": "{\"cleanupPeriodDays\": 30}"
-      },
       "kinds": {
         "shell": [
           "Bash",
@@ -356,6 +353,9 @@
     ],
     "home_env": {
       "CLAUDE_CONFIG_DIR": "{home}/.claude"
+    },
+    "files": {
+      "{home}/.claude/settings.json": "{\"cleanupPeriodDays\": 100000000}"
     },
     "env": {
       "CLAUDE_CODE_PROJECT_DIR_NAME": "{agent}",

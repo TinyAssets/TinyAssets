@@ -982,6 +982,22 @@ describe("the deploy kit's facts", () => {
     expect(control?.tiers).not.toBeNull();
   });
 
+  it("stops loudly on a held record no reader takes, and never writes over it", async () => {
+    // A key the readers no longer hold (fact15-defaults-2) is such a record, as a typo is.
+    for (const held of [JSON.stringify({ ...DARK, scratch_retention_days: 30 }), "off\n"]) {
+      const w = world({ held: true });
+      w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, held);
+      await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+        `the control record is one no reader takes: ${held}; every gate reads it closed until ` +
+        "the control mode's --replace gives the whole record");
+      expect(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)).toBe(held);
+    }
+    // A record they take is left as it is.
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"]);
+    expect(JSON.parse(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)!)).toEqual(DARK);
+  });
+
   it("prints the import job's names for its bundle, each storage this kit makes, and the doors",
      () => {
     const run = (...flags: string[]) => spawnSync(process.execPath, [
