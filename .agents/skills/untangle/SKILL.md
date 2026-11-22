@@ -46,7 +46,8 @@ Untangle the code a change touches, or a whole area, and finish the job.
   It asks only for what makes the code more correct or simpler, and calls a
   departure from the decided design better (the log is updated) or a
   shortcut. It commits its own fixes of up to 50 lines and approves that
-  head; a bigger fix is a `BLOCK` with its diff. A re-confirm after main is merged in reads
+  head; a bigger fix is a `BLOCK` with its diff. A merge of main touching the
+  PR's code fails `review` until its merger asks a re-confirm, which reads
   only its conflicts.
 - After each batch of merges, a step-5 search across everything merged and
   open looks for drift between PRs; unopened branches wait for it.

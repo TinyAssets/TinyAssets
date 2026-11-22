@@ -10,7 +10,7 @@ name: review
 #   no verdict                         -> in progress, "waiting for review of <head>"
 #   BLOCK that carries to the head     -> failure
 #   APPROVE at A, carries(A, head)     -> success, naming A and why it carries
-#   anything else                      -> in progress: the delta needs a review
+#   a verdict that does not carry      -> failure, naming the review the delta needs
 #
 # `carries` is the same change, or a delta of Markdown prose only. Only reviews
 # submitted after the PR's last base change count: a retarget changes what was read.

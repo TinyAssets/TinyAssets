@@ -263,6 +263,10 @@ prose delta. Readers SHALL take the App's highest-id run for their own pull requ
 - **THEN** the approval carries to the new head
 - **AND** it does not carry when any changed path is under `docs/reference/`, or its name matches `(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$` at any depth
 
+#### Scenario: A verdict that does not carry fails, naming the review owed
+- **WHEN** the latest verdict was on an earlier commit and does not carry to the head, as after a merge of main that touched a file the pull request changes
+- **THEN** the `review` run on the head is a failure whose title names the verdict, its commit, and the delta review (after `APPROVE`) or fresh review (after `BLOCK`) the change since needs
+
 #### Scenario: A retarget voids the verdict
 - **WHEN** a pull request approved at its head is retargeted to another base, by hand or by GitHub after its parent merged
 - **THEN** its `review` check is pending until a review after the retarget

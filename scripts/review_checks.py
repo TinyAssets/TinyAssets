@@ -86,7 +86,9 @@ def change_entries(raw: bytes) -> dict[bytes, bytes]:
 # * no verdict -> in progress, "waiting for review of <head>" (pending, not red);
 # * the latest verdict is BLOCK and it carries to the head -> failure;
 # * the latest verdict is APPROVE at A and `carries(A, head)` -> success;
-# * anything else -> in progress: the change since A needs a delta review.
+# * a verdict that does not carry -> failure, naming the review the change since A
+#   needs. In progress, it waited with no event for a review nobody knew to ask
+#   for (#5725, #5727: 3 h, 2026-11-21); a failure is an event and reads red.
 #
 # COMMENT, not APPROVE, because the one writer account cannot approve its own
 # PR (ADR-038 decision 2).
@@ -510,20 +512,15 @@ def review_check(
             title += f" (the base changed at {since})"
         return CheckState(None, title, ask)
     why = carry(verdict.commit)
-    if verdict.verdict == "BLOCK":
-        if why is None:
-            return CheckState(
-                None,
-                f"BLOCK at {verdict.commit}; the change since needs a fresh review",
-                f"{verdict.url}\n\n{ask}",
-            )
-        return CheckState("failure", f"BLOCK: {why}", verdict.url)
     if why is None:
+        owed = "a fresh review" if verdict.verdict == "BLOCK" else "a delta review"
         return CheckState(
-            None,
-            f"APPROVE at {verdict.commit}; the change since needs a delta review",
+            "failure",
+            f"{verdict.verdict} at {verdict.commit}; the change since needs {owed}",
             f"{verdict.url}\n\n{ask}",
         )
+    if verdict.verdict == "BLOCK":
+        return CheckState("failure", f"BLOCK: {why}", verdict.url)
     return CheckState("success", f"APPROVE: {why}", verdict.url)
 
 
