@@ -94,6 +94,14 @@ approval is not given within 30 days (docs.github.com, reviewing deployments).
 - `owner/src/ledger.ts` `LedgerDoorNeeds.registrations` restates `take`'s signature by hand
   rather than `Pick<Registrations, "take">`, as its other needs do; changed only to match.
 
+## In `fact15-defaults.md`
+
+- Its held-requests line is ticked. Its shares line names `untangle/limits-guard` too, so it
+  stays open for that branch to tick; the shares half is done here (the rows' `Share:`
+  clauses).
+- Its `cleanupPeriodDays` line (`untangle/fact15-defaults-2`) asks what the held-call card's
+  30 days rests on then: nothing, since the card has no life now.
+
 ## Owed
 
 - [ ] Keep the spend counters' current and previous periods alone, `SPEND_KEPT` derived from
