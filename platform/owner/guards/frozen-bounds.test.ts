@@ -55,8 +55,23 @@ const LIMITS: Values = Object.freeze({ ...CONTRACT, RUNS_CEILING, SEGMENT_LEAST_
 const ELSEWHERE: readonly string[] = Object.freeze(["RUNS_CEILING", "SEGMENT_LEAST_BYTES",
                                                     "SHARE_BYTES"]);
 
-/** Which statements a place is in: those starting with the head and a space, or matching it. */
-type Head = string | RegExp;
+/**
+ * A trigger as the schema stands: its statement no later one drops. A migration that changes a
+ * trigger's bound drops the trigger and makes it again, and the dropped text, frozen at the
+ * old bound, enforces nothing.
+ */
+class Live {
+  constructor(readonly name: string) {}
+
+  toString(): string {
+    return `CREATE TRIGGER ${this.name}`;
+  }
+}
+/**
+ * Which statements a place is in: those starting with the head and a space, or matching it,
+ * or a trigger's live one.
+ */
+type Head = string | RegExp | Live;
 /**
  * One place the SQL spells a bound: its statements, how many times they spell its text in
  * all, and its text at the bound's value (and the other bounds', for a product of two).
@@ -68,9 +83,14 @@ type At = readonly [number, number];
 /** Every statement of `migrations` that `head` names, with where it is. */
 function statements(head: Head, migrations: readonly Migration[] = MIGRATIONS):
     { sql: string; at: At }[] {
-  return migrations
-    .flatMap((migration, m) => migration.map((sql, s) => ({ sql, at: [m, s] as const })))
-    .filter(({ sql }) => typeof head === "string" ? sql.startsWith(`${head} `) : head.test(sql));
+  const all = migrations
+    .flatMap((migration, m) => migration.map((sql, s) => ({ sql, at: [m, s] as const })));
+  if (head instanceof Live) {
+    return all.filter(({ sql }, k) => sql.startsWith(`${head} `)
+      && !all.slice(k + 1).some((later) => later.sql === `DROP TRIGGER ${head.name}`));
+  }
+  return all.filter(({ sql }) => typeof head === "string" ? sql.startsWith(`${head} `)
+    : head.test(sql));
 }
 
 /** How many times `text` is in `sql`, none overlapping. */
@@ -82,7 +102,7 @@ const TABLE = (name: string, ...texts: ((n: number) => string)[]): Place[] =>
 const MADE = (name: string, times: number, ...texts: ((n: number) => string)[]): Place[] =>
   texts.map((text) => [`CREATE TABLE ${name}`, times, text] as const);
 const TRIGGER = (name: string, ...texts: ((n: number) => string)[]): Place[] =>
-  texts.map((text) => [`CREATE TRIGGER ${name}`, 1, text] as const);
+  texts.map((text) => [new Live(name), 1, text] as const);
 /** A body's placement (ADR-035): inline within the bound, or placed past it. */
 const PLACED = (table: string, body: string, times = 1) => MADE(table, times,
   (n) => `length(CAST(${body} AS BLOB)) <= ${n}`,

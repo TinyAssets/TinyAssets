@@ -17,7 +17,10 @@ import {
   DEFAULT_POLICY_JSON, MODEL_DEFAULTS, MODEL_SETTINGS, validate,
 } from "../../contract/src/policy-document";
 import { modelSettings } from "../src/policy";
-import { largestFitting, periods } from "../src/money";
+import { keptFrom, largestFitting, periods, SETTLED_WITHIN_S } from "../src/money";
+import { MIGRATIONS } from "../src/schema";
+import { migrate } from "../../contract/src/migrate";
+import { SPEND_KEPT } from "../../contract/src/limits";
 import {
   type Ask, type ModelCaps, priced, Usage, USAGE_LIMITS,
 } from "../src/usage";
@@ -462,13 +465,6 @@ describe("the receipts", () => {
                                                                cost: 1 }, NOW))).toBe(true);
     }));
 
-  it("drop spend counters past their window", () => withUsage(async (r) => {
-    await spent(r, ASK, 10, 7);
-    await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t9" }, NOW + 200 * 86_400));
-    expect(Object.keys(r.spend()).some((key) => key.startsWith(`d:${day}`))).toBe(false);
-    expect(Object.keys(r.spend()).some((key) => key.startsWith(`m:${month}`))).toBe(false);
-  }));
-
   it("are the owner's alone", async () => {
     const r = await gated();
     expect((await failure(() => r.stub.usageReceipts(
@@ -476,6 +472,75 @@ describe("the receipts", () => {
                source: { kind: "mcp", ref: "conn-1" } })))).message)
       .toBe("only the owner may read its model spend");
   });
+});
+
+describe("the spend counters", () => {
+  /** The first instant of 2026-12, seconds. */
+  const DECEMBER = Date.UTC(2026, 11, 1) / 1000;
+
+  it("are kept until every charge reserved in their period has settled, and no longer",
+     () => withUsage(async (r) => {
+    const counters = ["d:2026-11-28", "d:2026-11-29", "d:2026-11-30", "d:2026-12-01",
+                     "m:2026-10", "m:2026-11", "m:2026-12"];
+    // The last charge reserved on 29 November may settle until a moment before this.
+    const edge = Date.UTC(2026, 10, 30) / 1000 + SETTLED_WITHIN_S;
+    const now = edge - 1;
+    await r.gate.write(() => {
+      for (const period of counters) {
+        r.state.storage.sql.exec("INSERT INTO model_spend (period, source, cost) " +
+                                   "VALUES (?, 'anthropic', 1)", period);
+      }
+      r.usage.spendPruned(now);
+    });
+    expect(Object.keys(r.spend())).toEqual(["d:2026-11-29/anthropic", "d:2026-11-30/anthropic",
+                                            "d:2026-12-01/anthropic", "m:2026-11/anthropic",
+                                            "m:2026-12/anthropic"]);
+    await r.gate.write(() => r.usage.spendPruned(edge));
+    expect(Object.keys(r.spend())).toEqual(["d:2026-11-30/anthropic", "d:2026-12-01/anthropic",
+                                            "m:2026-11/anthropic", "m:2026-12/anthropic"]);
+  }));
+
+  it("hold a charge reserved before midnight until it settles, its settle moving its own " +
+     "counters", () => withUsage(async (r) => {
+    const reservedAt = DECEMBER - 10;
+    const reserved = await r.gate.write(() => r.usage.reserve(ASK, reservedAt));
+    if (!reserved.ok) {
+      throw new Error("refused");
+    }
+    await r.gate.write(() => r.usage.dispatched(reserved.id, reservedAt, null));
+    // Another call's reserve prunes just before the first settles, at the last it may.
+    const settledAt = reservedAt + SETTLED_WITHIN_S - 1;
+    await spent(r, { ...ASK, run: "t2" }, 10, 7, settledAt);
+    expect(await r.gate.write(() => r.usage.settle(reserved.id, {
+      state: "succeeded", tokens: 1200, cost: 5000 }, settledAt))).toBe(true);
+    expect(r.spend()).toEqual({ "d:2026-11-30/anthropic": 5000, "d:2026-12-02/anthropic": 7,
+                                "m:2026-11/anthropic": 5000, "m:2026-12/anthropic": 7 });
+  }));
+
+  it("past the bound migration 25 holds them to go before the next reservation adds one",
+     () => withUsage(async (r) => {
+    const sql = r.state.storage.sql;
+    for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+        "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+        "AND name NOT GLOB 'cf_*'").toArray()) {
+      sql.exec(`DROP TABLE "${name}"`);
+    }
+    migrate(r.state.storage, MIGRATIONS.slice(0, 24));
+    // Forty days of thirteen sources' counters, as the window before kept: more than the bound.
+    sql.exec("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 519) " +
+               "INSERT INTO model_spend (period, source, cost) SELECT 'd:' || " +
+               "date(?, 'unixepoch', '-' || (i / 13) || ' days'), 's' || (i % 13), 1 FROM n",
+             NOW);
+    migrate(r.state.storage, MIGRATIONS);
+    expect(sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM model_spend").one().n)
+      .toBeGreaterThan(SPEND_KEPT);
+    expect(await r.gate.write(() => r.usage.reserve(ASK, NOW))).toMatchObject({ ok: true });
+    const kept = keptFrom(NOW);
+    expect(sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM model_spend WHERE period < ? " +
+                                     "OR (period >= 'm:' AND period < ?)",
+                                   `d:${kept.day}`, `m:${kept.month}`).one().n).toBe(0);
+  }));
+
 });
 
 describe("the models table of owner policy", () => {

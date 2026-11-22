@@ -45,7 +45,7 @@ import type { Api, Model, Usage as PiUsage } from "@earendil-works/pi-ai";
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import type { OwnerStorage } from "./gate";
-import { costMicros, largestFitting, periods } from "./money";
+import { costMicros, keptFrom, largestFitting, periods } from "./money";
 import type { Call } from "./door";
 import { clock } from "./clock";
 
@@ -57,9 +57,6 @@ interface UsageLimits {
   readonly minOutput: number;
   /** The fewest a reasoning call may have: the gateway refuses less (`reservation_too_small`). */
   readonly minReasoningOutput: number;
-  /** Days of daily spend counters kept, and months of monthly ones. */
-  readonly daysKept: number;
-  readonly monthsKept: number;
 }
 
 export const USAGE_LIMITS: UsageLimits = Object.freeze({
@@ -67,8 +64,6 @@ export const USAGE_LIMITS: UsageLimits = Object.freeze({
   receiptsListed: 50,
   minOutput: 1_024,
   minReasoningOutput: 2_048,
-  daysKept: 40,
-  monthsKept: 3,
 });
 
 /** The ceilings of the owner's model policy (`policy.ts`, `modelSettings`), in µ$. */
@@ -258,8 +253,8 @@ export class Usage {
   }
 
   /**
-   * Receipts past the newest `receiptsKept`, never an open one, and spend counters past
-   * their window. None of it moves a counter a cap reads.
+   * Receipts past the newest `receiptsKept`, never an open one, and the spend counters no
+   * longer kept. None of it moves a counter a cap reads.
    */
   #prune(now: number): void {
     this.#sql.exec("DELETE FROM model_reservations WHERE seq <= " +
@@ -269,18 +264,14 @@ export class Usage {
   }
 
   /**
-   * The spend counters past their window (`daysKept` days, `monthsKept` months), as each
-   * reserve prunes them: a reservation's here, a sandbox call's at its open (`egress.ts`),
-   * so an owner who uses only the sandbox never fills them. None in a window is touched.
+   * The spend counters before the oldest kept (`keptFrom`), as each reserve prunes them: a
+   * reservation's here, a sandbox call's at its open (`egress.ts`), so an owner who uses only
+   * the sandbox never fills them.
    */
   spendPruned(now: number): void {
-    const day = periods(now - USAGE_LIMITS.daysKept * 86_400).day;
-    const month = new Date(now * 1000);
-    month.setUTCDate(1);
-    month.setUTCMonth(month.getUTCMonth() - USAGE_LIMITS.monthsKept);
+    const { day, month } = keptFrom(now);
     this.#sql.exec("DELETE FROM model_spend WHERE period < ?", `d:${day}`);
-    this.#sql.exec("DELETE FROM model_spend WHERE period >= 'm:' AND period < ?",
-                   `m:${month.toISOString().slice(0, 7)}`);
+    this.#sql.exec("DELETE FROM model_spend WHERE period >= 'm:' AND period < ?", `m:${month}`);
   }
 
   /**
