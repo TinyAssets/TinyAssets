@@ -832,9 +832,6 @@
       "door": "flowFinish", "class": "work", "capability": null, "args": "loose"
     },
     {
-      "door": "usageReceipts", "class": "read", "capability": null, "args": "none"
-    },
-    {
       "door": "noticeList", "class": "read", "capability": null, "args": "none"
     },
     {

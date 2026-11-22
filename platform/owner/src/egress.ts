@@ -45,12 +45,12 @@
  * call's body; its model and tier are what that one parse read, since the model may be a
  * body's last key): the model one the connection lists (and, for an API whose path names
  * it, the path's) (`egress_unknown_model`), the tier one its rules price
- * (`egress_unpriced_option`), and the call's charge (`#reserve`), by `usage.ts`'s rules but
- * on counters of its own: its run's requests, tokens and cost (on its `runs` row; the model
- * policy's per-run limits are its caps), and the owner's and the source's day and month
- * (shared with the model reservations) (`egress_spend_refused`, the binding cap its
- * `rule`). Its input is held at the largest context window, so the charge bounds the call's
- * cost. Then the open row charged and the output cap the charge leaves (the gateway clamps
+ * (`egress_unpriced_option`), and the call's charge (`#reserve`): its run's requests, tokens
+ * and cost (on its `runs` row; the model policy's per-run limits are its caps), and the
+ * owner's and the source's day and month (`model_spend`, the spend counters its charge's
+ * triggers move, which the runs' own limits read too, `spent`) (`egress_spend_refused`, the
+ * binding cap its `rule`). Its input is held at the largest context window, so the charge
+ * bounds the call's cost. Then the open row charged and the output cap the charge leaves (the gateway clamps
  * the request's own to it); or the row a refusal receipt and its stream ended. Until it is
  * reserved an admitted call is open as any other (it counts to the rate, is beaten, and
  * settled lost when its beats stop), charged nothing.
@@ -88,7 +88,7 @@ import {
 
 import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
-import { costMicros, largestFitting, periods, SETTLED_WITHIN_S } from "./money";
+import { costMicros, keptFrom, largestFitting, periods, priced, SETTLED_WITHIN_S } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
 import { type MeterOutcome, MODEL_NAME } from "../../contract/src/gateway";
 import type {
@@ -204,8 +204,7 @@ interface EgressCaps {
 /**
  * Egress pricing: a sandbox call's most cost before its model is known, input at its
  * dearest of uncached, cache-read and cache-write rates, each model's tokens at its rates by
- * `cost` (pi-ai's `calculateCost`, `usage.ts`'s `priced`, handed in: the sandbox's spend runs
- * nothing of pi's engine).
+ * pi-ai's `calculateCost` (`money.ts` `priced`).
  */
 
 /** A model's cost record with its input at its dearest rate: what a token can cost at most. */
@@ -222,15 +221,12 @@ function dearest(model: ModelRecord): ModelRecord {
  * The most µ$ a sandbox call of `input` and `output` tokens can cost on any of `models`,
  * each model's tokens at most its own context window and output cap, at its dearest rates.
  */
-export function egressPrice(models: readonly ModelRecord[], input: number, output: number,
-                            cost: ModelCost): number {
-  return Math.max(...models.map((model) => cost(dearest(model),
-                                                Math.min(input, model.contextWindow),
-                                                Math.min(output, model.maxTokens))));
+export function egressPrice(models: readonly ModelRecord[], input: number,
+                            output: number): number {
+  return Math.max(...models.map((model) => priced(dearest(model),
+                                                  Math.min(input, model.contextWindow),
+                                                  Math.min(output, model.maxTokens))));
 }
-
-/** A model's µ$ for `input` and `output` tokens at its catalog rates. */
-type ModelCost = (model: ModelRecord, input: number, output: number) => number;
 
 
 /** What `open` reads beside its own rows, each at the open's unit. */
@@ -264,15 +260,12 @@ interface EgressDeps {
       readonly models: readonly ModelRecord[] } | null;
   /** The caps for a call of `source`. */
   readonly caps: (source: string) => EgressCaps;
-  /** The µ$ held in a period (`d:<day>`, `m:<month>`) by `source`, or by every source. */
-  readonly spent: (period: string, source: string | null) => number;
-  /** A model's cost at its rates (pi-ai's `calculateCost`, `usage.ts`). */
-  readonly cost: ModelCost;
-  /** In the open's unit: the spend counters past their window pruned, as `usage.ts` does. */
-  readonly pruned: (now: number) => void;
 }
 
-/** The fewest output tokens a sandbox model call is worth reserving, as a loop call's. */
+/**
+ * The fewest output tokens a sandbox model call is worth reserving: provider thinking budgets
+ * start at 1,024.
+ */
 const MIN_OUTPUT = 1_024;
 
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH",
@@ -520,7 +513,7 @@ export class Egress {
     if (multiplier === null) {
       return refuse("egress_unpriced_option");
     }
-    this.#deps.pruned(now);
+    this.#spendPruned(now);
     const charge = this.#reserve(row.run, connection.source, model, multiplier, now);
     if (!charge.ok) {
       return refuse("egress_spend_refused", charge.rule);
@@ -534,10 +527,31 @@ export class Egress {
   }
 
   /**
+   * The µ$ held in `period` (`d:<day>` or `m:<month>`), by `source` or by every source: the
+   * counters the charges' triggers move (`model_spend`), which the caps here and the runs'
+   * own limits (`runs.ts`) read. A read.
+   */
+  spent(period: string, source: string | null): number {
+    return this.#sql.exec<{ cost: number }>(
+      "SELECT COALESCE(SUM(cost), 0) AS cost FROM model_spend WHERE period = ? " +
+        "AND (? IS NULL OR source = ?)", period, source, source).one().cost;
+  }
+
+  /**
+   * In the reserve's unit, before its charge adds a counter: the spend counters before the
+   * oldest kept (`keptFrom`), so the counters never fill.
+   */
+  #spendPruned(now: number): void {
+    const { day, month } = keptFrom(now);
+    this.#sql.exec("DELETE FROM model_spend WHERE period < ?", `d:${day}`);
+    this.#sql.exec("DELETE FROM model_spend WHERE period >= 'm:' AND period < ?", `m:${month}`);
+  }
+
+  /**
    * The call's charge, against every cap, in the open's unit, so concurrent calls reserve
    * one after another and never pass a cap between them: its run's requests, tokens and
    * cost (its `runs` row), and the owner's and the source's day and month (the spend
-   * counters the model reservations hold too, read through `spent`). It is the named model's:
+   * counters, read through `spent`). It is the named model's:
    * its input held at that model's context window (a body's bytes do not bound its tokens:
    * a file or a cached context it names can be far larger), its output at that model's cap
    * and what the caps leave (the gateway clamps every cap alias the call names to it, and
@@ -568,7 +582,7 @@ export class Egress {
     ];
     for (const [rule, cap, period, by] of ceilings) {
       if (cap !== null) {
-        rooms.push([rule, cap - this.#deps.spent(period, by)]);
+        rooms.push([rule, cap - this.spent(period, by)]);
       }
     }
     const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
@@ -579,7 +593,7 @@ export class Egress {
     // The call's model is unknown until the gateway reads the body: priced at the most any
     // of the connection's models charges (`egressPrice`), non-decreasing in the output.
     const price = (output: number) =>
-      Math.ceil(egressPrice(models, input, output, this.#deps.cost) * multiplier);
+      Math.ceil(egressPrice(models, input, output) * multiplier);
     const fits = (output: number) => price(output) <= costRoom;
     const output = largestFitting(Math.min(most, byTokens), fits);
     if (output < floor || output < 1) {
@@ -592,7 +606,7 @@ export class Egress {
 
   /**
    * In the door's unit: a reservation's one end, as the door and the gateway's meter saw
-   * it; its model reservation settled with it. False for one already settled, lost or
+   * it; its charge settled with it. False for one already settled, lost or
    * refused, or presented by another token.
    */
   settle(sandbox: SandboxToken, request: SettleRequest, now: number):

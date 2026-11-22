@@ -186,9 +186,6 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     ledger_ids: t("only id_key", "only"),
     // Spend.
     model_spend: t("period source cost", "period source"),
-    model_reservations: t("seq id run connection_id source model state rule max_output_tokens " +
-                          "est_tokens est_cost tokens cost policy_generation day month " +
-                          "created_at settled_at", "seq"),
     egress_reservations: t("id lease_id epoch run source charge rule max_output_tokens " +
                            "est_tokens est_cost tokens cost day month served connection_id " +
                            "version method path generation bytes_hint opened_at beat_at state " +

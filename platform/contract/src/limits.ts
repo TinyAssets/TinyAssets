@@ -267,12 +267,7 @@ export const IMAGE_MAX = 1536 * 1024;
 /** A schedule's cron expression's most characters (`owner/src/cron.ts`). */
 export const CRON_MAX_CHARS = 256;
 /**
- * Model calls open at once (`reserved` or `dispatched`), past which a reservation is
- * refused (`model_calls_full`).
- */
-export const CALLS_OPEN = 1000;
-/**
- * Spend counters kept (`usage.ts`'s): a day's or a month's per source, each period kept
+ * Spend counters kept (`owner/src/egress.ts`'s): a day's or a month's per source, each period kept
  * until every charge reserved in it has settled (`owner/src/money.ts` `keptFrom`, a day and
  * a beat), so at most three days and two months at once, each at a hundred sources, past
  * which a new source's first call in a period is refused (`model_spend_full`).
