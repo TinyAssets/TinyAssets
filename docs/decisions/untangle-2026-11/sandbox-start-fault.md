@@ -70,3 +70,10 @@ job's launch crossed to the owner's object as plain errors, which it reads as `u
 3. **The owner's readers say it** (`owner/src/sandbox.ts`): `startOutcome` names the code
    among the refusals that come only before a launch, and `sandboxAnswer`'s `unanswered` is a
    start's fault at or after its launch, or a re-apply's.
+4. **Review: the look armed on every path** (`#launch`). A start that made or resumed a
+   sandbox and failed before its lease reached the row (a fault at the create's `prepare`, a
+   wait or refusal after a resume) armed no look, and the owner's release finds a sandbox
+   only by its lease, so the sandbox ran, billed, to E2B's own timeout at the runtime
+   ceiling. It predates the PR (an `unknown` start's cancel stops only a launched job), but it
+   is what a refused start leaves. The serial body now arms in a `finally`, so the look reaps
+   it idle like any other (the faults-before-launch test reads the alarm).

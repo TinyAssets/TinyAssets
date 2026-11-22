@@ -856,7 +856,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
    * serial chain, the sandbox found, resumed or made (`#ensure`), its network widened by the
    * job's vendor hosts; a start that opened the lease hands the runner its secrets
    * (`LEASE_FILE`); then what the job does first (`ready`), its document into the inbox, and
-   * the runner's launch of it, detached, which holds the lease until it is released.
+   * the runner's launch of it, detached, which holds the lease until it is released; the look
+   * armed on every path.
    *
    * Until the launch command is sent, nothing of the job runs: a fault there that is not a
    * refusal already (the runner's two alerts, the runtime's overload) is logged with its cause
@@ -874,7 +875,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       }
       const { ceilings, job } = got;
       const { request } = job;
-      return await this.#serial(async () => {
+      const launch = async (): Promise<Started> => {
         const e2b = this.#e2b();
         const network = request.network === null ? null : request.network.network;
         const { hosts } = request;
@@ -922,9 +923,12 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                        request.lease.lease_id, JSON.stringify(hosts));
         this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
                          "authority = ?", request.authority);
-        await this.#arm();
         return { started: true };
-      });
+      };
+      // Whatever it came to, the look is armed: a sandbox a start resumed or made and no job
+      // launched in (its lease, if any, never written to its row) is reaped idle, not left
+      // running to its ceiling; a slot owed the line is given back.
+      return await this.#serial(() => launch().finally(() => this.#arm()));
     } catch (error) {
       if (launching || refusalOf(error) !== null) {
         throw error;

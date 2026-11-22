@@ -323,6 +323,8 @@ describe("a start", () => {
       const { got, causes } = await faulted(() => stub(each).start(start(over)));
       expect(got).toBe("sandbox_start_failed");
       expect(causes).toHaveLength(1);
+      // The sandbox it made or found is looked at, so one no job runs in is reaped idle.
+      expect(await alarmOf(each)).not.toBeNull();
     }
     const state = await seen();
     expect(state.commands.map((command) => command.argv[1])).not.toContain("launch");
