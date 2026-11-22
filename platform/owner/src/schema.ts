@@ -2560,6 +2560,25 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE run_grants ADD COLUMN connectors TEXT NOT NULL DEFAULT '[]' " +
       "CHECK (length(connectors) <= 2048)",
   ]),
+  // 23 (`grants.ts`, `definition.ts`; `untangle-2026-11/registered-agent.md`): which of the
+  // owner's agents a client is, `main` (`MAIN_AGENT`) until the owner names another: its
+  // definition's agent and where its scoped triples are held. An agent id (`AGENT_ID`), as
+  // `native_agents` holds one. The table is exported, so its capture triggers that write rows
+  // are made again with the column, and no generation from before is brought forward
+  // (`GRANT_AGENT`).
+  Object.freeze([
+    "ALTER TABLE outside_clients ADD COLUMN agent TEXT NOT NULL DEFAULT 'main' " +
+      "CHECK (length(agent) BETWEEN 1 AND 128 AND agent NOT GLOB '*[^A-Za-z0-9._-]*')",
+    "DROP TRIGGER outside_clients_logged_insert",
+    "DROP TRIGGER outside_clients_logged_update",
+    "CREATE TRIGGER outside_clients_logged_insert AFTER INSERT ON outside_clients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'outside_clients', 'row', json_object('client', NEW.client, 'source', NEW.source, 'mode', NEW.mode, 'scopes', NEW.scopes, 'generation', NEW.generation, 'revoked_at', NEW.revoked_at, 'name', NEW.name, 'first_seen', NEW.first_seen, 'last_seen', NEW.last_seen, 'owner_set', NEW.owner_set, 'agents', NEW.agents, 'held', NEW.held, 'profile', NEW.profile, 'revision', NEW.revision, 'vendor', NEW.vendor, 'vendor_verified', NEW.vendor_verified, 'agent', NEW.agent)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER outside_clients_logged_update AFTER UPDATE ON outside_clients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'outside_clients', 'key', json_array(OLD.client)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.client IS NEW.client); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'outside_clients', 'row', json_object('client', NEW.client, 'source', NEW.source, 'mode', NEW.mode, 'scopes', NEW.scopes, 'generation', NEW.generation, 'revoked_at', NEW.revoked_at, 'name', NEW.name, 'first_seen', NEW.first_seen, 'last_seen', NEW.last_seen, 'owner_set', NEW.owner_set, 'agents', NEW.agents, 'held', NEW.held, 'profile', NEW.profile, 'revision', NEW.revision, 'vendor', NEW.vendor, 'vendor_verified', NEW.vendor_verified, 'agent', NEW.agent)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
 ]);
 
 /**
@@ -2569,6 +2588,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
 const UNREPLAYABLE = "before a restore could bring a generation forward: migration 7 re-keys " +
   "collection history by insertion order and migration 9 reads other tables' rows, neither of " +
   "which a generation holds";
+
+/**
+ * Why no generation from before migration 23 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/registered-agent.md`).
+ */
+const GRANT_AGENT = "before a restore could bring a generation forward: migration 23 names " +
+  "each grant's agent, which a generation's grant lines do not hold";
 
 /** Why no generation from before migration 19 can be brought forward. */
 const ROOMS_BACKFILLED = "before a restore could bring a generation forward: migration 19 " +
@@ -2608,6 +2634,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 20
   null,  // 21
   null,  // 22
+  GRANT_AGENT,  // 23
 ]);
 
 /**

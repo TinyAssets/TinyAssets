@@ -659,7 +659,7 @@ export interface DoorTypes {
         readonly client: string; readonly source: string; readonly mode: string;
         readonly scopes: unknown; readonly revision: number;
         readonly revoked_at: number | null; readonly vendor: string | null;
-        readonly vendor_verified: number }[] };
+        readonly vendor_verified: number; readonly agent: string }[] };
   };
   readonly registerProposal: {
     readonly answer: { readonly client: string; readonly family: string;

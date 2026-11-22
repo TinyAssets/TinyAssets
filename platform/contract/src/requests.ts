@@ -55,7 +55,8 @@ export interface DoorRequests {
   readonly actionApprove: DoorFields<"card_id" | "digest">;
   readonly actionRefuse: DoorFields<"card_id" | "digest">;
   readonly grantSet:
-    DoorFields<"client" | "source" | "mode" | "scopes" | "expected_revision" | "name", "profile">;
+    DoorFields<"client" | "source" | "mode" | "scopes" | "expected_revision" | "name", "profile"
+      | "agent">;
   readonly grantRevoke: DoorFields<"client">;
   readonly grantForget: DoorFields<"client">;
   readonly grantForgetRevoked: DoorFields<"clients">;

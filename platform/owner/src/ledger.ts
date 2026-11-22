@@ -1118,7 +1118,7 @@ export class Ledger {
   }
 
   /** A live own agent by name, or refused: gone (`AGENT_RETIRED`) or never one (`NO_AGENT`). */
-  #liveNative(agent: string): StoredNative {
+  liveNative(agent: string): StoredNative {
     const row = this.#nativeNamed(agent);
     if (row === undefined) {
       throw new Refusal("no_agent", NO_AGENT);
@@ -1577,7 +1577,7 @@ export class Ledger {
       return owner;
     }
     if (isNative(actor)) {
-      const own = this.#liveNative(actor.native);
+      const own = this.liveNative(actor.native);
       const found = members.find((m) => m.id === own.agent_id);
       if (found === undefined) {
         throw new Refusal("refused", "an agent posts only in its own dm rooms");

@@ -72,5 +72,5 @@ instructions.
 
 ## Owed
 
-- [ ] A registration names the owner's agent its connection is, and `definitionRead` reads it, so a connected main agent's definition is the agent it registered, else `main` (the coordinator's call; `untangle/registered-agent`).
+- [x] A registration names the owner's agent its connection is, and `definitionRead` reads it, so a connected main agent's definition is the agent it registered, else `main` (the coordinator's call; `untangle/registered-agent`). Done there: the connection's grant names it (`registered-agent.md`).
 - [ ] Claude.ai's prompt picker shows `agent`, and one Skills-extension client (VS Code, in the matrix) lists the skills (live: at the dark redeploy).

@@ -16,6 +16,11 @@
  * policy's switch, so no capability stands for it. A profile is authority: changing it
  * moves the generation.
  *
+ * And a grant names **which of the owner's agents** the client is (`agent`, `MAIN_AGENT` until
+ * the owner names another in `set`): the agent whose definition it reads (`definitionRead`)
+ * and where a scoped grant's triples are held when a call names no agent
+ * (`authority.ts` `actingAgent`). An agent is authority too: changing it moves the generation.
+ *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
  *   before any door acts (`admit`): an MCP client's first verified call records it
@@ -73,13 +78,13 @@ import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
-import { type ConnectedApp, type Grant, may, type Scope } from "./authority";
+import { type ConnectedApp, type Grant, MAIN_AGENT, may, type Scope } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { keyed } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import { policyDigest } from "../../contract/src/policy-document";
 import type { Policy } from "./policy";
-import { codePoints, utf8Bytes } from "../../contract/src/text";
+import { agentId, codePoints, utf8Bytes } from "../../contract/src/text";
 import { type Call, type LiveSession, type ObjectReads, proven } from "./door";
 import type { Keys } from "./keys";
 import type { Launcher } from "./launch";
@@ -123,7 +128,9 @@ export type Client = {
   readonly mode: string;
   readonly scopes: Scope[];
   readonly profile: string;
-  /** Its authority: moves only with its mode, scopes or profile, a revoke among them. */
+  /** The owner's agent the client is. */
+  readonly agent: string;
+  /** Its authority: moves only with its mode, scopes, profile or agent, a revoke among them. */
   readonly generation: number;
   /** Its concurrency token: moves on every owner set and every revoke. */
   readonly revision: number;
@@ -160,11 +167,18 @@ export interface GrantChange {
   readonly name: unknown;
   /** The tool profile; omitted, the grant keeps its own (a new one, `custom`). */
   readonly profile?: unknown;
+  /** The owner's agent the client is; omitted, the grant keeps its own (a new one, `main`). */
+  readonly agent?: unknown;
 }
 
-/** What a grant holds, as one value: equal exactly when `holds` and its profile answer alike. */
-function authority(mode: string, held: readonly Scope[], profile: string): string {
-  return canonical([mode, [...new Set(held.map((scope) => canonical(scope)))].sort(), profile]);
+/**
+ * What a grant holds, as one value: equal exactly when `holds`, its profile and its agent
+ * answer alike.
+ */
+function authority(mode: string, held: readonly Scope[], profile: string, agent: string):
+    string {
+  return canonical([mode, [...new Set(held.map((scope) => canonical(scope)))].sort(), profile,
+                    agent]);
 }
 
 /**
@@ -237,7 +251,8 @@ export class Grants {
       throw new Refusal("refused", "a fresh sign-in is required after a revoke");
     }
     return { mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
-             generation: row.generation, profile: row.profile as ProfileName };
+             generation: row.generation, profile: row.profile as ProfileName,
+             agent: row.agent };
   }
 
   /**
@@ -319,14 +334,15 @@ export class Grants {
   }
 
   /**
-   * Whether a client's grant, as it stands, holds `scope` (a full grant holds every one):
-   * what a wake is held to before it rings. A read: it never records a client.
+   * Whether a client's grant, as it stands, holds `capability` in `universe` as the agent it
+   * names (a full grant holds every one): what a wake is held to before it rings. A read: it
+   * never records a client.
    */
-  reads(client: string, scope: Scope): boolean {
+  reads(client: string, universe: string, capability: string): boolean {
     const row = this.#row(client);
     return row !== undefined && row.mode !== "revoked"
-      && may({ mode: row.mode, scopes: JSON.parse(row.scopes) as Scope[] }, scope.capability,
-             scope);
+      && may({ mode: row.mode, scopes: JSON.parse(row.scopes) as Scope[] }, capability,
+             { universe, agent: row.agent });
   }
 
   /**
@@ -373,14 +389,14 @@ export class Grants {
   }
 
   /**
-   * `outside_set`, an owner widening from its protected session: one client's mode, scopes
-   * and name, against the revision the owner was shown; `expected_revision` 0 creates the
-   * row, as a key's mint does. The revision always moves; the generation only when the
-   * authority does (`moved`), which is when the caller ends the client's work.
+   * `outside_set`, an owner widening from its protected session: one client's mode, scopes,
+   * profile, agent and name, against the revision the owner was shown; `expected_revision` 0
+   * creates the row, as a key's mint does. The revision always moves; the generation only when
+   * the authority does (`moved`), which is when the caller ends the client's work.
    */
   set(session: LiveSession, change: GrantChange, now: number):
-      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
-        revision: number; moved: boolean } {
+      { client: string; mode: string; scopes: Scope[]; profile: string; agent: string;
+        generation: number; revision: number; moved: boolean } {
     proven(session, "session");
     const client = outsideClient(change.client, change.source);
     const { mode, expected_revision: expected, name } = change;
@@ -402,6 +418,7 @@ export class Grants {
       .includes(change.profile)) {
       throw new Refusal("invalid", `a grant's profile is one of ${CLIENT_PROFILES.join(", ")}`);
     }
+    const asked = change.agent === undefined ? undefined : agentId(change.agent);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = this.#row(client);
@@ -418,9 +435,10 @@ export class Grants {
                           "one to make room");
       }
       const profile = (change.profile ?? row?.profile ?? DEFAULT_PROFILE) as string;
+      const agent = asked ?? row?.agent ?? MAIN_AGENT;
       const moved = row === undefined
-        || authority(row.mode, JSON.parse(row.scopes) as Scope[], row.profile)
-          !== authority(mode, held, profile);
+        || authority(row.mode, JSON.parse(row.scopes) as Scope[], row.profile, row.agent)
+          !== authority(mode, held, profile, agent);
       const generation = (row?.generation ?? 0) + (moved ? 1 : 0);
       const revision = expected + 1;
       // A revoke is timed when it lands; a revoked grant set again keeps its fence.
@@ -428,25 +446,25 @@ export class Grants {
       const named = name === "" ? row?.name ?? "" : name;
       sql.exec(
         "INSERT INTO outside_clients (client, source, mode, scopes, generation, revision, " +
-          "revoked_at, name, first_seen, last_seen, owner_set, profile) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) " +
+          "revoked_at, name, first_seen, last_seen, owner_set, profile, agent) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) " +
           "ON CONFLICT (client) DO UPDATE SET mode = excluded.mode, scopes = excluded.scopes, " +
-          "profile = excluded.profile, " +
+          "profile = excluded.profile, agent = excluded.agent, " +
           "generation = excluded.generation, revision = excluded.revision, " +
           "revoked_at = excluded.revoked_at, owner_set = 1, " +
           "name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END",
         client, source, mode, canonical(held), generation, revision, revokedAt, name, now, now,
-        profile,
+        profile, agent,
       );
       // The receipt's digest names the set whole, so a rename's differs from a set that
       // changes nothing; its generation is the authority's.
       this.#policy.receipt("outside_grant", {
         session_id: session.hash,
         request_digest: policyDigest({ client, mode, scopes: held, name: named, revision,
-                                       profile }),
+                                       profile, agent }),
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
-      return { client, mode, scopes: held, profile, generation, revision, moved };
+      return { client, mode, scopes: held, profile, agent, generation, revision, moved };
     });
   }
 
@@ -602,7 +620,11 @@ export interface ForgetRequest {
 export interface GrantsDoorNeeds extends Pick<ObjectReads, "storage"> {
   readonly grants: Grants;
   readonly keys: Pick<Keys, "revoked" | "forgotten">;
-  readonly ledger: { suppressClient(client: string, now: number): void };
+  readonly ledger: {
+    suppressClient(client: string, now: number): void;
+    /** One of the owner's live agents by name, else refused (`no_agent`, `agent_retired`). */
+    liveNative(agent: string): unknown;
+  };
   readonly registrations: { endClient(client: string): void };
   readonly launcher: Pick<Launcher, "endClient">;
 }
@@ -631,15 +653,19 @@ export const grantsDoors = Object.freeze({
   },
   /**
    * The owner's widening, in its session, against the grant's revision. A set that moves
-   * the grant's authority (its mode or scopes) ends the client's agents' wakes and held
-   * registrations with it, as `grantRevoke` ends them; one that moves only the revision, a
-   * rename, ends nothing: every stamp of the client's still stands.
+   * the grant's authority (its mode, scopes, profile or agent) ends the client's agents' wakes
+   * and held registrations with it, as `grantRevoke` ends them; one that moves only the
+   * revision, a rename, ends nothing: every stamp of the client's still stands. The agent it
+   * names is one of the owner's live agents, else refused (`no_agent`, `agent_retired`).
    */
   grantSet(o: GrantsDoorNeeds, { session, r }: Call<GrantChange, "session">):
-      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
-        revision: number } {
+      { client: string; mode: string; scopes: Scope[]; profile: string; agent: string;
+        generation: number; revision: number } {
     return o.storage.transactionSync(() => {
       const { moved, ...set } = o.grants.set(session, r as unknown as GrantChange, clock());
+      if (r["agent"] !== undefined) {
+        o.ledger.liveNative(set.agent);
+      }
       if (moved) {
         endClient(o, set.client);
       }

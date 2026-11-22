@@ -5,13 +5,14 @@
  * too), as stored. The doors serve them as MCP resources, the `agent` prompt and the Skills
  * extension (`doors/src/definition.ts`); nothing here or there runs them.
  *
- * Which agent: a run's own; anyone else's, `main` (`MAIN_AGENT`), until a registration names
- * the owner's agent a connection is (owed: `untangle/registered-agent`). The read is held to
- * the caller's grant by its row's capability (`read_files`), as every file read is.
+ * Which agent: the one the call acts as (`actingAgent`): a run's own; an outside client's, the
+ * one its grant names (`main` until the owner names another); the owner's, `main`. One that is
+ * not a live agent of the owner's is refused (`no_agent`, `agent_retired`), never served as
+ * another. The read is held to the caller's grant by its row's capability (`read_files`), as
+ * every file read is, there as that agent.
  */
 import type { Door, DoorUnits } from "./door";
 import type { Content, Files } from "./files";
-import { MAIN_AGENT } from "./authority";
 import { DEFINITION_UNITS, ownerSlots } from "./holds";
 import {
   AGENT_FILES, agentPath, type ServedDefinition, type ServedSkill, skillUnion,
@@ -23,6 +24,8 @@ import { slotted } from "../../contract/src/slots";
 /** What `definitionRead` reaches: the owner's files, read in a unit, then their chunks. */
 export interface DefinitionDoorNeeds extends Pick<DoorUnits, "door"> {
   readonly files: Pick<Files, "stat" | "list" | "open" | "openFile" | "range">;
+  /** One of the owner's live agents by name, else refused (`no_agent`, `agent_retired`). */
+  readonly ledger: { liveNative(agent: string): unknown };
 }
 
 export const DEFINITION_TOO_LARGE = `result_too_large: the agent's definition passes the ${
@@ -57,15 +60,15 @@ const name = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 export const definitionDoors = Object.freeze({
   /**
-   * The definition of the agent the caller acts as (a run's own, else `main`): its
-   * instructions and soul, null when absent (a folder there refused, `Files.openFile`), and its
-   * skills' files, bytes as stored. Pinned in one unit, then read; past `DEFINITION_BYTES_MAX`
-   * refused, never cut.
+   * The definition of the agent the caller acts as, a live one: its instructions and soul,
+   * null when absent (a folder there refused, `Files.openFile`), and its skills' files, bytes
+   * as stored. Pinned in one unit, then read; past `DEFINITION_BYTES_MAX` refused, never cut.
    */
   async definitionRead(o: DefinitionDoorNeeds, door: Door<undefined>):
       Promise<ServedDefinition> {
     const pinned = await o.door(() => {
-      const agent = door.check().account.run?.agent ?? MAIN_AGENT;
+      const { agent } = door.check();
+      o.ledger.liveNative(agent);
       const skills = [...skillUnion(agent, {
         dirs: (dir) => entriesIn(o.files, dir).filter((entry) => entry.kind === "dir")
           .map((entry) => name(entry.path)),

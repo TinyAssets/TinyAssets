@@ -95,7 +95,7 @@ describe("the starter package", () => {
     // The profile moved from main's own folder to the workspace's root, shared by every agent.
     expect(fileAt("/workspace/USER.md")).toMatchObject({
       moved_from: "/workspace/agents/main/USER.md" });
-    // The default agent is the one a scoped client's call acts as when it names none.
+    // The default agent is the one a grant is until the owner names another.
     expect(bundled.files.at(-1)!.path).toBe(`/workspace/agents/${MAIN_AGENT}/agent.json`);
     expect(bundled.retired).toEqual(["/workspace/agents/main/USER.md"]);
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/USER.md");

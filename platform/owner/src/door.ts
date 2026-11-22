@@ -139,13 +139,14 @@ export interface Checked<R = unknown, K extends CallerKind = Binds> extends Boun
   readonly request: R;
   readonly r: Record<string, unknown>;
   readonly universe: string | null;
+  /** The agent it acts as: at a run door, the one its request names; else `actingAgent`'s. */
   readonly agent: string;
   /** The row's capability held at `place`, the place its handler names. */
   held(place: unknown): void;
   /**
    * `capability` held where the call's account acts, as the runner's scope step holds it: as
-   * `agent` (the `main` agent by default), in `center` (by default, where a scoped client's
-   * one enabled agent is registered).
+   * `agent` (by default, the agent it acts as, `actingAgent`), in `center` (by default, where a
+   * scoped client's one enabled agent is registered).
    */
   scope(capability: RunCapability, center?: unknown, agent?: string): void;
   /**

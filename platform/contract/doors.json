@@ -679,7 +679,7 @@
           "client": {}, "source": {}, "mode": {}, "scopes": {}, "expected_revision": {},
           "name": {}
         },
-        "optional": { "profile": {} }
+        "optional": { "profile": {}, "agent": {} }
       }
     },
     {

@@ -208,6 +208,34 @@ describe("the owner's agent definitions", () => {
     }
   });
 
+  it("serve a connection the agent its grant names, main until the owner names another, and " +
+     "refuse one that is gone, never serving another in its place", async () => {
+    const r = await ledgerRig();
+    await r.register(MUSE);
+    const read = () => r.stub.definitionRead(r.bind(MUSE));
+    const work = `${AGENTS_DIR}/work`;
+    await r.stub.fileMkdir(r.session(null), { path: work, expected_etag: null });
+    for (const [name, text] of [["agent.json", JSON.stringify({ engine: "auto" })],
+                                ["AGENTS.md", "Work."]]) {
+      await r.stub.fileWrite(r.session(null), { path: `${work}/${name}`, expected_etag: "",
+                                                content: bytes(text!) });
+    }
+    expect(await read()).toMatchObject({ agent: "main" });
+    const named = async (agent: string) => {
+      const row = (await r.stub.grantList(r.bind(null))).clients
+        .find((client) => client.client === MUSE.client)!;
+      await r.stub.grantSet(r.session(null), { client: MUSE.client, source: "mcp",
+        mode: row.mode, scopes: row.scopes as never, expected_revision: row.revision,
+        name: "", agent });
+    };
+    await named("work");
+    expect(await read()).toMatchObject({ agent: "work", instructions: bytes("Work."),
+                                         soul: null });
+    await r.stub.fileRemove(r.session(null), { path: `${work}/agent.json`, expected_etag: null,
+                                               recursive: false });
+    expect((await failure(read)).code).toBe("agent_retired");
+  });
+
   it("hold only the tree and the roots themselves, never a name that merely starts alike",
      async () => {
     expect([within("/workspaceX/a", "/workspace"), within("/workspace/agentsX/a", AGENTS_DIR),

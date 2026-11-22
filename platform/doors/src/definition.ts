@@ -1,7 +1,8 @@
 /**
  * The agent's definition at the MCP door (founder's call 1, `agent-definition-door.md`,
  * research §3): the definition of the agent the caller acts as (`definitionRead`: a run's own,
- * else `main`), served through every channel MCP has for it, from that one read.
+ * else the one its grant names, `main` until the owner names another), served through every
+ * channel MCP has for it, from that one read.
  *
  * - **Resources**: its `AGENTS.md` and `SOUL.md` (`tinyassets://agent/<agent>/<file>`), and each
  *   skill's files (`skill://<skill>/<path>`, the Skills extension's own), its `SKILL.md` listed.
