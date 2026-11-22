@@ -20,12 +20,14 @@
  *   handed over one at a time, on whatever host the identity names, the egress custom domain
  *   (waited on until the egress door answers on it),
  *   and the webhook enabled at the identity's URL. Before any change it keeps a record of each
- *   of those as they stood (`RouteRecord`), and the job summary names its id.
- * - `handback`: the record `--record` names, handed back (the cutover's rollback): the webhook
+ *   of those as they stood (`RouteRecord`), or, while the host's handover has one, keeps that
+ *   (`keepRecord`), and the plan names its id.
+ * - `handback`: the record `--record` names, the host's oldest, handed back (the cutover's
+ *   rollback): the webhook
  *   disabled and the egress custom domain detached unless the record has them so before, then
  *   the zone's routes put back as the record has them, only what the handover changed, one at
  *   a time, then the host's DNS record deleted if `routes` made it; each read back and held to
- *   the record. Each is held to the record before any
+ *   the record, then the host's route records deleted. Each is held to the record before any
  *   change too: anything changed since `routes` stops it, named. The handles canary follows
  *   the old stack's restart, so the run ends saying where it runs.
  * - `rollback`: the rollout record `--record` names, which `dark` and `routes` keep before
@@ -374,6 +376,8 @@ export interface Values {
   /** The route record `handback` reads, and its handback on the zone as it stands. */
   readonly record: RouteRecord;
   readonly back: readonly RouteChange[];
+  /** The host's route records the handback ends, in the order it deletes them (`recordRead`). */
+  readonly ending: readonly KeptRecord[];
   /** The doors' custom domains on the egress host the handback detaches. */
   readonly detach: readonly { id: string; service: string }[];
 }
@@ -1009,7 +1013,9 @@ export function throwaway(): { state: string; challenge: string } {
  * kit's own record store (the control record is written there): the kit writes it itself, before its first change, over the client and token it
  * already holds, so a refused write stops the run before anything is changed, and `handback`
  * reads it with that same token, with no host and no GitHub API in between. Its key is the
- * run's id (`actions.ts` `runOf`), which a re-run attempt keeps, and the job summary names it.
+ * run's id (`actions.ts` `runOf`), and the job summary names it. It is the handover's: every
+ * later routes run on the host, a re-run attempt or not, keeps it while it stands
+ * (`keepRecord`), and the handback that names it deletes it (`recordsEnded`).
  */
 export interface RouteRecord {
   readonly kind: typeof RECORD_KIND;
@@ -1522,11 +1528,44 @@ export interface KeptRecord {
 type Recording = "cloudflare" | "zone" | "account" | "table" | "changes" | "placed";
 
 /**
- * The route record (`RouteRecord`), kept before any change: written when the handover moves
- * a route and the run's record is not there yet, and kept as it is when it is (a re-run
- * attempt keeps the table its first attempt read). A record that cannot be written stops the
- * run, nothing changed. `hook` is E2B's listing of the lifecycle hook, or undefined in the plan
- * job, which cannot list it and never writes.
+ * The route records of the doors' host (`HOST`) in the control namespace, oldest first (by
+ * `at`): each the state before the handover a routes run began on the host, held until a
+ * handback ends it (`recordsEnded`). A routes run keeps the oldest and writes none while one
+ * is held (`keepRecord`), so a later one is a kit's from before that rule: kept while the
+ * oldest stood, it holds the handover's own state as its before. A record naming another host
+ * is that host's handover; a listed key whose value is gone was deleted since the listing (KV
+ * lists eventually); any other value out of shape throws (`recordOf`). The run's own key
+ * (`own`) is read whether listed or not: a listing just after a write can lack it, and a
+ * re-run attempt that missed its first attempt's record would write over it.
+ */
+async function hostRecords({ cloudflare, account, zone: id }:
+                             Pick<Values, "cloudflare" | "account" | "zone">,
+                           namespace: string, own: string): Promise<KeptRecord[]> {
+  const held: KeptRecord[] = [];
+  for (const key of new Set([...await cloudflare.keys(account, namespace, RECORD_PREFIX), own])) {
+    const value = await cloudflare.value(account, namespace, key);
+    const host = (value as { host?: { name?: unknown } } | null | undefined)?.host?.name;
+    if (value === undefined || (typeof host === "string" && host !== HOST)) {
+      continue;
+    }
+    held.push({ record: recordOf(value, key, id), namespace, key });
+  }
+  return held.sort((a, b) => a.record.at < b.record.at ? -1 : a.record.at > b.record.at ? 1 : 0);
+}
+
+/** How a plan names a held route record: its run, attempt and time. */
+function heldLine({ record }: KeptRecord): string {
+  return `run ${record.run}'s (attempt ${record.attempt ?? "-"}, ${record.at})`;
+}
+
+/**
+ * The route record (`RouteRecord`), kept before any change. The host's handover has one
+ * record, the state before its first routes run: while the control namespace holds one of
+ * the host (`hostRecords`), every routes run keeps the oldest as it is (a re-run attempt its
+ * own first attempt's, a later run the record of the run that began the handover), and it is
+ * the one a handback names. Only with none held is this run's written. A record that cannot
+ * be written stops the run, nothing changed. `hook` is E2B's listing of the lifecycle hook, or
+ * undefined in the plan job, which cannot list it and never writes.
  */
 async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Values, Recording>,
                           hook: Json | null | undefined): Promise<Pick<Values, "kept">> {
@@ -1543,25 +1582,19 @@ async function keepRecord({ run, say, summarize: add }: Context, got: Pick<Value
         "apply job stops until a dark run makes it");
     return { kept: null };
   }
-  const held = await got.cloudflare.value(got.account, namespace, key);
-  if (held !== undefined) {
-    const record = recordOf(held, key, got.zone);
-    say(`keep this run's route record as attempt ${record.attempt ?? "-"} wrote it at ` +
-        `${record.at}, before its first change: hand back with --mode handback --record ` +
-        "<this run's id>");
-    return { kept: { record, namespace, key } };
+  const [first, ...later] = await hostRecords(got, namespace, key);
+  if (first !== undefined) {
+    say(`keep the route record ${first.key}, ${heldLine(first)}, the state before the first ` +
+        `routes run on ${HOST}, as it is, and write none${later.length === 0 ? ""
+          : ` (${later.map((each) => each.key).join(", ")}, kept while it stood, hold the ` +
+            "handover's own state; a handback of it ends them too)"}: hand back with --mode ` +
+        `handback --record ${first.record.run}`);
+    return { kept: first };
   }
-  // Doors on their routes already: an earlier routes run moved them.
-  const earlier = got.table.filter((route) => route.script === DOORS
-    && ROUTES.includes(route.pattern))
-    .map((route) => route.pattern);
   say(checked(`record the zone's ${got.table.length} routes and the handover's ${
     got.changes.length} changes, the egress domain (${domain ?? "none"}) and E2B's lifecycle ` +
     `webhook as this run's route record in ${title}, before any change: hand back with --mode ` +
-    `handback --record <this run's id>${
-      earlier.length === 0 ? "" : `; ${DOORS} holds ${earlier.join(", ")} already: the ` +
-      "record of the routes run that moved them is the one to hand back, and it covers this " +
-      "run's changes too"}; the webhook it records`, hook === undefined ? null
+    "handback --record <this run's id>; the webhook it records", hook === undefined ? null
     : hook === null ? "absent" : hook["enabled"] === true ? "enabled" : "disabled"));
   // The plan job (no listing of the hook) never applies.
   if (!run.apply || hook === undefined) {
@@ -1591,7 +1624,7 @@ function named(records: readonly Omit<DnsRecord, "id">[], name: string): string 
  * a Worker route on a subdomain takes nothing without a proxied record (Cloudflare's routes
  * page). Made once the route record is kept and before anything is deployed, then written
  * into it, so a handback deletes exactly it; a refused make (the token's DNS Edit) stops the
- * run with only the route record written. The route record it makes is the run's from here.
+ * run with only the route record written. The record it makes is the handover's from here.
  */
 const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "kept">(
   async ({ run, say, did }, got) => {
@@ -1599,13 +1632,14 @@ const hostRecord = step<"cloudflare" | "zone" | "account" | "placed" | "kept", "
       return { kept: got.kept };
     }
     // A route record that has the host holding none before routes makes a placeholder on it
-    // now this run's: an earlier attempt's, made before it was written in, or the one added by
-    // hand after that attempt's refused make (the checklist's fallback); its handback deletes it.
+    // now the handover's: one an earlier run or attempt made before it was written in, or the
+    // one added by hand after a refused make (the checklist's fallback), or a new one made when
+    // the one it made is gone since (deleted by hand); its handback deletes it.
     const bare = got.kept !== null && !got.kept.record.host.held
-      && got.kept.record.host.made === null;
+      && (got.kept.record.host.made === null || got.placed.length === 0);
     say(got.placed.length > 0
-      ? bare ? `${HOST} holds ${named(got.placed, HOST)}, and held none when this run's route ` +
-               "record was kept: the record keeps it as this run's, for a handback to delete"
+      ? bare ? `${HOST} holds ${named(got.placed, HOST)}, and held none when the route record ` +
+               "was kept: the record keeps it as the handover's, for a handback to delete"
         : `${HOST} holds its DNS record already, ${named(got.placed, HOST)}: none is made`
       : `make the DNS record ${named([PLACEHOLDER], HOST)}, proxied, for the ` +
         "doors' routes on it, before anything is deployed: the route record keeps it, for a " +
@@ -1864,6 +1898,37 @@ function servesAs(now: readonly Serving[], want: readonly Serving[]): boolean {
 }
 
 /**
+ * How long a deployment just made is read back for, and how often. Cloudflare's deployments
+ * listing answered the gateway's deployment at 100%, which wrangler had just made, with the
+ * deployment before it (run 45065434026, 2026-11-22), and listed it by the next run's plan;
+ * its docs give the listing no read-after-write, only that a deployment "takes up to a few
+ * seconds" to reach every location (`version-skew.mdx`).
+ */
+const READ_BACK_MS = 60_000;
+const READ_BACK_EVERY_MS = 2_000;
+
+/**
+ * The Worker `name`'s deployment read (`Cloudflare.deployment`) until Cloudflare lists it
+ * serving exactly `want`, in its order, every `READ_BACK_EVERY_MS`; past `READ_BACK_MS` a
+ * throw naming the last read-back, `stop` after it. It reads only: nothing is deployed again.
+ */
+async function readBack(run: Run, { cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                        name: string, want: readonly Serving[], stop: string): Promise<void> {
+  const until = run.io.now().getTime() + READ_BACK_MS;
+  for (;;) {
+    const now = await cloudflare.deployment(account, name);
+    if (servesAs(now, want)) {
+      return;
+    }
+    if (run.io.now().getTime() >= until) {
+      throw new Error(`${name}'s deployment read back as ${sharesLine(now)}, not ${
+        sharesLine(want)}, ${READ_BACK_MS / 1000} s after it was made${stop}`);
+    }
+    await run.io.sleep(READ_BACK_EVERY_MS);
+  }
+}
+
+/**
  * What a deploy's plan says of `rolled` (`decided`, `setting` the plan's secrets on it): its
  * stages (`STAGES`), with `reach` saying whether its shares below 100 are smoked, or 100% at
  * once and why (`atOnce`).
@@ -1883,7 +1948,7 @@ function deployLine(rolled: Rolled, setting: readonly Setting[], reach: Reach): 
 
 /**
  * Each Worker deployed, bound first, touching no route, each deployment read back
- * (`Cloudflare.deployment`) before anything follows it. A first deploy (the account's Workers
+ * (`readBack`) before anything follows it. A first deploy (the account's Workers
  * listing lacked it: `rolled`) is `wrangler deploy`; later ones upload a version, then deploy
  * it through the stages (`platform.json` `stages`): at each share below 100 beside the version
  * it serves (`rolled`), the new one listed first, so a Durable Object assigned it keeps it as
@@ -1915,24 +1980,20 @@ const workers = step<"cloudflare" | "account" | "wrangler" | "stage" | "setting"
     const flags = ["--config", config,
                    ...versionFlags(commit, got.migrations[worker] ?? {}, FORWARD[worker]!),
                    ...secretsFile(run, scratch, worker, got.setting)];
-    const readBack = async (want: Serving[]) => {
-      const now = await got.cloudflare.deployment(got.account, rolled.name);
-      if (!servesAs(now, want)) {
-        throw new Error(`${rolled.name}'s deployment read back as ${sharesLine(now)}, not ${
-          sharesLine(want)}${stop}`);
-      }
-      did(`${rolled.name} serves ${sharesLine(now)}, read back`);
+    const landed = async (want: Serving[]) => {
+      await readBack(run, got, rolled.name, want, stop);
+      did(`${rolled.name} serves ${sharesLine(want)}, read back`);
     };
     if (rolled.before === null || rolled.whole) {
       const id = versionOf(got.wrangler(["deploy", ...flags]), "deploy");
-      await readBack([{ version: id, percentage: 100 }]);
+      await landed([{ version: id, percentage: 100 }]);
       continue;
     }
     const id = versionOf(got.wrangler(["versions", "upload", ...flags]), "versions upload");
     const deploy = async (want: Serving[]) => {
       got.wrangler(["versions", "deploy", ...want.map((each) =>
         `${each.version}@${each.percentage}`), "--yes", "--config", config]);
-      await readBack(want);
+      await landed(want);
     };
     for (const share of atOnce(rolled) === null ? STAGES.shares.slice(0, -1) : []) {
       await deploy([{ version: id, percentage: share },
@@ -2869,21 +2930,62 @@ const pairCheck = step<"e2b">(async ({ run }, { e2b: admin }) => {
 
 type Handing = "cloudflare" | "zone" | "account" | "record";
 
-/** The route record `--record` names, read and held to its shape; missing or bad stops it. */
-const recordRead = step<"cloudflare" | "zone" | "account", "record">(async ({ run, say }, got) => {
-  const key = `${RECORD_PREFIX}${run.record}`;
-  const namespace = await controlNamespace(got.cloudflare, got.account);
-  const value = namespace === undefined ? undefined
-    : await got.cloudflare.value(got.account, namespace, key);
-  if (value === undefined) {
-    throw new Error(`there is no route record ${key} in ${NAMESPACES["CONTROL"]}: name the ` +
-                    "id a routes run's job summary gives; nothing is changed");
-  }
-  const record = recordOf(value, key, got.zone);
-  say(`the route record ${key}: the zone's ${record.routes.length} routes as run ${record.run} ` +
-      `read them at ${record.at}, and the handover's ${record.moved.length} changes`);
-  return { record };
-});
+/**
+ * The route record `--record` names, read and held to its shape; missing or bad stops it. It
+ * must be the host's oldest (`hostRecords`), the state before the handover's first routes run:
+ * one kept after it holds the handover's own state, and its handback would leave the host
+ * served, so naming it stops the run, naming the oldest. The handback ends the handover: once
+ * it reads back as the record has it, every record of the host is deleted (`recordsEnded`).
+ */
+const recordRead = step<"cloudflare" | "zone" | "account", "record" | "ending">(
+  async ({ run, say }, got) => {
+    const key = `${RECORD_PREFIX}${run.record}`;
+    const namespace = await controlNamespace(got.cloudflare, got.account);
+    const value = namespace === undefined ? undefined
+      : await got.cloudflare.value(got.account, namespace, key);
+    if (namespace === undefined || value === undefined) {
+      throw new Error(`there is no route record ${key} in ${NAMESPACES["CONTROL"]}: name the ` +
+                      "id a routes plan gives (a handback that read back deletes its records, " +
+                      "copied into its job summary); nothing is changed");
+    }
+    const record = recordOf(value, key, got.zone);
+    const held = await hostRecords(got, namespace, key);
+    const first = held[0];
+    if (first !== undefined && first.record.at < record.at) {
+      throw new Error(`the record ${key} was kept at ${record.at}, after the route record ${
+        first.key}, ${heldLine(first)}, the state before the first routes run on ${HOST}: it ` +
+        "holds the handover's own state, and its handback would leave the host served. Hand " +
+        `back with --record ${first.record.run}; nothing is changed`);
+    }
+    // Later ones first, so a handback stopped among the deletes leaves the one it names.
+    const ending = [...held.filter((each) => each.key !== key).reverse(),
+                    { record, namespace, key }];
+    say(`the route record ${key}: the zone's ${record.routes.length} routes as run ${
+      record.run} read them at ${record.at}, and the handover's ${record.moved.length} changes`,
+        `once the handback reads back as the record has it, delete ${ending.map((each) =>
+          each.key).join(", then ")} from ${NAMESPACES["CONTROL"]}: the handback ends the ` +
+        `handover ${ending.length === 1 ? "it records" : "they record"} (each copied into ` +
+        "this run's job summary first)");
+    return { record, ending };
+  });
+
+/**
+ * The route records the handback ends (`ending`), deleted once it has read back as its record
+ * has it: so the next routes run on the host keeps none and records the host as it stands. A
+ * copy of each goes in the job summary first.
+ */
+const recordsEnded = step<"cloudflare" | "account" | "ending">(
+  async ({ run, did, summarize: add }, got) => {
+    if (!run.apply) {
+      return;
+    }
+    for (const { record, namespace, key } of got.ending) {
+      add(`Route record ${key}, ended by this handback:\n\n\`\`\`json\n${
+        JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
+      await got.cloudflare.deleteKeys(got.account, namespace, [key]);
+    }
+    did(`deleted ${got.ending.map((each) => each.key).join(", ")}`);
+  });
 
 /**
  * The record's handback on the zone and the egress domain as they stand: the doors' custom
@@ -3235,12 +3337,8 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   }
   for (const rolled of back) {
     await got.cloudflare.deploy(got.account, rolled.name, rolled.before!.version);
-    const now = await got.cloudflare.deployment(got.account, rolled.name);
-    const want = [{ version: rolled.before!.version, percentage: 100 }];
-    if (!servesAs(now, want)) {
-      throw new Error(`${rolled.name}'s deployment read back as ${sharesLine(now)}, not ${
-        sharesLine(want)}: the rollback stops here`);
-    }
+    await readBack(run, got, rolled.name, [{ version: rolled.before!.version, percentage: 100 }],
+                   ": the rollback stops here");
   }
   say(back.length === 0 ? "every Worker serves its version before the run already"
     : `read each Worker's deployment back: ${back.map((each) => each.name).join(", ")} ` +
@@ -3311,11 +3409,14 @@ const ROUTED = READS.then(routePlan).then(recorded).then(hostRecord).then(redire
   .then(secrets).then(rollout).then(workers).then(retired).then(control).then(handOver)
   .then(customDomain).then(hook(true, ROUTED_HOOK));
 
-/** A handback: a routes run's record read, held to the zone, handed back and read back. */
+/**
+ * A handback: a routes run's record read, held to the zone, handed back and read back, then
+ * the host's records ended.
+ */
 const HANDBACK_LATER = Steps.none.then(zone).then(recordRead).then(backPlan).then(hookBackLater)
   .then(handBack);
 const HANDBACK = Steps.none.then(zone).then(recordRead).then(e2b).then(hookListed).then(backPlan)
-  .then(hookBack).then(handBack).then(handedBack);
+  .then(hookBack).then(handBack).then(handedBack).then(recordsEnded);
 
 /** The operator path's modes: the same steps for the plan job, which applies nothing. */
 const CONTROL = Steps.none.then(zone).then(controlEdit).list;
