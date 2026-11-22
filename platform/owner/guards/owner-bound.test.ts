@@ -1046,7 +1046,7 @@ describe("the owner's database bound", () => {
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
     expect([CALLS_OPEN, SPEND_KEPT, MODELS_BYTES, BLOB_CHARS])
-      .toEqual([1000, 4300, 655_360, 65_536]);
+      .toEqual([1000, 500, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME]).toEqual([512, 80]);
     // A grant's scopes are counted in bytes: the module's bound is the frozen bound the
     // schema's check spells.
@@ -1056,7 +1056,7 @@ describe("the owner's database bound", () => {
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 64 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
-    expect(TERMS["model_spend"]!.rows).toBe(4300);
+    expect(TERMS["model_spend"]!.rows).toBe(500);
     expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["connections"]!.bytes).toBe(256 + 655_360 + 16_384);  // in bytes

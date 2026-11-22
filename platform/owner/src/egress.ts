@@ -88,14 +88,14 @@ import {
 
 import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
-import { costMicros, largestFitting, periods } from "./money";
+import { costMicros, largestFitting, periods, SETTLED_WITHIN_S } from "./money";
 import { EGRESS_BEAT_S, type Outcome, OUTCOMES } from "../../contract/src/egress";
 import { type MeterOutcome, MODEL_NAME } from "../../contract/src/gateway";
 import type {
   EgressOpened, EgressRefusal, EgressRequest, EgressReserved, ReserveRequest,
 } from "../../contract/src/owner";
 import { type EgressCode, Refusal } from "../../contract/src/refusal";
-import { EGRESS_DEADLINE_S, EGRESS_PATH_MAX } from "../../contract/src/limits";
+import { EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Call, Door, DoorUnits } from "./door";
 import type { Runs } from "./runs";
@@ -131,7 +131,8 @@ export const EGRESS_LIMITS: EgressLimits = Object.freeze({
 /**
  * An open reservation with no beat for this long was its door's lost invocation's: three
  * beats missed, so a slow beat is never taken for a lost door. The one-day total stays the
- * door's own deadline (`EGRESS_DEADLINE_S`), past which an open row is lost too.
+ * door's own deadline (`EGRESS_DEADLINE_S`), a beat past which an open row is lost too
+ * (`money.ts` `SETTLED_WITHIN_S`).
  */
 export const LOST_AFTER_S = 3 * EGRESS_BEAT_S;
 /** A path the door sends: URL-serialized, so visible ASCII only. */
@@ -710,14 +711,14 @@ export class Egress {
   }
 
   /**
-   * Open rows with no beat for `LOST_AFTER_S`, or past their door's deadline: their doors'
-   * invocations were lost; their spend unknown.
+   * Open rows with no beat for `LOST_AFTER_S`, or past their door's deadline and a beat
+   * (`SETTLED_WITHIN_S`): their doors' invocations were lost; their spend unknown.
    */
   #recover(now: number): void {
     const lost = this.#sql.exec<{ id: string }>(
       "UPDATE egress_reservations SET state = 'settled', outcome = 'lost', settled_at = ? " +
         "WHERE state = 'open' AND (coalesce(beat_at, opened_at) <= ? OR opened_at <= ?) " +
-        "RETURNING id", now, now - LOST_AFTER_S, now - EGRESS_DEADLINE_S - EGRESS_BEAT_S)
+        "RETURNING id", now, now - LOST_AFTER_S, now - SETTLED_WITHIN_S)
       .toArray();
     for (const { id } of lost) {
       // What it cost is unknown: it keeps its whole charge.
