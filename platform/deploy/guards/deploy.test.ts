@@ -58,13 +58,14 @@ import {
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
   lifecycleHook, lockCounts, type Mode, MODES, parse,
   holding, perform, PUBLIC_INPUTS, registerRedirect, type Rolled, rolloutOf, type RolloutRecord, routedConfig,
-  type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
+  type RouteRecord, secretPlan, upstreamFrom, versionFlags, versionOf, wranglerFor,
 } from "../deploy";
 import {
   type Bundle, type Bundles, BUNDLES, bundles, pairTag, treeImage,
 } from "../../sandbox/template/pair";
 import {
-  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, FILES_BUCKET, IMPORT_NAMES,
+  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, FILES_BUCKET, FORWARD, forwardCounts,
+  IMPORT_NAMES,
   KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, QUEUES, RETIRED,
   retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, workerNames,
 } from "../facts";
@@ -273,6 +274,28 @@ const HELD_SERVING: Readonly<Record<string, readonly Served[]>> = Object.fromEnt
 const NOW = new Date("2026-11-07T12:00:00.000Z");
 
 /**
+ * Each Worker's active deployment, by script, as a map, and every deployment before it: each
+ * one set is a new deployment, as Cloudflare lists them, newest first.
+ */
+class Deployed extends Map<string, { version: string; percentage: number }[]> {
+  readonly #past = new Map<string, { version: string; percentage: number }[][]>();
+
+  override set(script: string, serving: { version: string; percentage: number }[]): this {
+    const now = this.get(script);
+    if (now !== undefined) {
+      this.#past.set(script, [now, ...this.#past.get(script) ?? []]);
+    }
+    return super.set(script, serving);
+  }
+
+  /** `script`'s deployments, newest first. */
+  history(script: string): { version: string; percentage: number }[][] {
+    const now = this.get(script);
+    return now === undefined ? [] : [now, ...this.#past.get(script) ?? []];
+  }
+}
+
+/**
  * A fake of everything the kit reaches, as one ordered event log: Cloudflare's API and
  * wrangler (the account's state changing as the kit changes it), WorkOS, the owner issuer,
  * E2B, the canary, the pair's checks, the migration locks' command line, H2's probes and
@@ -348,7 +371,7 @@ function world(options: WorldOptions = {}) {
   /** Each version the account holds, by id: its Worker and its tag. */
   const versions = new Map<string, { script: string; tag: string | null }>();
   /** Each Worker's active deployment, by script: a held account's one version before. */
-  const deployments = new Map<string, { version: string; percentage: number }[]>();
+  const deployments = new Deployed();
   for (const [script, serving] of Object.entries(options.serving ?? (held ? HELD_SERVING : {}))) {
     deployments.set(script, serving.map(({ version, percentage }) => ({ version, percentage })));
     for (const { version, tag } of serving) {
@@ -370,12 +393,16 @@ function world(options: WorldOptions = {}) {
         && path.startsWith(`${account}/${options.refusingListing}`)) {
       return json({ success: false, errors: [{ code: 10000 }] }, 500);
     }
-    const deploying = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)\/deployments$/.exec(path);
+    const deploying = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)\/deployments(\?per_page=100)?$/
+      .exec(path);
     if (deploying !== null && method === "GET") {
-      const serving = deployments.get(deploying[1]!);
-      return json({ success: true, result: { deployments: serving === undefined ? []
-        : [{ id: "d", strategy: "percentage", versions: serving.map((each) =>
-          ({ version_id: each.version, percentage: each.percentage })) }] } });
+      // The latest alone on the default page, as the kit reads it; every one on the long page.
+      const history = deployments.history(deploying[1]!);
+      return json({ success: true, result: { deployments: (deploying[2] === undefined
+        ? history.slice(0, 1) : history).map((serving, at) => ({ id: `d${at}`,
+          strategy: "percentage", versions: serving.map((each) =>
+            ({ version_id: each.version, percentage: each.percentage })) })) },
+                    result_info: { page: 1, per_page: 100, total_count: history.length } });
     }
     if (deploying !== null && method === "POST") {
       if (options.refusingDeploy !== undefined) {
@@ -829,6 +856,23 @@ describe("the deploy kit's facts", () => {
     expect(retiredWorkers(["tinyassets-old"], NAMES)).toEqual(["tinyassets-old"]);
     expect(() => retiredWorkers(["tinyassets-old", NAMES["owner"]!], NAMES))
       .toThrow(`platform.json retires ${NAMES["owner"]}, which a config still names`);
+  });
+
+  it("counts each Worker's forward changes, each naming Workers of this tree once, with why",
+     () => {
+    expect(FORWARD).toEqual(forwardCounts(platform.forward.changes, NAMES));
+    expect(Object.keys(FORWARD).sort()).toEqual([...WORKERS].sort());
+    const why = "its app's page asks /app/api in a shape the version before cannot read";
+    expect(forwardCounts([{ workers: ["doors"], why }, { workers: ["doors", "owner"], why }],
+                         NAMES)).toEqual({ ...Object.fromEntries(WORKERS.map((worker) =>
+      [worker, 0])), doors: 2, owner: 1 });
+    for (const bad of [{ workers: [], why }, { workers: ["doors", "doors"], why },
+                       { workers: ["tinyassets-doors"], why }, { workers: ["doors"] },
+                       { workers: ["doors"], why: " " }, null]) {
+      expect(() => forwardCounts([{ workers: ["owner"], why }, bad], NAMES), JSON.stringify(bad))
+        .toThrow("platform.json's forward change 2 names no Worker of this tree, each once, " +
+                 "with why");
+    }
   });
 
   it("holds only what no config says, and that for exactly what the configs declare", () => {
@@ -2379,7 +2423,7 @@ describe("the rollout record and mode rollback", () => {
                                        tag: HELD_SERVING[NAMES[worker]!]![0]!.tag },
         counts: Object.fromEntries(Object.entries(PINNED[worker] ?? {}).map(([path, pinned]) =>
           [path, pinned.length])),
-        whole: false, secrets: [] })) });
+        whole: false, secrets: [], forward: 0 })) });
     // Its every new version is tagged with the run's commit.
     expect(Object.values(serving(w)).map((each) =>
       w.versions.get(each.replace(/@100$/, ""))!.tag!.slice(0, 12))).toEqual(WORKERS.map(() => OURS));
@@ -2540,7 +2584,7 @@ describe("the rollout record and mode rollback", () => {
   it("names why each Worker is forward-only, from the record's facts alone", () => {
     const rolled = (change: Partial<Rolled>): Rolled => ({
       name: "w", before: { version: "v", tag: `${BEFORE}-m3.1` }, counts: { a: 3, b: 1 },
-      whole: false, secrets: [], ...change });
+      whole: false, secrets: [], forward: 0, ...change });
     expect(forwardOnly(rolled({}))).toBeNull();
     expect(forwardOnly(rolled({ counts: { a: 2, b: 1 } }))).toBeNull();
     expect(forwardOnly(rolled({ counts: {}, before: { version: "v", tag: null } }))).toBeNull();
@@ -2559,6 +2603,26 @@ describe("the rollout record and mode rollback", () => {
         `its version before is tagged ${tag ?? "with nothing"}, which names no migration ` +
         "counts to hold the run's -m3.1 to: unknown");
     }
+    // A forward count above the version before's stops it; one at or below it, or none, not.
+    const marked = (forward: number, tag: string | null) =>
+      forwardOnly(rolled({ forward, before: { version: "v", tag } }));
+    const cannot = "it writes, or is called, in a way its version before cannot follow " +
+      "(platform.json forward)";
+    expect(marked(1, `${BEFORE}-m3.1`)).toBe(
+      `the run's version is marked -f1 and its version before with none: ${cannot}`);
+    expect(marked(3, `${BEFORE}-m3.1-f2`)).toBe(
+      `the run's version is marked -f3 and its version before -f2: ${cannot}`);
+    expect([marked(2, `${BEFORE}-m3.1-f2`), marked(1, `${BEFORE}-m3.1-f2`),
+            marked(0, `${BEFORE}-m3.1-f2`)]).toEqual([null, null, null]);
+    for (const tag of [null, "v1.2", `${BEFORE}-f0`, `${BEFORE}-m3.1-f`]) {
+      expect(marked(1, tag), String(tag)).toBe(`its version before is tagged ${
+        tag ?? "with nothing"}, which names no forward count to hold the run's -f1 to: unknown`);
+    }
+    // The count rides the tag after the locks' counts, and is left out at 0.
+    expect(versionFlags(COMMIT, { b: 1, a: 3 }, 2))
+      .toEqual(["--tag", `${OURS}-m3.1-f2`, "--message", COMMIT]);
+    expect(versionFlags(COMMIT, {}, 1)).toEqual(["--tag", `${OURS}-f1`, "--message", COMMIT]);
+    expect(versionFlags(COMMIT, {}, 0)).toEqual(["--tag", OURS, "--message", COMMIT]);
   });
 
   it("holds every Worker to the record first: a deploy since stops it, a split of the run's " +
@@ -2579,6 +2643,83 @@ describe("the rollout record and mode rollback", () => {
                                 { version: "before-gateway", percentage: 90 }]);
     await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
     expect(serving(w)).toEqual(BEFORE_ALL);
+  });
+
+  it("holds the record's version before to Cloudflare's deployments, and its Workers to the " +
+     "tree's deploy order", async () => {
+    // The gateway served an older real version before the one the run found.
+    const w = world({ held: true });
+    const gateway = NAMES["gateway"]!;
+    const older = { version: "older-gateway", tag: "a".repeat(12) };
+    w.versions.set(older.version, { script: gateway, tag: older.tag });
+    w.deployments.set(gateway, [{ version: older.version, percentage: 100 }]);
+    w.deployments.set(gateway, [{ version: "before-gateway", percentage: 100 }]);
+    await runMode(w, "dark", ["--yes"], RUN);
+    const held = recordIn(w)!;
+    const plant = (workers: readonly Rolled[]) => {
+      w.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers }));
+      w.events.splice(0);
+    };
+    // Named as the one before, with its real tag: every tag agrees, and the history does not.
+    plant(held.workers.map((each) => each.name === gateway ? { ...each, before: older } : each));
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+      `the record ${ROLLOUT} holds ${gateway} as serving ${older.version} before the run, and ` +
+      `Cloudflare's deployments listing has no deployment of it alone followed by one of ` +
+      `commit ${OURS}: nothing is changed`);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    // A Worker left out, or the order turned, so a callee would go back before its caller.
+    const names = WORKERS.map((worker) => NAMES[worker]).join(", ");
+    for (const workers of [held.workers.filter((each) => each.name !== DOORS),
+                           [...held.workers].reverse()]) {
+      plant(workers);
+      await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+        `the record ${ROLLOUT} names the Workers ${workers.map((each) => each.name).join(", ")
+        }, and this tree deploys ${names}, in that order: nothing is changed (a rollback by ` +
+        "hand follows checklist.md)");
+      expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    }
+    plant(held.workers);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+  });
+
+  it("takes a later run of the same commit back to the earlier's version, and the earlier back " +
+     "after a later run's rollback", async () => {
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    const first = serving(w);
+    await runMode(w, "dark", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
+    await runMode(w, "rollback", ["--yes", "--record", "7002"], RUN);
+    expect(serving(w)).toEqual(first);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+  });
+
+  it("stops at a Worker the run marked forward (-f), its count held to Cloudflare's tag",
+     async () => {
+    // A tree whose forward list names the owner once: its version's tag carries -f1.
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    const owner = NAMES["owner"]!;
+    const ours = w.deployments.get(owner)![0]!.version;
+    const held = recordIn(w)!;
+    const count = (forward: number) => {
+      w.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers: held.workers.map(
+        (each) => each.name === owner ? { ...each, forward } : each) }));
+      w.events.splice(0);
+    };
+    // The record's count is held to the tag: one the tag lacks is no record of the run's.
+    count(1);
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+      `the record ${ROLLOUT} holds ${owner} as before ${HELD_SERVING[owner]![0]!.tag}, counts `);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    w.versions.set(ours, { script: owner, tag: `${w.versions.get(ours)!.tag}-f1` });
+    const work = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(deployed(w)).toEqual([DOORS]);
+    expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
+      `^leave ${owner} on ${ours} \\(${OURS}-m[0-9.]+-f1\\) at 100%: the run's version is ` +
+      "marked -f1 and its version before with none: it writes, or is called, in a way its " +
+      "version before cannot follow \\(platform.json forward\\)$")));
   });
 
   it("stops loudly when Cloudflare refuses a deployment, or one reads back otherwise",
@@ -2603,7 +2744,8 @@ describe("the rollout record and mode rollback", () => {
         NAMESPACES["CONTROL"]}: name the id a dark or routes run's job summary gives; nothing ` +
         "is changed");
     const good = { kind: "tinyassets-rollout", run: "1", attempt: null, at: "t", commit: COMMIT,
-                   workers: [{ name: "w", before: null, counts: {}, whole: false, secrets: [] }] };
+                   workers: [{ name: "w", before: null, counts: {}, whole: false, secrets: [],
+                                forward: 0 }] };
     expect(rolloutOf(good, "k")).toEqual(good);
     const one = good.workers[0]!;
     for (const [bad, why] of [
@@ -2611,6 +2753,8 @@ describe("the rollout record and mode rollback", () => {
       [{ ...good, commit: "c0ffee" }, "is out of shape"],
       [{ ...good, workers: [{ ...one, counts: { a: -1 } }] }, "holds a Worker out of shape"],
       [{ ...good, workers: [{ ...one, secrets: ["K", "K"] }] }, "holds a Worker out of shape"],
+      [{ ...good, workers: [{ ...one, forward: 0.5 }] }, "holds a Worker out of shape"],
+      [{ ...good, workers: [{ ...one, forward: undefined }] }, "holds a Worker out of shape"],
       [{ ...good, workers: [{ ...one, before: { version: 1 } }] }, "holds a Worker out of shape"],
       [{ ...good, workers: [one, one] }, "holds a Worker twice"],
     ] as const) {
