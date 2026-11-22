@@ -498,18 +498,15 @@ jobs:
   # workspaces it deletes), the typecheck and the process leg run on that tree. Green when
   # nothing that stays, and is no edit, needs what goes. The tree is never pushed, no job holds
   # a secret, and nothing live is reached. Required through `required-tests`' needs, as the
-  # platform legs are, on every event but the merge group: the queue's runners are its
-  # bottleneck (jobs waited up to 410 s for one in merge-group runs 44901731945 and
-  # 44901733800), and a PR can only break the tree on its own diff, which its PR run reads;
-  # the hourly run holds main (docs/decisions/untangle-2026-11/dry-run-required.md). Deleted
-  # at the cutover with dry-run.ts.
+  # platform legs are, on every event: strict status checks are off, so the merge group is
+  # the one run of a PR merged onto the main it lands on
+  # (docs/decisions/untangle-2026-11/dry-run-queue.md). Deleted at the cutover with dry-run.ts.
   #
   # timeout-minutes is a watchdog, as the platform legs' are: the slowest legs took 23 s, the
   # slowest leg 344 s (owner 2/2, run 44888783406) and the checks 107 s, in ten runs of
   # the old `Cutover dry run` workflow on 2026-11-21 (44888783406 to 44904009707).
   cutover-dry-run-legs:
     name: cutover-dry-run-legs
-    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -556,7 +553,6 @@ jobs:
 
   cutover-dry-run-checks:
     name: cutover-dry-run-checks
-    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1027,11 +1023,9 @@ jobs:
             exit 1
           fi
 
-      # The cutover's dry run, on every event but the merge group, which runs none of it: its
-      # legs and its checks must have run and succeeded. A failed `cutover-dry-run-legs`
-      # skips `cutover-dry-run`, which fails here.
+      # The cutover's dry run on every event: its legs and its checks must have run and
+      # succeeded. A failed `cutover-dry-run-legs` skips `cutover-dry-run`, which fails here.
       - name: Require the cutover dry run
-        if: github.event_name != 'merge_group'
         env:
           DRY_RUN_RESULT: ${{ needs.cutover-dry-run.result }}
           DRY_RUN_CHECKS_RESULT: ${{ needs.cutover-dry-run-checks.result }}

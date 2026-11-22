@@ -14,7 +14,7 @@
 2. **The job is `cutover-dry-run.yml`**: on every pull request, nightly and by hand. No job holds a secret, nothing is pushed, nothing live is reached.
    - Its legs are `platform-tests`' own (`ci/dry-run.ts legs` reads `tests.yml`), less each workspace the manifest deletes (`import`). A new leg needs no second edit.
    - A `checks` job runs the typecheck and the process leg (`scripts/tests`, carry-outs included).
-   - It was not required: a required job would add a full suite run to every queue entry. Corrected by `dry-run-required.md`: `tests.yml`'s `required-tests` needs it on every event but the merge group.
+   - It was not required: a required job would add a full suite run to every queue entry. Corrected by `dry-run-required.md` and `dry-run-queue.md`: `tests.yml`'s `required-tests` needs it on every event.
    - No actionlint: a deletion changes no staying workflow's text. What it can break there, a local action or a script a step runs, is a path the scope rule (item 4) holds on every PR. actionlint stays `actionlint.yml`'s, so its version and checksum are not copied.
    - **Green locally on this head:** the typecheck, all 13 legs and the process leg pass on the tree (body, "Gates"). This PR's own run is the live proof.
 3. **What the dry run found, each fixed as data or at its cause:**
