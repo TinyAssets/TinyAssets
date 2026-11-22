@@ -41,10 +41,10 @@
  * so the keyed checks wait, key or none. The kit reads the record and passes it (`deploy.ts`
  * `canary`); where it is not passed (the workflow holds no Cloudflare token to read the record)
  * a canary owner is owed, and a missing key fails (exit 7). `--clock` (the workflow's own
- * schedule, the watchdog) checks that the clock dispatched a run in the last 30 minutes. Every check runs and prints one line; the exit is
- * the first failure's code, else 0. A run with a check waiting exits 0 and says what waits:
- * a waiting check is not a pass. `--result` writes the outcomes for the alarm (`alarm.ts`).
- * No credential is ever printed.
+ * schedule, the watchdog) checks that the clock dispatched a run in the last 30 minutes.
+ * Every check runs and prints one line; the exit is the first failure's code, else 0. A run
+ * with a check waiting exits 0 and says what waits: a waiting check is not a pass. `--result`
+ * writes the outcomes for the alarm (`alarm.ts`). No credential is ever printed.
  *
  * `--smoke` is the deploy kit's smoke of the doors' new version at a share below 100
  * (`deploy.ts` `workers`), alone: the doors must serve, and only their checks run (the

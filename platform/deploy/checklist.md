@@ -392,9 +392,9 @@ It never counts as "absent".
     dark record's `ordinary: "canary"` with `canary: []`, or `ordinary: "none"`): no canary
     owner can sign in or pass the gate then. The kit reads the record after every mode it
     runs the canary for and says so (`--closed`); the workflow holds no token to read it, so
-    its runs always need the key. Anywhere else, without `TA_PROBE_KEY` it fails (exit 7), since an unchecked check
-    is not a pass. A closed gate (`503`) is named too. The handle set assumes the canary owner keeps the
-    default policy (every tool, and code mode on): a narrowed one reads as drift.
+    its runs always need the key. Otherwise, without `TA_PROBE_KEY` it fails (exit 7), since
+    an unchecked check is not a pass. A closed gate (`503`) is named too. The handle set
+    assumes the canary owner keeps the default policy (every tool, and code mode on): a narrowed one reads as drift.
   - **Its clock and alarm.** The doors' Cron Trigger dispatches the workflow every ten
     minutes with `PLATFORM_CANARY_TOKEN`; without the token it dispatches nothing. A failed
     dispatch pages Pushover directly at `:00` and `:30`. The workflow's own hourly schedule
