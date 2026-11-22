@@ -1171,10 +1171,10 @@ async function placedBefore({ cloudflare, zone: id }: Pick<Values, "cloudflare" 
  * served before (none for a first deploy) and that version's tag, and what the run's version
  * of it carries that a version before cannot take back (`forwardOnly`): its locks' counts, a
  * whole deploy (`--migrate`), the names of the secrets the run sets on it, and its forward
- * count (`platform.json` `forward`). The run's own
- * versions are known by their tag, the run's commit (`versionFlags`). It holds no secret and
- * not the account id, beside the route record in the control namespace, under the run's id,
- * which a re-run attempt keeps; the job summary names it.
+ * count (`platform.json` `forward`). The run's own versions are known by their tag, the run's
+ * commit (`versionFlags`). It holds no secret and not the account id, beside the route record
+ * in the control namespace, under the run's id, which a re-run attempt keeps; the job summary
+ * names it.
  */
 export interface RolloutRecord {
   readonly kind: typeof ROLLOUT_KIND;

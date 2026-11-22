@@ -867,7 +867,8 @@ describe("the deploy kit's facts", () => {
                          NAMES)).toEqual({ ...Object.fromEntries(WORKERS.map((worker) =>
       [worker, 0])), doors: 2, owner: 1 });
     for (const bad of [{ workers: [], why }, { workers: ["doors", "doors"], why },
-                       { workers: ["tinyassets-doors"], why }, { workers: ["doors"] },
+                       { workers: [NAMES["doors"]], why }, { workers: ["toString"], why },
+                       { workers: ["doors"] },
                        { workers: ["doors"], why: " " }, null]) {
       expect(() => forwardCounts([{ workers: ["owner"], why }, bad], NAMES), JSON.stringify(bad))
         .toThrow("platform.json's forward change 2 names no Worker of this tree, each once, " +

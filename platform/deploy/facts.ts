@@ -135,7 +135,7 @@ export function forwardCounts(changes: readonly unknown[],
   for (const [at, change] of changes.entries()) {
     const { workers, why } = (change ?? {}) as { workers?: unknown; why?: unknown };
     if (!Array.isArray(workers) || workers.length === 0 || new Set(workers).size !== workers.length
-        || !workers.every((worker) => typeof worker === "string" && worker in counts)
+        || !workers.every((worker) => typeof worker === "string" && Object.hasOwn(counts, worker))
         || typeof why !== "string" || why.trim() === "") {
       throw new Error(`platform.json's forward change ${at + 1} names no Worker of this tree, ` +
                       "each once, with why");

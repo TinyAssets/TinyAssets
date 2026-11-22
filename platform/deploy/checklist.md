@@ -313,25 +313,27 @@ It never counts as "absent".
   - the run set its secrets: its version before holds the old values, and Cloudflare
     refuses that deployment (10220) unless forced, which the kit never does;
   - its version's `-m` counts are higher than its version before's tag names, or that tag
-    names none: every object the newer version migrated would refuse to start.
+    names none: every object the newer version migrated would refuse to start;
+  - its version's `-f` count is higher than its version before's tag names: a change in
+    `platform.json` `forward` says its version before cannot read what it writes, or answer
+    what sandboxes, open pages or queued messages send it. Its author adds that change in
+    the same pull request, and its reviewer finds one missing.
 
   With no Worker to take back it changes nothing. Then roll forward with a fix, or close
-  the gates (mode `control`). Before any change it holds each Worker to the record: a
-  version neither the one before nor one tagged with the run's commit (a deploy since)
-  stops it, named, and so does a record whose tags or counts differ from Cloudflare's.
-
-  **What it cannot see: read the run's diff before you approve the apply job.** A version
-  that writes a shape its version before cannot read, with no migration (a KV value, an R2
-  object, a queue message, Durable Object storage outside `migrate.ts`, JSON in a column),
-  or that sandboxes it started or open browsers speak to in a way the version before cannot,
-  is forward-only too, and nothing marks it yet. Roll forward instead. Hold each version the
-  plan names to the run's job summary copy of the record: other Workers can write the KV one.
+  the gates (mode `control`). Before any change it holds the record whole to Cloudflare,
+  which only the deploy's token writes (other Workers can write the KV record): its Workers
+  are this tree's, in its deploy order; each Worker serves only its version before or ones
+  tagged with the run's commit (else a deploy since stops it, named); the record's tags and
+  counts are Cloudflare's tags; and each version it takes a Worker back to is one the
+  Worker's Deployments show serving alone just before a deployment of the run's commit.
+  Any difference stops it, named, with nothing changed.
 
   **A rollback by hand** (the dashboard's Deployments, Rollback, from a phone) follows the
-  same rules, which Cloudflare cannot know: never to a version whose tag's `-m` counts are
-  lower than the live version's, nor past a run that set the Worker's secrets (the dashboard
-  asks to confirm changed secrets: refuse), and callers first, the doors before the owner.
-  The run's rollout record names each version before.
+  same rules, which Cloudflare cannot know: never to a version whose tag's `-m` or `-f`
+  counts are lower than the live version's, nor past a run that set the Worker's secrets
+  (the dashboard asks to confirm changed secrets: refuse), and callers first, the doors
+  before the owner. The run's rollout record names each version before; its Deployments
+  show the same one just before the run's.
 - **The platform's canary** (Fact 11, d3 §J2): `deploy/canary.ts`, run by **Platform canary**
   (`platform-canary.yml`) and by the kit after each mode. It checks the platform from
   outside, through the public routes, and changes nothing but one file in the canary owner's

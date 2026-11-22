@@ -42,7 +42,9 @@ Untangle the code a change touches, or a whole area, and finish the job.
   test uses, a copy of a contract value, a per-module allow-list, an enforcer
   (hook, gate, sandbox check) reading or started under env or files the
   agent or its settings can write (`NODE_OPTIONS`), or start-checked in an
-  env it does not enforce in.
+  env it does not enforce in, and a Worker's change its version before cannot
+  follow (a shape it writes, a sandbox, page or message that calls it) with no
+  change in `platform/deploy/platform.json` `forward`.
   It asks only for what makes the code more correct or simpler, and calls a
   departure from the decided design better (the log is updated) or a
   shortcut. It commits its own fixes of up to 50 lines and approves that

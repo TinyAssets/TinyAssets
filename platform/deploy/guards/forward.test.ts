@@ -65,8 +65,8 @@ describe("the forward list against the base branch", () => {
   it("refuses an edited or dropped change, and a template moved unmarked", () => {
     const one = { workers: ["doors"], why: "its app's page asks /app/api in a new shape" };
     const two = { workers: ["sandbox"], why: "the image's engines write a new sign-in layout" };
-    const base: Side = { changes: [one], template: "tinyassets-sandbox:s1" };
-    expect(forwardProblems(base, { changes: [one, two], template: "tinyassets-sandbox:s2" }))
+    const base: Side = { changes: [one], template: "image:s1" };
+    expect(forwardProblems(base, { changes: [one, two], template: "image:s2" }))
       .toEqual([]);
     expect(forwardProblems(base, { changes: [one], template: base.template })).toEqual([]);
     const edited = "a forward change was edited or taken away: a rollback reads each Worker's " +
@@ -74,14 +74,14 @@ describe("the forward list against the base branch", () => {
     expect(forwardProblems(base, { changes: [{ ...one, why: "another" }, two],
                                    template: base.template })).toEqual([edited]);
     expect(forwardProblems(base, { changes: [two], template: base.template })).toEqual([edited]);
-    const moved = "the sandbox's pinned template moves from tinyassets-sandbox:s1 to " +
-      "tinyassets-sandbox:s2 with no forward change naming the sandbox: add one (a " +
+    const moved = "the sandbox's pinned template moves from image:s1 to " +
+      "image:s2 with no forward change naming the sandbox: add one (a " +
       "rolled-back sandbox Worker would resume its sandboxes with its older runner)";
-    expect(forwardProblems(base, { changes: [one], template: "tinyassets-sandbox:s2" }))
+    expect(forwardProblems(base, { changes: [one], template: "image:s2" }))
       .toEqual([moved]);
     // A change the base already holds does not mark a template moved now.
-    expect(forwardProblems({ changes: [two], template: "tinyassets-sandbox:s1" },
-                           { changes: [two], template: "tinyassets-sandbox:s2" }))
+    expect(forwardProblems({ changes: [two], template: "image:s1" },
+                           { changes: [two], template: "image:s2" }))
       .toEqual([moved]);
   });
 });
