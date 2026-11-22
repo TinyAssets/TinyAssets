@@ -359,7 +359,7 @@ A widening refused after its call reached the owner's account SHALL leave a `ref
 - **THEN** the call is refused, no agent is registered, and one refusal receipt is kept
 
 ### Requirement: Owner policy is one document written against its generation
-The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown.
+The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown. A pending proposal SHALL have no life of its own: at the pending set's bound a new card SHALL let the oldest pending one go (the proposer's own at its share, else its class's: an outside client's card SHALL never push out the owner's; a card whose class has none to let go is refused), and the owner SHALL be told whose went.
 
 #### Scenario: Two writes from the same view
 - **WHEN** the owner writes twice naming the same generation
@@ -388,7 +388,7 @@ At a door whose row names an act, the object SHALL hold an agent's call (a run's
 - **THEN** a run of `main` is refused `action_never` at a file door, and an outside client's call and the owner's own are not
 
 ### Requirement: The owner answers a held call once
-The owner SHALL answer a held call only in its session, by the card's id and the digest it was shown: a yes SHALL admit that one call once, within a day, and a no SHALL delete the card. A held call SHALL be bound to the policy generation it was asked under, bounded, and swept past its life. Every decision a rule made SHALL be receipted, and a call no rule decides SHALL write nothing.
+The owner SHALL answer a held call only in its session, by the card's id and the digest it was shown: a yes SHALL admit that one call once, whenever it is made, and a no SHALL delete the card. A held call SHALL be bound to the policy generation it was asked under, and SHALL have no life of its own: it waits until it is answered, its generation passes, or the held set's bound needs its place, when the oldest goes (the asking client's own at its share, else its class's: an outside client's call SHALL never push out the owner's own agents'; a call whose class has none to let go is refused), and the owner SHALL be told whose went. Every decision a rule made SHALL be receipted, and a call no rule decides SHALL write nothing.
 
 #### Scenario: A call held and answered yes
 - **WHEN** the owner's rule is `{ act: "workspace.files", do: "ask" }` and an outside client makes a directory
@@ -397,6 +397,10 @@ The owner SHALL answer a held call only in its session, by the card's id and the
 #### Scenario: The rules changed while a call is held
 - **WHEN** the owner writes its policy while a card is pending
 - **THEN** the card is neither shown nor answered, and the call asked again is decided under the new rules
+
+#### Scenario: A card the owner answers a year on
+- **WHEN** a call is held, and the owner answers yes a year later, and the agent makes the call again a year after that
+- **THEN** the card is shown and answered, and the yes admits the call once
 
 ### Requirement: A run's CLI's own tool calls are decided at its hook
 Where a run's engine record names a pre-tool hook (`decide`), the run's decide door SHALL answer which of the CLI's tools the owner's rules name, and SHALL decide each call the hook sends as each act it is (its tool kind's, or a rule's tools'), as that act's door call is decided, refused with the card where held. The runner SHALL write the hook only when a rule names a tool it matches, and SHALL fail the run when the hook's helper cannot reach the door before the CLI starts.
@@ -542,7 +546,7 @@ A revoked API key's row nothing holds MAY be forgotten when the binder reports t
 - **THEN** its row is forgotten, and a call with that key is refused with "outside client has no grant"
 
 ### Requirement: An MCP agent registers through a card its client files
-An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held for a bounded time. The owner SHALL apply it, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
+An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held until the owner applies it or its client's grant changes, with no life of its own; at the cards' bound a filing SHALL let the oldest go (the client's own at its share), never refuse for room. The owner SHALL apply it, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
 
 #### Scenario: The owner's browser names an MCP client
 - **WHEN** a call carries an MCP client's origin together with the owner's session to register an agent

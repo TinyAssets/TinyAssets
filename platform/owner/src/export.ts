@@ -257,8 +257,8 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   owner_restore: "a restore under way, or the record of the one that made this object",
   restore_rows: "a restore's staged rows, the generation's own, deleted once loaded",
   restore_filter: "a restore's filter of its chunk rows' names, deleted once swept",
-  action_requests: "an agent's call held for the owner's answer, a month at most: in flight, " +
-    "as an upload is; a restored owner's agents ask again",
+  action_requests: "an agent's call held for the owner's answer: in flight, as an upload " +
+    "is; a restored owner's agents ask again",
   action_receipts: "the action rules' decisions on agents' calls: kept apart until a " +
     "migration may change an exported table (`schema.ts` `FORWARD`)",
 });

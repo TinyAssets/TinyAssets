@@ -4,7 +4,7 @@ Owed by `fact15-caps.md` (#5781): the owner's spend counters kept 40 days and 3 
 periods (`USAGE_LIMITS.daysKept`, `monthsKept`; `SPEND_KEPT` 4,300, a hundred sources at 43
 periods) with no reason behind either number. Fact 15: a ceiling is recorded with its reason.
 
-## Research: every writer and reader of `model_spend` (read at `c21c166d0`)
+## Research: every writer and reader of `model_spend` (read at `c21c166d0`; #5781 merged in at `b6895aaae` changed none)
 
 Writers, all the schema's triggers, each into the row's own `d:<day>` and `m:<month>`, the
 periods it was reserved in:
@@ -73,7 +73,7 @@ counts toward `SPEND_KEPT` and lasts until the next prune.
   old reservation into a pruned period (one counter made anew, gone at the next prune). Its
   removal is a door, an exported table and a migration of its own.
 - `SPEND_KEPT`'s hundred sources a period: the row's share, its reason the 10 GB's
-  (`fact15-caps.md`'s Share clause, which names 43 periods until #5781 merges here).
+  (`fact15-caps.md`'s Share clause, now five periods, 0.42 MB).
 - `specs/owner-object/spec.md` says the counters are "pruned past their window at each open",
   still true.
 
@@ -82,6 +82,8 @@ counts toward `SPEND_KEPT` and lasts until the next prune.
 - [ ] Delete the object's own model reservations, which nothing has called since #5389: the
   `Usage` reserve path, `model_reservations` and its triggers, `usageReceipts`, with an owner
   migration (`untangle/model-reservations`).
-- [ ] Once #5781 merges, tick its `fact15-caps.md` spend-periods line and move
+- [x] Once #5781 merges, tick its `fact15-caps.md` spend-periods line and move
   `limits-audit.md`'s `SPEND_KEPT` Share clause to five periods and this head's figure
-  (`untangle/spend-periods`).
+  (`untangle/spend-periods`: merged with main at `b6895aaae`). The kept window is wider than
+  that line's "current and previous": a day and a beat, so three days at a month's first
+  minute.
