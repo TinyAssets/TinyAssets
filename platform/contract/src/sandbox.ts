@@ -181,10 +181,14 @@ export interface NetworkReapply {
 }
 
 /**
- * A re-apply's answer: `applied`, on the running sandbox now; `at_resume`, its sandbox
- * paused, the network kept and applied as it resumes; `lost`, no sandbox of that lease.
+ * A re-apply's answers (`NetworkApplied`): `applied`, on the running sandbox now; `at_resume`,
+ * its sandbox paused, the network kept and applied as it resumes; `lost`, no sandbox of that
+ * lease.
  */
-export type NetworkApplied = { readonly state: "applied" | "at_resume" | "lost" };
+export const NETWORK_STATES = Object.freeze(["applied", "at_resume", "lost"] as const);
+
+/** A re-apply's answer. */
+export type NetworkApplied = { readonly state: (typeof NETWORK_STATES)[number] };
 
 /** The most log entries one read takes. */
 export const METER_BATCH = 1000;

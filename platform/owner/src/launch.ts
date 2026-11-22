@@ -62,7 +62,7 @@ import {
   type SpendCaps,
 } from "./runs";
 import type { Usable } from "./auto";
-import { startOutcome, vendorHosts } from "./sandbox";
+import { networkOutcome, startOutcome, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";
 import { type Signins, switchedOn } from "./signins";
@@ -842,9 +842,9 @@ export class Launcher implements RunHost {
    * once after a policy write that moved the egress generation, whose unit wakes this lane
    * (`synced`). Its send is a unit (`networkSent`): the lease's calls are admitted under
    * the new generation from there on, since only that network's transform sets it. Its
-   * answer is another (`networkAnswered`): `applied` confirms it; `at_resume` keeps it out
-   * for its paused sandbox; `lost` or a throw clears it. No answer within `LANE_CALL_MS`
-   * records nothing: the send's retry clock stands.
+   * answer is another (`networkAnswered`, as `networkOutcome` reads it): `applied` confirms
+   * it; `at_resume` keeps it out for its paused sandbox; a failure clears it. No answer
+   * within `LANE_CALL_MS` records nothing: the send's retry clock stands.
    */
   async reapply(): Promise<void> {
     const { sandbox } = this.#o;
@@ -864,18 +864,11 @@ export class Launcher implements RunHost {
       return out;
     });
     await Promise.all(sent.map(async ({ lease, generation, network }) => {
-      let answer: "applied" | "at_resume" | "failed" = "failed";
-      try {
-        const got = await inTime(sandbox.network({
-          authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-          network }), LANE_CALL_MS);
-        if (got === "late") {
-          return;
-        }
-        answer = got.state === "lost" ? "failed" : got.state;
-      } catch (error) {
-        console.error("a lease's network re-apply did not reach the sandbox; the lane tries " +
-                      "again", error);
+      const answer = await inTime(networkOutcome(() => sandbox.network({
+        authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
+        network })), LANE_CALL_MS);
+      if (answer === "late") {
+        return;
       }
       await this.#o.door(() => this.#o.files.networkAnswered(
         lease.lease_id, lease.epoch, generation, answer, clock()));
