@@ -40,12 +40,12 @@
  * and the sandbox goes on with the runner it has, asked again at its next start. The
  * loader's absent (24) has the Worker's own digest uploaded and installed and the command
  * asked again, once; its mismatch (25) is the alert `sandbox_runner_mismatch`, logged and
- * thrown as the contract's refusal of that code, and nothing launches. Before a start
- * launches on a runner not its own, the Worker asks it `state`, which every protocol answers
- * alike: one nothing lives on is adopted where it can be, whatever protocol it speaks; one it
- * keeps (something lives on it, its adoption failed, or a rebooted sandbox's runs restart
- * under it) must speak a protocol this Worker does (`SPEAKS`), or the start is refused the
- * same way (`sandbox_runner_protocol`) and nothing is sent to it. The look refuses it too.
+ * thrown as the contract's refusal of that code, and nothing launches. Before a start or a
+ * resume sends anything else to a runner not its own, the Worker asks it `state`, which every
+ * protocol answers alike: one nothing lives on is adopted where it can be, whatever protocol
+ * it speaks; one it keeps (something lives on it, its adoption failed, or a rebooted
+ * sandbox's runs restart under it) must speak a protocol this Worker does (`SPEAKS`), or the
+ * start is refused the same way (`sandbox_runner_protocol`) and nothing is sent to it.
  *
  * **The look** (the alarm; the founder's rule of 2026-11-03): a sandbox may run
  * `runtime_ceiling_s` at a stretch, and a pause resets that window (probed). The window's
@@ -62,12 +62,18 @@
  * land, or that has no live run at its look, is paused (the idle reaper); so is one whose
  * runner has had no live run for a lease's TTL (`LEASE_TTL_S`), looked at once a TTL while
  * it runs: by then the owner's lease, renewed only by its runs' heartbeats, has lapsed, so
- * a release that never reached this Worker leaves no sandbox running to its ceiling.
+ * a release that never reached this Worker leaves no sandbox running to its ceiling. The
+ * look reads a runner by its `state` alone, so it reaps a sandbox whose runner speaks a
+ * protocol this Worker does not as any other; but no renewal can carry on a job living on
+ * such a runner, so that sandbox runs to the end of the window it was found in (`kill_at`),
+ * where E2B's own timeout pauses it, and the look kills it by its E2B id.
  *
- * The alarm is armed again on every path, a failed look included (backing off from the
- * measured request time, never past the soonest edge), so no run dies at the ceiling. Each
- * look ends by giving the line back every slot this object owes it (a renewal's, its sandbox
- * running again or gone), so one the line did not take is asked again until it lands.
+ * Each sandbox is looked at on its own: one whose look fails is logged, and the others are
+ * looked at still. The alarm is armed again on every path, a failed look included (backing
+ * off from the measured request time, never past the soonest edge), so no run dies at the
+ * ceiling. Each look ends by giving the line back every slot this object owes it (a
+ * renewal's, its sandbox running again or gone), so one the line did not take is asked again
+ * until it lands.
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { AUTHORITY, HEX32, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
@@ -190,6 +196,11 @@ interface Row {
    * owner's plan as it came, with no egress token (`network`), or null.
    */
   network_due: string | null;
+  /**
+   * When the look kills it (ms): a job lives in it on a runner this Worker does not speak, so
+   * no renewal carries it past the window it was found in, whose end this is (`#heard`).
+   */
+  kill_at: number | null;
 }
 
 interface Box extends Handle {
@@ -349,19 +360,11 @@ function answerOf<T>(out: string, fields: AnswerFields<T>): T {
 }
 
 /**
- * The state `box`'s runner answered, from a runner speaking a protocol this Worker speaks:
- * one that does not is refused (`sandbox_runner_protocol`), and nothing runs on it.
+ * A runner's answer to `state`, which every protocol answers alike (`state-format.test.ts`),
+ * so it is read from any runner, one speaking a protocol this Worker does not included.
  */
-function spoken(box: Box, state: StateAnswer): StateAnswer {
-  if (!SPEAKS.includes(state.protocol)) {
-    console.error(`sandbox_runner_protocol: the runner ${box.runner} in sandbox ${
-      box.sandboxID} speaks protocol ${state.protocol}; this Worker speaks ${
-      SPEAKS.join(" and ")}`);
-    throw new Refusal("sandbox_runner_protocol",
-                      "the sandbox's runner speaks a protocol this Worker does not; nothing " +
-                      "runs on it");
-  }
-  return state;
+function stateOf(asked: Exec): StateAnswer {
+  return answerOf<StateAnswer>(answered(COMMAND.state, asked).out, ANSWERS[COMMAND.state]);
 }
 
 /**
@@ -614,26 +617,27 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * The sandbox's runner as a start finds it, made one this Worker speaks to before anything
-   * else is sent to it. Its own is as it is. Another is asked `state`, which every protocol
-   * answers alike: when nothing lives in it (no run, no sign-in) and `adoptable`, this
-   * Worker's is installed, `adopt`ed (the disk held to its format; nothing deleted) and
-   * committed to its row, its caller then running the adopted runner's `prepare`, which drops
-   * the other runners' bytes. A runner kept (a live run's, a rebooted sandbox's, a renewal's,
-   * or one whose adoption failed) must speak a protocol this Worker speaks, or it is refused
+   * The sandbox's runner as a start or a resume finds it (`found`, as E2B told it before), made
+   * one this Worker speaks to before anything else is sent to it. Its own is as it is. Another
+   * is asked `state`, which every protocol answers alike, and what follows is kept (`#heard`):
+   * when nothing lives in it (no run, no sign-in) and `adoptable`, this Worker's is installed,
+   * `adopt`ed (the disk held to its format; nothing deleted) and committed to its row, its
+   * caller then running the adopted runner's `prepare`, which drops the other runners' bytes.
+   * A runner kept (a live run's, a rebooted sandbox's, a renewal's, or one whose adoption
+   * failed) must speak a protocol this Worker speaks, or it is refused
    * (`sandbox_runner_protocol`); one whose `state` fails is a fault, thrown, never gone on
    * with. An adoption that fails on the way keeps the runner it has (logged loudly, asked
    * again at the next start), so an adoption alone never fails a start. Whether it adopted.
    */
-  async #speaking(authority: string, box: Box, adoptable: boolean):
+  async #speaking(authority: string, box: Box, adoptable: boolean, found: SandboxInfo):
       Promise<{ box: Box; adopted: boolean }> {
     if (box.runner === this.#digest) {
       return { box, adopted: false };
     }
     const asked = await this.#exec(box, [COMMAND.state]);
     // Its own runner gone from the disk: nothing can live on it.
-    const state = asked.exitCode === EXIT.absent ? null
-      : answerOf<StateAnswer>(answered(COMMAND.state, asked).out, ANSWERS[COMMAND.state]);
+    const state = asked.exitCode === EXIT.absent ? null : stateOf(asked);
+    const spoken = state === null || this.#heard(authority, state, found).spoken;
     if (adoptable && (state === null || state.live === 0) && await this.#adopt(authority, box)) {
       return { box: { ...box, runner: this.#digest }, adopted: true };
     }
@@ -641,8 +645,40 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       throw new Error(`the runner ${box.runner} is gone from sandbox ${box.sandboxID}, and ` +
                       "this Worker's is not adopted");
     }
-    spoken(box, state);
+    if (!spoken) {
+      console.error(`sandbox_runner_protocol: the runner ${box.runner} in sandbox ${
+        box.sandboxID} speaks protocol ${state.protocol}; this Worker speaks ${
+        SPEAKS.join(" and ")}`);
+      throw new Refusal("sandbox_runner_protocol",
+                        "the sandbox's runner speaks a protocol this Worker does not; nothing " +
+                        "runs on it");
+    }
     return { box, adopted: false };
+  }
+
+  /**
+   * What follows from a runner's `state` (its sandbox `found` as E2B told it), kept on its row:
+   * whether this Worker speaks its protocol (`SPEAKS`). One it does not is sent nothing but
+   * `state`, so no renewal carries its sandbox on (one pending is dropped), and a job living on
+   * it ends with the window it was found in: the look kills the sandbox then (`kill_at`, kept
+   * from the first look that saw it, so a resume that moved E2B's timeout since moves it not).
+   * Nothing living, or a runner it speaks, and nothing ends.
+   */
+  #heard(authority: string, state: StateAnswer, found: SandboxInfo):
+      { spoken: boolean; killAt: number | null } {
+    const spoken = SPEAKS.includes(state.protocol);
+    const kept = this.#row(authority)?.kill_at ?? null;
+    const killAt = spoken || state.live === 0 ? null : kept ?? Date.parse(found.endAt);
+    if (killAt !== null && kept === null) {
+      console.error(`sandbox_runner_protocol: ${state.live} job(s) live in sandbox ${
+        found.sandboxID} on a runner speaking protocol ${state.protocol}, which no renewal of ${
+        ""}this Worker's carries on: it is killed at its window's end, ${found.endAt}`);
+    }
+    this.#sql.exec("UPDATE sandboxes SET kill_at = ? WHERE authority = ?", killAt, authority);
+    if (!spoken) {
+      this.#sql.exec("UPDATE sandboxes SET renewing = 0 WHERE authority = ?", authority);
+    }
+    return { spoken, killAt };
   }
 
   /** `box` on this Worker's runner, nothing living in it: whether it adopted. */
@@ -674,14 +710,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   /**
    * A paused sandbox resumed (memory restored, or rebooted when E2B kept its files only):
    * prepared again, and its runs told (`renewed`) or restarted from disk (`recover`). Null
-   * when E2B has it no more. E2B's refusal for room is thrown (`noRoom`). A start's resume
-   * (`start`) makes its runner one this Worker speaks to first (`#speaking`): one resumed
-   * with its memory and no renewal pending adopts this Worker's when nothing lives, so the
-   * one `prepare` is the adopted runner's; a rebooted one's runs restart under the runner
+   * when E2B has it no more. E2B's refusal for room is thrown (`noRoom`). Every resume, a
+   * start's or the look's, makes its runner one this Worker speaks to first (`#speaking`): one
+   * resumed with its memory and no renewal pending adopts this Worker's when nothing lives, so
+   * the one `prepare` is the adopted runner's; a rebooted one's runs restart under the runner
    * that launched them, and a renewal's runs go on under theirs.
    */
   async #resume(row: Row, found: SandboxInfo, network: NetworkDocument | null,
-                ceilings: SandboxCeilings, start = false): Promise<Box | null> {
+                ceilings: SandboxCeilings): Promise<Box | null> {
     const e2b = this.#e2b();
     this.#ended(found);  // a pause E2B made on its own is logged before the resume
     const resumed = await e2b.connect(found.sandboxID, ceilings.runtime_ceiling_s);
@@ -689,11 +725,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       return null;
     }
     // Running from here, so its row says so: a fault or refusal on the way leaves it to the
-    // look (armed by `#launch`), never billed unseen as a paused one to its ceiling.
+    // look (armed by `#launch`), never billed unseen as a paused one to its ceiling. A slot a
+    // renewal held for it is owed back from here too, so no fault after keeps it held.
     if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
       this.#log(row.authority, "resume");
     }
     this.#sql.exec("UPDATE sandboxes SET paused = 0 WHERE authority = ?", row.authority);
+    this.#owe(resumed.sandboxID);
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
                         runner: row.runner };
@@ -703,10 +741,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.#sql.exec("UPDATE sandboxes SET network_due = NULL WHERE authority = ?",
                      row.authority);
     }
-    if (start) {
-      handle = (await this.#speaking(row.authority, handle,
-                                     found.pauseMode !== "filesystem" && row.renewing === 0)).box;
-    }
+    handle = (await this.#speaking(row.authority, handle,
+                                   found.pauseMode !== "filesystem" && row.renewing === 0,
+                                   found)).box;
     await this.#prepare(handle, applied ?? liveNetwork(found));
     if (found.pauseMode === "filesystem") {
       await this.#run(handle, [COMMAND.recover]);  // rebooted: its runs restart from disk
@@ -717,7 +754,6 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("UPDATE sandboxes SET renewing = 0, retry_at = NULL, tries = 0, end_at = ? " +
                      "WHERE authority = ?",
                    after === null ? Date.now() : Date.parse(after.endAt), row.authority);
-    this.#owe(resumed.sandboxID);
     await this.#giveBack();
     return handle;
   }
@@ -740,7 +776,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       if (network !== null) {
         await e2b.network(running.sandboxID, network);
       }
-      const { box, adopted } = await this.#speaking(authority, running, true);
+      const { box, adopted } = await this.#speaking(authority, running, true, found!);
       if (adopted) {
         // The adopted runner's own `prepare`, the row naming it: its lockdown, and the
         // other runners' bytes dropped.
@@ -758,7 +794,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     };
     if (row !== null && row.renewing === 1 && found !== null) {
       // A renewal's own sandbox keeps its slot: resumed without its turn.
-      const handle = await this.#resume(row, found, network, ceilings, true);
+      const handle = await this.#resume(row, found, network, ceilings);
       return handle === null ? "lost" : { handle };
     }
     const { turn, reserved } = await slots.turn(this.#owner);
@@ -774,7 +810,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return await wait();
       }
       if (found !== null) {
-        const handle = await this.#resume(row!, found, network, ceilings, true);
+        const handle = await this.#resume(row!, found, network, ceilings);
         if (handle !== null) {
           await this.#took();
           return { handle };
@@ -793,11 +829,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       });
       const info = await e2b.info(created.sandboxID);
       const digest = this.#digest;
+      // One E2B no longer has is forgotten as the look forgets it: nothing of it, its window
+      // or its kill, its runs or its held slot, is the new one's.
+      this.#forget(authority);
       this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
-                       "VALUES (?, ?, NULL, ?, ?) ON CONFLICT (authority) DO UPDATE SET " +
-                       "sandbox_id = excluded.sandbox_id, lease_id = NULL, end_at = " +
-                       "excluded.end_at, renewing = 0, releasing = 0, paused = 0, runner = " +
-                       "excluded.runner", authority, created.sandboxID,
+                       "VALUES (?, ?, NULL, ?, ?)", authority, created.sandboxID,
                      info === null ? Date.now() : Date.parse(info.endAt), digest);
       this.#log(authority, "start");
       await this.#took();
@@ -1126,7 +1162,7 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
       return found.state === "paused";
     }
-    if ((await this.#runnerState(handle)).live > 0) {
+    if ((await this.#runnerState(row.authority, handle, found)).live > 0) {
       this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
       return false;
     }
@@ -1162,9 +1198,14 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#sql.exec("DELETE FROM launched WHERE authority = ?", authority);
   }
 
-  async #runnerState(handle: Box): Promise<StateAnswer> {
-    return spoken(handle, answerOf<StateAnswer>((await this.#run(handle, [COMMAND.state])).out,
-                                                ANSWERS[COMMAND.state]));
+  /**
+   * A running sandbox's runner asked `state`, whatever protocol it speaks, and what follows
+   * kept (`#heard`): when a job living on it ends, or null when nothing ends it.
+   */
+  async #runnerState(authority: string, handle: Box, found: SandboxInfo):
+      Promise<StateAnswer & { killAt: number | null }> {
+    const state = stateOf(await this.#exec(handle, [COMMAND.state]));
+    return { ...state, killAt: this.#heard(authority, state, found).killAt };
   }
 
   /**
@@ -1183,9 +1224,10 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
 
   /**
    * The alarm at the soonest thing a row needs: a renewal look (`end_at` less the window),
-   * a resume (a paused sandbox a lease runs in, or a renewing one), a reap (a release whose
-   * pause did not land); and at once while a slot is owed the line. A paused, idle sandbox
-   * needs nothing. None, no alarm.
+   * or its kill (`kill_at`) where no renewal can carry it on; a resume (a paused sandbox a
+   * lease runs in, or a renewing one), a reap (a release whose pause did not land), a kill
+   * (a paused one `kill_at` names); and at once while a slot is owed the line. A paused, idle
+   * sandbox needs nothing. None, no alarm.
    */
   async #arm(at = Number.POSITIVE_INFINITY): Promise<void> {
     const ceilings = this.#known();
@@ -1193,13 +1235,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       ? Math.min(at, Date.now()) : at;
     for (const row of this.#rows()) {
       if (row.renewing === 1 || row.releasing === 1
-          || (row.paused === 1 && this.#leased(row.authority))) {
+          || (row.paused === 1 && (row.kill_at !== null || this.#leased(row.authority)))) {
         // Asked at once the first time, then at its back-off: never at alarm speed.
         soonest = Math.min(soonest, row.retry_at ?? Date.now());
       } else if (row.paused === 1) {
         continue;
       } else if (ceilings !== null) {
-        soonest = Math.min(soonest, row.end_at - ceilings.renewal_window_s * 1000,
+        soonest = Math.min(soonest, row.kill_at ?? row.end_at - ceilings.renewal_window_s * 1000,
                            (row.idle_since ?? Date.now()) + LEASE_TTL_S * 1000);
       }
     }
@@ -1211,36 +1253,48 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
   }
 
   /**
-   * Each sandbox looked at. First, outside the chain, each running one in its renewal
-   * window waits for a quiet moment (at most to its edge, and inside this alarm's wall
-   * clock); then, on the chain, each is renewed, resumed, reaped or left. Armed again on
-   * every path.
+   * Each sandbox looked at, each on its own. First, outside the chain, each running one in
+   * its renewal window waits for a quiet moment (at most to its edge, and inside this
+   * alarm's wall clock); then, on the chain, each is renewed, resumed, reaped, killed or left.
+   * Armed again on every path.
    */
   override async alarm(): Promise<void> {
     const began = Date.now();
-    let next: number;
+    let next = Number.POSITIVE_INFINITY;
+    let failed: number;
     try {
       // What is owed is given back whatever the look found: no slot waits on another sandbox.
-      next = await this.#look(began).finally(() => this.#giveBack());
-      this.#sql.exec("UPDATE known SET failures = 0");
+      ({ next, failed } = await this.#look(began).finally(() => this.#giveBack()));
     } catch (error) {
-      // E2B unreachable, or answering out of shape: asked again, backing off from the
-      // measured request time, and sooner only for an edge still ahead (one already past is
-      // E2B's own timeout's to pause; the next look resumes it). Never at alarm speed.
       console.error("a sandbox look failed; it is tried again, backing off", error);
-      this.#sql.exec("UPDATE known SET failures = failures + 1");
-      const failures = this.#sql.exec<{ failures: number }>("SELECT failures FROM known")
-        .toArray()[0]?.failures ?? 1;
-      const now = Date.now();
-      const ahead = this.#rows().map((row) => row.end_at - RENEW_EDGE_MS)
-        .filter((edge) => edge > now);
-      await this.ctx.storage.setAlarm(Math.min(now + backoff(failures), ...ahead));
+      failed = 1;
+    }
+    if (failed === 0) {
+      this.#sql.exec("UPDATE known SET failures = 0");
+      await this.#arm(next);
       return;
     }
-    await this.#arm(next);
+    // E2B unreachable, or answering out of shape, for the look or for one sandbox's: asked
+    // again, backing off from the measured request time, and sooner only for what the
+    // sandboxes looked at need and for an edge still ahead (one already past is E2B's own
+    // timeout's to pause; the next look resumes it). Never at alarm speed.
+    this.#sql.exec("UPDATE known SET failures = failures + 1");
+    const failures = this.#sql.exec<{ failures: number }>("SELECT failures FROM known")
+      .toArray()[0]?.failures ?? 1;
+    const now = Date.now();
+    const ahead = this.#rows().map((row) => row.end_at - RENEW_EDGE_MS)
+      .filter((edge) => edge > now);
+    await this.ctx.storage.setAlarm(Math.max(now, Math.min(next, now + backoff(failures),
+                                                           ...ahead)));
   }
 
-  async #look(began: number): Promise<number> {
+  /**
+   * The look: when it next needs to look, and at how many sandboxes it failed. Each is looked
+   * at on its own: one whose look fails (E2B or its runner faulting, its runner refused) is
+   * logged and looked at again at the next look, backing off, and the others are looked at
+   * still, so no sandbox is left running for another's fault.
+   */
+  async #look(began: number): Promise<{ next: number; failed: number }> {
     const ceilings = (await this.#control()).ceilings ?? this.#known();
     if (ceilings === null) {
       throw new Error("no sandbox numbers were ever read, yet a sandbox is kept");
@@ -1250,7 +1304,17 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const e2b = this.#e2b();
     const lookEnd = began + ALARM_WALL_MS - rows.length * RENEWAL_MS;
     const quiet = new Map<string, boolean>();
-    await Promise.all(rows.map(async (row) => {
+    const failed = new Set<string>();
+    const settle = async (row: Row, look: () => Promise<void>): Promise<void> => {
+      try {
+        await look();
+      } catch (error) {
+        console.error(`the look at sandbox ${row.sandbox_id} failed; it is looked at again, ${
+          ""}backing off`, error);
+        failed.add(row.authority);
+      }
+    };
+    await Promise.all(rows.map((row) => settle(row, async () => {
       if (row.renewing === 1 || row.releasing === 1 || row.paused === 1) {
         return;
       }
@@ -1259,24 +1323,36 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         return;
       }
       this.#ended(found!);
+      // A start on the chain adopted another runner meanwhile, and its `prepare` dropped
+      // this one's bytes: no answer read here, and nothing failed.
+      const adopted = (asked: Exec) => asked.exitCode === EXIT.absent
+        && this.#row(row.authority)?.runner !== handle.runner;
+      if (handle.runner !== this.#digest) {
+        // Nothing but `state` goes to a runner until it says it speaks a protocol this Worker
+        // does; one that does not is renewed never, so waits for no quiet moment.
+        const asked = await this.#exec(handle, [COMMAND.state]);
+        if (adopted(asked) || !SPEAKS.includes(stateOf(asked).protocol)) {
+          return;
+        }
+      }
       const until = Math.min(Date.parse(found!.endAt) - RENEW_EDGE_MS, lookEnd);
       const asked = await this.#exec(handle, [COMMAND.quietWait, String(Math.floor(until))],
                                      Math.max(0, until - Date.now()) + COMMAND_MS);
-      // A start on the chain adopted another runner meanwhile, and its `prepare` dropped
-      // this one's bytes: no quiet moment read here, and nothing failed.
-      if (asked.exitCode === EXIT.absent && this.#row(row.authority)?.runner !== handle.runner) {
+      if (adopted(asked)) {
         return;
       }
       const { out } = answered(COMMAND.quietWait, asked);
       quiet.set(row.authority, answerOf<QuietAnswer>(out, ANSWERS[COMMAND.quietWait]).quiet);
-    }));
+    })));
     return this.#serial(async () => {
-      let soonest = Number.POSITIVE_INFINITY;
-      for (const row of this.#rows()) {
-        soonest = Math.min(soonest, await this.#lookAt(row, quiet.get(row.authority) ?? false,
-                                                       ceilings));
+      let next = Number.POSITIVE_INFINITY;
+      for (const row of this.#rows().filter((each) => !failed.has(each.authority))) {
+        await settle(row, async () => {
+          next = Math.min(next, await this.#lookAt(row, quiet.get(row.authority) ?? false,
+                                                   ceilings));
+        });
       }
-      return soonest;
+      return { next, failed: failed.size };
     });
   }
 
@@ -1293,6 +1369,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     this.#ended(found);
     const handle = handleOf(found, row);
     if (handle === null) {
+      if (row.kill_at !== null) {
+        return this.#kill(row);  // E2B's own timeout paused it at its window's end
+      }
       if (row.renewing === 0 && !this.#leased(row.authority)) {
         this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);
         return Number.POSITIVE_INFINITY;
@@ -1324,7 +1403,13 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         : paused || after === null ? Number.POSITIVE_INFINITY : after.end_at - windowMs;
     }
     const endAt = Date.parse(found.endAt);
-    const state = await this.#runnerState(handle);
+    const state = await this.#runnerState(row.authority, handle, found);
+    if (state.killAt !== null) {
+      // A job lives on a runner this Worker does not speak: it runs, looked at as one before
+      // its window is, to the end of the window it was found in, and no further.
+      return Date.now() < state.killAt
+        ? Math.min(state.killAt, await this.#idle(row, found, state.live)) : this.#kill(row);
+    }
     if (Date.now() < endAt - windowMs) {
       const idle = await this.#idle(row, found, state.live);
       return Number.isFinite(idle) ? Math.min(endAt - windowMs, idle) : idle;  // paused
@@ -1346,6 +1431,22 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     const after = this.#row(row.authority);
     return after === null ? Number.POSITIVE_INFINITY
       : after.renewing === 1 ? this.#later(row.authority) : after.end_at - windowMs;
+  }
+
+  /**
+   * A sandbox whose window `kill_at` ended: a job lived in it on a runner this Worker does not
+   * speak, so no renewal could carry it on, and its window is over (past, or E2B's own timeout
+   * paused it at its end). Killed by its E2B id: kept paused, it would hold that job, which a
+   * resume restores and every start refuses (`sandbox_runner_protocol`), at each start's cost.
+   * Its runs went with their window: the owner settles each `unknown` once its heartbeat lapsed.
+   */
+  async #kill(row: Row): Promise<number> {
+    console.error(`sandbox_runner_protocol: sandbox ${row.sandbox_id} is killed: a job lived in ${
+      ""}it on a runner this Worker does not speak, and its window ended`);
+    await this.#e2b().kill(row.sandbox_id);
+    this.#forget(row.authority);
+    await this.#freed();
+    return Number.POSITIVE_INFINITY;
   }
 
   /**

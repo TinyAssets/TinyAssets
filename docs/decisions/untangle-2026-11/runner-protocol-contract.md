@@ -82,7 +82,9 @@ What a Worker of this tree could still meet that speaks or holds an older protoc
   that a Worker speaking its runner's protocol launched. Each command is in every record, 1
   to 4, with no change. None carries a document. Refusing one would only keep a CLI
   running to the ceiling. Such a job can exist only where a run lives across two deploys, and
-  the look refuses that sandbox by name every time (item 3 of the research).
+  the look runs that sandbox to the end of its window and kills it there
+  (`foreign-runner-reap.md`, which corrects item 3 of the research: the look's refusal stopped
+  the look for the owner's other sandboxes too).
 - **`SPEAKS = [4]` is a deploy-order decision, not a behaviour a test pins.** The Worker's
   tests are parametric on `SPEAKS`, and the guard bounds it to protocols one either side
   of `PROTOCOL`. Putting `[3, 4]` back passes, as the rule allows. A test pinning `[4]` would
