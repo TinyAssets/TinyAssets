@@ -9,17 +9,17 @@
  *
  * - `cmd:echo`, and a body with no `cmd:` word: the reply's text is JSON of what it received
  *   (path, the credential headers, the output-token cap, the service tier), so a test reads
- *   back what the gateway sent; `x-fake-served-tier` names the tier an Anthropic answer says
- *   it served.
+ *   back what the gateway sent; the word `tier` (`steer`) names the tier an Anthropic answer
+ *   says it served.
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  *
- * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
- * `say`, `decoded`, `hdr`, `jsonesc`, `encoded` (the credential written back as
- * `x-fake-encoding` names), `stall` (some bytes, then silence), and `held`: the
+ * The word `mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
+ * `say`, `decoded`, `hdr`, `jsonesc`, `encoded` (the credential written back as the word
+ * `encoding` names), `stall` (some bytes, then silence), and `held`: the
  * body read to its end, its length answered once the test lets it go,
- * `https://status.test/release?id=<x-fake-id>`, as a provider holds its answer until its
- * first token). A request with an `x-fake-id` is recorded as it arrives, read back from
+ * `https://status.test/release?id=<id>`, as a provider holds its answer until its
+ * first token). A request with an `id` is recorded as it arrives, read back from
  * `https://status.test/cancelled?id=<id>` (`arrived`), so a test acts once the provider has
  * it; `auth.test` is a token endpoint; `keys.test` is a key-exchange endpoint (OpenRouter's
  * PKCE flow); `evil.test` records everything it receives, read back from
@@ -31,10 +31,24 @@
  * (`?retry=<v>` its `Retry-After`), `hang` never, `echo` the verification challenge it was
  * sent, else 202.
  */
+
+/**
+ * A test's words to the fake, as the request headers that carry them: a query string in its
+ * `user-agent`, the one free-text header the gateway passes on every call (`egressHeaders`).
+ */
+export function steer(words: Readonly<Record<string, string>>): Record<string, string> {
+  return { "user-agent": new URLSearchParams(words).toString() };
+}
+
+/** The test's word `name` in `request` (`steer`), or null. */
+function word(request: Request, name: string): string | null {
+  return new URLSearchParams(request.headers.get("user-agent") ?? "").get(name);
+}
+
 const cancelled = new Map<string, boolean>();
-/** The `x-fake-id`s of the passthrough requests that arrived. */
+/** The `id`s of the passthrough requests that arrived. */
 const arrived = new Set<string>();
-/** The `held` answers the test let go, by `x-fake-id`. */
+/** The `held` answers the test let go, by `id`. */
 const released = new Set<string>();
 const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };
@@ -159,8 +173,8 @@ async function model(request: Request, format: Format): Promise<Response> {
   const half = Math.floor(reply.length / 2);
   const tier = typeof body["service_tier"] === "string" ? body["service_tier"] : null;
   // OpenAI's Responses answer names the tier it served the call at, as the API does; an
-  // Anthropic answer names its served tier in its usage when `x-fake-served-tier` asks.
-  const served = request.headers.get("x-fake-served-tier");
+  // Anthropic answer names its served tier in its usage when the word `tier` asks.
+  const served = word(request, "tier");
   const payload = (format.start(name) + format.text(reply.slice(0, half))
     + format.text(reply.slice(half)) + format.finish(reply))
     .replace('"status":"completed",', tier === null ? '"status":"completed",'
@@ -250,9 +264,9 @@ async function keyExchange(request: Request): Promise<Response> {
 }
 
 async function forwardEcho(request: Request): Promise<Response> {
-  const mode = request.headers.get("x-fake-mode");
+  const mode = word(request, "mode");
   const url = new URL(request.url);
-  const id = request.headers.get("x-fake-id");
+  const id = word(request, "id");
   if (id !== null) {
     arrived.add(id);
   }
@@ -263,7 +277,7 @@ async function forwardEcho(request: Request): Promise<Response> {
   }
   if (mode === "stall") {
     // Some bytes, then silence; a timer holds the stream open (so workerd does not cut it
-    // as hung) and ends it after 5 s. Its cancel is recorded under `x-fake-id`.
+    // as hung) and ends it after 5 s. Its cancel is recorded under its `id`.
     cancelled.set(id ?? "", false);
     let timer: ReturnType<typeof setTimeout> | undefined;
     return new Response(new ReadableStream<Uint8Array>({
@@ -289,19 +303,19 @@ async function forwardEcho(request: Request): Promise<Response> {
     return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });
   }
   if (mode === "say") {
-    return new Response(request.headers.get("x-fake-say") ?? "", { status: 200 });
+    return new Response(word(request, "say") ?? "", { status: 200 });
   }
   if (mode === "encoded") {
-    // The credential it was sent, inside `x-fake-before` and a tail, written back encoded:
+    // The credential it was sent, after the word `before`, then a tail, written back encoded:
     // in a JSON body escaping `/` as `\/`, and in a redirect's `Location`.
-    const text = `${request.headers.get("x-fake-before") ?? ""}${credentialOf(request)}|tail`;
+    const text = `${word(request, "before") ?? ""}${credentialOf(request)}|tail`;
     const base64 = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
     const written = {
       base64, base64url: base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
       uri: encodeURIComponent(text), form: new URLSearchParams({ v: text }).toString().slice(2),
       // .NET's `HttpUtility.UrlEncode` writes its hex in lower case.
       "uri-lower": encodeURIComponent(text).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase()),
-    }[request.headers.get("x-fake-encoding") ?? ""] ?? text;
+    }[word(request, "encoding") ?? ""] ?? text;
     return new Response(`{"echo":"${written.split("/").join("\\/")}"}`, {
       status: 401, headers: { location: `https://login.test/?next=${written}` } });
   }
@@ -408,7 +422,7 @@ export default {
       }
       return token(request);
     }
-    if (request.headers.has("x-fake-mode")) {
+    if (word(request, "mode") !== null) {
       return forwardEcho(request);
     }
     if (url.hostname === "api.anthropic.com" && url.pathname === "/v1/models") {

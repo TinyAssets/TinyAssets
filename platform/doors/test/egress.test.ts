@@ -320,7 +320,7 @@ describe("the egress door", () => {
   it("streams an SSE answer as the provider writes it, unbuffered, its type kept", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-stream" } }));
+      headers: { "user-agent": "slow-stream" } }));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     const reader = response.body!.getReader();
@@ -356,7 +356,7 @@ describe("the egress door", () => {
     const box = await sandbox();
     for (let i = 0; i < 3; i++) {
       const response = await send(egressRequest(box, COMPLETIONS, {
-        headers: { "x-fake-egress": "nousage" } }));
+        headers: { "user-agent": "nousage" } }));
       expect(response.status).toBe(200);
       expect(await response.text()).toContain("one ");
       await until(async () => (await reservations(box.owner))
@@ -374,7 +374,7 @@ describe("the egress door", () => {
      "listed fallbacks stays unknown", async () => {
     const box = await sandbox();
     const named = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "snapshot" } }));
+      headers: { "user-agent": "snapshot" } }));
     await named.text();
     await settledOf(box.owner);
     const [settled] = await receipts(box.owner);
@@ -382,7 +382,7 @@ describe("the egress door", () => {
     expect(settled!["cost"] as number).toBeGreaterThan(0);
     const other = await sandbox();
     const listed = await send(egressRequest(other, COMPLETIONS, {
-      headers: { "x-fake-egress": "snapshot" },
+      headers: { "user-agent": "snapshot" },
       body: bodyOf(other, { models: [other.model, "someone/else"] }) }));
     await listed.text();
     await settledOf(other.owner);
@@ -527,7 +527,7 @@ describe("the egress door", () => {
   it("passes the provider's own refusal through, and settles it at no cost", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "busy" } }));
+      headers: { "user-agent": "busy" } }));
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("7");
     expect(await response.json()).toEqual({ error: { message: "rate limited" } });
@@ -813,7 +813,7 @@ describe("a policy write mid-stream", () => {
      "and the next call through it is answered", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-policy" } }));
+      headers: { "user-agent": "slow-policy" } }));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     // The gateway holds back a secret's length less one, in case a secret spans chunks.
@@ -845,7 +845,7 @@ describe("settlement", () => {
   it("records a client's abort, the provider's request cancelled", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-abort" } }));
+      headers: { "user-agent": "slow-abort" } }));
     const reader = response.body!.getReader();
     await reader.read();
     await reader.cancel();
@@ -903,7 +903,7 @@ describe("settlement", () => {
   it("settles through a fresh stub when the first settle's answer was lost", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-reset" } }));
+      headers: { "user-agent": "slow-reset" } }));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     await reader.read();
@@ -1000,7 +1000,7 @@ describe("settlement", () => {
     const box = await sandbox();
     const ctx = createExecutionContext();
     const response = await serveEgress(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-deadline" } }), doorsEnv, ctx, 300);
+      headers: { "user-agent": "slow-deadline" } }), doorsEnv, ctx, 300);
     const reader = response.body!.getReader();
     expect(await drained(reader)).toBe("egress_deadline");
     await settledOf(box.owner);
@@ -1011,7 +1011,7 @@ describe("settlement", () => {
   it("ends a stream when its run ends, or its connection is revoked", async () => {
     const box = await sandbox();
     const first = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-close" } }));
+      headers: { "user-agent": "slow-close" } }));
     const reader = first.body!.getReader();
     await reader.read();
     await over(box);
@@ -1021,7 +1021,7 @@ describe("settlement", () => {
 
     const again = await sandbox();
     const second = await send(egressRequest(again, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-revoke" } }));
+      headers: { "user-agent": "slow-revoke" } }));
     const held = second.body!.getReader();
     await held.read();
     const revoked = await appPost("connections/revoke", again.app, again.session,

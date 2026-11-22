@@ -6,13 +6,13 @@
  * placeholder keys; the binder admits the request at the owner's object, which hands it
  * the blob, and calls `forward`. The gateway opens the blob, requires the request's
  * method, origin and path to be among the sealed endpoints, strips every credential the
- * request carried (headers and the API-key query parameters; any other parameter its API's
- * rules do not allow is refused, `egressTarget`), injects the sealed one by the sealed auth
- * template, and sends it to the sealed origin. The provider's own answer streams back,
- * status and body, so the client sees its own API; only the secret is redacted from it, in
- * every spelling a provider could quote it back in (`redact.ts`). A call is cut at
- * `FORWARD_DEADLINE_MS`, or once its answer is silent for `IDLE_CUT_MS`, and redirects are
- * never followed.
+ * request carried (the API-key query parameters; any other parameter its API's rules do not
+ * allow is refused, `egressTarget`; every header its rules do not name is dropped,
+ * `egressHeaders`), injects the sealed one by the sealed auth template, and sends it to the
+ * sealed origin. The provider's own answer streams back, status and body, so the client sees
+ * its own API; only the secret is redacted from it, in every spelling a provider could quote
+ * it back in (`redact.ts`). A call is cut at `FORWARD_DEADLINE_MS`, or once its answer is
+ * silent for `IDLE_CUT_MS`, and redirects are never followed.
  *
  * User CLIs speak their provider's wire format. An unmetered call (a read, a cited free
  * call) only moves bytes: its body streams through. A metered one is the one request the
@@ -27,8 +27,8 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
-  type EgressScope, egressTarget, isService, type Meter, meteredCall, meteredModel,
-  type ModelScope, type Upstream,
+  egressHeaders, type EgressScope, egressTarget, isService, type Meter, meteredCall,
+  meteredModel, type ModelScope, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
   metering, MODEL_NAME, type MeterOutcome, type Resealed, type Reservation, type Reserve,
@@ -118,19 +118,12 @@ function uploaded(whole: Uint8Array, ended: () => void): Upload {
   };
 }
 
-/** Headers that carry a credential, or route, in any provider's or proxy's convention. */
-const CREDENTIAL_HEADERS: readonly string[] = Object.freeze([
-  "authorization", "proxy-authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie",
-  "host", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip",
-  // A method override would let a sealed `POST` act as a method that is not sealed.
-  "x-http-method-override", "x-http-method", "x-method-override",
-]);
-/** Headers that belong to one hop, never forwarded either way. */
+/** An answer's headers that belong to one hop, never passed back. */
 const HOP_HEADERS: readonly string[] = Object.freeze([
   "connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade", "content-length",
 ]);
 
-/** Whether a header is ours or Cloudflare's, never passed on either way. */
+/** Whether an answer's header is ours or Cloudflare's, never passed back. */
 function internal(name: string): boolean {
   return name.startsWith("x-ta-") || name.startsWith("cf-");
 }
@@ -305,9 +298,9 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
  * model list), which carries no model use, or a call its API's rules cite as free
  * (`freeCall`: a token count). Any other is `unmetered`, so no call the owner's object did
  * not charge reaches a provider's model. A service's every call on its sealed URL is free:
- * it reaches no model (`isService`). Its request (its method, path, query, headers and
- * body; its host is ignored) goes to the credential's sealed origin; the provider's own
- * answer passes through.
+ * it reaches no model (`isService`). Its request (its method, path, query, the headers its
+ * rules name, and body; its host is ignored) goes to the credential's sealed origin; the
+ * provider's own answer passes through.
  */
 export async function forwardRead(env: KeyringEnv, bound: Binding, blob: unknown,
                                   request: Request, stop: ReadableStream<Uint8Array>):
@@ -342,8 +335,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   } catch {
     return refused("invalid_request", resealed);
   }
-  const target = egressTarget(scopeOf(credential), request.method,
-                              `${incoming.pathname}${incoming.search}`);
+  const scope = scopeOf(credential);
+  const target = egressTarget(scope, request.method, `${incoming.pathname}${incoming.search}`);
   if (target === null) {
     return refused("endpoint_refused", resealed);
   }
@@ -403,26 +396,14 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                             timeout(heldDeadlineMs(Number(declared)))]);
     held.addEventListener("abort", () => upload?.stop(), { once: true });
   }
-  const headers = new Headers();
+  let headers: Headers;
   let deadline: AbortSignal;
   let signal: AbortSignal;
   try {
-    // A metered call's provider beta headers go only where its API's rules account for them.
-    const betas = metered === null || priced === null ? null
-      : apiRules(priced.api)?.betas ?? [];
-    for (const [name, value] of request.headers) {
-      if (!CREDENTIAL_HEADERS.includes(name) && !HOP_HEADERS.includes(name) && !internal(name)
-          && !(betas !== null && /-beta$/.test(name) && !betas.includes(name))) {
-        headers.append(name, value);
-      }
-    }
-    // `set` replaces every value the request sent under the sealed header's name.
+    headers = egressHeaders(scope, metered === null, request.headers);
     headers.set(credential.upstream.auth.header, authValue(credential));
     // Plain bytes back, so the redaction reads what the provider wrote.
     headers.set("accept-encoding", "identity");
-    if (metered !== null) {
-      headers.delete("content-length");
-    }
     deadline = timeout(FORWARD_DEADLINE_MS);
     signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
   } catch {
