@@ -110,8 +110,11 @@
  * - nothing is deployed unless every migration lock (`owner/migrations.json`, and the sandbox
  *   Worker's `sandbox/migrations/<class>.json`) marks the first deploy and pins every
  *   migration the code ships, in order (`lockCounts`, by `ci/kit/locks.ts`);
- * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it,
- *   which never touches a route; `--migrate` names a Worker with a pending Durable Object
+ * - a Worker's first deploy is `wrangler deploy`; later ones upload a version, then deploy it
+ *   through the stages (`platform.json` `stages`: at 0% beside the version before, then at
+ *   100%), which never touches a route, each deployment read back, and the doors smoked at 0%
+ *   once they hold their routes (`workers`); one that cannot serve beside its version before
+ *   goes to 100% at once (`atOnce`); `--migrate` names a Worker with a pending Durable Object
  *   migration to deploy whole; each version is tagged with the commit, its locks' counts and
  *   its forward count (`platform.json` `forward`);
  *   nothing is deployed, and no secret set by `retire`, on a Worker serving two versions (a
@@ -150,7 +153,8 @@ import { closedToAll, CONTROL_KEY, controlOf } from "../contract/src/control.ts"
 import { EGRESS_HOST } from "../contract/src/egress.ts";
 import { KEY_BYTES, parseRing, type Ring, ringText, ringWith } from "../contract/src/envelope.ts";
 import {
-  APP_RESOURCE, E2B_HOOK_EVENTS, HOST, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT, ZONE,
+  APP_RESOURCE, E2B_HOOK_EVENTS, HOST, UPSTREAM_CALLBACK, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
+  ZONE,
 } from "../contract/src/identity.ts";
 import { IMPORT_KEY } from "../contract/src/import-message.ts";
 import {
@@ -178,7 +182,7 @@ import {
 import {
   AUTHORIZE, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, E2B_HOOK_URL, FILES_BUCKET, FORWARD,
   IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
-  RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, WORKER_FACTS, WORKERS,
+  RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, STAGES, WORKER_FACTS, WORKERS,
 } from "./facts.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
@@ -342,6 +346,11 @@ export interface Values {
   readonly table: readonly Route[];
   /** The route changes the run's handover makes, from those. */
   readonly changes: readonly RouteChange[];
+  /**
+   * Whether the doors hold every route of theirs before any change: a handover of the zone's
+   * routes would change nothing.
+   */
+  readonly routed: boolean;
   /** The doors' host's DNS records before any change (`placedBefore`): null for the zone. */
   readonly placed: readonly DnsRecord[] | null;
   /** The route record `routes` keeps, and its key: null on a run that changes nothing. */
@@ -356,6 +365,11 @@ export interface Values {
   readonly setting: readonly Setting[];
   /** Each migrated Worker's locks' counts, by lock path (`lockCounts`). */
   readonly migrations: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  /**
+   * Each Worker as the rollout step read it before any deploy, in deploy order (`WORKERS`):
+   * the version it serves, and what the run's version carries (`Rolled`).
+   */
+  readonly rolled: readonly Rolled[];
   /** The route record `handback` reads, and its handback on the zone as it stands. */
   readonly record: RouteRecord;
   readonly back: readonly RouteChange[];
@@ -853,11 +867,18 @@ export function wranglerFor(run: Run, account: string): Wrangler {
   };
 }
 
-/** The version id `wrangler versions upload` prints, or a throw. */
-export function versionOf(output: string): string {
-  const id = /Worker Version ID:\s*([0-9a-f-]{36})/.exec(output)?.[1];
+/**
+ * What wrangler 4.154 prints before the id of the version each command makes, `versions
+ * upload`'s and `deploy`'s (`deploy-helpers`' `versions-upload.ts` and `deploy.ts`).
+ */
+const PRINTS = Object.freeze({ "versions upload": "Worker Version ID",
+                               deploy: "Current Version ID" });
+
+/** The version id `made` printed (`PRINTS`), or a throw. */
+export function versionOf(output: string, made: keyof typeof PRINTS): string {
+  const id = new RegExp(`${PRINTS[made]}:\\s*([0-9a-f-]{36})`).exec(output)?.[1];
   if (id === undefined) {
-    throw new Error("wrangler versions upload printed no Worker Version ID");
+    throw new Error(`wrangler ${made} printed no ${PRINTS[made]}`);
   }
   return id;
 }
@@ -1206,17 +1227,18 @@ const ROLLOUT_KIND = "tinyassets-rollout";
 const ROLLOUT_PREFIX = "deploy:rollout:";
 
 /**
- * Why a rollback may not take `rolled` back to the version it served before the run, or null
- * when it may: the version before is none (a first deploy); the run deployed it whole (a
- * Durable Object class change, which Cloudflare rolls back across never); the run set its
- * secrets, which the version before holds otherwise (Cloudflare refuses that deployment, 10220,
- * and the kit never forces one); the run's forward count is above the version before's tag's,
- * so it writes, or is called, in a way the version before cannot follow (`platform.json`
- * `forward`); or the run's locks pin more migrations than the version before's tag names, so
- * every object the newer one migrated would refuse to start on it (`contract/src/migrate.ts`).
- * A tag that names neither count to hold the run's to is unknown, and stops it too.
+ * Why `rolled` goes to 100% at once, its stages below it skipped (`STAGES`), or null when it
+ * takes them: why its version before can neither serve beside the run's in a split nor be
+ * gone back to, which ending a split asks. The version before is none (a first deploy); the
+ * run deployed it whole (a Durable Object class change, which Cloudflare uploads as no version
+ * and rolls back across never); the run set its secrets, which the version before holds
+ * otherwise (each version serves with its own, and Cloudflare refuses that deployment, 10220,
+ * which the kit never forces); or the run's forward count is above the version before's
+ * tag's, so it writes, or is called, in a way the version before cannot follow
+ * (`platform.json` `forward`). A tag that names no count to hold the run's to is unknown, and
+ * goes at once too.
  */
-export function forwardOnly(rolled: Rolled): string | null {
+export function atOnce(rolled: Rolled): string | null {
   if (rolled.before === null) {
     return "the run deployed it first: no version comes before it";
   }
@@ -1238,6 +1260,23 @@ export function forwardOnly(rolled: Rolled): string | null {
         tagged.forward === 0 ? "with none" : `-f${tagged.forward}`}: it writes, or is called, ` +
         "in a way its version before cannot follow (platform.json forward)";
   }
+  return null;
+}
+
+/**
+ * Why a rollback may not take `rolled` back to the version it served before the run, or null
+ * when it may: what sends it to 100% at once (`atOnce`), or the run's locks pinning more
+ * migrations than the version before's tag names, so every object the newer one migrated
+ * would refuse to start on it (`contract/src/migrate.ts`); a tag naming no counts to hold the
+ * run's to is unknown, and stops it too.
+ */
+export function forwardOnly(rolled: Rolled): string | null {
+  const alone = atOnce(rolled);
+  if (alone !== null) {
+    return alone;
+  }
+  const tagged = taggedAs(rolled.before!.tag);
+  const tag = rolled.before!.tag ?? "with nothing";
   const pinned = pinnedCounts(rolled.counts);
   if (pinned.length === 0) {
     return null;
@@ -1253,10 +1292,42 @@ export function forwardOnly(rolled: Rolled): string | null {
     : null;
 }
 
+/** What a plan line says of a rule's answer (`decided`). */
+interface Says {
+  /** The line when the rule answers null. */
+  readonly otherwise: string;
+  /** The line when it answers `reason`. */
+  readonly then: (reason: string) => string;
+  /** What follows when the run sets an optional secret that decides it. */
+  readonly so: string;
+}
+
 /**
- * What `rolled`'s line of a deploy's plan says: where it stands, and where a rollback stops.
- * `setting` is the plan's secrets on it: when only optional ones the plan job cannot tell of
- * (`Setting`) decide the stop, the line ends in what the apply job reads (`checked`).
+ * `rule`'s answer for `rolled` (`atOnce`, `forwardOnly`) as a plan line says it, `setting`
+ * the plan's secrets on it. When only optional ones the plan job cannot tell of (`Setting`)
+ * could change the answer, the line ends in what the apply job reads (`checked`).
+ */
+function decided(rolled: Rolled, setting: readonly Setting[],
+                 rule: (rolled: Rolled) => string | null, says: Says): string {
+  const unsure = setting.filter((each) => OPTIONAL.includes(each.name));
+  const reason = rule({ ...rolled, secrets: setting.filter((each) =>
+    !OPTIONAL.includes(each.name)).map((each) => each.name) });
+  if (reason !== null) {
+    return says.then(reason);
+  }
+  if (unsure.length === 0) {
+    return says.otherwise;
+  }
+  const set = unsure.filter((each) => each.sets === true).map((each) => each.name);
+  return checked(`${says.otherwise} unless the run sets ${unsure.map((each) =>
+    each.name).join(", ")} on it`, unsure.some((each) => each.sets === null) ? null
+    : set.length === 0 ? "it sets none of them" : `it sets ${set.join(", ")}, so ${says.so}: ${
+      rule(rolled)}`);
+}
+
+/**
+ * What `rolled`'s line of a deploy's plan says: where it stands, and where a rollback stops,
+ * `setting` the plan's secrets on it (`decided`).
  */
 function rolledLine(rolled: Rolled, setting: readonly Setting[]): string {
   if (rolled.before === null) {
@@ -1264,20 +1335,9 @@ function rolledLine(rolled: Rolled, setting: readonly Setting[]): string {
   }
   const at = `${rolled.name}: serving ${rolled.before.version} (${rolled.before.tag ??
     "untagged"}); a rollback`;
-  const unsure = setting.filter((each) => OPTIONAL.includes(each.name));
-  const reason = forwardOnly({ ...rolled, secrets: setting.filter((each) =>
-    !OPTIONAL.includes(each.name)).map((each) => each.name) });
-  if (reason !== null) {
-    return `${at} stops at it: ${reason}`;
-  }
-  if (unsure.length === 0) {
-    return `${at} takes it back there`;
-  }
-  const set = unsure.filter((each) => each.sets === true).map((each) => each.name);
-  return checked(`${at} takes it back there unless the run sets ${unsure.map((each) =>
-    each.name).join(", ")} on it`, unsure.some((each) => each.sets === null) ? null
-    : set.length === 0 ? "it sets none of them" : `it sets ${set.join(", ")}, so it stops at ` +
-      `it: ${forwardOnly(rolled)}`);
+  return decided(rolled, setting, forwardOnly, {
+    otherwise: `${at} takes it back there`, then: (reason) => `${at} stops at it: ${reason}`,
+    so: "it stops at it" });
 }
 
 /** Whether `value` is a list of strings, each once. */
@@ -1434,11 +1494,16 @@ const authorize = step<"upstream" | "listed">(async ({ run, say }, got) => {
 });
 
 /** The doors' routes' handover, from the zone's routes as they stand, and the host's record. */
-const routePlan = step<"cloudflare" | "zone", "table" | "changes" | "placed">(
+const routePlan = step<"cloudflare" | "zone", "table" | "changes" | "placed" | "routed">(
   async (_ctx, got) => {
     const table = await got.cloudflare.routes(got.zone);
-    return { table, changes: handover(table, DOORS, ROUTES), placed: await placedBefore(got) };
+    const changes = handover(table, DOORS, ROUTES);
+    return { table, changes, placed: await placedBefore(got), routed: changes.length === 0 };
   });
+
+/** Whether the doors hold their routes (`routed`), from the zone's routes as they stand. */
+const routedNow = step<"cloudflare" | "zone", "routed">(async (_ctx, got) => ({
+  routed: handover(await got.cloudflare.routes(got.zone), DOORS, ROUTES).length === 0 }));
 
 /** The control namespace's id, or undefined while no dark run has made it. */
 async function controlNamespace(cloudflare: Cloudflare, account: string):
@@ -1719,8 +1784,10 @@ const secretsLater = step<Secrets, "deployed" | "setting">((ctx, got) =>
  * Written on an applied run when the run's record is not there yet, and kept as it is when it
  * is (a re-run attempt keeps the versions its first attempt read); a refused write stops the
  * run before any deploy. The plan names, Worker by Worker, where a rollback of the run stops.
+ * The Workers as read now are what the deploy goes on from (`workers`).
  */
-const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" | "migrations">(
+const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" | "migrations",
+                     "rolled">(
   async ({ run, say, summarize: add }, got) => {
     const title = NAMESPACES["CONTROL"]!;
     const key = `${ROLLOUT_PREFIX}${run.job.id}`;
@@ -1751,49 +1818,134 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
       say(`keep this run's rollout record as attempt ${record.attempt ?? "-"} wrote it at ` +
           `${record.at}, before its first deploy: roll back with --mode rollback --record ` +
           "<this run's id>");
-      return;
+      return { rolled: workers };
     }
     say(`record each Worker's version as this run's rollout record in ${title}, before its ` +
         "first deploy: roll back with --mode rollback --record <this run's id>", ...lines);
     if (!run.apply) {
-      return;
+      return { rolled: workers };
     }
     const record: RolloutRecord = { kind: ROLLOUT_KIND, run: run.job.id, attempt: run.job.attempt,
                                     at: run.io.now().toISOString(), commit: run.io.commit(),
                                     workers };
     await putOrStop(got, namespace!, key, JSON.stringify(record));
     add(`Rollout record ${key}:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
+    return { rolled: workers };
   });
 
+/** The doors' smoke at a share below 100 (`canary.ts --smoke`), as a plan names it. */
+const SMOKE = "the canary's doors checks, each request with Cloudflare's version override for " +
+  `it and each answer held to name it in ${VERSION_HEADER}`;
+
 /**
- * Each Worker deployed, bound first, touching no route. A first deploy (the account's Workers
- * listing lacks it) is `wrangler deploy`; later ones are Cloudflare's staged path,
- * `versions upload` then `versions deploy` at 100%, which leaves the Worker's routes as they
- * are. Wrangler 4.154 refuses a versions upload with a pending Durable Object migration:
- * `--migrate <worker>` deploys it whole. The secrets the run sets on a Worker go up with its
- * version (`--secrets-file`; one the file omits is kept from the version before), never by
- * `wrangler secret put`, which deploys the code already there at once; each version is tagged
- * (`versionFlags`).
+ * Who reaches a Worker's version at a share below 100, and so whether it is smoked there: the
+ * doors once they hold their routes (`smoked`); the doors before (`unrouted`), when no
+ * request reaches them; any other Worker (`bound`), which only RPC reaches, where no version
+ * override does.
  */
-const workers = step<"wrangler" | "deployed" | "stage" | "setting" | "migrations">((
-    { run, say, scratch }, got) => {
+type Reach = "smoked" | "unrouted" | "bound";
+
+const REACH: Readonly<Record<Reach, string>> = Object.freeze({
+  smoked: `held ${STAGES.soakMs / 1000} s and smoked there (${SMOKE})`,
+  unrouted: "not smoked: the doors do not hold their routes yet, so no request reaches them",
+  bound: "not smoked: only RPC reaches it, and no version override reaches RPC",
+});
+
+/** A deployment's versions, as a line says them: each id and its share, in order. */
+function sharesLine(serving: readonly Serving[]): string {
+  return serving.map((each) => `${each.version} at ${each.percentage}%`).join(" and ") || "none";
+}
+
+/** Whether `now`, a deployment as Cloudflare lists it, serves `want`, in its order. */
+function servesAs(now: readonly Serving[], want: readonly Serving[]): boolean {
+  return now.length === want.length && now.every((each, at) =>
+    each.version === want[at]!.version && each.percentage === want[at]!.percentage);
+}
+
+/**
+ * What a deploy's plan says of `rolled` (`decided`, `setting` the plan's secrets on it): its
+ * stages (`STAGES`), with `reach` saying whether its shares below 100 are smoked, or 100% at
+ * once and why (`atOnce`).
+ */
+function deployLine(rolled: Rolled, setting: readonly Setting[], reach: Reach): string {
+  const whole = rolled.before === null || rolled.whole;
+  const below = STAGES.shares.slice(0, -1).map((share) => `${share}%`).join(", then ");
+  return decided(rolled, setting, atOnce, {
+    otherwise: `upload a version of ${rolled.name} and deploy it at ${below}, listed first ` +
+      `beside its version before, ${REACH[reach]}, then at 100%, each read back, touching no ` +
+      "route",
+    then: (reason) => `${whole ? `deploy ${rolled.name}` : `upload a version of ${
+      rolled.name} and deploy it`} at 100% at once, read back, touching no route, since ${
+      reason}`,
+    so: "it goes to 100% at once" });
+}
+
+/**
+ * Each Worker deployed, bound first, touching no route, each deployment read back
+ * (`Cloudflare.deployment`) before anything follows it. A first deploy (the account's Workers
+ * listing lacked it: `rolled`) is `wrangler deploy`; later ones upload a version, then deploy
+ * it through the stages (`platform.json` `stages`): at each share below 100 beside the version
+ * it serves (`rolled`), the new one listed first, so a Durable Object assigned it keeps it as
+ * the share rises; then at 100%. Each is `wrangler versions deploy`, which leaves the Worker's
+ * routes as they are and syncs the settings its config gives that no version carries
+ * (logpush, tail consumers, observability). At each share below 100 the doors, once they hold
+ * their routes (`routed`), are held `soak_s`, then
+ * smoked (`canary.ts --smoke`); a failed smoke stops the run there, every request but an
+ * override's still served by their version before, which a rollback takes them back to. A
+ * Worker that cannot serve beside its version before goes to 100% at once (`atOnce`), in its
+ * place in the order. Wrangler 4.154 refuses a versions upload with a pending Durable Object
+ * migration: `--migrate <worker>` deploys it whole. The secrets the run sets on a Worker go up
+ * with its version (`--secrets-file`; one the file omits is kept from the version before),
+ * never by `wrangler secret put`, which deploys the code already there at once; each version
+ * is tagged (`versionFlags`).
+ */
+const workers = step<"cloudflare" | "account" | "wrangler" | "stage" | "setting" | "migrations"
+                     | "rolled" | "routed">(async ({ run, say, did, scratch }, got) => {
   const commit = run.io.commit();
-  for (const worker of WORKERS) {
-    const whole = !got.deployed.includes(NAMES[worker]!) || run.migrate.has(worker);
-    say(`${whole ? "deploy" : "upload and deploy a version of"} ${NAMES[worker]}, touching no ` +
-        "route");
-    if (run.apply) {
-      const config = got.stage.config(worker);
-      const flags = ["--config", config,
-                     ...versionFlags(commit, got.migrations[worker] ?? {}, FORWARD[worker]!),
-                     ...secretsFile(run, scratch, worker, got.setting)];
-      if (whole) {
-        got.wrangler(["deploy", ...flags]);
-      } else {
-        const id = versionOf(got.wrangler(["versions", "upload", ...flags]));
-        got.wrangler(["versions", "deploy", `${id}@100`, "--yes", "--config", config]);
+  const stop = `: the run stops here (--mode rollback --record ${run.job.id} takes it back)`;
+  for (const [at, worker] of WORKERS.entries()) {
+    const rolled = got.rolled[at]!;
+    const reach: Reach = worker !== IDENTITY ? "bound" : got.routed ? "smoked" : "unrouted";
+    say(deployLine(rolled, got.setting.filter((each) => each.worker === worker), reach));
+    if (!run.apply) {
+      continue;
+    }
+    const config = got.stage.config(worker);
+    const flags = ["--config", config,
+                   ...versionFlags(commit, got.migrations[worker] ?? {}, FORWARD[worker]!),
+                   ...secretsFile(run, scratch, worker, got.setting)];
+    const readBack = async (want: Serving[]) => {
+      const now = await got.cloudflare.deployment(got.account, rolled.name);
+      if (!servesAs(now, want)) {
+        throw new Error(`${rolled.name}'s deployment read back as ${sharesLine(now)}, not ${
+          sharesLine(want)}${stop}`);
+      }
+      did(`${rolled.name} serves ${sharesLine(now)}, read back`);
+    };
+    if (rolled.before === null || rolled.whole) {
+      const id = versionOf(got.wrangler(["deploy", ...flags]), "deploy");
+      await readBack([{ version: id, percentage: 100 }]);
+      continue;
+    }
+    const id = versionOf(got.wrangler(["versions", "upload", ...flags]), "versions upload");
+    const deploy = async (want: Serving[]) => {
+      got.wrangler(["versions", "deploy", ...want.map((each) =>
+        `${each.version}@${each.percentage}`), "--yes", "--config", config]);
+      await readBack(want);
+    };
+    for (const share of atOnce(rolled) === null ? STAGES.shares.slice(0, -1) : []) {
+      await deploy([{ version: id, percentage: share },
+                    { version: rolled.before.version, percentage: 100 - share }]);
+      if (reach === "smoked") {
+        await run.io.sleep(STAGES.soakMs);
+        const exit = canaryExit(run, ["--smoke", id]);
+        if (exit !== 0) {
+          throw new Error(`the doors' smoke of ${id} at ${share}% failed (exit ${exit})${stop}`);
+        }
+        did(`the doors' smoke of ${id} at ${share}% passed`);
       }
     }
+    await deploy([{ version: id, percentage: 100 }]);
   }
 });
 
@@ -2593,14 +2745,19 @@ const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stag
  */
 function canary(...args: [] | ["--side", "doors", "--unkeyed"]): Step<never, never> {
   return step(({ run }) => {
-    const ran = run.io.spawn(process.execPath, ["--experimental-strip-types",
-                                                join(PLATFORM, "deploy", "canary.ts"), ...args],
-                             { stdio: "inherit", cwd: REPO });
-    if (ran.status !== 0) {
+    const exit = canaryExit(run, args);
+    if (exit !== 0) {
       throw new Error(`the platform canary${args.length === 0 ? "" : ` (${args.join(" ")})`} ` +
-                      `failed (exit ${ran.status})`);
+                      `failed (exit ${exit})`);
     }
   });
+}
+
+/** The platform canary (`canary.ts`) run with `args`, its output the job's: its exit. */
+function canaryExit(run: Run, args: readonly string[]): number | null {
+  return run.io.spawn(process.execPath, ["--experimental-strip-types",
+                                         join(PLATFORM, "deploy", "canary.ts"), ...args],
+                      { stdio: "inherit", cwd: REPO }).status;
 }
 
 /** H2's probes alone: they change nothing, and need a routed door and a probe owner. */
@@ -2886,7 +3043,9 @@ async function servedBefore({ cloudflare, account }: Pick<Values, "cloudflare" |
  * every deploy, the Workers a caller binds are never older than it. It stops at the first
  * Worker the run made forward-only (`forwardOnly`): that one and every Worker before it stay
  * on the run's versions, each named, and with none to take back the run stops before any
- * change. Each is held to the record first: every version it serves is the one before or one
+ * change. A Worker the run left at 0% beside its version before, which already serves all its
+ * traffic, is taken back whatever its version carries. Each is held to the record first:
+ * every version it serves is the one before or one
  * tagged with the run's commit (a split of the two, which a run stopped mid-rollout leaves,
  * included), and anything else (a deploy since) stops it, named, with nothing changed; so
  * does a record that is not Cloudflare's word: its Workers not this tree's, in its deploy
@@ -2954,11 +3113,18 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
         versionLine(serving)}`);
       continue;
     }
-    if (stop === null) {
+    // A run stopped at a share of 0% leaves its version beside the one before, serving only a
+    // request with an override for it, which no RPC call carries. Cloudflare assigns each
+    // Durable Object a version by the shares, so none ran this one's migrations, and the
+    // stages took it there only with no forward change (`atOnce`): the way back is open.
+    const unserved = servesAs(serving, [
+      { version: serving[0]!.version, percentage: 0 },
+      { version: rolled.before?.version ?? "", percentage: 100 }]);
+    if (stop === null && !unserved) {
       const reason = forwardOnly(rolled);
       stop = reason === null ? null : { name: rolled.name, reason };
     }
-    if (stop !== null) {
+    if (stop !== null && !unserved) {
       lines.push(`leave ${rolled.name} on ${versionLine(serving)}: ${rolled.name === stop.name
         ? stop.reason : `it comes before ${stop.name} in the deploy order, and ${stop.name} ` +
           "stays on the run's version"}`);
@@ -2972,7 +3138,8 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
     }
     back.push(rolled);
     lines.push(`roll ${rolled.name} back to ${rolled.before!.version} (${
-      rolled.before!.tag ?? "untagged"}) at 100%, from ${versionLine(serving)}`);
+      rolled.before!.tag ?? "untagged"}) at 100%, from ${versionLine(serving)}${unserved
+      ? ": its run's version at 0% served no request but an override's" : ""}`);
   }
   if (drifted.length > 0) {
     throw new Error(`deployed since run ${record.run}, so nothing is rolled back: ${
@@ -2991,11 +3158,10 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
   for (const rolled of back) {
     await got.cloudflare.deploy(got.account, rolled.name, rolled.before!.version);
     const now = await got.cloudflare.deployment(got.account, rolled.name);
-    if (now.length !== 1 || now[0]!.version !== rolled.before!.version
-        || now[0]!.percentage !== 100) {
-      throw new Error(`${rolled.name}'s deployment read back as ${now.map((each) =>
-        `${each.version} at ${each.percentage}%`).join(" and ") || "none"}, not ${
-        rolled.before!.version} at 100%: the rollback stops here`);
+    const want = [{ version: rolled.before!.version, percentage: 100 }];
+    if (!servesAs(now, want)) {
+      throw new Error(`${rolled.name}'s deployment read back as ${sharesLine(now)}, not ${
+        sharesLine(want)}: the rollback stops here`);
     }
   }
   say(back.length === 0 ? "every Worker serves its version before the run already"
@@ -3046,11 +3212,11 @@ const READS = Steps.none.then(locks).then(zone).then(upstream).then(e2b).then(te
  * the control record.
  */
 const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(workers)
-  .then(retired).then(control).then(hookLater(""));
+  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(routedNow)
+  .then(workers).then(retired).then(control).then(hookLater(""));
 const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(workers)
-  .then(retired).then(control).then(hook(false, ""));
+  .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(routedNow)
+  .then(workers).then(retired).then(control).then(hook(false, ""));
 
 /**
  * A routes run: the route plan read and its record kept before the first change, then the

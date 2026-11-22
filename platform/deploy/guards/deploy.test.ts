@@ -54,7 +54,7 @@ import {
   Cloudflare, describeStep, handback, handover, type Route,
 } from "../cloudflare";
 import {
-  authorizeCheck, deployedConfig, firstPartyLink, forwardOnly,
+  atOnce, authorizeCheck, deployedConfig, firstPartyLink, forwardOnly,
   E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
   lifecycleHook, lockCounts, type Mode, MODES, parse,
   holding, perform, PUBLIC_INPUTS, registerRedirect, type Rolled, rolloutOf, type RolloutRecord, routedConfig,
@@ -67,7 +67,7 @@ import {
   boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, FILES_BUCKET, FORWARD, forwardCounts,
   IMPORT_NAMES,
   KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, QUEUES, RETIRED,
-  retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, workerNames,
+  retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, STAGES, stagesOf, WORKERS, workerNames,
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
@@ -246,6 +246,8 @@ interface WorldOptions {
   readonly refusingDeploy?: number;
   /** Secrets a held account's Workers lack: optional ones the founder never stored. */
   readonly lacking?: readonly string[];
+  /** The exit of the doors' smoke (`canary.ts --smoke`): 0 by default. */
+  readonly smoke?: number;
 }
 
 /** A version a fake Worker serves: its id, its share and its tag. */
@@ -699,19 +701,27 @@ function world(options: WorldOptions = {}) {
       let stdout = "";
       if (script !== undefined && (args[0] === "deploy" || args[1] === "upload")) {
         const id = version(script, tagged);
-        stdout = `Worker Version ID: ${id}\n`;
-        if (args[0] === "deploy") {
+        stdout = `${args[0] === "deploy" ? "Current" : "Worker"} Version ID: ${id}\n`;
+        if (args[0] === "deploy" && !inert.has("deploy")) {
           deployments.set(script, [{ version: id, percentage: 100 }]);
         }
       } else if (script !== undefined && args[0] === "versions" && args[1] === "deploy") {
-        deployments.set(script, [{ version: args[2]!.replace(/@100$/, ""), percentage: 100 }]);
+        // Each `<id>@<share>` before the flags, in the order given, as wrangler sends them.
+        const specs = args.slice(2, args.indexOf("--yes")).map((spec) => {
+          const [version, share] = spec.split("@");
+          expect(versions.get(version!)?.script).toBe(script);
+          return { version: version!, percentage: Number(share) };
+        });
+        if (!inert.has("deploy")) {
+          deployments.set(script, specs);
+        }
       }
       return { status: 0, stdout, stderr: "" };
     }
     if (command === process.execPath && argv.some((arg) => arg.endsWith("canary.ts"))) {
       events.push(["node", ...argv.slice(argv.findIndex((arg) => arg.endsWith("canary.ts")))
         .map((arg) => basename(arg))].join(" "));
-      return { status: 0, stdout: "", stderr: "" };
+      return { status: argv.includes("--smoke") ? options.smoke ?? 0 : 0, stdout: "", stderr: "" };
     }
     if (command === process.execPath && argv.some((arg) => arg.endsWith("checks.ts"))) {
       events.push(`node ${argv.slice(argv.findIndex((arg) => arg.endsWith("checks.ts")))
@@ -856,6 +866,20 @@ describe("the deploy kit's facts", () => {
     expect(retiredWorkers(["tinyassets-old"], NAMES)).toEqual(["tinyassets-old"]);
     expect(() => retiredWorkers(["tinyassets-old", NAMES["owner"]!], NAMES))
       .toThrow(`platform.json retires ${NAMES["owner"]}, which a config still names`);
+  });
+
+  it("reads the stages as shares rising to 100 and a soak of whole seconds", () => {
+    expect(STAGES).toEqual(stagesOf(platform.stages));
+    expect(stagesOf({ shares: [0, 10, 50, 100], soak_s: 300 }))
+      .toEqual({ shares: [0, 10, 50, 100], soakMs: 300_000 });
+    expect(stagesOf({ shares: [100], soak_s: 1 })).toEqual({ shares: [100], soakMs: 1000 });
+    for (const bad of [{ shares: [0, 50], soak_s: 30 }, { shares: [50, 0, 100], soak_s: 30 },
+                       { shares: [0, 0, 100], soak_s: 30 }, { shares: [-1, 100], soak_s: 30 },
+                       { shares: ["0", 100], soak_s: 30 }, { shares: [0, 100], soak_s: 0 },
+                       { shares: [0, 100], soak_s: 1.5 }, { shares: [0, 100] }, { soak_s: 30 }]) {
+      expect(() => stagesOf(bad), JSON.stringify(bad)).toThrow("platform.json's stages are no " +
+        "shares rising from 0 up to 100 with a soak of whole seconds above 0");
+    }
   });
 
   it("counts each Worker's forward changes, each naming Workers of this tree once, with why",
@@ -1095,10 +1119,10 @@ describe("the plan the apply job runs", () => {
     const plan = await planned(forged, "dark");
     const file = JSON.parse(readFileSync(plan, "utf8")) as { plan: { lines: string[] } };
     file.plan.lines = file.plan.lines.filter((line) =>
-      !line.startsWith(`upload and deploy a version of ${DOORS}`));
+      !line.startsWith(`upload a version of ${DOORS}`));
     writeFileSync(plan, JSON.stringify(file));
     expect(await refused(forged, "dark", plan)).toEqual({ changed: [], why: expect.stringContaining(
-      `planned now, and never approved: upload and deploy a version of ${DOORS}`) });
+      `planned now, and never approved: upload a version of ${DOORS}`) });
     const shapeless = world({ held: true });
     const empty = await planned(shapeless, "dark");
     writeFileSync(empty, "{}");
@@ -1128,8 +1152,10 @@ describe("the plan the apply job runs", () => {
       const work = await perform(parse(["--mode", mode, "--yes", "--plan", plan], env, w.io));
       rmSync(join(plan, ".."), { recursive: true, force: true });
       const applied = work.plan.slice(1);
-      // The custom domain's DNS record, which routes writes into its record once made.
-      const did = applied.filter((line) => line.startsWith("record in deploy:routes:"));
+      // What a change showed once made: the custom domain's DNS record, which routes writes
+      // into its record, and each deployment read back.
+      const did = applied.filter((line) => line.startsWith("record in deploy:routes:")
+        || READ_BACK.test(line));
       const said = applied.filter((line) => !did.includes(line));
       expect([mode, options, said.length]).toEqual([mode, options, approved.length]);
       said.forEach((line, at) => {
@@ -2771,6 +2797,164 @@ describe("the rollout record and mode rollback", () => {
       expect(() => rolloutOf(bad, "k"), why).toThrow(`the record k ${why}`);
     }
   });
+
+  describe("the stages", () => {
+    /** Each `wrangler versions deploy`'s versions and shares, in order. */
+    const shares = (w: ReturnType<typeof world>) => w.events.filter((event) =>
+      event.startsWith("wrangler versions deploy ")).map((event) =>
+      event.slice("wrangler versions deploy ".length, event.indexOf(" --yes")));
+    const read = (worker: string) =>
+      `cf GET /accounts/${ACCOUNT}/workers/scripts/${NAMES[worker]}/deployments`;
+    /** The run's every wait, in the world's timeline. */
+    const waited = (w: ReturnType<typeof world>) => {
+      Object.assign(w.io, { sleep: async (ms: number) => { w.events.push(`sleep ${ms}`); } });
+    };
+    const DOORS_AT = WORKERS.indexOf("doors");
+    const OWNER_AT = WORKERS.indexOf("owner");
+    const lacking = ["INBOUND_SLACK_SIGNING_SECRET", "PLATFORM_CANARY_TOKEN"];
+
+    it("takes each held Worker to 0% beside its version before, the new one listed first, then " +
+       "to 100%, each read back before the next; nothing smoked before the doors' routes",
+       async () => {
+      const w = world({ held: true });
+      waited(w);
+      const work = await runMode(w, "dark", ["--yes"], RUN);
+      expect(shares(w)).toEqual(WORKERS.flatMap((worker, at) => [
+        `${MADE_ID(at + 1)}@0 before-${worker}@100`, `${MADE_ID(at + 1)}@100`]));
+      for (const [at, worker] of WORKERS.entries()) {
+        order(w.events, [`wrangler versions upload --config ${worker}/`,
+                         `wrangler versions deploy ${MADE_ID(at + 1)}@0 `, read(worker),
+                         `wrangler versions deploy ${MADE_ID(at + 1)}@100 `, read(worker)]);
+      }
+      expect(w.events.filter((event) => /^(sleep|node canary.ts --smoke)/.test(event)))
+        .toEqual([]);
+      expect(work.plan.filter((line) => line.startsWith("upload a version of")))
+        .toEqual(WORKERS.map((worker) => stagedLine(worker)));
+      expect(serving(w)).toEqual(Object.fromEntries(WORKERS.map((worker, at) =>
+        [NAMES[worker]!, `${MADE_ID(at + 1)}@100`])));
+    });
+
+    it("once the doors hold their routes, holds their 0% for the soak, then smokes it; a " +
+       "failed smoke stops the run there, and a rollback takes them back", async () => {
+      const again = { ...RUN, GITHUB_RUN_ID: "7002" };
+      const ours = MADE_ID(WORKERS.length + DOORS_AT + 1);
+      const theirs = MADE_ID(DOORS_AT + 1);
+      const w = world({ held: true });
+      await runMode(w, "routes", ["--yes"], RUN);
+      waited(w);
+      w.events.splice(0);
+      const work = await runMode(w, "dark", ["--yes"], again);
+      order(w.events, [`wrangler versions deploy ${ours}@0 ${theirs}@100 `, read("doors"),
+                       `sleep ${STAGES.soakMs}`, `node canary.ts --smoke ${ours}`,
+                       `wrangler versions deploy ${ours}@100 `, read("doors")]);
+      expect(w.events.filter((event) => /^(sleep|node canary.ts --smoke)/.test(event)))
+        .toEqual([`sleep ${STAGES.soakMs}`, `node canary.ts --smoke ${ours}`]);
+      expect(work.plan).toEqual(expect.arrayContaining([
+        stagedLine("doors", SMOKED), stagedLine("owner"), `the doors' smoke of ${ours} at 0% passed`]));
+      // Failed, the doors stay at 0% beside their version before, and nothing follows.
+      const failed = world({ held: true, smoke: 16 });
+      await runMode(failed, "routes", ["--yes"], RUN);
+      failed.events.splice(0);
+      await expect(runMode(failed, "dark", ["--yes"], again)).rejects.toThrow(
+        `the doors' smoke of ${ours} at 0% failed (exit 16): the run stops here (--mode ` +
+        "rollback --record 7002 takes it back)");
+      expect(serving(failed)[DOORS]).toBe(`${ours}@0,${theirs}@100`);
+      expect(failed.events.some((event) => event.startsWith(`wrangler versions deploy ${ours}@100`)))
+        .toBe(false);
+      failed.events.splice(0);
+      const back = await runMode(failed, "rollback", ["--yes", "--record", "7002"], again);
+      expect(serving(failed)).toEqual(Object.fromEntries(WORKERS.map((worker, at) =>
+        [NAMES[worker]!, `${MADE_ID(at + 1)}@100`])));
+      expect(back.plan).toContain(`roll ${DOORS} back to ${theirs} (${OURS}) at 100%, from ${
+        ours} (${OURS}) at 0% and ${theirs} (${OURS}) at 100%: its run's version at 0% served ` +
+        "no request but an override's");
+    });
+
+    it("lets a rollback end a 0% split that a migration would stop at 100%", async () => {
+      const ours = MADE_ID(OWNER_AT + 1);
+      const w = world({ held: true, pinned: BUMPED, failing: `versions deploy ${ours}@100` });
+      await expect(runMode(w, "dark", ["--yes"], RUN)).rejects.toThrow(
+        `wrangler versions deploy ${ours}@100 failed (exit 1): the API refused it`);
+      expect(serving(w)[NAMES["owner"]!]).toBe(`${ours}@0,before-owner@100`);
+      w.events.splice(0);
+      const work = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+      expect(serving(w)).toEqual(BEFORE_ALL);
+      expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
+        `^roll ${NAMES["owner"]} back to before-owner \\(${BEFORE}-m[0-9.]+\\) at 100%, from ${
+          ours} \\(${OURS}-m[0-9.]+\\) at 0% and before-owner \\(${BEFORE}-m[0-9.]+\\) at ` +
+        "100%: its run's version at 0% served no request but an override's$")));
+    });
+
+    it("takes a Worker that cannot serve beside its version before to 100% at once, in its " +
+       "place", async () => {
+      const w = world({ held: true });
+      const work = await runMode(w, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY", "--migrate",
+                                             "owner"], RUN);
+      const at = (worker: string) => MADE_ID(WORKERS.indexOf(worker) + 1);
+      expect(shares(w)).toEqual(WORKERS.flatMap((worker) => worker === "owner" ? []
+        : worker === "doors" ? [`${at(worker)}@100`]
+          : [`${at(worker)}@0 before-${worker}@100`, `${at(worker)}@100`]));
+      order(w.events, [`wrangler deploy --config owner/`, read("owner"),
+                       "wrangler versions upload --config doors/",
+                       `wrangler versions deploy ${at("doors")}@100 `, read("doors")]);
+      expect(work.plan).toEqual(expect.arrayContaining([
+        onceLine("owner", "the run deployed it whole (--migrate), and Cloudflare rolls back " +
+                 "across no Durable Object class change", true),
+        onceLine("doors", "the run set ROUTING_MAC_KEY on it, which its version before holds " +
+                 "otherwise (Cloudflare refuses that rollback, and the kit never forces one)"),
+        stagedLine("sandbox"), readBack("owner", [at("owner"), 100])]));
+      // A forward mark above the version before's, or a tag naming none, goes at once too; a
+      // migration alone takes the stages.
+      const rolled: Rolled = { name: "w", before: { version: "v", tag: `${OURS}-m2` },
+                               counts: { "a.json": 3 }, whole: false, secrets: [], forward: 1 };
+      expect(atOnce(rolled)).toMatch(/^the run's version is marked -f1 and its version before /);
+      expect(atOnce({ ...rolled, before: { version: "v", tag: null } }))
+        .toMatch(/names no forward count to hold the run's -f1 to: unknown$/);
+      expect(atOnce({ ...rolled, before: { version: "v", tag: `${OURS}-m2-f1` } })).toBeNull();
+      expect(forwardOnly({ ...rolled, before: { version: "v", tag: `${OURS}-m2-f1` } }))
+        .toMatch(/^the run's version pins -m3 and its version before -m2/);
+    });
+
+    it("leaves the doors' stages to the apply job when only optional secrets it cannot see " +
+       "decide them", async () => {
+      const without = Object.fromEntries(Object.entries(RUN).filter(([name]) =>
+        !lacking.includes(name)));
+      const unless = `${stagedLine("doors")} unless the run sets ${lacking.join(", ")} on it`;
+      const doors = (plan: readonly string[]) => plan.filter((line) =>
+        line.startsWith(`upload a version of ${DOORS}`));
+      const w = world({ held: true, lacking });
+      expect(doors((await runMode(w, "dark", ["--public"], PUBLIC)).plan)).toEqual([
+        `${unless}: checked by the apply job before any change`]);
+      expect(doors((await runMode(w, "dark", ["--yes"], without)).plan)).toEqual([
+        `${unless}: it sets none of them`]);
+      expect(shares(w).filter((each) => each.startsWith(MADE_ID(DOORS_AT + 1)))).toEqual([
+        `${MADE_ID(DOORS_AT + 1)}@0 before-doors@100`, `${MADE_ID(DOORS_AT + 1)}@100`]);
+      const given = world({ held: true, lacking });
+      expect(doors((await runMode(given, "dark", ["--yes"], RUN)).plan)).toEqual([
+        `${unless}: it sets ${lacking.join(", ")}, so it goes to 100% at once: the run set ${
+          lacking.join(", ")} on it, which its version before holds otherwise (Cloudflare ` +
+        "refuses that rollback, and the kit never forces one)"]);
+      expect(shares(given).filter((each) => each.startsWith(MADE_ID(DOORS_AT + 1)))).toEqual([
+        `${MADE_ID(DOORS_AT + 1)}@100`]);
+    });
+
+    it("stops at a deployment that reads back otherwise, before anything follows it",
+       async () => {
+      const held = world({ held: true });
+      held.inert.add("deploy");
+      await expect(runMode(held, "dark", ["--yes"], RUN)).rejects.toThrow(
+        `${NAMES["codemode"]}'s deployment read back as before-codemode at 100%, not ${
+          MADE_ID(1)} at 0% and before-codemode at 100%: the run stops here (--mode rollback ` +
+        "--record 7001 takes it back)");
+      expect(shares(held)).toEqual([`${MADE_ID(1)}@0 before-codemode@100`]);
+      const fresh = world();
+      fresh.inert.add("deploy");
+      await expect(runMode(fresh, "dark", ["--yes"], RUN)).rejects.toThrow(
+        `${NAMES["codemode"]}'s deployment read back as none, not ${MADE_ID(1)} at 100%: the ` +
+        "run stops here (--mode rollback --record 7001 takes it back)");
+      expect(fresh.events.filter((event) => event.startsWith("wrangler deploy"))).toHaveLength(1);
+    });
+  });
 });
 
 describe("the pair and h2 modes", () => {
@@ -3557,11 +3741,17 @@ describe("the template and the pair", () => {
         "its passed pair; nothing is deployed");
   });
 
-  it("versions a later deploy by the id wrangler prints", () => {
-    expect(versionOf(`Uploaded ${NAMES["owner"]}\nWorker Version ID: ` +
-                     "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n"))
-      .toBe("0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b");
-    expect(() => versionOf(`Uploaded ${NAMES["owner"]}`)).toThrow(/Version ID/);
+  it("reads each version's id as wrangler prints it, an upload's and a deploy's", () => {
+    const id = "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b";
+    expect(versionOf(`Uploaded ${NAMES["owner"]}\nWorker Version ID: ${id}\n`, "versions upload"))
+      .toBe(id);
+    expect(versionOf(`Deployed ${NAMES["owner"]}\nCurrent Version ID: ${id}\n`, "deploy"))
+      .toBe(id);
+    // Each its own command's words: the other's are no id of it.
+    expect(() => versionOf(`Current Version ID: ${id}`, "versions upload"))
+      .toThrow("wrangler versions upload printed no Worker Version ID");
+    expect(() => versionOf(`Worker Version ID: ${id}`, "deploy"))
+      .toThrow("wrangler deploy printed no Current Version ID");
   });
 });
 
@@ -4789,6 +4979,42 @@ const RECORDED = `record each Worker's version as this run's rollout record in $
   NAMESPACES["CONTROL"]}, before its first deploy: roll back with --mode rollback --record ` +
   "<this run's id>";
 
+/** The id of the `n`th version the fake account makes in a run. */
+const MADE_ID = (n: number) => `0f7e3a3c-1b2d-4e5f-8a9b-${String(n).padStart(12, "0")}`;
+
+/** A deployment read back, as the run reports it once made. */
+const READ_BACK = /^tinyassets-[a-z]+ serves .+, read back$/;
+const readBack = (worker: string, ...serving: [string, number][]) =>
+  `${NAMES[worker]} serves ${serving.map(([version, share]) => `${version} at ${share}%`)
+    .join(" and ")}, read back`;
+
+/** The doors' smoke, as a plan names it. */
+const SMOKED = "held 30 s and smoked there (the canary's doors checks, each request with " +
+  "Cloudflare's version override for it and each answer held to name it in " +
+  "x-tinyassets-version)";
+/** What a plan says of a Worker no smoke reaches at 0%: the doors before their routes, or RPC. */
+const UNSMOKED = (worker: string) => worker === "doors"
+  ? "not smoked: the doors do not hold their routes yet, so no request reaches them"
+  : "not smoked: only RPC reaches it, and no version override reaches RPC";
+
+/** A Worker's deploy line, through the stages: smoked there, or `UNSMOKED`'s. */
+const stagedLine = (worker: string, reach = UNSMOKED(worker)) => `upload a version of ${
+  NAMES[worker]} and deploy it at 0%, listed first beside its version before, ${reach}, then ` +
+  "at 100%, each read back, touching no route";
+
+/** A Worker's deploy line, at 100% at once, `whole` with no upload, and why. */
+const onceLine = (worker: string, why: string, whole = false) => `${whole ? `deploy ${
+  NAMES[worker]}` : `upload a version of ${NAMES[worker]} and deploy it`} at 100% at once, read ` +
+  `back, touching no route, since ${why}`;
+
+/** Why a first deploy goes at once. */
+const FIRST = "the run deployed it first: no version comes before it";
+
+/** A held Worker's lines through the stages, its upload the run's `n`th version, read back. */
+const heldLines = (worker: string, n: number) => [
+  stagedLine(worker), readBack(worker, [MADE_ID(n), 0], [`before-${worker}`, 100]),
+  readBack(worker, [MADE_ID(n), 100])];
+
 /** A fresh dark run's plan, in order: what the founder's first `dark` changes. */
 const DARK_FRESH = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
@@ -4809,7 +5035,8 @@ const DARK_FRESH = [
   RECORDED,
   ...WORKERS.map((worker) => `${NAMES[worker]}: deployed by this run first, so a rollback stops ` +
     "at it"),
-  ...WORKERS.map((worker) => `deploy ${NAMES[worker]}, touching no route`),
+  ...WORKERS.flatMap((worker, at) => [onceLine(worker, FIRST, true),
+                                       readBack(worker, [MADE_ID(at + 1), 100])]),
   "write the control record closed (outside off, canary none, inbound off, the founder's " +
   "tier numbers): the API answered there is none",
   `E2B lifecycle webhook ${E2B_HOOK.url}: registered, disabled`,
@@ -4831,7 +5058,7 @@ const ROUTES_HELD = [
   RECORDED,
   ...WORKERS.map((worker) => `${NAMES[worker]}: serving before-${worker} (${
     HELD_SERVING[NAMES[worker]!]![0]!.tag}); a rollback takes it back there`),
-  ...WORKERS.map((worker) => `upload and deploy a version of ${NAMES[worker]}, touching no route`),
+  ...WORKERS.flatMap((worker, at) => heldLines(worker, at + 1)),
   ...["mcp*", "api*", "app*"].map((path) =>
     `move the route ${HOST}/${path} from tinyassets-mcp-proxy to ${DOORS}`),
   `add the route ${HOST}/hooks/inbound/* for ${DOORS}`,

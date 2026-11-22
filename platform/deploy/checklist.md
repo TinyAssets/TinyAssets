@@ -141,8 +141,21 @@ It never counts as "absent".
    than the stored ring's stops the run.
 4. **Every Worker deployed with no public route,** each after the Workers it binds (`WORKERS`,
    `deploy/facts.ts`). None has a `workers.dev` or preview URL. A Worker's first deploy is
-   `wrangler deploy`. Later deploys upload a version, then deploy it (`wrangler versions
-   upload`, then `versions deploy`), which never touches a route. Wrangler refuses a version
+   `wrangler deploy`. Later deploys upload a version, then deploy it in **stages**
+   (`platform/deploy/platform.json` `stages`, each `wrangler versions deploy`, which never
+   touches a route): first at 0% beside the version it serves, the new one listed first, then
+   at 100%. Each deployment is read back before anything follows it, and one that reads back
+   otherwise stops the run there. At 0% only a request carrying Cloudflare's version override
+   reaches the new version, and no override reaches a call between Workers, so only the doors
+   are smoked there: once they hold their routes, the kit waits `soak_s` (a deployment takes a
+   few seconds to reach every location) and runs the platform canary's doors checks with the
+   override (`canary.ts --smoke`), each answer held to name the new version in
+   `x-tinyassets-version`. Before `routes` hands the doors their routes (every `dark` run until
+   the cutover, and the cutover's own `routes` run, which hands them over after the Workers)
+   no request reaches them, so the plan says each Worker is not smoked and the run goes from
+   0% to 100% with no wait. A Worker the run deploys first or whole, sets a secret on, or
+   marks with a `forward` change goes to 100% at once, in its place in the order: it cannot
+   serve beside its version before. Wrangler refuses a version
    upload with a pending Durable Object migration (read in wrangler 4.154's source). Name that
    Worker in `migrate` to deploy it whole; `migrate` takes only a Worker whose config declares
    Durable Object migrations. Each version is tagged with the commit's first 12 digits and, on
@@ -155,8 +168,9 @@ It never counts as "absent".
    the control namespace (a copy in the job summary): each Worker's version before the run
    and that version's tag, and what the run's version carries that the one before cannot
    take back. Its plan says, Worker by Worker, where a `rollback` of the run would stop. A
-   Worker serving two versions (a split, which only the dashboard makes today) stops the
-   run before any deploy: end the split first.
+   Worker serving two versions (a split: a run stopped between a Worker's stages, a failed
+   smoke among them, or the dashboard) stops the run before any deploy: end the split first,
+   with `rollback` of the stopped run (below), then dispatch again.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
@@ -318,6 +332,10 @@ It never counts as "absent".
     `platform.json` `forward` says its version before cannot read what it writes, or answer
     what sandboxes, open pages or queued messages send it. Its author adds that change in
     the same pull request, and its reviewer finds one missing.
+
+  A Worker a stopped run left at 0% beside its version before is taken back whatever its
+  version carries: at 0% it served only requests with an override for it, and Cloudflare
+  assigns no Durable Object a version at 0%, so no object ran its migrations.
 
   With no Worker to take back it changes nothing. Then roll forward with a fix, or close
   the gates (mode `control`). Before any change it holds the record whole to Cloudflare,

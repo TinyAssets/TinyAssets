@@ -13,11 +13,10 @@ import { mcpClient } from "../src/binder";
 import { ACCESS_TOKEN_TTL_S, now, REFRESH_TOKEN_TTL_S } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import {
-  APP_RESOURCE, MCP_RESOURCE, ORIGIN, WEB_CLIENT, WEB_REDIRECT,
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
 } from "../../contract/src/identity";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
-import { VERSION_HEADER } from "../src/doors";
 import { revokeClient } from "../src/revoke";
 import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
