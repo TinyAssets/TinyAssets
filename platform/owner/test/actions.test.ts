@@ -168,7 +168,7 @@ describe("the held calls", () => {
     expect(await pending(muses[0]!)).toBe("no pending action request for this card");
     expect((await r.stub.actionRequest(o.owner, { card_id: dots })).card.card_id).toBe(dots);
     // The rest of the set, by the owner's agents' runs, to its bound and one past it, which
-    // lets the oldest of all go: DOT's.
+    // lets their own oldest go, never an outside client's.
     const runs = ACTION_LIMITS.held - ACTION_LIMITS.perClient - 1;
     expect(await inStores(r.stub, ({ actions }) => {
       const asked = (n: number) => {
@@ -183,7 +183,15 @@ describe("the held calls", () => {
       return Array.from({ length: runs + 1 }, (_, n) => asked(n));
     })).toEqual(Array(runs + 1).fill("held for your owner's answer"));
     expect(await r.table("action_requests")).toHaveLength(ACTION_LIMITS.held);
+    expect((await r.stub.actionRequest(o.owner, { card_id: dots })).card.card_id).toBe(dots);
+    // An outside client's call at the full set lets the oldest outside one go: DOT's.
+    await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot-2"));
     expect(await pending(dots)).toBe("no pending action request for this card");
+    // Each eviction is told, once an asker, naming the asker and never the call.
+    const told = (await r.table("owner_notices"))
+      .filter((row) => row["type"] === "held_request_evicted").map((row) => row["detail"]);
+    expect([told.length, told.some((detail) => String(detail).includes("workspace"))])
+      .toEqual([3, false]);
     // A card and a yes have no life of their own: years on, the card is shown and answered,
     // and the yes admits its call once.
     const later = clock() + 10 * 365 * 86_400;
@@ -200,6 +208,22 @@ describe("the held calls", () => {
       expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more")))
         .not.toBe(more);
     });
+  });
+
+  it("refuse an outside client's call when the full set holds only the owner's agents'",
+     async () => {
+    const { r, o } = await ledgerOwner();
+    await ruled(o, [{ act: "workspace.files", do: "ask" }]);
+    await inStores(r.stub, ({ actions }) => {
+      for (let n = 0; n < ACTION_LIMITS.held; n++) {
+        expect(() => actions.decide("workspace.files", { agent: "main", client: null, run: null },
+                                    { door: "fileMkdir", request: { n } }, clock()))
+          .toThrow("held for your owner's answer");
+      }
+    });
+    expect((await failure(() => mkdir(r.stub, r.bind(MUSE), "/workspace/m"))).message)
+      .toBe("too many calls held for the owner");
+    expect(await r.table("action_requests")).toHaveLength(ACTION_LIMITS.held);
   });
 
   it("keep their receipts to the newest receiptsPerBucket, and list the last receiptsListed",

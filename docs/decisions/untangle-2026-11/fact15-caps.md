@@ -61,15 +61,24 @@ approval is not given within 30 days (docs.github.com, reviewing deployments).
    owner's reads), since nothing expires.
 2. **What replaces the age's one real protection: the count ceiling's oldest-out.** A
    request at its bound lets the oldest go to make its room, the asker's own when it is at its
-   share, else the oldest of all (by filing time, then insertion). Nothing is refused for room,
-   and the per-client shares still keep one client's asks from pushing out the rest. This is
+   share, else the oldest of the asker's class (by filing time, then insertion): outside
+   clients' rows for an outside client, the owner's own agents' (a held call with no client, a
+   proposal by `owner`) for the owner's. An outside client's ask never pushes out the
+   owner's; when the asker's class has no row to let go, the asker is refused, loudly, as
+   before ("too many calls held for the owner", "too many pending policy proposals"). Every
+   registration card is an outside client's, so its oldest of all is its class's. Each
+   eviction is told on the owner's notices (`held_request_evicted`, `Notices.once`: once an
+   asker while the notice stands, so a flood is one line), naming the kind and the asker,
+   never the request. The per-client shares still keep one client's asks from pushing out the
+   rest. This is
    the settled wakes' rule (`maxSettledWakes`), and strictly less lossy than an age, which let
    every request go at its time. It also bounds the grant rows the cards hold
    (`outside_clients.held`) to `maxPending`, which the age used to free. Refusal texts gone:
    "this client's pending registrations are at their limit", "too many pending agent
-   registrations", "this client's calls held for the owner are at their limit", "too many calls
-   held for the owner", "too many pending policy proposals", "this client's pending policy
-   proposals are at their limit". A yes waits until its one use or a policy change.
+   registrations", "this client's calls held for the owner are at their limit", "this
+   client's pending policy proposals are at their limit". A yes waits until its one use or a
+   policy change. (Review: the first cut's "else the oldest of all" let outside clients
+   together push out the owner's own agents' requests, silently; corrected here.)
    - **No migration.** No column or index changes; the oldest is found on the existing
      `agent_cards_by_age` and `proposals_by_age`, and `action_requests` is at most 200 rows.
      A stored action card's JSON keeps its old `expires_at`, which nothing reads; its digest is
@@ -93,6 +102,15 @@ approval is not given within 30 days (docs.github.com, reviewing deployments).
   branch. They are not in this PR's brief and need their own research (Fact 14).
 - `owner/src/ledger.ts` `LedgerDoorNeeds.registrations` restates `take`'s signature by hand
   rather than `Pick<Registrations, "take">`, as its other needs do; changed only to match.
+- An outside client's unused yes waits until its one use, a policy change or its eviction
+  (it was a day). The call it admits is the identical one (door, client, agent, request
+  bytes) and passes every current check made again (grant, scopes, policy generation); the
+  state of its target then is not part of the yes, as it was not within the day. Left: a
+  clock on it would be a limit of none of Fact 15's kinds.
+- A yes given past Claude Code's pinned `cleanupPeriodDays` (30) after a run's held call
+  resumes a conversation whose CLI session the CLI may have pruned, as any conversation idle
+  that long does. Left to `fact15-defaults.md`'s `cleanupPeriodDays` line
+  (`untangle/fact15-defaults-2`: what value keeps every session).
 
 ## In `fact15-defaults.md`
 

@@ -156,6 +156,10 @@ describe("an MCP client's agent registration", () => {
     expect(kept).toHaveLength(CARD_LIMITS.maxPending);
     expect(kept.sort()).toEqual(ids.filter((id) => id !== out.mine[0]).sort());
     expect(kept).not.toContain(second.card_id);
+    // Each eviction is told, once an asker (both were MUSE's), never naming the request.
+    expect((await r.table("owner_notices")).filter((row) => row["type"] ===
+      "held_request_evicted").map((row) => row["detail"])).toEqual([
+      `an agent registration of ${MUSE.client} was let go to make room for a newer one`]);
   });
 
   it("holds its client's row, and ends with any change to the client's grant", async () => {

@@ -39,8 +39,9 @@
  *   answered nor admitted, so a change of the owner's rules decides every held call afresh.
  * - **Bounded and swept**: `held` rows in all, `perClient` of them one outside client's; a
  *   call held at a bound lets the oldest row go to make its room (the client's own at its
- *   share, else the oldest of all), so nothing is refused for room. At each decision and
- *   each answer, rows of another generation go first.
+ *   share, else the oldest of its class's: an outside client's never pushes out the owner's
+ *   agents'), refused only when its class has none. At each decision and each answer, rows
+ *   of another generation go first.
  * - **Receipted** in a bucket of their own, `action_receipts`, kept to the policy's
  *   `receiptsPerBucket` as its other buckets are, only where a rule decided: `denied`, `held`
  *   (once a card), `admitted`, and the owner's `approved` and `refused`. A call no rule
@@ -425,7 +426,7 @@ export class Actions {
       if (row !== undefined) {
         return row.card_id;
       }
-      this.#room(actor.client);
+      this.#room(actor.client, now);
       const cardId = "act_" + randomHex(16);
       const shown = [...request];
       const card: ActionCard = {
@@ -452,20 +453,29 @@ export class Actions {
 
   /**
    * Room for one more held call: at `perClient` of `client`'s, its oldest row goes; else at
-   * `held` in all, the oldest of all.
+   * `held` in all, the oldest of its asker's class (outside clients', or the owner's own
+   * agents'), so an outside client's ask never pushes out the owner's; with none, refused.
+   * The owner is told whose call went (`held_request_evicted`), once while that notice stands.
    */
-  #room(client: string | null): void {
+  #room(client: string | null, now: number): void {
     const sql = this.#sql;
-    if (client !== null && sql.exec<{ n: number }>(
+    const own = client !== null && sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM action_requests WHERE client = ?", client).one().n
-        >= ACTION_LIMITS.perClient) {
-      sql.exec("DELETE FROM action_requests WHERE card_id = (SELECT card_id FROM " +
-                 "action_requests WHERE client = ? ORDER BY filed_at, rowid LIMIT 1)", client);
-    } else if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM action_requests").one().n
-               >= ACTION_LIMITS.held) {
-      sql.exec("DELETE FROM action_requests WHERE card_id = (SELECT card_id FROM " +
-                 "action_requests ORDER BY filed_at, rowid LIMIT 1)");
+        >= ACTION_LIMITS.perClient;
+    if (!own && sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM action_requests").one().n
+        < ACTION_LIMITS.held) {
+      return;
     }
+    const gone = sql.exec<{ client: string | null; agent: string | null }>(
+      "DELETE FROM action_requests WHERE card_id = (SELECT card_id FROM action_requests WHERE " +
+        `${own ? "client = ?" : `client IS ${client === null ? "" : "NOT "}NULL`} ORDER BY ` +
+        "filed_at, rowid LIMIT 1) RETURNING client, json_extract(card, '$.agent') AS agent",
+      ...(own ? [client] : [])).toArray()[0];
+    if (gone === undefined) {
+      throw new Refusal("refused", "too many calls held for the owner");
+    }
+    this.#notices.once("held_request_evicted", `a held call of ${gone.agent ?? gone.client} ` +
+                       "was let go to make room for a newer one", now);
   }
 
   /** The pending card under `cardId`, of the policy's generation, or null. */

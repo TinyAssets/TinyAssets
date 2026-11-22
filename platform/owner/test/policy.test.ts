@@ -356,10 +356,14 @@ describe("an agent's proposal", () => {
       const later = now + 10 * 365 * 86_400;
       policy.propose(change(1), "late", "owner", later);
       expect(policy.held("p1")).not.toBeNull();
-      // A full set refuses nothing: a new card lets the oldest pending one go.
+      // A full set refuses the owner nothing: a new card lets the oldest pending one go.
       policy.propose(change(1), "over", "owner", later);
       expect(policy.held("p1")).toBeNull();
       expect(policy.held("p2")).not.toBeNull();
+      // An outside client's card never pushes out the owner's: with none of its class's to
+      // let go, it is refused.
+      expect(() => policy.propose(change(1), "outside", MUSE.client, later))
+        .toThrow("too many pending policy proposals");
     });
     expect((await r.table("policy_proposals")).map((row) => row["request_id"]).sort())
       .toEqual([...ids(2).slice(0, most - 2), "late", "over"].sort());

@@ -95,6 +95,7 @@ import type { Files } from "./files";
 import { narrows } from "./network";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
+import type { Notices } from "./notices";
 
 /**
  * The files settings a document leaves in force: its own, and the defaults for the rest;
@@ -230,9 +231,11 @@ function expected(value: unknown): number {
 
 export class Policy {
   readonly #storage: OwnerStorage;
+  readonly #notices: Pick<Notices, "once">;
 
-  constructor(storage: OwnerStorage) {
+  constructor(storage: OwnerStorage, notices: Pick<Notices, "once">) {
     this.#storage = storage;
+    this.#notices = notices;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -439,7 +442,9 @@ export class Policy {
    * An agent's proposal, receipted; with its card's id, held for the owner. Refiling a
    * held card with another change is refused (the same change again is a no-op); all but
    * the newest applied ones are pruned first, and a new card at a bound lets the oldest
-   * pending one go to make its room: the proposer's own at its share, else the oldest of all.
+   * pending one go to make its room: the proposer's own at its share, else the oldest of its
+   * class's (outside clients' or the owner's), refused when its class has none; the owner
+   * told whose (`held_request_evicted`).
    */
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
       { request_digest: string; generation: number } {
@@ -470,12 +475,18 @@ export class Policy {
           const share = sql.exec<{ pending: number }>(
             "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
           ).toArray()[0]?.pending ?? 0;
-          const oldest = "DELETE FROM policy_proposals WHERE request_id = (SELECT request_id " +
-            "FROM policy_proposals WHERE applied_at IS NULL";
-          if (proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient) {
-            sql.exec(`${oldest} AND proposer = ? ORDER BY at, rowid LIMIT 1)`, proposer);
-          } else if (this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
-            sql.exec(`${oldest} ORDER BY at, rowid LIMIT 1)`);
+          const own = proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient;
+          if (own || this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
+            const gone = sql.exec<{ proposer: string }>(
+              "DELETE FROM policy_proposals WHERE request_id = (SELECT request_id FROM " +
+                "policy_proposals WHERE applied_at IS NULL AND proposer " +
+                `${own || proposer === OWNER ? "=" : "!="} ? ORDER BY at, rowid LIMIT 1) ` +
+                "RETURNING proposer", own ? proposer : OWNER).toArray()[0];
+            if (gone === undefined) {
+              throw new Refusal("refused", "too many pending policy proposals");
+            }
+            this.#notices.once("held_request_evicted", `a proposal of ${gone.proposer} was ` +
+                               "let go to make room for a newer one", now);
           }
           sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
                      "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,

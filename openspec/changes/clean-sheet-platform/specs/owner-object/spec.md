@@ -359,7 +359,7 @@ A widening refused after its call reached the owner's account SHALL leave a `ref
 - **THEN** the call is refused, no agent is registered, and one refusal receipt is kept
 
 ### Requirement: Owner policy is one document written against its generation
-The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown. A pending proposal SHALL have no life of its own: at the pending set's bound a new card SHALL let the oldest pending one go (the proposer's own at its share).
+The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown. A pending proposal SHALL have no life of its own: at the pending set's bound a new card SHALL let the oldest pending one go (the proposer's own at its share, else its class's: an outside client's card SHALL never push out the owner's; a card whose class has none to let go is refused), and the owner SHALL be told whose went.
 
 #### Scenario: Two writes from the same view
 - **WHEN** the owner writes twice naming the same generation
@@ -388,7 +388,7 @@ At a door whose row names an act, the object SHALL hold an agent's call (a run's
 - **THEN** a run of `main` is refused `action_never` at a file door, and an outside client's call and the owner's own are not
 
 ### Requirement: The owner answers a held call once
-The owner SHALL answer a held call only in its session, by the card's id and the digest it was shown: a yes SHALL admit that one call once, whenever it is made, and a no SHALL delete the card. A held call SHALL be bound to the policy generation it was asked under, and SHALL have no life of its own: it waits until it is answered, its generation passes, or the held set's bound needs its place, when the oldest goes (the asking client's own at its share). Every decision a rule made SHALL be receipted, and a call no rule decides SHALL write nothing.
+The owner SHALL answer a held call only in its session, by the card's id and the digest it was shown: a yes SHALL admit that one call once, whenever it is made, and a no SHALL delete the card. A held call SHALL be bound to the policy generation it was asked under, and SHALL have no life of its own: it waits until it is answered, its generation passes, or the held set's bound needs its place, when the oldest goes (the asking client's own at its share, else its class's: an outside client's call SHALL never push out the owner's own agents'; a call whose class has none to let go is refused), and the owner SHALL be told whose went. Every decision a rule made SHALL be receipted, and a call no rule decides SHALL write nothing.
 
 #### Scenario: A call held and answered yes
 - **WHEN** the owner's rule is `{ act: "workspace.files", do: "ask" }` and an outside client makes a directory

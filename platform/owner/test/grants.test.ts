@@ -534,9 +534,9 @@ describe("every door admits an outside client against its grant", () => {
       for (let n = 0; n < owners; n++) {  // the owner past a client's share
         policy.propose({ card: n }, `o${n}`, "owner", now);
       }
-      // The set full, the owner's next card lets the oldest of all go: CLAUDE's.
+      // The set full, the owner's next card lets its own oldest go, never a client's.
       policy.propose({ n: 6 }, "i", "owner", now);
-      expect([policy.held("d"), policy.held("c1") !== null]).toEqual([null, true]);
+      expect([policy.held("o0"), policy.held("d") !== null]).toEqual([null, true]);
       // An applied card frees its proposer's share.
       const { digest } = policy.held("c2")!;
       gate.storage.sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?",
@@ -544,9 +544,17 @@ describe("every door admits an outside client against its grant", () => {
       expect(digest).toMatch(/^sha256:/);
       policy.propose({ n: 7 }, "g", CHATGPT.client, now);
       expect(policy.held("c3")).not.toBeNull();
+      // A client below its share at the full set lets the oldest outside card go: CLAUDE's.
+      policy.propose({ n: 8 }, "e", CLAUDE.client, now);
+      expect([policy.held("d"), policy.held("o1") !== null]).toEqual([null, true]);
     });
     expect((await r.table("proposal_shares")).map((row) => [row["proposer"], row["pending"]])
-      .sort()).toEqual([[CHATGPT.client, share], ["owner", owners + 1]].sort());
+      .sort()).toEqual([[CHATGPT.client, share], [CLAUDE.client, 1], ["owner", owners]].sort());
+    // Each eviction is told, once an asker, naming the asker and never the change.
+    expect((await r.table("owner_notices")).filter((row) => row["type"] ===
+      "held_request_evicted").map((row) => row["detail"]).sort()).toEqual(
+      [CHATGPT.client, CLAUDE.client, "owner"].map((who) =>
+        `a proposal of ${who} was let go to make room for a newer one`).sort());
   });
 });
 

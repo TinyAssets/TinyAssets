@@ -22,8 +22,9 @@
  * - Bounded: `maxPending` cards (a counter the schema's triggers keep), `perClient` of
  *   them one outside client's (counted on its index), each request at most
  *   `maxRequest` characters. A filing at a bound lets the oldest card go to make its
- *   room: the client's own at its share, else the oldest of all. Nothing is refused for
- *   room, and at most `maxPending` grant rows are held.
+ *   room: the client's own at its share, else the oldest of all (every card is an outside
+ *   client's), the owner told whose (`held_request_evicted`). Nothing is refused for room,
+ *   and at most `maxPending` grant rows are held.
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64, randomHex } from "../../contract/src/ids";
@@ -34,6 +35,7 @@ import { codePoints } from "../../contract/src/text";
 import { type Call, type LiveSession, proven } from "./door";
 import type { Source } from "../../contract/src/binding";
 import { clock } from "./clock";
+import type { Notices } from "./notices";
 
 /** The outside authority a held card was filed under: its client, generation and sign-in. */
 export interface Stamp {
@@ -87,10 +89,12 @@ type Row = {
 export class Registrations {
   readonly #storage: OwnerStorage;
   readonly #grants: StandingReader;
+  readonly #notices: Pick<Notices, "once">;
 
-  constructor(storage: OwnerStorage, grants: StandingReader) {
+  constructor(storage: OwnerStorage, grants: StandingReader, notices: Pick<Notices, "once">) {
     this.#storage = storage;
     this.#grants = grants;
+    this.#notices = notices;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -128,13 +132,15 @@ export class Registrations {
                origin.family);
       const mine = sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM agent_cards WHERE client = ?", origin.client).one().n;
-      if (mine >= CARD_LIMITS.perClient) {
-        sql.exec("DELETE FROM agent_cards WHERE card_id = (SELECT card_id FROM agent_cards " +
-                   "WHERE client = ? ORDER BY filed_at, rowid LIMIT 1)", origin.client);
-      } else if (sql.exec<{ pending_cards: number }>("SELECT pending_cards FROM policy_usage")
+      const own = mine >= CARD_LIMITS.perClient;
+      if (own || sql.exec<{ pending_cards: number }>("SELECT pending_cards FROM policy_usage")
                    .one().pending_cards >= CARD_LIMITS.maxPending) {
-        sql.exec("DELETE FROM agent_cards WHERE card_id = (SELECT card_id FROM agent_cards " +
-                   "ORDER BY filed_at, rowid LIMIT 1)");
+        const gone = sql.exec<{ client: string }>(
+          "DELETE FROM agent_cards WHERE card_id = (SELECT card_id FROM agent_cards " +
+            `${own ? "WHERE client = ? " : ""}ORDER BY filed_at, rowid LIMIT 1) RETURNING client`,
+          ...(own ? [origin.client] : [])).one();
+        this.#notices.once("held_request_evicted", `an agent registration of ${gone.client} ` +
+                           "was let go to make room for a newer one", now);
       }
       const cardId = "card_" + randomHex(16);
       const shown = sha256Hex(JSON.stringify([cardId, origin.client, origin.family, sourceRef,
