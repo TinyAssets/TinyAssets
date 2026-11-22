@@ -15,7 +15,7 @@
  * `ServiceScope`): a key the owner gave for one URL of an outside service, an MCP server of
  * its agents' (`serviceSource`), sent with no metering and only to that URL.
  */
-import { apiRules, declaredApi } from "./api-rules.ts";
+import { type ApiRules, apiRules, declaredApi } from "./api-rules.ts";
 import { list, object, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
@@ -313,6 +313,43 @@ export function source(value: unknown, oauth: boolean): Source {
  */
 const SERVICE_METHODS: readonly string[] = Object.freeze(["POST", "GET", "DELETE"]);
 
+/** A header's value as text: printable ASCII. */
+const HEADER_TEXT = /^[\x20-\x7e]*$/;
+
+/**
+ * The headers MCP's streamable HTTP transport sends beyond HTTP's own, by lower-case name,
+ * with the values each may take: 2025-11-25's session and resumption, 2026-07-28's method and
+ * name, and its `Mcp-Param-{Name}` for each tool parameter a server marks `x-mcp-header` (a
+ * prefix, `*`).
+ */
+const SERVICE_HEADERS: Readonly<Record<string, RegExp>> = Object.freeze({
+  "mcp-protocol-version": /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/,
+  "mcp-session-id": HEADER_TEXT, "last-event-id": HEADER_TEXT,
+  "mcp-method": HEADER_TEXT, "mcp-name": HEADER_TEXT, "mcp-param-*": HEADER_TEXT,
+});
+
+/** The query and header rules a scope's calls are held to beyond its sealed endpoints. */
+type CallRules = Pick<ApiRules, "query" | "headers" | "betas">;
+/** A service's: the transport's headers, and no query (its sealed URL has none). */
+const SERVICE_RULES: CallRules = Object.freeze({
+  query: Object.freeze({}), headers: SERVICE_HEADERS, betas: Object.freeze({}),
+});
+
+/**
+ * The rules `scope`'s calls are held to: a service's the transport's, else its API's
+ * (`ApiRules`), which every scope's API has (`supported`).
+ */
+function callRules(scope: EgressScope): CallRules {
+  if ("kind" in scope) {
+    return SERVICE_RULES;
+  }
+  const rules = apiRules(scope.api);
+  if (rules === null) {
+    throw new Error(`the scope's API ${scope.api} has no rules`);
+  }
+  return rules;
+}
+
 /**
  * The values a key the owner gave for the service at `url` is sealed with: that URL alone
  * (its origin, its exact path, no query), on the transport's methods, its secret sent as
@@ -567,11 +604,48 @@ export function egressTarget(scope: EgressScope, method: string, path: string): 
   if (target.origin !== origin || !allows(scope.endpoints, method, target)) {
     return null;
   }
-  const query = keptQuery("kind" in scope ? {} : apiRules(scope.api)?.query ?? {},
-                          target.searchParams);
+  const query = keptQuery(callRules(scope).query, target.searchParams);
   if (query === null) {
     return null;
   }
   target.search = query;
   return target;
+}
+
+/**
+ * HTTP's own headers, which every API and the transport take: `content-type` held to JSON in
+ * UTF-8, since a metered body is the gateway's own UTF-8 JSON and the provider must read it as
+ * the gateway parsed it.
+ */
+const BASE_HEADERS: Readonly<Record<string, RegExp>> = Object.freeze({
+  accept: HEADER_TEXT,
+  "content-type": /^application\/json(?: *; *charset=utf-8)?$/i,
+  "user-agent": HEADER_TEXT,
+});
+
+/** The value rule `rules` keeps a header named `name` by (an exact name, or a `*` prefix). */
+function headerRule(rules: Readonly<Record<string, RegExp>>, name: string): RegExp | undefined {
+  if (Object.hasOwn(rules, name)) {
+    return rules[name];
+  }
+  return Object.entries(rules)
+    .find(([key]) => key.endsWith("*") && name.startsWith(key.slice(0, -1)))?.[1];
+}
+
+/**
+ * The headers of `sent`, a sandbox request, that go on with it: HTTP's own (`BASE_HEADERS`),
+ * its API's (`ApiRules.headers`; a service's, the transport's) and, on a `free` call, its
+ * API's betas, each with a value its rule takes. Every other is dropped, every credential
+ * header among them, since no list names one: the sealed one is the gateway's to set.
+ */
+export function egressHeaders(scope: EgressScope, free: boolean, sent: Headers): Headers {
+  const rules = callRules(scope);
+  const lists = [BASE_HEADERS, rules.headers, ...(free ? [rules.betas] : [])];
+  const kept = new Headers();
+  for (const [name, value] of sent) {
+    if (lists.some((list) => headerRule(list, name)?.test(value) === true)) {
+      kept.append(name, value);
+    }
+  }
+  return kept;
 }
