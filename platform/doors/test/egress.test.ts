@@ -756,7 +756,7 @@ describe("a refused call", () => {
     const response = await send(egressRequest(box));
     expect([response.status, response.headers.get("Retry-After"), await response.json()])
       .toEqual([429, "1", { error: { code: "object_overloaded",
-                                     message: "this account is busy; try again shortly" } }]);
+                                     message: "this account is busy" } }]);
     expect(await forwarded()).toEqual([]);
   });
 

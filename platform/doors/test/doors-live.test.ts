@@ -829,7 +829,7 @@ describe("no caller is counted or capped by the doors", () => {
     const answer = await appPost("keys/list", app.access_token, null, {})
       .finally(() => stub.mockRestore());
     expect([answer.status, answer.headers.get("Retry-After"), await answer.json()])
-      .toEqual([429, "1", { error: "this account is busy; try again shortly" }]);
+      .toEqual([429, "1", { error: "this account is busy" }]);
     expect(keyList).toHaveBeenCalledTimes(1);
   });
 });

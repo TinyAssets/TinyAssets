@@ -34,7 +34,7 @@ import type { Binding } from "../../contract/src/binding";
 import type { Gate } from "./control-gate";
 import type { ProfileName } from "../../contract/src/doors";
 import { CODE_MODE_OFF } from "../../contract/src/policy-document";
-import { Refusal } from "../../contract/src/refusal";
+import { callAgain, Refusal } from "../../contract/src/refusal";
 import type { OwnerEnv } from "./env";
 
 /** The tools a script calls, as pi-codemode's sandbox takes them. */
@@ -288,13 +288,17 @@ function codeServed(o: CodemodeDoorNeeds, account: Account): readonly string[] {
   return tools;
 }
 
-/** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
+/**
+ * One tool call of a script: rechecked as `codeRun` says, then the tool's own door. A refusal
+ * reaches the script as the error an MCP tool's result would be: its message, then whether to
+ * call again, and when (`callAgain`).
+ */
 async function scripted(o: CodemodeDoorNeeds, binding: Binding, tool: Tool, args: unknown,
                         gate: () => Promise<string | null>): Promise<unknown> {
   try {
     const closed = await gate();
     if (closed !== null) {
-      throw new Refusal("refused", closed);
+      throw new Refusal("unavailable", closed);
     }
     await o.door(() => {
       if (!codeServed(o, o.accountAt("toolProfile", binding)).includes(tool.name)) {
@@ -308,7 +312,7 @@ async function scripted(o: CodemodeDoorNeeds, binding: Binding, tool: Tool, args
       console.error(`code mode's ${tool.name} call failed`, error);
       throw new Error("internal error");
     }
-    throw new Error(error.message);
+    throw new Error(`${error.message}\n${callAgain(error)}`);
   }
 }
 
@@ -343,7 +347,7 @@ export const codemodeDoors = Object.freeze({
     const control = o.control();
     const closed = await control.refusal(gate, owner);
     if (closed !== null) {
-      throw new Refusal("refused", closed);
+      throw new Refusal("unavailable", closed);
     }
     return runScript({ service: o.env.CODEMODE_VM, owner, script, tools,
                        call: (tool, args) => scripted(o, binding, tool, args,

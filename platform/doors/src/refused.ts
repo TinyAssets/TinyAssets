@@ -17,7 +17,9 @@ import {
 } from "@modelcontextprotocol/server";
 
 import { keyed, whole } from "../../contract/src/checks";
-import { type FaultCode, type Refusal, refusalOf } from "../../contract/src/refusal";
+import {
+  callAgain, type FaultCode, type Refusal, refusalOf, told,
+} from "../../contract/src/refusal";
 
 import { answer, failure, redirect } from "./kit";
 
@@ -37,7 +39,7 @@ export async function answered<A>(surface: Surface<A>, work: () => Promise<A>): 
   }
 }
 
-/** The `Retry-After` header a refusal is answered with, if it names a wait or its code does. */
+/** The `Retry-After` header a refusal is answered with, if it is for the moment (`retryAfter`). */
 export function retryAfter(refusal: Refusal): Record<string, string> {
   const seconds = refusal.retryAfter;
   return seconds === undefined ? {} : { "Retry-After": String(seconds) };
@@ -69,10 +71,6 @@ export function asEgressFault(code: FaultCode): Response {
   return answer(404, { error: { code, message: code } });
 }
 
-/** An MCP tool's: the tool's error result, its text the refusal's message. */
-export const asTool: Surface<CallToolResult> = (refusal) =>
-  ({ isError: true, content: [{ type: "text", text: refusal.message }] });
-
 /** The inbound hooks', to a capability URL's sender: `{error: <shown code>}`. */
 export const asInbound: Surface<Response> = (refusal) =>
   answer(refusal.status, { error: shownCode(refusal) }, retryAfter(refusal));
@@ -94,20 +92,32 @@ export const EVENT_ERRORS = Object.freeze({
 });
 
 /**
+ * An MCP tool's: the tool's error result, its text the refusal's message, then whether to make
+ * the call again, and when (`callAgain`), read as every other MCP request's error reads it
+ * (`told`). A tool call's failure is a result the model reads, never a JSON-RPC error (MCP
+ * 2026-07-28 `server/tools.mdx` "Error Handling", at `862397cec702`), and the pinned SDK
+ * (`@modelcontextprotocol/server` 2.4.0) answers anything a tool throws as one.
+ */
+export const asTool: Surface<CallToolResult> = (refusal) =>
+  ({ isError: true,
+     content: [{ type: "text", text: `${refusal.message}\n${callAgain(refusal)}` }] });
+
+/**
  * Every MCP request's but a tool call's (the definition's resources, prompt and skills,
  * `definition.ts`; MCP Events' but a terminal refusal, `asEvent`): its JSON-RPC error, thrown,
  * which the SDK answers: invalid params for an invalid request, else an internal error, the
- * refusal's reason and wait in its `data`.
+ * refusal's reason in its `data`, and its wait when it is for the moment.
  * MCP names no code for a refusal for the moment, and its codes `-32000` to `-32019` mean
  * nothing across implementations (its 2026-07-28 "Error Codes", at `862397cec702`, read
  * 2026-11-22), so `-32603` with `retryAfterMs` is how a client is told to try again.
  */
 export const asRequest: Surface<never> = (refusal) => {
-  const seconds = refusal.retryAfter;
+  const said = told(refusal);
   throw new ProtocolError(
-    refusal.invalid ? ProtocolErrorCode.InvalidParams : ProtocolErrorCode.InternalError,
+    said.kind === "invalid" ? ProtocolErrorCode.InvalidParams : ProtocolErrorCode.InternalError,
     refusal.message,
-    { reason: refusal.message, ...(seconds === undefined ? {} : { retryAfterMs: seconds * 1000 }) },
+    { reason: refusal.message,
+      ...(said.kind === "temporary" ? { retryAfterMs: said.waitS * 1000 } : {}) },
   );
 };
 
@@ -121,7 +131,7 @@ export const asRequest: Surface<never> = (refusal) => {
  * 6). The sketch at `c77b84395eff`, read 2026-11-21, still its `HEAD` on 2026-11-22.
  */
 export const asEvent: Surface<never> = (refusal) => {
-  if (refusal.invalid || refusal.transient) {
+  if (told(refusal).kind !== "final") {
     return asRequest(refusal);
   }
   if (refusal.code === "subscription_limit") {

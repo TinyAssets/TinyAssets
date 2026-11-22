@@ -78,13 +78,13 @@ transient refusal. Events adds only its sketch's codes for a terminal refusal.
 
 ## Found and left
 
-- [ ] `asTool` answers a transient refusal with its message only, and drops its wait. By the
+- [x] `asTool` answers a transient refusal with its message only, and drops its wait. By the
   2026-07-28 spec (`server/tools.mdx`), a tool's execution error is a result the model
   reads, not an error a client branches on, so the JSON-RPC mapping does not apply to it.
   Some messages tell the model to try again (`BUSY`, the overload's). Others do not
   (`MAINTENANCE`, `RESTORING`, `storage_busy`'s bare code). How a tool result should tell
   the model to wait needs its own research: what Claude and ChatGPT do with an `isError`
-  result (`untangle/tool-transient`).
+  result (`untangle/tool-transient`). Done (`tool-transient.md`).
 - The sketch's `-32023` to `-32027` sit in the range the 2026-07-28 spec reserves for itself.
   They stay, because they are the MCP project's own provisional allocations for this
   extension (SEP-3415). If SEP-3415 renumbers them, the change is in `EVENT_ERRORS` alone.

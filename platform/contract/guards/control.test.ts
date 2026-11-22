@@ -148,7 +148,7 @@ describe("a kept copy", () => {
     expect(acts).toEqual(["authorization", "admit", "key", "signin"]);
     for (const act of acts) {
       expect(() => requireFresh(kept, act)).toThrow(expect.objectContaining({
-        code: "unavailable", message: expect.stringMatching(/try again in a few minutes$/) }));
+        code: "unavailable", message: expect.stringMatching(/can't be read just now$/) }));
       for (const other of [read, { kind: "missing" }, { kind: "malformed" },
                            { kind: "unreadable" }] as const) {
         expect(() => requireFresh(other, act)).not.toThrow();
