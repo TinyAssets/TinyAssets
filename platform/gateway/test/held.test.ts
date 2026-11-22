@@ -18,6 +18,7 @@ import {
 import { ConnectGateway, EgressGateway } from "../src/index";
 import { UNIT_BYTES } from "../../contract/src/slots";
 import { until } from "../../ci/workerd";
+import { steer } from "./fake-upstream";
 import { C1, GOOGLE, granting, meterable, OPENAI, outcome, posted } from "./support";
 import type { Reserve } from "../../contract/src/gateway";
 
@@ -46,7 +47,7 @@ describe("a key past ASCII, or a body model where the path names it", () => {
     const asked: unknown[] = [];
     const answer = await egress.forward("alice", C1, 1, blob, posted("/v1/responses",
       JSON.stringify({ model: model.id, input: "hi", max_output_tokens: 900_000,
-                       ["max_output_tokenſ"]: 900_000 }), { "x-fake-mode": "echo" }),
+                       ["max_output_tokenſ"]: 900_000 }), steer({ mode: "echo" })),
       granting(asked), new ReadableStream());
     expect([answer.response.status, await answer.response.json()]).toEqual(
       [400, { error: { code: "egress_aliased_key", message: "egress_aliased_key" } }]);
@@ -62,7 +63,7 @@ describe("a key past ASCII, or a body model where the path names it", () => {
     const asked: unknown[] = [];
     const answer = await egress.forward("alice", C1, 1, blob, posted(path, JSON.stringify({
       model: "models/some-dearer-model", contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
-      { "x-fake-mode": "echo" }), granting(asked), new ReadableStream());
+      steer({ mode: "echo" })), granting(asked), new ReadableStream());
     expect(await answer.response.json()).toMatchObject({ error: { code: "egress_aliased_key" } });
     expect(asked).toEqual([]);
   });
@@ -78,7 +79,7 @@ describe("a held call's length, weight and holds", () => {
     const answer = await egress.forward("alice", C1, 1, blob, new Request(
       "https://egress/v1/responses", { method: "POST", body: new Blob([text]).stream(),
                                         headers: { "content-length": String(text.length + 1000),
-                                                   "x-fake-mode": "echo" } }),
+                                                   ...steer({ mode: "echo" }) } }),
       granting(asked), new ReadableStream());
     expect(await answer.response.json()).toMatchObject({ error: { code: "invalid_request" } });
     expect(asked).toEqual([]);
@@ -122,7 +123,7 @@ describe("a held call's length, weight and holds", () => {
     await until(() => pool.state().held === 1, "the unit held", 1500);
     const small = JSON.stringify({ model: model.id, input: "hi" });
     const other = await egress.forward("alice", C1, 1, blob, posted("/v1/responses", small,
-      { "x-fake-mode": "echo" }), granting(), new ReadableStream());
+      steer({ mode: "echo" })), granting(), new ReadableStream());
     expect(other.response.status).toBe(200);
     await other.response.body?.cancel();
     // The caller (the door) stops the call: its read ends, and its slot goes.
@@ -173,7 +174,7 @@ describe("a held call's length, weight and holds", () => {
     const stop = new IdentityTransformStream();
     let asked = false;
     const answer = egress.forward("alice", C1, 1, blob, posted("/v1/responses",
-      JSON.stringify({ model: model.id, input: "hi" }), { "x-fake-mode": "echo" }),
+      JSON.stringify({ model: model.id, input: "hi" }), steer({ mode: "echo" })),
       () => {
         asked = true;
         return new Promise(() => undefined);  // the owner's object never answers
@@ -234,7 +235,7 @@ describe("a held call's sender, and its weight past ASCII", () => {
       await vi.advanceTimersByTimeAsync(1);
       const text = JSON.stringify({ model: model.id, input: "hi" });
       const asked = egress.forward("alice", C1, 1, alice, posted("/v1/responses", text,
-        { "x-fake-mode": "echo" }), granting(), new ReadableStream());
+        steer({ mode: "echo" })), granting(), new ReadableStream());
       await until(() => pool.state().waiting === 1, "alice's wait", 1500);
       await vi.advanceTimersByTimeAsync(SLOT_WAIT_MS - 2);
       expect(pool.state()).toMatchObject({ held: GATEWAY_POOL_SLOTS, waiting: 1 });

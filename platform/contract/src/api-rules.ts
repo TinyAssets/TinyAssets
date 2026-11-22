@@ -37,9 +37,13 @@
  *   any of `paths`), and the values pi-ai prices: an answer served at any other settles
  *   `unknown`, keeping its whole charge; one that reports none settles at `absent` times
  *   pi-ai's price, where the account's own default may be dear.
- * - `betas`: the provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) a
- *   call may carry; every other is stripped, since a beta can widen a call past what it
- *   was reserved for (a longer context). None today.
+ * - `headers` and `betas`: the request headers a call may carry beyond HTTP's own
+ *   (`egress-scope.ts` `BASE_HEADERS`), each name with the values it may take, each one an
+ *   engine's or pi-ai's own: `headers` on every call, `betas` (a provider's beta) on a free
+ *   call only, since a beta can widen a call past what it was reserved for (a longer
+ *   context). Any other header is dropped (`egressHeaders`): a header can change what a call
+ *   does or bills, as a query parameter can (Google's `X-Goog-FieldMask`, OpenAI's
+ *   `OpenAI-Project`), and engines send dozens of their own that no provider needs.
  * - `free`: calls beyond a read (`GET`, `HEAD`) that a provider does not bill, each keyed
  *   by that provider (pi-ai's id) as well as the API, so a citation covers its own
  *   provider's endpoint and no other source that speaks the same API, each with the
@@ -111,8 +115,10 @@ export interface ApiRules {
                       * one, as pi-ai reads it; every event when absent.
                       */
                      readonly events?: readonly string[] } | null;
-  /** The beta headers a call may carry, each one its reservation accounts for. */
-  readonly betas: readonly string[];
+  /** The headers a call may carry, by lower-case name: the values each may take. */
+  readonly headers: Readonly<Record<string, RegExp>>;
+  /** The beta headers a free call may carry, by lower-case name: the values each may take. */
+  readonly betas: Readonly<Record<string, RegExp>>;
   /** Calls the provider does not bill, each on its cited page: forwarded unmetered. */
   readonly free: readonly FreeCall[];
   /** The query parameters a call may carry, by name: the values each may take. */
@@ -139,7 +145,8 @@ const COMPLETIONS: ApiRules = Object.freeze({
   // name for the same standard tier) are what pi-ai prices; any other is unknown.
   served: Object.freeze({ paths: Object.freeze([Object.freeze(["service_tier"])]),
                           priced: Object.freeze(["default", "on_demand"]) }),
-  betas: Object.freeze([]),
+  headers: Object.freeze({}),
+  betas: Object.freeze({}),
   free: Object.freeze([]),
   query: Object.freeze({}),
 });
@@ -171,7 +178,8 @@ const RESPONSES: ApiRules = Object.freeze({
                           absent: 2.5,
                           events: Object.freeze(["response.completed",
                                                  "response.incomplete"]) }),
-  betas: Object.freeze([]),
+  headers: Object.freeze({}),
+  betas: Object.freeze({}),
   free: Object.freeze([]),
   // Codex lists its models as `GET /models?client_version=<major.minor.patch>`
   // (learn.chatgpt.com/codex/model-catalogs, as searched 2026-11-22).
@@ -198,7 +206,8 @@ const GOOGLE: ApiRules = Object.freeze({
                     allowed: Object.freeze([]) }),
   ]),
   served: null,
-  betas: Object.freeze([]),
+  headers: Object.freeze({}),
+  betas: Object.freeze({}),
   free: Object.freeze([]),
   // `@google/genai`, pi-ai's and Gemini CLI's client, streams as `?alt=sse`.
   query: Object.freeze({ alt: /^sse$/ }),
@@ -227,7 +236,10 @@ const ANTHROPIC: ApiRules = Object.freeze({
                                                 Object.freeze(["message", "usage",
                                                                "service_tier"])]),
                           priced: Object.freeze(["standard"]) }),
-  betas: Object.freeze([]),
+  // The one version the SDK sends (`@anthropic-ai/sdk` 0.129.0 `client.js` `buildHeaders`),
+  // the API these rules and the meter read; Claude Code's token count sends its betas.
+  headers: Object.freeze({ "anthropic-version": /^2023-06-01$/ }),
+  betas: Object.freeze({ "anthropic-beta": /^[A-Za-z0-9._-]+(?: *, *[A-Za-z0-9._-]+)*$/ }),
   // Claude Code counts tokens before it sends; Anthropic does not bill the count.
   free: Object.freeze([Object.freeze({
     provider: "anthropic", method: "POST", path: "/v1/messages/count_tokens",
