@@ -85,7 +85,6 @@ import {
  */
 export const NETWORK_RETRY_S = 30;
 
-<<<<<<< HEAD
 /**
  * How long a live lease's sandbox may owe a narrowed egress policy (a host the owner dropped
  * still let out by its older network) before its lease is given back and its runs stopped
@@ -100,10 +99,7 @@ export const NARROWED_WITHIN_S = LEASE_TTL_S;
 /** A run's settle code, and the owner's notice, when a narrowing was not in force in time. */
 export const NETWORK_UNCONFIRMED = "network_unconfirmed";
 
-/** What a run is admitted on (`readAgent`). */
-=======
 /** What a run is admitted on (`readAgent`): its `agent.json` at its etag, and its servers. */
->>>>>>> origin/main
 export interface AgentRead {
   readonly file: AgentFile;
   readonly etag: string;
@@ -867,7 +863,6 @@ export class Launcher implements RunHost {
   }
 
   /**
-<<<<<<< HEAD
    * In a unit: when each live lease owing a narrowed egress policy is given back, if no
    * re-apply confirms it first (`#unconfirmed`).
    */
@@ -920,20 +915,9 @@ export class Launcher implements RunHost {
    * that moved the egress generation, whose unit wakes this lane (`synced`). Its send is a
    * unit (`networkSent`): the lease's calls are admitted under the new generation from
    * there on, since only that network's transform sets it. Its answer is another
-   * (`networkAnswered`): `applied` confirms it; `at_resume` keeps it out for its paused
-   * sandbox; `lost` or a throw clears it. No answer within `LANE_CALL_MS` records nothing:
-   * the send's retry clock stands.
-=======
-   * Each live lease whose network is behind the current egress generation, made again
-   * under it and re-applied on its sandbox (the sandbox Worker's `network`, which keeps the
-   * live egress token and the launched jobs' vendor hosts), each one due (`#behind`): at
-   * once after a policy write that moved the egress generation, whose unit wakes this lane
-   * (`synced`). Its send is a unit (`networkSent`): the lease's calls are admitted under
-   * the new generation from there on, since only that network's transform sets it. Its
-   * answer is another (`networkAnswered`, as `networkOutcome` reads it): `applied` confirms
-   * it; `at_resume` keeps it out for its paused sandbox; a failure clears it. No answer
-   * within `LANE_CALL_MS` records nothing: the send's retry clock stands.
->>>>>>> origin/main
+   * (`networkAnswered`, as `networkOutcome` reads it): `applied` confirms it; `at_resume`
+   * keeps it out for its paused sandbox; a failure clears it. No answer within
+   * `LANE_CALL_MS` records nothing: the send's retry clock stands.
    */
   async reapply(): Promise<void> {
     const { sandbox } = this.#o;

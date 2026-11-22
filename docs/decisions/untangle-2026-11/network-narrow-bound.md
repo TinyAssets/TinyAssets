@@ -129,3 +129,79 @@ Sources: [E2B: update sandbox network](https://e2b.dev/docs/api-reference/sandbo
 [AWS: security group connection tracking](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/security-group-connection-tracking.html),
 [OpenAI Codex: cloud environments](https://developers.openai.com/codex/cloud/environments),
 [OpenAI Codex: agent internet access](https://developers.openai.com/codex/cloud/agent-internet).
+
+## As built
+
+1. **A narrowing is one rule's** (`owner/src/network.ts`). The names a policy lets out
+   (`letOut`) are now one function: `networkDocument` builds the network from it, and
+   `narrows(before, after)` asks whether `before` let out a name `after` does not. A copy of
+   the rule would be a second reading of the same thing.
+2. **The write marks the leases** (`policy.ts` `policyWrite`). In its own unit, a write that
+   narrows marks every live lease (`Files.leasesNarrowed`, owner migration 21:
+   `sandbox_leases.narrowed_generation` and `narrowed_at`). The mark keeps the earliest time
+   still owed and the latest narrowing's generation. An `applied` answer at or past that
+   generation clears both (`networkAnswered`). A widening marks nothing. The policy itself
+   is unchanged: `owner_policy` is exported, and `sandbox_leases` is not, so no capture,
+   restore form or export shape moves (`FORWARD` null; the export's digest is the same).
+3. **The lane gives an unconfirmed lease back** (`launch.ts` `reapply`, `#unconfirmed`).
+   Each pass, before any send and whatever the owner's admission, it takes each live lease
+   whose mark is older than `NARROWED_WITHIN_S` (= `LEASE_TTL_S`, 60 s), in one unit:
+   - its sign-ins are ended;
+   - its runs are settled `failed` (`network_unconfirmed`, `Runs.endLease`), which gives the
+     lease back with its tokens and streams;
+   - each CLI is stopped and the sandbox paused through the Worker;
+   - the owner gets a `network_unconfirmed` notice naming the sandbox and what ended.
+   The runners' next posts are refused (`run_ended`, 403), so each stops its CLI inside the
+   VM even if the Worker never answers. The lane's next time includes each lease's bound
+   (`#narrowedDue`), so the stop comes at the bound, not at the next retry.
+4. **The bound is recorded** (`limits-audit.md`, the `NARROWED_WITHIN_S` row), and the
+   owner-object spec's "A change ends the egress streams it covers" states it, with a
+   scenario.
+5. **Tests** (`owner/test/egress.test.ts`, `owner/test/network.test.ts`):
+   - a narrowing whose re-applies keep failing (none answered, or `lost`) gives the lease
+     back at the bound and not before: the run is settled `network_unconfirmed`, the
+     sign-in ended, the cancels and the release sent, both runners refused, the egress token
+     closed, and the owner's notice kept;
+   - the lane is woken by the bound;
+   - a narrowing that lands clears its mark, and a widening that never lands stops nothing;
+   - the bound holds two whole tries;
+   - `narrows`' cases are tested one by one.
+
+## Untangle (step 2 on the code touched, and its callers)
+
+- Fixed: `networkDocument` held the "what leaves" rule inline. The narrowing test needed the
+  same rule, so it is `letOut`, used once by each.
+- Fixed: `Files.leasesLapsed` had two stacked doc comments, one of them stale. They are now
+  one.
+- Fixed: the owner-bound guard's `sandbox_leases` term never counted migration 5's three
+  columns (the re-apply out, its retry clock and its generation). It now counts those and
+  this change's two (`5 * NUMBER`): 2.6 MB at `RUNS_CEILING`, and `limits-audit.md`'s
+  worst case moved with it.
+- Kept: `Runs.endLease` beside `endClient`. They select different rows (live runs under a
+  lease, against a client's live and waiting runs, its schedules removed with them), so one
+  function would need a parameter only one caller reads.
+- Kept, as the system needs it: `#unconfirmed` runs whatever the owner's admission. A
+  suspended owner's sandbox still runs its sign-ins, and a stop is never held back.
+- No shim, alias, copy of a value (`NARROWED_WITHIN_S` is `LEASE_TTL_S` by name), one-caller
+  parameter, test-only hook, optional binding or special case added.
+
+## Found and left
+
+- The cutover import's policy write (`Policy.imported`) marks no lease. It writes only onto
+  the default policy, inside the cutover's maintenance window, where no run lives, and it is
+  deleted with the import doors. A live lease there would be a cutover bug of its own.
+- The Worker's resume (`control.ts` `#resume`) resumes the VM first (`connect`) and then
+  applies a kept network. For that moment, the VM runs on its old network. If the update
+  fails, the resume throws and the VM goes on running. The owner's bound now catches the
+  failure, since the lease stays unconfirmed and is given back. The moment itself can close
+  only if E2B takes a network update on a paused sandbox, which is unprobed.
+- An applied update may leave an open connection to a dropped host alive, as AWS's tracked
+  connections are (research §2). Stopping the workload ends it. Whether E2B cuts it is
+  unprobed.
+
+## Owed
+
+- [ ] live: at the dark redeploy's sandbox probe, whether E2B's network update takes a
+  paused sandbox (so a kept re-apply could land before the resume), and whether it cuts a
+  connection already open to a host it drops; if either holds, the Worker's resume and this
+  bound are revisited.
