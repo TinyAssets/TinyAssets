@@ -142,16 +142,12 @@ function unnamedWords({ count, paths }) {
     paths.slice(0, 5).join(", ")}${count > 5 ? ", …" : ""}. Rename them to sync them.`;
 }
 
-function scratchWords({ evicted, expired, freed_bytes, free_bytes, total_bytes }) {
-  if (!texts(evicted) || !texts(expired) || !whole(freed_bytes) || !whole(free_bytes)
-      || !whole(total_bytes)) {
+function scratchWords({ evicted, freed_bytes, free_bytes, total_bytes }) {
+  if (!texts(evicted) || !whole(freed_bytes) || !whole(free_bytes) || !whole(total_bytes)) {
     return null;
   }
-  const why = evicted.length > 0
-    ? "The sandbox's working disk was running low"
-    : "Some working files had not been used for a long time";
-  return `${why}, so old scratch was cleared (${[...evicted, ...expired].join(", ")}; ${
-    scratchBytes(freed_bytes)} freed; ${scratchBytes(free_bytes)} of ${
+  return `The sandbox's working disk was running low, so old scratch was cleared (${
+    evicted.join(", ")}; ${scratchBytes(freed_bytes)} freed; ${scratchBytes(free_bytes)} of ${
     scratchBytes(total_bytes)} free now). Scratch is a temporary cache: a cleared repository ` +
     "is cloned again when needed. Your storage is unaffected.";
 }

@@ -172,9 +172,11 @@ export interface DocLease {
  * A run's start, as the runner reads it from the inbox: the run, its agent and conversation,
  * the engine's record and the credential it runs on, its input, whose sandbox it runs in and
  * under which lease, the run's config, its doors (`mcp` carries the run's own secret;
- * `mcp_bare` is the one a record sending that secret in a header takes), the control
- * record's scratch retention (null when it names none; absent, the same), the agent's own
- * MCP servers its admission kept, and its own hooks by event, an event absent holding none.
+ * `mcp_bare` is the one a record sending that secret in a header takes), the agent's own MCP
+ * servers its admission kept, and its own hooks by event, an event absent holding none.
+ * `scratch_retention_days` is protocol 4's alone: the Worker writes it null, which a protocol
+ * 4 runner reads as no age, and this runner reads it not at all; it leaves the document with
+ * the next protocol (`untangle-2026-11/fact15-defaults-2.md`).
  */
 export interface StartDoc {
   readonly run: string;

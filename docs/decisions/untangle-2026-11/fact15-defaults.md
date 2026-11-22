@@ -90,16 +90,17 @@ the deploy kit's copies and the Workers' configs.
 - [x] `TEMP_TTL_S` and the whole temporary area (`/.ta/tmp`, `file_temps`, `tempDir`,
   `dropTemps`, its triggers, export and restore entries and guard terms) have no product
   caller, so it is deleted with a migration, its retention with it (`untangle/drop-temp-area`).
-- [ ] The control record's `scratch_retention_days` leaves the record, since the record holds
+- [x] The control record's `scratch_retention_days` leaves the record, since the record holds
   only the tier's runs and storage: scratch is a cache that only disk pressure lets go, and
   the sandbox Worker's `known_retention` goes with it. This follows `untangle/control-last-good`,
   which owns `contract/src/control.ts` and `sandbox/src/control.ts`
-  (`untangle/fact15-defaults-2`).
-- [ ] Claude Code's pinned `cleanupPeriodDays: 30` (`sources/records/claude-code.json`
+  (`untangle/fact15-defaults-2`). Done (`fact15-defaults-2.md`).
+- [x] Claude Code's pinned `cleanupPeriodDays: 30` (`sources/records/claude-code.json`
   `cli.decide.pins`) is the engine's own transcript retention at its default. Research comes
   first: what value keeps every session, and what the held-call card's 30 days (`cardTtlS`)
   rests on then; the same research reads whether any other engine record's CLI (Codex,
   Gemini, Kimi, pi) lets its sessions go at its own unpinned default (`untangle/fact15-defaults-2`).
+  Done (`fact15-defaults-2.md`): Claude Code's and Gemini CLI's cleanups are off on every run.
 - [x] The lives of requests held for the owner (`CARD_TTL_S` 7 days, `ACTION_LIMITS.cardTtlS`
   30 days and `approvalTtlS` a day, `POLICY_LIMITS.proposalTtlS` 90 days) each go into one of
   Fact 15's kinds (`untangle/fact15-caps`).

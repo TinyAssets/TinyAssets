@@ -336,7 +336,11 @@ Each model source SHALL be an editable JSON record in `platform/sources/` naming
 - **THEN** reading it fails loudly naming the record, and CI fails
 
 ### Requirement: A CLI record is an engine, never a backend
-A `cli` record SHALL have no single-inference `invoke` (ADR-033 decision 2). It SHALL declare its pinned install, its credentials, its new-run and resume invocations, event matchers, instruction and skills paths, MCP template and trust handling, tool filters, unattended and no-update flags, its home, its `session_paths` and `secret_paths`, and per credential whether unattended hosted runs are allowed (ADR-034 decision 5).
+A `cli` record SHALL have no single-inference `invoke` (ADR-033 decision 2). It SHALL declare its pinned install, its credentials, its new-run and resume invocations, event matchers, instruction and skills paths, MCP template and trust handling, tool filters, unattended and no-update flags, its home, its `session_paths` and `secret_paths`, and per credential whether unattended hosted runs are allowed (ADR-034 decision 5). Where its CLI lets its own sessions go by age or count at its default, the record SHALL turn that off in a settings file every run gets, so a session lives as long as the owner's files keep it.
+
+#### Scenario: A held call answered months later resumes its session
+- **WHEN** a run of Claude Code or Gemini CLI resumes a session last used 90 days before
+- **THEN** the CLI finds its transcript in its home, since neither CLI's own cleanup lets it go, hooked run or not
 
 #### Scenario: A secret path could leave the sandbox
 - **WHEN** a CLI record's `secret_paths` or `session_paths` holds a path not under `{home}` (an absolute path, `/proc/self/cwd`, `/workspace`, a relative path), `{home}` itself, a `..` segment or a `*` first segment, or a secret path inside (or holding) a session path
@@ -427,7 +431,7 @@ The in-VM runner SHALL post an empty batch as soon as it runs, before the sync; 
 - **THEN** the CLI never runs and the run ends failed with a `ta.refused` frame
 
 ### Requirement: An agent works in scratch apart from the owner's storage
-Each agent SHALL have a scratch area on its sandbox's own disk (`/scratch/<agent>`, group `ta`), never synced and never counted in the owner's storage, bounded only by the sandbox's disk (the sandbox vendor's limit, the same on every tier), kept between runs in the paused sandbox as a cache. Before a run, scratch unused for the control record's `scratch_retention_days` SHALL be deleted, then, while the disk's free space is under a tenth of it, the least recently used, never a live run's agent's; what went SHALL be told to the agent and the user in plain words, saying their storage is unaffected and never offering an upgrade. A run's engine SHALL be told where scratch is (`TA_SCRATCH`, its tools' caches pointed there, and the run-scoped MCP door's instructions): clones and builds go there, and what the user keeps goes to `/workspace` or leaves by `git push`.
+Each agent SHALL have a scratch area on its sandbox's own disk (`/scratch/<agent>`, group `ta`), never synced and never counted in the owner's storage, bounded only by the sandbox's disk (the sandbox vendor's limit, the same on every tier), kept between runs in the paused sandbox as a cache, never deleted for its age alone. Before a run, while the disk's free space is under a tenth of it, the least recently used agent's scratch SHALL be deleted, never a live run's agent's; what went SHALL be told to the agent and the user in plain words, saying their storage is unaffected and never offering an upgrade. A run's engine SHALL be told where scratch is (`TA_SCRATCH`, its tools' caches pointed there, and the run-scoped MCP door's instructions): clones and builds go there, and what the user keeps goes to `/workspace` or leaves by `git push`.
 
 #### Scenario: A repository cloned for a task
 - **WHEN** a run clones a repository into its scratch and builds it

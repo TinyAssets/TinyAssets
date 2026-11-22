@@ -951,9 +951,9 @@ function roomForEnd(): void {
 
 /**
  * The run's agent's scratch (`scratch.ts`): made (root's at the top, group `ta`'s below), old
- * scratch let go first (unused past the control record's retention, then least recently used
- * while the disk is low, never a live run's agent), and the agent's marked used now. What
- * went, in plain words for the agent and the user, or null.
+ * scratch let go first (least recently used while the disk is low, never a live run's agent),
+ * and the agent's marked used now. What went, in plain words for the agent and the user, or
+ * null.
  */
 function scratchFor(start: StartDoc, run: string):
     { dir: string; notice: ScratchCleared | null } {
@@ -968,8 +968,7 @@ function scratchFor(start: StartDoc, run: string):
       }
     })]);
   const index = readIndex(SCRATCH_INDEX);
-  const pruned = pruneScratch(SCRATCH, index, Date.now(),
-                              start.scratch_retention_days ?? null, live);
+  const pruned = pruneScratch(SCRATCH, index, Date.now(), live);
   safeDirs(SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
   writeOrRelease(() => markUsed(index, start.agent, Date.now()), RESERVE);
   keepReserve(RESERVE);
