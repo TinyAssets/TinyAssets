@@ -1,6 +1,6 @@
 /**
  * The owner's migrations held to their lock, `owner/migrations.json` (`ci/kit/locks.ts`,
- * which says what a lock holds and how a deploy pins it).
+ * which says what a lock holds and when a migration is pinned).
  */
 import { createHash } from "node:crypto";
 
