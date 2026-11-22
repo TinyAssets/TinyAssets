@@ -11,6 +11,7 @@
      - **Compiling.** A token's set and its line's parse come to about 360 bytes a state at the peak. 1 MiB of automaton lines needed between 360 and 400 MiB of old space, and 98,304 states needed 44 MiB.
    - **So memory forces a ceiling**, and the folders set it. The compile's peak is lower a state and is gone before a path is matched.
    - **The walk's own folders.** `AGENT_PEAK` was measured three folders deep. `walkFiles` holds 14.8 MB at 2,000 folders, beside the matcher's.
+   - **Found in review: the walk's figure was not its worst.** It was measured over folders of one entry. Node's `opendir` reads a batch of 32 names, each a `Buffer` of its own, so an open folder holding 31 more names of 250 bytes took 17.9 KB where one of one name took 2.4 KB. At every folder of the deepest path that is about 30 MB more, past the margin: (88.6 MB − 47 MB − 1.1 MB) / 510.75 is about 79,000 states. Read one entry at a time (`bufferSize` 1), an open folder takes 2.4 KB whatever it lists; 200,000 entries took 224 ms to list where they took 177 to 186.
 2. **The choice: the ceiling derived from the heap.**
    - The value is (88.6 MB `LIST_BYTES` leaves − the walk's 15 MB − the folders' own 1.1 MB) / 510.75 bytes a state at the deepest path, about 141,900. That is rounded down to 98,304 (3,072 words), a margin of 1.30. 131,072 would leave 1.07, under the near-ceiling rule's 1.25.
    - **Weighed against no memo of folders** (each path stepped from the root, the state O(W)), so that `LIST_BYTES` alone bounds the states. It trades the ceiling for every path costing its whole length, which is the cost the memo exists to remove (`REMEMBERED_NAME_BYTES`).
@@ -24,16 +25,19 @@
    - `sandbox/runner/sizing.ts`: `AGENT_PEAK` is restated. It was measured over 500,000 entries three folders deep, it grows with no entry count (`sync.test.ts`), and only a path's depth adds to it, which the states' test measures.
    - `sandbox/runner/sync.test.ts`: a new test (`large`). It takes `AUTOMATON_STATES` of path lines at a state a list byte, matched down a walk to the deepest path the host allows, the walk's folders with it, and holds the result to the room `LIST_BYTES` leaves. It measures 71.4 MB against 93.3 MB.
    - `contract/guards/sync-ignore.test.ts`: all 310 templates together apply whole. The states test's list is sized from the ceiling.
+   - `sandbox/runner/fsafe.ts`: `entries` reads an open folder one entry at a time (`bufferSize` 1), as `walkFiles`' doc already said, so the states' test's chain of one-entry folders is the walk's worst at any depth. `sync.test.ts` holds it: 400 folders each listing 31 more names of 241 bytes hold under 512 bytes a folder more at the bottom (70 to 101 measured).
    - `runner.test.ts`'s filler is sized from the ceiling.
    - `doors/guards/app-words.test.ts` passes its own figures, the words being the app's.
    - `limits-audit.md`'s row carries the arithmetic.
-   - **The bundles.** The constant is in both bundles, so the runner (`5f49f51daed781f7` to `028bdff9c2649df3`) and the probes (`5be3b90f19131973` to `d9097958a515b0d5`) change, so the pair tag does. The next deploy builds and checks the pair as for any runner change.
+   - **The bundles.** The constant is in both bundles, so the runner (`5f49f51daed781f7` to `48eec1619ebfd72b`) and the probes (`5be3b90f19131973` to `5000ffb2f4264438`) change, so the pair tag does. The next deploy builds and checks the pair as for any runner change.
    - **Cost.** A byte of text costs up to 3,073 word steps where it cost 257. The contract guards' hostile lists, sizes tests, take 3.6 to 4.1 s each locally where they took 0.5 to 1.3. The walk-cost test, a medium one, takes 1.1 s where it took 0.3 (budget 4.6 s, times 4).
+     At 1.4 ns a word step at 3,072 words (this host), a byte of a name costs about 4.4 µs, so a sync-out over the disk's 3,788,096 inodes, each a distinct 255-byte name, matches for about 70 minutes, where 8,192 took about 6. It is said past `SLOW_MATCH_MS`. The sync agent is a process of its own and its requests have no timeout, so the run's heartbeats and its lease go on beside it. Paths of one short name each over 98,160 states, where the copy of a folder's D and I is most of a path's work, held the cost guard at 0.35 of its bound.
 4. **Proof.** Each mutation was run and fails.
    - `AUTOMATON_STATES` doubled fails the states' test (126.7 MB against 98.0).
    - The folders keeping three words a word of I fails it (121.8 MB against 93.3).
    - 8,192 again fails "all 310 together" (56 lines said).
    - `runner.test.ts`'s old 900-line filler fails "says the sync-ignore lines past its ceilings" (no event).
+   - Node's batch again (no `bufferSize`) fails "walks a folder an entry at a time" (2,924 bytes a folder against 512).
 5. **Left.** Nothing in scope.
 
 - [ ] live: the next deploy's pair job passes with this PR's runner and probes (the standing checks run once on the pinned image, as for any runner change).

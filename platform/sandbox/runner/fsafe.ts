@@ -308,8 +308,11 @@ export function* walkFiles(dir: string, walk: Walk = {}, base = dir): Generator<
 function* entries(dir: string, sorted: boolean): Generator<Buffer> {
   let handle: Dir;
   try {
-    // Buffer names (Node takes `buffer` here, though its types say only text encodings).
-    handle = opendirSync(dir, { encoding: "buffer" as BufferEncoding });
+    // Buffer names (Node takes `buffer` here, though its types say only text encodings), read
+    // one at a time: Node reads a batch otherwise (32), each name a Buffer of its own, and the
+    // walk holds an open directory a folder deep, so each folder of a deep path would hold up
+    // to 31 names more (15.5 KB a folder at 250-byte names, Node 22.22.0, 2026-11-22).
+    handle = opendirSync(dir, { encoding: "buffer" as BufferEncoding, bufferSize: 1 });
   } catch {
     return;  // one this user may not list: its contents are not ours to walk
   }

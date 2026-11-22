@@ -709,6 +709,35 @@ describe("the matcher's memory in the sync agent's heap", () => {
     }
   });
 
+  it("walks a folder an entry at a time: a deep path's folders hold none of what they list",
+     { tags: ["large"] }, () => {
+    // What the walk holds at the bottom of 400 folders, each listing `beside` long names more.
+    const held = (beside: number) => {
+      const root = mkdtempSync(join(tmpdir(), "listed-"));
+      const chain = (depth: number) => join(root, ...Array.from({ length: depth }, () => "-"));
+      mkdirSync(chain(400), { recursive: true });
+      writeFileSync(join(chain(400), "f"), "");
+      for (let depth = 0; depth < 400; depth++) {
+        for (let i = 0; i < beside; i++) {
+          writeFileSync(join(chain(depth), `${i}${"x".repeat(240)}`), "");
+        }
+      }
+      try {
+        const base = settled();
+        let bottom = 0;
+        const skip = (each: string, isDir: boolean) => !isDir && !each.endsWith("/f");
+        for (const _ of walkFiles(root, { skip })) {
+          bottom = settled() - base;
+        }
+        return bottom;
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    // So the states' test's chain, a name a folder, is the walk's worst at any depth.
+    expect((held(31) - held(0)) / 400).toBeLessThan(512);
+  });
+
   it("holds `AUTOMATON_STATES` at the deepest path, the walk's own folders beside it, in the " +
      "room `LIST_BYTES` leaves", { tags: ["large"] }, () => {
     // A chain of folders as deep as a path here reaches (`MAX_PATH_BYTES`, Linux's
