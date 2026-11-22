@@ -306,7 +306,14 @@ It never counts as "absent".
   With no Worker to take back it changes nothing. Then roll forward with a fix, or close
   the gates (mode `control`). Before any change it holds each Worker to the record: a
   version neither the one before nor one tagged with the run's commit (a deploy since)
-  stops it, named.
+  stops it, named, and so does a record whose tags or counts differ from Cloudflare's.
+
+  **What it cannot see: read the run's diff before you approve the apply job.** A version
+  that writes a shape its version before cannot read, with no migration (a KV value, an R2
+  object, a queue message, Durable Object storage outside `migrate.ts`, JSON in a column),
+  or that sandboxes it started or open browsers speak to in a way the version before cannot,
+  is forward-only too, and nothing marks it yet. Roll forward instead. Hold each version the
+  plan names to the run's job summary copy of the record: other Workers can write the KV one.
 
   **A rollback by hand** (the dashboard's Deployments, Rollback, from a phone) follows the
   same rules, which Cloudflare cannot know: never to a version whose tag's `-m` counts are

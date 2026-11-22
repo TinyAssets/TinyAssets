@@ -148,7 +148,7 @@ fetched 2026-11-22), wrangler's source at its pinned tag (`cloudflare/workers-sd
    `tagCommit`, `pinnedCounts` beside `versionFlags`).
 4. **Mode `rollback`** (`rollbackAsk`, `--record`): each Worker held to the record first (every
    version it serves is the one before, or tagged with the run's commit; a split of the two
-   is taken back), then, callers first, each deployed back alone over Cloudflare's API
+   is taken back; the record's tag before and counts are Cloudflare's tags), then, callers first, each deployed back alone over Cloudflare's API
    (`Cloudflare.deploy`, never forced) and read back, stopping at the first forward-only
    Worker, which stays with every Worker before it in the deploy order: so, as in the middle
    of every deploy, the Workers a caller binds are never older than it. With none to take back
@@ -175,6 +175,21 @@ fetched 2026-11-22), wrangler's source at its pinned tag (`cloudflare/workers-sd
   undone. `retire` shares the deploy's concurrency group; the window's close does not (its
   workflow's group), so the checklist says no deploy runs across it. Holding the close to
   the deploy's group would hold every deploy for each window job's six hours.
+- **Data and callers the forward-only rule cannot see (review).** It reads only `-m` counts,
+  `--migrate`, secrets and first deploys. A version that writes a shape its version before
+  cannot read without an app-level migration (a KV value, an R2 object or layout, a queue
+  message, Durable Object storage outside `migrate.ts`, JSON in an existing column), or whose
+  callers outside the binding graph (sandboxes started from its `E2B_TEMPLATE`, the doors'
+  app in open browsers, messages it queued) speak a protocol the version before cannot, is
+  forward-only and nothing marks it: a rollback across it is the one direction no deploy
+  makes, new callers and data on old code. Until A2b's mark, the founder reads the run's diff
+  for these before approving a `rollback`'s apply job (`checklist.md`).
+- **The record's trust (review).** The control namespace is bound, writable, by the doors,
+  owner and sandbox, so a rollback holds the record's tag before and counts to Cloudflare's
+  tags, which only the deploy's token writes, and stops on a difference. A record naming
+  another real, older version as the one before, with its real tag, still passes: the plan
+  job names each target version and tag, which the founder holds to the run's job summary
+  copy before approving the apply job.
 - The stages, the health check and the 0% smoke: the series, below.
 
 ## Owed
@@ -184,7 +199,9 @@ fetched 2026-11-22), wrangler's source at its pinned tag (`cloudflare/workers-sd
   as a keyring (`platform.json` `made`), rotated by `keyring-add`, and its old kid retired only
   once no lease or sandbox minted under it lives; before any split.
 - [ ] `untangle/deploy-stages`: A2b, the stages, soak, health check and the doors' 0% smoke, as
-  "The series" item 3 lists them.
+  "The series" item 3 lists them; and, researched first and before any split (which mixes
+  the two versions' data and callers both ways), the rule and the mark that make a version
+  forward-only for a shape or protocol its version before cannot read ("Left", review).
 - [ ] live: the next `dark` run's summary shows its rollout record, each Worker's version before
   equal to its Deployments in the dashboard and that version's tag; a `rollback` dispatch of
   that run's id, its plan job alone (it changes nothing), names each Worker's way back as the

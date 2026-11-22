@@ -2286,6 +2286,14 @@ describe("the rollout record and mode rollback", () => {
     expect(again.plan).toContain(`keep this run's rollout record as attempt 1 wrote it at ${
       NOW.toISOString()}, before its first deploy: roll back with --mode rollback --record ` +
       "<this run's id>");
+    // A split stops a re-run attempt too, before any deploy.
+    const gateway = NAMES["gateway"]!;
+    w.deployments.set(gateway, [{ ...w.deployments.get(gateway)![0]!, percentage: 90 },
+                                { version: "before-gateway", percentage: 10 }]);
+    w.events.splice(0);
+    await expect(runMode(w, "dark", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "3" })).rejects
+      .toThrow(`${gateway} is split (`);
+    expect(w.events.filter((event) => event.startsWith("wrangler "))).toEqual([]);
   });
 
   it("stops before any deploy when a Worker serves two versions, or its record is refused",
@@ -2361,6 +2369,18 @@ describe("the rollout record and mode rollback", () => {
       expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
         `^leave ${NAMES[worker]} on .*: it comes before ${NAMES["owner"]} in the deploy order, ` +
         `and ${NAMES["owner"]} stays on the run's version$`)));
+    }
+    // A record whose counts or tag before are not Cloudflare's tags is never rolled back.
+    const held = recordIn(bumped)!;
+    for (const owner of [{ counts: Object.fromEntries(Object.entries(PINNED["owner"]!).map(
+                           ([path, pinned]) => [path, pinned.length])) },
+                         { before: { version: "before-owner", tag: `${BEFORE}-m99` } }]) {
+      bumped.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers:
+        held.workers.map((each) => each.name === NAMES["owner"] ? { ...each, ...owner } : each) }));
+      bumped.events.splice(0);
+      await expect(runMode(bumped, "rollback", ["--yes", "--record", "7001"], RUN)).rejects
+        .toThrow(`the record ${ROLLOUT} holds ${NAMES["owner"]} as before `);
+      expect(bumped.events.filter((event) => CHANGE.test(event))).toEqual([]);
     }
     // The routing key set on the doors and the owner: the doors stay, so nothing goes back.
     const rotated = world({ held: true });

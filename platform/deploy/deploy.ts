@@ -1574,15 +1574,6 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
     const title = NAMESPACES["CONTROL"]!;
     const key = `${ROLLOUT_PREFIX}${run.job.id}`;
     const namespace = got.ids["CONTROL"];
-    const held = namespace === undefined ? undefined
-      : await got.cloudflare.value(got.account, namespace, key);
-    if (held !== undefined) {
-      const record = rolloutOf(held, key);
-      say(`keep this run's rollout record as attempt ${record.attempt ?? "-"} wrote it at ` +
-          `${record.at}, before its first deploy: roll back with --mode rollback --record ` +
-          "<this run's id>");
-      return;
-    }
     const workers: Rolled[] = [];
     for (const worker of WORKERS) {
       const name = NAMES[worker]!;
@@ -1595,6 +1586,16 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
                      whole: run.migrate.has(worker),
                      secrets: got.setting.filter((each) => each.worker === worker)
                        .map((each) => each.name) });
+    }
+    // Read after the split check, so a re-run attempt stops on a split as its first would.
+    const held = namespace === undefined ? undefined
+      : await got.cloudflare.value(got.account, namespace, key);
+    if (held !== undefined) {
+      const record = rolloutOf(held, key);
+      say(`keep this run's rollout record as attempt ${record.attempt ?? "-"} wrote it at ` +
+          `${record.at}, before its first deploy: roll back with --mode rollback --record ` +
+          "<this run's id>");
+      return;
     }
     say(`record each Worker's version as this run's rollout record in ${title}, before its ` +
         "first deploy: roll back with --mode rollback --record <this run's id>",
@@ -2701,7 +2702,8 @@ function versionLine(serving: readonly (Serving & { readonly tag: string | null 
  * on the run's versions, each named, and with none to take back the run stops before any
  * change. Each is held to the record first: every version it serves is the one before or one
  * tagged with the run's commit (a split of the two, which a run stopped mid-rollout leaves,
- * included), and anything else (a deploy since) stops it, named, with nothing changed.
+ * included), and anything else (a deploy since) stops it, named, with nothing changed; so
+ * does a record whose tag before or counts are not Cloudflare's tags.
  */
 const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => {
   const title = NAMESPACES["CONTROL"]!;
@@ -2731,6 +2733,19 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
       drifted.push(`${rolled.name} serves ${serving.length === 0 ? "no deployment"
         : versionLine(serving)}, neither its version before the run nor one of commit ${ours}`);
       continue;
+    }
+    // What `forwardOnly` reads, held to Cloudflare's tags, which only the deploy's token
+    // writes: the record's namespace is bound, writable, by the doors, owner and sandbox.
+    const pinned = pinnedCounts(rolled.counts).join(".");
+    const tagBefore = rolled.before === null ? null
+      : serving.find((each) => each.version === rolled.before!.version)?.tag
+        ?? await got.cloudflare.tag(got.account, rolled.name, rolled.before.version);
+    if (tagBefore !== (rolled.before?.tag ?? null) || serving.some((each) =>
+      each.version !== rolled.before?.version
+        && (taggedAs(each.tag)?.counts ?? []).join(".") !== pinned)) {
+      throw new Error(`the record ${key} holds ${rolled.name} as before ${
+        rolled.before?.tag ?? "untagged"}, counts -m${pinned}, and Cloudflare tags its version ` +
+        `before ${tagBefore ?? "untagged"} and serves ${versionLine(serving)}: nothing is changed`);
     }
     if (serving.length === 1 && serving[0]!.version === rolled.before?.version) {
       lines.push(`${rolled.name} serves its version before the run already, ${
