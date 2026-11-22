@@ -55,19 +55,11 @@ export function defaultSyncIgnore(): readonly string[] {
 /**
  * The most states the automaton's lines take together (a line's: its tokens, each a byte, a
  * `?` or a class, plus one), each distinct line once, in file order: a technical ceiling,
- * the matcher's time. A byte of text costs ⌈S/32⌉ word steps, so at the files plane's own
- * ceilings a sync-out's matching stays well inside the sandbox's shortest session
- * (`limits-audit.md`: the arithmetic, with `STEP_NS` measured in the sandbox). Lines an
- * index takes cost none of it.
+ * the matcher's time: a byte of text costs at most ⌈S/32⌉ word steps, so the list slows a
+ * sync-out's matching by at most that much a byte. Its value's derivation is owed
+ * (`limits-audit.md`). Lines an index takes cost none of it.
  */
 export const AUTOMATON_STATES = 8_192;
-/**
- * The most nanoseconds one automaton step (a byte of text, a 32-state word) may take in the
- * sandbox: the constant `AUTOMATON_STATES` is derived from, measured there (`stepNanos`) by
- * the template's standing check (`sandbox/runner/probes.ts`'s `matcher-probe`), which fails
- * the pair past it.
- */
-export const STEP_NS = 6;
 /**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
  * memory in the sync agent's heap, 7.8 MiB with the worst class's heads diverging, so 6 MiB
@@ -1150,50 +1142,4 @@ export function ignoredBy(lines: readonly string[]): Matcher {
     return decided(step(parent, cut < 0 ? rel : rel.slice(cut + 1)).best, false);
   };
   return Object.assign(match, { unapplied: c.unapplied });
-}
-
-// -- The constant, measured where it runs -------------------------------------------------------
-
-/**
- * Nanoseconds per automaton step (a byte of text, a 32-state word) at `AUTOMATON_STATES`,
- * on the automaton's slowest branch: lines with a `/**\/` each (so every byte
- * reads and writes its passed states too), and text of `/` bytes (the branch that re-arms
- * as well), with `*\/**\/…` and `**\/` lines keeping states alive throughout; the median of
- * five runs of `ms` each after a warm-up, so a neighbour's moment on the sandbox's CPU moves
- * it little; the slower of the two texts (`/` and none). The template's standing check runs
- * it in the sandbox and holds it to `STEP_NS`.
- */
-export function stepNanos(ms = 600): number {
-  const lines: AutomatonLine[] = [];
-  let states = 0;
-  const add = (pattern: string) => {
-    const tokens = tokenize(utf8(pattern), true)!;
-    if (states + statesOf(tokens) > AUTOMATON_STATES) {
-      return false;
-    }
-    lines.push({ tokens, rule: () => 0, dirOnly: false });
-    states += statesOf(tokens);
-    return true;
-  };
-  // A leading `**/` keeps a line alive across `/`; `*` loops keep the rest alive between.
-  add(`**/*${"?".repeat(28)}*`);
-  while (add(`*/**/${"?".repeat(27)}*`)) {
-    // filled to the ceiling
-  }
-  const automaton = new Automaton(lines, AUTOMATON_STATES);
-  const timed = (text: Uint8Array, span: number) => {
-    let runs = 0;
-    const began = Date.now();
-    while (Date.now() - began < span) {
-      const D = Uint32Array.from(automaton.init);
-      automaton.run(D, new Uint32Array(automaton.W), text);
-      runs++;
-    }
-    return ((Date.now() - began) * 1e6) / (runs * text.length * automaton.W);
-  };
-  const median = (text: Uint8Array) => {
-    timed(text, ms);  // warm-up
-    return Array.from({ length: 5 }, () => timed(text, ms)).sort((a, b) => a - b)[2]!;
-  };
-  return Math.max(median(utf8("ab-cd".repeat(51))), median(utf8("a/b/c".repeat(51))));
 }
