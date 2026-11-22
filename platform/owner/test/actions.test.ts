@@ -353,7 +353,9 @@ describe("the honest note (d3 §N5)", () => {
     // Codex's hook is written, but the agent can alter what it answers (its record says how).
     const unheld = ["main_agent", "sandbox_programs", "codex", "gemini.fails_open"];
     expect((await o.stub.policyRead(o.owner)).notes).toEqual([
-      { holds_at: ["claude-code", "gemini", "pi"], not_enforced: unheld },
+      // A shell rule holds over the commands the agent's own definition starts too, at its
+      // run's admission, whatever its engine, Codex's included.
+      { holds_at: ["definitions", "claude-code", "gemini", "pi"], not_enforced: unheld },
       { holds_at: ["doors", "claude-code", "gemini", "pi"], not_enforced: unheld },
       { holds_at: ["doors"], not_enforced: [] },
     ]);
@@ -400,8 +402,10 @@ describe("a run's held call (R5 P-resume)", () => {
     const resumed = await startOf(r.stub, approved.run!);
     expect([resumed.conversation, resumed.session_id, resumed.agent, resumed.prompt]).toEqual([
       run.conversation_id, "sess-held", "main",
-      `Your owner said yes to card ${card} (workspace.files at fileMkdir). Make that same ` +
-        "call again now and it goes through, once. If you made it since, do not make it again."]);
+      `Your owner said yes to card ${card} (workspace.files at fileMkdir), once. If it was a ` +
+        "call of yours, make that same call again now and it goes through; if you made it " +
+        "since, do not make it again. If it was a command of your own definition, it runs in " +
+        "this run."]);
     await mkdir(r.stub, runBinding(r, resumed), "/workspace/held");
     expect(await heldCard(() => mkdir(r.stub, runBinding(r, resumed), "/workspace/held")))
       .not.toBe(card);

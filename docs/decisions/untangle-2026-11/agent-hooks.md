@@ -142,7 +142,8 @@ beside the dispatcher's, and a silent hook's dispatch is no decision.
 - **An agent may write its own `hooks.json` and `mcp.json`** (every agent has full power over
   the owner's definitions by default, `files.ts` `ownersTree`), so a rule on `workspace.shell`
   does not hold over the commands those files run at the next run; only a rule on
-  `workspace.files` does. D4 has the same shape. Owed below, researched first.
+  `workspace.files` does. D4 has the same shape. Owed below, researched first; since done:
+  each such command is decided at its run's admission (`definition-commands.md`).
 - **The `unsupported` forms of `decide` and `definition.hooks`** have no record since Kimi went
   (#5745); they stay as the shape of an engine with no root-owned layer (R5 item 8).
 
@@ -151,5 +152,5 @@ beside the dispatcher's, and a silent hook's dispatch is no decision.
 - [ ] live: at the dark redeploy, an agent's `pre_tool` hook that blocks holds on each engine (Claude Code's managed command hook, Codex's requirements hook, Gemini's system-settings hook, pi's `-e` extension), on a hooked run and an unhooked one, and a `prompt` and a `session_start` hook's context reaches the model on each.
 - [ ] live: at the dark redeploy, Gemini's and pi's loading order puts R5's hook first: Gemini's `BeforeTool` list holds R5's entry before the dispatcher's, and pi's `-e decide.mjs` runs before `-e hooks.mjs`, so a call R5 holds files its card whatever the agent's hook says.
 - [ ] live: at the dark redeploy, what a run shows when pi's `input` handler consumes a blocked prompt (`handled`); if nothing, the template sends the reason as a message too.
-- [ ] `untangle/definition-commands`: whether a rule on `workspace.shell` should hold over the commands the agent's own definition files run (`mcp.json` stdio servers, `hooks.json`), researched first.
+- [x] `untangle/definition-commands`: whether a rule on `workspace.shell` should hold over the commands the agent's own definition files run (`mcp.json` stdio servers, `hooks.json`), researched first. Done: it does, decided at each run's admission (`definition-commands.md`).
 - [ ] `untangle/hooks-shared-cost`: a shared hook file (Claude Code, Codex) carries the dispatcher only once a run of the sandbox has an agent hook, written under `writeShared`'s lock and kept while the sandbox lives, so an owner whose agents have none pays no dispatcher start (about 65 ms here) per event; today every run pays it on every event, two per tool call.

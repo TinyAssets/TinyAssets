@@ -29,6 +29,7 @@ import { MCP, MUSE, signedIn } from "./ledger-support";
 import { ALL_SCOPES, defineAgent, hashed, inSession, later, ownerFile, ownerRun, recorder,
   runBinding, runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
 import { RANKING } from "../../contract/src/paths";
+import type { ActionRule } from "../../contract/src/policy-document";
 import { ADMITTED_FILE_BYTES } from "../src/holds";
 import { secretOf, until } from "../../ci/workerd";
 import { drainDue, failure, gateFor, spaceOf } from "./support";
@@ -234,6 +235,96 @@ describe("admission", () => {
       { run: ["./guard.sh"], allow: true }] } }));
     expect((await failure(() => ownerRun(r.stub, r.bind()))).message)
       .toMatch(/^hooks\.json: pre_tool\[0\] is its run, and optionally match and timeout_s/);
+  });
+
+  describe("the commands its own definition starts, under the owner's shell rules", () => {
+    const guard = { match: { kinds: ["shell"] }, run: ["./hooks/guard.sh"] };
+    const note = { run: ["./hooks/note.sh"] };
+    const local = { command: "uvx", args: ["some-mcp"], env: {} };
+    const docs = { url: "https://docs.example.com/mcp" };
+
+    /** The owner whose `main` has two hooks and two servers, one by its command. */
+    async function defined() {
+      const r = await gated();
+      await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+      await ownerFile(r.stub, r.bind(), "/workspace/agents/main/hooks.json", JSON.stringify({
+        hooks: { pre_tool: [guard], session_start: [note] } }));
+      await ownerFile(r.stub, r.bind(), "/workspace/agents/main/mcp.json",
+                      JSON.stringify({ mcpServers: { docs, local } }));
+      const ruled = async (actions: readonly ActionRule[]) => {
+        const { generation, policy } = await r.stub.policyRead(r.bind());
+        await r.stub.policyWrite(r.session(), { expected_generation: generation,
+                                                policy: { ...policy, actions } });
+      };
+      const told = async (type: string) => (await r.stub.noticeList(r.bind())).notices
+        .filter((notice) => notice.type === type).map((notice) => notice.detail);
+      return { r, ruled, told };
+    }
+
+    it("leaves out each one a never rule holds for its agent, the owner told once of each, " +
+       "and starts every one a rule holds for no other", async () => {
+      const { r, ruled, told } = await defined();
+      await ruled([{ act: "workspace.shell", do: "never", agent: "other" },
+                   { act: "workspace.files", do: "never" }]);
+      const free = (await ownerRun(r.stub, r.bind())).start;
+      expect([free.mcp_servers, free.hooks.pre_tool, free.hooks.session_start])
+        .toEqual([{ docs, local }, [guard], [note]]);
+      await ruled([{ act: "workspace.shell", do: "never", agent: "main" }]);
+      for (let n = 0; n < 2; n++) {
+        const { start } = await ownerRun(r.stub, r.bind());
+        expect(start.mcp_servers).toEqual({ docs });
+        expect(Object.values(start.hooks).flat()).toEqual([]);
+      }
+      const why = "is left out of this run: the owner's rule never lets an agent do this " +
+        "(workspace.shell)";
+      expect((await told("definition_command_dropped")).sort()).toEqual([
+        `main: its MCP server local (uvx) ${why}`, `main: its pre_tool hook ./hooks/guard.sh ${
+          why}`, `main: its session_start hook ./hooks/note.sh ${why}`]);
+      expect((await r.stub.policyReceipts(r.bind())).actions.map((receipt) =>
+        [receipt.act, receipt.outcome, receipt.agent]))
+        .toEqual(Array(6).fill(["workspace.shell", "denied", "main"]));
+    });
+
+    it("holds each one an ask rule names for the owner's yes, which resumes its conversation " +
+       "on a run that starts it, once", async () => {
+      const { r, ruled, told } = await defined();
+      await ruled([{ act: "workspace.shell", do: "ask" }]);
+      const { run, start } = await ownerRun(r.stub, r.bind());
+      expect([start.mcp_servers, start.hooks.pre_tool, start.hooks.session_start])
+        .toEqual([{ docs }, [], []]);
+      const waits = /^main: (.*) is left out of this run: it waits for your answer to card (\S+)$/;
+      const dropped = (await told("definition_command_dropped")).map((detail) =>
+        waits.exec(detail)!.slice(1));
+      expect(dropped.map(([what]) => what).sort()).toEqual(["its MCP server local (uvx)",
+        "its pre_tool hook ./hooks/guard.sh", "its session_start hook ./hooks/note.sh"]);
+      const card = dropped.find(([what]) => what!.includes("pre_tool"))![1]!;
+      expect((await told("action_request")).sort()).toEqual(dropped.map(([what, id]) =>
+        `main asks to workspace.shell at ${what!.includes("MCP") ? "mcp.json" : "hooks.json"}: ` +
+        `card ${id}`).sort());
+      const shown = await r.stub.actionRequest(r.bind(), { card_id: card });
+      expect(shown.card).toMatchObject({
+        act: "workspace.shell", door: "hooks.json", agent: "main",
+        conversation: run.conversation_id,
+        request: JSON.stringify({ hook: "pre_tool[0]", match: { kinds: ["shell"] },
+                                  run: ["./hooks/guard.sh"] }) });
+      // The yes while the run is live: its resume waits behind it, and so does an input sent
+      // after, whose admission, written waiting, uses no yes.
+      const approved = await r.stub.actionApprove(r.session(), { card_id: card,
+                                                                 digest: shown.digest });
+      const after = await r.stub.agentSubmit({ ...r.bind(), tiers: TIERS }, {
+        message: "and then", client_send_id: "then-1", conversation_id: run.conversation_id });
+      expect(after.state).toBe("waiting");
+      await r.stub.runEvents(runnerBinding(r, start), { frames: frames(INIT("sess-1")),
+                                                     end: { exit_code: 0 } });
+      await drainDue(r.stub);
+      const resumed = await startOf(r.stub, approved.run!);
+      expect([resumed.conversation, resumed.hooks.pre_tool, resumed.hooks.session_start,
+              resumed.mcp_servers]).toEqual([run.conversation_id, [guard], [], { docs }]);
+      // Once: the conversation's next run asks again.
+      await r.stub.runEvents(runnerBinding(r, resumed), { frames: [], end: { exit_code: 0 } });
+      await drainDue(r.stub);
+      expect((await startOf(r.stub, after.run_id)).hooks.pre_tool).toEqual([]);
+    });
   });
 
   it("refuses a run whose mcp.json names the run's own door, or is no file", async () => {

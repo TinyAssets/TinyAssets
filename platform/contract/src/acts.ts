@@ -18,6 +18,11 @@ import { keyed, object } from "./checks.ts";
 /** A CLI's own tool kind whose every call is the act (`kinds`). */
 export type HookKind = keyof typeof raw.kinds;
 /**
+ * The kind a command the agent's own definition starts is (`mcp.json`'s server, `hooks.json`'s
+ * hook): one the run starts with no tool call, decided at the run's admission.
+ */
+export const COMMAND_KIND: HookKind = "shell";
+/**
  * A tool a rule or the agent's own hook names beside the kinds: an MCP server's and its tool's
  * names (`mcp:<server>:<tool>`), `*` matching any run of them.
  */

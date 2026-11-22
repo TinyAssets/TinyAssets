@@ -616,7 +616,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     this.#launcher = new Launcher({
       env, storage, owner: () => this.#ownerName(), sandbox, control: () => this.#control(),
       door: (act) => this.#door(act), sync: () => this.#schedule.sync(),
-      admission: this.#admission, bodies: this.#bodies, connections: this.#connections,
+      actions: this.#actions, admission: this.#admission, bodies: this.#bodies,
+      connections: this.#connections,
       egress: this.#egress, files: this.#files, grants: this.#grants, ledger: this.#ledger,
       notices: this.#notices, policy: this.#policy, relay: this.#relay, signins: this.#signins,
       starter: this.#starter, usage: this.#usage,
