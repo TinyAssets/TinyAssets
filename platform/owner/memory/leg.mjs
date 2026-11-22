@@ -36,8 +36,8 @@
 //   put within the units it holds (`SHIP_UNITS`);
 // - an owner's open egress calls: `EGRESS_LIMITS.open` of them held at once, each opened by the
 //   real `Egress.open` and its end signal read from another isolate as the egress door reads
-//   it, within `OPEN_CALL_BYTES` each, and every signal reaching its reader when the object
-//   closes them;
+//   it, within `OPEN_CALL_BYTES` each, and every end reaching its read within a beat
+//   (`EGRESS_BEAT_S`) when the object ends them all at once;
 // - per unit: two edits at once hold at most one making step's units more than one;
 // - its time: the worst edit's time a chunk, measured with no collections, keeps
 //   `EDIT_BYTES_MAX` inside a request's CPU limit (`guards/cpu.ts`; the time is wall time, at
@@ -357,20 +357,27 @@ try {
 
   // An owner's open egress calls at their most (`EGRESS_LIMITS.open`), each opened by the real
   // `Egress.open` and its end signal read from the store's isolate as the egress door reads
-  // it: within `OPEN_CALL_BYTES` each, the case's own objects among them, and every signal
-  // reaching its reader when the object closes them all. One run: each open reads the open
-  // rows (its count, its lost ones), so the case takes minutes at the bound; a high reading
-  // fails it, and none has read within a tenth of the figure (2026-11-22, five runs).
+  // it: within `OPEN_CALL_BYTES` each, the case's own objects among them; then the object
+  // ends them all, and every end reaches its read within a beat (`EGRESS_BEAT_S`, times this
+  // runner's speed): a door not stopped by then beats again as if nothing ended. One run: each
+  // open reads the open rows (its count, its lost ones), so the opens take the case's time.
   const opens = costs.egress_open;
+  const started = performance.now();
   const signals = await peak("signals", opens);
+  const caseMs = performance.now() - started;
+  const endsMs = peak.answer[0];
   check("egress: EGRESS_LIMITS.open calls' end signals held", signals,
         opens * costs.OPEN_CALL_BYTES, "EGRESS_LIMITS.open x OPEN_CALL_BYTES");
   rows.push({ check: "egress: bytes an open call, at EGRESS_LIMITS.open",
               bytes: +(signals / opens).toFixed(1), most: costs.OPEN_CALL_BYTES,
               ok: signals <= opens * costs.OPEN_CALL_BYTES });
-  if (peak.answer?.[0] !== opens) {
-    problems.push(`egress: ${peak.answer?.[0]} of ${opens} end signals reached their reader ` +
-                  "when the object closed them");
+  const beatMs = costs.beat_s * 1000 * RUNNER.speed;
+  rows.push({ check: "egress: EGRESS_LIMITS.open ends reaching their reads, at once",
+              ms: Math.round(endsMs), most_ms: beatMs, case_s: +(caseMs / 1000).toFixed(1),
+              ok: endsMs <= beatMs });
+  if (endsMs > beatMs) {
+    problems.push(`egress: ${opens} ends took ${endsMs} ms to reach their reads, past a beat ` +
+                  "times this runner's speed");
   }
 
   // The cutover's check (`importCheck`): every chunk checked through the store, which answers

@@ -46,6 +46,7 @@ import {
 import type { ServiceScope } from "../../contract/src/egress-scope";
 import { randomHex } from "../../contract/src/ids";
 import type { EgressOpened, EgressRefusal, EgressRequest } from "../../contract/src/owner";
+import { EGRESS_BEAT_S } from "../../contract/src/egress";
 import { Egress, EGRESS_LIMITS, OPEN_CALL_BYTES } from "../src/egress";
 import type { Located } from "../src/bodies";
 import { clock } from "../src/clock";
@@ -129,12 +130,24 @@ export class Store extends WorkerEntrypoint<StoreEnv> implements ChunkStore {
    * The egress case, as the egress door holds its calls (`doors/src/egress.ts`): `calls`
    * sandbox calls opened at `name`'s object one after another, each by a run of its own, each
    * end signal held here with a read waiting on it, sampled while all are held; then the
-   * object closes them all, and every read must end. How many did.
+   * object ends them all, and every read must end within `ENDS_WAIT_MS`. How long the ends
+   * took to reach their reads, in ms.
    */
   async signals(name: string, calls: number): Promise<number> {
     const stub = this.env.OWNER.getByName(name);
-    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
     let ends = 0;
+    let last = 0;
+    let allEnded = () => {};
+    const ended = new Promise<void>((resolve) => { allEnded = resolve; });
+    // Each held as the door holds its own (`signal`), for the case's life.
+    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+    const end = () => {
+      ends += 1;
+      last = Date.now();
+      if (ends === calls) {
+        allEnded();
+      }
+    };
     for (let n = 0; n < calls; n++) {
       const opened = await stub.legOpen({ run: `run_${randomHex(16)}`, connection: LEG_CONNECTOR,
                                           method: "POST", path: "/v1/call", bytes_hint: 1000 });
@@ -142,15 +155,18 @@ export class Store extends WorkerEntrypoint<StoreEnv> implements ChunkStore {
         throw new Error(`the egress case's call ${n} was refused ${opened.code}`);
       }
       const reader = opened.ended.getReader();
-      reader.read().then(() => { ends += 1; }, () => { ends += 1; });
+      reader.read().then(end, end);
       readers.push(reader);
     }
     await checkpoint(this.env, undefined, "signals");
+    const started = Date.now();
     await stub.legEnd();
-    for (let n = 0; n < LANE_LOOKS && ends < readers.length; n++) {
-      await scheduler.wait(LANE_POLL_MS);
+    await Promise.race([ended, scheduler.wait(ENDS_WAIT_MS)]);
+    if (ends < readers.length) {
+      throw new Error(`${ends} of ${calls} end signals reached their reads within ` +
+                      `${ENDS_WAIT_MS} ms of the object's ending them`);
     }
-    return ends;
+    return last - started;
   }
 
   async putChunks(ns: string, _key: string, chunks: { sha256: string; bytes: Uint8Array }[]):
@@ -1025,6 +1041,8 @@ function mergeMail(own: number): MergeMail {
 /** How often a case looks at its archive object's lane, and how many looks it waits at most. */
 const LANE_POLL_MS = 10;
 const LANE_LOOKS = 12_000;
+/** How long the egress case waits for its ends to reach their reads: as long as for a lane. */
+const ENDS_WAIT_MS = LANE_LOOKS * LANE_POLL_MS;
 
 /** Until the lane's passes stand as `done` says (its own alarm runs them), or loudly not. */
 async function settled(stub: DurableObjectStub<LegOwner>,
@@ -1174,7 +1192,8 @@ export default {
                              move_most_units: holds.moveTableUnits(MOVE_RECORDS),
                              move_records: MOVE_RECORDS,
                              move_body_units: holds.moveTableUnits(2),
-                             egress_open: EGRESS_LIMITS.open, OPEN_CALL_BYTES });
+                             egress_open: EGRESS_LIMITS.open, OPEN_CALL_BYTES,
+                             beat_s: EGRESS_BEAT_S });
     }
     if (url.pathname === "/rest") {
       LEG.runs += 1;

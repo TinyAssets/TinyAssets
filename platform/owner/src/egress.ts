@@ -57,9 +57,9 @@
  *
  * **Ending** (`end`): a policy write, a suspension, the owner's erasure, the connection's
  * revoke and the lease's close or replacement each end the in-flight streams they cover,
- * once their own unit committed: the object closes each one's end signal (the door stops the
- * stream on it) and marks its row with why. An end signal that errors (this instance gone)
- * is an end too.
+ * once their own unit committed: the object errors each one's end signal (`#release`; the
+ * door stops the stream on it) and marks its row with why. An end signal that errors because
+ * this instance went is an end the same way.
  *
  * **Settle** (`settle`, `reduce`): the door reports each reservation's end once, with the
  * provider's status, the bytes it streamed and the gateway's metered outcome, which settles
@@ -650,7 +650,7 @@ export class Egress {
 
   /**
    * In a unit, once the change that ends them committed: every open stream `covers` takes
-   * (all of them by default) ended, its signal closed and its row marked `why`.
+   * (all of them by default) ended, its signal errored and its row marked `why`.
    */
   end(why: EndedBy, covers: (live: LiveStream) => boolean = () => true): void {
     // What each covers is its open row's: a reservation's ids never change (the schema's
@@ -672,7 +672,7 @@ export class Egress {
   }
 
   /**
-   * Every end signal closed, writing nothing: the owner's erasure, whose wipe takes the
+   * Every end signal errored, writing nothing: the owner's erasure, whose wipe takes the
    * rows. Each door then settles into a refusal, and its stream is over.
    */
   drop(): void {
@@ -719,11 +719,16 @@ export class Egress {
     return id;
   }
 
-  /** Its end signal closed and forgotten; the door sees the close as the end. */
+  /**
+   * Its end signal errored and forgotten; the door takes the error as the end. An abort, not
+   * a close: in workerd the closes of many such streams at once reach their readers in time
+   * growing as the square of their count (4,000 in 5.7 s, 8,000 in 23.6 s, 16,000 in about
+   * 110 s), the aborts in time linear in it (8,000 in 0.5 s, 16,000 in 1.1 s; 2026-11-22).
+   */
   #release(reservation: string): void {
     const live = this.#live.get(reservation);
     this.#live.delete(reservation);
-    live?.end.close().catch(() => undefined);  // a door that stopped reading is gone already
+    live?.end.abort("ended").catch(() => undefined);  // a door that stopped reading is gone
   }
 
   /**
