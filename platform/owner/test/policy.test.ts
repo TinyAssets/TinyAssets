@@ -24,7 +24,7 @@ import {
   policyDigest, validate,
 } from "../../contract/src/policy-document";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, inStores, ownerObject } from "./support";
+import { atClock, failure, inStores, ownerObject } from "./support";
 
 type Doc = {
   egress: { mode: string; destinations: unknown[] };
@@ -331,7 +331,8 @@ describe("an agent's proposal", () => {
     expect(stale.message).toBe("proposal is not the pending card shown");
   });
 
-  it("refuses a malformed proposal, and a pending set at its limit", async () => {
+  it("refuses a malformed proposal, and at a full pending set lets the oldest go",
+     async () => {
     const r = await rig();
     for (const request of [{ change: [] }, { change: { big: "x".repeat(16_001) } },
                            { change: {}, request_id: "" },
@@ -344,28 +345,27 @@ describe("an agent's proposal", () => {
     // A proposal with no card is receipted and held nowhere.
     await r.stub.policyPropose(r.bind(null), { change: change(1) });
     expect(await r.table("policy_proposals")).toEqual([]);
-    const { pendingProposals: most, proposalTtlS: ttl } = POLICY_LIMITS;
+    const { pendingProposals: most } = POLICY_LIMITS;
     const ids = (from: number) => Array.from({ length: most }, (_, n) => `p${from + n}`);
     await inStores(r.stub, ({ policy }) => {
       const now = clock();
-      for (const id of ids(0)) {
+      for (const id of ids(0).slice(1)) {
         policy.propose(change(1), id, "owner", now);
       }
-      // A pending one is never evicted: a full set refuses.
-      expect(() => policy.propose(change(1), "over", "owner", now))
-        .toThrow("too many pending policy proposals");
-      expect(policy.held("p0", now + ttl - 1)).not.toBeNull();
-      expect(policy.held("p0", now + ttl + 1)).toBeNull();  // expired
-      // The expired ones are pruned at the next filing, which makes room.
-      const later = now + ttl + 1;
-      for (const id of ids(most)) {
-        policy.propose(change(1), id, "owner", later);
-      }
-      expect(() => policy.propose(change(1), "over", "owner", later))
-        .toThrow("too many pending policy proposals");
+      // A pending proposal has no life of its own: a filing years on prunes none.
+      const later = now + 10 * 365 * 86_400;
+      policy.propose(change(1), "late", "owner", later);
+      expect(policy.held("p1")).not.toBeNull();
+      // A full set refuses nothing: a new card lets the oldest pending one go.
+      policy.propose(change(1), "over", "owner", later);
+      expect(policy.held("p1")).toBeNull();
+      expect(policy.held("p2")).not.toBeNull();
     });
     expect((await r.table("policy_proposals")).map((row) => row["request_id"]).sort())
-      .toEqual(ids(most).sort());
+      .toEqual([...ids(2).slice(0, most - 2), "late", "over"].sort());
+    // Read years on, the oldest is still the owner's to apply.
+    expect((await atClock(clock() + 10 * 365 * 86_400, () =>
+      r.stub.policyProposal(r.bind(null), { request_id: "p2" }))).digest).toMatch(/^sha256:/);
   });
 
   it("keeps only the newest applied proposals", async () => {

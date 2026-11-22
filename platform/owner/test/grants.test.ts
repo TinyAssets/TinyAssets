@@ -526,24 +526,27 @@ describe("every door admits an outside client against its grant", () => {
       for (let n = 1; n < share; n++) {
         policy.propose({ n }, `c${n}`, CHATGPT.client, now);
       }
-      expect(() => policy.propose({ n: -1 }, "c", CHATGPT.client, now))
-        .toThrow("this client's pending policy proposals are at their limit");
-      policy.propose({ n: 1 }, "a", CHATGPT.client, now);  // the same card again: a no-op
+      // Past its share, a client's new card lets its own oldest pending one go.
+      policy.propose({ n: -1 }, "c", CHATGPT.client, now);
+      expect(policy.held("a")).toBeNull();
       policy.propose({ n: 4 }, "d", CLAUDE.client, now);
       for (let n = 0; n < owners; n++) {  // the owner past a client's share
         policy.propose({ card: n }, `o${n}`, "owner", now);
       }
-      expect(() => policy.propose({ n: 6 }, "i", "owner", now))
-        .toThrow("too many pending policy proposals");
+      // The set full, the owner's next card lets the oldest of all go: CHATGPT's.
+      policy.propose({ n: 6 }, "i", "owner", now);
+      expect(policy.held("c1")).toBeNull();
       // An applied card frees its proposer's share.
-      const { digest } = policy.held("a", now)!;
+      const { digest } = policy.held("c2")!;
       gate.storage.sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?",
-                             now, "a");
+                             now, "c2");
       expect(digest).toMatch(/^sha256:/);
       policy.propose({ n: 7 }, "g", CHATGPT.client, now);
+      expect(policy.held("c3")).not.toBeNull();
     });
     expect((await r.table("proposal_shares")).map((row) => [row["proposer"], row["pending"]])
-      .sort()).toEqual([[CHATGPT.client, share], [CLAUDE.client, 1], ["owner", owners]].sort());
+      .sort()).toEqual([[CHATGPT.client, share - 1], [CLAUDE.client, 1], ["owner", owners + 1]]
+      .sort());
   });
 });
 

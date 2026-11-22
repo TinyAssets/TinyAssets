@@ -12,15 +12,18 @@
  * still registers from the owner's browser with the key, whose origin the object
  * re-derives from the key id.
  *
- * - One pending card per outside identity: filing again replaces it. A card lives
- *   `CARD_TTL_S`; expired ones are pruned at each filing and never applied.
+ * - One pending card per outside identity: filing again replaces it. A card waits until
+ *   the owner applies it, its client's grant changes, or the room needs its place (below):
+ *   it has no life of its own (Fact 15).
  * - A card is stamped like scheduled work: `take` rechecks its client's grant with
  *   `standing`, and a grant change drops the client's cards in its own transaction
  *   (`endClient`). A pending card holds its client's grant row (the schema's `held`).
  * - A card never changes (the schema refuses an update), and is gone once applied.
  * - Bounded: `maxPending` cards (a counter the schema's triggers keep), `perClient` of
  *   them one outside client's (counted on its index), each request at most
- *   `maxRequest` characters.
+ *   `maxRequest` characters. A filing at a bound lets the oldest card go to make its
+ *   room: the client's own at its share, else the oldest of all. Nothing is refused for
+ *   room, and at most `maxPending` grant rows are held.
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64, randomHex } from "../../contract/src/ids";
@@ -43,9 +46,6 @@ export interface Stamp {
 interface StandingReader {
   standing(client: unknown, generation: unknown, authenticatedAt: number | null): unknown;
 }
-
-/** How long a filed card waits for the owner. */
-export const CARD_TTL_S = 7 * 86_400;
 
 interface CardLimits {
   readonly maxPending: number;
@@ -70,7 +70,6 @@ export interface Card {
   readonly source_ref: string;
   readonly request: Fields;
   readonly digest: string;
-  readonly expires_at: number;
 }
 
 /** What an applied card registers: the captured identity, source and request. */
@@ -101,8 +100,7 @@ export class Registrations {
   #shown(row: Row): Card {
     return { card_id: row.card_id, client: row.client, family: row.family,
              source_ref: row.source_ref,
-             request: JSON.parse(row.request) as Fields, digest: row.digest,
-             expires_at: row.filed_at + CARD_TTL_S };
+             request: JSON.parse(row.request) as Fields, digest: row.digest };
   }
 
   /**
@@ -111,7 +109,7 @@ export class Registrations {
    */
   file(origin: { client: string; family: string }, sourceRef: string, by: Stamp,
        request: Readonly<Record<string, unknown>>, now: number):
-      { card_id: string; digest: string; expires_at: number } {
+      { card_id: string; digest: string } {
     if (!HEX64.test(origin.client) || !HEX64.test(origin.family) || by.client !== origin.client) {
       throw new Refusal("invalid", "invalid outside origin");
     }
@@ -126,17 +124,17 @@ export class Registrations {
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       this.#grants.standing(by.client, by.generation, by.authenticated_at);
-      sql.exec("DELETE FROM agent_cards WHERE filed_at < ?", now - CARD_TTL_S);
       sql.exec("DELETE FROM agent_cards WHERE client = ? AND family = ?", origin.client,
                origin.family);
       const mine = sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM agent_cards WHERE client = ?", origin.client).one().n;
       if (mine >= CARD_LIMITS.perClient) {
-        throw new Refusal("refused", "this client's pending registrations are at their limit");
-      }
-      if (sql.exec<{ pending_cards: number }>("SELECT pending_cards FROM policy_usage").one()
-            .pending_cards >= CARD_LIMITS.maxPending) {
-        throw new Refusal("refused", "too many pending agent registrations");
+        sql.exec("DELETE FROM agent_cards WHERE card_id = (SELECT card_id FROM agent_cards " +
+                   "WHERE client = ? ORDER BY filed_at, rowid LIMIT 1)", origin.client);
+      } else if (sql.exec<{ pending_cards: number }>("SELECT pending_cards FROM policy_usage")
+                   .one().pending_cards >= CARD_LIMITS.maxPending) {
+        sql.exec("DELETE FROM agent_cards WHERE card_id = (SELECT card_id FROM agent_cards " +
+                   "ORDER BY filed_at, rowid LIMIT 1)");
       }
       const cardId = "card_" + randomHex(16);
       const shown = sha256Hex(JSON.stringify([cardId, origin.client, origin.family, sourceRef,
@@ -145,31 +143,29 @@ export class Registrations {
                  "authenticated_at, request, digest, filed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                cardId, origin.client, origin.family, sourceRef, by.generation,
                by.authenticated_at, body, shown, now);
-      return { card_id: cardId, digest: shown, expires_at: now + CARD_TTL_S };
+      return { card_id: cardId, digest: shown };
     });
   }
 
-  /** The pending, unexpired card under `cardId`, or null. */
-  card(cardId: unknown, now: number): Card | null {
+  /** The pending card under `cardId`, or null. */
+  card(cardId: unknown): Card | null {
     if (typeof cardId !== "string" || !CARD_ID.test(cardId)) {
       return null;
     }
-    const row = this.#sql.exec<Row>(
-      "SELECT * FROM agent_cards WHERE card_id = ? AND filed_at >= ?", cardId, now - CARD_TTL_S,
-    ).toArray()[0];
+    const row = this.#sql.exec<Row>("SELECT * FROM agent_cards WHERE card_id = ?", cardId)
+      .toArray()[0];
     return row === undefined ? null : this.#shown(row);
   }
 
   /**
-   * The owner's apply, in its session: the pending, unexpired card with the digest the owner
-   * was shown, whose client's authority still stands, consumed. The caller registers what it
+   * The owner's apply, in its session: the pending card with the digest the owner was
+   * shown, whose client's authority still stands, consumed. The caller registers what it
    * returns in the same transaction, so a refused registration keeps the card.
    */
-  take(session: LiveSession, cardId: unknown, shown: unknown, now: number): Taken {
+  take(session: LiveSession, cardId: unknown, shown: unknown): Taken {
     proven(session, "session");
     const row = typeof cardId === "string" && CARD_ID.test(cardId)
-      ? this.#sql.exec<Row>("SELECT * FROM agent_cards WHERE card_id = ? AND filed_at >= ?",
-                            cardId, now - CARD_TTL_S).toArray()[0]
+      ? this.#sql.exec<Row>("SELECT * FROM agent_cards WHERE card_id = ?", cardId).toArray()[0]
       : undefined;
     if (row === undefined || typeof shown !== "string" || row.digest !== shown) {
       throw new Refusal("refused", "registration is not the pending card shown");
@@ -207,14 +203,14 @@ export const registrationsDoors = Object.freeze({
    */
   registerPropose(o: RegistrationsDoorNeeds,
                   { account, r, binding }: Call<Readonly<Record<string, unknown>>>):
-      { card_id: string; digest: string; expires_at: number } {
+      { card_id: string; digest: string } {
     return o.registrations.file(account.origin!, (binding.source as Source).ref, {
     client: account.origin!.client, generation: account.grant!.generation,
     authenticated_at: binding.authenticated_at ?? null }, r, clock());
   },
   /** The pending registration card the owner is shown, and the digest its apply names. */
   registerProposal(o: RegistrationsDoorNeeds, { r }: Call<RegistrationCardRequest>): Card {
-    const card = o.registrations.card(r["card_id"], clock());
+    const card = o.registrations.card(r["card_id"]);
     if (card === null) {
       throw new Refusal("refused", "no pending registration for this card");
     }

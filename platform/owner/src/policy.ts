@@ -334,7 +334,7 @@ export class Policy {
 
   /**
    * The owner's write, in its session; with `proposal`, only as that held card's one apply.
-   * The held proposal must be pending, unexpired, a `policy_proposal` of exactly this
+   * The held proposal must be pending, a `policy_proposal` of exactly this
    * document and generation with the digest the owner was shown, and is marked applied in
    * the same transaction.
    */
@@ -363,8 +363,7 @@ export class Policy {
       if (proposal !== null) {
         const held = sql.exec<{ digest: string; document: string }>(
           "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-            "AND applied_at IS NULL AND at > ?",
-          proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
+            "AND applied_at IS NULL", proposal["request_id"] as string,
         ).toArray()[0];
         const change: unknown = held === undefined ? {} : JSON.parse(held.document);
         if (held === undefined || held.digest !== proposal["digest"] || !object(change)
@@ -438,8 +437,9 @@ export class Policy {
 
   /**
    * An agent's proposal, receipted; with its card's id, held for the owner. Refiling a
-   * held card with another change is refused (the same change again is a no-op);
-   * expired proposals and all but the newest applied ones are pruned first.
+   * held card with another change is refused (the same change again is a no-op); all but
+   * the newest applied ones are pruned first, and a new card at a bound lets the oldest
+   * pending one go to make its room: the proposer's own at its share, else the oldest of all.
    */
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
       { request_digest: string; generation: number } {
@@ -454,7 +454,6 @@ export class Policy {
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       if (requestId !== null) {
-        sql.exec("DELETE FROM policy_proposals WHERE at < ?", now - POLICY_LIMITS.proposalTtlS);
         const over = this.#usage().applied_proposals - POLICY_LIMITS.appliedProposals;
         if (over > 0) {
           sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +
@@ -468,15 +467,15 @@ export class Policy {
           throw new Refusal("refused", "a proposal is already held for this card");
         }
         if (held === undefined) {
-          if (this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
-            throw new Refusal("refused", "too many pending policy proposals");
-          }
           const share = sql.exec<{ pending: number }>(
             "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
           ).toArray()[0]?.pending ?? 0;
+          const oldest = "DELETE FROM policy_proposals WHERE request_id = (SELECT request_id " +
+            "FROM policy_proposals WHERE applied_at IS NULL";
           if (proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient) {
-            throw new Refusal("refused",
-                              "this client's pending policy proposals are at their limit");
+            sql.exec(`${oldest} AND proposer = ? ORDER BY at, rowid LIMIT 1)`, proposer);
+          } else if (this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
+            sql.exec(`${oldest} ORDER BY at, rowid LIMIT 1)`);
           }
           sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
                      "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,
@@ -492,7 +491,7 @@ export class Policy {
   /**
    * In the mint's unit (`keyMint`), in the owner's session: an agent's held key request
    * applied with its key's grant, once (the Python's `_apply_key_request`). The card must
-   * be pending, unexpired, an `api_key_request` whose scopes are exactly the grant's, with
+   * be pending, an `api_key_request` whose scopes are exactly the grant's, with
    * the digest the owner was shown; it is marked applied here.
    */
   applyKeyRequest(session: LiveSession, proposal: unknown, scopes: unknown, now: number): void {
@@ -503,8 +502,7 @@ export class Policy {
     }
     const held = this.#sql.exec<{ digest: string; document: string }>(
       "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-        "AND applied_at IS NULL AND at > ?",
-      proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
+        "AND applied_at IS NULL", proposal["request_id"] as string,
     ).toArray()[0];
     const change: unknown = held === undefined ? {} : JSON.parse(held.document);
     if (held === undefined || held.digest !== proposal["digest"] || !object(change)
@@ -516,14 +514,14 @@ export class Policy {
                    proposal["request_id"] as string);
   }
 
-  /** The pending, unexpired proposal held under a card id, and its digest, or null. */
-  held(requestId: unknown, now: number): { change: Change; digest: string } | null {
+  /** The pending proposal held under a card id, and its digest, or null. */
+  held(requestId: unknown): { change: Change; digest: string } | null {
     if (!cardId(requestId)) {
       return null;
     }
     const row = this.#sql.exec<{ digest: string; document: string }>(
       "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-        "AND applied_at IS NULL AND at > ?", requestId, now - POLICY_LIMITS.proposalTtlS,
+        "AND applied_at IS NULL", requestId,
     ).toArray()[0];
     return row === undefined ? null
       : { change: JSON.parse(row.document) as Change, digest: row.digest };
@@ -617,7 +615,7 @@ export const policyDoors = Object.freeze({
   },
   /** The pending card the owner is shown, and the digest its apply must name. */
   policyProposal(o: PolicyDoorNeeds, { r }: Call<CardRequest>): { change: Change; digest: string } {
-    const held = o.policy.held(r["request_id"], clock());
+    const held = o.policy.held(r["request_id"]);
     if (held === null) {
       throw new Refusal("refused", "no pending proposal for this card");
     }

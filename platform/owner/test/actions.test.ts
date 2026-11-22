@@ -152,18 +152,22 @@ describe("an agent's call of an act", () => {
 });
 
 describe("the held calls", () => {
-  it("are at most perClient a client's and held in all, each living cardTtlS, a yes " +
-     "approvalTtlS", async () => {
+  it("wait whatever their age, and at perClient a client's or held in all the oldest goes",
+     async () => {
     const { r, o } = await ledgerOwner();
     await ruled(o, [{ act: "workspace.files", do: "ask" }]);
     const muses: string[] = [];
     for (let n = 0; n < ACTION_LIMITS.perClient; n++) {
       muses.push(await heldCard(() => mkdir(r.stub, r.bind(MUSE), `/workspace/p-${n}`)));
     }
-    expect((await failure(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"))).message)
-      .toBe("this client's calls held for the owner are at their limit");
+    // Past MUSE's share, its own oldest goes, never another's.
+    const more = await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"));
     const dots = await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
-    // The rest of the set, by the owner's agents' runs, to its bound.
+    const pending = async (card: string) => (await failure(
+      () => r.stub.actionRequest(o.owner, { card_id: card }))).message;
+    expect(await pending(muses[0]!)).toBe("no pending action request for this card");
+    // The rest of the set, by the owner's agents' runs, to its bound and one past it, which
+    // lets the oldest of all go: MUSE's second.
     const runs = ACTION_LIMITS.held - ACTION_LIMITS.perClient - 1;
     expect(await inStores(r.stub, ({ actions }) => {
       const asked = (n: number) => {
@@ -175,25 +179,25 @@ describe("the held calls", () => {
           return (error as Error).message.split(":")[0];
         }
       };
-      return [...Array.from({ length: runs }, (_, n) => asked(n)), asked(runs)];
-    })).toEqual([...Array(runs).fill("held for your owner's answer"),
-                 "too many calls held for the owner"]);
-    // Past a card's life, every pending card is swept at the next decision.
-    const later = clock() + ACTION_LIMITS.cardTtlS + 1;
+      return Array.from({ length: runs + 1 }, (_, n) => asked(n));
+    })).toEqual(Array(runs + 1).fill("held for your owner's answer"));
+    expect(await r.table("action_requests")).toHaveLength(ACTION_LIMITS.held);
+    expect(await pending(muses[1]!)).toBe("no pending action request for this card");
+    // A card and a yes have no life of their own: years on, the card is shown and answered,
+    // and the yes admits its call once.
+    const later = clock() + 10 * 365 * 86_400;
     await atClock(later, async () => {
-      const fresh = await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
-      expect(fresh).not.toBe(dots);
-      expect((await failure(() => r.stub.actionRequest(o.owner, { card_id: muses[0]! })))
-        .message).toBe("no pending action request for this card");
-      await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more"));
-      const shown = await r.stub.actionRequest(o.owner, { card_id: fresh });
-      // A yes past its life admits nothing: the call is held anew.
+      expect(await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"))).toBe(dots);
+      const shown = await r.stub.actionRequest(o.owner, { card_id: more });
+      expect("expires_at" in shown.card).toBe(false);
       await r.stub.actionApprove({ ...o.session, session: (await r.stub.sessionOpen({
         ...o.owner, authenticated_at: Math.floor(later) })).session },
-                                 { card_id: fresh, digest: shown.digest });
+                                 { card_id: more, digest: shown.digest });
     });
-    await atClock(later + ACTION_LIMITS.approvalTtlS + 1, async () => {
-      await heldCard(() => mkdir(r.stub, r.bind(DOT), "/workspace/dot"));
+    await atClock(later + 10 * 365 * 86_400, async () => {
+      await mkdir(r.stub, r.bind(MUSE), "/workspace/one-more");
+      expect(await heldCard(() => mkdir(r.stub, r.bind(MUSE), "/workspace/one-more")))
+        .not.toBe(more);
     });
   });
 

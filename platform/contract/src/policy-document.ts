@@ -81,12 +81,12 @@ export const DEFAULT_POLICY_DIGEST =
 /**
  * How large policy state may grow. The document's room holds hundreds of rules (a rule is
  * under 200 bytes); one outside client holds at most a quarter of the pending proposals; a
- * receipt bucket's newest rows are about a megabyte.
+ * receipt bucket's newest rows are about a megabyte. A pending proposal waits until the owner
+ * applies it or the room needs its place: it has no life of its own (Fact 15).
  */
 interface PolicyLimits {
   readonly maxDocument: number;
   readonly maxChange: number;
-  readonly proposalTtlS: number;
   readonly pendingProposals: number;
   /** Pending proposals one outside client may hold. */
   readonly pendingPerClient: number;
@@ -98,7 +98,6 @@ interface PolicyLimits {
 export const POLICY_LIMITS: PolicyLimits = Object.freeze({
   maxDocument: 65_536,
   maxChange: 16_000,
-  proposalTtlS: 90 * 86_400,
   pendingProposals: 200,
   pendingPerClient: 50,
   appliedProposals: 200,
