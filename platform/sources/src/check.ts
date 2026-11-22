@@ -189,6 +189,8 @@ const RUNS_CARRY = Object.freeze({
  * reads stdin, the prompt goes there instead (`engine.stdin`).
  */
 const PROMPT_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{prompt\}$/;
+/** The one shape `{name}` takes, for the same reason: an agent's server may be named `-y`. */
+const NAME_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{name\}$/;
 /** A value that turns a setting off: nothing, bare quotes, or an empty list or map. */
 const EMPTY_VALUE = /^\s*(?:""|''|\[\s*\]|\{\s*\})?\s*$/;
 /** An empty list or map anywhere in a text (`tools.core: []`, `mcp_servers={}`). */
@@ -1048,7 +1050,8 @@ function definitionHooks(check: ReturnType<typeof checker>, value: unknown, deci
  * Where a run's MCP servers go (`Mcp`), the run's door and the agent's own alike: under
  * `servers` in the record's JSON file (its template, if any, holding nothing of the servers but
  * the door's own keys, and nothing at `names`) or as `flag` pairs, exactly one of the two; each
- * transport's entry carrying the server's own values once each; `argv_each` carrying `{name}`.
+ * transport's entry carrying the server's own values once each; `argv_each` carrying `{name}`,
+ * joined to its option (`NAME_ARG`).
  */
 function mcpSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
                  template: (item: unknown, what: string) => string,
@@ -1106,8 +1109,10 @@ function mcpSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
   }
   const each = fields["argv_each"] === undefined ? undefined
     : argv(fields["argv_each"], `${what}.argv_each`, 8);
-  if (each !== undefined && !each.some((arg) => arg.includes("{name}"))) {
-    check.fail(`${what}.argv_each carries {name}, the server's name`);
+  if (each !== undefined && (!each.some((arg) => arg.includes("{name}"))
+      || each.some((arg) => arg.includes("{name}") && !NAME_ARG.test(arg)))) {
+    check.fail(`${what}.argv_each carries {name}, the server's name, joined to its option ` +
+               "(--option={name})");
   }
   return Object.freeze({
     servers, ...entries,

@@ -3,7 +3,8 @@
 `untangle/agent-mcp`, slice D4 of `agent_definition_research.md` §4.4, with §5 question 3 and §6
 B5, and the coordinator's call (`next_builders.md`, "Agent definition"): the agent's own MCP
 servers get their credentials the connector way, so `mcp.json` lists URLs and commands only, and
-a credential-shaped field is refused (D1's `agentMcp`, unchanged in that). The credentials
+a credential-shaped field is refused (D1's `agentMcp`; review added a URL's query parameter
+and an argument's option to the variable it refused by name, `credentialShaped`). The credentials
 themselves are C1's (`untangle/connector-credentials`), not this slice's.
 
 ## Research first (Fact 14), read 2026-11-21 and 2026-11-22
@@ -25,8 +26,9 @@ What the research left open, from each pinned version's own source or docs:
   `settings.ts`): `httpUrl` is streamable HTTP (`url` is SSE); `command`, `args`, `env`. The
   allowed servers are `argv.allowedMcpServerNames ?? ` the intersection of every settings layer's
   `mcp.allowed`, so both name every server. `--allowed-mcp-server-names` is `type: "array",
-  nargs: 1`, comma-split: one flag per server, repeated, parsed by its pinned yargs 17.7.2 to
-  `["tinyassets", "docs", "local"]` (checked in this session).
+  nargs: 1`, comma-split: one flag per server, repeated and joined (`--allowed-mcp-server-names=<name>`),
+  parsed by its pinned yargs 17.7.2 to `["tinyassets", "-y", "docs"]`; bare, a server named `-y`
+  is read as `--yolo` (review, against the pinned 0.66.0 bundle's option and yargs 17.7.2).
 - **pi 1.4.0** (`docs/mcp.md` in the npm package): `command`, `args`, `env` or `url` (streamable
   HTTP; `type` optional, SSE refused), `exposure`; `${VAR}` and `!command` values, which
   `literal` already refuses.
@@ -47,7 +49,7 @@ What the research left open, from each pinned version's own source or docs:
      record that had none for the agent's servers, is gone (#5745).
    - The checker: a file or a flag, one of the two; a template and names only with a file, and
      a template holding no server but the door's own keys and nothing at `names`; `argv_each`
-     carrying `{name}`, and `{name}` nowhere else; the entries as D1 checked them.
+     carrying `{name}` joined to its option, as `{prompt}` is (`NAME_ARG`), and `{name}` nowhere else; the entries as D1 checked them.
 2. **The owner's admission (`owner/src/launch.ts`, `owner/src/network.ts` `agentServers`).**
    `readAgent` reads `mcp.json` whole beside `agent.json` (absent: no servers; not UTF-8, or not
    `agentMcp`'s shape: `agent_file_invalid`, so a server named as the door, `tinyassets`, refuses

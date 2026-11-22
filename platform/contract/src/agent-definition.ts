@@ -245,8 +245,9 @@ function serverName(name: string): boolean {
 /**
  * `mcp.json`'s text, checked whole: `{"mcpServers": {<name>: <server>}}`, the shape the CLIs
  * share, each server either `{"url"}` (https, with no user or password in it) or
- * `{"command", "args"?, "env"?}`, every value literal (`literal`), no variable shaped like a
- * credential (`CREDENTIAL_NAME`), and no server named as the run's own door.
+ * `{"command", "args"?, "env"?}`, every value literal (`literal`), no name shaped like a
+ * credential (`credentialShaped`: a variable, a URL's query parameter or an argument's option),
+ * and no server named as the run's own door.
  */
 export function agentMcp(text: string): AgentMcp {
   const name = AGENT_FILES.mcp;
@@ -271,7 +272,7 @@ export function agentMcp(text: string): AgentMcp {
       servers[server] = Object.freeze({
         command,
         args: entry["args"] === undefined ? Object.freeze([])
-          : literals(entry["args"], name, `${what}'s args`),
+          : optionsOf(literals(entry["args"], name, `${what}'s args`), name, what),
         env: serverEnv(entry["env"] ?? {}, name, what),
       });
     } else {
@@ -290,10 +291,31 @@ function httpsUrl(value: unknown, name: string, what: string): string {
     url = null;
   }
   if (url === null || url.protocol !== "https:" || url.username !== ""
-      || url.password !== "" || url.hash !== "") {
-    refuse(name, `${what}'s url is https, with no user, password or fragment`);
+      || url.password !== "" || url.hash !== ""
+      || [...url.searchParams.keys()].some(credentialShaped)) {
+    refuse(name, `${what}'s url is https, with no user, password, fragment or query ` +
+                 "parameter shaped like a credential");
   }
   return value as string;
+}
+
+/**
+ * Whether a variable's, a query parameter's or an option's `name` is shaped like a credential,
+ * an endpoint or a proxy (`CREDENTIAL_NAME`, `-` read as `_`): a credential comes through a
+ * connection, never in the file.
+ */
+function credentialShaped(name: string): boolean {
+  return CREDENTIAL_NAME.test(name.toUpperCase().replaceAll("-", "_"));
+}
+
+/** `args`, none an option (`-x`, `--x`, `--x=v`) whose name is `credentialShaped`. */
+function optionsOf(args: readonly string[], name: string, what: string): readonly string[] {
+  const option = args.find((arg) => credentialShaped(/^--?([^=]*)/.exec(arg)?.[1] ?? ""));
+  if (option !== undefined) {
+    refuse(name, `${what}'s args give ${JSON.stringify(option)}: an option is never one ` +
+                 "shaped like a credential, an endpoint or a proxy");
+  }
+  return args;
 }
 
 function serverEnv(value: unknown, name: string, what: string):
@@ -303,7 +325,7 @@ function serverEnv(value: unknown, name: string, what: string):
   }
   const env: Record<string, string> = {};
   for (const [variable, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (!ENV_NAME.test(variable) || CREDENTIAL_NAME.test(variable.toUpperCase())) {
+    if (!ENV_NAME.test(variable) || credentialShaped(variable)) {
       refuse(name, `${what}'s env sets ${JSON.stringify(variable)}: a variable is a name, ` +
                    "never one shaped like a credential, an endpoint or a proxy");
     }

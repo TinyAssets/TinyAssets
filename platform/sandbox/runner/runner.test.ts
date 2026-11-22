@@ -357,8 +357,8 @@ describe("the run's MCP servers (D4)", () => {
       local: { command: "uvx", args: ARGS, env: { MODE: "ro" } } });
     expect(settings["mcp"]).toEqual({ allowed: ["tinyassets", "docs", "local"] });
     expect(settings["context"]).toEqual({ fileName: ["AGENTS.md"] });
-    expect(made.argv.join(" ")).toContain("--allowed-mcp-server-names tinyassets " +
-      "--allowed-mcp-server-names docs --allowed-mcp-server-names local");
+    expect(made.argv.join(" ")).toContain("--allowed-mcp-server-names=tinyassets " +
+      "--allowed-mcp-server-names=docs --allowed-mcp-server-names=local");
   });
 
   it("gives pi every server in its own mcp.json, each exposed directly", () => {

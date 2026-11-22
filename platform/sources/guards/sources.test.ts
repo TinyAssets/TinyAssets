@@ -1046,6 +1046,9 @@ describe("how the agent's definition reaches an engine", () => {
     ["an argv a server adds that names no server", cli((s) => {
       at(s, "mcp")["argv_each"] = ["--allowed-mcp-server-names", "tinyassets"]; },
                                                    records.get("gemini") as Json)],
+    ["a server's name bare in the argv a server adds", cli((s) => {
+      at(s, "mcp")["argv_each"] = ["--allowed-mcp-server-names", "{name}"]; },
+                                                       records.get("gemini") as Json)],
     ["a server's name outside the argv a server adds", cli((s) => {
       s["unattended_argv"] = ["--allow", "{name}"]; })],
     ["an http entry without the server's URL", cli((s) => {

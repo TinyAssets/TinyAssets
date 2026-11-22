@@ -256,8 +256,7 @@
       },
       "argv": [],
       "argv_each": [
-        "--allowed-mcp-server-names",
-        "{name}"
+        "--allowed-mcp-server-names={name}"
       ],
       "trust": "Every server is in the system settings, outside the agent's folder, and only they load: mcp.allowed and --allowed-mcp-server-names name each, and the argv's list replaces every settings layer's (packages/cli/src/config/config.ts)."
     },
