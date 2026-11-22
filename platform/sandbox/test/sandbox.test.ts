@@ -118,6 +118,9 @@ const CLAUDE_HOSTS = ["claude.ai", "api.anthropic.com"];
 const GEMINI = { engine: "gemini", hosts: ["accounts.google.com"] };
 /** A run on a key: no vendor hosts. */
 const ON_KEY = { credential: "api_key", hosts: [] } as const;
+/** The agent's own MCP servers a start's admission kept, one by URL and one by command. */
+const AGENT_SERVERS = { docs: { url: "https://mcp.example.com/mcp" },
+                        local: { command: "uvx", args: ["some-mcp"], env: { MODE: "ro" } } };
 
 function start(over: Partial<SandboxStart> = {}): SandboxStart {
   return {
@@ -128,7 +131,7 @@ function start(over: Partial<SandboxStart> = {}): SandboxStart {
     network: NETWORK as never, hosts: CLAUDE_HOSTS,
     config: { generation: 1, egress: { mode: "allowlist", destinations: [] },
               env: { HOME: "{home}" }, inherit: ["PATH"] },
-    urls: runUrls(RUN, hex(64, "e")),
+    urls: runUrls(RUN, hex(64, "e")), mcp_servers: {},
     ...over,
   };
 }
@@ -207,7 +210,8 @@ describe("a start", () => {
     await e2b("/script", { signin: { "claude-code": 0 } });
     const who = owner();
     const began = Date.now();
-    expect(await stub(who).start(start())).toEqual({ started: true });
+    expect(await stub(who).start(start({ mcp_servers: AGENT_SERVERS })))
+      .toEqual({ started: true });
     const state = await seen();
     expect(state.sandboxes).toHaveLength(1);
     const box = state.sandboxes[0]!;
@@ -252,7 +256,7 @@ describe("a start", () => {
     expect(JSON.parse(doc)).not.toHaveProperty("tokens");
     expect(JSON.parse(doc)).not.toHaveProperty("network");
     expect(JSON.parse(doc).prompt).toBe("hello");
-    expect(JSON.parse(doc).mcp_servers).toEqual({});
+    expect(JSON.parse(doc).mcp_servers).toEqual(AGENT_SERVERS);
     // The look is armed a lease's TTL on, for the idle reap, before its renewal window.
     const look = await alarmOf(who);
     expect(look!).toBeGreaterThanOrEqual(began + LEASE_TTL_S * 1000);

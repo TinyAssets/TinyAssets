@@ -23,7 +23,7 @@ import { CREDENTIAL_NAME, forbids, SOURCE_ID } from "../../contract/src/text";
 import { CODE_LOADING_ENV, RUN_BASICS } from "./run-env";
 import {
   type ApiKeyEnv, type CliSpec, type ConnectMethod, type Decide, type Definition,
-  type DefinitionHooks, type DefinitionMcp, type DefinitionNative, type DefinitionSkills,
+  type DefinitionHooks, type DefinitionNative, type DefinitionSkills,
   type Engine, type HostedUse,
   type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
   type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
@@ -169,7 +169,7 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ARG = /^.{0,4096}$/su;
 /** The placeholders the runner fills, in an argv, an env value or a file template. */
 const PLACEHOLDERS: readonly string[] = Object.freeze([
-  "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
+  "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{name}",
   "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{run_secret}", "{system}",
   "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}",
   "{skill}",
@@ -189,6 +189,8 @@ const RUNS_CARRY = Object.freeze({
  * reads stdin, the prompt goes there instead (`engine.stdin`).
  */
 const PROMPT_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{prompt\}$/;
+/** The one shape `{name}` takes, for the same reason: an agent's server may be named `-y`. */
+const NAME_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{name\}$/;
 /** A value that turns a setting off: nothing, bare quotes, or an empty list or map. */
 const EMPTY_VALUE = /^\s*(?:""|''|\[\s*\]|\{\s*\})?\s*$/;
 /** An empty list or map anywhere in a text (`tools.core: []`, `mcp_servers={}`). */
@@ -475,7 +477,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   const decide = decideSpec(check, fields["decide"], argv, template, declared);
 
   const engine = engineSpec(check, fields["engine"], argv);
-  const definition = definitionSpec(check, fields["definition"], argv, mcp, decide);
+  const definition = definitionSpec(check, fields["definition"], argv, decide);
   const tools = check.keys(fields["tools"], "cli.tools", [], ["allow", "deny"]);
   for (const side of ["allow", "deny"] as const) {
     if (tools[side] !== undefined) {
@@ -575,7 +577,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   for (const [what, text] of settings) {
     const kinds = what.startsWith("cli.per_credential.")
       ? [what.split(".")[2] as CredentialKind] : credential;
-    const path = what === "cli.mcp.template" ? ("file" in mcp ? mcp.file! : "")
+    const path = what === "cli.mcp.template" ? mcp.file ?? ""
       : what.slice(what.indexOf(".files.") + ".files.".length);
     const read = settingsOf(path, text);
     if (read === null) {
@@ -658,13 +660,16 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       if (found === "{run_secret}" && what !== "cli.mcp.template") {
         check.fail(`${what} uses {run_secret}, which only cli.mcp.template's header carries`);
       }
+      if (found === "{name}" && what !== "cli.mcp.argv_each") {
+        check.fail(`${what} uses {name}, which only cli.mcp.argv_each carries`);
+      }
       if (found === "{skill}" && what !== "cli.definition.skills.argv_each") {
         check.fail(`${what} uses {skill}, which only cli.definition.skills.argv_each carries`);
       }
       if (HOOK_PLACEHOLDERS.includes(found) && what !== "cli.decide.template") {
         check.fail(`${what} uses ${found}, which only cli.decide.template carries`);
       }
-      if (found === "{mcp_config}" && !("file" in mcp)) {
+      if (found === "{mcp_config}" && mcp.file === undefined) {
         check.fail(`${what} uses {mcp_config}, which names cli.mcp.file, and there is none`);
       }
     }
@@ -945,7 +950,7 @@ function instructionsSpec(check: ReturnType<typeof checker>, value: unknown): In
 
 /** A key of an engine's own config: a server entry's, or a hook event's name. */
 const NATIVE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
-/** What a server's entry carries of the server's own, by transport (`DefinitionMcp`). */
+/** What a server's entry carries of the server's own, by transport (`Mcp`). */
 const SERVER_CARRY = Object.freeze({
   http: Object.freeze(["{url}"]),
   stdio: Object.freeze(["{command}", "{args}", "{env}"]),
@@ -954,16 +959,13 @@ const SERVER_CARRY = Object.freeze({
 /**
  * How the agent's definition reaches the engine (`Definition`): its instructions; its skills,
  * linked into folders relative to the agent's directory or given one argv a skill; the engine's
- * own layers it keeps out, none of them a path the definition renders; where its own MCP
- * servers go, which is the run door's own place (the record's MCP file, its template holding
- * the door at `servers`, and the door's name in `names`'s list; or the door's `flag` pair), each
- * transport's entry carrying the server's own values once each; and the engine's name of every
- * hook event, its hooks held to the `decide` hook's root-owned layer, so present exactly when
- * that hook is.
+ * own layers it keeps out, none of them a path the definition renders; and the engine's name of
+ * every hook event, its hooks held to the `decide` hook's root-owned layer, so present exactly
+ * when that hook is. Its own MCP servers go where the run's door does (`mcpSpec`).
  */
 function definitionSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
-                        mcp: Mcp, decide: Decide): Definition {
-  const fields = check.keys(value, "cli.definition", ["instructions", "skills", "native", "mcp",
+                        decide: Decide): Definition {
+  const fields = check.keys(value, "cli.definition", ["instructions", "skills", "native",
                                                       "hooks"]);
   const instructions = instructionsSpec(check, fields["instructions"]);
   const skills = definitionSkills(check, fields["skills"], argv);
@@ -971,7 +973,6 @@ function definitionSpec(check: ReturnType<typeof checker>, value: unknown, argv:
     instructions, skills,
     native: definitionNative(check, fields["native"], argv,
                              [instructions.file, ...instructions.shadowed_by, ...skills.paths]),
-    mcp: definitionMcp(check, fields["mcp"], mcp),
     hooks: definitionHooks(check, fields["hooks"], decide),
   });
 }
@@ -1016,63 +1017,6 @@ function definitionNative(check: ReturnType<typeof checker>, value: unknown, arg
   });
 }
 
-function definitionMcp(check: ReturnType<typeof checker>, value: unknown, mcp: Mcp):
-    DefinitionMcp {
-  const what = "cli.definition.mcp";
-  if (object(value) && "unsupported" in value) {
-    const fields = check.keys(value, what, ["unsupported"]);
-    return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
-                                                   `${what}.unsupported`) });
-  }
-  const fields = check.keys(value, what, ["servers", "http", "stdio"], ["flag", "names"]);
-  const servers = check.text(fields["servers"], DOTTED, `${what}.servers`);
-  const entries = Object.fromEntries((["http", "stdio"] as const).map((transport) => {
-    const entry = check.stringMap(fields[transport], `${what}.${transport}`, NATIVE_KEY, 16);
-    const carried = Object.values(entry).filter((item) => item.includes("{"));
-    if (carried.length !== SERVER_CARRY[transport].length
-        || !SERVER_CARRY[transport].every((item) => carried.includes(item))
-        || Object.values(entry).some((item) => !REASON.test(item))) {
-      check.fail(`${what}.${transport} carries ${SERVER_CARRY[transport].join(", ")} once ` +
-                 "each, and otherwise fixed text");
-    }
-    return [transport, Object.freeze({ ...entry })];
-  })) as Record<"http" | "stdio", Readonly<Record<string, string>>>;
-  const door = [...servers.split("."), RUN_DOOR_SERVER];
-  if ("unsupported" in mcp) {
-    check.fail(`${what} goes where cli.mcp's door does, and there is none`);
-  }
-  const placed = mcp as Exclude<Mcp, { unsupported: string }>;
-  if (fields["flag"] !== undefined) {
-    const flag = check.text(fields["flag"], /^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$/, `${what}.flag`);
-    const pair = placed.argv.findIndex((arg, at) => arg === flag
-      && (placed.argv[at + 1] ?? "").startsWith(`${door.join(".")}.`));
-    if (fields["names"] !== undefined || pair < 0) {
-      check.fail(`${what}.flag is the one cli.mcp.argv gives the door by, under servers, ` +
-                 "with no names list");
-    }
-  } else {
-    let template: unknown;
-    try {
-      template = JSON.parse(placed.template ?? "");
-    } catch {
-      template = undefined;
-    }
-    const names = fields["names"] === undefined ? undefined
-      : check.text(fields["names"], DOTTED, `${what}.names`);
-    const listed = names === undefined ? undefined : valueAtPath(template, names.split("."));
-    if (!object(valueAtPath(template, door))
-        || (names !== undefined && !(Array.isArray(listed) && listed.includes(RUN_DOOR_SERVER)))) {
-      check.fail(`${what}.servers is the key of cli.mcp's file whose servers hold the door, ` +
-                 `${RUN_DOOR_SERVER}, and names, if given, a list in it naming the door`);
-    }
-  }
-  return Object.freeze({
-    servers, ...entries,
-    ...(fields["flag"] === undefined ? {} : { flag: fields["flag"] as string }),
-    ...(fields["names"] === undefined ? {} : { names: fields["names"] as string }),
-  });
-}
-
 function definitionHooks(check: ReturnType<typeof checker>, value: unknown, decide: Decide):
     DefinitionHooks {
   const what = "cli.definition.hooks";
@@ -1102,35 +1046,83 @@ function definitionHooks(check: ReturnType<typeof checker>, value: unknown, deci
   });
 }
 
+/**
+ * Where a run's MCP servers go (`Mcp`), the run's door and the agent's own alike: under
+ * `servers` in the record's JSON file (its template, if any, holding nothing of the servers but
+ * the door's own keys, and nothing at `names`) or as `flag` pairs, exactly one of the two; each
+ * transport's entry carrying the server's own values once each; `argv_each` carrying `{name}`,
+ * joined to its option (`NAME_ARG`).
+ */
 function mcpSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
                  template: (item: unknown, what: string) => string,
                  sandboxPath: (item: unknown, what: string) => string[],
                  declared: string[]): Mcp {
-  if (object(value) && "unsupported" in value) {
-    const fields = check.keys(value, "cli.mcp", ["unsupported"]);
-    return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
-                                                   "cli.mcp.unsupported") });
+  const what = "cli.mcp";
+  const fields = check.keys(value, what, ["servers", "http", "stdio", "argv", "trust"],
+                            ["file", "template", "flag", "names", "argv_each"]);
+  const servers = check.text(fields["servers"], DOTTED, `${what}.servers`);
+  const entries = Object.fromEntries((["http", "stdio"] as const).map((transport) => {
+    const entry = check.stringMap(fields[transport], `${what}.${transport}`, NATIVE_KEY, 16);
+    const carried = Object.values(entry).filter((item) => item.includes("{"));
+    if (carried.length !== SERVER_CARRY[transport].length
+        || !SERVER_CARRY[transport].every((item) => carried.includes(item))
+        || Object.values(entry).some((item) => !REASON.test(item))) {
+      check.fail(`${what}.${transport} carries ${SERVER_CARRY[transport].join(", ")} once ` +
+                 "each, and otherwise fixed text");
+    }
+    return [transport, Object.freeze({ ...entry })];
+  })) as Record<"http" | "stdio", Readonly<Record<string, string>>>;
+  if ((fields["file"] === undefined) === (fields["flag"] === undefined)
+      || (fields["file"] === undefined
+          && (fields["template"] !== undefined || fields["names"] !== undefined))) {
+    check.fail(`${what} puts its servers in a file (with its template and names, if any) or ` +
+               "by a flag, one of the two");
   }
-  const fields = check.keys(value, "cli.mcp", ["argv", "trust"], ["file", "template"]);
-  const flags = argv(fields["argv"], "cli.mcp.argv", 16);
-  if ((fields["file"] === undefined) !== (fields["template"] === undefined)) {
-    check.fail("cli.mcp has a file exactly when it has the file's template");
+  if (fields["flag"] !== undefined) {
+    check.text(fields["flag"], /^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$/, `${what}.flag`);
   }
+  const names = fields["names"] === undefined ? undefined
+    : check.text(fields["names"], DOTTED, `${what}.names`);
   let text: string | undefined;
   if (fields["file"] !== undefined) {
-    sandboxPath(fields["file"], "cli.mcp.file");
-    text = template(fields["template"], "cli.mcp.template");
+    sandboxPath(fields["file"], `${what}.file`);
+    if (!(fields["file"] as string).endsWith(".json")) {
+      check.fail(`${what}.file is a .json file, which the servers are rendered into`);
+    }
     declared.push(fields["file"] as string);
   }
-  if (![...flags, text ?? ""].some((item) => item.includes("{mcp_url}"))) {
-    check.fail("cli.mcp carries {mcp_url}, in its file's template or its argv");
+  if (fields["template"] !== undefined) {
+    text = template(fields["template"], `${what}.template`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    const held = valueAtPath(parsed, servers.split("."));
+    if (!object(parsed) || (held !== undefined && (!object(held)
+        || Object.keys(held).some((name) => name !== RUN_DOOR_SERVER)))
+        || (names !== undefined && valueAtPath(parsed, names.split(".")) !== undefined)) {
+      check.fail(`${what}.template is a JSON object holding no server but the door's own ` +
+                 `keys (${RUN_DOOR_SERVER}), and nothing at names: the servers are rendered`);
+    }
   }
-  const trust = check.keys(fields["trust"], "cli.mcp.trust", ["argv", "note"]);
+  const each = fields["argv_each"] === undefined ? undefined
+    : argv(fields["argv_each"], `${what}.argv_each`, 8);
+  if (each !== undefined && (!each.some((arg) => arg.includes("{name}"))
+      || each.some((arg) => arg.includes("{name}") && !NAME_ARG.test(arg)))) {
+    check.fail(`${what}.argv_each carries {name}, the server's name, joined to its option ` +
+               "(--option={name})");
+  }
   return Object.freeze({
-    argv: Object.freeze(flags),
-    ...(text === undefined ? {} : { file: fields["file"] as string, template: text }),
-    trust: Object.freeze({ argv: Object.freeze(argv(trust["argv"], "cli.mcp.trust.argv", 16)),
-                           note: check.text(trust["note"], REASON, "cli.mcp.trust.note") }),
+    servers, ...entries,
+    ...(fields["file"] === undefined ? {} : { file: fields["file"] as string }),
+    ...(text === undefined ? {} : { template: text }),
+    ...(fields["flag"] === undefined ? {} : { flag: fields["flag"] as string }),
+    ...(names === undefined ? {} : { names }),
+    argv: Object.freeze(argv(fields["argv"], `${what}.argv`, 16)),
+    ...(each === undefined ? {} : { argv_each: Object.freeze(each) }),
+    trust: check.text(fields["trust"], REASON, `${what}.trust`),
   });
 }
 

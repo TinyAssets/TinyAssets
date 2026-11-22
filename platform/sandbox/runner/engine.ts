@@ -15,11 +15,13 @@
  *   takes each by its argv (`definition.skills.argv_each`), the MCP arguments, the update
  *   switch, then the record's `argv` or `resume_argv` past its binary. The prompt goes on stdin
  *   where the record says so, or joined to its option (`--prompt={prompt}`), never bare.
- * - The run's MCP door is `urls.mcp`, or `urls.mcp_bare` where the record's template sends
- *   the run's secret as a header (`{run_secret}`), so the secret is out of the URL.
- * - Files: the record's own templates, the credential's, and the MCP template, each filled
- *   (a `.json`, `.toml` or `.mjs` file's values escaped as a quoted string's), several
- *   templates of one JSON file merged.
+ * - The run's MCP servers (`cli.mcp`): its door, `urls.mcp` (or `urls.mcp_bare` where the
+ *   record's template sends the run's secret as a header, `{run_secret}`, so the secret is out
+ *   of the URL), then the agent's own as its admission kept them (`mcp_servers`), each in the
+ *   record's entry for its transport, in the record's MCP file or as its flag's pairs.
+ * - Files: the record's own templates, the credential's, the MCP servers and their file's
+ *   template, each filled (a `.json`, `.toml` or `.mjs` file's values escaped as a quoted
+ *   string's), several parts of one JSON file merged.
  * - The CLI's own pre-tool hook (R5 P-hooks), where its record has one: the run's decide
  *   credential in its environment (`DECIDE_ENV`), and, when the owner's rules name tools it
  *   matches (`hook.tools`), its file filled from the record's template (`{matcher}` those
@@ -31,14 +33,16 @@
  *   matched, so the latest run's start leaves the owner's latest rules there; null for a call
  *   given no hook.
  */
-import type { CliSpec } from "../../sources/src/schema";
+import type { CliSpec, Mcp } from "../../sources/src/schema";
 import type { Served } from "../../sources/src/served";
+import { RUN_DOOR_SERVER } from "../../contract/src/agent-definition";
+import { object } from "../../contract/src/checks";
 import { DECIDE_HEADER, decideDoor, egressDoor, envStem } from "../../contract/src/egress";
 import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
 
 import { DECIDE_ENV, helperArgv, helperCommand, matcherOf } from "./decide";
-import type { StartDoc } from "./protocol";
+import type { DocMcpServer, StartDoc } from "./protocol";
 
 export const ENGINE_ROOT = "/opt/ta/engines";
 
@@ -129,6 +133,60 @@ function modelArgs(template: readonly string[], values: Readonly<Record<string, 
   return out;
 }
 
+/**
+ * The run's MCP servers by name: its door (`url`, an `http` server), then the agent's own, as
+ * its admission kept them; no agent server takes the door's name.
+ */
+function runServers(start: StartDoc, url: string): [string, DocMcpServer][] {
+  if (Object.hasOwn(start.mcp_servers, RUN_DOOR_SERVER)) {
+    throw new Error(`no agent server is named ${RUN_DOOR_SERVER}, the run's own door`);
+  }
+  return [[RUN_DOOR_SERVER, { url }], ...Object.entries(start.mcp_servers)];
+}
+
+/** `server`'s entry in the engine's own keys: its transport's, its own values in their places. */
+function entryOf(mcp: Mcp, server: DocMcpServer): Record<string, unknown> {
+  const own: Readonly<Record<string, unknown>> = "url" in server ? { "{url}": server.url }
+    : { "{command}": server.command, "{args}": server.args, "{env}": server.env };
+  return Object.fromEntries(Object.entries("url" in server ? mcp.http : mcp.stdio).map(
+    ([key, value]) => [key, Object.hasOwn(own, value) ? own[value] : value]));
+}
+
+/** `value` at the dotted `path` in `into`, its objects made on the way. */
+function setAt(into: Record<string, unknown>, path: string, value: unknown): void {
+  const keys = path.split(".");
+  let at = into;
+  for (const key of keys.slice(0, -1)) {
+    at = (at[key] ??= {}) as Record<string, unknown>;
+  }
+  at[keys.at(-1)!] = value;
+}
+
+/** The servers as the record's file holds them: under `servers`, every name on `names`'s list. */
+function serversFile(mcp: Mcp, servers: readonly [string, DocMcpServer][]):
+    Record<string, unknown> {
+  const file: Record<string, unknown> = {};
+  setAt(file, mcp.servers, Object.fromEntries(servers.map(([name, server]) =>
+    [name, entryOf(mcp, server)])));
+  if (mcp.names !== undefined) {
+    setAt(file, mcp.names, servers.map(([name]) => name));
+  }
+  return file;
+}
+
+/**
+ * The servers as the record's flag gives them (none without one): one
+ * `<flag> <servers>.<name>.<key>=<JSON>` pair a value, a map's one an entry.
+ */
+function serverPairs(mcp: Mcp, servers: readonly [string, DocMcpServer][]): string[] {
+  const flag = mcp.flag;
+  return flag === undefined ? [] : servers.flatMap(([name, server]) =>
+    Object.entries(entryOf(mcp, server)).flatMap(([key, value]) => object(value)
+      ? Object.entries(value).flatMap(([entry, each]) =>
+        [flag, `${mcp.servers}.${name}.${key}.${entry}=${JSON.stringify(each)}`])
+      : [flag, `${mcp.servers}.${name}.${key}=${JSON.stringify(value)}`]));
+}
+
 /** Deep merge of JSON objects, `b` over `a`. */
 function merged(a: unknown, b: unknown): unknown {
   if (typeof a === "object" && a !== null && !Array.isArray(a)
@@ -184,14 +242,14 @@ export function invocation(record: Served, start: StartDoc,
   const home = options.home;
   const system = options.system;
   const agentDir = `${AGENTS_DIR}/${start.agent}`;
-  const mcp = "unsupported" in cli.mcp ? null : cli.mcp;
-  const secretInHeader = mcp?.template?.includes("{run_secret}") === true;
+  const mcp = cli.mcp;
+  const servers = runServers(start, mcp.template?.includes("{run_secret}") === true
+    ? start.urls.mcp_bare : start.urls.mcp);
   const values: Record<string, string> = {
     bin: binPath(record), home, system, agent: start.agent,
-    mcp_url: secretInHeader ? start.urls.mcp_bare : start.urls.mcp,
     run_secret: runSecret(start.urls.mcp),
   };
-  if (mcp?.file !== undefined) {
+  if (mcp.file !== undefined) {
     values["mcp_config"] = fill(mcp.file, values);
   }
   if (start.model !== null) {
@@ -243,7 +301,10 @@ export function invocation(record: Served, start: StartDoc,
     ...(cli.definition.native.argv ?? []).map((arg) => fill(arg, values)),
     ...options.skills.flatMap((skill) => (cli.definition.skills.argv_each ?? [])
       .map((arg) => fill(arg, { ...values, skill }))),
-    ...(mcp === null ? [] : [...mcp.argv, ...mcp.trust.argv].map((arg) => fill(arg, values))),
+    ...serverPairs(mcp, servers),
+    ...mcp.argv.map((arg) => fill(arg, values)),
+    ...servers.flatMap(([name]) => (mcp.argv_each ?? []).map((arg) =>
+      fill(arg, { ...values, name }))),
     ...(hooked ? decide!.argv ?? [] : []).map((arg) => fill(arg, values)),
     ...("argv" in cli.no_update ? cli.no_update.argv ?? [] : []).map((arg) => fill(arg, values)),
     ...tail,
@@ -258,18 +319,20 @@ export function invocation(record: Served, start: StartDoc,
     decide_header: DECIDE_HEADER, decide_env: DECIDE_ENV,
     decide: helperCommand(options.hook.digest, door.url),
     decide_argv: JSON.stringify(helperArgv(options.hook.digest, door.url)) };
-  // The files: the record's, the credential's, the MCP template, then the run's own hook;
-  // one JSON file's templates merged in that order.
+  // The files: the record's, the credential's, the MCP servers and their file's template,
+  // then the run's own hook; one JSON file's parts merged in that order.
   const files = new Map<string, string>();
-  const write = (pathTemplate: string, template: string) => {
-    const path = fill(pathTemplate, values);
+  const put = (path: string, text: string) => {
     const json = path.endsWith(".json");
-    const text = fill(template, hookValues, /\.(?:json|toml|mjs)$/.test(path));
     if (json && files.has(path)) {
       files.set(path, JSON.stringify(merged(JSON.parse(files.get(path)!), JSON.parse(text))));
     } else {
       files.set(path, json ? JSON.stringify(JSON.parse(text)) : text);
     }
+  };
+  const write = (pathTemplate: string, template: string) => {
+    const path = fill(pathTemplate, values);
+    put(path, fill(template, hookValues, /\.(?:json|toml|mjs)$/.test(path)));
   };
   for (const [path, template] of Object.entries(cli.files ?? {})) {
     write(path, template);
@@ -277,8 +340,11 @@ export function invocation(record: Served, start: StartDoc,
   for (const [path, template] of Object.entries(credential?.files ?? {})) {
     write(path, template);
   }
-  if (mcp?.file !== undefined && mcp.template !== undefined) {
-    write(mcp.file, mcp.template);
+  if (mcp.file !== undefined) {
+    put(values["mcp_config"]!, JSON.stringify(serversFile(mcp, servers)));
+    if (mcp.template !== undefined) {
+      write(mcp.file, mcp.template);
+    }
   }
   const own = decide?.file.startsWith("{system}/") === true;
   if (hooked && own) {

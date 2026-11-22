@@ -4,10 +4,11 @@
  * `runs.ts`'s rows and decisions. One `Launcher` an object, which serves Runs its one narrow
  * interface (`RunHost`) and holds:
  *
- * - **a launch** (`launch`): the agent's `agent.json` read whole (`readAgent`), with the
- *   ranking its `auto` ranks by (the owner's `/workspace/model-ranking.json`, else the
+ * - **a launch** (`launch`): the agent's `agent.json` and `mcp.json` read whole (`readAgent`),
+ *   with the ranking its `auto` ranks by (the owner's `/workspace/model-ranking.json`, else the
  *   platform's), its run admitted in one unit against the file still at the etag it was
- *   read at, then started through the
+ *   read at, with the agent's own MCP servers the owner's egress lets out (`agentServers`; the
+ *   owner told of each left out), then started through the
  *   sandbox Worker (`SANDBOX`), and what came of it recorded (`running`, `failed` with the
  *   sandbox's code or for an answer out of its shape, `unknown` when its answer never came,
  *   or `waiting` for a sandbox to free);
@@ -42,7 +43,7 @@ import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
 import {
-  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, agentPath,
+  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, type AgentMcp, agentMcp, agentPath,
 } from "../../contract/src/agent-definition";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
@@ -55,7 +56,7 @@ import { type Delivery, type Ledger, type MailAuthority, mailInput } from "./led
 import { nativeId } from "../../contract/src/binding";
 import { RANKING } from "../../contract/src/paths";
 import { clock, inTime } from "./clock";
-import { networkDocument } from "./network";
+import { agentServers, networkDocument } from "./network";
 import type { Notices } from "./notices";
 import type { Relay } from "./relay";
 import {
@@ -64,7 +65,7 @@ import {
   type SpendCaps,
 } from "./runs";
 import type { Usable } from "./auto";
-import { startOutcome, vendorHosts } from "./sandbox";
+import { networkOutcome, startOutcome, vendorHosts } from "./sandbox";
 import { LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";
 import { type Signins, switchedOn } from "./signins";
@@ -84,6 +85,7 @@ import {
  */
 export const NETWORK_RETRY_S = 30;
 
+<<<<<<< HEAD
 /**
  * How long a live lease's sandbox may owe a narrowed egress policy (a host the owner dropped
  * still let out by its older network) before its lease is given back and its runs stopped
@@ -99,10 +101,23 @@ export const NARROWED_WITHIN_S = LEASE_TTL_S;
 export const NETWORK_UNCONFIRMED = "network_unconfirmed";
 
 /** What a run is admitted on (`readAgent`). */
+=======
+/** What a run is admitted on (`readAgent`): its `agent.json` at its etag, and its servers. */
+>>>>>>> origin/main
 export interface AgentRead {
   readonly file: AgentFile;
   readonly etag: string;
   readonly ranking: Ranking;
+  readonly mcp: AgentMcp;
+}
+
+/** `agent`'s definition file `name`, as text: strict UTF-8, or the run is refused. */
+function definitionText(agent: string, name: string, bytes: Uint8Array): string {
+  try {
+    return utf8Decoder("strip").decode(bytes);
+  } catch {
+    throw new Refusal("agent_file_invalid", `${agentPath(agent, name)} is not UTF-8 text`);
+  }
 }
 
 /** The agent's file changed between its read and the admission: the caller tries again. */
@@ -153,7 +168,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
   };
   readonly egress: Pick<Egress, "end">;
   readonly files: Pick<Files, "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
-    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "open" | "range"
+    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "openFile" | "range"
     | "sandboxLease" | "stat">;
   readonly grants: {
     standing(client: unknown, generation: unknown, authenticatedAt: number | null):
@@ -322,23 +337,21 @@ export class Launcher implements RunHost {
 
   /**
    * What a run of `agent` is admitted on: its `agent.json`, read whole, the etag it was read
-   * at, and the ranking its `auto` ranks by: the owner's own file, `RANKING`, whole, else the
-   * platform's. An owner's file that is no ranking refuses the run (`invalid`), never a
-   * silent fall back to the platform's.
+   * at, the ranking its `auto` ranks by (the owner's own file, `RANKING`, whole, else the
+   * platform's) and its `mcp.json` (none, no servers). An owner's file that is no ranking
+   * refuses the run (`invalid`), never a silent fall back to the platform's; a definition
+   * file that does not fit refuses it too (`agent_file_invalid`), never half-read.
    */
   async readAgent(agent: string): Promise<AgentRead> {
-    const path = agentPath(agent, AGENT_FILES.agent);
-    const read = await this.#whole(path);
+    const read = await this.#whole(agentPath(agent, AGENT_FILES.agent));
     if (read === null) {
       throw new Refusal("agent_undefined", AGENT_UNDEFINED);
     }
-    let text: string;
-    try {
-      text = utf8Decoder("strip").decode(read.bytes);
-    } catch {
-      throw new Refusal("agent_file_invalid", `${path} is not UTF-8 text`);
-    }
-    return { file: agentFile(text), etag: read.etag, ranking: await this.#ranking() };
+    const servers = await this.#whole(agentPath(agent, AGENT_FILES.mcp));
+    return { file: agentFile(definitionText(agent, AGENT_FILES.agent, read.bytes)),
+             etag: read.etag, ranking: await this.#ranking(),
+             mcp: servers === null ? { servers: {} }
+               : agentMcp(definitionText(agent, AGENT_FILES.mcp, servers.bytes)) };
   }
 
   async #ranking(): Promise<Ranking> {
@@ -355,12 +368,12 @@ export class Launcher implements RunHost {
     return rankingOf(value, RANKING);
   }
 
-  /** The owner's file at `path`, read whole, and its etag; null where no file is. */
+  /**
+   * The owner's file at `path`, read whole, and its etag; null where nothing is. Anything else
+   * there (a folder) refuses the run (`Files.openFile`), never read as no file (Fact 8).
+   */
   async #whole(path: string): Promise<{ bytes: Uint8Array; etag: string } | null> {
-    const content = await this.#o.door(() => {
-      const entry = this.#o.files.stat(path);
-      return entry === null || entry.kind !== "file" ? null : this.#o.files.open(path);
-    });
+    const content = await this.#o.door(() => this.#o.files.openFile(path));
     if (content === null) {
       return null;
     }
@@ -386,19 +399,25 @@ export class Launcher implements RunHost {
   async launch(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking">,
                waiting: string | null = null, taken: (run: string) => void = () => {}):
       Promise<string> {
-    const { admitted, agent, unattended } = await this.#o.door(() => {
+    const { admitted, agent, unattended, servers } = await this.#o.door(() => {
       const made = ask();
       if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
         throw new Refusal("agent_changed", AGENT_CHANGED);
       }
       const { file, ranking } = read;
-      const done = { agent: made.agent, unattended: made.unattended,
+      // The servers under the policy the run's network is made by, in this same unit.
+      const kept = agentServers(read.mcp, this.#o.policy.read().document.egress);
+      const done = { agent: made.agent, unattended: made.unattended, servers: kept.servers,
                      admitted: this.runs.admit({ ...made, file, ranking }, clock(), (chosen) =>
                        this.#runConfig({ run: chosen.run, secret: chosen.secret,
                                          engine: chosen.engine, credential: chosen.credential,
                                          ...(chosen.connection === null ? {}
                                            : { connection: chosen.connection }) }), waiting) };
       taken(done.admitted.run);  // the input it was asked on is its own now (a mail's, taken)
+      for (const { name, host, why } of done.admitted.existing ? [] : kept.dropped) {
+        this.#o.notices.once("mcp_server_dropped", `${made.agent}: its MCP server ${name} (${
+          host}) is left out of its runs: ${why}`, clock());
+      }
       return done;
     });
     if (admitted.existing) {
@@ -413,7 +432,7 @@ export class Launcher implements RunHost {
       hosts: vendorHosts(admitted.engine, admitted.credential),
       route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
                                                       authority: admitted.authority }),
-      urls: runUrls(admitted.run, admitted.secret) };
+      urls: runUrls(admitted.run, admitted.secret), mcp_servers: servers };
     const answer = await startOutcome("a run", () => this.#o.sandbox.start(start),
                                       () => this.#o.door(() =>
                                         this.runs.grant(admitted.run) !== null));
@@ -848,6 +867,7 @@ export class Launcher implements RunHost {
   }
 
   /**
+<<<<<<< HEAD
    * In a unit: when each live lease owing a narrowed egress policy is given back, if no
    * re-apply confirms it first (`#unconfirmed`).
    */
@@ -903,6 +923,17 @@ export class Launcher implements RunHost {
    * (`networkAnswered`): `applied` confirms it; `at_resume` keeps it out for its paused
    * sandbox; `lost` or a throw clears it. No answer within `LANE_CALL_MS` records nothing:
    * the send's retry clock stands.
+=======
+   * Each live lease whose network is behind the current egress generation, made again
+   * under it and re-applied on its sandbox (the sandbox Worker's `network`, which keeps the
+   * live egress token and the launched jobs' vendor hosts), each one due (`#behind`): at
+   * once after a policy write that moved the egress generation, whose unit wakes this lane
+   * (`synced`). Its send is a unit (`networkSent`): the lease's calls are admitted under
+   * the new generation from there on, since only that network's transform sets it. Its
+   * answer is another (`networkAnswered`, as `networkOutcome` reads it): `applied` confirms
+   * it; `at_resume` keeps it out for its paused sandbox; a failure clears it. No answer
+   * within `LANE_CALL_MS` records nothing: the send's retry clock stands.
+>>>>>>> origin/main
    */
   async reapply(): Promise<void> {
     const { sandbox } = this.#o;
@@ -923,18 +954,11 @@ export class Launcher implements RunHost {
       return out;
     });
     await Promise.all(sent.map(async ({ lease, generation, network }) => {
-      let answer: "applied" | "at_resume" | "failed" = "failed";
-      try {
-        const got = await inTime(sandbox.network({
-          authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-          network }), LANE_CALL_MS);
-        if (got === "late") {
-          return;
-        }
-        answer = got.state === "lost" ? "failed" : got.state;
-      } catch (error) {
-        console.error("a lease's network re-apply did not reach the sandbox; the lane tries " +
-                      "again", error);
+      const answer = await inTime(networkOutcome(() => sandbox.network({
+        authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
+        network })), LANE_CALL_MS);
+      if (answer === "late") {
+        return;
       }
       await this.#o.door(() => this.#o.files.networkAnswered(
         lease.lease_id, lease.epoch, generation, answer, clock()));

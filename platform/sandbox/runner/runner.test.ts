@@ -290,6 +290,99 @@ describe("the invocation", () => {
   });
 });
 
+describe("the run's MCP servers (D4)", () => {
+  const RUN = `run_${"5".repeat(32)}`;
+  const SECRET = "6".repeat(64);
+  const DOOR = `https://egress.tinyassets.io/r/${RUN}/${SECRET}/mcp`;
+  const BARE = `https://egress.tinyassets.io/r/${RUN}/mcp`;
+  const ARGS = ["some-mcp", "--root=/w \"x\""];
+  /** The agent's own, as its admission kept them: one by URL, one by command. */
+  const SERVERS: StartDoc["mcp_servers"] = {
+    docs: { url: "https://mcp.example.com/mcp" },
+    local: { command: "uvx", args: ARGS, env: { MODE: "ro" } },
+  };
+  /** `engine`'s start on its first credential (a key: an OpenAI connection's). */
+  function startOf(engine: string, mcp_servers = SERVERS): StartDoc {
+    const credential = served().get(engine)!.cli.credential[0]!;
+    const connection = `c${"3".repeat(24)}`;
+    const made = runEnv(sources, engine, credential);
+    const keyed = credential === "vendor_login_in_sandbox" ? {} : sandboxEnv(
+      [{ connection, provider: "openai",
+         egress: { api: "x", base_url: "https://api.example/v1", endpoints: [], meter: null } }],
+      () => "4".repeat(32), { ...made, run: RUN, secret: SECRET, connection });
+    return { run: RUN, agent: "main", conversation: `cv_${"c".repeat(32)}`, engine,
+             credential, model: null, session_id: null, prompt: "p",
+             unattended: false, authority: "owner", lease: { lease_id: "b".repeat(32), epoch: 1 },
+             config: { generation: 1, egress: { mode: "open", destinations: [] },
+                       env: { ...made.env, ...keyed }, inherit: ["PATH"] },
+             urls: { mcp: DOOR, mcp_bare: BARE,
+                     events: `https://egress.tinyassets.io/r/${RUN}/events`,
+                     signin: "https://egress.tinyassets.io/signin" },
+             mcp_servers };
+  }
+  const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
+    home: "/h", system: "/s", skills: [] });
+  const json = (made: ReturnType<typeof call>, path: string) =>
+    JSON.parse(made.files.get(path)!) as Record<string, unknown>;
+  /** Each `-c` pair that names a server, in order. */
+  const pairs = (argv: readonly string[]) =>
+    argv.flatMap((arg, at) => arg === "-c" && argv[at + 1]!.startsWith("mcp_servers.")
+      ? [argv[at + 1]!] : []);
+
+  it("gives Claude Code its door and the agent's servers in its --mcp-config file, the " +
+     "door's secret its header", () => {
+    const made = call(startOf("claude-code"));
+    expect(json(made, "/h/run/mcp.json")).toEqual({ mcpServers: {
+      tinyassets: { type: "http", url: BARE, headers: { "x-ta-run": SECRET } },
+      docs: { type: "http", url: "https://mcp.example.com/mcp" },
+      local: { type: "stdio", command: "uvx", args: ARGS, env: { MODE: "ro" } } } });
+    expect(made.argv.join(" ")).toContain("--mcp-config /h/run/mcp.json --strict-mcp-config");
+  });
+
+  it("gives Codex each server by -c pairs, each value TOML reads as its JSON", () => {
+    expect(pairs(call(startOf("codex")).argv)).toEqual([
+      `mcp_servers.tinyassets.url="${DOOR}"`,
+      "mcp_servers.docs.url=\"https://mcp.example.com/mcp\"",
+      "mcp_servers.local.command=\"uvx\"",
+      `mcp_servers.local.args=${JSON.stringify(ARGS)}`,
+      "mcp_servers.local.env.MODE=\"ro\""]);
+  });
+
+  it("gives Gemini CLI every server in its system settings, each named on both allow-lists",
+     () => {
+    const made = call(startOf("gemini"));
+    const settings = json(made, "/s/gemini-settings.json");
+    expect(settings["mcpServers"]).toEqual({
+      tinyassets: { httpUrl: DOOR }, docs: { httpUrl: "https://mcp.example.com/mcp" },
+      local: { command: "uvx", args: ARGS, env: { MODE: "ro" } } });
+    expect(settings["mcp"]).toEqual({ allowed: ["tinyassets", "docs", "local"] });
+    expect(settings["context"]).toEqual({ fileName: ["AGENTS.md"] });
+    expect(made.argv.join(" ")).toContain("--allowed-mcp-server-names=tinyassets " +
+      "--allowed-mcp-server-names=docs --allowed-mcp-server-names=local");
+  });
+
+  it("gives pi every server in its own mcp.json, each exposed directly", () => {
+    expect(json(call(startOf("pi")), "/h/.pi/agent/mcp.json")).toEqual({ mcpServers: {
+      tinyassets: { url: DOOR, exposure: "direct" },
+      docs: { url: "https://mcp.example.com/mcp", exposure: "direct" },
+      local: { command: "uvx", args: ARGS, env: { MODE: "ro" }, exposure: "direct" } } });
+  });
+
+  it("gives every engine its door alone where the agent has none, and refuses a server " +
+     "named as the door", () => {
+    for (const engine of ["claude-code", "codex", "gemini", "pi"]) {
+      const made = call(startOf(engine, {}));
+      const text = [...made.files.values(), ...made.argv].join("\n");
+      expect(text, engine).toContain("tinyassets");
+      expect(text, engine).not.toContain("mcp.example.com");
+      expect(() => call(startOf(engine, { tinyassets: { url: "https://x.example/mcp" } })),
+             engine).toThrow(/the run's own door/);
+    }
+    expect(pairs(call(startOf("codex", {})).argv))
+      .toEqual([`mcp_servers.tinyassets.url="${DOOR}"`]);
+  });
+});
+
 describe("the CLI's own pre-tool hook (R5 P-hooks)", () => {
   const MANAGED = "/etc/claude-code/managed-settings.json";
   /** The decide door's checks the run's start asked, the runner's and its start check's. */

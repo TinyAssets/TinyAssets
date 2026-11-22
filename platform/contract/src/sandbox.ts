@@ -13,6 +13,7 @@
  * - the Worker's own log of the owner's sandboxes (`MeterEvent`), read `METER_BATCH` at a time.
  */
 
+import type { McpServer } from "./agent-definition.ts";
 import type { EgressMode } from "./policy-document.ts";
 
 /** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
@@ -110,13 +111,18 @@ export interface SandboxStart {
    */
   readonly route: string;
   /**
-   * The run's MCP door (the record's `{mcp_url}`, carrying the run's own secret), its event
-   * door and the sign-in door (both the runner's, by its secret). A record whose MCP
-   * template carries `{run_secret}` (a header, `x-ta-run`) takes `mcp_bare` as its
-   * `{mcp_url}`, the secret in the header and out of the URL.
+   * The run's MCP door (its `RUN_DOOR_SERVER`'s URL, carrying the run's own secret), its
+   * event door and the sign-in door (both the runner's, by its secret). A record whose MCP
+   * template carries `{run_secret}` (a header, `x-ta-run`) takes `mcp_bare` as the door's
+   * URL, the secret in the header and out of the URL.
    */
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
+  /**
+   * The agent's own MCP servers (`mcp.json`) its admission kept: those the owner's egress lets
+   * out (`owner/src/network.ts` `agentServers`), by name.
+   */
+  readonly mcp_servers: Readonly<Record<string, McpServer>>;
 }
 
 /** The start codes the owner's object answers by name (`START_CODES`). */
@@ -181,10 +187,14 @@ export interface NetworkReapply {
 }
 
 /**
- * A re-apply's answer: `applied`, on the running sandbox now; `at_resume`, its sandbox
- * paused, the network kept and applied as it resumes; `lost`, no sandbox of that lease.
+ * A re-apply's answers (`NetworkApplied`): `applied`, on the running sandbox now; `at_resume`,
+ * its sandbox paused, the network kept and applied as it resumes; `lost`, no sandbox of that
+ * lease.
  */
-export type NetworkApplied = { readonly state: "applied" | "at_resume" | "lost" };
+export const NETWORK_STATES = Object.freeze(["applied", "at_resume", "lost"] as const);
+
+/** A re-apply's answer. */
+export type NetworkApplied = { readonly state: (typeof NETWORK_STATES)[number] };
 
 /** The most log entries one read takes. */
 export const METER_BATCH = 1000;

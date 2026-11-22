@@ -26,8 +26,8 @@ import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
 import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, hashed, later, ownerFile, ownerRun, recorder, runBinding,
-  runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
+import { ALL_SCOPES, defineAgent, hashed, inSession, later, ownerFile, ownerRun, recorder,
+  runBinding, runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
 import { RANKING } from "../../contract/src/paths";
 import { ADMITTED_FILE_BYTES } from "../src/holds";
 import { secretOf, until } from "../../ci/workerd";
@@ -188,6 +188,48 @@ describe("admission", () => {
       .toBe(AGENT_UNDEFINED);
     expect((await failure(() => ownerRun(r.stub, r.bind(), { ...SIGNED_IN, enabled: false },
                                          "helper"))).message).toBe(AGENT_DISABLED);
+    expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+  });
+
+  it("starts the agent's own MCP servers its egress lets out, and tells the owner of each " +
+     "left out, by the policy the run was admitted under", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await ownerFile(r.stub, r.bind(), "/workspace/agents/main/mcp.json", JSON.stringify({
+      mcpServers: { docs: { url: "https://docs.example.com/mcp" },
+                    other: { url: "https://other.example.com/mcp" },
+                    local: { command: "uvx", args: ["some-mcp"], env: { MODE: "ro" } } } }));
+    // Open mode, the default: every one.
+    expect(Object.keys((await ownerRun(r.stub, r.bind())).start.mcp_servers))
+      .toEqual(["docs", "other", "local"]);
+    // An allowlist naming one of the two hosts: the other is left out, and the owner told.
+    const { generation, policy } = await r.stub.policyRead(r.bind());
+    await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
+      ...policy, egress: { mode: "allowlist",
+                           destinations: [{ host: "docs.example.com", port: 443 }] } } });
+    const { start } = await ownerRun(r.stub, r.bind());
+    expect(start.mcp_servers).toEqual({
+      docs: { url: "https://docs.example.com/mcp" },
+      local: { command: "uvx", args: ["some-mcp"], env: { MODE: "ro" } } });
+    const told = (await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "mcp_server_dropped");
+    expect(told.map((notice) => notice.detail)).toEqual([
+      "main: its MCP server other (other.example.com) is left out of its runs: its host is " +
+      "not on your egress allowlist"]);
+  });
+
+  it("refuses a run whose mcp.json names the run's own door, or is no file", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const path = "/workspace/agents/main/mcp.json";
+    await ownerFile(r.stub, r.bind(), path, JSON.stringify({
+      mcpServers: { tinyassets: { url: "https://docs.example.com/mcp" } } }));
+    expect((await failure(() => ownerRun(r.stub, r.bind()))).message)
+      .toMatch(/^mcp\.json: server "tinyassets": .* not tinyassets, the run's own door$/);
+    await ownerFile(r.stub, r.bind(), path, null);
+    await r.stub.fileMkdir(await inSession(r.stub, r.bind()), { path, expected_etag: null });
+    expect((await failure(() => ownerRun(r.stub, r.bind()))).message)
+      .toBe(`${path} is not a file`);
     expect(await r.sql("SELECT id FROM runs")).toEqual([]);
   });
 

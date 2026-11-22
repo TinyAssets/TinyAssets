@@ -267,7 +267,7 @@ export function runPath(run: string, secret?: string): string {
 }
 
 /**
- * The run's MCP door (the record's `{mcp_url}`), its event door, and the sandbox's sign-in
+ * The run's MCP door (its `RUN_DOOR_SERVER`'s URL), its event door, and the sandbox's sign-in
  * report door, on the egress host.
  */
 export function runUrls(run: string, secret: string):

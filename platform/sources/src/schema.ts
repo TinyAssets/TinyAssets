@@ -119,21 +119,6 @@ export interface Instructions {
 }
 
 /**
- * Where the agent's own MCP servers (`mcp.json`) go beside the run's door (`cli.mcp`): under
- * the dotted key `servers`, in the record's MCP file or, with `flag`, as one `<flag>
- * <servers>.<name>.<key>=<value>` pair a value (a map one pair an entry, `.<key>.<entry>`),
- * each value JSON. `http` and `stdio` are a server's entry in the engine's own keys, each value
- * a fixed text or the server's own (`{url}`; `{command}`, `{args}`, `{env}`), and `names`, a
- * dotted key of the file whose list each server's name joins (an allow-list). Or why none can.
- */
-export type DefinitionMcp =
-  | { readonly servers: string; readonly flag?: string;
-      readonly http: Readonly<Record<string, string>>;
-      readonly stdio: Readonly<Record<string, string>>;
-      readonly names?: string }
-  | { readonly unsupported: string };
-
-/**
  * The engine's own name of each engine-neutral hook event (`HOOK_EVENTS`), every one, from its
  * hooks page (`cite`, read on `read`). Its hooks go in the root-owned layer the record's
  * `decide` hook does, so an engine with no such layer has none (`unsupported`).
@@ -169,22 +154,43 @@ export interface DefinitionNative {
 
 /**
  * How the agent's definition (`contract/src/agent-definition.ts`) reaches the engine, part by
- * part: its instructions, its skills, the engine's own layers kept out, its own MCP servers and
- * its own hooks.
+ * part: its instructions, its skills, the engine's own layers kept out and its own hooks. Its
+ * own MCP servers go where the run's door does (`Mcp`).
  */
 export interface Definition {
   readonly instructions: Instructions;
   readonly skills: DefinitionSkills;
   readonly native: DefinitionNative;
-  readonly mcp: DefinitionMcp;
   readonly hooks: DefinitionHooks;
 }
 
-/** How TinyAssets' run-scoped MCP door reaches the engine, and how its trust is handled. */
-export type Mcp =
-  | { readonly argv: readonly string[]; readonly file?: string; readonly template?: string;
-      readonly trust: { readonly argv: readonly string[]; readonly note: string } }
-  | { readonly unsupported: string };
+/**
+ * How a run's MCP servers reach the engine, each the same way: TinyAssets' run-scoped door
+ * (`RUN_DOOR_SERVER`, an `http` server), which every engine's run takes, and the agent's own
+ * (`mcp.json`, as its run's admission kept them).
+ * - `servers`: the dotted key every server goes under, in `file` (JSON), or with `flag` as one
+ *   `<flag> <servers>.<name>.<key>=<value>` pair a value (a map one pair an entry,
+ *   `.<key>.<entry>`), each value JSON, which TOML reads as its own.
+ * - `http`, `stdio`: a server's entry in the engine's own keys, each value a fixed text or the
+ *   server's own (`{url}`; `{command}`, `{args}`, `{env}`).
+ * - `template`: what else `file` holds, merged over the servers (the door's own header, the
+ *   file's other settings); `names`, a dotted key of `file` whose list names every server.
+ * - `argv`: what makes the engine read them (`{mcp_config}` is `file`); `argv_each`, what each
+ *   server adds, `{name}` its name.
+ * - `trust`: why the engine runs them with no prompt, and loads no other.
+ */
+export interface Mcp {
+  readonly servers: string;
+  readonly file?: string;
+  readonly template?: string;
+  readonly flag?: string;
+  readonly http: Readonly<Record<string, string>>;
+  readonly stdio: Readonly<Record<string, string>>;
+  readonly names?: string;
+  readonly argv: readonly string[];
+  readonly argv_each?: readonly string[];
+  readonly trust: string;
+}
 
 /** A tool filter: joined into `{tools}`, one argv per tool (`{tool}`), or a file's key. */
 export type ToolFilter =

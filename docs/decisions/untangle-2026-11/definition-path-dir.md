@@ -51,8 +51,8 @@ naming the path (Fact 8).
 
 ## Owed
 
-- [ ] `untangle/agent-mcp`: `Launcher.#whole` takes `Files.openFile` in place of its own
+- [x] `untangle/agent-mcp`: `Launcher.#whole` takes `Files.openFile` in place of its own
   inline check, the message and code unchanged, so its tests hold. If #5754 lands first, this
-  branch makes that change on merging `origin/main`.
-- [ ] #5756 (`untangle/ranking-path-dir`): whichever of #5756 and this PR lands second ticks
-  `ranking-path-dir.md`'s `untangle/definition-path-dir` line, done by this PR.
+  branch makes that change on merging `origin/main`. Done (#5754).
+- [x] #5756 (`untangle/ranking-path-dir`): whichever of #5756 and this PR lands second ticks
+  `ranking-path-dir.md`'s `untangle/definition-path-dir` line, done by this PR. Done (#5754).
