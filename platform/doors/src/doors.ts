@@ -29,7 +29,9 @@ import {
   AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH, MCP_PATH,
   UPSTREAM_CALLBACK_PATH,
 } from "./config";
-import { ORIGIN, WEB_CLIENT, WEB_REDIRECT } from "../../contract/src/identity";
+import {
+  ORIGIN, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
+} from "../../contract/src/identity";
 import type { AccountBinding } from "../../contract/src/binding";
 import type { DoorsEnv } from "./env";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
@@ -84,9 +86,6 @@ function outsideMcp(request: Request, env: DoorsEnv, bound: Bound<AccountBinding
   return answered(asJson, async () =>
     serveMcp(request, await outsideAccount(env, bound, sources), env));
 }
-
-/** The header naming the version that served an answer: its id (`CF_VERSION_METADATA`). */
-export const VERSION_HEADER = "x-tinyassets-version";
 
 /**
  * `answer`, naming `version`: Cloudflare ignores a version override for a version outside
