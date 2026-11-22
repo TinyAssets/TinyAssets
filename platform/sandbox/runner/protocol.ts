@@ -11,16 +11,17 @@
  * `protocol.json` records each version whole (its commands, exit codes, paths, documents
  * and answers), frozen by digest (`state-format.test.ts`); this file, what the Worker writes
  * and what the runner answers are held to its record. The runner reports its own protocol in
- * `state`; the Worker speaks `SPEAKS` and refuses loudly a runner speaking another. A change
- * ships in two deploys: the first Worker speaks both while its runner speaks the old one,
- * the second runner speaks the new one.
+ * `state`; the Worker speaks `SPEAKS` and refuses loudly a runner speaking another, and each
+ * document it writes holds every field a protocol it speaks reads (one a newer protocol added,
+ * one it dropped), so any of their runners reads it. A change ships in two deploys: the first
+ * Worker speaks both while its runner speaks the old one, the second runner speaks the new one.
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
 export const PROTOCOL = 2;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([1, 2]);
+export const SPEAKS: readonly number[] = Object.freeze([1, 2, 3]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({
@@ -162,8 +163,9 @@ export interface DocLease {
  * A run's start, as the runner reads it from the inbox: the run, its agent and conversation,
  * the engine's record and the credential it runs on, its input, whose sandbox it runs in and
  * under which lease, the run's config, its doors (`mcp` carries the run's own secret;
- * `mcp_bare` is the one a record sending that secret in a header takes), and the control
- * record's scratch retention (null when it names none; absent, the same).
+ * `mcp_bare` is the one a record sending that secret in a header takes), the control
+ * record's scratch retention (null when it names none; absent, the same), and the agent's own
+ * MCP servers its admission kept (protocol 3).
  */
 export interface StartDoc {
   readonly run: string;
@@ -187,12 +189,20 @@ export interface StartDoc {
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
   readonly scratch_retention_days?: number | null;
+  readonly mcp_servers: Readonly<Record<string, DocMcpServer>>;
 }
+
+/** An MCP server of the agent's own, as a start names it: by its URL, or by its command. */
+export type DocMcpServer =
+  | { readonly url: string }
+  | { readonly command: string; readonly args: readonly string[];
+      readonly env: Readonly<Record<string, string>> };
 
 /**
  * A sign-in's document: the engine signed in or out, whose sandbox, and its doors (its own
  * events, and the presence report's). Protocol 2 records a `region`, always null and read by
- * no runner; the next protocol drops it (`untangle-2026-11/drop-kimi.md`).
+ * no runner, which protocol 3 drops: it goes from the document once the Worker no longer
+ * speaks 2 (`untangle-2026-11/drop-kimi.md`).
  */
 export interface SigninDoc {
   readonly id: string;

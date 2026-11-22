@@ -1125,7 +1125,8 @@ describe("an API-key run's base URL", () => {
              urls: { mcp: `https://egress.tinyassets.io/r/${RUN}/${SECRET}/mcp`,
                      mcp_bare: `https://egress.tinyassets.io/r/${RUN}/mcp`,
                      events: `https://egress.tinyassets.io/r/${RUN}/events`,
-                     signin: "https://egress.tinyassets.io/signin" } };
+                     signin: "https://egress.tinyassets.io/signin" },
+             mcp_servers: {} };
   }
   const call = (start: StartDoc) => invocation(served().get(start.engine)!, start, {}, {
     home: "/h", system: "/s", skills: [] });
