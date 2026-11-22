@@ -17,10 +17,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HELD_WAIT_MS, keyring } from "../../ci/fixtures";
 import { PLATFORM_CALLER } from "../../contract/src/binding";
+import { canonical } from "../../contract/src/canonical";
 import { parseRing, type Ring } from "../../contract/src/envelope";
 import type { NamespacePage } from "../../contract/src/files";
 import {
-  acceptanceKey, acceptanceOf, answerKey, argsText, LOCATE_PAGE, locateArgs, namespacesArgs,
+  acceptanceKey, acceptanceOf, answerKey, LOCATE_PAGE, locateArgs, namespacesArgs,
   type OperatorAnswer, operatorAnswer, type OperatorArgs, type OperatorMessage, OPERATOR_WINDOW_S,
   type Refused, signOperator,
 } from "../../contract/src/operator-message";
@@ -56,7 +57,7 @@ const sign = (owner: string, op = "owner.state", args = {}, ring: Ring = RING, a
  * choosing.
  */
 function remac(message: OperatorMessage): OperatorMessage {
-  const digest = createHash("sha256").update(argsText(message.args)).digest("hex");
+  const digest = createHash("sha256").update(canonical(message.args)).digest("hex");
   const mac = createHmac("sha256", RING.keys.get(message.kid)!)
     .update(["tinyassets-operator-v1", message.op, message.owner, digest, message.ask,
              String(message.at)].join(String.fromCharCode(0))).digest("base64url");
@@ -192,7 +193,7 @@ describe("the operator channel", () => {
   it("makes the acceptance record and the answer once, a racing delivery held to them",
      async () => {
     const message = await sign(fresh(), "owner.tier", { tier: "paid" });
-    const first = await acceptanceOf(message);
+    const first = acceptanceOf(message);
     await doorsEnv.OPERATOR_LOG.put(acceptanceKey(message.ask), JSON.stringify(first));
     // Other args under the ask, by a delivery that read before the record was made: dropped.
     const logged = logs();
@@ -213,7 +214,7 @@ describe("the operator channel", () => {
      async () => {
     const message = await sign(fresh(), "owner.state", {}, RING, now() - OPERATOR_WINDOW_S - 60);
     await doorsEnv.OPERATOR_LOG.put(acceptanceKey(message.ask),
-                                    JSON.stringify(await acceptanceOf(message)));
+                                    JSON.stringify(acceptanceOf(message)));
     expect(await deliver(message)).toEqual({ acked: 1, retried: 0 });
     expect(operatorAnswer((await held(message.ask)).answer, message))
       .toMatchObject({ result: { state: "pending" } });

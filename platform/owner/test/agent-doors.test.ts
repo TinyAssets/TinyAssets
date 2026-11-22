@@ -187,6 +187,27 @@ describe("the owner's agent definitions", () => {
       content: bytes("## Agreed\n") })).toHaveProperty("entry");
   });
 
+  it("serve a main agent an absent AGENTS.md or SOUL.md as none, and refuse a folder at either " +
+     "by its path, never read as none", async () => {
+    const r = await ledgerRig();
+    await r.register(MUSE);
+    const read = () => r.stub.definitionRead(r.bind(MUSE));
+    const [instructions, soul] = ["AGENTS.md", "SOUL.md"].map((name) =>
+      `${AGENTS_DIR}/main/${name}`);
+    // The seed's two files, removed: each absent, served as none.
+    for (const path of [instructions!, soul!]) {
+      await r.stub.fileRemove(r.session(null), { path, expected_etag: null, recursive: false });
+    }
+    expect(await read()).toMatchObject({ agent: "main", instructions: null, soul: null });
+    // A folder at either refuses the read, naming it.
+    for (const path of [instructions!, soul!]) {
+      await r.stub.fileMkdir(r.session(null), { path, expected_etag: null });
+      expect(await failure(read)).toMatchObject({ code: "invalid",
+                                                  message: `${path} is not a file` });
+      await r.stub.fileRemove(r.session(null), { path, expected_etag: null, recursive: true });
+    }
+  });
+
   it("hold only the tree and the roots themselves, never a name that merely starts alike",
      async () => {
     expect([within("/workspaceX/a", "/workspace"), within("/workspace/agentsX/a", AGENTS_DIR),

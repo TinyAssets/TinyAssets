@@ -22,7 +22,7 @@ import { slotted } from "../../contract/src/slots";
 
 /** What `definitionRead` reaches: the owner's files, read in a unit, then their chunks. */
 export interface DefinitionDoorNeeds extends Pick<DoorUnits, "door"> {
-  readonly files: Pick<Files, "stat" | "list" | "open" | "range">;
+  readonly files: Pick<Files, "stat" | "list" | "open" | "openFile" | "range">;
 }
 
 export const DEFINITION_TOO_LARGE = `result_too_large: the agent's definition passes the ${
@@ -58,23 +58,22 @@ const name = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 export const definitionDoors = Object.freeze({
   /**
    * The definition of the agent the caller acts as (a run's own, else `main`): its
-   * instructions and soul, null when absent, and its skills' files, bytes as stored. Pinned in
-   * one unit, then read; past `DEFINITION_BYTES_MAX` refused, never cut.
+   * instructions and soul, null when absent (a folder there refused, `Files.openFile`), and its
+   * skills' files, bytes as stored. Pinned in one unit, then read; past `DEFINITION_BYTES_MAX`
+   * refused, never cut.
    */
   async definitionRead(o: DefinitionDoorNeeds, door: Door<undefined>):
       Promise<ServedDefinition> {
     const pinned = await o.door(() => {
       const agent = door.check().account.run?.agent ?? MAIN_AGENT;
-      const one = (file: string) => o.files.stat(agentPath(agent, file))?.kind === "file"
-        ? o.files.open(agentPath(agent, file)) : null;
       const skills = [...skillUnion(agent, {
         dirs: (dir) => entriesIn(o.files, dir).filter((entry) => entry.kind === "dir")
           .map((entry) => name(entry.path)),
         file: (path) => o.files.stat(path)?.kind === "file",
       })].map(([skill, dir]) => ({ skill, files: filesBelow(o.files, dir)
         .map(([path, stored]) => [path, o.files.open(stored)] as const) }));
-      const instructions = one(AGENT_FILES.instructions);
-      const soul = one(AGENT_FILES.soul);
+      const instructions = o.files.openFile(agentPath(agent, AGENT_FILES.instructions));
+      const soul = o.files.openFile(agentPath(agent, AGENT_FILES.soul));
       const all = [instructions, soul,
                    ...skills.flatMap((skill) => skill.files.map(([, content]) => content))];
       if (all.reduce((sum, content) => sum + (content?.entry.size ?? 0), 0)
