@@ -115,7 +115,7 @@ CommonJS program of their own, built into the runner and written beside it.
    `child_process`, `fs` and `path` (`guards/template.test.ts`); the run-session guard reads its
    inputs too, since `hooks.ts` is no longer in the runner's.
 
-## Measured (this host, the real build, 61 starts each after 3 warm-ups)
+## Measured (this host, the real build, 41 starts each after 3 warm-ups)
 
 | what starts | before | after |
 | --- | --- | --- |
@@ -124,7 +124,9 @@ CommonJS program of their own, built into the runner and written beside it.
 | the runner's own commands (`nosuch`) | 65.0 (p95 66.2) | 46.4 (p95 48.2) |
 | `node -e 0` | 17.6 (p95 18.3) | 17.6 |
 
-So a hook command's start past Node's own goes from about 48 ms to 13 ms.
+So a hook command's start past Node's own goes from about 48 ms to 13 ms. The review's rerun
+(the same 41 starts, `main`'s build against this one's, the host less loaded): `node -e 0`
+15.5, `decide` and `hooks` 50 before and 21 after, `nosuch` 50 and 32.
 
 ## Left, with why
 

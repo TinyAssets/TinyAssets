@@ -1,11 +1,12 @@
 /**
  * The hook helper (R5 P-hooks; d3 §N3, `r5_research.md` §5.3): the hook program's
- * `decide <door>` (`hook-entry.ts`), which a run's CLI's own pre-tool hook runs, as the run's user, on each tool call it matches
- * (the record's `decide` block, `sources/src/schema.ts`), where the CLI runs a command rather
- * than posting the call itself. It reads the call as every CLI hands its hook one
- * (`tool_name`, `tool_input`, on stdin), asks the runs' decide door (`runDecide`) and answers
- * in the one shape each CLI reads: let it be, exit 0 and `{}`; refused or held for the owner,
- * exit 2 and the door's reason on stderr, which the CLI hands the model.
+ * `decide <door>` (`hook-entry.ts`), which a run's CLI's own pre-tool hook runs, as the run's
+ * user, on each tool call it matches (the record's `decide` block, `sources/src/schema.ts`),
+ * where the CLI runs a command rather than posting the call itself. It reads the call as
+ * every CLI hands its hook one (`tool_name`, `tool_input`, on stdin), asks the runs' decide
+ * door (`runDecide`) and answers in the one shape each CLI reads: let it be, exit 0 and `{}`;
+ * refused or held for the owner, exit 2 and the door's reason on stderr, which the CLI hands
+ * the model.
  *
  * The door's address is its argument, which only the root-owned hook file names, and must be
  * the decide door's; the run's credential (`DECIDE_ENV`, `<run>:<secret>`) is its

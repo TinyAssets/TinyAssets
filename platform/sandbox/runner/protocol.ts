@@ -116,6 +116,7 @@ export const RUNNERS = "/opt/ta/runner";
 export function hookProgram(digest: string): string {
   return `${RUNNERS}/${digest}/hooks.cjs`;
 }
+
 /** The root-only state directory. */
 export const STATE_DIR = "/var/lib/ta";
 /** Where a runner's bytes are uploaded for the loader to install. */
