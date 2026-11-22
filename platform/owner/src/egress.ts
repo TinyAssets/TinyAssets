@@ -49,8 +49,8 @@
  * and cost (on its `runs` row; the model policy's per-run limits are its caps), and the
  * owner's and the source's day and month (`model_spend`, the spend counters its charge's
  * triggers move, which the runs' own limits read too, `spent`) (`egress_spend_refused`, the
- * binding cap its `rule`). Its input is held at the largest context window, so the charge bounds the call's
- * cost. Then the open row charged and the output cap the charge leaves (the gateway clamps
+ * binding cap its `rule`). Its input is held at the largest context window, so the charge
+ * bounds the call's cost. Then the open row charged and the output cap the charge leaves (the gateway clamps
  * the request's own to it); or the row a refusal receipt and its stream ended. Until it is
  * reserved an admitted call is open as any other (it counts to the rate, is beaten, and
  * settled lost when its beats stop), charged nothing.

@@ -1046,8 +1046,8 @@ describe("the spend caps", () => {
                                            tokens: charge!["est_tokens"] }]);
     expect(await sourceSpend(r)).toEqual([{ p: "d", cost: charge!["est_cost"] },
                                           { p: "m", cost: charge!["est_cost"] }]);
-    // A provider's refusal before any output costs nothing, as a loop call's does, and
-    // counts as the run's request still.
+    // A provider's refusal before any output costs nothing, and counts as the run's request
+    // still.
     const refused = await admitted(r, lease, connection);
     await r.stub.egressSettle(lease.as(), settle(refused.reservation, { status: 429,
                                                                          spend: { state: "failed" } }));
