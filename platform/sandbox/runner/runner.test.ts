@@ -24,6 +24,7 @@ import { bundledSources } from "../../sources/src/catalog";
 import { served } from "../../sources/src/served";
 import { runEnv } from "../../sources/src/run-env";
 import { sandboxEnv } from "../../contract/src/egress";
+import { LEASE_TTL_S } from "../../contract/src/limits";
 import { readEvent } from "../../contract/src/run-events";
 import { AUTOMATON_STATES, LIST_BYTES, STEP_NS } from "../../contract/src/sync-ignore";
 
@@ -2042,6 +2043,25 @@ describe("the sync", () => {
     expect(doors.posts.slice(commit).some((post) => post.path === `/r/${start.run}/events`
       && (post.body["frames"] as unknown[]).length === 0)).toBe(true);
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/notes.md");
+  });
+
+  it("ends a run none of whose posts the object took for a lease's TTL, its sync-out " +
+     "stopped, so nothing lives on for its sandbox to be renewed for", { tags: ["large"] },
+     async () => {
+    // The object takes no post (busy, for ever), so the held commit is never answered: the
+    // owner's object has settled the run lost, and without the lapse its sync-out would wait
+    // on that commit, and the run live, for ever.
+    doors.busy = Number.POSITIVE_INFINITY;
+    doors.holdCommit = true;
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "notes.md": "unsynced" } });
+    const start = startDoc(doors, "codex", { config: config("codex") });
+    box.start(start);
+    expect(box.runner("launch", start.run).code).toBe(0);
+    await waitFor(() => box.runner("state").out.includes("\"live\":0"),
+                  LEASE_TTL_S * 1000 + HEARTBEAT_MS * 3);
+    expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/notes.md");
+    expect(readFileSync(box.path(`/var/lib/ta/runs/${start.run}/${JOB_FILES.log}`), "utf8"))
+      .toContain("heartbeat_lapsed");
   });
 
   it("ends the run loudly when the sync agent dies before reading a job past the pipe's " +

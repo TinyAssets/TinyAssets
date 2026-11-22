@@ -895,6 +895,41 @@ describe("the look before the runtime ceiling", () => {
     expect((await seen()).sandboxes[0]!.state).toBe("running");
   });
 
+  it("resumes a paused sandbox for its lease only on its runner's word since it last ran",
+     async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 1, quiet: false } });
+    const who = owner();
+    await stub(who).start(start());
+    const id = (await seen()).sandboxes[0]!.id;
+    const resumes = async () => (await seen()).calls
+      .filter((call) => call.path.endsWith("/connect")).length;
+    // Paused by E2B's own timeout: resumed on the launch's word, then on the look's `state`.
+    await e2b("/pause", { id });
+    await runDurableObjectAlarm(stub(who));
+    await runDurableObjectAlarm(stub(who));
+    await e2b("/pause", { id });
+    await runDurableObjectAlarm(stub(who));
+    expect(await resumes()).toBe(2);
+    // Its runner answers no more: each look at it fails, and once E2B pauses it, it is left
+    // paused, by name, its lease's runs dropped and no look armed for it.
+    await e2b("/script", { broken: "state" });
+    await runDurableObjectAlarm(stub(who));
+    await e2b("/pause", { id });
+    const logged = vi.spyOn(console, "error");
+    try {
+      await runDurableObjectAlarm(stub(who));
+      expect(logged.mock.calls.filter((call) =>
+        String(call[0]).startsWith(`sandbox_runner_unheard: sandbox ${id}`))).toHaveLength(1);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(await resumes()).toBe(2);
+    expect((await seen()).sandboxes[0]!.state).toBe("paused");
+    expect(await alarmOf(who)).toBeNull();
+    expect(await runInDurableObject(stub(who), (_i, state) => state.storage.sql
+      .exec("SELECT 1 FROM launched").toArray().length)).toBe(0);
+  });
+
   it("keeps a renewal's slot across its pause: the first in line cannot take it",
      async () => {
     await control({ ...OPEN, ...NUMBERS, sandbox_concurrency_ceiling: 2 });
