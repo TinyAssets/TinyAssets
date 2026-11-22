@@ -316,8 +316,6 @@ class Job {
   readonly poster: Poster;
   /** The CLI it runs, once started. */
   cli: Bounded | null = null;
-  /** The sync agent it waits on, while one runs (`syncAgent`). */
-  sync: Bounded | null = null;
   stopped = false;
   #pump: ReturnType<typeof setInterval> | null = null;
   #channel: Server | null = null;
@@ -329,17 +327,10 @@ class Job {
     process.on("SIGTERM", () => this.stop());
   }
 
-  /**
-   * The CLI stopped (`spawnBounded`'s stop), and none started after; once its heartbeat
-   * lapsed (`Poster`), its sync agent too, and none started after: its lease is over, so no
-   * sync of it lands, and one that cannot reach the object would wait on it for ever.
-   */
+  /** The CLI stopped (`spawnBounded`'s stop), and none started after. */
   stop(): void {
     this.stopped = true;
     this.cli?.stop();
-    if (this.poster.lapsed) {
-      this.sync?.stop();
-    }
   }
 
   /** Whether the job was cancelled (`cancelJob`'s mark). */
@@ -729,14 +720,12 @@ interface SyncJob {
 /**
  * The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. It runs
  * as a child the runner waits on without blocking, so the run's heartbeat goes on posting
- * (each post renews the lease) however long a sync takes; the job's (`work`) stops it once
- * its heartbeat lapsed, and starts none after.
+ * (each post renews the lease) however long a sync takes; stopped, and thrown, once the
+ * job's (`work`) heartbeat has lapsed: its lease is over, so no sync of it lands, and one
+ * that cannot reach the object would wait on it for ever.
  */
 async function syncAgent(job: SyncJob, work: Job):
     Promise<{ report: Record<string, unknown> | null; code: number }> {
-  if (work.poster.lapsed) {
-    throw new Error("the job's heartbeat lapsed: its lease is over, so nothing syncs");
-  }
   const as = user(SYNC_USER);
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, COMMAND.sync]);
@@ -758,12 +747,10 @@ async function syncAgent(job: SyncJob, work: Job):
   // write's EPIPE is let go here, and the child's exit status says what happened.
   child.stdin!.on("error", () => undefined);
   child.stdin!.end(JSON.stringify(job));
-  work.sync = agent;
-  let status: number;
-  try {
-    status = await agent.exit;
-  } finally {
-    work.sync = null;
+  const status = await Promise.race([agent.exit, work.poster.lapse.then(() => null)]);
+  if (status === null) {
+    agent.stop();
+    throw new Error("the job's heartbeat lapsed: its lease is over, so its sync is stopped");
   }
   // Its report whole, however many paths.
   const done = { status, stdout: Buffer.concat(out).toString("utf8"),

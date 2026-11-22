@@ -145,7 +145,7 @@ export const FLUSH_MS = 250;
  * object (`owner/src/runs.ts` settles a job lost, and `files.ts` lapses its lease, a lease's
  * TTL after its last post). So once none was taken for `LEASE_TTL_S`, since it was made or
  * since the last that was, none ever will be: it is refused then as the object would refuse
- * it (`lapsed`), whether the object answers or cannot be reached, and its job ends. A job
+ * it (`lapse`), whether the object answers or cannot be reached, and its job ends. A job
  * the object no longer hears never runs on, and its sandbox is not renewed for it.
  */
 export class Poster {
@@ -156,18 +156,26 @@ export class Poster {
   #busy = false;
   #wait = FLUSH_MS;
   #refused: string | null = null;
-  #lapsed = false;
+  readonly #lapsed = Promise.withResolvers<void>();
+  readonly url: string;
+  readonly token: string;
+  readonly outbox: Outbox;
+  readonly onRefused: (why: string) => void;
 
-  constructor(readonly url: string, readonly token: string, readonly outbox: Outbox,
-              readonly onRefused: (why: string) => void) {}
+  constructor(url: string, token: string, outbox: Outbox, onRefused: (why: string) => void) {
+    this.url = url;
+    this.token = token;
+    this.outbox = outbox;
+    this.onRefused = onRefused;
+  }
 
   get refused(): string | null {
     return this.#refused;
   }
 
-  /** Whether it was refused by its own lapse, not by the object. */
-  get lapsed(): boolean {
-    return this.#lapsed;
+  /** Settled once its heartbeat lapsed: refused by the lease's TTL, not by the object. */
+  get lapse(): Promise<void> {
+    return this.#lapsed.promise;
   }
 
   /** Refused: told once (`onRefused`), and nothing more is posted. */
@@ -180,7 +188,7 @@ export class Poster {
   #over(): boolean {
     if (this.#refused === null
         && Date.now() - Math.max(this.#last, this.#made) >= LEASE_TTL_S * 1000) {
-      this.#lapsed = true;
+      this.#lapsed.resolve();
       const why = `heartbeat_lapsed: no post was taken in ${LEASE_TTL_S} s, so the owner's ` +
         "object has settled the job lost and its lease has lapsed; the job ends";
       console.error(why);
@@ -249,7 +257,7 @@ export class Poster {
     }
   }
 
-  /** The post in flight finished, and every frame that waits posted (or refused, or lapsed). */
+  /** The post in flight finished, and every frame that waits posted (or refused or lapsed). */
   async drain(): Promise<void> {
     while (this.#busy && !this.#over()) {
       await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
