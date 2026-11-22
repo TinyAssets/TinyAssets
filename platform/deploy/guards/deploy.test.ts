@@ -2299,7 +2299,7 @@ describe("the rollout record and mode rollback", () => {
     expect(split.events.filter((event) => CHANGE.test(event))).toEqual([]);
     const refused = world({ held: true, refusing: ROLLOUT });
     await expect(runMode(refused, "dark", ["--yes"], RUN)).rejects.toThrow(
-      `writing the rollout record ${ROLLOUT} failed (500): nothing is deployed`);
+      `writing ${ROLLOUT} failed (500)`);
     expect(refused.events.filter((event) => event.startsWith("wrangler "))).toEqual([]);
   });
 

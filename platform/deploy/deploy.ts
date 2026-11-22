@@ -454,8 +454,13 @@ export function lockCounts(worker: string, run: Run): Record<string, number> {
  */
 function versionFlags(commit: string, counts: Readonly<Record<string, number>>): string[] {
   const pinned = pinnedCounts(counts);
-  return ["--tag", `${commit.slice(0, 12)}${pinned.length === 0 ? "" : `-m${pinned.join(".")}`}`,
+  return ["--tag", `${tagCommit(commit)}${pinned.length === 0 ? "" : `-m${pinned.join(".")}`}`,
           "--message", commit];
+}
+
+/** The part of `commit` a version's tag names it by: its first 12 digits. */
+function tagCommit(commit: string): string {
+  return commit.slice(0, 12);
 }
 
 /** Each lock's count, in its path's order: a tag's `-m` part. */
@@ -463,10 +468,14 @@ function pinnedCounts(counts: Readonly<Record<string, number>>): number[] {
   return Object.keys(counts).sort().map((path) => counts[path]!);
 }
 
-/** The counts a version's tag names after its `-m` (`versionFlags`), or null when it names none. */
-function taggedCounts(tag: string | null): number[] | null {
-  const counts = tag === null ? undefined : /-m(\d+(?:\.\d+)*)$/.exec(tag)?.[1];
-  return counts === undefined ? null : counts.split(".").map(Number);
+/**
+ * A version's tag as `versionFlags` writes it, read back: the commit's digits it names, and
+ * the counts after its `-m` (null when it names none). Null for a tag it did not write.
+ */
+function taggedAs(tag: string | null): { commit: string; counts: number[] | null } | null {
+  const parts = tag === null ? null : /^([0-9a-f]{12})(?:-m(\d+(?:\.\d+)*))?$/.exec(tag);
+  return parts === null ? null
+    : { commit: parts[1]!, counts: parts[2] === undefined ? null : parts[2].split(".").map(Number) };
 }
 
 // --- WorkOS and the owner issuer --------------------------------------------------------
@@ -1134,7 +1143,7 @@ export function forwardOnly(rolled: Rolled): string | null {
   if (pinned.length === 0) {
     return null;
   }
-  const tagged = taggedCounts(rolled.before.tag);
+  const tagged = taggedAs(rolled.before.tag)?.counts ?? null;
   if (tagged === null || tagged.length !== pinned.length) {
     return `its version before is tagged ${rolled.before.tag ?? "with nothing"}, which names no ` +
            `migration counts to hold the run's -m${pinned.join(".")} to: unknown`;
@@ -1583,7 +1592,7 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
         before = { version, tag: await got.cloudflare.tag(got.account, name, version) };
       }
       workers.push({ name, before, counts: got.migrations[worker] ?? {},
-                     whole: before !== null && run.migrate.has(worker),
+                     whole: run.migrate.has(worker),
                      secrets: got.setting.filter((each) => each.worker === worker)
                        .map((each) => each.name) });
     }
@@ -1596,10 +1605,7 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
     const record: RolloutRecord = { kind: ROLLOUT_KIND, run: run.job.id, attempt: run.job.attempt,
                                     at: run.io.now().toISOString(), commit: run.io.commit(),
                                     workers };
-    const status = await got.cloudflare.put(got.account, namespace!, key, record);
-    if (status !== 200) {
-      throw new Error(`writing the rollout record ${key} failed (${status}): nothing is deployed`);
-    }
+    await putOrStop(got, namespace!, key, JSON.stringify(record));
     add(`Rollout record ${key}:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
   });
 
@@ -2708,7 +2714,7 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
                     "routes run's job summary gives; nothing is changed");
   }
   const record = rolloutOf(value, key);
-  const ours = record.commit.slice(0, 12);
+  const ours = tagCommit(record.commit);
   const back: Rolled[] = [];
   const lines: string[] = [];
   const drifted: string[] = [];
@@ -2720,7 +2726,7 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
                                                             each.version) });
     }
     const unknown = serving.filter((each) => each.version !== rolled.before?.version
-      && !(each.tag === ours || each.tag?.startsWith(`${ours}-m`)));
+      && taggedAs(each.tag)?.commit !== ours);
     if (serving.length === 0 || unknown.length > 0) {
       drifted.push(`${rolled.name} serves ${serving.length === 0 ? "no deployment"
         : versionLine(serving)}, neither its version before the run nor one of commit ${ours}`);
