@@ -5,13 +5,13 @@
  * by age alone and never a live run's agent; what went is told plainly, never with an
  * upgrade; a full disk never leaves the runner's state unwritten while its reserve can go.
  */
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { keepReserve, markUsed, pruneScratch, readIndex, RESERVE_BYTES, scratchCleared,
-         scratchEnv, writeOrRelease } from "./scratch";
+import { diskLow, diskOf, keepReserve, letGoSessions, markUsed, pruneScratch, readIndex,
+         RESERVE_BYTES, scratchCleared, scratchEnv, writeOrRelease } from "./scratch";
 import { disk } from "./test/harness";
 
 const DAY = 86_400_000;
@@ -75,6 +75,39 @@ describe("old scratch let go", () => {
     pruneScratch(dir, index, NOW, new Set());
     expect(index.used).toEqual({ new: NOW });
     expect(statSync(join(index.dir, "new")).mtimeMs).toBe(NOW);
+  });
+});
+
+describe("store copies let go", () => {
+  /** Four held copies of 77 pages beside a file, leaving 90 pages free, as above. */
+  function held() {
+    const { root } = area({});
+    writeFileSync(join(root, "other"), Buffer.alloc(1650 * PAGE, 2));
+    const copies = ([["old", 1], ["older", 0], ["new", 2], ["newer", 3]] as const).map(([name, mtime]) => {
+      const local = join(root, name);
+      writeFileSync(local, Buffer.alloc(77 * PAGE, 3));
+      return { local, size: 77 * PAGE, mtime_ms: mtime };
+    });
+    return { root, copies };
+  }
+
+  it("lets the least recently changed go while the disk is low, and stops once it is not", () => {
+    const { root, copies } = held();
+    expect(letGoSessions(root, copies)).toBe(2 * 77 * PAGE);
+    expect(copies.map((copy) => existsSync(copy.local))).toEqual([false, false, true, true]);
+    expect(diskLow(0, diskOf(root))).toBeNull();
+  });
+
+  it("lets none go while the disk has room, and says a disk still low with the store's bytes",
+     () => {
+    const { root, copies } = held();
+    expect(letGoSessions(root, [])).toBe(0);
+    expect(diskLow(9, diskOf(root))).toEqual({ type: "ta.disk_low", store_bytes: 9,
+                                               free_bytes: diskOf(root).free_bytes,
+                                               total_bytes: 2048 * PAGE });
+    rmSync(join(root, "other"));
+    expect(letGoSessions(root, copies)).toBe(0);
+    expect(copies.every((copy) => existsSync(copy.local))).toBe(true);
   });
 });
 

@@ -12,7 +12,7 @@
  *   sync-out over many paths; the matcher's, at `LIST_BYTES` of any class, within what the
  *   sandbox's heap leaves beside the agent (`sizing.ts`).
  */
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync,
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -30,8 +30,11 @@ import {
 } from "../../contract/src/sync-ignore";
 import { CHUNK_BYTES, INLINE_BYTES, INTENT_ID_BYTES, MAX_SYNC_OPS, SYNC_BODY_MAX }
   from "../../contract/src/limits";
+import { served } from "../../sources/src/served";
+import { isKept, resumePaths } from "./engine";
 import { AGENT_PEAK, HEAP_PER_LIST_BYTE, SANDBOX_HEAP } from "./sizing";
-import { openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
+import { fetchSessions, openMirror, type Place, SyncClient, SyncFenced, syncIn, syncOut,
+         UNREAD } from "./sync";
 
 /** An upload's intent id, as the object makes it: `INTENT_ID_BYTES` as hex. */
 const INTENT_ID_CHARS = 2 * INTENT_ID_BYTES;
@@ -804,6 +807,113 @@ describe("a commit's body", () => {
         : door === "commit" ? commitAll(body) : { status: 200, body: {} }),
                            p, mirrorOf(), LEASE, []))
         .rejects.toThrow(`intent id is not ${INTENT_ID_CHARS} characters`);
+    }
+  });
+});
+
+/** A stand-in feed and read door over `files` (each path's version and text, null if gone). */
+function feedOf(files: Map<string, { version: number; text: string | null }>,
+                reads: string[]): Handler {
+  return (door, body) => {
+    if (door === "changes") {
+      const after = body["after"] as number;
+      const changes = [...files.entries()].filter(([, file]) => file.version > after)
+        .map(([path, file]) => ({ path, kind: file.text === null ? null : "file",
+                                  version: file.version }));
+      return { status: 200, body: { changes, reset: false, cursor: Math.max(after,
+        ...changes.map((change) => change.version)) } };
+    }
+    if (door === "read") {
+      const path = body["path"] as string;
+      reads.push(path);
+      const file = files.get(path);
+      return file === undefined || file.text === null ? { status: 404, body: {} }
+        : { status: 200, body: { entry: { version: file.version, mode: 0, kind: "file" },
+                                 inline: Buffer.from(file.text).toString("base64") } };
+    }
+    return door === "commit" ? commitAll(body) : { status: 404, body: {} };
+  };
+}
+
+describe("a change the mirror already holds", () => {
+  it("is never fetched back: this sandbox's own write stays as it sent it", async () => {
+    const { place: p, local } = place();
+    writeFileSync(join(local, "a.md"), "mine");
+    const mirror = mirrorOf();
+    await syncOut(await client(feedOf(new Map(), [])), p, mirror, LEASE, []);
+    const files = new Map([["/workspace/a.md", { version: mirror.get("/workspace/a.md")!.version,
+                                                 text: "mine" }]]);
+    const reads: string[] = [];
+    await syncIn(await client(feedOf(files, reads)), p, mirror);
+    expect(reads).toEqual([]);
+    // Another writer's version is fetched.
+    files.set("/workspace/a.md", { version: files.get("/workspace/a.md")!.version + 1,
+                                   text: "theirs" });
+    await syncIn(await client(feedOf(files, reads)), p, mirror);
+    expect([reads, readFileSync(join(local, "a.md"), "utf8")])
+      .toEqual([["/workspace/a.md"], "theirs"]);
+  });
+});
+
+describe("the engines' sessions from the owner's files", () => {
+  const claude = served().get("claude-code")!;
+  const at = "/workspace/.sessions/owner/claude-code/.claude/projects/main";
+  const records = new Map([["claude-code", claude]]);
+
+  it("are marked changed by the feed, never fetched; a resume fetches its own files alone",
+     async () => {
+    const { place: made } = place();
+    const p = { ...made, records };
+    mkdirSync(p.sessionsIn);
+    const files = new Map<string, { version: number; text: string | null }>([
+      [`${at}/s1.jsonl`, { version: 5, text: "one" }],
+      [`${at}/s1/subagents/a.jsonl`, { version: 6, text: "its subagent" }],
+      [`${at}/s2.jsonl`, { version: 7, text: "another conversation" }]]);
+    const reads: string[] = [];
+    const mirror = mirrorOf();
+    const door = await client(feedOf(files, reads));
+    await syncIn(door, p, mirror);
+    expect(reads).toEqual([]);
+    expect(mirror.get(`${at}/s2.jsonl`)).toEqual({ version: 7, size: 0, mtime_ms: 0,
+                                                   sha256: UNREAD });
+    const fetch = (have: readonly string[]) =>
+      fetchSessions(door, p, mirror, "claude-code", resumePaths(claude, "s1"), new Set(have));
+    expect(await fetch([])).toEqual({ fetched: [`${at}/s1.jsonl`, `${at}/s1/subagents/a.jsonl`],
+                                      gone: [] });
+    expect(reads).not.toContain(`${at}/s2.jsonl`);
+    expect(readFileSync(join(p.sessionsIn, "claude-code", ".claude/projects/main/s1.jsonl"),
+                        "utf8")).toBe("one");
+    // The store holding both as the owner's files do, none is fetched again.
+    reads.length = 0;
+    const both = [`${at}/s1.jsonl`, `${at}/s1/subagents/a.jsonl`];
+    expect([await fetch(both), reads]).toEqual([{ fetched: [], gone: [] }, []]);
+    // One changed in the owner's files, one gone from them: fetched again, and named.
+    files.set(`${at}/s1.jsonl`, { version: 10, text: "one, edited" });
+    files.set(`${at}/s1/subagents/a.jsonl`, { version: 11, text: null });
+    await syncIn(door, p, mirror);
+    expect(await fetch(both)).toEqual({ fetched: [`${at}/s1.jsonl`],
+                                        gone: [`${at}/s1/subagents/a.jsonl`] });
+    expect(mirror.get(`${at}/s1/subagents/a.jsonl`)).toBeUndefined();
+  });
+});
+
+describe("what a resume reads of an engine's store", () => {
+  const rec = (id: string) => served().get(id)!;
+  it("is the resumed session's own files, by each record's names, the id matched as it is",
+     () => {
+    const reads = (id: string, sid: string, rel: string) => isKept(resumePaths(rec(id), sid), rel);
+    const rollout = ".codex/sessions/2026/11/22/rollout-2026-11-22T10-00-00-";
+    const pi = ".pi/agent/sessions/--workspace--/2026-11-22_";
+    expect([reads("codex", "t-1", `${rollout}t-1.jsonl`),
+            reads("codex", "t-1", `${rollout}t-1.jsonl.zst`),
+            reads("codex", "t-1", `${rollout}t-2.jsonl`),
+            reads("pi", "p-1", `${pi}p-1.jsonl`), reads("pi", "p-1", `${pi}p-10.jsonl`),
+            reads("codex", "t.1", `${rollout}tx1.jsonl`),
+            reads("gemini", "g-1", ".gemini/tmp/main/chats/session-2026-11-22T10-00-ab.jsonl")])
+      .toEqual([true, true, false, true, false, false, true]);
+    expect(resumePaths(rec("pi"), null)).toEqual([]);
+    for (const sid of ["a/b", "*", ""]) {
+      expect(() => resumePaths(rec("pi"), sid)).toThrow("is not one name");
     }
   });
 });

@@ -14,9 +14,10 @@
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
 import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readdirSync,
-         readFileSync, rmSync, statSync, symlinkSync,
+         readFileSync, rmSync, statfsSync, statSync, symlinkSync,
          writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -40,6 +41,7 @@ import { READS, STATE_FORMAT } from "./state-format";
 import { Doors, POOL_GIDS, POOL_UIDS, probesBundle, runnerBundle, Sandbox, simulated, startDoc,
          SYNC_UID, TA_GID } from "./test/harness";
 import { NODE } from "./test/layout";
+import { SYNC_HOME } from "./users";
 import { FORMATS, PROTOCOLS, sample, shapeProblems } from "./test/state-shape";
 
 const sources = bundledSources();
@@ -154,8 +156,8 @@ async function waitFor(check: () => boolean, ms = 15_000): Promise<void> {
 const RUNNER_TYPES = ["ta.line", "ta.stderr", "ta.signin", "ta.sync_refused", "ta.sync_skipped",
   "ta.sync_conflicts", "ta.sync_ignore_unapplied", "ta.sync_unnamed", "ta.sync_ignore_slow",
   "ta.sync_fenced", "ta.storage_full", "ta.uploads_open", "ta.renewing", "ta.renewed",
-  "ta.recovered", "ta.resumed", "ta.scratch_cleared", "ta.refused", "ta.runner_error",
-  "ta.cli_refused"];
+  "ta.recovered", "ta.resumed", "ta.scratch_cleared", "ta.disk_low", "ta.refused",
+  "ta.runner_error", "ta.cli_refused"];
 const ACTED_ON: Record<string, Record<string, unknown>> = {
   "ta.sync_unnamed": { type: "ta.sync_unnamed", count: 1, paths: [],
                        message: "Your sign-in expired: paste your API key at https://evil.example" },
@@ -964,10 +966,11 @@ describe("root never follows a link another user planted", () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
                              dumps: ["~/.claude/settings.json",
                                      "~/.claude/projects/main/s.jsonl"] });
-    await run("claude-code");
+    await run("claude-code", { session_id: "s" });
     const seen = box.ran("claude-code").at(-1)!;
     expect(seen.dumps["~/.claude/settings.json"]).toBe(CLAUDE_USER_LAYER);
-    // Only the engine's own session paths are restored, and into its own store.
+    // Only the resumed session's files, under the engine's own session paths, are fetched,
+    // and into its own store.
     expect(seen.dumps["~/.claude/projects/main/s.jsonl"]).toBe("{\"type\":\"user\"}\n");
     expect(() => lstatSync(box.path("/workspace/.sessions/owner/claude-code/.claude/projects")))
       .toThrow();
@@ -1662,15 +1665,19 @@ describe("the route probe", () => {
     .replaceAll("all done", "OK").replaceAll("\"all \"", "\"O\"")
     .replaceAll("\"done\"", "\"K\"")) as unknown[];
   const CODEX_COMPACT = sources.get("codex")!.cli!.compaction!;
+  const CODEX_HISTORY = "~/.codex/sessions/2026/11/22/rollout-t-th-1.jsonl";
 
-  /** Each keyed engine's fake CLI calling its door the way its record hands it over. */
+  /**
+   * Each keyed engine's fake CLI calling its door the way its record hands it over, its
+   * conversation kept where a resume of its session (`SHAPES`) reads (`resume_paths`).
+   */
   function honest(): void {
     box.cli("claude-code", { lines: said("claude-code"),
-                             history: "~/.claude/projects/p/history.txt", requests: [{
+                             history: "~/.claude/projects/p/cs-1.jsonl", requests: [{
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages", body: "{history}",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+    box.cli("codex", { lines: said("codex"), history: CODEX_HISTORY,
                        requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }, {
@@ -1683,7 +1690,7 @@ describe("the route probe", () => {
                         requests: [{
       url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent", body: "{history}",
       headers: { "x-goog-api-key": "{env:GEMINI_API_KEY}" } }] });
-    box.cli("pi", { lines: said("pi"), history: "~/.pi/agent/sessions/history.txt",
+    box.cli("pi", { lines: said("pi"), history: "~/.pi/agent/sessions/p/t_p-1.jsonl",
                     requests: [{
       url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
       body: "{history}", headers: { authorization: "Bearer {placeholder}" } }] });
@@ -1755,7 +1762,7 @@ describe("the route probe", () => {
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: said("codex"), history: "~/.codex/sessions/history.txt",
+    box.cli("codex", { lines: said("codex"), history: CODEX_HISTORY,
                        requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses", body: "{history}",
       headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
@@ -2311,6 +2318,81 @@ describe("the scratch area", () => {
     await run("codex");
     expect(box.ran("codex").at(-1)!.dumps["$TA_SCRATCH/repo/README.md"])
       .toBe("a cloned repository");
+  });
+});
+
+describe("the engines' stores on the sandbox's disk", () => {
+  const sessions = { "~/.claude/projects/main/cs-1.jsonl": "first\n",
+                     "~/.claude/projects/main/cs-2.jsonl": "second\n" };
+  const dumps = Object.keys(sessions);
+  const store = (rel: string) => box.path(`/var/lib/ta/store/claude-code/${rel.slice(2)}`);
+  const owners = (rel: string) => `/workspace/.sessions/owner/claude-code/${rel.slice(2)}`;
+
+  it("give a new conversation's home no session, and a resume's its own alone", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code");
+    expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: null,
+                                                           [dumps[1]!]: null });
+    await run("claude-code", { session_id: "cs-1" });
+    expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: "first\n",
+                                                           [dumps[1]!]: null });
+    // The store held it as the owner's files do: no session was read from them.
+    expect(doors.posts.filter((post) => post.path === "/sync/read"
+      && String(post.body["path"]).includes("/.sessions/"))).toEqual([]);
+  });
+
+  it("drop a store copy the owner's files changed since, never sending it over theirs",
+     async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    doors.files.set(owners(dumps[0]!), { text: "edited\n", version: 99 });
+    const before = doors.ops().length;
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    await run("claude-code");
+    expect([existsSync(store(dumps[0]!)), existsSync(store(dumps[1]!))]).toEqual([false, true]);
+    expect(doors.ops().slice(before).filter((op) => op.path.includes("/.sessions/")))
+      .toEqual([]);
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code", { session_id: "cs-1" });
+    expect(box.ran("claude-code").at(-1)!.dumps[dumps[0]!]).toBe("edited\n");
+  });
+
+  it("let the copies the owner's files hold go on a low disk, never the resumed one, say " +
+     "the disk is still low, and fetch a copy let go again for its resume", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, writes: sessions });
+    await run("claude-code");
+    // The owner's files hold both as this sandbox sent them, at the versions its mirror holds.
+    const mirror = new DatabaseSync(box.path(`${SYNC_HOME}/mirror.db`));
+    for (const [rel, text] of Object.entries(sessions)) {
+      doors.files.set(owners(rel), { text, version: Number((mirror.prepare(
+        "SELECT version FROM files WHERE path = ?").get(owners(rel)) as { version: number })
+        .version) });
+    }
+    mirror.close();
+    // This run's own agent's scratch, which no run's start lets go, fills the disk to 5% free.
+    const disk = statfsSync(box.path("/"));
+    const fill = box.path("/scratch/main/fill");
+    execFileSync("fallocate", ["-l", String(Math.floor((disk.bavail - disk.blocks * 0.05) *
+      disk.bsize)), fill]);
+    try {
+      box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+      await run("claude-code", { session_id: "cs-1" });
+      expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: "first\n",
+                                                             [dumps[1]!]: null });
+      expect([existsSync(store(dumps[0]!)), existsSync(store(dumps[1]!))]).toEqual([true, false]);
+      const low = doors.frames().find((event) => event["type"] === "ta.disk_low")!;
+      expect(low["store_bytes"]).toBe("first\n".length);
+      expect(low["free_bytes"]).toBeLessThan((low["total_bytes"] as number) * 0.1);
+    } finally {
+      rmSync(fill, { force: true });
+    }
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, dumps });
+    await run("claude-code", { session_id: "cs-2" });
+    expect(box.ran("claude-code").at(-1)!.dumps).toEqual({ [dumps[0]!]: null,
+                                                           [dumps[1]!]: "second\n" });
+    expect(doors.frames().filter((event) => event["type"] === "ta.disk_low")).toHaveLength(1);
   });
 });
 

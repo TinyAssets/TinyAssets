@@ -116,10 +116,16 @@ describe("secret and session paths", () => {
     ["a parent segment", cli((s) => { s["secret_paths"] = ["{home}/a/../../workspace/x"]; })],
     ["a dot segment", cli((s) => { s["secret_paths"] = ["{home}/./x"]; })],
     ["a session path equal to the secret", cli((s) => {
-      s["session_paths"] = ["{home}/.claude/.credentials.json"]; })],
+      s["session_paths"] = ["{home}/.claude/.credentials.json"];
+      s["resume_paths"] = ["{home}/.claude/.credentials.json"]; })],
     ["a secret holding the session", cli((s) => { s["secret_paths"] = ["{home}/.claude/"]; })],
     ["a wildcard secret root", cli((s) => { s["secret_paths"] = ["/*"]; })],
     ["home itself as the secret", cli((s) => { s["secret_paths"] = ["{home}"]; })],
+    ["a resume path outside every session path, at the secret", cli((s) => {
+      s["resume_paths"] = ["{home}/.claude/.credentials.json"]; })],
+    ["a resume path climbing out of its session path", cli((s) => {
+      s["resume_paths"] = ["{home}/.claude/projects/../.credentials.json"]; })],
+    ["no resume path", cli((s) => { s["resume_paths"] = []; })],
   ])("refuses: %s", (_what, record) => {
     expect(accepted(record)).toBe(false);
   });

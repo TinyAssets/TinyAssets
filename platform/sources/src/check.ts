@@ -287,6 +287,8 @@ function settingsOf(path: string, text: string):
 const DOTTED = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,7}$/;
 /** A path segment: no `.` or `..`, a `*` only whole (any one segment). */
 const SEGMENT = /^(?:\*|(?!\.{1,2}$)[A-Za-z0-9._-]{1,128})$/;
+/** A resume path's segment: a name's characters, `*` and `{sid}`, never `.` or `..`. */
+const RESUME_SEGMENT = /^(?!\.{1,2}$)(?:[A-Za-z0-9._*-]|\{sid\}){1,128}$/;
 const DATE = /^20\d\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/;
 const REASON = /^[^\p{Cc}]{1,512}$/u;
 const TEMPLATE_MAX = 64 * 1024;
@@ -341,7 +343,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   const fields = check.keys(value, "cli", [
     "install", "credential", "unattended", "engine", "definition", "mcp", "decide", "tools",
     "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
-    "hosts"], ["login", "api_key_env", "per_credential", "env", "files",
+    "resume_paths", "hosts"], ["login", "api_key_env", "per_credential", "env", "files",
                "run_secret_env", "compaction"]);
   const argvs: [string, string[]][] = [];
   const argv = (item: unknown, what: string, max = 64): string[] => {
@@ -629,6 +631,22 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                  "secret never syncs (ADR-039 decision 2.20)");
     }
   }
+  // What a resume reads is some of the sessions, so never a secret: under a session path, a
+  // segment's `*` a run of characters in it, `{sid}` the session id.
+  const resumes = check.strings(fields["resume_paths"], "cli.resume_paths", /^.{1,512}$/su, 16);
+  if (resumes.length === 0) {
+    check.fail("cli.resume_paths lists at least one path: every engine resumes");
+  }
+  for (const path of resumes) {
+    const segments = path.startsWith("{home}/")
+      ? (path.endsWith("/") ? path.slice(0, -1) : path).slice("{home}/".length).split("/") : [];
+    if (segments.length === 0 || !segments.every((segment) => RESUME_SEGMENT.test(segment))
+        || !sessionSegments.some((session) => session.length <= segments.length
+          && session.every((segment, i) => segment === segments[i]))) {
+      check.fail(`cli.resume_paths ${path} is under one of cli.session_paths, each segment ` +
+                 "names, * and {sid} alone, with no . or .. segment");
+    }
+  }
   const login = signsIn ? loginSpec(check, fields["login"], argv) : undefined;
   if (login !== undefined) {
     if (engine.model_argv === undefined) {
@@ -754,6 +772,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     no_update: noUpdate,
     secret_paths: Object.freeze(secrets),
     session_paths: Object.freeze(sessions),
+    resume_paths: Object.freeze(resumes),
     hosts: Object.freeze(hosts as unknown as CliSpec["hosts"]),
   }) as CliSpec;
 }

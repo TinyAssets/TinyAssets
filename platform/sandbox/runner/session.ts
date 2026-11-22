@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { RUN_BASICS } from "../../sources/src/run-env";
 import { type Served, servedRecord } from "../../sources/src/served";
 
-import { HOMES, isKept, keptPaths, SYSTEM } from "./engine";
+import { HOMES, isKept, keptPaths, resumePaths, SYSTEM } from "./engine";
 import { HEARTBEAT_MS } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
 import { withLock } from "./pid-lock";
@@ -141,26 +141,30 @@ export function dropHome(home: string): void {
 }
 
 /**
- * A run's home, made fresh by root in its root-only parent from the engine's store (its
- * kept paths alone), under the store's lock, its snapshot kept (the generation and each
- * secret's digest); `giveTree` then gives it to the run's user entry by entry: no other
- * user can reach it while it is made. A home made for an API-key run (`signedIn` false)
- * carries the store's sessions and never its secrets: the vendor sign-in's files (Codex's
- * `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no key run's
- * CLI can send them anywhere (the route probe proves it live).
+ * A run's home, made fresh by root in its root-only parent from the engine's store, under
+ * the store's lock, its snapshot kept (the generation and each secret's digest); `giveTree`
+ * then gives it to the run's user entry by entry: no other user can reach it while it is
+ * made. Of the store's sessions it holds those a resume of `session` reads (`resumePaths`),
+ * a new conversation's none, so no home copies the whole store. A home made for an API-key
+ * run (`signedIn` false) never carries the store's secrets: the vendor sign-in's files
+ * (Codex's `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no
+ * key run's CLI can send them anywhere (the route probe proves it live). Each file is
+ * written fresh, its time now, so an engine's own age rule (Codex compresses a rollout
+ * 7 days old, `compression.rs`) never finds one old.
  */
-async function makeHome(name: string, rec: Served, signedIn: boolean): Promise<string> {
+async function makeHome(name: string, rec: Served, signedIn: boolean,
+                        session: string | null): Promise<string> {
   safeDirs("/", HOMES, 0o711);
   const home = homeOf(name);
   remove(home);
   mkdirSync(home, { mode: 0o700 });
   const store = `${STORE}/${rec.id}`;
-  const { secrets, sessions } = keptPaths(rec);
+  const { secrets } = keptPaths(rec);
+  const taken = [...(signedIn ? secrets : []), ...resumePaths(rec, session)];
   const copied: Record<string, string> = {};
   const made = await withStore(rec, () => {
     for (const rel of sortedWalk(store)) {
-      if (isKept(signedIn ? [...secrets, ...sessions] : sessions, rel)
-          && (signedIn || !isKept(secrets, rel))) {
+      if (isKept(taken, rel)) {
         const bytes = safeRead(store, join(store, rel));
         if (bytes !== null) {
           safeWrite(home, join(home, rel), bytes, 0o600);
@@ -300,8 +304,9 @@ export interface RunSession {
 
 /**
  * `act` run as a run runs, by every CLI the runner or the probes start: a pool user taken;
- * its home made from the engine's store (with its secrets when `signedIn`) and its own
- * root-owned directory (`systemOf`), the one of its group; `files` (an invocation's, by path) written, those in
+ * its home made from the engine's store (with its secrets when `signedIn`, and the files of
+ * the session it `resumes`, `makeHome`) and its own root-owned directory (`systemOf`), the
+ * one of its group; `files` (an invocation's, by path) written, those in
  * that directory root's and readable by the user's group, the rest root's in the home
  * (`configOwned`), and the home given to the user. Once `act` is over, however it ends:
  * every process of the user killed, what it left in the shared scratch removed, the home
@@ -310,6 +315,7 @@ export interface RunSession {
  */
 export async function withRunUser<T>(rec: Served, name: string,
                                      opts: { readonly signedIn: boolean;
+                                             readonly resumes: string | null;
                                              readonly keeps: boolean;
                                              readonly files?: ReadonlyMap<string, string> },
                                      act: (session: RunSession) => Promise<T>): Promise<T> {
@@ -317,7 +323,7 @@ export async function withRunUser<T>(rec: Served, name: string,
   const system = systemOf(name);
   let home: string | null = null;
   try {
-    home = await makeHome(name, rec, opts.signedIn);
+    home = await makeHome(name, rec, opts.signedIn, opts.resumes);
     safeDirs("/", SYSTEM, 0o755);
     remove(system);
     // The one directory of the user's group, by which the dispatcher finds its run

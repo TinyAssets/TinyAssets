@@ -375,6 +375,10 @@
     "session_paths": [
       "{home}/.claude/projects/"
     ],
+    "resume_paths": [
+      "{home}/.claude/projects/*/{sid}.jsonl",
+      "{home}/.claude/projects/*/{sid}/"
+    ],
     "hosts": {
       "registry": [
         "registry.npmjs.org"

@@ -304,9 +304,6 @@ function startDocument(start: SandboxStart): StartDoc {
     config: { generation: config.generation, egress: config.egress, env: config.env,
               inherit: config.inherit },
     urls: { mcp: urls.mcp, mcp_bare: urls.mcp_bare, events: urls.events, signin: urls.signin },
-    // Protocol 4's, which every runner speaking it reads as no age (`scratch.ts`): the control
-    // record no longer holds a scratch retention (`untangle-2026-11/fact15-defaults-2.md`).
-    scratch_retention_days: null,
     mcp_servers: Object.fromEntries(Object.entries(start.mcp_servers).map(([name, server]) =>
       [name, "url" in server ? { url: server.url }
         : { command: server.command, args: server.args, env: server.env }])),

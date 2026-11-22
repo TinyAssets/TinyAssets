@@ -18,14 +18,18 @@
  * protocol it speaks reads (one a newer protocol added, one it dropped), so any of their
  * runners reads it. A change ships in two deploys: the first Worker speaks both while its
  * runner speaks the old one, the second runner speaks the new one. A later Worker speaks the
- * new one alone, dropping what only the old one read.
+ * new one alone, dropping what only the old one read. The two deploys keep a run that lives
+ * across one, or across its rollback, on a Worker that speaks its runner's protocol; where no
+ * run can (no owner has a sandbox before the cutover's routes), one deploy carries all three,
+ * and a sandbox whose runner outlived it would be refused by name at its next start while
+ * anything lives on it, or for good once rebooted (`control.ts` `#speaking`).
  */
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
-export const PROTOCOL = 4;
+export const PROTOCOL = 5;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([4]);
+export const SPEAKS: readonly number[] = Object.freeze([5]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({
@@ -174,9 +178,6 @@ export interface DocLease {
  * under which lease, the run's config, its doors (`mcp` carries the run's own secret;
  * `mcp_bare` is the one a record sending that secret in a header takes), the agent's own MCP
  * servers its admission kept, and its own hooks by event, an event absent holding none.
- * `scratch_retention_days` is protocol 4's alone: the Worker writes it null, which a protocol
- * 4 runner reads as no age, and this runner reads it not at all; it leaves the document with
- * the next protocol (`untangle-2026-11/fact15-defaults-2.md`).
  */
 export interface StartDoc {
   readonly run: string;
@@ -199,7 +200,6 @@ export interface StartDoc {
   };
   readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
                    readonly signin: string };
-  readonly scratch_retention_days?: number | null;
   readonly mcp_servers: Readonly<Record<string, DocMcpServer>>;
   readonly hooks: Readonly<Record<string, readonly DocHook[]>>;
 }

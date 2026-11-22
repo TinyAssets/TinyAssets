@@ -340,6 +340,9 @@
     "session_paths": [
       "{home}/.codex/sessions/"
     ],
+    "resume_paths": [
+      "{home}/.codex/sessions/*/*/*/rollout-*-{sid}*"
+    ],
     "compaction": {
       "argv": [
         "-c",

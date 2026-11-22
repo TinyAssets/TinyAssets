@@ -373,9 +373,6 @@ describe("a start", () => {
     expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com", EGRESS_HOST]);
     expect(state.commands.map((command) => command.argv[1]))
       .toEqual(["install", "prepare", "launch"]);
-    // Protocol 4's scratch retention, which the record no longer holds: null, no age.
-    const doc = state.files[`${state.sandboxes[0]!.id}:${inboxDoc(RUN)}`]!;
-    expect(JSON.parse(doc).scratch_retention_days).toBeNull();
   });
 
   it("starts on the copy of the record it last read, by any read, while KV can't be read",
