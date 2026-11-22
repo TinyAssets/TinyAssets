@@ -71,7 +71,7 @@ import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
 import {
-  authorizeCheck, fetchFailure, firstPartyLink, heldHook, upstreamFrom,
+  authorizeCheck, egressRefusal, fetchFailure, firstPartyLink, heldHook, upstreamFrom,
 } from "./deploy.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import {
@@ -336,8 +336,7 @@ async function clientDocument(world: World): Promise<string> {
 async function egressHost(world: World): Promise<string> {
   const url = `https://${EGRESS_HOST}/`;
   const answer = await send(world, url);
-  const error = answer.status === 404 ? (await json(answer, url, 2))["error"] : null;
-  if (typeof (error as Json | null)?.["code"] !== "string") {
+  if (!(await egressRefusal(answer))) {
     throw new Failure(2, `${url} answered ${answer.status}, not the egress door's refusal`);
   }
   return `${EGRESS_HOST} answers with the egress door's refusal`;

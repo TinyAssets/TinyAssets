@@ -18,7 +18,7 @@
  *   canary.
  * - `routes`: on a host under the zone, its DNS record; then `dark`, then the doors' routes
  *   handed over one at a time, on whatever host the identity names, the egress custom domain
- *   (waited on until it answers over HTTPS),
+ *   (waited on until the egress door answers on it),
  *   and the webhook enabled at the identity's URL. Before any change it keeps a record of each
  *   of those as they stood (`RouteRecord`), and the job summary names its id.
  * - `handback`: the record `--record` names, handed back (the cutover's rollback): the webhook
@@ -2719,7 +2719,7 @@ const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, go
 });
 
 /**
- * How long the kit waits for the egress host to answer over HTTPS after its attach, how often
+ * How long the kit waits for the egress door to answer on its host after the attach, how often
  * it asks, and each request's limit: the stage's host had its own certificate about two
  * minutes after the attach (2026-11-22).
  */
@@ -2735,7 +2735,7 @@ const ANSWER_REQUEST_MS = 30_000;
 const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stage" | "kept">(
   async ({ run, say, did }, got) => {
     say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then ` +
-        `wait up to ${ANSWER_MS / 60_000} minutes for it to answer over HTTPS`);
+        `wait up to ${ANSWER_MS / 60_000} minutes for the egress door's refusal on it`);
     if (!run.apply) {
       return;
     }
@@ -2770,10 +2770,24 @@ export function fetchFailure(error: unknown): string {
 }
 
 /**
- * The egress host answering over HTTPS, asked every `ANSWER_EVERY_MS` until it does, or a
- * throw past `ANSWER_MS` naming the last failure. Any HTTP status is an answer: it came over
- * a TLS connection whose certificate fetch verified for the host. A failed attempt leaves no
- * connection to reuse, so each is a fresh one, its name resolved again, as the canary's is.
+ * Whether `answer` is the egress door's own refusal, a `404` naming its code: the doors serve
+ * the host, not a Cloudflare error page (a `522`, a challenge). The kit's wait and the
+ * canary's egress check both read it.
+ */
+export async function egressRefusal(answer: Response): Promise<boolean> {
+  if (answer.status !== 404) {
+    await answer.body?.cancel();
+    return false;
+  }
+  const body = await answer.json().catch(() => null) as { error?: { code?: unknown } } | null;
+  return typeof body?.error?.code === "string";
+}
+
+/**
+ * The egress door's refusal on its host, asked every `ANSWER_EVERY_MS` until it answers, or a
+ * throw past `ANSWER_MS` naming the last failure. fetch checks the certificate for the host;
+ * `Connection: close` makes each attempt a fresh connection, its name resolved again (undici
+ * keeps an answered socket for the next request otherwise), as the canary's process is.
  */
 async function answering(run: Run): Promise<string> {
   const url = `https://${EGRESS_HOST}/`;
@@ -2781,16 +2795,19 @@ async function answering(run: Run): Promise<string> {
   for (;;) {
     let failed: string;
     try {
-      const answer = await run.io.fetch(url, { redirect: "manual",
+      const answer = await run.io.fetch(url, { redirect: "manual", headers: { Connection: "close" },
                                                signal: AbortSignal.timeout(ANSWER_REQUEST_MS) });
-      await answer.body?.cancel();
-      return `${url} answers over HTTPS (HTTP ${answer.status})`;
+      if (await egressRefusal(answer)) {
+        return `${url} answers with the egress door's refusal`;
+      }
+      failed = `HTTP ${answer.status}, not the egress door's refusal`;
     } catch (error) {
       failed = fetchFailure(error);
     }
     if (run.io.now().getTime() >= until) {
-      throw new Error(`${url} did not answer over HTTPS within ${ANSWER_MS / 60_000} minutes ` +
-                      `of the custom domain's attach: ${failed}. Run routes again once it does`);
+      throw new Error(`${url} did not answer with the egress door's refusal within ${
+        ANSWER_MS / 60_000} minutes of the custom domain's attach: ${failed}. Run routes ` +
+        "again once it does");
     }
     await run.io.sleep(ANSWER_EVERY_MS);
   }

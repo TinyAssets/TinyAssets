@@ -234,9 +234,10 @@ It never counts as "absent".
   record, so on it nothing is made.
 
   It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
-  `wrangler triggers deploy`), waits up to ten minutes for the egress host to answer over
-  HTTPS from a fresh connection (it has no TLS for its name until Cloudflare issues its
-  certificate, about two minutes on the stage), and stops naming the last failure's cause if
+  `wrangler triggers deploy`), waits up to ten minutes for the egress door's own refusal on
+  the host, a fresh connection each attempt (the host has no TLS for its name until Cloudflare
+  issues its certificate, about two minutes on the stage, and Cloudflare's own error pages do
+  not count), and stops naming the last failure's cause if
   it does not,
   enables E2B's lifecycle webhook at the doors' path on the host now that the doors serve
   it, and runs the

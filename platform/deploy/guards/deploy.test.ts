@@ -56,7 +56,7 @@ import {
 } from "../cloudflare";
 import {
   atOnce, authorizeCheck, deployedConfig, firstPartyLink, forwardOnly,
-  E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
+  E2B_HOOK, egressRefusal, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
   lifecycleHook, lockCounts, type Mode, MODES, parse,
   holding, perform, PUBLIC_INPUTS, registerRedirect, type Rolled, rolloutOf, type RolloutRecord, routedConfig,
   type RouteRecord, secretPlan, upstreamFrom, versionFlags, versionOf, wranglerFor,
@@ -218,9 +218,11 @@ interface WorldOptions {
   readonly keepsDns?: boolean;
   /**
    * How long after the run starts the egress host, once it is the doors' custom domain,
-   * answers over HTTPS (its TLS fails before): at once by default.
+   * completes TLS (it fails before): at once by default.
    */
   readonly egressAfterMs?: number;
+  /** How long after that Cloudflare answers its own `522` page before the doors serve it. */
+  readonly egressErrorMs?: number;
   /** The DNS listing ignores its name filter: the zone's other records come back too. */
   readonly noisyDns?: boolean;
   /** A route change the API refuses (400): `METHOD pattern`. */
@@ -621,11 +623,15 @@ function world(options: WorldOptions = {}) {
       return cf(path, method, body);
     }
     if (at.host === EGRESS_HOST) {
-      events.push(`egress ${method} ${url}`);
+      events.push(`egress ${method} ${url} Connection: ${
+        new Headers(init?.headers).get("Connection")}`);
       if (![...domains.values()].some((domain) => domain.service === DOORS)
           || clock - NOW.getTime() < (options.egressAfterMs ?? 0)) {
         throw new TypeError("fetch failed", { cause: new Error(
           "Client network socket disconnected before secure TLS connection was established") });
+      }
+      if (clock - NOW.getTime() < (options.egressAfterMs ?? 0) + (options.egressErrorMs ?? 0)) {
+        return new Response("<html>Connection timed out</html>", { status: 522 });
       }
       return json({ error: { code: "not_found", message: "not_found" } }, 404);
     }
@@ -1687,16 +1693,17 @@ describe("a routes run", () => {
     }
   });
 
-  it("waits for the egress host to answer over HTTPS after its attach, before the hook and " +
-     "the canary", async () => {
-    const w = world({ held: true, egressAfterMs: 2 * 60_000 });
+  it("waits for the egress door's refusal after its attach, through TLS failures and " +
+     "Cloudflare's own error page, before the hook and the canary", async () => {
+    const w = world({ held: true, egressAfterMs: 60_000, egressErrorMs: 60_000 });
     const { sleep } = w.io;
     Object.assign(w.io, { sleep: async (ms: number) => {
       w.events.push(`sleep ${ms}`);
       await sleep(ms);
     } });
     const work = await runMode(w, "routes", ["--yes"]);
-    const asked = `egress GET https://${EGRESS_HOST}/`;
+    // Each attempt a fresh connection: undici keeps an answered socket otherwise.
+    const asked = `egress GET https://${EGRESS_HOST}/ Connection: close`;
     const attach = w.events.findIndex((event) => event.startsWith("wrangler triggers deploy"));
     const after = w.events.slice(attach);
     // Asked only after the attach, every 15 s until it answers, two minutes on; then the hook
@@ -1709,16 +1716,27 @@ describe("a routes run", () => {
       "e2b PATCH /events/webhooks/w1 {\"enabled\":true}"));
     expect(after.lastIndexOf(asked)).toBeLessThan(after.indexOf(
       "node canary.ts --side doors --unkeyed"));
-    expect(work.plan).toContain(`https://${EGRESS_HOST}/ answers over HTTPS (HTTP 404)`);
+    expect(work.plan).toContain(`https://${EGRESS_HOST}/ answers with the egress door's refusal`);
   });
 
-  it("stops ten minutes after the attach while the egress host's TLS fails, naming its cause, " +
-     "before the hook or the canary", async () => {
-    const w = world({ held: true, egressAfterMs: Number.POSITIVE_INFINITY });
+  it("takes only the egress door's refusal, never another 404 or Cloudflare's page", async () => {
+    const answers = [Response.json({ error: { code: "not_found" } }, { status: 404 }),
+                     Response.json({ error: {} }, { status: 404 }),
+                     new Response("<html>Not found</html>", { status: 404 }),
+                     new Response("<html>Connection timed out</html>", { status: 522 })];
+    expect(await Promise.all(answers.map(egressRefusal))).toEqual([true, false, false, false]);
+  });
+
+  it.each([
+    [{ egressAfterMs: Number.POSITIVE_INFINITY }, "fetch failed (Client network socket " +
+     "disconnected before secure TLS connection was established)"],
+    [{ egressErrorMs: Number.POSITIVE_INFINITY }, "HTTP 522, not the egress door's refusal"],
+  ])("stops ten minutes after the attach while the egress door does not answer (%o), naming " +
+     "the cause, before the hook or the canary", async (egress, cause) => {
+    const w = world({ held: true, ...egress });
     await expect(runMode(w, "routes", ["--yes"])).rejects.toThrow(
-      `https://${EGRESS_HOST}/ did not answer over HTTPS within 10 minutes of the custom ` +
-      "domain's attach: fetch failed (Client network socket disconnected before secure TLS " +
-      "connection was established). Run routes again once it does");
+      `https://${EGRESS_HOST}/ did not answer with the egress door's refusal within 10 minutes ` +
+      `of the custom domain's attach: ${cause}. Run routes again once it does`);
     expect(w.events.some((event) => event.startsWith("node canary.ts"))).toBe(false);
     expect(w.events.some((event) => event.startsWith("e2b PATCH"))).toBe(false);
   });
@@ -5140,8 +5158,8 @@ const ROUTES_HELD = [
   `delete tinyassets-mcp-proxy's narrower route ` +
   `${HOST}/.well-known/oauth-authorization-server*, its paths now ${DOORS}'s`,
   `add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then wait up ` +
-  "to 10 minutes for it to answer over HTTPS",
+  "to 10 minutes for the egress door's refusal on it",
   "record in deploy:routes:local-20261107T120000Z the DNS records the custom domain made: AAAA",
-  `https://${EGRESS_HOST}/ answers over HTTPS (HTTP 404)`,
+  `https://${EGRESS_HOST}/ answers with the egress door's refusal`,
   `E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: present, enabled set, enabled`,
 ];

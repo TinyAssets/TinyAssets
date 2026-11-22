@@ -30,12 +30,14 @@ fixes both, from the code and a read-only look at the stage.
 
 ## Can the host's own answer be read reliably from the runner?
 
-Yes, on the stage's evidence. A wildcard certificate valid for the host would have passed the
-canary's egress check: fetch verifies the certificate against the host, and the door answers
-its `404`. The check failed with `fetch failed` instead. So before the host's own certificate,
-Cloudflare served no certificate that verifies for it. A certificate it does serve that
-verifies is an HTTPS answer, which is the property the canary needs either way. The wait also
-covers DNS propagation: it resolves the name as the canary will.
+Yes, if the wait asks for what the canary checks. The run's line dropped the cause, so whether
+DNS or TLS failed is not known, and an HTTPS answer alone is not the doors': before the Worker
+serves the host, Cloudflare can answer with its own page (a `522`, a challenge). So the wait
+takes only the egress door's refusal, the `404` naming its code (`egressRefusal`, which the
+canary's egress check reads too), and anything else is a failure it names and waits past
+(review, 2026-11-22). undici keeps an answered socket for the next request, so each attempt
+sends `Connection: close`: a fresh connection, its name looked up again (Node caches no
+lookup; the runner's resolver may, a cached miss ending in the loud stop and a rerun).
 
 ## Weighed and not built
 
@@ -58,8 +60,11 @@ covers DNS propagation: it resolves the name as the canary will.
    `answering`).
    - After the attach, and after the DNS record is written into the route record, the kit
      asks `https://<egress host>/` with fetch's own certificate check.
-   - Any HTTP status is an answer. A failed attempt leaves no connection to reuse, so each
-     is a fresh one, its name resolved again.
+   - Only the egress door's refusal is an answer (`egressRefusal`, shared with the canary).
+     Each attempt is a fresh connection (`Connection: close`), its name resolved again.
+   - A rerun on an attached domain: the attach keeps a domain already the same Worker's (as
+     the test fake models; wrangler refuses only another Worker's), the record step is
+     skipped (`domain.service` is the doors'), and the first ask answers.
    - It asks every 15 s, each request bounded at 30 s, for up to 10 minutes. Past that it
      stops, naming the last failure's cause, before the hook or the canary.
    - The plan job reads nothing new, and the canary is not retried.
@@ -75,9 +80,14 @@ covers DNS propagation: it resolves the name as the canary will.
   through the contract's `navigation`, so every doors case proves the canary sends one. The
   unreachable case names its cause.
 - `deploy/guards/deploy.test.ts`: the fake egress host fails its TLS until it is the doors'
-  custom domain and a given time has passed, then answers `404`. Two cases:
-  - The wait: asked only after the attach, nine asks 15 s apart, then the hook and the canary.
-  - The stop: after ten minutes, naming the TLS cause, with no hook and no canary.
+  custom domain and a given time has passed, then Cloudflare's `522` for a given time, then the
+  door's `404`. The cases:
+  - The wait: asked only after the attach, through TLS failures and the `522`, nine asks 15 s
+    apart, each with `Connection: close`, then the hook and the canary.
+  - The stop: after ten minutes of TLS failures or of `522`, naming the cause, with no hook
+    and no canary.
+  - `egressRefusal` takes the door's refusal alone: not a `404` without a code, an HTML `404`
+    or a `522`.
   - `ROUTES_HELD` carries the new lines.
 - Mutations, each caught:
   - The canary sends no `NAVIGATE`: 8 cases.
@@ -85,8 +95,10 @@ covers DNS propagation: it resolves the name as the canary will.
   - No wait: 3 cases.
   - The wait taking a TLS failure as an answer: 2 cases.
   - The shared predicate taking either header: 3 cases in `doors/test/hardening.test.ts`.
+  - Review: the wait taking any status: 2 cases; no `Connection: close`: 1; `egressRefusal`
+    ignoring the code: 1.
 
 ## Owed
 
-- [ ] live: the stage's next `routes` run shows the egress host's HTTPS answer line, and the
+- [ ] live: the stage's next `routes` run shows the egress door's refusal line, and the
   canary's sign-in and egress checks passing.
