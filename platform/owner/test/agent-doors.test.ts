@@ -221,19 +221,37 @@ describe("the owner's agent definitions", () => {
                                                 content: bytes(text!) });
     }
     expect(await read()).toMatchObject({ agent: "main" });
-    const named = async (agent: string) => {
-      const row = (await r.stub.grantList(r.bind(null))).clients
-        .find((client) => client.client === MUSE.client)!;
+    const listed = async () => (await r.stub.grantList(r.bind(null))).clients
+      .find((client) => client.client === MUSE.client)!;
+    const named = async (agent: string, profile = "custom") => {
+      const row = await listed();
       await r.stub.grantSet(r.session(null), { client: MUSE.client, source: "mcp",
         mode: row.mode, scopes: row.scopes as never, expected_revision: row.revision,
-        name: "", agent });
+        name: "", profile, agent });
     };
+    expect(await listed()).toMatchObject({ agent: "main", agent_live: true });
     await named("work");
     expect(await read()).toMatchObject({ agent: "work", instructions: bytes("Work."),
                                          soul: null });
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: true });
     await r.stub.fileRemove(r.session(null), { path: `${work}/agent.json`, expected_etag: null,
                                                recursive: false });
     expect((await failure(read)).code).toBe("agent_retired");
+    // The owner sees why on the grant, and the file put back serves the agent again.
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: false });
+    // Keeping it never blocks a save, a narrowing among them.
+    await named("work", "directory");
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: false,
+                                           profile: "directory" });
+    await r.stub.fileWrite(r.session(null), { path: `${work}/agent.json`, expected_etag: "",
+                                              content: bytes(JSON.stringify({ engine: "auto" })) });
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: true });
+    expect(await read()).toMatchObject({ agent: "work" });
+    // Naming it anew once it is gone is refused.
+    await named("main");
+    await r.stub.fileRemove(r.session(null), { path: `${work}/agent.json`, expected_etag: null,
+                                               recursive: false });
+    expect((await failure(() => named("work"))).code).toBe("agent_retired");
   });
 
   it("hold only the tree and the roots themselves, never a name that merely starts alike",
