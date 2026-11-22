@@ -13,11 +13,11 @@
  *
  * One way of each: one write path (`safeStream`, of which `safeWrite` is the one-piece
  * case), one read path (`openRegular`, under `safeReadHead`, `safeRead` and `safePieces`),
- * and one walker (`walkFiles`).
+ * and one walker (`walkTree`, of which `walkFiles` is the files alone).
  */
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, type Dir, fchmodSync, fchownSync, fstatSync, lstatSync, mkdirSync,
-         opendirSync, openSync, readSync, renameSync, rmSync, unlinkSync,
+         opendirSync, openSync, readSync, renameSync, rmdirSync, rmSync, unlinkSync,
          writeSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -274,11 +274,23 @@ export interface Walk {
 }
 
 /**
- * Every regular file under `dir`, by path from it, by `lstat` alone (links never entered).
- * What the walk holds is one directory a level of depth, never the tree's paths, however
- * many there are: unsorted, one open directory read entry by entry (`opendir`).
+ * An entry a walk meets (`walkTree`), by its path (`at`) and its path from the walk's top
+ * (`rel`): a regular file; a directory once everything under it was met (`left`); or one the
+ * walk passes over (`passed`): kept out (`skip`, its whole tree with it), a link, or anything
+ * else neither a file nor a directory. A name that is not UTF-8 has no path from the top a
+ * string names (`unnamed`, told to the walk's `unnamed`), so its path is its bytes.
  */
-export function* walkFiles(dir: string, walk: Walk = {}, base = dir): Generator<string> {
+export type Met =
+  | { readonly kind: "file" | "left" | "passed"; readonly rel: string; readonly at: string }
+  | { readonly kind: "unnamed"; readonly at: Buffer };
+
+/**
+ * Every entry under `dir`, by `lstat` alone (links never entered), a directory met after
+ * everything under it. What the walk holds is one directory a level of depth, never the
+ * tree's paths, however many there are: unsorted, one open directory read entry by entry
+ * (`opendir`).
+ */
+export function* walkTree(dir: string, walk: Walk = {}, base = dir): Generator<Met> {
   if (kind(dir) !== "dir") {
     return;
   }
@@ -288,18 +300,31 @@ export function* walkFiles(dir: string, walk: Walk = {}, base = dir): Generator<
     const name = raw.toString("utf8");
     if (!Buffer.from(name, "utf8").equals(raw)) {
       walk.unnamed?.(join(relative(base, dir), escapedName(raw)));
+      yield { kind: "unnamed", at: Buffer.concat([Buffer.from(`${dir}${sep}`), raw]) };
       continue;
     }
-    const path = join(dir, name);
-    const rel = relative(base, path);
-    const found = kind(path);
+    const at = join(dir, name);
+    const rel = relative(base, at);
+    const found = kind(at);
+    if (found === null) {
+      continue;  // gone since it was listed
+    }
     if (walk.skip?.(rel, found === "dir") === true) {
-      continue;
+      yield { kind: "passed", rel, at };
+    } else if (found === "dir") {
+      yield* walkTree(at, walk, base);
+      yield { kind: "left", rel, at };
+    } else {
+      yield { kind: found === "file" ? "file" : "passed", rel, at };
     }
-    if (found === "dir") {
-      yield* walkFiles(path, walk, base);
-    } else if (found === "file") {
-      yield rel;
+  }
+}
+
+/** Every regular file under `dir`, by path from it: `walkTree`'s files. */
+export function* walkFiles(dir: string, walk: Walk = {}): Generator<string> {
+  for (const met of walkTree(dir, walk)) {
+    if (met.kind === "file") {
+      yield met.rel;
     }
   }
 }
@@ -346,6 +371,26 @@ function escapedName(raw: Buffer): string {
 }
 
 /** A tree removed, links removed as links (Node's `rm` never follows one). */
-export function remove(path: string): void {
+export function remove(path: string | Buffer): void {
   rmSync(path, { recursive: true, force: true });
+}
+
+/**
+ * A directory removed only while it holds nothing: whether it is gone. `rmdir` refuses one
+ * holding an entry (EEXIST or ENOTEMPTY, POSIX) and anything there not a directory, a link
+ * among them (ENOTDIR), so an entry made in it up to its removal keeps it.
+ */
+export function removeEmpty(path: string): boolean {
+  try {
+    rmdirSync(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" || code === "ENOTEMPTY" || code === "ENOTDIR") {
+      return false;
+    }
+    if (code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return true;
 }

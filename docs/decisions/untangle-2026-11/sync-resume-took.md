@@ -108,7 +108,8 @@ read, so the order buys nothing and the unsorted walk (one entry at a time, #579
   removes each emptied folder (`rmdir`, refused while it holds a late file) and what the walk
   skips by name, which is its own design (Fact 14).
 
-- [ ] fix/gone-folder-late-file: `sync.ts` `goneFolder` removes the folder whole after its walk,
+- [x] fix/gone-folder-late-file: `sync.ts` `goneFolder` removes the folder whole after its walk,
   so a file a run makes in it after the walk read that folder goes unread and unsent; remove
   what the walk read and skipped, then each emptied folder (`rmdir`), keeping one still holding
-  a file, and hold it in `sync.test.ts`.
+  a file, and hold it in `sync.test.ts`. Done in `untangle/gone-folder-late-file`
+  (`gone-folder-late-file.md`).
