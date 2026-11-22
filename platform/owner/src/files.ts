@@ -970,6 +970,19 @@ export class Files {
              ...this.#content(found.content_id!, found.size) };
   }
 
+  /**
+   * The file at `path`, pinned as `open` pins it, or null where nothing is, for a reader to
+   * which an absent file has a meaning of its own. Anything else there (a folder) is refused
+   * `invalid`, naming the path, never read as no file (Fact 8).
+   */
+  openFile(path: string): Content | null {
+    const entry = this.stat(path);
+    if (entry !== null && entry.kind !== "file") {
+      throw new Refusal("invalid", `${path} is not a file`);
+    }
+    return entry === null ? null : this.open(path);
+  }
+
   /** One kept version's content, pinned, as `open` gives the current one. */
   openVersion(path: unknown, version: unknown): Content & { change: Change } {
     const row = this.#version(storedPath(path), version);
