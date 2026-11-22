@@ -47,6 +47,11 @@ counts toward `SPEND_KEPT` and lasts until the next prune.
    stays open, now the one name `Egress.#recover`'s deadline cut reads too (it spelled the sum
    itself). `keptFrom(now)` is `periods(now - SETTLED_WITHIN_S)`, and `spendPruned` deletes
    every `d:` before its day and `m:` before its month. `daysKept` and `monthsKept` go.
+   **The owner's export loses its spend history:** it carried up to 40 days' and 3 months'
+   totals; now it carries the kept periods alone, so a day's or a month's total is gone from
+   it a day and a beat after its period ends. No door, tool or page showed
+   them; each call's cost stays in its receipt (`egress_reservations`, the newest 2,000
+   admitted), as before. No owner holds data before the cutover, so none loses any now.
 2. **`SPEND_KEPT` is 500:** a window of a day and a minute spans at most three days and two
    months (a minute past midnight on the 1st holds the 1st, the last day of the month before,
    and the one before that; and both months), five periods at the row's hundred sources. The
