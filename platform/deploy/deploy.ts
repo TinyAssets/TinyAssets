@@ -3116,10 +3116,10 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
     // A run stopped at a share of 0% leaves its version beside the one before, serving only a
     // request with an override for it, which no RPC call carries. Cloudflare assigns each
     // Durable Object a version by the shares, so none ran this one's migrations, and the
-    // stages took it there only with no forward change (`atOnce`): the way back is open.
-    const unserved = servesAs(serving, [
-      { version: serving[0]!.version, percentage: 0 },
-      { version: rolled.before?.version ?? "", percentage: 100 }]);
+    // stages took it there only with no forward change (`atOnce`): the way back is open. In
+    // whichever order Cloudflare lists the two: the shares, not the order, say who serves.
+    const unserved = serving.length === 2 && serving.every((each) =>
+      each.percentage === (each.version === rolled.before?.version ? 100 : 0));
     if (stop === null && !unserved) {
       const reason = forwardOnly(rolled);
       stop = reason === null ? null : { name: rolled.name, reason };

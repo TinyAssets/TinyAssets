@@ -49,7 +49,14 @@ fetched 2026-11-22: `workers/versions-and-deployments/version-overrides.mdx`,
    keeps it until a new deployment; listed in the same order, a raised share never moves one
    back. [I] At 0% no object is assigned the new version, so none runs its migrations: a 0%
    split of a Worker with a new `-m` count can be ended by a rollback, which `forwardOnly`
-   would refuse at 100%.
+   would refuse at 100%. "For a given deployment, requests to each Durable Object will always
+   use the same Worker version," so neither an override nor its caller's version moves an
+   object (reviewer, from `with-durable-objects.mdx`; the override page names no Durable
+   Object). The schema migrations (`contract/src/migrate.ts`) run only in an object, on wake.
+   The doors go last (`WORKERS`), so the smoke reaches the owner's and the sandbox's objects
+   only once both serve their new versions at 100%; its override names the doors alone, so a
+   `fetch` binding forwarding it moves no other Worker. A rollback reads a 0% split by its
+   shares, in whichever order Cloudflare lists the two.
 5. **Who reaches a 0% version.** Overrides reach `fetch` and no RPC, so only the doors' new
    version is reachable at 0%, and only once the doors hold their routes. A `routes` run
    deploys the Workers before its handover (`ROUTED`'s order), so the cutover's own run, like

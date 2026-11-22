@@ -2877,13 +2877,15 @@ describe("the rollout record and mode rollback", () => {
       await expect(runMode(w, "dark", ["--yes"], RUN)).rejects.toThrow(
         `wrangler versions deploy ${ours}@100 failed (exit 1): the API refused it`);
       expect(serving(w)[NAMES["owner"]!]).toBe(`${ours}@0,before-owner@100`);
+      // Listed the other way round, the shares still say its run's version served nothing.
+      w.deployments.set(NAMES["owner"]!, [...w.deployments.get(NAMES["owner"]!)!].reverse());
       w.events.splice(0);
       const work = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
       expect(serving(w)).toEqual(BEFORE_ALL);
       expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
-        `^roll ${NAMES["owner"]} back to before-owner \\(${BEFORE}-m[0-9.]+\\) at 100%, from ${
-          ours} \\(${OURS}-m[0-9.]+\\) at 0% and before-owner \\(${BEFORE}-m[0-9.]+\\) at ` +
-        "100%: its run's version at 0% served no request but an override's$")));
+        `^roll ${NAMES["owner"]} back to before-owner \\(${BEFORE}-m[0-9.]+\\) at 100%, from ` +
+        `before-owner \\(${BEFORE}-m[0-9.]+\\) at 100% and ${ours} \\(${OURS}-m[0-9.]+\\) at ` +
+        "0%: its run's version at 0% served no request but an override's$")));
     });
 
     it("takes a Worker that cannot serve beside its version before to 100% at once, in its " +
