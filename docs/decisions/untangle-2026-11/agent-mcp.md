@@ -77,11 +77,12 @@ What the research left open, from each pinned version's own source or docs:
    each document to the joined shape of the protocols it speaks (`spokenShape`), and the fake E2B's
    runner speaks the runner's own protocol unless a test scripts another, not a stale 1.
    - **Two deploys (`protocol.ts`).** The expand, a Worker speaking 1, 2 and 3 beside protocol 2's
-     runner, with protocol 3's record exactly as recorded here, is `untangle/runner-protocol-3`'s
-     first step; this branch is the second deploy. As for P-hooks (`r5-hooks.md` item 5), the
-     order matters only to a rollback past this deploy, which the dark platform has none to make.
-     Its contract step, `region` gone from `SigninDoc` and `signinDocument` once the Worker no
-     longer speaks 2, is that branch's too, not this one's.
+     runner, with protocol 3's record exactly as recorded here, is `untangle/runner-protocol-3`
+     (`runner-protocol-3.md`, which says what the rule and its guard require); this branch is the
+     second deploy, merged on top of it. As for P-hooks (`r5-hooks.md` item 5), the order matters
+     only to a rollback past this deploy, which the dark platform has none to make. The contract
+     step, `region` gone from `SigninDoc` and `signinDocument` once the Worker no longer speaks 2,
+     is `untangle/runner-protocol-3-contract`.
 
 ## Departures from the research
 
@@ -96,6 +97,7 @@ What the research left open, from each pinned version's own source or docs:
 
 ## Owed
 
-- [ ] `untangle/runner-protocol-3`: protocol 3's expand deploy (the Worker speaking 1, 2 and 3 beside protocol 2's runner, this record as it is) before this branch's, and, once no runner speaks 2, `region` dropped from `SigninDoc` and `signinDocument` (`drop-kimi.md`).
+- [ ] `untangle/runner-protocol-3`: protocol 3's expand deploy (the Worker speaking 1, 2 and 3 beside protocol 2's runner, this record as it is), merged before this branch.
+- [ ] `untangle/runner-protocol-3-contract`: once no runner speaks 2, `region` dropped from `SigninDoc` and `signinDocument` (`drop-kimi.md`).
 - [ ] `untangle/connector-credentials`: credentials for the agent's own MCP servers the connector way (`packages_connectors_research.md` C1): egress injects each server's sealed token, and no credential is ever in `mcp.json` or the sandbox.
 - [ ] live: at the dark redeploy, B5: one stdio server and one http server on the allowlist connect on each engine (Claude Code's `--mcp-config`, Codex's `-c` pairs, Gemini's system settings with `--allowed-mcp-server-names` repeated, pi's own `mcp.json`) and their tools are callable, and a host not on the list never reaches the CLI (the owner's `mcp_server_dropped` notice says so).
