@@ -35,7 +35,8 @@ import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./test/s
  * changes. A new format or protocol is a new entry, and its pin is added here with it.
  */
 const FROZEN = Object.freeze({
-  formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263" },
+  formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263",
+             "2": "5f02a16dd4a6685627097767309b32800cfaa89fa94daeec41752c5c14b1fff7" },
   protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2",
                "2": "c38091d43b77abc01243f22e52285771355d6680a9d0ae3cce9ac438c5440fc0",
                "3": "f46e144d6b9eaa1cd38a394722a8135501755a85a5e79020246a06957a79d5ff",
@@ -94,13 +95,21 @@ describe("the runner's on-disk format", () => {
   it("is the mirror this runner writes, exactly as its format's record says", () => {
     const path = join(temp(), "mirror.db");
     const mirror = openMirror(path);
-    mirror.put("/workspace/a.md", { version: 3, size: 5, mtime_ms: 1, sha256: "0".repeat(64) });
+    mirror.put("/workspace/a.md", { version: 3, size: 5, mtime_ms: 1, sha256: "0".repeat(64),
+                                    unread: false });
     mirror.setCursor(7);
     mirror.close();
     expect(schema(path)).toEqual(FORMATS[String(STATE_FORMAT)]!.mirror);
   });
 
   it("reads every format's mirror it reads, as each was recorded", () => {
+    // A synced row and a marked one, as each format wrote them: format 1's mark was its hash
+    // `""`, format 2's is a column of its own, the hash kept.
+    const hash = "0".repeat(64);
+    const rows: Record<string, string> = {
+      "1": `('/workspace/a.md', 3, 5, 1, '${hash}'), ('/workspace/b.md', 4, 0, 0, '')`,
+      "2": `('/workspace/a.md', 3, 5, 1, '${hash}', 0), ('/workspace/b.md', 4, 0, 0, '', 1)`,
+    };
     for (const format of READS) {
       const path = join(temp(), "mirror.db");
       const db = new DatabaseSync(path);
@@ -109,14 +118,19 @@ describe("the runner's on-disk format", () => {
           db.exec(entry.sql);
         }
       }
-      db.exec("INSERT INTO meta VALUES (1, 7); INSERT INTO files VALUES " +
-              `('/workspace/a.md', 3, 5, 1, '${"0".repeat(64)}')`);
+      db.exec(`INSERT INTO meta VALUES (1, 7); INSERT INTO files VALUES ${rows[String(format)]!}`);
       db.close();
-      const mirror = openMirror(path);
-      expect(mirror.cursor()).toBe(7);
-      expect(mirror.get("/workspace/a.md")).toEqual({ version: 3, size: 5, mtime_ms: 1,
-                                                      sha256: "0".repeat(64) });
-      mirror.close();
+      // Opened twice: a mirror rebuilt once is this format's, read alike after.
+      for (let open = 0; open < 2; open += 1) {
+        const mirror = openMirror(path);
+        expect(mirror.cursor()).toBe(7);
+        expect(mirror.get("/workspace/a.md")).toEqual({ version: 3, size: 5, mtime_ms: 1,
+                                                        sha256: hash, unread: false });
+        expect(mirror.get("/workspace/b.md")).toEqual({ version: 4, size: 0, mtime_ms: 0,
+                                                        sha256: "", unread: true });
+        mirror.close();
+      }
+      expect(schema(path)).toEqual(FORMATS[String(STATE_FORMAT)]!.mirror);
     }
   });
 

@@ -70,5 +70,7 @@ the run's turn silently.
 
 ## Owed
 
-- [ ] `untangle/sync-in-unsent-edit`: a sync-in never replaces a workspace file holding
+- [x] `untangle/sync-in-unsent-edit`: a sync-in never replaces a workspace file holding
   unsent changes silently (research first: keep it and conflict, then fetch the owner's).
+  Done in `untangle/sync-in-unsent-edit` (`sync-in-unsent-edit.md`), with the session left
+  above (format 2).
