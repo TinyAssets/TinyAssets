@@ -58,11 +58,16 @@
  * when E2B kept its files only). A renewal's resume never waits its turn: the renewing
  * sandbox keeps its slot, and E2B refusing it is retried, backing off, and logged as an
  * alert. A sandbox paused while a lease runs in it (a renewal cut short, or E2B's own
- * timeout) is resumed the same way. A sandbox whose release asked a pause that did not
- * land, or that has no live run at its look, is paused (the idle reaper); so is one whose
- * runner has had no live run for a lease's TTL (`LEASE_TTL_S`), looked at once a TTL while
- * it runs: by then the owner's lease, renewed only by its runs' heartbeats, has lapsed, so
- * a release that never reached this Worker leaves no sandbox running to its ceiling. The
+ * timeout) is resumed the same way, on its runner's word: one whose runner has not answered
+ * since the sandbox last came running is left paused (`heard`). A sandbox whose release
+ * asked a pause that did not land, or that has no live run at its look, is paused (the idle
+ * reaper); so is one whose runner has had no live run for a lease's TTL (`LEASE_TTL_S`),
+ * looked at once a TTL while it runs: by then the owner's lease, renewed only by its runs'
+ * heartbeats, has lapsed, so a release that never reached this Worker leaves no sandbox
+ * running to its ceiling. Only a live run is renewed, and a run lives only while the owner's
+ * object takes its heartbeat: a job none of whose posts it took for a lease's TTL ends
+ * itself (`runner/frames.ts` `Poster`), as the object has settled it lost, so an owner
+ * that cannot be reached renews no sandbox past that. The
  * look reads a runner by its `state` alone, so it reaps a sandbox whose runner speaks a
  * protocol this Worker does not as any other; but no renewal can carry on a job living on
  * such a runner, so that sandbox runs to the end of the window it was found in (`kill_at`),
@@ -201,6 +206,11 @@ interface Row {
    * no renewal carries it past the window it was found in, whose end this is (`#heard`).
    */
   kill_at: number | null;
+  /**
+   * 1 once its runner answered (its `state`, or a job's launch) since the sandbox last came
+   * running, created or resumed: paused, it is resumed for its lease only on that word.
+   */
+  heard: number;
 }
 
 interface Box extends Handle {
@@ -674,7 +684,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         found.sandboxID} on a runner speaking protocol ${state.protocol}, which no renewal of ${
         ""}this Worker's carries on: it is killed at its window's end, ${found.endAt}`);
     }
-    this.#sql.exec("UPDATE sandboxes SET kill_at = ? WHERE authority = ?", killAt, authority);
+    this.#sql.exec("UPDATE sandboxes SET kill_at = ?, heard = 1 WHERE authority = ?", killAt,
+                   authority);
     if (!spoken) {
       this.#sql.exec("UPDATE sandboxes SET renewing = 0 WHERE authority = ?", authority);
     }
@@ -724,13 +735,15 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (resumed === null) {
       return null;
     }
-    // Running from here, so its row says so: a fault or refusal on the way leaves it to the
-    // look (armed by `#launch`), never billed unseen as a paused one to its ceiling. A slot a
-    // renewal held for it is owed back from here too, so no fault after keeps it held.
+    // Running from here, so its row says so, its runner unheard until it answers: a fault or
+    // refusal on the way leaves it to the look (armed by `#launch`), never billed unseen as a
+    // paused one to its ceiling. A slot a renewal held for it is owed back from here too, so
+    // no fault after keeps it held.
     if (row.paused === 1 || this.#row(row.authority)?.paused === 1) {
       this.#log(row.authority, "resume");
     }
-    this.#sql.exec("UPDATE sandboxes SET paused = 0 WHERE authority = ?", row.authority);
+    this.#sql.exec("UPDATE sandboxes SET paused = 0, heard = 0 WHERE authority = ?",
+                   row.authority);
     this.#owe(resumed.sandboxID);
     // Its own runner: the one that wrote its disk and launched its runs.
     let handle: Box = { sandboxID: resumed.sandboxID, envdAccessToken: resumed.envdAccessToken,
@@ -978,8 +991,8 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
         this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id, hosts) " +
                          "VALUES (?, ?, ?, ?)", job.id, request.authority,
                        request.lease.lease_id, JSON.stringify(hosts));
-        this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
-                         "authority = ?", request.authority);
+        this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL, heard = 1 " +
+                         "WHERE authority = ?", request.authority);
         return { started: true };
       };
       // Whatever it came to, the look is armed: a sandbox a start resumed or made and no job
@@ -1371,6 +1384,16 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
     if (handle === null) {
       if (row.kill_at !== null) {
         return this.#kill(row);  // E2B's own timeout paused it at its window's end
+      }
+      if (row.heard === 0 && (row.renewing === 1 || this.#leased(row.authority))) {
+        // Its runner has not answered since it last came running (its `state` failing at
+        // every look): nothing says a run lives in it, so no look brings it back for one.
+        console.error(`sandbox_runner_unheard: sandbox ${row.sandbox_id} is left paused: a ${
+          ""}lease ran in it, but its runner has not answered since it last ran`);
+        this.#sql.exec("DELETE FROM launched WHERE authority = ?", row.authority);
+        this.#sql.exec("UPDATE sandboxes SET renewing = 0, releasing = 0 WHERE authority = ?",
+                       row.authority);
+        return Number.POSITIVE_INFINITY;
       }
       if (row.renewing === 0 && !this.#leased(row.authority)) {
         this.#sql.exec("UPDATE sandboxes SET releasing = 0 WHERE authority = ?", row.authority);

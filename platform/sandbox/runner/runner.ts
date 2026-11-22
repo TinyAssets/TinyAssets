@@ -88,7 +88,7 @@ import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept,
          keptPaths } from "./engine";
 import { DECIDE_ENV, DECIDE_MS, helperArgv, helperCommand, hookTools } from "./decide";
-import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
+import { FLUSH_MS, HEARTBEAT_MS, lineEvent, Outbox, Poster } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
 import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
@@ -122,8 +122,6 @@ const RESERVE = `${STATE}/reserve`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
 
-/** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
-const FLUSH_MS = 250;
 const OK = EXIT.ok;
 const NO = EXIT.no;
 const FENCED = EXIT.fenced;
@@ -722,9 +720,11 @@ interface SyncJob {
 /**
  * The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. It runs
  * as a child the runner waits on without blocking, so the run's heartbeat goes on posting
- * (each post renews the lease) however long a sync takes.
+ * (each post renews the lease) however long a sync takes; stopped, and thrown, once the
+ * job's (`work`) heartbeat has lapsed: its lease is over, so no sync of it lands, and one
+ * that cannot reach the object would wait on it for ever.
  */
-async function syncAgent(job: SyncJob):
+async function syncAgent(job: SyncJob, work: Job):
     Promise<{ report: Record<string, unknown> | null; code: number }> {
   const as = user(SYNC_USER);
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
@@ -747,7 +747,11 @@ async function syncAgent(job: SyncJob):
   // write's EPIPE is let go here, and the child's exit status says what happened.
   child.stdin!.on("error", () => undefined);
   child.stdin!.end(JSON.stringify(job));
-  const status = await agent.exit;
+  const status = await Promise.race([agent.exit, work.poster.lapse.then(() => null)]);
+  if (status === null) {
+    agent.stop();
+    throw new Error("the job's heartbeat lapsed: its lease is over, so its sync is stopped");
+  }
   // Its report whole, however many paths.
   const done = { status, stdout: Buffer.concat(out).toString("utf8"),
                  stderr: Buffer.concat(err).toString("utf8") };
@@ -875,110 +879,6 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
 }
 
 // -- a run ----------------------------------------------------------------------------
-
-/** The run's posts to its event door: one in flight, held during a renewal's pause. */
-class Poster {
-  holding = false;
-  #last = 0;
-  #busy = false;
-  #wait = FLUSH_MS;
-  #refused: string | null = null;
-
-  constructor(readonly url: string, readonly token: string, readonly outbox: Outbox,
-              readonly onRefused: (why: string) => void) {}
-
-  get refused(): string | null {
-    return this.#refused;
-  }
-
-  /**
-   * One post of the next frames, with `end` when they are the last ones: `taken`, `retry`
-   * (the network, or `events_busy` after its `Retry-After`, a retry's wait doubling to at
-   * most a heartbeat), or `refused` (the object ended the run: cancelled, revoked, settled,
-   * its lease closed).
-   */
-  async #post(end: { exit_code: number } | null): Promise<"taken" | "retry" | "refused"> {
-    const frames = this.outbox.peek();
-    const last = end !== null && frames.length === this.outbox.pending;
-    let response: Response;
-    try {
-      response = await fetch(this.url, {
-        method: "POST",
-        headers: { "content-type": "application/json", [RUNNER_HEADER]: this.token },
-        body: JSON.stringify({ frames, ...(last ? { end } : {}) }) });
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, this.#wait));
-      return "retry";
-    }
-    const text = await response.text();
-    if (response.status === 200) {
-      this.outbox.taken(frames);
-      this.#last = Date.now();
-      return "taken";
-    }
-    if (response.status === 503 || response.status === 429) {
-      const after = Number(response.headers.get("retry-after") ?? "0") * 1000;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(HEARTBEAT_MS,
-        Number.isFinite(after) && after > 0 ? after : this.#wait)));
-      return "retry";
-    }
-    if (response.status === 401 || response.status === 403 || response.status === 404) {
-      this.#refused = text;
-      this.onRefused(this.#refused);
-      return "refused";
-    }
-    await new Promise((resolve) => setTimeout(resolve, this.#wait));
-    return "retry";
-  }
-
-  async #once(end: { exit_code: number } | null): Promise<"taken" | "retry" | "refused"> {
-    this.#busy = true;
-    try {
-      const answer = await this.#post(end);
-      this.#wait = answer === "retry" ? Math.min(this.#wait * 2, HEARTBEAT_MS) : FLUSH_MS;
-      return answer;
-    } finally {
-      this.#busy = false;
-    }
-  }
-
-  /** Post whatever waits, and a heartbeat when nothing went for `HEARTBEAT_MS`. */
-  async tick(): Promise<void> {
-    if (this.holding || this.#refused !== null || this.#busy) {
-      return;
-    }
-    if (this.outbox.pending > 0 || Date.now() - this.#last >= HEARTBEAT_MS) {
-      await this.#once(null);
-    }
-  }
-
-  /** The post in flight finished, and every frame that waits posted (or refused). */
-  async drain(): Promise<void> {
-    while (this.#busy) {
-      await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
-    }
-    while (this.outbox.pending > 0 && this.#refused === null) {
-      await this.#once(null);
-    }
-  }
-
-  /** Every frame, then the end with the last of them, until taken or refused. */
-  async finish(exitCode: number): Promise<void> {
-    for (;;) {
-      if (this.#refused !== null) {
-        return;
-      }
-      if (this.holding || this.#busy) {
-        await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
-        continue;
-      }
-      const last = this.outbox.peek().length === this.outbox.pending;
-      if (await this.#once({ exit_code: exitCode }) === "taken" && last) {
-        return;
-      }
-    }
-  }
-}
 
 class RunRefused extends Error {
   override readonly name = "RunRefused";
@@ -1219,7 +1119,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       outbox.push({ type: "ta.recovered" });
     }
     await reportSignins(start, lease);
-    if ((await syncAgent(job("in"))).code === FENCED) {
+    if ((await syncAgent(job("in"), work)).code === FENCED) {
       throw new SyncFenced("the sync door fenced the lease");
     }
     synced = true;
@@ -1357,12 +1257,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       if (synced) {
         const secrets = atoms();
         const refused = await stageSessions(start.authority, run, secrets, async (paths) =>
-          ((await syncAgent({ ...job("known"), paths })).report?.["known"] ?? {}) as
+          ((await syncAgent({ ...job("known"), paths }, work)).report?.["known"] ?? {}) as
             Record<string, string | null>);
         for (const path of refused) {
           outbox.push({ type: "ta.sync_refused", path, code: "secret_bytes" });
         }
-        const done = await syncAgent(job("out", secrets));
+        const done = await syncAgent(job("out", secrets), work);
         remove(`${SYNC_HOME}/out/${run}`);
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
