@@ -162,10 +162,7 @@ function setAt(into: Record<string, unknown>, path: string, value: unknown): voi
   at[keys.at(-1)!] = value;
 }
 
-/**
- * The servers as the record's file holds them (under `servers`, every name in `names`'s list),
- * or as its flag's pairs: one `<servers>.<name>.<key>=<JSON>` a value, a map's one an entry.
- */
+/** The servers as the record's file holds them: under `servers`, every name on `names`'s list. */
 function serversFile(mcp: Mcp, servers: readonly [string, DocMcpServer][]):
     Record<string, unknown> {
   const file: Record<string, unknown> = {};
@@ -177,10 +174,14 @@ function serversFile(mcp: Mcp, servers: readonly [string, DocMcpServer][]):
   return file;
 }
 
-function serverPairs(mcp: Mcp, flag: string, servers: readonly [string, DocMcpServer][]):
-    string[] {
-  return servers.flatMap(([name, server]) => Object.entries(entryOf(mcp, server)).flatMap(
-    ([key, value]) => object(value)
+/**
+ * The servers as the record's flag gives them (none without one): one
+ * `<flag> <servers>.<name>.<key>=<JSON>` pair a value, a map's one an entry.
+ */
+function serverPairs(mcp: Mcp, servers: readonly [string, DocMcpServer][]): string[] {
+  const flag = mcp.flag;
+  return flag === undefined ? [] : servers.flatMap(([name, server]) =>
+    Object.entries(entryOf(mcp, server)).flatMap(([key, value]) => object(value)
       ? Object.entries(value).flatMap(([entry, each]) =>
         [flag, `${mcp.servers}.${name}.${key}.${entry}=${JSON.stringify(each)}`])
       : [flag, `${mcp.servers}.${name}.${key}=${JSON.stringify(value)}`]));
@@ -300,7 +301,7 @@ export function invocation(record: Served, start: StartDoc,
     ...(cli.definition.native.argv ?? []).map((arg) => fill(arg, values)),
     ...options.skills.flatMap((skill) => (cli.definition.skills.argv_each ?? [])
       .map((arg) => fill(arg, { ...values, skill }))),
-    ...(mcp.flag === undefined ? [] : serverPairs(mcp, mcp.flag, servers)),
+    ...serverPairs(mcp, servers),
     ...mcp.argv.map((arg) => fill(arg, values)),
     ...servers.flatMap(([name]) => (mcp.argv_each ?? []).map((arg) =>
       fill(arg, { ...values, name }))),
