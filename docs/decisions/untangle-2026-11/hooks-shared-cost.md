@@ -79,4 +79,4 @@ engine already starts reads it.
 
 ## Owed
 
-- [ ] `untangle/runner-start-cost`: the runner's start for its internal hook commands (`hooks`, `decide`), about 50 ms past Node's own here, most of it loading every built-in module the bundle imports and checking every record at import (`served()`), so a hooked event or a decided call pays only what it uses; researched first.
+- [x] `untangle/runner-start-cost` (done, `runner-start-cost.md`: a hook program of its own, about 8 ms past Node): the runner's start for its internal hook commands (`hooks`, `decide`), about 50 ms past Node's own here, most of it loading every built-in module the bundle imports and checking every record at import (`served()`), so a hooked event or a decided call pays only what it uses; researched first.
