@@ -277,8 +277,8 @@ try {
       throw new Error(`${path} ${mib} MiB x ${n}: ${points} checkpoints, fewer than ${least}`);
     }
     if (path !== "hoard") {
-      // An open egress call takes no unit of the pool (`OPEN_CALL_BYTES` is its own term).
-      if (path !== "signals") {
+      // Where a hold was sampled (an open egress call takes no unit: `OPEN_CALL_BYTES`).
+      if (over > -Infinity) {
         check(`${path} ${mib} MiB x ${n}: live past the units held, at every hold's checkpoint`,
               over, 0, "the units its pool held");
       }

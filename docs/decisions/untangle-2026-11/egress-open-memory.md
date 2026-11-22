@@ -82,6 +82,21 @@ door when the object closed it, at every size.
 - **`end`'s `#live.has` check** keeps a row left open by an earlier instance unmarked, as
   before: its signal errored when that instance went, and its door settles it `ended`.
 
+## Review (2026-11-22)
+
+- **The leg's per-hold check skips by a measure, not a path name:** it runs where a hold was
+  sampled, so `signals` (whose one checkpoint holds no unit) needs no case of its own.
+- **The case's time is its ends, not its opens, and grows as the square.** Timed in the leg
+  (local, `1d828cf9e`): the 16,000 opens 35 s (0.8 ms an open at the start, 3.3 ms near the
+  bound, the open rows' reads), the sample 0.2 s, then 111.5 s for the 16,000 ends to reach
+  their reads after `drop`; at 4,000 calls the ends took 5.3 s (21 times for 4 times the
+  calls). The ends' wait is capped at 120 s (`LANE_LOOKS` x `LANE_POLL_MS`): 93% of it
+  locally. The whole case, 135 to 148 s, is one `/run` fetch, whose headers come at its end,
+  against Node fetch's 300 s headers timeout. CI's slower runner takes it past both.
+
 ## Owed
 
-None.
+- [ ] Research where the ends' square lies (the owner isolate closing every writer at once,
+  or the one reader isolate holding all 16,000 reads, which no door does) and whether a
+  prompt stop at `EGRESS_LIMITS.open` holds in production; then fit the case's ends to its
+  ceilings with room, or the cost, before merge (`untangle/egress-open-memory`).
