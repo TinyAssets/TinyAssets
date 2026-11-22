@@ -608,7 +608,8 @@ async function theirs(client: SyncClient, place: Place, mirror: Mirror,
  * hold unsent changes, each kept with its row (sent against its base, a conflict there):
  * whether it went whole. Its tree is walked an entry at a time, whatever a folder lists: a
  * file is removed only once the walk has read it, and a directory read as it changes still
- * gives every entry neither made nor removed since once (POSIX `readdir`), so none is missed.
+ * gives every entry neither made nor removed since once (POSIX `readdir`). A file made in it
+ * after its folder was read is not looked at, and goes with the folder.
  */
 async function goneFolder(place: Place, mirror: Mirror, select: () => Selection,
                           path: string): Promise<boolean> {

@@ -391,13 +391,13 @@ class Job {
 /**
  * The files a resume of `session` reads, in its engine's store before its home is made: the
  * sync agent fetches those the store lacks or holds stale (`fetchSessions`), each moved from
- * its directory into the store, which keeps no second copy; one the owner's files no longer
- * hold leaves the store. A store copy holding changes of its own is never replaced: the
+ * the sync agent's directory of this run's (`in/<run>`) into the store, which keeps no second
+ * copy; one the owner's files no longer hold leaves the store. A store copy holding changes of its own is never replaced: the
  * resume reads it, and the run's staging sends it. The sync agent then moves the mirror's
  * rows of what the store took, and only those (`tookSessions`): a copy a run kept meanwhile
  * is sent against the base it was made on.
  */
-async function storeResume(rec: Served, authority: string, session: string | null,
+async function storeResume(rec: Served, run: string, authority: string, session: string | null,
                            sync: (job: Pick<SyncJob, "direction" | "have" | "took">) =>
                              Promise<SyncAnswer>): Promise<void> {
   if (session === null) {
@@ -440,7 +440,7 @@ async function storeResume(rec: Served, authority: string, session: string | nul
   const { fetched, cursor } = await answered({ direction: "fetch", have: Object.fromEntries(
     [...hashed].map(([rel, each]) => [`${prefix}${rel}`, each.sha256])) }) as
     { fetched: Fetch[]; cursor: number };
-  const staged = `${SYNC_HOME}/in/${rec.id}`;
+  const staged = `${SYNC_HOME}/in/${run}/${rec.id}`;
   const took: Fetch[] = [];
   await withStore(rec, () => {
     for (const each of fetched) {
@@ -460,7 +460,7 @@ async function storeResume(rec: Served, authority: string, session: string | nul
         took.push(each);
       }
     }
-    remove(staged);
+    remove(`${SYNC_HOME}/in/${run}`);
   });
   if (took.length > 0) {
     await answered({ direction: "took", took: { fetched: took, cursor } });
@@ -849,10 +849,10 @@ async function syncCommand(): Promise<number> {
 async function syncLocked(job: SyncJob): Promise<number> {
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
-    const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
+    // Each run's own `in` and `out`: a run's import lets go only what its own fetch put there.
+    const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in/${job.run}`,
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
                     records: served() };
-    safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
     // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
     // cut short keeps what it sent.
     const mirror = openMirror(`${SYNC_HOME}/mirror.db`);
@@ -877,6 +877,7 @@ async function syncLocked(job: SyncJob): Promise<number> {
         return OK;
       }
       if (job.direction === "fetch") {
+        safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
         process.stdout.write(JSON.stringify(await fetchSessions(
           client, place, mirror, job.engine, resumePaths(record(job.engine), job.session!),
           new Map(Object.entries(job.have ?? {})))));
@@ -1264,7 +1265,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     if (pressed !== null) {
       outbox.push(pressed);
     }
-    await storeResume(rec, start.authority, start.session_id, (part) =>
+    await storeResume(rec, run, start.authority, start.session_id, (part) =>
       syncAgent({ ...job(part.direction), session: start.session_id!, ...part }, work));
     const home = homeOf(run);
     const system = systemOf(run);

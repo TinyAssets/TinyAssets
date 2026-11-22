@@ -76,11 +76,17 @@ read, so the order buys nothing and the unsorted walk (one entry at a time, #579
    the way (refused, or changed again), it is marked again. A sandbox removing its own unsent
    file there is covered by the same scan.
 5. **A gone folder is walked an entry at a time** (no `sorted`); the sorted walk stays for the
-   root's stores and homes (`sortedWalk`), whose order is read.
+   root's stores and homes (`sortedWalk`), whose order is read. The walk removes each file only
+   once read; the folder's own removal after it (`remove`) takes, unread, a file a run made in
+   it after its folder was read, as the sorted walk's did (owed below).
 6. **No format change.** The schema and the columns' values are format 2's; a workspace row may
-   now be marked. A runner one deploy back reads such a row as a file gone (a removal against
-   no base, a conflict, then its own `theirs`), which is the old loud failure at that path, no
-   loss; `took` is a job between one runner's own processes, in no protocol.
+   now be marked. A runner one deploy back reads such a row as a file gone: a removal against
+   the row's base, always older than the owner's version (a row is marked only where the owner's
+   version is not the row's, and versions are the space's one sequence) or none, so
+   a conflict at the owner's files, then its own `theirs`, which throws where the path still
+   changes kind (a folder created on a file, a file renamed onto a folder; neither removes a
+   byte). That is the old loud failure at that path, no loss; `took` is a job between one
+   runner's own processes, in no protocol.
 7. **The tests**: the race in the sync agent's jobs' order (a fetch not taken, a fetch taken, a
    row moved by a sync-out before the take, the cursor moved before it, a gone session with a
    copy kept meanwhile, `sync.test.ts`), the real interleaving through the root runner (the
@@ -89,6 +95,20 @@ read, so the order buys nothing and the unsorted walk (one entry at a time, #579
    names holding no more than one of 2,000 (`large`). The stand-in owner answers a write onto a
    folder or under a file as `#syncOp` does.
 
+8. **Found in review: each run fetches into its own directory** (`in/<run>`, as `out/<run>`).
+   The fetch wrote into one directory an engine's (`in/<engine>`), which each import removed
+   whole: a run's import let go another run's fetch waiting for its own import (that run then
+   resumed on the store's older copy, or none), or put in another fetch's bytes of the same
+   path against its own report. Now an import reads and removes only its own run's.
+
 ## Left
 
-Nothing found in scope is left.
+- `goneFolder`'s final removal (decision 5) takes a file made in the folder after the walk read
+  that folder: a run's new file there goes unsent. It was so in the sorted walk too; a fix
+  removes each emptied folder (`rmdir`, refused while it holds a late file) and what the walk
+  skips by name, which is its own design (Fact 14).
+
+- [ ] fix/gone-folder-late-file: `sync.ts` `goneFolder` removes the folder whole after its walk,
+  so a file a run makes in it after the walk read that folder goes unread and unsent; remove
+  what the walk read and skipped, then each emptied folder (`rmdir`), keeping one still holding
+  a file, and hold it in `sync.test.ts`.
