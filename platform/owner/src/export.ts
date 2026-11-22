@@ -140,7 +140,6 @@ export function exported(): Readonly<Record<string, ExportTable>> {
                     "parent name"),
     file_history: t("version path op kind content_id size mode writer at prune_after released",
                     "version"),
-    file_temps: t("name expires_at writer", "name"),
     file_contents: t("content_id size inline refs", "content_id"),
     file_content_chunks: t("content_id idx sha256", "content_id idx"),
     file_chunks: t("sha256 size state stored refs holds gc_after holder", "sha256"),

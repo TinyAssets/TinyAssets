@@ -286,9 +286,8 @@ describe("a file path", () => {
     ["a lone surrogate", `${W}/a\ud800`],
     ["a name past 255 bytes", `${W}/${"é".repeat(128)}`],
     ["a path past 4096 bytes", `${W}/${"a/".repeat(2046)}a`],
-    ["a path outside the roots", "/etc/passwd"],
-    ["the temporary area's parent", "/.ta"],
-    ["a prefix of a root", "/workspaces/a"],
+    ["a path outside the workspace", "/etc/passwd"],
+    ["a prefix of the workspace", "/workspaces/a"],
     ["not text", 7],
   ])("refuses %s", async (_what, path) => {
     const r = await rig();
@@ -547,7 +546,6 @@ describe("the manifest's queries", () => {
         plan("SELECT MIN(prune_after) FROM file_history WHERE prune_after IS NOT NULL"),
         plan("SELECT MIN(gc_after) FROM file_chunks WHERE gc_after IS NOT NULL"),
         plan("SELECT MIN(expires_at) FROM file_intents"),
-        plan("SELECT MIN(expires_at) FROM file_temps"),
       ];
     });
     for (const plan of plans) {

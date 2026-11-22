@@ -120,13 +120,13 @@ figures are the guard's print (`limits-audit.test.ts` "prints the audit's figure
 ## Summary
 
 - **tier**: 3
-- **owner setting**: 12
+- **owner setting**: 13
 - **vendor limit**: 14
-- **technical ceiling**: 180
+- **technical ceiling**: 183
 - **default**: 1
-- **total**: 210
+- **total**: 214
 
-Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-21.
+Counted by a script over every table row (`| ` lines with six cells, the header rows left out), recounted 2026-11-22.
 
 Removed by this slice, since only the tier's storage bounds what they bounded, or no
 platform fact stood behind them:
@@ -157,9 +157,6 @@ the sandbox's days). The platform's recovery copies are bounded by the vendor's 
 is what it is", above.
 
 Not yet in one of the kinds, each owed:
-- `owner/src/files.ts` `TEMP_TTL_S`, 7 days: a temporary directory under `/.ta/tmp` unused
-  for a week has its files deleted. No door makes one (`tempDir` has no caller), so the area
-  goes, its retention with it (`untangle/drop-temp-area`).
 - the control record's `scratch_retention_days` (`sandbox/runner/scratch.ts`): an agent's
   sandbox scratch unused that long is deleted at its sandbox's next run. Scratch is a cache
   on the sandbox's own disk, never counted in the owner's storage, and with none in the
@@ -209,7 +206,7 @@ bound lets the oldest go, the asker's own at its share, so none is refused for r
 | `codemode/wrangler.jsonc` `limits.cpu_ms` | 300,000 ms | the codemode Worker's CPU an invocation | a script past it resets its sandbox | vendor limit | Workers Paid's most, 5 minutes (Workers limits). |
 | `owner/wrangler.jsonc` `limits.subrequests` | 10,000,000 | the owner object's calls an invocation | the platform's error past it | technical ceiling | Workers Paid's most (Workers limits: "10,000 (up to 10M)"). P1 probed 1,000,000; a live check at the most is owed. |
 | `contract/src/control.ts` `RUNS_CEILING` | 1,000 | the most simultaneous runs a tier record may give | a record past it is malformed | technical ceiling | The 10 GB: each live run's row, grant, lease and egress calls are costed at it. Far past any tier. Share: one a thing another bound counts, the most runs a tier record may give: a hundred times the paid tier's 10, so the control record raises a tier with no deploy. Every per-run term is costed at it: `run_grants` 9.7 MB, `sandbox_leases` 5.6 MB, `sandbox_signins` 10.0 MB, and the live rows of `runs` and `egress_reservations`. |
-| `owner/src/manifest.ts` `INDEX_BYTES` | 512 MiB of the index's charge | the file index in the owner's object: every manifest row as SQLite stores it (`manifest_bytes`: entries, history rows, contents with each small file's inline bytes, chunk lists, chunks, temporary directories, scope rows, each path and overflow page) | a change that adds to it refused `file_index_full` (507 at the doors): "your file index is full ... Delete files or old versions of files", never an upgrade; `file_share` past an outside writer's share | technical ceiling | The 10 GB: the owner-bound guard's term `file_manifest`, this at `WORST_FILL` 2.25, 1,208.0 MB, the largest. No setting and no tier raises it: it is the object's room. About 200,000 to 350,000 small live files an owner (`datashapes_research.md` §2.4) until the index's cold level (F3), whose hot ceiling and cache R2's latency sizes: that is unmeasured, since the latency probe (run 41640819262, 2026-11-03; deleted in untangle F1) reached no R2 and measured only a call to a second object, placed in the caller's colo (5 ms p50; 30 ms p50 with a small SQLite write; about 0.3 s for the first call, which makes it). Placed bodies' contents and chunks are charged in it too. Share: the owner's content held hot, the largest. |
+| `owner/src/manifest.ts` `INDEX_BYTES` | 512 MiB of the index's charge | the file index in the owner's object: every manifest row as SQLite stores it (`manifest_bytes`: entries, history rows, contents with each small file's inline bytes, chunk lists, chunks, scope rows, each path and overflow page) | a change that adds to it refused `file_index_full` (507 at the doors): "your file index is full ... Delete files or old versions of files", never an upgrade; `file_share` past an outside writer's share | technical ceiling | The 10 GB: the owner-bound guard's term `file_manifest`, this at `WORST_FILL` 2.25, 1,208.0 MB, the largest. No setting and no tier raises it: it is the object's room. About 200,000 to 350,000 small live files an owner (`datashapes_research.md` §2.4) until the index's cold level (F3), whose hot ceiling and cache R2's latency sizes: that is unmeasured, since the latency probe (run 41640819262, 2026-11-03; deleted in untangle F1) reached no R2 and measured only a call to a second object, placed in the caller's colo (5 ms p50; 30 ms p50 with a small SQLite write; about 0.3 s for the first call, which makes it). Placed bodies' contents and chunks are charged in it too. Share: the owner's content held hot, the largest. |
 | `contract/src/limits.ts` `MAX_INTENT_CHUNKS` | 10,000 chunks (40 GiB) | one upload's chunks | a file over 40 GiB cannot be uploaded | technical ceiling | The 10 GB: guard term `file_intents`, 82.2 MB. One open upload's chunk list is one row. Share: what waits at once: one 40 GiB file, the most `max_file_bytes` lets one upload hold. |
 | `owner/src/files.ts` `MAX_OPEN_INTENTS` | 64 | uploads open at once (placed bodies' among them) | a 65th refused until one commits | technical ceiling | The 10 GB, inside `file_intents`. Share: what waits at once: far past the uploads one owner's syncs, devices and placed bodies open together. |
 | `owner/src/files.ts` `MAX_HELD_CHUNKS` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB, inside `file_intents`. Share: what waits at once: two of the largest uploads (`MAX_INTENT_CHUNKS`) open together. |
@@ -218,7 +215,6 @@ bound lets the oldest go, the asker's own at its share, so none is refused for r
 | `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. `file_edit` is no longer bound by it (ADR-037, ruling 2): it edits chunk by chunk (`EDIT_BYTES_MAX`, below). A whole write's bytes are not yet under a unit (PR 3b). |
 | `contract/src/limits.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
 | `contract/src/file-defaults.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The settings' range only: the rows any path keeps are bounded by the index's ceiling (`INDEX_BYTES`). |
-| `owner/src/files.ts` `tempDir` | 239 bytes | a temporary directory's prefix | a longer prefix refused | technical ceiling | One path component, `MAX_NAME_BYTES` 255, with its 16 hex. |
 | `doors/src/file-bytes.ts` one upload request | one chunk, 4 MiB at most | one `PUT files/upload/<intent_id>/<index>` | an upload sends one request a chunk, in any order, again after any failure; the door answers a chunk it holds without a second put | technical ceiling | Cloudflare's request body ceiling, 100 MB on Free and Pro (its Workers limits page, read 2026-11-03), never bounds a file: the policy's `max_file_bytes` and the intent's plan do. |
 | `owner/src/owner-do.ts` `fileWrite` | 4 MiB | one `fileWrite` call's content | a larger file goes by upload | technical ceiling | One chunk; Workers RPC's message and the isolate's 128 MB. |
 | `contract/src/limits.ts` `MAX_PATH_BYTES` | 4,096 bytes | a path | a longer path refused | technical ceiling | Linux's `PATH_MAX`, which the sandbox's disk holds. |

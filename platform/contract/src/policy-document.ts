@@ -190,7 +190,7 @@ function checkActions(actions: unknown): void {
  * together at most what `owner_reserve` percent leaves: set, no client fills the owner's
  * files and the owner keeps room of its own. Off (100 and 0), a client is held to the
  * owner's whole alone. A client is charged its own rows (the entries
- * it last wrote, its history rows, its temporary directories) and once for each content and
+ * it last wrote and its history rows) and once for each content and
  * chunk they or its open uploads reference, whoever else references them too
  * (`manifest.ts`). The index's ceiling itself is no setting: it is the object's room
  * (`owner/src/manifest.ts` `INDEX_BYTES`).

@@ -631,18 +631,18 @@ A change past the file index's ceiling or the owner's storage SHALL be refused, 
 - **THEN** it is refused `storage_full`, and the history is kept
 
 ### Requirement: Every entry holds its content
-Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
+Each file entry SHALL hold a reference to its content, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
 
-#### Scenario: A file renamed out of the temporary area
-- **WHEN** a file written under `/.ta/tmp` is renamed into `/workspace`, and housekeeping then collects every due chunk
+#### Scenario: A renamed file
+- **WHEN** a file is renamed into another folder, and housekeeping then collects every due chunk
 - **THEN** the file reads back byte for byte
 
 #### Scenario: Live files' churn inside the window
 - **WHEN** ten files, with `keep_versions` 1 and `keep_recent` 1, are each written ten times inside the retention window
 - **THEN** every write lands and history holds ten rows
 
-### Requirement: The owner frees history, and temporary files keep none
-A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
+### Requirement: The owner frees history
+A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version.
 
 #### Scenario: A purge at any time
 - **WHEN** the owner purges a path's history
@@ -671,7 +671,7 @@ Every refusal at the owner's storage figure (the tier's, from the control record
 - **THEN** only the uploads that sandbox's sync began are aborted, and the client's own write still commits
 
 ### Requirement: Every manifest row is bounded in bytes as the object stores it
-Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against the file index's ceiling (`INDEX_BYTES`). The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
+Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against the file index's ceiling (`INDEX_BYTES`). The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
 
 #### Scenario: A client writing 4,096-byte paths
 - **WHEN** an outside client writes file after file at 4,096-byte paths
@@ -697,7 +697,7 @@ Each outside client SHALL hold at most `client_share` percent of the owner's sto
 - **THEN** that client's next file, then the other's, is refused `file_share`, and the owner writes on until the whole index is full (`file_index_full`)
 
 ### Requirement: Each scope is charged once for what its own rows reference
-Each scope (an outside client's own, all clients', the owner's writers') SHALL be charged its own entries, history rows and temporary directories, and once for each content and chunk its rows or open uploads reference, while any do, deduplicated within the scope and never across scopes; a chunk no scope references SHALL be charged to the scope that let it go last until it is deleted or revived. The owner-wide total SHALL count each stored row once.
+Each scope (an outside client's own, all clients', the owner's writers') SHALL be charged its own entries and history rows, and once for each content and chunk its rows or open uploads reference, while any do, deduplicated within the scope and never across scopes; a chunk no scope references SHALL be charged to the scope that let it go last until it is deleted or revived. The owner-wide total SHALL count each stored row once.
 
 #### Scenario: A client copies the owner's file
 - **WHEN** the owner writes a file, a client writes the same bytes, and the owner removes and purges its own

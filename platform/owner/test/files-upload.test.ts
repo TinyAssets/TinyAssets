@@ -362,16 +362,14 @@ describe("a content id", () => {
 });
 
 describe("garbage collection", () => {
-  it("never collects content that an entry or a kept history row names, in any root",
-     async () => {
+  it("never collects content that an entry or a kept history row names", async () => {
     const r = await rig();
     const body = (seed: number) => filled(INLINE_BYTES + 10, seed);
     const limits = { keep_versions: 1, keep_recent: 2, retention_days: 30 };
     await setFiles(r, limits);
     const other = await inFiles(r.stub, async (files, unit) => {
       const o = { expected: null, writer: "o" };
-      const [temp, kept] = await unit(() => [files.tempDir("t-", "agent"),
-                                             files.tempDir("t-", "agent")]);
+      const [temp, kept] = [`${W}/temp`, `${W}/kept`];
       for (const seed of [1, 2, 3]) {
         await files.write(`${W}/a`, body(seed), o);
       }
@@ -379,6 +377,7 @@ describe("garbage collection", () => {
       await files.write(`${temp}/u`, body(5), o);
       await files.write(`${temp}/same-as-a`, body(3), o);
       await unit(() => {
+        files.mkdir(kept, o);
         files.rename(`${temp}/t`, `${W}/from-temp`, { ...o, replace: false });
         files.rename(`${temp}/u`, `${kept}/u`, { ...o, replace: false });
         files.rename(`${W}/a`, `${kept}/a`, { ...o, replace: false });
@@ -386,7 +385,7 @@ describe("garbage collection", () => {
       await files.write(`${W}/b`, body(6), o);
       await unit(() => {
         files.remove(`${W}/b`, o);
-        files.dropTemps([temp], "agent");
+        files.remove(temp, { ...o, recursive: true });
       });
       return kept;
     });

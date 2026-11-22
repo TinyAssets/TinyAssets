@@ -984,9 +984,10 @@ describe("the owner's database bound", () => {
     // A trigger that charges nothing, or none, is seen.
     expect(uncharged(SCHEMA.replaceAll("CREATE TRIGGER file_history_added", "CREATE TRIGGER x")))
       .toEqual(["file_history: file_history_added"]);
-    const charge = /(CREATE TRIGGER file_temps_removed AFTER DELETE ON file_temps BEGIN ).*? END$/m;
+    const charge =
+      /(CREATE TRIGGER file_history_removed AFTER DELETE ON file_history BEGIN ).*? END$/m;
     expect(uncharged(SCHEMA.replace(charge, "$1 END")))
-      .toEqual(["file_temps: file_temps_removed"]);
+      .toEqual(["file_history: file_history_removed"]);
     expect(manifestIndexes()).toEqual([...MANIFEST_INDEXES].sort());
     expect(manifestIndexes(`${SCHEMA}\nCREATE INDEX file_entries_by_writer ON file_entries ` +
                            "(writer)")).toContain("file_entries_by_writer");

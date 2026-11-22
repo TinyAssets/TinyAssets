@@ -188,7 +188,6 @@ export function loadOrder(): readonly Load[] {
     { table: "file_content_chunks" },
     { table: "file_entries" },
     { table: "file_history" },
-    { table: "file_temps" },
     { table: "starter_receipts" },
     { table: "starter_state" },
     { table: "collection_rows" },

@@ -212,7 +212,7 @@ describe("a sync commit", () => {
       { op: "mkdir", path: `${W}/ok`, base: null },
       { op: "chmod", path: `${W}/x`, base: null } as unknown as SyncOp,
       { op: "mkdir", path: `${W}/ok`, base: null },
-      { op: "mkdir", path: "/.ta/tmp/x", base: null },
+      { op: "mkdir", path: "/elsewhere/x", base: null },
       { op: "write", path: `${W}/big`, base: null, inline: new Uint8Array(INLINE_BYTES + 1) },
       { op: "mkdir", path: `${W}/zero`, base: 0 },
       { op: "write", path: `${W}/unsent`, base: null, intent_id: never.intent_id },

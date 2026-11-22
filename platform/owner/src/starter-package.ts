@@ -12,7 +12,7 @@ import {
 } from "../../contract/src/agent-definition";
 import { Refusal } from "../../contract/src/refusal";
 import { ownersOnly } from "./paths";
-import { storedPath, within, WORKSPACE } from "../../contract/src/paths";
+import { storedPath, WORKSPACE } from "../../contract/src/paths";
 
 /**
  * The most paths a package may name, its files and the paths it once shipped and dropped
@@ -71,7 +71,7 @@ export function starterPackage(value: unknown): StarterPackage {
     // workspace's map) is data, anywhere in the workspace, the owner's to change. Who else
     // may write it is the agent trees' rule: the profile is in `OWNER_TREES`, so a grant the
     // owner narrowed never writes it, and the map is not.
-    if (!within(path, WORKSPACE) || path === WORKSPACE || path.endsWith(NEWER)
+    if (path === WORKSPACE || path.endsWith(NEWER)
         || paths.has(path) || (file.class !== "managed" && file.class !== "personal")
         || (file.class === "managed" && !ownersOnly(path)) || typeof file.text !== "string") {
       throw new Refusal("invalid",
