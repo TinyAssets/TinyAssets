@@ -88,46 +88,18 @@ export const asShared: Surface<Response> = (refusal) => {
     : answer(200, body);
 };
 
-/** MCP Events' error codes: the design sketch's (`-32023` to `-32026`), and JSON-RPC's. */
+/** MCP Events' own error codes: the design sketch's (`-32023` to `-32026`). */
 export const EVENT_ERRORS = Object.freeze({
   notFound: -32023, forbidden: -32024, exhausted: -32025, unsupported: -32026,
-  invalidParams: -32602, internal: -32603,
 });
 
 /**
- * MCP Events': the design sketch's error, thrown, which the SDK answers. A full agent's is
- * `ResourceExhausted` with the owner's limit, `{limit, max}`, from its refusal's facts; a
- * `subscription_limit` refusal without them is a bug, thrown, never an answer with no limit.
- * A refusal for the moment is `-32603` with its reason and wait: the sketch names no code
- * for one, answers a recoverable failure `-32603` with `data.reason`, and has a client stop
- * on `Forbidden` (its "Transient per-occurrence error" and open question 6, at
- * `c77b84395eff`, read 2026-11-21).
- */
-export const asEvent: Surface<never> = (refusal) => {
-  if (refusal.code === "subscription_limit") {
-    const facts = refusal.facts;
-    if (!keyed(facts, ["limit", "max"]) || typeof facts["limit"] !== "string"
-        || !whole(facts["max"], 0)) {
-      throw new Error("a subscription_limit refusal carries no {limit, max}");
-    }
-    throw new ProtocolError(EVENT_ERRORS.exhausted, "ResourceExhausted", facts);
-  }
-  if (refusal.invalid) {
-    throw new ProtocolError(EVENT_ERRORS.invalidParams, refusal.message);
-  }
-  if (refusal.transient) {
-    const seconds = refusal.retryAfter;
-    throw new ProtocolError(EVENT_ERRORS.internal, refusal.message, {
-      reason: refusal.message, ...(seconds === undefined ? {} : { retryAfterMs: seconds * 1000 }),
-    });
-  }
-  throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden", { reason: refusal.message });
-};
-
-/**
- * An MCP request's other than a tool call's (the definition's resources, prompt and skills,
- * `definition.ts`): its JSON-RPC error, thrown, which the SDK answers: invalid params for an
- * invalid request, else an internal error, the refusal's reason and wait in its `data`.
+ * Every MCP request's but a tool call's (MCP Events', the definition's resources, prompt and
+ * skills, `definition.ts`): its JSON-RPC error, thrown, which the SDK answers: invalid params
+ * for an invalid request, else an internal error, the refusal's reason and wait in its `data`.
+ * MCP names no code for a refusal for the moment, and its codes `-32000` to `-32019` mean
+ * nothing across implementations (its 2026-07-28 "Error Codes", at `862397cec702`, read
+ * 2026-11-22), so `-32603` with `retryAfterMs` is how a client is told to try again.
  */
 export const asRequest: Surface<never> = (refusal) => {
   const seconds = refusal.retryAfter;
@@ -136,6 +108,30 @@ export const asRequest: Surface<never> = (refusal) => {
     refusal.message,
     { reason: refusal.message, ...(seconds === undefined ? {} : { retryAfterMs: seconds * 1000 }) },
   );
+};
+
+/**
+ * MCP Events': an invalid request or a refusal for the moment is any MCP request's
+ * (`asRequest`), as the design sketch answers them (`InvalidParams`, and its "Transient
+ * per-occurrence error", `-32603` with `data.reason`). Any other refusal is the sketch's own
+ * error: a full agent's `ResourceExhausted` with the owner's limit, `{limit, max}`, from its
+ * refusal's facts (a `subscription_limit` refusal without them is a bug, thrown, never an
+ * answer with no limit), and the rest `Forbidden`, which a client stops on (its open question
+ * 6). The sketch at `c77b84395eff`, read 2026-11-21, still its `HEAD` on 2026-11-22.
+ */
+export const asEvent: Surface<never> = (refusal) => {
+  if (refusal.invalid || refusal.transient) {
+    return asRequest(refusal);
+  }
+  if (refusal.code === "subscription_limit") {
+    const facts = refusal.facts;
+    if (!keyed(facts, ["limit", "max"]) || typeof facts["limit"] !== "string"
+        || !whole(facts["max"], 0)) {
+      throw new Error("a subscription_limit refusal carries no {limit, max}");
+    }
+    throw new ProtocolError(EVENT_ERRORS.exhausted, "ResourceExhausted", facts);
+  }
+  throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden", { reason: refusal.message });
 };
 
 /**
