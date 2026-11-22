@@ -150,7 +150,7 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
   };
   readonly egress: Pick<Egress, "end">;
   readonly files: Pick<Files, "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
-    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "open" | "range"
+    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "openFile" | "range"
     | "sandboxLease" | "stat">;
   readonly grants: {
     standing(client: unknown, generation: unknown, authenticatedAt: number | null):
@@ -352,16 +352,10 @@ export class Launcher implements RunHost {
 
   /**
    * The owner's file at `path`, read whole, and its etag; null where nothing is. Anything else
-   * there (a folder) refuses the run (`invalid`), never read as no file (Fact 8).
+   * there (a folder) refuses the run (`Files.openFile`), never read as no file (Fact 8).
    */
   async #whole(path: string): Promise<{ bytes: Uint8Array; etag: string } | null> {
-    const content = await this.#o.door(() => {
-      const entry = this.#o.files.stat(path);
-      if (entry !== null && entry.kind !== "file") {
-        throw new Refusal("invalid", `${path} is not a file`);
-      }
-      return entry === null ? null : this.#o.files.open(path);
-    });
+    const content = await this.#o.door(() => this.#o.files.openFile(path));
     if (content === null) {
       return null;
     }
