@@ -39,7 +39,7 @@ export async function answered<A>(surface: Surface<A>, work: () => Promise<A>): 
   }
 }
 
-/** The `Retry-After` header a refusal is answered with, if it names a wait or its code does. */
+/** The `Retry-After` header a refusal is answered with, if it is for the moment (`retryAfter`). */
 export function retryAfter(refusal: Refusal): Record<string, string> {
   const seconds = refusal.retryAfter;
   return seconds === undefined ? {} : { "Retry-After": String(seconds) };

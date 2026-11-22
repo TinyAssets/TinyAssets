@@ -329,9 +329,14 @@ export class Refusal extends Error {
     return REFUSALS[this.code].status;
   }
 
-  /** The `Retry-After` it is answered with, in seconds, if any. */
+  /**
+   * The `Retry-After` it is answered with, in seconds: a transient one's own, or its code's.
+   * A terminal one names none, whatever it carries, so no door tells a caller to try again.
+   */
   get retryAfter(): number | undefined {
-    return this.retryAfterS ?? (REFUSALS[this.code] as Entry).retryAfterS;
+    return this.transient
+      ? this.retryAfterS ?? (REFUSALS[this.code] as Entry).retryAfterS
+      : undefined;
   }
 
   /** Whether the request itself was malformed, the `invalid` family's (`400`). */
