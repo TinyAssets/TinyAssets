@@ -239,7 +239,12 @@
         "refuses": [
           ".codex/config.toml",
           ".codex/hooks.json",
-          ".codex/skills"
+          ".codex/skills",
+          ".codex/agents"
+        ],
+        "argv": [
+          "-c",
+          "features.skill_mcp_dependency_install=false"
         ],
         "cite": "https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/loader/mod.rs",
         "read": "2026-11-22"

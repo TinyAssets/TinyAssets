@@ -167,11 +167,13 @@ export interface DefinitionSkills {
 }
 
 /**
- * The engine's own settings layers an agent's folder could hold beside its definition, which
- * the definition never renders: `refuses`, the paths the engine loads them from, relative to
- * its cwd and each ancestor under `/workspace`, a run refused while one is there (Fact 8: never
- * a file loaded beside the definition, nor one silently ignored); `argv`, what keeps the engine
- * from loading the rest on every run; from the vendor's page (`cite`, read on `read`).
+ * The engine's own layers an agent's folder could hold beside its definition (its settings,
+ * custom commands, subagents, extensions), which the definition never renders: `refuses`, the
+ * paths the engine loads them from, relative to its cwd and each ancestor under `/workspace`,
+ * a run refused while one is there (Fact 8: never a file loaded beside the definition, nor one
+ * silently ignored); `argv`, what keeps the engine from loading the rest, or from starting
+ * what a part of the definition names for it alone, on every run; from the vendor's page
+ * (`cite`, read on `read`).
  */
 export interface DefinitionNative {
   readonly refuses: readonly string[];

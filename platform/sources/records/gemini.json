@@ -222,9 +222,11 @@
       "native": {
         "refuses": [
           ".gemini/settings.json",
-          ".gemini/skills"
+          ".gemini/skills",
+          ".gemini/commands",
+          ".gemini/agents"
         ],
-        "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/cli/skills.md",
+        "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/packages/core/src/config/storage.ts",
         "read": "2026-11-22"
       },
       "hooks": {
