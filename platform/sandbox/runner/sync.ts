@@ -41,14 +41,14 @@ import { existsSync, lstatSync, type Stats } from "node:fs";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { Served } from "../../sources/src/served";
+import { type Served, served } from "../../sources/src/served";
 
 import { isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
          walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
 import { STATE_DIR } from "./protocol";
-import { readJson, RECORDS, STORE } from "./session";
+import { readJson, STORE } from "./session";
 import { SYNC_HOME } from "./users";
 import { SYNC_HEADER, type SyncDoor } from "../../contract/src/egress";
 import { CLIENT_READ_ONLY, WORKSPACE } from "../../contract/src/paths";
@@ -112,7 +112,7 @@ export async function stageSessions(
   const next: Record<string, SeenSession> = {};
   const against = sha256Hex(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
   const sessions: { rec: Served; rel: string; path: string; digest: string }[] = [];
-  for (const each of RECORDS.values()) {
+  for (const each of served().values()) {
     const store = `${STORE}/${each.id}`;
     for (const rel of walkFiles(store)) {
       if (!isKept(keptPaths(each).sessions, rel)) {

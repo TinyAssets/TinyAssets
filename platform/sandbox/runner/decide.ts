@@ -1,11 +1,12 @@
 /**
- * The hook helper (R5 P-hooks; d3 §N3, `r5_research.md` §5.3): `ta-runner decide <door>`,
- * which a run's CLI's own pre-tool hook runs, as the run's user, on each tool call it matches
- * (the record's `decide` block, `sources/src/schema.ts`), where the CLI runs a command rather
- * than posting the call itself. It reads the call as every CLI hands its hook one
- * (`tool_name`, `tool_input`, on stdin), asks the runs' decide door (`runDecide`) and answers
- * in the one shape each CLI reads: let it be, exit 0 and `{}`; refused or held for the owner,
- * exit 2 and the door's reason on stderr, which the CLI hands the model.
+ * The hook helper (R5 P-hooks; d3 §N3, `r5_research.md` §5.3): the hook program's
+ * `decide <door>` (`hook-entry.ts`), which a run's CLI's own pre-tool hook runs, as the run's
+ * user, on each tool call it matches (the record's `decide` block, `sources/src/schema.ts`),
+ * where the CLI runs a command rather than posting the call itself. It reads the call as
+ * every CLI hands its hook one (`tool_name`, `tool_input`, on stdin), asks the runs' decide
+ * door (`runDecide`) and answers in the one shape each CLI reads: let it be, exit 0 and `{}`;
+ * refused or held for the owner, exit 2 and the door's reason on stderr, which the CLI hands
+ * the model.
  *
  * The door's address is its argument, which only the root-owned hook file names, and must be
  * the decide door's; the run's credential (`DECIDE_ENV`, `<run>:<secret>`) is its
@@ -17,7 +18,7 @@
 import { DECIDE_HEADER, decideCredential, egressDoor } from "../../contract/src/egress";
 import type { DoorAnswer } from "../../contract/src/owner";
 
-import { RUNNERS } from "./protocol";
+import { COMMAND, hookProgram } from "./protocol";
 
 /** The variable a run's CLI's environment carries its decide credential in. */
 export const DECIDE_ENV = "TA_DECIDE";
@@ -94,13 +95,12 @@ export function matcherOf(tools: readonly string[]): string {
 }
 
 /**
- * The helper's argv: the runner of `digest`, as the loader installed it, by the Node the
- * loader runs it with (this process's), Node's own warnings off, so the reason a refusal
- * writes on stderr is the door's alone; the door its argument.
+ * The helper's argv: the hook program of the runner of `digest`, by the Node the loader runs
+ * the runner with (this process's), Node's own warnings off, so the reason a refusal writes
+ * on stderr is the door's alone; the door its argument.
  */
 export function helperArgv(digest: string, door: string): string[] {
-  return [process.execPath, "--no-warnings", `${RUNNERS}/${digest}/runner.mjs`, "decide",
-          door];
+  return [process.execPath, "--no-warnings", hookProgram(digest), COMMAND.decide, door];
 }
 
 /**

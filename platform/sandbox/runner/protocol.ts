@@ -61,11 +61,16 @@ export const WORKER_COMMANDS = Object.freeze([
 export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
 
 /**
- * What the runner runs of its own: a job's detached runner, the sync agent, and the hook
- * helper and the agent's hooks' dispatcher a run's CLI runs.
+ * The commands a run's CLI runs on its events and calls, the hook helper and the agent's
+ * hooks' dispatcher: the runner's hook program takes them (`hook-entry.ts`, at `hookProgram`),
+ * not the runner's own entry, so each loads only what they use.
  */
+export const HOOK_COMMANDS = Object.freeze([COMMAND.decide, COMMAND.hooks] as const);
+export type HookCommand = (typeof HOOK_COMMANDS)[number];
+
+/** What the runner runs of its own: a job's detached runner, the sync agent, the hook commands. */
 export const INTERNAL_COMMANDS = Object.freeze([COMMAND.run, COMMAND.loginRun, COMMAND.sync,
-                                                COMMAND.decide, COMMAND.hooks] as const);
+                                                ...HOOK_COMMANDS] as const);
 
 /**
  * The exit codes. The runner's: done, a usage refused (no such command), "no" (not signed
@@ -97,6 +102,15 @@ export const INSTALL = "install";
 
 /** The runners the loader installed, `<sha256>/runner.mjs` each. */
 export const RUNNERS = "/opt/ta/runner";
+
+/**
+ * The hook program of the runner of `digest`, beside it: built into the runner's bytes and
+ * written there, root's, by the runner at each run's start (`runner.ts` `writeHookProgram`).
+ */
+export function hookProgram(digest: string): string {
+  return `${RUNNERS}/${digest}/hooks.cjs`;
+}
+
 /** The root-only state directory. */
 export const STATE_DIR = "/var/lib/ta";
 /** Where a runner's bytes are uploaded for the loader to install. */

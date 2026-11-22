@@ -52,7 +52,7 @@ import { AGENTS_DIR } from "../../contract/src/paths";
 import { forbids } from "../../contract/src/text";
 
 import { DECIDE_ENV, helperArgv, helperCommand, matcherOf } from "./decide";
-import { COMMAND, type DocHook, type DocMcpServer, RUNNERS, type StartDoc } from "./protocol";
+import { COMMAND, type DocHook, type DocMcpServer, hookProgram, type StartDoc } from "./protocol";
 
 export const ENGINE_ROOT = "/opt/ta/engines";
 
@@ -62,11 +62,11 @@ export function hooksFile(event: string): string {
 }
 
 /**
- * The dispatcher's argv before its event, as a hook file names it: the runner of `digest`, as
- * the loader installed it, by the Node the loader runs it with, Node's own warnings off.
+ * The dispatcher's argv before its event, as a hook file names it: the hook program of the
+ * runner of `digest`, by the Node the loader runs the runner with, Node's own warnings off.
  */
 export function dispatcherArgv(digest: string): string[] {
-  return [process.execPath, "--no-warnings", `${RUNNERS}/${digest}/runner.mjs`, COMMAND.hooks];
+  return [process.execPath, "--no-warnings", hookProgram(digest), COMMAND.hooks];
 }
 
 /**

@@ -3,7 +3,9 @@
 // (wrangler's), each from its own entry (`runner/runner.ts`, `runner/probes.ts`) in a build of
 // its own, so neither output depends on the other. The probes are given the runner's SHA-256
 // (`TA_RUNNER_SHA`), so they run only beside the runner they were built with. The pair the
-// deploy looks for names both digests (`template/pair.ts`, which names both files).
+// deploy looks for names both digests (`template/pair.ts`, which names both files). The
+// runner carries its hook program (`TA_HOOK_PROGRAM`), a CommonJS file built first from its
+// own entry (`runner/hook-entry.ts`), which the runner writes beside itself.
 //
 //   node sandbox/build/bundle.mjs <runner> <probes>   writes the runner to <runner> and the
 //                                                      probes to <probes>
@@ -19,19 +21,25 @@ const require = createRequire(join(platform, "package.json"));
 const esbuild = require("esbuild");
 
 /** Each bundle's entry. */
-const ENTRIES = Object.freeze({ runner: "sandbox/runner/runner.ts",
+const ENTRIES = Object.freeze({ hooks: "sandbox/runner/hook-entry.ts",
+                                runner: "sandbox/runner/runner.ts",
                                 probes: "sandbox/runner/probes.ts" });
 
-/** One bundle's build: the same options for both, `define` the probes' runner digest. */
-async function one(root, entry, define) {
+/**
+ * One bundle's build: the same options for each, `define` the runner's hook program or the
+ * probes' runner digest. An ES module but the hook program, which is CommonJS: Node starts
+ * one without its ES module loader, about 7 ms sooner on each event and call that runs it.
+ */
+async function one(root, entry, define, format = "esm") {
   const built = await esbuild.build({
     entryPoints: [join(root, entry)],
     bundle: true,
     platform: "node",
     target: "node22",
-    format: "esm",
-    banner: { js: "import { createRequire as __ta } from 'node:module'; " +
-                  "const require = __ta(import.meta.url);" },
+    format,
+    // An ES module's `require`, for the CommonJS code it bundles; CommonJS has its own.
+    banner: format === "esm" ? { js: "import { createRequire as __ta } from 'node:module'; " +
+                                     "const require = __ta(import.meta.url);" } : {},
     legalComments: "none",
     define,
     // Paths in the bundle's comments from the workspace root, whoever runs it, so its digest
@@ -48,14 +56,16 @@ async function one(root, entry, define) {
 }
 
 /**
- * Both bundles of the platform tree at `root` (this one by default), in memory: each one's
- * bytes, SHA-256 and the source files it was built from.
+ * Both bundles of the platform tree at `root` (this one by default), and the hook program the
+ * runner carries, in memory: each one's bytes, SHA-256 and the source files it was built from.
  */
 export async function build(root = platform) {
-  const runner = await one(root, ENTRIES.runner, {});
+  const hooks = await one(root, ENTRIES.hooks, {}, "cjs");
+  const runner = await one(root, ENTRIES.runner,
+                           { TA_HOOK_PROGRAM: JSON.stringify(hooks.bytes.toString("utf8")) });
   const probes = await one(root, ENTRIES.probes,
                            { TA_RUNNER_SHA: JSON.stringify(runner.sha) });
-  return { runner, probes };
+  return { hooks, runner, probes };
 }
 
 if (process.argv[1] !== undefined
