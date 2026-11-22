@@ -874,7 +874,7 @@ export class Sandbox extends Box {
   login(doc: { id: string; engine: string; mode?: "in" | "out"; authority?: string },
         doors: Doors): void {
     const signin: SigninDoc = {
-      id: doc.id, engine: doc.engine, region: null, mode: doc.mode ?? "in",
+      id: doc.id, engine: doc.engine, mode: doc.mode ?? "in",
       authority: doc.authority ?? "owner",
       urls: { events: `${doors.origin}/signin/${doc.id}/events`,
               signin: `${doors.origin}/signin` } };

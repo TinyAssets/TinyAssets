@@ -89,7 +89,7 @@ import { codePoints } from "../../contract/src/text";
 import {
   type Call, type Door, type DoorUnits, type ImportLine, type LiveSession, proven,
 } from "./door";
-import { type ActionReceipt, type Actions, type RuleNote, ruleNotes } from "./actions";
+import { type ActionReceipt, type Actions, hookNote, type RuleNote, ruleNotes } from "./actions";
 import type { Egress } from "./egress";
 import type { Files } from "./files";
 import { narrows } from "./network";
@@ -155,7 +155,8 @@ interface PolicyState {
 
 /**
  * What `read` shows the owner: the Python's `OwnerPolicy.projection()`, where each of its
- * action rules holds and can't (`ruleNotes`, d3 §N5), and the code mode settings in force
+ * action rules holds and can't (`ruleNotes`, d3 §N5), where its agents' own hooks run and
+ * where they can't be held (`hookNote`), and the code mode settings in force
  * (`codemodeSettings`), so the app shows the switch with no copy of its default.
  */
 export interface Projection {
@@ -164,13 +165,14 @@ export interface Projection {
   readonly digest: string;
   readonly policy: PolicyDocument;
   readonly notes: readonly RuleNote[];
+  readonly hooks: RuleNote;
   readonly codemode: { readonly on: boolean };
 }
 
 /** The projection of `owner`'s policy as it stands. */
 function projected(owner: string, { generation, digest, document }: PolicyState): Projection {
   return { owner, generation, digest, policy: document, notes: ruleNotes(document),
-           codemode: codemodeSettings(document) };
+           hooks: hookNote(), codemode: codemodeSettings(document) };
 }
 
 type ReceiptKind = "write" | "wake_limits" | "outside_grant" | "proposal" | "refusal";

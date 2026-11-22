@@ -358,6 +358,15 @@ describe("the honest note (d3 §N5)", () => {
       { holds_at: ["doors"], not_enforced: [] },
     ]);
   });
+
+  it("says where the agents' own hooks run, and where they are not held (D5)", async () => {
+    const { o } = await ledgerOwner();
+    // Codex runs its dispatcher through a login shell the agent writes; where an engine's
+    // dispatcher cannot start, the call goes on; a main agent runs none.
+    expect((await o.stub.policyRead(o.owner)).hooks).toEqual({
+      holds_at: ["claude-code", "gemini", "pi"],
+      not_enforced: ["main_agent", "codex", "gemini.fails_open"] });
+  });
 });
 
 describe("a run's held call (R5 P-resume)", () => {

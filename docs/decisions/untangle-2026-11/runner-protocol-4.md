@@ -25,4 +25,4 @@ deploys, not a check.
 
 ## Owed
 
-- [ ] `untangle/agent-hooks`: protocol 4's second deploy (the runner speaks 4 and takes `hooks`, the Worker 3 and 4), with D5's admission, records and dispatcher.
+- [x] `untangle/agent-hooks`: protocol 4's second deploy (the runner speaks 4 and takes `hooks`, the Worker 3 and 4), with D5's admission, records and dispatcher. Done (`agent-hooks.md`).

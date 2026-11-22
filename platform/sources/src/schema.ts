@@ -119,13 +119,39 @@ export interface Instructions {
 }
 
 /**
- * The engine's own name of each engine-neutral hook event (`HOOK_EVENTS`), every one, from its
- * hooks page (`cite`, read on `read`). Its hooks go in the root-owned layer the record's
- * `decide` hook does, so an engine with no such layer has none (`unsupported`).
+ * How the agent's own hooks (`hooks.json`) reach the engine: through the runner's dispatcher
+ * (`sandbox/runner/hooks.ts`, `<runner> hooks <event>`), which the engine runs from a file in
+ * the root-owned layer its `decide` hook is in, and which runs each of the agent's hooks the
+ * event's call matches from the run's own `{system}/hooks.json`. The dispatcher answers in the
+ * one shape every engine here reads: exit 2 and the reason on stderr blocks, exit 0 and
+ * `hookSpecificOutput.additionalContext` (under the event's `hookEventName`) adds context.
+ * - `events`: the engine's own name of each engine-neutral event (`HOOK_EVENTS`), every one.
+ * - `file`: where the dispatcher's entries go: `decide.file` (a shared one is that alone), or
+ *   another file of the run's own under `{system}`.
+ * - `template`: what the file holds once; `each`: what it holds for each event it carries,
+ *   `{event}` the event, `{native}` the engine's name of it, `{on_failure}` what a dispatcher
+ *   that fails does to it (`block` where the event takes a block, else `continue`, by
+ *   `HOOK_EVENTS`). A file every run shares carries
+ *   every event (any run's agent may have a hook on it); a run's own carries the events the
+ *   run's agent has hooks on, and is written only when there is one. `{dispatcher}` is the
+ *   dispatcher's command line before its event, `{dispatcher_argv}` its argv as JSON, and
+ *   `{hook_events}` the run's events as JSON. Several parts of one JSON file merge, lists
+ *   joined; of any other file, their texts are joined.
+ * - `argv`: what loads a file of the run's own, added whenever the file is written.
+ * - `runs`: how the engine runs the dispatcher (a shell and its arguments, or `exec`, the
+ *   record's own file starting it by its argv), which its start check runs it through.
+ * - `fails`: whether a dispatcher that cannot start lets the call through (`open`) or blocks it.
+ * - `alterable`: how the agent can change what the dispatcher does, where it can (the owner's
+ *   note says its hooks are not held there).
+ * - `cite`, `read`: the vendor's hooks page, and when it was read.
+ * An engine with no root-owned layer has none (`unsupported`), as its `decide` has none.
  */
 export type DefinitionHooks =
-  | { readonly events: Readonly<Record<HookEvent, string>>; readonly cite: string;
-      readonly read: string }
+  | { readonly events: Readonly<Record<HookEvent, string>>; readonly file: string;
+      readonly template?: string; readonly each?: string; readonly argv?: readonly string[];
+      readonly runs: { readonly shell: readonly string[] } | { readonly exec: true };
+      readonly fails: "open" | "closed"; readonly alterable?: string;
+      readonly cite: string; readonly read: string }
   | { readonly unsupported: string };
 
 /**

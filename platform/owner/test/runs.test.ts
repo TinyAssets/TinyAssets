@@ -218,6 +218,24 @@ describe("admission", () => {
       "not on your egress allowlist"]);
   });
 
+  it("starts a run with its agent's own hooks as its hooks.json has them, none without one, " +
+     "and refuses one that does not read", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const path = "/workspace/agents/main/hooks.json";
+    await ownerFile(r.stub, r.bind(), path, null);
+    expect(Object.values((await ownerRun(r.stub, r.bind())).start.hooks).flat()).toEqual([]);
+    const guard = { match: { kinds: ["shell"] }, run: ["./hooks/guard.sh"], timeout_s: 30 };
+    await ownerFile(r.stub, r.bind(), path, JSON.stringify({ hooks: { pre_tool: [guard] } }));
+    const { start } = await ownerRun(r.stub, r.bind());
+    expect(start.hooks).toEqual({ pre_tool: [guard], post_tool: [], prompt: [],
+                                  session_start: [], stop: [], session_end: [], pre_compact: [] });
+    await ownerFile(r.stub, r.bind(), path, JSON.stringify({ hooks: { pre_tool: [
+      { run: ["./guard.sh"], allow: true }] } }));
+    expect((await failure(() => ownerRun(r.stub, r.bind()))).message)
+      .toMatch(/^hooks\.json: pre_tool\[0\] is its run, and optionally match and timeout_s/);
+  });
+
   it("refuses a run whose mcp.json names the run's own door, or is no file", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);

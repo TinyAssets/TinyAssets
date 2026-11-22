@@ -12,6 +12,7 @@ Accepted (founder, 2026-11-01).
   - decision 12: code mode is off by default until its isolation probe passes (ADR-039 decision 4);
   - decisions 4.1 and 8: a run past the tier's simultaneous runs waits, never refused for it (ADR-039 decision 6).
 - **Its "What stands"** list of ADR-024 to ADR-031 is held by ADR-039 decision 2.
+- **Built, decisions 2 and 11 as ADR-039 decision 3 amends them** (2026-11-22): the agent's one hook definition (`hooks.json`) runs on every engine through the runner's dispatcher, in the root-owned layer R5's decide hook is in, and no answer of it allows or rewrites a call (`docs/decisions/untangle-2026-11/agent-hooks.md`).
 
 ## Date
 

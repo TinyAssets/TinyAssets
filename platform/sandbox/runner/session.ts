@@ -299,7 +299,7 @@ export interface RunSession {
 /**
  * `act` run as a run runs, by every CLI the runner or the probes start: a pool user taken;
  * its home made from the engine's store (with its secrets when `signedIn`) and its own
- * root-owned directory (`systemOf`); `files` (an invocation's, by path) written, those in
+ * root-owned directory (`systemOf`), the one of its group; `files` (an invocation's, by path) written, those in
  * that directory root's and readable by the user's group, the rest root's in the home
  * (`configOwned`), and the home given to the user. Once `act` is over, however it ends:
  * every process of the user killed, what it left in the shared scratch removed, the home
@@ -318,6 +318,13 @@ export async function withRunUser<T>(rec: Served, name: string,
     home = await makeHome(name, rec, opts.signedIn);
     safeDirs("/", SYSTEM, 0o755);
     remove(system);
+    // The one directory of the user's group, by which the dispatcher finds its run
+    // (`hooks.ts` `ownHooks`): one a dead runner left for this user's last run goes.
+    for (const left of readdirSync(SYSTEM)) {
+      if (lstatSync(join(SYSTEM, left), { throwIfNoEntry: false })?.gid === as.gid) {
+        remove(join(SYSTEM, left));
+      }
+    }
     mkdirSync(system, { mode: 0o750 });
     chownSync(system, 0, as.gid);
     const files = opts.files ?? new Map<string, string>();

@@ -252,7 +252,7 @@
           ".claude/agents"
         ],
         "cite": "https://code.claude.com/docs/en/settings",
-        "read": "2026-11-21"
+        "read": "2026-11-22"
       },
       "hooks": {
         "events": {
@@ -264,8 +264,12 @@
           "session_end": "SessionEnd",
           "pre_compact": "PreCompact"
         },
+        "file": "/etc/claude-code/managed-settings.json",
+        "each": "{\"hooks\": {\"{native}\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"{dispatcher} {event}\", \"shell\": \"bash\", \"timeout\": 600, \"onFailure\": \"{on_failure}\"}]}]}}",
+        "runs": {"shell": ["bash", "-c"]},
+        "fails": "closed",
         "cite": "https://code.claude.com/docs/en/hooks",
-        "read": "2026-11-21"
+        "read": "2026-11-22"
       }
     },
     "mcp": {

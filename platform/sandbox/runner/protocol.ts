@@ -19,9 +19,9 @@
 import { LEASE_TTL_S } from "../../contract/src/limits";
 
 /** The protocol this runner speaks. */
-export const PROTOCOL = 3;
+export const PROTOCOL = 4;
 /** The runner protocols the Worker speaks: its runner's, and at most the ones either side. */
-export const SPEAKS: readonly number[] = Object.freeze([2, 3, 4]);
+export const SPEAKS: readonly number[] = Object.freeze([3, 4]);
 
 /** Every command the runner takes, by its name on the command line. */
 export const COMMAND = Object.freeze({
@@ -43,6 +43,7 @@ export const COMMAND = Object.freeze({
   loginRun: "login-run",
   sync: "sync",
   decide: "decide",
+  hooks: "hooks",
 } as const);
 
 export type Command = (typeof COMMAND)[keyof typeof COMMAND];
@@ -57,10 +58,10 @@ export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
 
 /**
  * What the runner runs of its own: a job's detached runner, the sync agent, and the hook
- * helper a run's CLI runs.
+ * helper and the agent's hooks' dispatcher a run's CLI runs.
  */
-export const INTERNAL_COMMANDS = Object.freeze([COMMAND.run, COMMAND.loginRun,
-                                                COMMAND.sync, COMMAND.decide] as const);
+export const INTERNAL_COMMANDS = Object.freeze([COMMAND.run, COMMAND.loginRun, COMMAND.sync,
+                                                COMMAND.decide, COMMAND.hooks] as const);
 
 /**
  * Retired: commands protocol 1 records that the runner no longer takes. The template's
@@ -212,14 +213,11 @@ export interface DocHook {
 
 /**
  * A sign-in's document: the engine signed in or out, whose sandbox, and its doors (its own
- * events, and the presence report's). Protocol 2 records a `region`, always null and read by
- * no runner, which protocol 3 drops: it goes from the document once the Worker no longer
- * speaks 2 (`untangle-2026-11/drop-kimi.md`).
+ * events, and the presence report's).
  */
 export interface SigninDoc {
   readonly id: string;
   readonly engine: string;
-  readonly region: null;
   readonly mode: "in" | "out";
   readonly authority: string;
   readonly urls: { readonly events: string; readonly signin: string };
