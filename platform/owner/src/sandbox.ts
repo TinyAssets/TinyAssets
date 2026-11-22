@@ -99,9 +99,9 @@ export function vendorHosts(engine: string, credential: CredentialKind): string[
  * - `refused`: a refusal it threw that the contract reads, by its code;
  * - `malformed`: an answer came, returned or thrown as a refusal, out of the contract's shape
  *   (another version's code, say): the call is over and its fault is the sandbox Worker's.
- *   `cause` names it: a refusal's code, or the contract's own `fields` as they came and only
- *   the names of the answer's keys, since a bug's answer is no place a log can trust to hold
- *   nothing secret;
+ *   `cause` names it: a refusal's code, or the contract's own `fields` and only the names of
+ *   the answer's keys, since a bug's answer is no place a log can trust to hold nothing
+ *   secret: a code or field's value as it came only in the shape of a contract code (`shown`);
  * - `unanswered`: the call threw a plain error, its answer lost on the way or the sandbox
  *   Worker's own fault, which crosses as a plain error the object cannot tell from a loss.
  *
@@ -109,6 +109,14 @@ export function vendorHosts(engine: string, credential: CredentialKind): string[
  * one. Each call's own reader says what each means for its job (`startOutcome`,
  * `networkOutcome`).
  */
+/** A value in the shape of a contract code, a boolean, a number or none; else its type. */
+function shown(value: unknown): string {
+  if (typeof value === "string") {
+    return /^[a-z][a-z0-9_]{0,31}$/.test(value) ? value : "string";
+  }
+  return typeof value === "object" && value !== null ? "object" : String(value);
+}
+
 type SandboxAnswer<T> = { readonly kind: "answered"; readonly answer: T }
   | { readonly kind: "refused"; readonly refusal: Refusal }
   | { readonly kind: "malformed"; readonly cause: string }
@@ -126,7 +134,7 @@ async function sandboxAnswer<T>(call: () => Promise<unknown>, fields: readonly s
       return { kind: "refused", refusal };
     }
     return namedRefusal(error)
-      ? { kind: "malformed", cause: `a refusal of code ${String((error as { code?: unknown }).code)}` }
+      ? { kind: "malformed", cause: `a refusal of code ${shown((error as { code?: unknown }).code)}` }
       : { kind: "unanswered", error };
   }
   const answer = read(value);
@@ -134,7 +142,7 @@ async function sandboxAnswer<T>(call: () => Promise<unknown>, fields: readonly s
     return { kind: "answered", answer };
   }
   return { kind: "malformed", cause: object(value)
-    ? [...fields.map((field) => `${field} ${String(value[field])}`),
+    ? [...fields.map((field) => `${field} ${shown(value[field])}`),
        `keys ${Object.keys(value).join(" ")}`].join(", ")
     : typeof value };
 }

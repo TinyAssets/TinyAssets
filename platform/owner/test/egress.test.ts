@@ -1609,21 +1609,27 @@ describe("a live lease's network re-applied after an egress write", () => {
     await scripted(r.stub, { networkAnswer: { state: "gone", note: "a value" } as never });
     await egressWrite(r);
     await failedNow(2);
-    const gate = gateFor(env.SANDBOX_GATE, r.name);
-    await gate.arm("network", { refuse: { code: "e2b_quota", message: "another version's" } });
+    // A contract field's value not in a code's shape (hosts, say) is logged by its type.
+    await scripted(r.stub, { networkAnswer: { state: ["leak.example"] } as never });
     await egressWrite(r, "open");
     await failedNow(3);
-    await gate.arm("network", { refuse: { code: "object_overloaded", message: "busy" } });
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("network", { refuse: { code: "e2b_quota", message: "another version's" } });
     await egressWrite(r);
     await failedNow(4);
+    await gate.arm("network", { refuse: { code: "object_overloaded", message: "busy" } });
+    await egressWrite(r, "open");
+    await failedNow(5);
     const again = "the lane tries again";
     expect(lines()).toEqual([
       "the sandbox answered a lease's network re-apply out of the contract's shape (state " +
         `gone, keys state note), a sandbox Worker bug: it failed, and ${again}`,
+      "the sandbox answered a lease's network re-apply out of the contract's shape (state " +
+        `object, keys state), a sandbox Worker bug: it failed, and ${again}`,
       "the sandbox answered a lease's network re-apply out of the contract's shape (a refusal " +
         `of code e2b_quota), a sandbox Worker bug: it failed, and ${again}`,
       `the sandbox refused a lease's network re-apply (object_overloaded); ${again}`]);
-    expect(JSON.stringify(logged.mock.calls)).not.toContain("a value");
+    expect(JSON.stringify(logged.mock.calls)).not.toMatch(/a value|leak\.example/);
     // Past its retry clock the lane sends it again, and it lands (the refused two never
     // reached the Worker).
     await scripted(r.stub, { networkAnswer: { state: "applied" } });
@@ -1631,8 +1637,8 @@ describe("a live lease's network re-applied after an egress write", () => {
                 NETWORK_RETRY_S);
     await laneNow(r);
     expect((await recorder(r.stub)).networks.map((each) => generationOf(each.network.network)))
-      .toEqual([2, 4]);
-    expect(await networkRow(r)).toEqual([{ network_generation: 4, network_pending: null,
+      .toEqual([2, 3, 5]);
+    expect(await networkRow(r)).toEqual([{ network_generation: 5, network_pending: null,
                                            tried: 0 }]);
   });
 

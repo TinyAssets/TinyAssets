@@ -35,20 +35,33 @@ reach the sandbox".
 ## As built
 
 1. **One reading of a sandbox call** (`owner/src/sandbox.ts` `sandboxAnswer`): `answered`,
-   `refused`, `malformed` with its cause (a refusal's code, or the contract's own fields as
-   they came and only the names of the answer's keys) or `unanswered` (a plain throw).
-   `startOutcome` is now its start reader (same outcomes, same log lines), and
+   `refused`, `malformed` with its cause (a refusal's code, or the contract's own fields and
+   only the names of the answer's keys, a value as it came only in a contract code's shape,
+   else its type: a Worker bug's field may hold hosts or a token) or `unanswered` (a plain
+   throw). `startOutcome` is now its start reader (same outcomes, same log lines), and
    `networkOutcome` its re-apply reader.
 2. **The re-apply reads it** (`launch.ts` `reapply`): `applied` and `at_resume` as answered;
-   `lost`, a refusal, an answer out of shape and no answer all `failed`, each logged as itself;
-   late still records nothing.
+   `lost`, a refusal, an answer out of shape and no answer all `failed`, each but `lost` (no
+   sandbox of that lease) logged as itself; late still records nothing.
 3. **The answer's states are the contract's** (`contract/src/sandbox.ts` `NETWORK_STATES`,
    which `NetworkApplied` is typed from), as `START_CODES` is for a start: the owner reads the
    list, never a copy of it.
 
-## Found and left
+## Found and left (review)
 
-- While re-applies keep failing, the sandbox keeps its old network's direct reach (a host the
-  new policy dropped), though the gateway refuses its model calls. E2 leaves that window to
-  the lane's retry, bounded by the retry clock and the lease's life; nothing here changes it,
-  and a re-apply that cannot land (no sandbox of that lease) has no sandbox to reach out of.
+- While re-applies keep failing, the sandbox keeps its old network: E2B's `allowOut` still
+  reaches a host the owner's new policy dropped. Only the egress door fails closed (an
+  API-key run's model calls); a signed-in run's CLI, git and every tool's direct call never
+  cross it. The lane retries every `NETWORK_RETRY_S` with no bound but the lease's life, which
+  each runner batch renews (`LEASE_TTL_S`), and the policy write answers `ok` with nothing
+  telling the owner the narrowing is not in force. A failure that repeats (a terminal refusal,
+  another version's answer, E2B refusing the plan) leaves it so for the run's whole life: a
+  Fact 8 gap E2 left and this change does not move. Its fix needs a bound with a reason
+  (Fact 15) and an owner-facing fact, a design this change does not settle (Fact 14).
+
+## Owed
+
+- [ ] A narrowed egress policy not yet in force on a live sandbox: research first what bounds
+  it and how the owner is told (the lease's `network_generation` behind, the write's answer or
+  status naming it; past a bound with a recorded reason, the lease's runs stopped), then build
+  it (`untangle/network-narrow-bound`).
