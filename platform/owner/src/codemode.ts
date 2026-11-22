@@ -191,7 +191,7 @@ interface ScriptParts {
  * One script run to its end (the MCP door's `code`, `codeRun`): its tools' calls counted by
  * how each ended, the writes that landed in order, and the answer fitted to one tool answer
  * (`fittedCode`). A script whose caller stopped waiting is stopped (pi-codemode's abort: its
- * pending call cancelled, its VM ended at its next exchange), answered `stopped`, and logged
+ * pending call cancelled and its execution ended), answered `stopped`, and logged
  * with its calls and what landed, since its answer has no reader.
  */
 async function runScript(parts: ScriptParts): Promise<CodeResult> {

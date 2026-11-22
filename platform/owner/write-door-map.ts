@@ -19,6 +19,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { takesStop } from "../contract/src/doors.ts";
 import { docLines, WIDTH } from "../contract/src/source-lines.ts";
 import { type OwnerRow, ownerRows } from "./src/door-steps.ts";
 
@@ -32,7 +33,7 @@ function method(row: OwnerRow): string[] {
     ...row.args === "none" ? []
       : [`request${row.args !== "loose" && "omitted" in row.args ? "?" : ""}: ` +
          `RequestIn<H, "${row.door}">`],
-    ...row.stop === true ? ["stop: ReadableStream<Uint8Array>"] : [],
+    ...takesStop(row) ? ["stop: ReadableStream<Uint8Array>"] : [],
   ];
   const line = `  ${row.door}(${parts.join(", ")}): Promise<AnswerIn<H, "${row.door}">>;`;
   return [...row.tool === undefined ? [] : docLines(row.door, row.tool.description, "  "),
@@ -62,7 +63,7 @@ function mapSource(rows: readonly OwnerRow[]): string {
     " * The doors that take their caller's stop after their request (their rows' `stop`), each",
     " * handler handed it as its door's `left`.",
     " */",
-    `export type StopDoors = ${rows.filter((row) => row.stop === true)
+    `export type StopDoors = ${rows.filter(takesStop)
       .map((row) => `"${row.door}"`).join(" | ") || "never"};`,
     "",
     "/** The handler of `door` in a map of modules' handlers `H`, by its row's module. */",
