@@ -44,10 +44,8 @@ record holds.**
   need **Workers Scripts edit** on the account, which the kit's deploys need too.
 - **What the token holds.** The infra-ops reference (`.claude/skills/infra-ops/references/
   cloudflare.md`) records this secret with Zone DNS Edit and Account Workers Scripts edit,
-  and `emergency-dns.yml` writes DNS records with it. A run has shown it reading DNS:
-  `cloud-only-preflight.yml` (run 35704397255, 2026-09-22) read the zone's records with this
-  secret, and `internal_origin_dns` passed. No run has written DNS with it yet: the
-  stage's `routes` is the first (below).
+  and `emergency-dns.yml` writes DNS records with it. The stage's first `routes` (run
+  45059834265, 2026-11-22) read and wrote the zone's DNS records with it.
 - **How to check without reading the token.**
   - In the Cloudflare dashboard, My Profile → API Tokens lists each token's permissions and
     never shows its value.
@@ -236,7 +234,11 @@ It never counts as "absent".
   record, so on it nothing is made.
 
   It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
-  `wrangler triggers deploy`),
+  `wrangler triggers deploy`), waits up to ten minutes for the egress door's own refusal on
+  the host, a fresh connection each attempt (the host has no TLS for its name until Cloudflare
+  issues its certificate, about two minutes on the stage, and Cloudflare's own error pages do
+  not count), and stops naming the last failure's cause if
+  it does not,
   enables E2B's lifecycle webhook at the doors' path on the host now that the doors serve
   it, and runs the
   platform's canary's unkeyed checks (`--side doors --unkeyed`, below). The same

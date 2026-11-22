@@ -32,11 +32,12 @@ import { until } from "../../ci/workerd";
 import {
  admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorsEnv,
  failNextForget, forgotten, held,
- NAVIGATE, OPEN,
+ OPEN,
  grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
  signInApp,
  url,
 } from "./support";
+import { NAVIGATE } from "../../contract/src/navigation";
 
 const SCOPES = [{ universe: "cc", agent: "main", capability: "read_graph" }];
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
