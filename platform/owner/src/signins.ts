@@ -63,7 +63,8 @@ import type { SandboxSignin } from "../../contract/src/sandbox";
 
 /** A live sign-in is the authority's one at a time. */
 export const SIGNIN_LIVE = "signin_live: a sign-in is already in progress in that sandbox";
-const NO_SIGNIN = "no such sign-in";
+/** No live sign-in of that id: it ended, or never was. */
+export const NO_SIGNIN = "no such sign-in";
 /** A source whose sign-in the platform's control record has switched off. */
 export const SIGNIN_OFF = "signin_off: signing in to this source inside a sandbox is switched " +
   "off until its vendor's terms for hosted use are verified";
@@ -421,7 +422,10 @@ export const signinsDoors = Object.freeze({
    * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
    * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
    * a pasted code), or why it did not start (`StartOutcome`'s code: `sandbox_waiting`, ...),
-   * a start with no answer the object can read stopped in the sandbox too.
+   * a start with no answer the object can read stopped in the sandbox too. A sign-in stands
+   * while its row is live: one whose row ended while its start was out (the owner stopped it,
+   * or it was lost) is never sent again, is stopped in the sandbox if it launched, and is
+   * refused as no such sign-in.
    */
   async signinStart(o: SigninsDoorNeeds, door: Door<SigninStartRequest>):
       Promise<SigninView | { started: false; code: string }> {
@@ -470,18 +474,26 @@ export const signinsDoors = Object.freeze({
       urls: signinUrls(begun.row.id) };
     const answer = await startOutcome("a sign-in", () => o.sandbox.signin(signin),
                                       () => o.door(() => o.signins.owned(begun.row.id)));
-    if (answer.started === true) {
-      return signinView(begun.row);
-    }
-    await o.door(() => {
+    const standing = await o.door(() => {
+      if (answer.started === true && o.signins.owned(begun.row.id)) {
+        return true;
+      }
       o.signins.end(begun.row.id);
       o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
+      return false;
     });
-    if (answer.started === null) {
-      // In case its CLI did launch: stopped, as a run's is cancelled.
+    if (standing) {
+      return signinView(begun.row);
+    }
+    if (answer.started !== false) {
+      // Its CLI may have launched (no answer it can read), or did after its row ended (the
+      // owner stopped it, or it was lost, while its start was out): stopped, as a run's is.
       await o.sandbox.signinCancel({ authority: begun.row.authority, id: begun.row.id })
-        .catch((error) => console.error("a lost sign-in start's stop did not reach the sandbox",
-                                        error));
+        .catch((error) => console.error("a sign-in's stop after its start did not reach the " +
+                                        "sandbox", error));
+    }
+    if (answer.started === true) {
+      throw new Refusal("refused", NO_SIGNIN);  // it ended before its start answered
     }
     return { started: false, code: answer.code };
   },
@@ -538,10 +550,22 @@ export const signinsDoors = Object.freeze({
     });
     return o.sandbox.signinInput({ authority: row.authority, id: row.id, code });
   },
-  /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
+  /**
+   * A sign-in stopped, the owner's own door: its row ended at once and its lease given back
+   * once nothing holds it, so a start still out or waiting to be sent again is never sent
+   * again, one that launches late is stopped as its answer comes (`signinStart`), and its
+   * runner's next post is refused; then its CLI stopped in the sandbox, whether one was live
+   * there to stop (`cancelled`).
+   */
   async signinCancel(o: SigninsDoorNeeds, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
-    const row = await o.door(() => o.signins.get(door.check().r["id"]));
+    const row = await o.door(() => {
+      const row = o.signins.get(door.check().r["id"]);
+      o.signins.end(row.id);
+      o.launcher.leaseFreed(row.lease_id, row.epoch);
+      return row;
+    });
+    o.relay.settled(row.id);  // its tail goes with it
     return o.sandbox.signinCancel({ authority: row.authority, id: row.id });
   },
   /**
