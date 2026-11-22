@@ -147,6 +147,8 @@ function world(bundles: readonly Staged[]) {
   const faults: { kill?: { op: string; after: number }; refuse?: string } = {};
   const namespaces = new Map(bundles.map((staged, n) => [staged.owner, `${String(n).repeat(32)}`]));
   const secrets = new Set([IMPORT_KEY]);
+  /** The doors' active deployment: one version, unless a case splits it. */
+  const serving = [{ version_id: "doors-v1", percentage: 100 }];
   for (const staged of bundles) {
     staging.set(...indexAt(staged));
     staging.set(doneName(`${RUN}/${staged.key}`), JSON.stringify({ op: "import",
@@ -251,6 +253,9 @@ function world(bundles: readonly Staged[]) {
         .filter((key) => key.startsWith(prefix)).map((name) => ({ name })),
                              result_info: { cursor: "" } });
     }
+    if (path === `/workers/scripts/${NAMES.doors}/deployments`) {
+      return ok({ deployments: [{ id: "d1", strategy: "percentage", versions: serving }] });
+    }
     const secret = `/workers/scripts/${NAMES.doors}/secrets`;
     if (path === secret) {
       return ok([...secrets].map((name) => ({ name, type: "secret_text" })));
@@ -269,7 +274,7 @@ function world(bundles: readonly Staged[]) {
   };
   const window: Window = { names: NAMES, inputs: INPUTS, fetcher, clock: CLOCK };
   return { window, buckets, staging, kv, sent, dead, consumers, held, admitted, faults,
-           namespaces, secrets };
+           namespaces, secrets, serving };
 }
 
 const quiet = () => undefined;
@@ -682,6 +687,18 @@ describe("the window's key, deleted after its close", () => {
       await expect(unkeyMain(["unkey", "--facts", facts], given, quiet, w.window.fetcher))
         .rejects.toThrow(/unkey takes CLOUDFLARE_ACCOUNT_ID, then IMPORT_DOORS_API_TOKEN/);
     }
+    expect([...w.secrets]).toEqual([IMPORT_KEY]);
+  });
+
+  it("deletes nothing while the doors serve two versions: the delete deploys at once",
+     async () => {
+    const { facts, bundles } = bundled();
+    const w = world(bundles);
+    w.serving.splice(0, 1, { version_id: "doors-v2", percentage: 10 },
+                     { version_id: "doors-v1", percentage: 90 });
+    await expect(unkeyMain(["unkey", "--facts", facts], stdin, quiet, w.window.fetcher))
+      .rejects.toThrow(`${NAMES.doors} is split (doors-v2 at 10%, doors-v1 at 90%): end the ` +
+                       "split first");
     expect([...w.secrets]).toEqual([IMPORT_KEY]);
   });
 });
