@@ -811,7 +811,11 @@ describe("a commit's body", () => {
   });
 });
 
-/** A stand-in feed and read door over `files` (each path's version and text, null if gone). */
+/**
+ * A stand-in feed, read and commit door over `files` (each path's version and text, null if
+ * gone), a commit's write against a version that moved on kept beside the owner's under a
+ * conflict name, as the owner's object keeps it (`files.ts` `#syncOp`).
+ */
 function feedOf(files: Map<string, { version: number; text: string | null }>,
                 reads: string[]): Handler {
   return (door, body) => {
@@ -831,7 +835,25 @@ function feedOf(files: Map<string, { version: number; text: string | null }>,
         : { status: 200, body: { entry: { version: file.version, mode: 0, kind: "file" },
                                  inline: Buffer.from(file.text).toString("base64") } };
     }
-    return door === "commit" ? commitAll(body) : { status: 404, body: {} };
+    if (door !== "commit") {
+      return { status: 404, body: {} };
+    }
+    const ops = body["ops"] as { op: string; path: string; base: number | null;
+                                 inline?: string }[];
+    return { status: 200, body: { outcomes: ops.map((op) => {
+      const now = files.get(op.path);
+      const current = now?.text === null ? undefined : now;
+      const text = op.op === "remove" ? null : Buffer.from(op.inline!, "base64").toString();
+      if (op.base === null ? current !== undefined : current?.version !== op.base) {
+        if (text !== null) {
+          files.set(`${op.path}.ta-conflict-${LEASE.epoch}`, { version: version += 1, text });
+        }
+        return { path: op.path, outcome: "conflict" };
+      }
+      files.set(op.path, { version: version += 1, text });
+      return { path: op.path, outcome: "committed",
+               entry: text === null ? null : { version } };
+    }) } };
   };
 }
 
@@ -894,6 +916,31 @@ describe("the engines' sessions from the owner's files", () => {
     expect(await fetch(both)).toEqual({ fetched: [`${at}/s1.jsonl`],
                                         gone: [`${at}/s1/subagents/a.jsonl`] });
     expect(mirror.get(`${at}/s1/subagents/a.jsonl`)).toBeUndefined();
+  });
+
+  it("staged before a sync-in marks it changed, lands beside the owner's edit, never over it",
+     async () => {
+    const { place: made } = place();
+    const p = { ...made, records };
+    const files = new Map<string, { version: number; text: string | null }>();
+    const mirror = mirrorOf();
+    const door = await client(feedOf(files, []));
+    const path = `${at}/s1.jsonl`;
+    const staged = join(p.sessionsOut, "claude-code", ".claude/projects/main/s1.jsonl");
+    mkdirSync(dirname(staged), { recursive: true });
+    writeFileSync(staged, "one");
+    await syncOut(door, p, mirror, LEASE, []);
+    // The owner edits it; this sandbox's next run stages its own turn; another run's sync-in
+    // marks it changed before this run's sync-out.
+    files.set(path, { version: version += 1, text: "one, the owner's edit" });
+    writeFileSync(staged, "one, and this run's turn");
+    await syncIn(door, p, mirror);
+    const report = await syncOut(door, p, mirror, LEASE, []);
+    // Still marked, so the next staging drops the store's copy and a resume fetches the
+    // owner's: one conflict copy, never one a sync.
+    expect([report.conflicts, files.get(path)!.text,
+            files.get(`${path}.ta-conflict-${LEASE.epoch}`)?.text, mirror.get(path)?.sha256])
+      .toEqual([[path], "one, the owner's edit", "one, and this run's turn", UNREAD]);
   });
 });
 

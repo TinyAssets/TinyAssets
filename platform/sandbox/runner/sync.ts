@@ -264,7 +264,10 @@ export class SyncClient {
   }
 }
 
-/** What the sandbox last synced of one path: its version, and its bytes' identity. */
+/**
+ * What the sandbox last synced of one path: the version it last read or wrote (the base of
+ * its next write), and its bytes' identity.
+ */
 interface Known {
   readonly version: number;
   readonly size: number;
@@ -443,11 +446,16 @@ async function fetchInto(client: SyncClient, path: string, base: string, local: 
 
 /**
  * A session the owner's files changed, at `version`, since this sandbox read it: marked so
- * (`UNREAD`), its bytes left where they are, for a resume to fetch (`fetchSessions`).
+ * (`UNREAD`), its bytes left where they are, for a resume to fetch (`fetchSessions`). Its
+ * row keeps the version this sandbox last read or wrote, as every row does: the base a write
+ * of it is offered against, so a copy staged before the mark is a conflict at the owner's
+ * files, kept beside their newer one, never over it. A path with no row takes `version`: this
+ * sandbox holds no older copy of it to offer (its sessions are named by its own runs' ids).
  */
 function unread(place: Place, mirror: Mirror, path: string, version: number): void {
   if (sessionOf(place, path) !== null) {
-    mirror.put(path, { version, size: 0, mtime_ms: 0, sha256: UNREAD });
+    mirror.put(path, { version: mirror.get(path)?.version ?? version, size: 0, mtime_ms: 0,
+                       sha256: UNREAD });
   }
 }
 
