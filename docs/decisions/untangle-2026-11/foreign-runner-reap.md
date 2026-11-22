@@ -114,6 +114,12 @@ sandboxes. So one such sandbox left them, and itself, running and billed to E2B'
    - `#look` settles each sandbox on its own and returns how many failed. `alarm` backs off
      on any failure.
    - `#lookAt` kills a paused `kill_at` row, and a running one once its `kill_at` passes.
+   - A start's create forgets the row of a sandbox E2B no longer has (`#forget`, as the look
+     does) before it inserts the new one (review). Its upsert kept every column it did not
+     name, `kill_at` among them: a gone sandbox's `kill_at` became the new one's, and a look
+     that met the new one paused before reading its runner killed it, a live run on this
+     Worker's own runner with it. The upsert also kept the gone one's `network_due`,
+     `idle_since` and back-off, and a held slot it never owed back.
    - The header says all of it.
 3. `sandbox/test/sandbox.test.ts`:
    - An idle sandbox on a protocol 3 or 9 runner is reaped by the look (`state` alone, no
@@ -125,6 +131,11 @@ sandboxes. So one such sandbox left them, and itself, running and billed to E2B'
      killed at the next look.
    - Each sandbox is looked at on its own, failing before its window or in it.
    - A refused renewal's runner leaves no renewal pending.
+   - A sandbox a start made in place of a gone one with a `kill_at`, paused before any look
+     read it, is resumed, never killed (review).
+   - A start's refused resume owes its give-back at once, so its look is armed at once and the
+     runtime may run it: the test waits for the look to be armed again rather than reading the
+     alarm in that moment (review; it failed about one run in ten).
 4. `runner-protocol-contract.md`: its "Left" line corrected (the look kills such a sandbox at
    its window's end).
 

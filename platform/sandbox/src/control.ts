@@ -829,11 +829,11 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
       });
       const info = await e2b.info(created.sandboxID);
       const digest = this.#digest;
+      // One E2B no longer has is forgotten as the look forgets it: nothing of it, its window
+      // or its kill, its runs or its held slot, is the new one's.
+      this.#forget(authority);
       this.#sql.exec("INSERT INTO sandboxes (authority, sandbox_id, lease_id, end_at, runner) " +
-                       "VALUES (?, ?, NULL, ?, ?) ON CONFLICT (authority) DO UPDATE SET " +
-                       "sandbox_id = excluded.sandbox_id, lease_id = NULL, end_at = " +
-                       "excluded.end_at, renewing = 0, releasing = 0, paused = 0, runner = " +
-                       "excluded.runner", authority, created.sandboxID,
+                       "VALUES (?, ?, NULL, ?, ?)", authority, created.sandboxID,
                      info === null ? Date.now() : Date.parse(info.endAt), digest);
       this.#log(authority, "start");
       await this.#took();

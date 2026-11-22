@@ -1297,11 +1297,16 @@ describe("the runner, by digest", () => {
       } else {
         expect(answer).toBe("sandbox_runner_protocol");
         expect(commands).toEqual([["state", old]]);
-        // Resumed, so its row says it runs, and the look is armed for it.
+        // Resumed, so its row says it runs, and the look is armed for it: at once (its
+        // resume's give-back owed), so the runtime may be running it, which arms it again.
         expect((await seen()).sandboxes[0]!.state).toBe("running");
         expect(await runInDurableObject(stub(who), (_instance, state) =>
           state.storage.sql.exec("SELECT paused FROM sandboxes").one().paused)).toBe(0);
-        expect(await alarmOf(who)).not.toBeNull();
+        const until = Date.now() + 5_000;
+        while (await alarmOf(who) === null) {
+          expect(Date.now()).toBeLessThan(until);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
       }
     });
   }
@@ -1426,6 +1431,33 @@ describe("the runner, by digest", () => {
     expect((await seen()).sandboxes.map((box) => box.id)).not.toContain(id);
     expect((await stub(who).meter({ after: 0 })).events.map((event) => event.kind))
       .toEqual(["start", "kill"]);
+  });
+
+  it("kills no sandbox a start made in place of a gone one for the gone one's window",
+     async () => {
+    const who = owner();
+    const id = await bornUnder(who, "0".repeat(64));
+    await e2b("/script", { state: { live: 1, quiet: true }, protocol: PROTOCOL + 5 });
+    await runDurableObjectAlarm(stub(who));
+    expect((await rowOf(who))[0]!.kill_at).not.toBeNull();
+    // Gone from E2B unseen; a start makes another on this Worker's runner, and E2B's own
+    // timeout pauses it, a lease's run in it, before any look reads it (E2B unreachable).
+    await e2b("/gone", { id });
+    await e2b("/script", { protocol: PROTOCOL, hold: "launch" });
+    const started = stub(who).start(start({ run: `run_${hex(32, "2")}`,
+                                            lease: { lease_id: hex(32, "e"), epoch: 2 } }));
+    await seenOnce((state) => state.held.includes("launch"), "the start's launch");
+    await e2b("/script", { down: 1_000_000 });
+    await e2b("/release", {});
+    expect(await started).toEqual({ started: true });
+    const made = (await seen()).sandboxes[0]!.id;
+    await e2b("/pause", { id: made });
+    await e2b("/script", { down: 0 });
+    await runDurableObjectAlarm(stub(who));
+    // Resumed, its run going on, or the runtime's own alarm is resuming it.
+    const after = await seenOnce((state) => state.sandboxes.length !== 1
+      || state.sandboxes[0]!.state === "running", "the new sandbox looked at");
+    expect(after.sandboxes.map((box) => [box.id, box.state])).toEqual([[made, "running"]]);
   });
 
   it("asks a paused sandbox's runner before its runs go on, and kills one it does not speak",
