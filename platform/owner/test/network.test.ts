@@ -368,8 +368,9 @@ describe("the sandbox's model clients' environment", () => {
     let checked = 0;
     for (const [index, key] of KEYS.entries()) {
       const own = EVERY[index]!;
-      for (const engine of key.engines!) {
-        const made = run(engine, "api_key", own.connection);
+      for (const [engine, { api }] of key.engines!.flatMap((engine) =>
+        own.egress.apis.map((row) => [engine, row] as const))) {
+        const made = run(engine, "api_key", own.connection, api);
         const env = sandboxEnv(EVERY, () => "ab".repeat(16), made);
         // The secret in the path, or as the header the record names (never both).
         const inPath = made.secret_header === undefined ? S : undefined;
@@ -384,7 +385,7 @@ describe("the sandbox's model clients' environment", () => {
         if (vars.base_url !== null) {
           expect(env[vars.base_url], `${key.id} → ${engine}`).toBe(vars.base === "connection"
             ? egressBaseUrl(own.connection, null, R, inPath)
-            : egressBaseUrl(own.connection, sealedBase(own.egress, null), R, inPath));
+            : egressBaseUrl(own.connection, sealedBase(own.egress, api), R, inPath));
         }
         // No other connection's placeholder, nor its base URL, is in the run's environment.
         for (const other of EVERY.filter((entry) => entry !== own)) {
@@ -400,7 +401,7 @@ describe("the sandbox's model clients' environment", () => {
     const at = (n: number) => `c${String(n).padStart(24, "0")}`;
     const random = () => "0".repeat(31) + "1";
     expect(sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
-                      run("codex", "api_key", C2))).toEqual({
+                      run("codex", "api_key", C2, "openai-responses"))).toEqual({
       OPENAI_BASE_URL: `https://egress.tinyassets.io/r/${RS}/c/${C2}/v1`,
       OPENAI_API_KEY: `ta_ph_${C2}_${"0".repeat(31)}1`,
       // Codex's own key variable, from its record.
@@ -409,7 +410,7 @@ describe("the sandbox's model clients' environment", () => {
       [`TA_${C2.toUpperCase()}_API_KEY`]: `ta_ph_${C2}_${"0".repeat(31)}1`,
     });
     expect(sandboxEnv([{ connection: C5, provider: "google", egress: GOOGLE }], random,
-                      run("gemini", "api_key", C5))).toEqual({
+                      run("gemini", "api_key", C5, "google-generative-ai"))).toEqual({
       GOOGLE_BASE_URL: `https://egress.tinyassets.io/r/${RS}/c/${C5}/v1beta`,
       GOOGLE_API_KEY: `ta_ph_${C5}_${"0".repeat(31)}1`,
       // Gemini CLI's own names, its base URL the door and the connection alone.
@@ -426,15 +427,15 @@ describe("the sandbox's model clients' environment", () => {
     // Two names for one variable that disagree, or a name the credential forbids, fail.
     expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
                             { run: R, secret: S, credential: "api_key", connection: C2,
-                              api: null, forbid_env: [],
+                              api: "openai-responses", forbid_env: [],
                               api_key_env: { openai: { base_url: "OPENAI_BASE_URL",
                                                        api_key: "K", base: "connection" } } }))
       .toThrow(/two values/);
     expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
-                            { ...run("codex", "api_key", C2), forbid_env: ["CODEX_API_KEY"] }))
+                            { ...run("codex", "api_key", C2, "openai-responses"), forbid_env: ["CODEX_API_KEY"] }))
       .toThrow(/forbids CODEX_API_KEY/);
     expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
-                            { ...run("codex", "api_key", C2), forbid_env: ["CODEX_*"] }))
+                            { ...run("codex", "api_key", C2, "openai-responses"), forbid_env: ["CODEX_*"] }))
       .toThrow(/forbids CODEX_API_KEY/);
   });
 
@@ -469,24 +470,25 @@ describe("the sandbox's model clients' environment", () => {
   });
 
   it("refuses a connection id or a placeholder that is not one", () => {
-    const anthropic = sealedBase(ANTHROPIC, null);
+    const anthropic = sealedBase(ANTHROPIC, "anthropic-messages");
     expect(() => egressBaseUrl("c1", anthropic, R, S)).toThrow("invalid connection");
     expect(() => egressBaseUrl(C1, anthropic, "run_x", S)).toThrow("invalid run");
     expect(() => egressBaseUrl(C1, anthropic, R, "5e")).toThrow("invalid run secret");
     expect(() => sandboxEnv([{ connection: C1, provider: "openai", egress: OPENAI }],
-                            () => "not hex", run("codex", "api_key", C1))).toThrow();
-    expect(egressBaseUrl(C1, sealedBase(GROQ, null), R, S))
+                            () => "not hex", run("codex", "api_key", C1, "openai-responses")))
+      .toThrow("a placeholder's random part is 16 to 64 hex");
+    expect(egressBaseUrl(C1, sealedBase(GROQ, "openai-completions"), R, S))
       .toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/openai/v1`);
   });
 
-  it("gives a run on a source of several APIs the base of its model's API, the first for " +
-     "none, and refuses an API its connection is not sealed for", () => {
+  it("gives a run on a source of several APIs the base of its model's API, and refuses none " +
+     "or an API its connection is not sealed for", () => {
     const at = (api: string | null) =>
       sandboxEnv([{ connection: C1, provider: "openrouter", egress: OPENROUTER }],
                  () => "ab".repeat(16), run("pi", "api_key", C1, api))["OPENROUTER_BASE_URL"];
     expect(at("anthropic-messages")).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/api`);
     expect(at("openai-completions")).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/api/v1`);
-    expect(at(null)).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/api/v1`);
+    expect(() => at(null)).toThrow("an API-key run is given its model's API");
     expect(() => at("openai-responses")).toThrow(Refusal);
   });
 

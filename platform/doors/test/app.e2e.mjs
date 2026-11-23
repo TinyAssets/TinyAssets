@@ -417,7 +417,10 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
                               message: { role: "assistant", content: "Hello from pi" } } }],
                         end: { exit_code: 0 } });
   await page.locator(".said.agent", { hasText: "Hello from pi" }).waitFor();
-  assert.match(await page.locator("main").innerText(), /Run succeeded on pi/);
+  // Every run is given its model, never its engine's own default, and the owner sees which.
+  assert.equal(typeof start.model, "string");
+  assert.ok((await page.locator("main").innerText())
+    .includes(`Run succeeded on pi (${start.model})`));
   await shot("agent");
   // A run ended for a code with no words of its own shows the code as it came.
   await page.getByPlaceholder("Say something to helper").fill("again");
@@ -431,7 +434,8 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   }
   await report(again, { frames: [], end: { exit_code: 1 } });
   await page.locator(".said.agent", { hasText: "(exit)" }).waitFor();
-  assert.match(await page.locator("main").innerText(), /Run failed on pi: exit/);
+  assert.ok((await page.locator("main").innerText())
+    .includes(`Run failed on pi (${again.model}): exit`));
 });
 
 test("the agent form offers a subscription signed in inside the sandbox, beside an API key " +

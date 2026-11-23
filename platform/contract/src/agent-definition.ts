@@ -128,7 +128,9 @@ const RECORD = /^[a-z0-9][a-z0-9_-]{0,63}$/;
  * - `credential` (optional): `vendor_login_in_sandbox` or `api_key`, when the agent pins
  *   which the engine runs on;
  * - `connection` (optional): the owner's connection an API-key run spends on;
- * - `model` (optional): the model the engine is asked for;
+ * - `model` (optional): the model the engine is asked for; absent, the run is given its
+ *   source's strongest, as `auto` ranks it (`owner/src/runs.ts` `choose`), never left to the
+ *   engine's own default;
  * - `scopes`: the capabilities its runs' MCP door holds (`RUN_CAPABILITIES`), which an
  *   owner-started or scheduled run gets whole and a client-started run only where that
  *   client's grant holds them too (ADR-034 decision 6);

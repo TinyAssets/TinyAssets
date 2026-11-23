@@ -197,7 +197,7 @@ design built instead.
   keyring sweep has resealed every blob and the owner has rewritten its stored scopes and
   tagged its stored models, drop the old spelling's readers (`modelUpstream`, `egressScope`)
   and `ModelRecord.api`'s absence.
-- [ ] untangle/run-names-model: the owner names the model of every API-key run (as `auto`
+- [x] untangle/run-names-model: the owner names the model of every API-key run (as `auto`
   already does), so a run's base is always its model's API's and `sealedBase`'s first-API
   fallback goes. Today "a record lists first the API its engine's default model speaks" is
   held by nothing: pi 1.4.0's `defaultModelPerProvider.openrouter` is `moonshotai/kimi-k2.6`,
