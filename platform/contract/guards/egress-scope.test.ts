@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   allows, egressHeaders, egressScope, egressTarget, type Endpoint, keySource, type ModelScope,
-  modelApi, scopeApi, serviceSource, source,
+  modelApi, scopeApi, serviceSource, source, upstream,
 } from "../src/egress-scope";
 
 const ENDPOINTS: readonly Endpoint[] = Object.freeze([
@@ -115,9 +115,12 @@ describe("a model source of several APIs", () => {
     }
   });
 
-  it("reads a blob or a scope of one API spelled before upstreams named their APIs", () => {
-    expect(source({ upstream: { provider: "router", ...apis[0]!, auth: AUTH }, endpoints },
-                  false).upstream).toEqual({ provider: "router", apis: [apis[0]], auth: AUTH });
+  it("reads a blob or a scope of one API spelled before upstreams named their APIs, and seals " +
+     "none so", () => {
+    const old = { provider: "router", ...apis[0]!, auth: AUTH };
+    expect(upstream(old, endpoints)).toEqual({ provider: "router", apis: [apis[0]], auth: AUTH });
+    expect(() => upstream({ ...old, apis: [apis[0]] }, endpoints)).toThrow("invalid_source");
+    expect(() => source({ upstream: old, endpoints }, false)).toThrow("invalid_source");
     expect(egressScope({ ...apis[0]!, endpoints, meter: null }))
       .toEqual({ apis: [{ ...apis[0]!, meter: null }], endpoints });
   });

@@ -244,11 +244,22 @@ export interface ServiceSource {
   readonly endpoints: readonly Endpoint[];
 }
 
-/** An upstream as it is sealed and opened: a service's, or a model source's. */
+/**
+ * An upstream as a sealed blob holds it: a service's, or a model source's. A model source's
+ * sealed before upstreams named their APIs (`api`, `base_url`) is read as its one row, until a
+ * keyring sweep has resealed every such blob (`apis-contract.md`).
+ */
 export function upstream(value: unknown, endpoints: readonly Endpoint[]):
     Upstream | ServiceUpstream {
-  return object(value) && "kind" in value ? serviceUpstream(value, endpoints)
-    : modelUpstream(value, endpoints);
+  if (object(value) && "kind" in value) {
+    return serviceUpstream(value, endpoints);
+  }
+  if (object(value) && "api" in value) {
+    const { api, base_url, ...rest } = shape(value, ["provider", "api", "base_url", "auth"],
+                                             ["verify_url", "models"]);
+    return modelUpstream({ ...rest, apis: [{ api, base_url }] }, endpoints);
+  }
+  return modelUpstream(value, endpoints);
 }
 
 /**
@@ -272,19 +283,12 @@ function upstreamApis(value: unknown, endpoints: readonly Endpoint[]): readonly 
 
 /**
  * A model source's upstream; a declared endpoint (`custom`) speaks one API, one with a
- * declared adapter. One spelled as before an upstream named its APIs (`api`, `base_url`) is
- * read as its one row: blobs sealed so, sources the doors' version before hands, and those the
- * gateway still seals so (`gateway/src/credential.ts` `sealedForm`), until no rollback needs
- * it.
+ * declared adapter.
  */
 function modelUpstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
-  const old = object(value) && "api" in value;
-  const fields = old
-    ? shape(value, ["provider", "api", "base_url", "auth"], ["verify_url", "models"])
-    : shape(value, ["provider", "apis", "auth"], ["verify_url", "models"]);
+  const fields = shape(value, ["provider", "apis", "auth"], ["verify_url", "models"]);
   const provider = text(fields["provider"], ID);
-  const apis = upstreamApis(old ? [{ api: fields["api"], base_url: fields["base_url"] }]
-    : fields["apis"], endpoints);
+  const apis = upstreamApis(fields["apis"], endpoints);
   const verify = fields["verify_url"];
   if (verify !== undefined && !allows(endpoints, "GET", httpsUrl(verify, true))) {
     throw new Refusal("invalid_source");
@@ -655,18 +659,6 @@ export interface ModelScope {
   readonly endpoints: readonly Endpoint[];
 }
 
-/**
- * A model scope of one API, spelled as scopes were before they named their APIs, which
- * `egressScope` reads as its one row: what the owner's object took before, and what the
- * gateway still hands for a source of one API while the stage may serve such an owner.
- */
-export interface OneApiScope {
-  readonly api: string;
-  readonly base_url: string;
-  readonly endpoints: readonly Endpoint[];
-  readonly meter: Meter | null;
-}
-
 /** Where a model call of a sealed API names its model and caps its output (`meter.ts`). */
 export interface Meter {
   readonly method: string;
@@ -713,7 +705,7 @@ export function egressScope(value: unknown): EgressScope {
                            endpoints });
   }
   // A scope committed before it named its APIs (`api`, `base_url`, `meter`) is its one row;
-  // it goes once no stored connection holds one.
+  // it goes once no stored or exported connection holds one (`apis-contract.md`).
   const old = object(value) && "api" in value;
   const fields = old ? shape(value, ["api", "base_url", "endpoints", "meter"])
     : shape(value, ["apis", "endpoints"]);

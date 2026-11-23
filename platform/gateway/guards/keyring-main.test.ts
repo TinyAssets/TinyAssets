@@ -6,7 +6,9 @@
  * and run as it was.
  *
  * - Main's golden credentials and doorbells, checked in, open under today's code.
- * - Blobs sealed today open on main's code, and main's fresh blobs on today's.
+ * - Blobs sealed today open on main's code (a credential's on its envelope, read by today's
+ *   grammar: main's predates upstreams naming their APIs, and no Worker serves it), and
+ *   main's fresh blobs on today's.
  * - Every malformed ring, every tampered or relabelled blob, every retired kid and every
  *   blob of its own domain past the 64 KiB bound is answered with main's own refusal.
  * - No data key the files Worker wrapped opens here, under the very same ring, and no
@@ -114,15 +116,17 @@ describe("main's golden blobs", () => {
 
 describe("today's blobs", () => {
   it("open on main's code as credentials, resealed and swept ones included", async () => {
+    // Each plaintext as sealed, in the one spelling today's code writes (HELD's).
     const sealed = await keyring.seal(ROTATED, BOUND, CREDENTIAL);
-    const opened = await main.keyring.open(ROTATED, BOUND, sealed.blob);
-    expect([opened.kid, opened.credential]).toEqual(["k2", VECTORS.gateway.credential]);
+    const opened = await main.keyring.openValue(ROTATED, BOUND, sealed.blob, same);
+    expect([opened.kid, opened.value]).toEqual(["k2", HELD]);
     const resealed = await keyring.reseal(ROTATED, BOUND, CREDENTIAL);
-    expect((await main.keyring.open(ROTATED, { ...BOUND, version: resealed.version },
-                                    resealed.blob)).credential).toMatchObject(SECRET);
+    expect((await main.keyring.openValue(ROTATED, { ...BOUND, version: resealed.version },
+                                         resealed.blob, same)).value)
+      .toEqual({ ...HELD, sealed_at: expect.any(Number) });
     const swept = (await keyring.open(ROTATED, BOUND, VECTORS.gateway.k1)).resealed!;
-    expect((await main.keyring.open(RETIRED, { ...BOUND, version: swept.version },
-                                    swept.blob)).credential).toMatchObject(SECRET);
+    expect((await main.keyring.openValue(RETIRED, { ...BOUND, version: swept.version },
+                                         swept.blob, same)).value).toEqual(HELD);
   });
 
   it("open on main's code as doorbells", async () => {
