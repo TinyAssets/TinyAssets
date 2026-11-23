@@ -72,7 +72,7 @@ describe("the revision primitive", () => {
     const { body, ...rest } = lost as Row;
     expect({ ...rest, body_bytes: body.length }).toEqual(winner);
     expect(winner).not.toHaveProperty("body");
-    expect([winner!.revision, winner!.seq]).toEqual([2, 2]);
+    expect(winner!.revision).toBe(2);
     expect(await rows(stub)).toEqual([["board", "task-1", 2, 2, winner!.writer, 0, body]]);
   });
 
@@ -83,11 +83,19 @@ describe("the revision primitive", () => {
     const one = await write(o, alice, { row_id: "t1", body });
     await write(o, alice, { collection: "room:chess:main", row_id: "x", body: "{}" });
     const two = await write(o, alice, { row_id: "t2", body: "[]" });
-    const pull = (after: number, limit: number) =>
-      stub.collectionPull(as("bob"), { collection: "board", after, limit });
-    expect(await pull(0, 1)).toEqual({ cursor: 1, rows: [shownAs(one, body)] });
-    expect(await pull(1, 10)).toEqual({ cursor: 2, rows: [shownAs(two, "[]")] });
-    expect(await pull(2, 10)).toEqual({ cursor: 2, rows: [] });
+    const pull = (limit: number, after?: string) => stub.collectionPull(
+      as("bob"), { collection: "board", limit, ...(after === undefined ? {} : { after }) });
+    const first = await pull(1);
+    expect(first).toEqual({ cursor: expect.stringMatching(/^[0-9a-f]{48}$/),
+                            rows: [shownAs(one, body)] });
+    const next = await pull(10, first.cursor);
+    expect(next.rows).toEqual([shownAs(two, "[]")]);
+    expect((await pull(10, next.cursor)).rows).toEqual([]);
+    // A cursor is the object's own: one made up, or a digest's, is refused.
+    for (const after of ["0".repeat(48), "7", (await stub.boardDigest(as("bob"), {
+      limit: 1 })).cursor]) {
+      expect((await failure(() => pull(10, after))).code).toBe("invalid");
+    }
     expect(await stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t1", body: "{}", expected_etag: "", private: false,
     })).toEqual({ conflict: shownAs(one, body) });
@@ -98,9 +106,9 @@ describe("the revision primitive", () => {
     const { stub, as } = o;
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
-    expect(await stub.collectionPull(as("cara"), { collection: ROOM, after: 0, limit: 10 }))
-      .toEqual({ cursor: 0, rows: [] });
-    expect((await stub.collectionPull(as("bob"), { collection: ROOM, after: 0, limit: 10 }))
+    expect((await stub.collectionPull(as("cara"), { collection: ROOM, limit: 10 })).rows)
+      .toEqual([]);
+    expect((await stub.collectionPull(as("bob"), { collection: ROOM, limit: 10 }))
       .rows).toEqual([shownAs(mine, "secret")]);
     const taken = await failure(() => write(o, "cara", {
       collection: ROOM, row_id: "p", body: "x", expected_etag: mine.etag, private: true }));
@@ -179,7 +187,7 @@ describe("the revision primitive", () => {
       writer: alice } as never));
     expect(forged.message).toBe("invalid collection request");
     const elsewhere = await failure(() => stub.collectionPull(as("bob", "cara"), {
-      collection: "board", after: 0, limit: 1 }));
+      collection: "board", limit: 1 }));
     expect(elsewhere.message).toBe("this object belongs to another owner");
   });
 
@@ -234,10 +242,14 @@ describe("the revision primitive", () => {
   it("numbers past the stored rows when the high-water mark is missing", async () => {
     const { stub, name: alice } = await ownerObject();
     await inObject(stub, (store, state) => {
-      const put = (rowId: string) => store.write(alice, alice, "board", rowId, rowId, "", false);
-      expect(put("a").seq).toBe(1);
+      const put = (rowId: string) => {
+        store.write(alice, alice, "board", rowId, rowId, "", false);
+        return state.storage.sql.exec<{ seq: number }>(
+          "SELECT seq FROM collection_rows WHERE row_id = ?", rowId).one().seq;
+      };
+      expect(put("a")).toBe(1);
       state.storage.sql.exec("DELETE FROM collection_seqs"); // as a store before the table
-      expect(put("b").seq).toBe(2);
+      expect(put("b")).toBe(2);
     });
     expect(Object.keys(await etags(stub)).sort()).toEqual(["a", "b"]);
   });
@@ -251,6 +263,8 @@ describe("the revision primitive", () => {
       put(store, "mallory", "b");
       put(store, "cara", "c1");
     });
+    const held = (await stub.collectionPull(as("cara"), { collection: ROOM, limit: 10 }))
+      .cursor;
     const refused = await failure(() => stub.collectionClear(as("mallory"), {
       collection: ROOM, writer: null }));
     expect(refused.message).toBe("only the owner may clear collection rows");
@@ -259,10 +273,11 @@ describe("the revision primitive", () => {
     await inObject(stub, (store) => put(store, "mallory", "c"));
     expect(await stub.collectionClear(as(alice), { collection: ROOM, writer: null }))
       .toEqual({ deleted: 2 });
-    // A clear never moves a reader's cursor back: the next row is past every old seq.
-    expect((await inObject(stub, (store) => put(store, "cara", "z"))).seq).toBe(5);
-    expect((await stub.collectionPull(as("cara"), { collection: ROOM, after: 4, limit: 10 }))
-      .cursor).toBe(5);
+    // A clear never moves a reader's cursor back: the next row is past every old seq, so a
+    // cursor from before the collection was emptied reads it.
+    await inObject(stub, (store) => put(store, "cara", "z"));
+    expect((await stub.collectionPull(as("cara"), { collection: ROOM, after: held, limit: 10 }))
+      .rows.map((row) => row.row_id)).toEqual(["z"]);
   });
 });
 
@@ -287,7 +302,10 @@ describe("the primitive's history", () => {
     // A delete or clear drops the row's bodies and keeps one body-less entry.
     expect(await history(stub)).toEqual([[room, "a", 3, "delete", "", alice],
                                          [room, "b", 2, "clear", "", alice]]);
-    expect((await put("a", "again")).revision).toBe(4); // never a revision the row had
+    // Made again, a row is new: its writes counted from 1, under an etag none before had.
+    const again = await put("a", "again");
+    expect(again.revision).toBe(1);
+    expect(Object.values(await etags(stub))).not.toContain(a.etag);
     expect(b.revision).toBe(1);
     // A deletion is told by its table, not its op: a write named `delete` is a write.
     await put("c", "1", "", "bob", "delete");
@@ -296,7 +314,7 @@ describe("the primitive's history", () => {
       .toEqual([["a", true], ["b", true], ["a", false], ["c", false]]);
   });
 
-  it("is bounded in bytes, oldest first, and a key with no entry left repeats no revision",
+  it("is bounded in bytes, oldest first, and a key with no entry left is made again new",
      { tags: ["large"] }, async () => {
     const { stub, name: alice } = await ownerObject();
     const kept = await inFilled(stub, (store, state) => {
@@ -309,19 +327,20 @@ describe("the primitive's history", () => {
         sql, "SELECT COUNT(*) AS n FROM collection_erasures WHERE key = 'a'") === 0);
       expect(one(sql, "SELECT charge AS n FROM collection_space"))
         .toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
-      // Made again, `a` goes on past every revision an erase gave.
-      expect(store.write(alice, alice, "board", "a", "again", "", false).revision).toBe(3);
+      // Made again, `a` is a new row: revision 1, under an etag it never had.
+      const again = store.write(alice, alice, "board", "a", "again", "", false);
+      expect([again.revision, again.etag === a.etag]).toEqual([1, false]);
       return state.storage.sql.exec<{ revision: number; op: string }>(
         "SELECT revision, op FROM collection_history WHERE collection = 'board' AND key = 'a'")
         .toArray();
     });
-    expect(kept).toEqual([{ revision: 3, op: "write" }]);
+    expect(kept).toEqual([{ revision: 1, op: "write" }]);
   });
 
   it("holds an erased key's tombstone in its bytes, and prunes it oldest first",
      { tags: ["large"] }, async () => {
     // A key erased and never made again leaves one entry; such keys are bounded by the
-    // history's charge, and the floor keeps their revisions from repeating.
+    // history's charge.
     const { stub, name: alice } = await ownerObject();
     await inFilled(stub, (store, state) => {
       const count = (table: string, where: string) => state.storage.sql.exec<{ n: number }>(
@@ -343,23 +362,25 @@ describe("the primitive's history", () => {
       expect(count("collection_history", "collection = 'board'")).toBe(0);
       expect(state.storage.sql.exec<{ charge: number }>("SELECT charge FROM collection_space")
         .one().charge).toBeLessThanOrEqual(LIMITS.maxHistoryCharge);
-      // k0's tombstone was the oldest: made again, it goes past the pruned revisions.
-      expect(store.write(alice, alice, "board", "k0", "again", "", false).revision)
-        .toBeGreaterThan(2);
+      // k0's tombstone was the oldest: made again, it is a new row, at revision 1.
+      expect(store.write(alice, alice, "board", "k0", "again", "", false).revision).toBe(1);
     });
   });
 
   it("lets an emptied collection's seq row go, and never takes its cursor back", async () => {
     const { stub, name: alice, as } = await ownerObject();
-    await inObject(stub, (store, state) => {
+    const held = await inObject(stub, (store, state) => {
       store.write(alice, alice, "room:a:main", "x", "1", "", false);
       store.write(alice, alice, "room:a:main", "y", "2", "", false);
+      const cursor = store.pull(alice, "room:a:main", undefined, 10).cursor;
       store.clear(alice, "room:a:main", null);
       expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM collection_seqs").one().n)
         .toBe(0);
-      expect(store.write(alice, alice, "room:a:main", "x", "3", "", false).seq).toBe(3);
+      store.write(alice, alice, "room:a:main", "x", "3", "", false);
+      expect(state.storage.sql.exec("SELECT seq FROM collection_rows").one().seq).toBe(3);
+      return cursor;
     });
-    expect((await stub.collectionPull(as(alice), { collection: "room:a:main", after: 2,
+    expect((await stub.collectionPull(as(alice), { collection: "room:a:main", after: held,
                                                    limit: 10 })).rows.map((r) => r.body))
       .toEqual(["3"]);
   });
@@ -369,7 +390,7 @@ describe("the primitive's history", () => {
     const page = LIMITS.maxPull;
     const bodies = Array.from({ length: page + 2 }, (_, n) => `v${n}`);
     await inObject(stub, (store) => {
-      // Another row's write first, so an entry's change is not its revision.
+      // Another row's write first, so an entry's change is not its revision, which pages it.
       store.write(alice, alice, "board", "u", "x", "", false);
       let last = { etag: "" };
       for (const body of bodies) {
@@ -377,7 +398,7 @@ describe("the primitive's history", () => {
       }
       const first = store.history("bob", "board", "t");
       expect([first.entries.map((e) => e.body), first.more, first.before])
-        .toEqual([bodies.slice(2), true, first.entries[0]!.change]);
+        .toEqual([bodies.slice(2), true, first.entries[0]!.revision]);
       const older = store.history("bob", "board", "t", first.before);
       expect([older.entries.map((e) => e.body), older.more, older.before])
         .toEqual([["v0", "v1"], false, null]);
@@ -670,8 +691,7 @@ describe("the history keys' migration", () => {
         "collection_clock) AS clock", placed).one();
       const before = kept();
       migrate(state.storage, MIGRATIONS);
-      const space = sql.exec<{ charge: number; revision_floor: number }>(
-        "SELECT charge, revision_floor FROM collection_space").one();
+      const space = sql.exec<{ charge: number }>("SELECT charge FROM collection_space").one();
       return {
         before, after: kept(), space, recount: recount(sql)["history"],
         history: sql.exec("SELECT change, key, revision, prev FROM collection_history " +
@@ -679,9 +699,9 @@ describe("the history keys' migration", () => {
         erasures: sql.exec("SELECT change, key, revision, private_writer, prev FROM " +
                            "collection_erasures ORDER BY change").toArray()
           .map((row) => Object.values(row)),
-        read: ([[owner, "a", null], ["bob", "b", null], [owner, "a", -3]] as const).map(
+        read: ([[owner, "a", null], ["bob", "b", null], [owner, "a", 2]] as const).map(
           ([who, key, at]) => storesOn(state).collections
-            .history(who, "board", key, at).entries.map((each) => [each.change, each.body])),
+            .history(who, "board", key, at).entries.map((each) => [each.revision, each.body])),
       };
     });
     // Each live row's newest entry takes its row's change; older ones negative keys in the
@@ -691,12 +711,10 @@ describe("the history keys' migration", () => {
                                       [9, "d", 1, null]]);
     expect(migrated.erasures).toEqual([[5, "b", 2, null, null], [8, "c", 2, "bob", null],
                                        [10, "e", 4, null, null]]);
-    // A row made again reads from its making; a page before a negative key reads on.
-    expect(migrated.read).toEqual([[[-4, "a1"], [-3, "a2"], [3, "a3"]],
-                                   [[-2, "b3"], [-1, "b4"], [7, "b5"]], [[-4, "a1"]]]);
-    // A key made again goes past every revision a deletion gave, a clear's among them;
-    // nothing else moved.
-    expect(migrated.space.revision_floor).toBe(4);
+    // A row made again reads from its making; a page before a revision reads on.
+    expect(migrated.read).toEqual([[[1, "a1"], [2, "a2"], [3, "a3"]],
+                                   [[3, "b3"], [4, "b4"], [5, "b5"]], [[1, "a1"]]]);
+    // Nothing else moved.
     expect(migrated.space.charge).toBe(migrated.recount);
     expect(migrated.after).toEqual(migrated.before);
     expect(migrated.after).toMatchObject({ refs: 2, clock: 10 });
@@ -714,14 +732,26 @@ describe("the RPC door's fields", () => {
     expect(await rows(stub)).toEqual([]);
   });
 
-  it("refuses a cursor or a limit that is not a whole number in range", async () => {
+  it("refuses a cursor no answer gave, or a limit that is not a whole number in range",
+     async () => {
     const { stub, as } = await ownerObject();
-    for (const [after, limit] of [[1.5, 1], [Number.NaN, 1], [2 ** 53, 1], [-1, 1], ["1", 1],
-                                  [true, 1], [0, 1.5], [0, Number.POSITIVE_INFINITY], [0, "2"],
-                                  [0, 101], [0, 0], [0, null]]) {
+    for (const [after, limit] of [["1", 1], ["", 1], [true, 1], [null, 1], ["0".repeat(48), 1],
+                                  [undefined, 1.5], [undefined, Number.POSITIVE_INFINITY],
+                                  [undefined, "2"], [undefined, 101], [undefined, 0],
+                                  [undefined, null]]) {
       const refused = await failure(() => stub.collectionPull(as("bob"), {
         collection: "board", after, limit } as never));
       expect(refused.code, `after ${String(after)}, limit ${String(limit)}`).toBe("invalid");
+    }
+  });
+
+  it("reads a number, as the doors' release before hands, from the start", async () => {
+    const o = await ownerObject();
+    await write(o, "bob", { row_id: "t", body: "x" });
+    for (const after of [0, 7]) {
+      expect((await o.stub.collectionPull(o.as("bob"), { collection: "board", after,
+                                                         limit: 10 } as never))
+        .rows.map((row) => row.row_id)).toEqual(["t"]);
     }
   });
 });

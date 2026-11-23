@@ -48,7 +48,8 @@
  * reader drops the lines of a room in `archive_purges` at E (a deleted agent's room, its
  * segments not yet rewritten). Segments ship as they are, so a generation never reads the
  * archive back. The id key (`ledger_ids`) rides along, so whoever holds an export can read
- * the seq (and so the volume) a message id carries; it gates no access.
+ * the seq (and so the volume) a message id carries, and the place a collection cursor does;
+ * it gates no access.
  *
  * A file's bytes are its content's: `file_entries` and `file_history` name a `content_id`;
  * `file_contents` holds a small one `inline`, else `file_content_chunks` lists its chunks

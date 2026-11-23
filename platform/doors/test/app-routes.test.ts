@@ -301,7 +301,7 @@ describe("the owner app's sources and tools routes", () => {
     expect(listed).toEqual({ agents: [], owner_agents: expect.any(Array), apps: expect.any(Array) });
     expect((listed["owner_agents"] as { agent: string }[]).map((a) => a.agent)).toEqual(["main"]);
     expect(await answered(await appPost("tools/inbox_digest", app.access_token, null,
-                                        { limit: 10, after: 0 })))
+                                        { limit: 10 })))
       .toMatchObject({ mail: { messages: [] }, rooms: { rows: [] } });
     expect(await answered(await appPost("tools/no_such_tool", app.access_token, null, {}), 404))
       .toEqual({ error: "no such tool" });

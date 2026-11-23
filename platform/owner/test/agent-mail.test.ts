@@ -609,7 +609,7 @@ describe("a run and the mailbox", () => {
     expect((await failure(() => r.stub.mailboxAck(asRun, { through: 1 }))).message)
       .toBe(RUN_NO_MAILBOX);
     // Nor its digest, whose mail part is a mailbox read.
-    expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10, after: 0 }))).message)
+    expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10 }))).message)
       .toBe(RUN_NO_MAILBOX);
     // A malformed request is refused for its fields first, then for the run, as each of these
     // doors' row orders it (`fieldsFirst`): fields, then the guard, then the scope.

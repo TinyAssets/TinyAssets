@@ -96,7 +96,7 @@ describe("the placement rule", () => {
     const { body_bytes: _bytes, ...written } = (large as { row: { body_bytes: number } }).row;
     expect((await stub.collectionGet(as("bob"), { collection: "board", row_id: "large" })).row)
       .toEqual({ ...written, body: LARGE });
-    expect((await stub.collectionPull(as("bob"), { collection: "board", after: 0, limit: 10 }))
+    expect((await stub.collectionPull(as("bob"), { collection: "board", limit: 10 }))
       .rows.map((row) => [row.row_id, row.body])).toEqual([["small", SMALL], ["large", LARGE]]);
     expect((await stub.collectionHistory(as("bob"), { collection: "board", row_id: "large" }))
       .entries.map((entry) => entry.body)).toEqual([LARGE]);
@@ -419,7 +419,7 @@ describe("the placement rule, held to the owner's own limits", () => {
     }
     const first = await stub.collectionHistory(as(name), { collection: "board", row_id: "r" });
     expect([first.entries.map((e) => e.revision), first.more, first.before])
-      .toEqual([[3, 4], true, first.entries[0]!.change]);
+      .toEqual([[3, 4], true, first.entries[0]!.revision]);
     const older = await stub.collectionHistory(as(name), { collection: "board", row_id: "r",
                                                            before: first.before! });
     expect([older.entries.map((e) => e.body[0]), older.more, older.before])
@@ -464,9 +464,8 @@ describe("the placement rule, held to the owner's own limits", () => {
     expect(refused()).toBe(1);
     await files.release("deleteChunks");
     await pass;
-    // It began again once the delete landed, and lands: a new key goes on past the revision
-    // a's delete gave (`revision_floor`).
-    expect(await again).toMatchObject({ row: { revision: 3 } });
+    // It began again once the delete landed, and lands: a new row, at revision 1.
+    expect(await again).toMatchObject({ row: { revision: 1 } });
     expect(refused()).toBe(1);
     expect((await stub.collectionGet(as(name), { collection: "board", row_id: "b" })).row!.body)
       .toBe(LARGE);

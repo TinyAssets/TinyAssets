@@ -126,7 +126,7 @@ describe("a read's pages", () => {
       etag = done.row.etag;
     }
     void etag;
-    const pull = await stub.collectionPull(as(name), { collection: "notes", after: 0, limit: 10 });
+    const pull = await stub.collectionPull(as(name), { collection: "notes", limit: 10 });
     expect(pull.rows.map((row) => row.row_id)).toEqual(["r1"]);
     expect(bytes(pull)).toBeLessThanOrEqual(RESULT_CHARS);
     const rest = await stub.collectionPull(as(name), { collection: "notes", after: pull.cursor,
@@ -135,14 +135,18 @@ describe("a read's pages", () => {
     // A first row past one answer is cut, and read on with collection_get.
     await stub.collectionWrite(as(name), { collection: "notes", row_id: "big",
       body: "q\"".repeat(40_000), expected_etag: "", private: false });
-    const big = await stub.collectionPull(as(name), { collection: "notes", after: 3, limit: 10 });
+    const third = await stub.collectionPull(as(name), { collection: "notes", after: rest.cursor,
+                                                        limit: 10 });
+    expect(third.rows.map((row) => row.row_id)).toEqual(["r3"]);
+    const big = await stub.collectionPull(as(name), { collection: "notes", after: third.cursor,
+                                                      limit: 10 });
     expect(big.rows[0]).toMatchObject({ row_id: "big", body_bytes: 80_000, truncated: true });
     // The board's digest: heads of every row, while they fit, and its cursor after them.
     for (const n of [1, 2, 3, 4]) {
       await stub.collectionWrite(as(name), { collection: "board", row_id: `t${n}`,
         body: SHAPES["control"]!.repeat(5000), expected_etag: "", private: false });
     }
-    const digest = await stub.boardDigest(as(name), { limit: 10, after: 0, head_chars: 5000 });
+    const digest = await stub.boardDigest(as(name), { limit: 10, head_chars: 5000 });
     expect(bytes(digest)).toBeLessThanOrEqual(RESULT_CHARS);
     expect(digest.rows.length).toBe(1);
     const later = await stub.boardDigest(as(name), { limit: 10, after: digest.cursor,

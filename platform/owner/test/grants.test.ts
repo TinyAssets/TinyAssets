@@ -442,7 +442,7 @@ describe("every door admits an outside client against its grant", () => {
     const calls: Record<string, () => Promise<unknown>> = {
       write: () => r.stub.collectionWrite(binding, { ...BOARD, body: "x", expected_etag: "",
                                                       private: false }),
-      pull: () => r.stub.collectionPull(binding, { collection: "board", after: 0, limit: 5 }),
+      pull: () => r.stub.collectionPull(binding, { collection: "board", limit: 5 }),
       get: () => r.stub.collectionGet(binding, BOARD),
       history: () => r.stub.collectionHistory(binding, BOARD),
       delete: () => r.stub.collectionDelete(binding, { ...BOARD, expected_etag: "nope" }),
@@ -483,7 +483,7 @@ describe("every door admits an outside client against its grant", () => {
       .row.writer).toBe("bob");
     const through = await failure(() => r.stub.collectionPull(
       { owner: r.owner, caller: "bob", origin: CHATGPT, source: MCP },
-      { collection: "board", after: 0, limit: 1 }));
+      { collection: "board", limit: 1 }));
     expect(through.message).toBe("the account answers its owner's own callers only");
     expect((await failure(() => r.stub.outsideAgents(visitor))).message)
       .toBe("the account answers its owner's own callers only");
@@ -829,7 +829,7 @@ describe("a grant's revision apart from its authority", () => {
     await r.register(CHATGPT);  // its one enabled agent, registered in alpha
     await ownAgent(r, "work");
     const set = (agent?: string) => scopedAs(r, CHATGPT, [{ ...READ, agent: "work" }], agent);
-    const digest = () => r.stub.boardDigest(r.bind(CHATGPT), { limit: 10, after: 0 });
+    const digest = () => r.stub.boardDigest(r.bind(CHATGPT), { limit: 10 });
     expect((await clients(r))[0]!.agent).toBe("main");
     // A scoped grant holds its triples as the agent it names: as `main`, `work`'s are none.
     expect(await set()).toMatchObject({ agent: "main", generation: 2 });

@@ -190,7 +190,7 @@ describe("the MCP door's tool profiles", () => {
     const ran = await client.callTool({ name: "code", arguments: { script: [
       "await tools.collection_write({ collection: 'board', row_id: 't', body: 'todo',",
       "  expected_etag: '', private: false });",
-      "const digest = await tools.board_digest({ limit: 5, after: 0 });",
+      "const digest = await tools.board_digest({ limit: 5 });",
       "return digest.rows.map((row) => row.head);",
     ].join("\n") } });
     expect(ran.isError).toBeFalsy();

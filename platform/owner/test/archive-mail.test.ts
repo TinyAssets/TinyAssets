@@ -19,12 +19,13 @@ import { nativeId } from "../../contract/src/binding";
 import type { OwnerDO } from "../src/owner-do";
 import { parseTiers, TIER_STORAGE_MAX } from "../../contract/src/control";
 import {
-  type Content, idKey, idOrder, listed, makeChunk, MIN_RECORD_BYTES, MOVE_RECORDS,
-  MoveTable, orderedId,
+  type Content, listed, makeChunk, MIN_RECORD_BYTES, MOVE_RECORDS,
+  MoveTable,
   parseRecord,
   parseTrailer, planSegment, RECORD_TRAILER_BYTES, recordBytes, recordParts, recordRows,
   type SegmentRecord, type Source,
 } from "../src/segments";
+import { idKey, idOrder, orderedId } from "../src/ordered";
 import { batchOf, hotSources, noRead } from "./archive-support";
 import { MUSE, rig, dm } from "./ledger-support";
 import { referenceSegment, storedContent, streamed } from "./segment-support";

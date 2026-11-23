@@ -30,9 +30,7 @@
  * that, plus one: no count, the one number bounds them.
  */
 import { utf8Decoder } from "../../contract/src/text";
-import { HEX32 } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
-import { createHmac, randomBytes } from "node:crypto";
 import { sha256, sha256Stream } from "../../contract/src/digest";
 
 import { CHUNK_BYTES } from "../../contract/src/limits";
@@ -747,54 +745,4 @@ export function bloomOf(keys: Iterable<string>): Uint8Array {
 /** Whether `bloom` may hold `key`. */
 export function bloomHas(bloom: Uint8Array, key: string): boolean {
   return bloomBits(key).every((bit) => (bloom[bit >> 3]! & (1 << (bit & 7))) !== 0);
-}
-
-// -- Ids that carry their order key ----------------------------------------------------------
-
-/** A fresh key for `orderedId`: 32 random bytes, kept in the object. */
-export function idKey(): Uint8Array {
-  return new Uint8Array(randomBytes(32));
-}
-
-function round(key: Uint8Array, index: number, half: Buffer): Buffer {
-  return createHmac("sha256", key).update(Buffer.from([index])).update(half).digest()
-    .subarray(0, 8);
-}
-
-function xor(a: Buffer, b: Buffer): Buffer {
-  const out = Buffer.alloc(a.length);
-  for (let i = 0; i < a.length; i++) {
-    out[i] = a[i]! ^ b[i]!;
-  }
-  return out;
-}
-
-/**
- * An id for `key` (a mail's seq): 32 hex, a keyed permutation (a four-round Feistel network
- * over HMAC-SHA256) of the key and eight random bytes. Opaque to anyone without the object's
- * key, so it says nothing of the seq or the volume, and the object reads the seq back.
- */
-export function orderedId(idKeyBytes: Uint8Array, key: number): string {
-  let left = Buffer.alloc(8);
-  left.writeBigUInt64BE(BigInt(key));
-  let right = Buffer.from(randomBytes(8));
-  for (let i = 0; i < 4; i++) {
-    [left, right] = [right, xor(left, round(idKeyBytes, i, right))];
-  }
-  return Buffer.concat([left, right]).toString("hex");
-}
-
-/** The key an `orderedId` carries, or null for text that is not one (any 32 hex decodes). */
-export function idOrder(idKeyBytes: Uint8Array, id: string): number | null {
-  if (!HEX32.test(id)) {
-    return null;
-  }
-  const whole = Buffer.from(id, "hex");
-  let left = whole.subarray(0, 8);
-  let right = whole.subarray(8);
-  for (let i = 3; i >= 0; i--) {
-    [right, left] = [left, xor(right, round(idKeyBytes, i, left))];
-  }
-  const key = left.readBigUInt64BE();
-  return key <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(key) : null;
 }

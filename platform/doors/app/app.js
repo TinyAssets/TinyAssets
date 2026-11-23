@@ -519,8 +519,8 @@ function heads(rows) {
 async function rooms(arg = null) {
   const turn = turnOf("rooms", arg);
   const [inbox, board, { owner_agents: owned }] = await Promise.all([
-    call("tools/inbox_digest", { limit: 100, after: 0 }),
-    call("tools/board_digest", { limit: 100, after: 0 }), call("tools/agents_list")]);
+    call("tools/inbox_digest", { limit: 100 }),
+    call("tools/board_digest", { limit: 100 }), call("tools/agents_list")]);
   const room = h("select", {}, owned.filter((a) => a.retired_at === null).map((a) =>
     h("option", { value: a.room_id }, `You and ${a.agent}`)));
   const body = h("textarea", {});

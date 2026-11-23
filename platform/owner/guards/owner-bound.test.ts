@@ -485,7 +485,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                       by: "a deleted agent's room while segments may hold its mail, counted " +
                         "with the rooms under maxRooms (a deletion moves its rooms here)",
                       indexes: { sqlite_autoindex_archive_purges_1: key(ROOM_ID) } },
-    ledger_ids: { rows: 1, bytes: ROW + 64, by: "one row: the key ids carry their seq under" },
+    ledger_ids: { rows: 1, bytes: ROW + 64,
+                  by: "one row: the key ids and cursors carry their place under" },
     // The doorbell subscriptions: `WITHOUT ROWID`, keyed by the server's id, each its
     // fields at the schema's widest (its sealed blobs visible ASCII, a byte a character; its
     // arguments any text, four bytes a character), and its by-agent index entry.

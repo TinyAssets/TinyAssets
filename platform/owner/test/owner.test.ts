@@ -15,7 +15,7 @@ function version(state: DurableObjectState): number {
     .version;
 }
 
-const PULL = { collection: "board", after: 0, limit: 1 };
+const PULL = { collection: "board", limit: 1 };
 
 describe("schema migration on wake", () => {
   it("applies every migration before the first call", async () => {
@@ -193,7 +193,7 @@ describe("the object's name", () => {
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(state.storage.sql.exec("SELECT owner FROM object_owner").toArray()).toEqual([]);
     });
-    expect(await stub.collectionPull(as("bob"), PULL)).toEqual({ cursor: 0, rows: [] });
+    expect((await stub.collectionPull(as("bob"), PULL)).rows).toEqual([]);
   });
 
   it("refuses every call on an object with no name", async () => {
