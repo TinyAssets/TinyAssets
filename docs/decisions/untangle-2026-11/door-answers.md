@@ -39,7 +39,7 @@ doors version that reads an answer field with an owner that no longer answers it
   reads an answer's field fails to compile, so the errors are the reads. Rerun from
   `platform/` on a clean tree:
   `node -e 'const f="contract/doors.json",fs=require("fs"),t=JSON.parse(fs.readFileSync(f));for(const r of t.doors)delete r.answer;fs.writeFileSync(f,JSON.stringify(t))' && node contract/requests.ts && npx tsc --noEmit -p . | grep '^doors/src'; git checkout -- .`
-  At this branch it names 96 errors in 14 files, 30 doors: `admissionSet` and `ownerState`
+  At this branch it names 96 errors in 14 files, 29 doors: `admissionSet` and `ownerState`
   `state`, `sessionOpen` `session` (`authorize.ts`); `tierRead` `tier`, `fileRead` `entry`
   and `inline`, `ownerExport` (`app.ts`); `ownerErase` `erasing`, `erasureOutside` `keys`,
   `routes` or null (`erase.ts`); `toolProfile` (`mcp.ts`); `definitionRead`
@@ -48,8 +48,10 @@ doors version that reads an answer field with an owner that no longer answers it
   `state`, `error`, `inboundCreate`, `inboundSet`, `inboundRevoke` (`inbound.ts`);
   `connectionPrepare`, `flowFinish` (`connect.ts`); `fileUploadTarget` (`file-bytes.ts`);
   `importFileBegin`, `importCheck` `more`, `importDiscard` `namespace` (`import/index.ts`);
-  `egressOpen`, `egressReserve`, `fileReadChunks` `chunks`, `runDecide` `hook` (`egress.ts`);
-  `restoreStep` `done`, `keys` (`operator.ts`).
+  `egressOpen`, `egressReserve`, `fileReadChunks` `chunks` (`egress.ts`); `restoreStep`
+  `done`, `keys` (`operator.ts`). A read by an `in` check compiles on `object`, so the rerun
+  misses it: the one such read, `runDecide` `hook` (`egress.ts`, `"hook" in answer`), is the
+  30th, found by reading each `in` check of `doors/src` (#5843's second review).
 - **The app**, by reading it (untyped JavaScript, so no compiler finds its reads): each
   `call("<route>")` in `doors/app/app.js` and `api.js` (`grep -n 'call("' doors/app/*.js`),
   each route's door from `doors/src/app.ts`'s routes (`door:`, the `tools/<name>` route, and
