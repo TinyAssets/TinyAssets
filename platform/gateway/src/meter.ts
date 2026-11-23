@@ -18,12 +18,16 @@
  *   stream exactly as it parses any stream it asked for. Its final message's usage, priced
  *   by the catalog's records (`calculateCost`, tiers included) of both the model the request
  *   named and the model the answer says served it, the dearer, is the call's real cost.
+ *   A router's call (the reservation's `routed`: its vendor bills each call as the model it
+ *   routed it to, `sources/src/routers.ts`) is priced by the served model alone, never at
+ *   the router's own listed price (`openrouter/auto`'s is zero).
  *   Anything short of that is `null`, which the owner's object settles `unknown`, keeping the
  *   whole reservation: a stream pi-ai cannot read to a `done` (not its stream format, a cut,
  *   an abort, a non-streaming JSON answer, which pi-ai's adapters do not parse); a `done`
  *   with no usage (zero tokens: a stream sent without its usage report); a served model the
- *   catalog does not price; and a router the catalog prices at nothing (`openrouter/auto`),
- *   unless the answer names the dearer model it served.
+ *   catalog does not price; and a router's call whose answer names no other model, or one
+ *   the catalog prices at nothing (a router's own id, or a free model: its reservation, the
+ *   dearest route, is kept).
  *
  * Each API's rules (`api-rules.ts`) are held against pi-ai's learned call: the output cap
  * pi-ai sets must be one the rules list, and the usage-report fields the rules set must be
@@ -56,6 +60,18 @@ export interface Metered {
   /** The served model's id, when the answer named one other than the request's. */
   readonly served?: string;
 }
+
+/**
+ * What prices a call beside its usage: whether the request listed fallback models
+ * (`fallbacks`), and whether the reservation says its model is a router (`routed`).
+ */
+export interface Pricing {
+  readonly fallbacks: boolean;
+  readonly routed: boolean;
+}
+
+/** A call of one model, named alone, priced as that model. */
+export const UNROUTED: Pricing = Object.freeze({ fallbacks: false, routed: false });
 
 /** Every key path in `value` whose leaf is exactly `mark`. */
 function pathsOf(value: unknown, mark: unknown, at: readonly string[] = []): string[][] {
@@ -310,14 +326,16 @@ type AssistantUsage = Extract<AssistantMessageEvent, { type: "done" }>["message"
  * the answer says served it: tokens and dollars, or null for anything pi-ai cannot read
  * to its end or a `done` with no usage. A served model the catalog does not price (a
  * provider's dated snapshot of the named model, most often) is settled at the named
- * model's price when that one is concrete: priced in the catalog and named alone, not a
- * `fallbacks` list; else null. A model priced at nothing that names no other is null.
+ * model's price when that one is concrete: named alone, not a `fallbacks` list nor a
+ * router; else null. A router's call (`routed`) is priced at the served model alone, and is
+ * null unless the answer names another model the catalog prices above nothing.
  */
 export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey: string,
                                    model: Model<Api>,
                                    status: number, headers: Headers,
                                    body: ReadableStream<Uint8Array>,
-                                   fallbacks = false): Promise<Metered | null> {
+                                   { fallbacks, routed }: Pricing = UNROUTED):
+    Promise<Metered | null> {
   let handed = false;
   const replay: FetchFunction = async () => {
     if (handed) {
@@ -346,21 +364,22 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
   const named = usage.cost.total;
   const base = costOn(model, usage);
   const ratio = base > 0 ? named / base : 1;
-  const free = model.cost.input === 0 && model.cost.output === 0;
-  let cost = named;
   const other = typeof served === "string" && served !== "" && served !== model.id;
-  if (other) {
-    const record = meteredRecord(catalog, upstream, served);
-    if (record !== null) {
-      cost = Math.max(named, costOn(record, usage) * ratio);
-    } else if (free || fallbacks || !snapshotOf(served, model.id)) {
-      // A router, a fallback list, or an id that is not the named one's dated or versioned
-      // snapshot served something the catalog does not price.
-      return null;
+  const record = other ? meteredRecord(catalog, upstream, served) : null;
+  const priced = record === null ? null : costOn(record, usage) * ratio;
+  let cost = named;
+  if (routed) {
+    if (priced === null || !(priced > 0)) {
+      return null;  // no word of a priced model it routed to
     }
-    // Else the named model's own snapshot: the named model's price.
-  } else if (served !== model.id && free) {
-    return null;  // a router priced at nothing, with no word of what it served
+    cost = priced;
+  } else if (priced !== null) {
+    cost = Math.max(named, priced);
+  } else if (other && (fallbacks || !snapshotOf(served, model.id))) {
+    // A fallback list, or an id that is not the named one's dated or versioned snapshot,
+    // served something the catalog does not price. Else the named model's own snapshot: the
+    // named model's price.
+    return null;
   }
   if (!Number.isFinite(cost) || cost < 0) {
     return null;

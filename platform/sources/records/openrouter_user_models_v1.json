@@ -69,6 +69,37 @@
     ],
     "cite": "https://openrouter.ai/docs/api_reference/limits"
   },
+  "routers": [
+    {
+      "models": [
+        "openrouter/free"
+      ],
+      "to": [
+        "*:free"
+      ],
+      "cite": "https://openrouter.ai/openrouter/free"
+    },
+    {
+      "models": [
+        "auto",
+        "openrouter/auto",
+        "openrouter/auto-beta"
+      ],
+      "to": [
+        "*"
+      ],
+      "cite": "https://openrouter.ai/docs/guides/routing/routers/auto-router"
+    },
+    {
+      "models": [
+        "openrouter/pareto-code"
+      ],
+      "to": [
+        "*"
+      ],
+      "cite": "https://openrouter.ai/docs/guides/routing/routers/pareto-router"
+    }
+  ],
   "oauth": {
     "protocol": "pkce_user_key_v1",
     "authorization_endpoint": "https://openrouter.ai/auth",

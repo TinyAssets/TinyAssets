@@ -23,14 +23,18 @@ const code = (call: () => unknown): string | undefined => {
 };
 
 describe("metering", () => {
-  const fixture = { max_output_tokens: 1024, input_bytes: 10, model: "claude-x", tier: null };
-  it("takes its type's fixture, and a tier", () => {
+  const fixture = { max_output_tokens: 1024, input_bytes: 10, model: "claude-x", tier: null,
+                    routed: false };
+  it("takes its type's fixture, a tier and a router's, and an owner's before as unrouted", () => {
     expect(metering(fixture)).toEqual(fixture);
     expect(metering({ ...fixture, tier: "priority" })).toEqual({ ...fixture, tier: "priority" });
+    expect(metering({ ...fixture, routed: true })).toEqual({ ...fixture, routed: true });
+    const { routed: _routed, ...before } = fixture;
+    expect(metering(before)).toEqual(fixture);
   });
   it.each([
     [{ ...fixture, extra: 1 }], [{ ...fixture, input_bytes: 0 }], [{ ...fixture, model: "" }],
-    [{ ...fixture, model: "a b" }], [{ ...fixture, tier: 7 }],
+    [{ ...fixture, model: "a b" }], [{ ...fixture, tier: 7 }], [{ ...fixture, routed: 1 }],
     [{ ...fixture, model: "m".repeat(257) }], [null], [[]],
   ])("refuses %j as the object's bug", (value) => {
     expect(code(() => metering(value))).toBe("internal");

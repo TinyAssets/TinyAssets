@@ -44,14 +44,18 @@
  * **Reserve** (`reserve`, in the door's unit, once the gateway parsed the admitted model
  * call's body; its model and tier are what that one parse read, since the model may be a
  * body's last key): the model one the connection lists (and, for an API whose path names
- * it, the path's) (`egress_unknown_model`), the tier one its rules price
+ * it, the path's) and one its source record says a price of (`pricedBy`: a router is priced
+ * by the models it may route to, and a model its vendor lists at zero that is neither a
+ * router nor free has none) (`egress_unknown_model`), the tier one its rules price
  * (`egress_unpriced_option`), and the call's charge (`#reserve`): its run's requests, tokens
  * and cost (on its `runs` row; the model policy's per-run limits are its caps), and the
  * owner's and the source's day and month (`model_spend`, the spend counters its charge's
  * triggers move, which the runs' own limits read too, `spent`) (`egress_spend_refused`, the
- * binding cap its `rule`). Its input is held at the largest context window, so the charge
- * bounds the call's cost. Then the open row charged and the output cap the charge leaves (the gateway clamps
- * the request's own to it); or the row a refusal receipt and its stream ended. Until it is
+ * binding cap its `rule`). Its input is held at the model's context window, so the charge
+ * bounds the call's cost. Then the open row charged and the output cap the charge leaves
+ * (the gateway clamps the request's own to it), with whether the model is a router
+ * (`routed`, which the gateway prices the answer by); or the row a refusal receipt and its
+ * stream ended. Until it is
  * reserved an admitted call is open as any other (it counts to the rate, is beaten, and
  * settled lost when its beats stop), charged nothing.
  *
@@ -100,6 +104,8 @@ import { EGRESS_PATH_MAX } from "../../contract/src/limits";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Call, Door, DoorUnits } from "./door";
 import type { Runs } from "./runs";
+import { bundledSources } from "../../sources/src/catalog";
+import { pricedBy } from "../../sources/src/routers";
 import { clock, clockMs } from "./clock";
 
 
@@ -212,9 +218,9 @@ interface EgressCaps {
 }
 
 /**
- * Egress pricing: a sandbox call's most cost before its model is known, input at its
- * dearest of uncached, cache-read and cache-write rates, each model's tokens at its rates by
- * pi-ai's `calculateCost` (`money.ts` `priced`).
+ * Egress pricing: the most a sandbox call can cost on any of the models it is priced by (its
+ * own, or a router's routes), input at its dearest of uncached, cache-read and cache-write
+ * rates, each model's tokens at its rates by pi-ai's `calculateCost` (`money.ts` `priced`).
  */
 
 /** A model's cost record with its input at its dearest rate: what a token can cost at most. */
@@ -516,7 +522,11 @@ export class Egress {
     const path = rules.model === null
       ? meteredModel(scope.meter, row.method, row.path, {}) : null;
     const model = connection.models.find((entry) => entry.id === request.model);
-    if (model === undefined || (rules.model === null && path !== request.model)) {
+    // What its source record says bounds it: the model itself, or a router's routes.
+    const by = model === undefined ? null
+      : pricedBy(bundledSources().get(connection.source), connection.models, model);
+    if (model === undefined || by === null
+        || (rules.model === null && path !== request.model)) {
       return refuse("egress_unknown_model");
     }
     const tier = rules.tier === null ? null : request.tier;
@@ -525,7 +535,7 @@ export class Egress {
       return refuse("egress_unpriced_option");
     }
     this.#spendPruned(now);
-    const charge = this.#reserve(row.run, connection.source, model, multiplier, now);
+    const charge = this.#reserve(row.run, connection.source, model, by.models, multiplier, now);
     if (!charge.ok) {
       return refuse("egress_spend_refused", charge.rule);
     }
@@ -534,7 +544,8 @@ export class Egress {
                      "WHERE id = ? AND charge IS NULL", charge.source, charge.max_output_tokens,
                    charge.est_tokens, charge.est_cost, charge.day, charge.month, row.id);
     return { ok: true, metering: { max_output_tokens: charge.max_output_tokens,
-                                   input_bytes: row.bytes_hint!, model: model.id, tier } };
+                                   input_bytes: row.bytes_hint!, model: model.id, tier,
+                                   routed: by.routed } };
   }
 
   /**
@@ -562,17 +573,18 @@ export class Egress {
    * The call's charge, against every cap, in the open's unit, so concurrent calls reserve
    * one after another and never pass a cap between them: its run's requests, tokens and
    * cost (its `runs` row), and the owner's and the source's day and month (the spend
-   * counters, read through `spent`). It is the named model's:
+   * counters, read through `spent`). It is the named model's call:
    * its input held at that model's context window (a body's bytes do not bound its tokens:
    * a file or a cached context it names can be far larger), its output at that model's cap
    * and what the caps leave (the gateway clamps every cap alias the call names to it, and
-   * refuses several choices and another model), at that model's dearest rates times its
-   * tier's `multiplier`, so what it holds bounds what it can cost; the settle gives the
+   * refuses several choices and another model), at the dearest rates of `models`, what it is
+   * priced by (`pricedBy`: the model itself, or every model a router may route it to), times
+   * its tier's `multiplier`, so what it holds bounds what it can cost; the settle gives the
    * difference back. Refused, with the cap that binds, below `MIN_OUTPUT`.
    */
-  #reserve(runId: string, source: string, model: ModelRecord, multiplier: number,
-           now: number): ({ ok: true } & Charged) | { ok: false; rule: string } {
-    const models = [model];
+  #reserve(runId: string, source: string, model: ModelRecord, models: readonly ModelRecord[],
+           multiplier: number, now: number):
+      ({ ok: true } & Charged) | { ok: false; rule: string } {
     const input = model.contextWindow;
     const caps = this.#deps.caps(source);
     const run = this.#deps.runUsage(runId);
@@ -597,12 +609,12 @@ export class Egress {
       }
     }
     const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
-    const most = Math.max(...models.map((model) => model.maxTokens));
+    const most = model.maxTokens;
     const floor = Math.min(most, MIN_OUTPUT);
     const byTokens = caps.run_tokens === null ? Number.POSITIVE_INFINITY
       : caps.run_tokens - run.tokens - input;
-    // The call's model is unknown until the gateway reads the body: priced at the most any
-    // of the connection's models charges (`egressPrice`), non-decreasing in the output.
+    // Priced at the most any model it is priced by charges (`egressPrice`), non-decreasing
+    // in the output.
     const price = (output: number) =>
       Math.ceil(egressPrice(models, input, output) * multiplier);
     const fits = (output: number) => price(output) <= costRoom;
