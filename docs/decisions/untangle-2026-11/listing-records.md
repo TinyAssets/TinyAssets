@@ -137,7 +137,15 @@ Direction 2: one catalog, the gateway's.
   an API's method, path or model field would leave a connection's admission on the old shape
   while the gateway learns the new; none did from 1.4.0 to 1.6.0, and re-learning one rewrites
   the committed scope the admission holds every call to. The pi-ai watch's review (owed in
-  `model-catalog.md`) reads each bump's adapters for it.
+  `model-catalog.md`) reads each bump's adapters for it. Such a bump fails loudly, never
+  misprices (review): the owner's admission refuses a call off the scope's shape
+  (`scopeApi`), and the gateway's forward learns its meter from the catalog now and refuses a
+  call it does not read (`unmetered`); the reserve and the settle price by the same records.
+- **Migration 34 copies none of 33's listing** (review): from the object's start after the
+  deploy until the lane's first pass reads it (seconds: every row is due at once), a
+  connection's models are its commit's, unfiltered by the listing 33 kept, as a new
+  connection's are before its first read. Rebuilding records from 33's ids in SQL would be a
+  second join of the two to keep, for those seconds.
 - **The owner is not told that a reconnect would add an API.** A record that now names an API
   the blob lacks (OpenRouter's Messages API, on the stage) offers its models only after a
   reconnect, and nothing says so but the decision files. Owed below.
