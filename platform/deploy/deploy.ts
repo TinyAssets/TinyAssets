@@ -2128,9 +2128,10 @@ function deployLine(rolled: Rolled, setting: readonly Setting[], reach: Reach): 
  * Each Worker deployed, bound first, touching no route, each deployment read back
  * (`readBack`) before anything follows it. A first deploy (the account's Workers
  * listing lacked it: `rolled`) is `wrangler deploy`; later ones upload a version, read until
- * Cloudflare's versions API lists it (`uploaded`), then deploy it through the stages (`platform.json` `stages`): at each share below 100 beside the version
- * it serves (`rolled`), the new one listed first, so a Durable Object assigned it keeps it as
- * the share rises; then at 100%. Each is `wrangler versions deploy`, which leaves the Worker's
+ * Cloudflare's versions API lists it (`uploaded`), then deploy it through the stages
+ * (`platform.json` `stages`): at each share below 100 beside the version it serves (`rolled`),
+ * the new one listed first, so a Durable Object assigned it keeps it as the share rises; then
+ * at 100%. Each is `wrangler versions deploy`, which leaves the Worker's
  * routes as they are and syncs the settings its config gives that no version carries
  * (logpush, tail consumers, observability). At each share below 100 the doors, once they hold
  * their routes (`routed`), are held `soak_s`, then smoked (`canary.ts --smoke`); a failed

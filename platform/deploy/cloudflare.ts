@@ -1,12 +1,12 @@
 /**
  * Cloudflare, as the deploy kit and the import window speak to it over its REST API with the
  * account's token: the zone and its account, the account's Workers, their secrets' names,
- * their deployments and their versions (whether listed, and their tags), KV namespaces, keys and values, R2 buckets with
- * their lock rules and objects, queues with their messages and consumers, and the zone's
- * Worker routes, DNS records, Workers custom domains and WAF custom rules, and the Workers'
- * logs (Workers Observability's telemetry query). Every call is checked: a failed listing
- * or read throws, never reads as "absent", and a body that is not JSON throws. Every
- * listing is read to its last page. The kit's other Cloudflare tool is wrangler
+ * their deployments and their versions (whether listed, and their tags), KV namespaces, keys
+ * and values, R2 buckets with their lock rules and objects, queues with their messages and
+ * consumers, and the zone's Worker routes, DNS records, Workers custom domains and WAF custom
+ * rules, and the Workers' logs (Workers Observability's telemetry query). Every call is
+ * checked: a failed listing or read throws, never reads as "absent", and a body that is not
+ * JSON throws. Every listing is read to its last page. The kit's other Cloudflare tool is wrangler
  * (`deploy.ts`), which uploads and deploys the run's versions; a rollback's deployment is
  * this client's.
  *
