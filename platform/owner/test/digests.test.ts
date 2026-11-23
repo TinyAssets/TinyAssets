@@ -211,6 +211,9 @@ async function answers(reader: "visitor" | "host", hidden: boolean): Promise<str
   }
   if (reader === "host") {
     seen.push((await r.stub.inboxDigest(me, { limit: 10 })).rooms);
+    // Its clears reach the visitor's private rows too, and count none of them.
+    seen.push(await r.stub.collectionClear(me, { collection: lobby, writer: null }),
+              await r.stub.collectionClear(me, { collection: "board", writer: "bob" }));
   }
   return JSON.stringify(seen, (key, value: unknown) => key === "at" ? "<at>"
     : value === r.owner ? "<owner>"
@@ -434,8 +437,9 @@ describe("a digest's reads", () => {
       // Bob's row has the history of its own writes, from its making.
       expect(store.history(bob, "board", "t", true, null).entries.map((entry) => entry.op))
         .toEqual(Array<string>(6).fill("write"));
-      // Cleared as bob's, its private deletion is bob's alone, and the public one stays.
-      expect(store.clear(r.owner, "board", bob)).toEqual({ deleted: 1 });
+      // Cleared as bob's, its private deletion is bob's alone (the owner's clear counts no
+      // row it could not see), and the public one stays.
+      expect(store.clear(r.owner, "board", bob)).toEqual({ deleted: 0 });
       expect(store.changed("muse", { collection: "board" }, before, 10).rows
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
       expect(store.changed(bob, { collection: "board" }, before, 10).rows

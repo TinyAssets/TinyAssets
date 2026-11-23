@@ -71,7 +71,7 @@ row by its id and `private`, so it names only rows it may see, its own or the pu
 - `pull` and the digests read `space IN ('', caller)`; a digest's deletion says `private`, so a
   reader tells its own private row's deletion from the public row's of that id.
 - The owner sees every row it saw before: every public row and its own private ones; its clear
-  reaches every writer's, as before.
+  reaches every writer's, as before, and counts only the rows it could see (review).
 
 The contract adds an optional field on three doors, which the owner, deploying first, takes
 whatever the doors' release before hands: no expand-then-contract step (`handed.test.ts`).
@@ -86,6 +86,10 @@ whatever the doors' release before hands: no expand-then-contract step (`handed.
   - `import.ts` `rowThere` compared the held row's privacy with the import's, since one key
     could hold either.
   - `rowsPage` ordered by `(collection, row_id)`, no longer a total order.
+  - (Review) The owner's clear answered `deleted` with every row it erased, so it told the host
+    how many private rows a visitor held in a room or the board: `#erase` counts only the rows
+    its caller could see (a delete's row is always the caller's), and the leak test's host
+    clears both.
 - **One fact, one column.** `private` beside the space it is derived from goes.
 - **No test-only default.** `history`'s `before = null` was used only by tests; every caller
   passes it.
@@ -124,7 +128,10 @@ whatever the doors' release before hands: no expand-then-contract step (`handed.
   deletes private rows at the very ids it writes and claims; a public claim conflicts for
   everyone, the owner among them, beside a private row of its id; the owner reads every
   public row and its own; the migration keeps every row, entry, counter and content
-  reference, and fails loudly on an entry with no row; the widest private row's charge.
+  reference, and fails loudly on an entry with no row; a private row's charge at the widest
+  names and (review) at the shortest, where every record is in place and the charge has no
+  overflow page's slack, so a term it leaves out (its key's index entry without the space)
+  fails it.
 
 ## Owed
 

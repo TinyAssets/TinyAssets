@@ -696,7 +696,8 @@ export class Collections {
 
   /**
    * Delete the rows `where` matches: each row's entries go, and its deletion is kept in
-   * `collection_erasures`, naming the head of the chain it ended (`prev`).
+   * `collection_erasures`, naming the head of the chain it ended (`prev`). Answers how many of
+   * them the caller could see, so no count tells it of another writer's private rows.
    */
   #erase(caller: string, collection: string, op: string, where: string,
          params: unknown[]): number {
@@ -730,7 +731,7 @@ export class Collections {
       sql.exec("DELETE FROM collection_seqs WHERE collection = ?", collection);
     }
     this.#prune();
-    return rows.length;
+    return rows.filter(({ space }) => space === "" || space === caller).length;
   }
 
   /**
@@ -761,7 +762,7 @@ export class Collections {
    * Delete a collection's rows, or every row `writer` created or last wrote.
    *
    * The owner's act alone. Matching creator or writer removes an abuser's rows even
-   * after another account took them over.
+   * after another account took them over, their private rows too, which `deleted` leaves out.
    */
   clear(caller: string, collection: string, writer: unknown): { deleted: number } {
     name(collection, "collection");

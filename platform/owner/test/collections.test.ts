@@ -293,11 +293,18 @@ describe("the revision primitive", () => {
     const refused = await failure(() => stub.collectionClear(as("mallory"), {
       collection: ROOM, writer: null }));
     expect(refused.message).toBe("only the owner may clear collection rows");
+    // The owner clears every writer's rows, but counts only those it could see.
     expect(await stub.collectionClear(as(alice), { collection: ROOM, writer: "mallory" }))
-      .toEqual({ deleted: 2 });
-    await inObject(stub, (store) => put(store, "mallory", "c"));
+      .toEqual({ deleted: 0 });
+    expect((await stub.collectionPull(as("mallory"), { collection: ROOM, limit: 10 })).rows)
+      .toEqual([]);
+    await inObject(stub, (store) => {
+      put(store, "mallory", "c");
+      store.write(alice, "mallory", ROOM, "d", "1", "", false);
+    });
     expect(await stub.collectionClear(as(alice), { collection: ROOM, writer: null }))
-      .toEqual({ deleted: 2 });
+      .toEqual({ deleted: 1 });
+    expect(await rows(stub)).toEqual([]);
     // A clear never moves a reader's cursor back: the next row is past every old seq, so a
     // cursor from before the collection was emptied reads it.
     await inObject(stub, (store) => put(store, "cara", "z"));
