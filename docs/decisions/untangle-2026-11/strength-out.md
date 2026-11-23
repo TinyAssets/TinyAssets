@@ -35,9 +35,11 @@ mark it.
 - The kit's rollback (`deploy.ts` `rollbackAsk`) takes one run's Workers back to the versions
   its record kept, owner before gateway, and refuses, changing nothing, when any Worker serves
   anything but that run's version or the one before (a deploy since).
-- The run that deploys this removal will record 19b79ef8f as each Worker's version before, so
-  its rollback reaches 19b79ef8f's owner (calls only `listing`) and its gateway (still has
-  `strength`). Every older record, 45251793237's included, is refused once that run deploys.
+- The run that deploys this removal will record what serves then as each Worker's version
+  before: 19b79ef8f, or a later main the plan's hold also passes (run 45254594209 was deploying
+  579de4e77, #5837, at review; the hold passes against it too). Its rollback reaches that
+  owner (calls only `listing`) and gateway (still has `strength`). Every older record is
+  refused once that run deploys.
 - Before this removal deploys, a rollback of 45251793237 takes the stage back to 8e01c3dd2,
   whose shapes hand `strength_read`; the kit's plan (`servedHold`) then refuses this removal
   until 19b79ef8f or later serves again. Even so, 8e01c3dd2's owner never calls `strength`.
