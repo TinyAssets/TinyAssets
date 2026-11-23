@@ -3,7 +3,7 @@
  * hands the gateway to seal (the pi-ai provider and API, the base URL, how the secret is
  * sent, the endpoints it may reach, an OAuth client), the egress scope a committed
  * connection keeps, the rules that judge a request against them, and the reads of what a
- * key can pay for (`CreditRead`) and of how strong each model is (`StrengthRead`). The
+ * key can pay for (`CreditRead`) and of the models its vendor lists it (`ListingRead`). The
  * gateway seals and
  * opens by these (`gateway/src/credential.ts`), the source records are checked by them
  * (`sources/src/check.ts`), and the owner's object admits a sandbox call by them
@@ -524,59 +524,61 @@ export function paysBy(read: CreditRead, body: unknown): boolean | null {
 }
 
 /**
- * Where a source's vendor lists how strong each model is, from its source record
- * (`strength`): a `GET` of `url` with the sealed secret, whose JSON answer holds a list of
- * rows at `rows`, each a model's id at `id` and its score at `score`, higher stronger.
+ * Where a source's vendor lists the models it serves a key, from its source record
+ * (`listing`): a `GET` of `url` with the sealed secret, whose JSON answer holds a list of
+ * rows at `rows`, each a model it serves, its id at `id` and, where the vendor gives one, its
+ * score at `score`, higher stronger.
  */
-export interface StrengthRead {
+export interface ListingRead {
   readonly url: string;
   readonly rows: readonly string[];
   readonly id: readonly string[];
-  readonly score: readonly string[];
+  readonly score?: readonly string[];
 }
 
 /**
- * A strength read's `url` (`readUrl`) and its three paths, checked (`invalid_request`).
- * Which other keys it may come with is its holder's, as a credit read's are
- * (`strength_read`).
+ * A listing read's `url` (`readUrl`) and its paths, `score` optional, checked
+ * (`invalid_request`). Which other keys it may come with is its holder's, as a credit read's
+ * are (`listing_read`).
  */
-export function strengthRead(value: unknown): StrengthRead {
+export function listingRead(value: unknown): ListingRead {
   if (!object(value)) {
     throw new Refusal("invalid_request");
   }
   return Object.freeze({ url: readUrl(value["url"]), rows: answerPath(value["rows"]),
-                         id: answerPath(value["id"]), score: answerPath(value["score"]) });
+                         id: answerPath(value["id"]),
+                         ...value["score"] === undefined ? {}
+                           : { score: answerPath(value["score"]) } });
 }
 
-/** One model's score, as a strength read's answer gives it. */
-export interface ModelScore {
+/** One model a listing serves, with its score; null where the vendor gives it none. */
+export interface ListedModel {
   readonly id: string;
-  readonly score: number;
+  readonly score: number | null;
 }
 
 /**
- * The scores a strength answer `body` gives, by `read`: each row's id with its score, a
- * finite number; a row with none (a vendor omits the score of a model it has not scored) is
- * left out. Null for an answer of another shape: no list at `rows`, a row with no id, or not
- * one score in it.
+ * The models a listing answer `body` serves, by `read`: each row's id, with its score where
+ * `read` names one and the row has a finite number there. Null for an answer of another
+ * shape: no list at `rows`, no row, a row with no id, or, where `read` names a score, not one
+ * score in it (a renamed path would otherwise read as nothing served, or nothing scored).
  */
-export function scoresBy(read: StrengthRead, body: unknown): ModelScore[] | null {
+export function listedBy(read: ListingRead, body: unknown): ListedModel[] | null {
   const rows = valueAtPath(body, read.rows);
-  if (!Array.isArray(rows)) {
+  if (!Array.isArray(rows) || rows.length === 0) {
     return null;
   }
-  const scores: ModelScore[] = [];
+  const listed: ListedModel[] = [];
   for (const row of rows) {
     const id = valueAtPath(row, read.id);
     if (typeof id !== "string") {
       return null;
     }
-    const score = valueAtPath(row, read.score);
-    if (typeof score === "number" && Number.isFinite(score)) {
-      scores.push(Object.freeze({ id, score }));
-    }
+    const score = read.score === undefined ? null : valueAtPath(row, read.score);
+    listed.push(Object.freeze({
+      id, score: typeof score === "number" && Number.isFinite(score) ? score : null }));
   }
-  return scores.length === 0 ? null : scores;
+  return read.score !== undefined && listed.every((one) => one.score === null) ? null : listed;
 }
 
 /**

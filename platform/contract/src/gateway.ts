@@ -16,13 +16,13 @@
  *
  * Each value one side builds and the gateway reads has its checker beside its type
  * (`metering`, `doorbellInput`, `ringRequest`; a credit read's, `CreditRead`, and a
- * strength read's, `StrengthRead`, are `egress-scope.ts`'s, as the source records are checked
+ * listing read's, `ListingRead`, are `egress-scope.ts`'s, as the source records are checked
  * by them too), so its builder and its reader hold one rule.
  */
 import { keyed, object, whole } from "./checks.ts";
 import { taken } from "./handed.ts";
 import type {
-  CreditRead, EgressScope, ModelScore, ServiceSource, Source, StrengthRead,
+  CreditRead, EgressScope, ListedModel, ListingRead, ServiceSource, Source,
 } from "./egress-scope.ts";
 import type { ModelRecord } from "./model-record.ts";
 import { Refusal } from "./refusal.ts";
@@ -214,9 +214,9 @@ export interface KeyCredit {
   readonly pays: boolean;
 }
 
-/** What a strength listing said: each scored model's score, higher stronger. */
-export interface ModelStrength {
-  readonly scores: readonly ModelScore[];
+/** What a vendor's listing said: each model it serves the key, with its score or none. */
+export interface ModelListing {
+  readonly models: readonly ListedModel[];
 }
 
 /** The default entrypoint, as the owner's object binds it (`GATEWAY`). */
@@ -229,12 +229,12 @@ export interface GatewayService {
   credit(owner: string, connection: string, version: number, blob: string,
          read: CreditRead): Promise<KeyCredit>;
   /**
-   * How strong each model is, as a connection's source's vendor lists it (`StrengthRead`),
-   * read with the sealed secret, at a `GET` its sealed endpoints allow (`endpoint_refused`
-   * where they do not), as `credit` is.
+   * The models a connection's source's vendor lists its key served, with their scores
+   * (`ListingRead`), read with the sealed secret, at a `GET` its sealed endpoints allow
+   * (`endpoint_refused` where they do not), as `credit` is.
    */
-  strength(owner: string, connection: string, version: number, blob: string,
-           read: StrengthRead): Promise<ModelStrength>;
+  listing(owner: string, connection: string, version: number, blob: string,
+          read: ListingRead): Promise<ModelListing>;
   /** An OAuth credential refreshed; the result is bound to `version + 1`. */
   refresh(owner: string, connection: string, version: number, blob: string):
     Promise<Refreshed>;

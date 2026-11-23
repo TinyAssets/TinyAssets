@@ -23,8 +23,8 @@ import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
 import { clock } from "../src/clock";
-import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED, SIGNIN_LAPSED,
-         TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
+import { NO_CONVERSATION, NO_RUN, NO_SOURCE, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED,
+         SIGNIN_LAPSED, TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
 import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
@@ -1089,8 +1089,8 @@ describe("auto and the owner's sign-ins", () => {
       .toMatchObject({ engine: "pi", credential: "api_key" });
   });
 
-  it("picks on a key that pays for nothing only a model its source serves such a key, the " +
-     "strongest its vendor lists, and on one that pays the strongest", async () => {
+  it("picks on a key that pays for nothing only a model its source serves such a key and its " +
+     "vendor still lists, and on one that pays the strongest", async () => {
     // The stage finding of 2026-11-23, past the batch variants: a free-tier OpenRouter key,
     // whose catalog prices a router at zero that routes to priced models.
     const [base] = await catalog(OPENAI);
@@ -1103,8 +1103,10 @@ describe("auto and the owner's sign-ins", () => {
     const keyed = async (pays: boolean) => {
       const r = await gated();
       await r.gateway.arm("credit", { answer: { pays } });
-      // The vendor scores one free model; the other, first by id, it does not.
-      await r.gateway.arm("strength", { answer: { scores: [{ id: FREE, score: 11.8 }] } });
+      // The vendor scores none of them, and no longer serves the other free one, first by id.
+      await r.gateway.arm("listing", { answer: { models: [
+        { id: PAID, score: null }, { id: "openrouter/auto", score: null },
+        { id: FREE, score: null }] } });
       await r.connect("sk-good", OPENAI, "OpenRouter", models, "openrouter_user_models_v1");
       await drainDue(r.stub);
       await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
@@ -1116,6 +1118,10 @@ describe("auto and the owner's sign-ins", () => {
     // A model the agent names is its own choice.
     expect((await ownerRun(free.stub, free.bind(), { ...AUTO_AGENT, model: PAID }, "pinned"))
       .run).toMatchObject({ credential: "api_key", model: PAID });
+    // One its vendor no longer lists is refused, saying so.
+    expect((await failure(() => ownerRun(free.stub, free.bind(), {
+      ...AUTO_AGENT, model: "cohere/north-mini-code:free" }, "dropped"))).message).toBe(
+      `${NO_SOURCE} (no connected key lists cohere/north-mini-code:free)`);
     const paid = await keyed(true);
     expect((await ownerRun(paid.stub, paid.bind(), undefined, "helper")).run)
       .toMatchObject({ credential: "api_key", model: PAID });

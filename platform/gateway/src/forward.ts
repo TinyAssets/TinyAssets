@@ -1,7 +1,7 @@
 /**
  * Raw passthrough for sandbox egress (research §5.4 step 4.3), the credential check a
  * connection makes when it is set up (`verify`), and the reads of what its key can pay for
- * (`credit`) and of how strong its vendor lists each model (`strength`).
+ * (`credit`) and of the models its vendor lists it served (`listing`).
  *
  * The sandbox's model clients speak each provider's own API to our egress door with
  * placeholder keys; the binder admits the request at the owner's object, which hands it
@@ -31,11 +31,12 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
-  allows, creditRead, egressHeaders, type EgressScope, egressTarget, isService, type Meter,
-  meteredCall, meteredModel, type ModelScope, paysBy, scoresBy, strengthRead, type Upstream,
+  allows, creditRead, egressHeaders, type EgressScope, egressTarget, isService,
+  type ListedModel, listedBy, listingRead, type Meter, meteredCall, meteredModel,
+  type ModelScope, paysBy, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
-  type KeyCredit, metering, MODEL_NAME, type MeterOutcome, type ModelStrength, type Resealed,
+  type KeyCredit, metering, MODEL_NAME, type MeterOutcome, type ModelListing, type Resealed,
   type Reservation, type Reserve, type Verified,
 } from "../../contract/src/gateway";
 import { taken } from "../../contract/src/handed";
@@ -616,10 +617,10 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
 /** The most of a key's limits answer read (`credit`). */
 const CREDIT_ANSWER_MAX = 64 * 1024;
 /**
- * The most of a strength listing read (`strength`): a vendor's whole model listing, about
- * 0.9 MB for OpenRouter's 477 models on 2026-11-23, with room for it to grow.
+ * The most of a listing read (`listing`): a vendor's whole model listing, about 0.9 MB for
+ * OpenRouter's 477 models on 2026-11-23, with room for it to grow.
  */
-const STRENGTH_ANSWER_MAX = 4 * 1024 * 1024;
+const LISTING_ANSWER_MAX = 4 * 1024 * 1024;
 
 /**
  * What an opened model credential's key can pay for (`credit_read`, checked here), read by
@@ -640,22 +641,44 @@ export async function credit(env: KeyringEnv, bound: Binding, blob: unknown,
 }
 
 /**
- * How strong each model is, as the opened model credential's vendor lists it
- * (`strength_read`, checked here), read by `sealedRead` to `STRENGTH_ANSWER_MAX` and held to
- * the read's paths; an answer of another shape is `upstream_error`.
+ * The models the opened model credential's vendor lists its key served, with their scores
+ * (`listing_read`, checked here), read by `sealedRead` to `LISTING_ANSWER_MAX` and held to the
+ * read's paths (`listedBy`); an answer of another shape is `upstream_error`.
+ */
+export async function listing(env: KeyringEnv, bound: Binding, blob: unknown,
+                              value: unknown): Promise<ModelListing> {
+  if (!keyed(value, ...taken("listing_read"))) {
+    throw new Refusal("invalid_request");
+  }
+  return Object.freeze({ models: Object.freeze(await listed(env, bound, blob, value)) });
+}
+
+/**
+ * The owner's version before's read of the same listing (`strength_read`, its score path
+ * required): the scored models alone. It goes once the stage serves no owner that calls it
+ * (`untangle-2026-11/served-models.md`).
  */
 export async function strength(env: KeyringEnv, bound: Binding, blob: unknown,
-                               value: unknown): Promise<ModelStrength> {
+                               value: unknown):
+    Promise<{ readonly scores: readonly { readonly id: string; readonly score: number }[] }> {
   if (!keyed(value, ...taken("strength_read"))) {
     throw new Refusal("invalid_request");
   }
-  const read = strengthRead(value);
-  const scores = scoresBy(read,
-                          await sealedRead(env, bound, blob, read.url, STRENGTH_ANSWER_MAX));
-  if (scores === null) {
+  const scores = (await listed(env, bound, blob, value)).flatMap(({ id, score }) =>
+    score === null ? [] : [Object.freeze({ id, score })]);
+  return Object.freeze({ scores: Object.freeze(scores) });
+}
+
+/** A listing read's models (`listedBy`), or `upstream_error` for an answer of another shape. */
+async function listed(env: KeyringEnv, bound: Binding, blob: unknown, value: unknown):
+    Promise<ListedModel[]> {
+  const read = listingRead(value);
+  const models = listedBy(read, await sealedRead(env, bound, blob, read.url,
+                                                 LISTING_ANSWER_MAX));
+  if (models === null) {
     throw new Refusal("upstream_error");
   }
-  return Object.freeze({ scores: Object.freeze(scores) });
+  return models;
 }
 
 /**

@@ -155,12 +155,14 @@ describe("the source records", () => {
     expect(() => sourceRecord({ ...claude, credit })).toThrow(SourceRecordError);
   });
 
-  it("say where a vendor lists how strong each model is only as a gateway source's read at a " +
-     "GET its endpoints allow", () => {
-    const strength = openrouter["strength"] as Record<string, unknown>;
+  it("say where a vendor lists the models it serves a key only as a gateway source's read at " +
+     "a GET its endpoints allow, its score optional", () => {
+    const listing = openrouter["listing"] as Record<string, unknown>;
     const at = (change: Record<string, unknown>) =>
-      sourceRecord({ ...openrouter, strength: { ...strength, ...change } });
-    expect(at({}).strength).toEqual(strength);
+      sourceRecord({ ...openrouter, listing: { ...listing, ...change } });
+    expect(at({}).listing).toEqual(listing);
+    const { score: _score, ...unscored } = listing;
+    expect(sourceRecord({ ...openrouter, listing: unscored }).listing).toEqual(unscored);
     for (const bad of [{ url: "https://openrouter.ai/api/v1/elsewhere" },
                        { url: "https://evil.test/api/v1/models/user" },
                        { url: "https://openrouter.ai/api/v1/models/user?all=1" },
@@ -169,7 +171,7 @@ describe("the source records", () => {
                        { cite: "http://openrouter.ai/docs" }, { extra: 1 }]) {
       expect(() => at(bad), JSON.stringify(bad)).toThrow(SourceRecordError);
     }
-    expect(() => sourceRecord({ ...claude, strength })).toThrow(SourceRecordError);
+    expect(() => sourceRecord({ ...claude, listing })).toThrow(SourceRecordError);
   });
 
   it("take an issuer, bare or with a path, and its RFC 9207 flag", () => {
