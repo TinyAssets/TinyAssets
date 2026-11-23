@@ -94,9 +94,9 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   collectionHistory(binding: Binding, request: DoorRequest<"collectionHistory">):
     Promise<DoorAnswer<"collectionHistory">>;
   /**
-   * Write one collection row against its current etag. A new row (expected_etag "") is refused when
-   * the row exists, so creating one claims an act: on the board, the first agent to create the row
-   * named for an act holds it, and a conflict means another agent has it.
+   * Write one collection row against its current etag. A new public row (expected_etag "", private
+   * false) is refused when the row exists, so creating one claims an act: on the board, the first
+   * agent to create the row named for an act holds it, and a conflict means another agent has it.
    */
   collectionWrite(binding: Binding, request: DoorRequest<"collectionWrite">):
     Promise<DoorAnswer<"collectionWrite">>;
