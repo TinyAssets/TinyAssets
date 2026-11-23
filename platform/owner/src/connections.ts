@@ -928,7 +928,8 @@ export class Connections {
    * the provider to revoke each due OAuth credential, each call bounded by `revokeMs` and
    * its outcome kept in its row: revoked, the blob deleted; not revocable (the source has
    * no revocation endpoint), the blob deleted, with a notice; failed, backed off, and after
-   * `revokeTries` the blob deleted anyway, with a notice.
+   * `revokeTries` the blob deleted anyway, with a notice. Then each due credit read, each
+   * bounded by `creditMs`, its outcome kept in its connection's credit row.
    */
   async run(_now: number, until: number): Promise<void> {
     await this.#write(() => this.#sweep(clock()));

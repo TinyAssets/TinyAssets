@@ -15,7 +15,8 @@
  * (`RESEALED_HEADER`, `egress.ts`).
  *
  * Each value one side builds and the gateway reads has its checker beside its type
- * (`metering`, `doorbellInput`, `ringRequest`), so its builder and its reader hold one rule.
+ * (`metering`, `doorbellInput`, `ringRequest`, `creditRead`), so its builder and its reader
+ * hold one rule.
  */
 import { keyed, object, valueAtPath, whole } from "./checks.ts";
 import { taken } from "./handed.ts";
