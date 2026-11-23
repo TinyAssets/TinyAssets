@@ -2829,6 +2829,27 @@ describe("the rollout record and mode rollback", () => {
     expect(again.plan.at(-1)).toBe("every Worker serves its version before the run already");
   });
 
+  it("refuses, before any change, a rollback to a version no later plan could read",
+     async () => {
+    // The run's version before is a commit without handed.json, as run 45119864429's record
+    // names ecaccf90c: every plan after the rollback would stop at it.
+    const before: Record<string, string | null> = {};
+    const w = world({ held: true, before });
+    await runMode(w, "dark", ["--yes"], RUN);
+    const ran = serving(w);
+    before["platform/contract/handed.json"] = null;
+    const why = `${NAMES["doors"]}'s version before run 7001 is before-doors, tagged ${
+      HELD_SERVING[NAMES["doors"]!]![0]!.tag}, ${BEFORE} holds no platform/contract/handed.json: ` +
+      "what it hands and takes is unknown; every plan after a rollback to it would stop there, " +
+      "so nothing is rolled back";
+    w.events.splice(0);
+    await expect(runMode(w, "rollback", ["--public", "--record", "7001"],
+                         { ...PUBLIC, GITHUB_RUN_ID: "7002" })).rejects.toThrow(why);
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(why);
+    expect(deployed(w)).toEqual([]);
+    expect(serving(w)).toEqual(ran);
+  });
+
   it("has its canary's keyed checks wait only while the control record admits no owner, as " +
      "after every mode (rollback run 45071780667 judged it apart from routes)", async () => {
     const canaries = (w: ReturnType<typeof world>) =>

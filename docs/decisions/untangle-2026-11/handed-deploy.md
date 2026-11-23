@@ -135,6 +135,9 @@ other strict cross-Worker parser is data under the same rule, which runs both wa
 
 ## Owed
 
-- [x] Once the stage serves a commit with `handed.json` (this PR's or later), `sideAt`'s
-  reading of a commit's `bindings.json` goes (live: the stage serving this PR's commit). Done
-  (`process/handed-fallback`, `handed-fallback.md`): run 45119864429 deployed d315aaa61.
+- [x] Once no plan can meet a commit without `handed.json`, `sideAt`'s reading of a commit's
+  `bindings.json` goes (live: the stage serving a commit with `handed.json`, and no rollback
+  able to take a Worker back to one without; the first condition alone, as this line first
+  said, missed that a rollout record still reached ecaccf90c). Done (`process/handed-fallback`,
+  `handed-fallback.md`): run 45119864429 deployed d315aaa61, and rollback now refuses a target
+  no later plan could read.
