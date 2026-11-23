@@ -779,12 +779,6 @@
       }
     },
     {
-      "door": "registerProposal", "class": "read", "capability": null, "dropped": true,
-      "args": {
-        "refused": "invalid ledger request", "required": { "card_id": {} }, "optional": {}
-      }
-    },
-    {
       "door": "registerProposals", "class": "read", "capability": null, "args": "none"
     },
     {
