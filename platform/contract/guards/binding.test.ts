@@ -2,11 +2,13 @@
  * Each binding kind's parser (`contract/src/binding.ts`) takes the binding the binder builds
  * for it, field for field, which presents that kind (`bindingKind`), and refuses any malformed
  * one as `invalid`: a field missing, a field another kind carries, a field out of its grammar,
- * or another kind's caller.
+ * or another kind's caller. Each shape a binding is made of (`bindings.json`) lists exactly the
+ * fields its parser takes from what the binder builds.
  */
 import { describe, expect, it } from "vitest";
 
-import { BINDING_PARSERS, type BindingKind, bindingKind, PLATFORM_CALLER } from "../src/binding";
+import { BINDING_PARSERS, type BindingKind, bindingKind, bindingShapes, PLATFORM_CALLER,
+         type ShapeName } from "../src/binding";
 import { refusalOf } from "../src/refusal";
 
 const OWNER = "user_owner";
@@ -84,6 +86,11 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
                                         control: JSON.stringify({ outside: "on" }) }],
     ["a control record not its text", { owner: OWNER, caller: OWNER, origin: null,
                                         control: JSON.parse(RECORD) }],
+    // What the doors handed before #5805 and #5807, which no doors the stage serves hand now.
+    ["the tiers beside the record", { owner: OWNER, caller: OWNER, origin: null,
+                                      control: RECORD, tiers: { free: { runs: 5 } } }],
+    ["the switches beside the record", { owner: OWNER, caller: OWNER, origin: null,
+                                         control: RECORD, signins: ["claude-code"] }],
   ],
   session: [["no session", { owner: OWNER, caller: OWNER, origin: null }]],
   egress: [
@@ -119,6 +126,9 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
                               inbound: { binding: HEX("3", 32), revision: 1 } }],
     ["a binding id of 64 hex", { owner: OWNER, caller: OWNER, origin: null,
                                  inbound: { binding: HEX("3", 64), revision: 1 } }],
+    ["the switches beside the record", { owner: OWNER, caller: OWNER, origin: null,
+                                         inbound: { binding: HEX("3", 32), revision: 1 },
+                                         control: null, signins: [] }],
   ],
   reserved: [
     ["the owner's own caller", { owner: OWNER, caller: OWNER, origin: null }],
@@ -159,16 +169,62 @@ describe("each binding kind's parser", () => {
       expect(refusalOf(thrown)?.code).toBe("invalid");
     });
 
-  // The owner is deployed before the doors, so the doors' version before binds it for one
-  // deploy (`HANDED_BEFORE`): its bindings parse, the fields it still hands dropped.
-  const BEFORE = { tiers: { free: { runs: 5 } }, signins: ["claude-code"] };
-  it.each([["account", { owner: OWNER, caller: OWNER, origin: null, control: RECORD }],
-           ["session", { owner: OWNER, caller: OWNER, origin: null, session: "cookie" }],
-           ["inbound", { owner: OWNER, caller: OWNER, origin: null,
-                         inbound: { binding: HEX("3", 32), revision: 1 }, control: null }]] as const)(
-    "%s takes the doors' version before's binding, dropping its tiers and switches",
-    (kind, built) => {
-      expect(BINDING_PARSERS[kind]({ ...built, ...BEFORE })).toEqual(built);
-      expect(bindingKind({ ...built, ...BEFORE })).toBe(kind);
+  // A field a shape drops (`bindings.json`), which the doors' version before still hands, is
+  // taken and left out.
+  it.each(KINDS.flatMap((kind) => BUILT[kind].map((built) => [kind, built] as const))
+    .filter(([kind]) => kind !== "none"))(
+    "%s takes its shape's dropped fields and leaves them out", (kind, built) => {
+      const dropped = SHAPES[AT[kind]!].dropped ?? [];
+      const handed = { ...built as object, ...Object.fromEntries(dropped.map((field) =>
+        [field, "handed before"])) };
+      expect(BINDING_PARSERS[kind](handed)).toEqual(built);
     });
+});
+
+/** Where each shape sits in a kind's binding: the kind, and the path to it. */
+const PLACES: Readonly<Record<ShapeName, readonly (readonly [BindingKind, string?])[]>> = {
+  account: [["account"], ["session"]],
+  origin: [["account", "origin"], ["session", "origin"]],
+  source: [["account", "source"], ["session", "source"]],
+  vendor: [["account", "vendor"]],
+  sandbox: [["egress"], ["sync"]],
+  egress_token: [["egress", "sandbox"], ["run", "sandbox"]],
+  sync_token: [["sync", "sandbox"]],
+  run: [["run"]],
+  inbound: [["inbound"]],
+  inbound_route: [["inbound", "inbound"]],
+  reserved: [["reserved"]],
+  import: [["import"]],
+  import_bundle: [["import", "import"]],
+};
+const SHAPES = bindingShapes();
+/** Each kind's own shape, the one its binding is. */
+const AT: Partial<Record<BindingKind, ShapeName>> = Object.fromEntries(
+  Object.entries(PLACES).flatMap(([name, places]) => places
+    .filter(([, path]) => path === undefined).map(([kind]) => [kind, name])));
+
+describe("the shapes a binding is made of (bindings.json)", () => {
+  it("are each lists of distinct fields, none in two", () => {
+    for (const [name, shape] of Object.entries(SHAPES)) {
+      const listed = [...shape.required, ...shape.optional, ...shape.dropped ?? []];
+      expect(Object.keys(shape).every((key) => ["required", "optional", "dropped"].includes(key)),
+             name).toBe(true);
+      expect(new Set(listed).size, name).toBe(listed.length);
+    }
+  });
+
+  it.each(Object.keys(PLACES) as ShapeName[])(
+    "%s lists exactly the fields its parser takes from what the binder builds", (name) => {
+      const built = PLACES[name].flatMap(([kind, path]) => BUILT[kind].map((binding) =>
+        path === undefined ? binding : (binding as Record<string, unknown>)[path]))
+        .filter((value) => typeof value === "object" && value !== null) as object[];
+      const fields = new Set(built.flatMap((value) => Object.keys(value)));
+      expect([...fields].sort()).toEqual([...SHAPES[name].required, ...SHAPES[name].optional].sort());
+      expect(built.every((value) => SHAPES[name].required.every((field) => field in value)))
+        .toBe(true);
+    });
+
+  it("are every shape the table has", () => {
+    expect(Object.keys(SHAPES).sort()).toEqual(Object.keys(PLACES).sort());
+  });
 });

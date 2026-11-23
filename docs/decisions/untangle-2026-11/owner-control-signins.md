@@ -126,6 +126,10 @@ kept that names no switch for a source still takes that source's verdict, as bef
 
 ## Owed
 
-- [ ] `HANDED_BEFORE` goes, its two fields refused `invalid` again, once the doors the stage
+- [x] `HANDED_BEFORE` goes, its two fields refused `invalid` again, once the doors the stage
   serves are of this PR's commit or later (live: the stage's next deploy past this PR, then
   `untangle/binding-handed-before`).
+
+Taken by `process/binding-compat` (`binding-compat.md`), the stage's doors serving eab88202b
+at 100% (stage routes run 45103565688), with the guard that holds what the doors hand the
+owner to the base's doors.
