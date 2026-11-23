@@ -51,30 +51,35 @@ The deploy order is codemode, files, gateway, sandbox, owner, doors (`deploy/fac
   before it at b65adb647, and the owner as forward-only (it pins `-m30`, its version before
   `-m29`): a rollback of that run takes the doors, and the four before the owner, back to
   b65adb647 and leaves the owner at 9bb0b1b32.
-- **This change's deploy.** Its plan reads the doors at 9bb0b1b32 (or a later main): every doors
-  version since 351ba2fd6 hands a string or nothing. From the owner's 100% to the doors', the
-  doors before are those. The deploy will carry #5824 (migration 31), so the owner pins `-m31`
-  over `-m30` and a rollback of this run stops at it, taking the doors back to 9bb0b1b32, which
-  hand strings. Without #5824 the owner would go back to 9bb0b1b32, which takes a number too.
-- **A rollback of the doors to b65adb647 while this owner serves.** It would break: b65adb647's
-  MCP schema requires `after` as an integer on `board_digest`, `inbox_digest` and
-  `collection_list`, and its app sends `after: 0`, which this owner refuses, so every digest and
-  list from `/mcp` and the app would be refused until the doors went forward. The kit already
-  refuses it: the only record whose doors' version before is b65adb647 is run 45191373564's,
-  and `deploy.ts` `rollbackAsk` holds every Worker of a record to its version before or one of
-  its run's commit. Once this owner serves, the owner is neither, so that rollback stops whole,
-  "deployed since run 45191373564, so nothing is rolled back", changing nothing. This run's own
-  record names 9bb0b1b32's doors (or later). A rollback by hand (`checklist.md`, `wrangler
-  versions deploy`) is outside the kit, as for every pairing.
-- **The one order the kit does not hold.** If run 45191373564's record were rolled back
-  *before* this change deploys, the doors would serve b65adb647 at the next plan. That plan's
-  hold (`deploy.ts` `servedHold`, `deploy/handed.ts`) reads the door table's field names, not
-  their types: b65adb647's required `after` is taken (optional) here, so the plan passes, and
-  from this owner's 100% until the doors' the old doors' integers are refused. If the run then
-  stopped between them, its rollback would take the doors back to b65adb647 and leave the owner
-  (forward-only, `-m31`), the broken pairing above. The plan's own hold line names the doors'
-  commit ("tinyassets-doors at b65adb647aea"), but nothing stops it. Owed: the hold reads each
-  field's type too, so a type change takes an expand step the kit holds as it holds a field's.
+- **The stage now (review, 2026-11-23).** Run 45200348628 (main b8424315e, which carries
+  #5824's migration 31) has since deployed all six Workers at 100%, each read back; its canary
+  failed after the doors' 100% on the full run's file read, not on a cursor. Its record holds
+  the doors before at 9bb0b1b32 and the owner as forward-only (`-m31` over `-m30`), so a
+  rollback of it stops at the owner and takes the doors back to 9bb0b1b32, which hand strings.
+  Run 45191373564's record can no longer be rolled back at all: its owner serves neither its
+  version before nor its commit, so `deploy.ts` `rollbackAsk` stops it whole ("deployed since
+  run 45191373564, so nothing is rolled back"), and the kit never takes the owner back past
+  `-m31`.
+- **This change's deploy.** Its plan reads the doors at 9bb0b1b32 or b8424315e: both hand a
+  string or nothing. It adds no migration, so its owner is not forward-only over b8424315e's: a
+  rollback of its run takes every Worker back to b8424315e, whose owner still reads a number as
+  the start and whose doors hand strings. Every pairing a rollback through the kit can reach
+  hands strings.
+- **The pairing that would break, and why no rollback reaches it.** b65adb647's doors beside
+  this owner: their MCP schema requires `after` as an integer on `board_digest`, `inbox_digest`
+  and `collection_list`, and their app sends `after: 0`, which this owner refuses, so every
+  digest and list from `/mcp` and the app would be refused until the doors went forward. The
+  only record whose doors' version before is b65adb647 is run 45191373564's, which the kit
+  refuses (above). A rollback by hand (`checklist.md`, `wrangler versions deploy`) is outside
+  the kit, as for every pairing.
+- **What the kit's hold does not read.** The plan's hold (`deploy.ts` `servedHold`,
+  `deploy/handed.ts`) reads the door table's field names, not their types: b65adb647's required
+  `after` is taken (optional) here, so had run 45191373564 been rolled back before run
+  45200348628, a plan of this change over its doors would have passed, the hold line naming
+  "tinyassets-doors at b65adb647aea" but stopping nothing. The stage's state has closed that
+  order, so this change needs no check of its own; the gap stays for the next type change.
+  Owed: the hold reads each field's type too, so a type change takes an expand step the kit
+  holds as it holds a field's.
 
 ## The shape
 
@@ -125,8 +130,8 @@ true`, as the spec gives it; a pull and a history refuse it, now in one place (`
 
 - [ ] untangle/handed-types: the deploy kit's hold (`deploy/handed.ts`) reads each door
   table field's type as well as its name, so a plan stops before an owner that refuses a type
-  its serving doors hand (this change over b65adb647's doors, after a rollback of run
-  45191373564), and a type change takes an expand step held as a field's is. Research first
-  (Fact 14): how the table says a field taken in two types.
+  its serving doors hand (as this change would have over b65adb647's doors, had run
+  45191373564 been rolled back before run 45200348628), and a type change takes an expand step
+  held as a field's is. Research first (Fact 14): how the table says a field taken in two types.
 - [ ] live: after the next owner deploy, the stage's `board_digest` with `after` a number or a
   made-up cursor (via `/api` or code mode, which hand it through) answers `cursor_invalid`.
