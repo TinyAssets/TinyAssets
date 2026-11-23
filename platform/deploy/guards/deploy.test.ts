@@ -1172,7 +1172,8 @@ describe("the command line", () => {
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
     expect(Object.keys(MODES)).toEqual(["plan", "dark", "routes", "h2", "pair", "handback",
                                         "rollback", "edge", "control", "owner", "restore",
-                                        "copyback", "recover", "erase", "rotation", "retire"]);
+                                        "copyback", "recover", "erase", "rotation", "retire",
+                                        "logs"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
       expect(parse(["--mode", mode, ...needed(mode)], ENV, w.io).mode).toBe(mode);
     }
@@ -5534,7 +5535,8 @@ describe("platform-deploy.yml", () => {
   const PLAN = ["--plan", `${RUNNER_TEMP}/deploy-plan.json`];
   /** The dispatch's inputs, each handed to the kit as its option of the same name. */
   const DISPATCH = ["MODE", "ROTATE", "MIGRATE", "RECORD", "KILL", "SET", "REPLACE", "OWNER",
-                    "ACT", "GENERATION", "CONFIRM", "KEYRING", "AT"];
+                    "ACT", "GENERATION", "CONFIRM", "KEYRING", "AT", "MINUTES", "WORKER",
+                    "FILTER"];
   const dispatched = (inputs: Record<string, string>) =>
     DISPATCH.flatMap((name) => [`--${name.toLowerCase()}`, inputs[name]!]);
   /** `mode` dispatched with what it needs and nothing else. */
@@ -5550,11 +5552,14 @@ describe("platform-deploy.yml", () => {
                    { ...dispatchOf("erase"), CONFIRM: "erase-user_alice" },
                    { ...dispatchOf("retire"), CONFIRM: "retire-GATEWAY_KEYRING-k1" },
                    { ...dispatchOf("copyback"), AT: "2026-11-01T00:00:00Z" },
-                   { ...dispatchOf("recover"), AT: "2026-11-01T00:00:00Z" }];
+                   { ...dispatchOf("recover"), AT: "2026-11-01T00:00:00Z" },
+                   { ...dispatchOf("logs"), MINUTES: "15", WORKER: "sandbox",
+                     FILTER: "start did not answer" }];
   /** What the kit reads of a run's own options. */
   const ownOf = (run: ReturnType<typeof parse>) =>
     [run.record, run.kill, run.edits.length, run.replace, run.owner, run.act?.op ?? null,
-     run.generation?.gen ?? null, run.confirm, run.keyring, run.at?.toISOString() ?? null];
+     run.generation?.gen ?? null, run.confirm, run.keyring, run.at?.toISOString() ?? null,
+     run.minutes, run.worker, run.filter];
   const wanted = (inputs: Record<string, string>) =>
     [inputs["RECORD"] || null, inputs["KILL"] || null,
      inputs["SET"]!.split(" ").filter(Boolean).length,
@@ -5562,7 +5567,9 @@ describe("platform-deploy.yml", () => {
      inputs["ACT"] ? `owner.${inputs["ACT"].split("=")[0]}` : null,
      inputs["GENERATION"] ? inputs["GENERATION"].split("/")[1] : null,
      inputs["CONFIRM"] || null, inputs["KEYRING"] || null,
-     inputs["AT"] ? new Date(inputs["AT"]).toISOString() : null];
+     inputs["AT"] ? new Date(inputs["AT"]).toISOString() : null,
+     inputs["MINUTES"] ? Number(inputs["MINUTES"]) : null, inputs["WORKER"] || null,
+     inputs["FILTER"] || null];
 
   it("plans in a job of its own, with the Cloudflare token alone, the chosen mode's plan", () => {
     expect(plan!.environment).toBe("production");
@@ -5610,7 +5617,7 @@ describe("platform-deploy.yml", () => {
     // Its token reads only: the canary after each mode lists the off-account copy's nights.
     expect(apply!.permissions).toEqual({ contents: "read", actions: "read" });
     for (const inputs of [...offered.filter((mode) => MODES[mode].applies).map(dispatchOf),
-                          ...OPTIONS]) {
+                          ...OPTIONS.filter((each) => MODES[each["MODE"] as Mode].applies)]) {
       const ran = invoked(apply!, inputs);
       expect(ran.map((each) => each.argv)).toEqual([["npm", "ci"], [
         ...KIT, "--mode", inputs["MODE"]!, "--yes", ...PLAN, ...dispatched(inputs).slice(2)]]);

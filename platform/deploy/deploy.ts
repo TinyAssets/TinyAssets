@@ -79,6 +79,10 @@
  *   has no rotation's record: it is retired only once every route E2B holds opens under the
  *   stored ring (`routesHeld`), its words `retire-<keyring>-but-<kid kept>`. Irreversible
  *   unless the old ring is kept offline.
+ * - `logs` (`logs.ts`): the Workers' error and warn lines of the last `--minutes`, `--worker`'s
+ *   alone and those holding `--filter` when given, read from Workers Logs with the Cloudflare
+ *   token, redacted and bounded, printed to the plan job's log. It changes nothing and takes
+ *   no `--yes`, as `plan`.
  *
  * `--public` is the workflow's `plan` job's: the Cloudflare token and the repository's
  * variables alone, every Cloudflare read and the discovery check, the checks that need a
@@ -212,6 +216,7 @@ import {
 } from "./facts.ts";
 import { type Before, handedProblems, sideAt, TREE } from "./handed.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
+import { FILTER_MAX, MINUTES, MINUTES_MAX, workerLogs } from "./logs.ts";
 import {
   BACK_INPUTS, backFrom, type Begin, copyBack, firstNightAfter, KEEP_DAYS, readableAt, recover,
   type Recovering, type Referenced, RESTORE_KEY, restoreBegan, type Watch, watch,
@@ -309,7 +314,7 @@ export const IO: Io = Object.freeze({
 
 export type Mode = "plan" | "dark" | "routes" | "h2" | "pair" | "handback" | "rollback"
   | "edge" | "control" | "owner" | "restore" | "copyback" | "recover" | "erase" | "rotation"
-  | "retire";
+  | "retire" | "logs";
 
 /** One run, as `parse` reads it: its mode, how far it reaches, and its inputs. */
 export interface Run {
@@ -352,6 +357,13 @@ export interface Run {
    * as it stands.
    */
   readonly at: Date | null;
+  /**
+   * `--minutes`, `--worker` and `--filter`: the window `logs` reads (none: `MINUTES`), the one
+   * Worker it reads (none: every one), and text each line it reads holds (none: any).
+   */
+  readonly minutes: number | null;
+  readonly worker: string | null;
+  readonly filter: string | null;
   /** The environment as the run began: its inputs, and what the tools it runs are given. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly io: Io;
@@ -3694,6 +3706,39 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
       "serve their versions before the run");
 });
 
+// --- The Workers' logs (`logs.ts`) -------------------------------------------------------
+
+/**
+ * Mode `logs`: the Workers' error and warn lines of `--minutes` (`--worker`'s alone, those
+ * holding `--filter`), redacted and bounded, printed to the job's log; the plan says what was
+ * read. It changes nothing, so it is the plan job's alone.
+ *
+ * The job's log is public and a Worker's line may quote an owner's content, which no
+ * redaction by shape takes out, so it reads only while the control record admits no owner
+ * but its canary (the stage's accounts); the stage's end deletes the mode (`logs.test.ts`).
+ */
+const logsRead = step<"cloudflare" | "account">(async ({ run, say }, got) => {
+  const namespace = await controlNamespace(got.cloudflare, got.account);
+  const held = namespace === undefined ? undefined
+    : await got.cloudflare.text(got.account, namespace, CONTROL_KEY);
+  const control = held === undefined ? null : controlOf(held);
+  if (control === null || control.ordinary === "all") {
+    throw new Error("the job's log is public, so mode logs reads only while the control record " +
+                    `admits no owner but its canary, and it ${control === null
+                      ? "is missing or one no reader takes" : "admits every owner"}: read the ` +
+                    "Workers' logs in the Cloudflare dashboard; nothing was read");
+  }
+  const workers = run.worker === null ? WORKERS : [run.worker];
+  const read = await workerLogs(got.cloudflare, got.account, {
+    minutes: run.minutes ?? MINUTES, filter: run.filter,
+    scripts: Object.fromEntries(workers.map((worker) => [NAMES[worker]!, worker])),
+  }, run.io.now());
+  for (const line of read.lines) {
+    run.io.log(line);
+  }
+  say(read.said);
+});
+
 // --- The modes --------------------------------------------------------------------------
 
 /**
@@ -3781,6 +3826,7 @@ const ERASE = Steps.none.then(zone).then(eraseAsk).list;
 const ROTATION = Steps.none.then(zone).then(rotationSweep).list;
 const RETIRE = Steps.none.then(zone).then(retireAsk).list;
 const ROLLBACK = Steps.none.then(zone).then(rollbackAsk).list;
+const LOGS = Steps.none.then(zone).then(logsRead).list;
 
 /** What the plan job holds: the Cloudflare token, its one `production` secret, and the vars. */
 export const PUBLIC_INPUTS: readonly string[] = Object.freeze([
@@ -3888,6 +3934,12 @@ export const MODES: Readonly<Record<Mode, Row>> = Object.freeze({
               optional: [] },
     deploys: false, applies: true, own: ["--keyring", "--confirm"],
     steps: { public: RETIRE, secrets: RETIRE }, report: { unchanged: NOTHING, after: canary() },
+  },
+  // Read with the Cloudflare token alone, in the plan job; nothing to apply.
+  logs: {
+    inputs: { public: ["CLOUDFLARE_API_TOKEN"], secret: [], optional: [] },
+    deploys: false, applies: false, own: ["--minutes", "--worker", "--filter"],
+    steps: { public: LOGS, secrets: LOGS }, report: { unchanged: NOTHING, after: [] },
   },
 });
 
@@ -4110,6 +4162,12 @@ const OWN = Object.freeze({
                    RETIRES.join(" or ")})`, needed: true },
   "--at": { names: "the time the off-account copy is read back as it stood at, " +
                    "<yyyy>-<mm>-<dd>T<hh>:<mm>:<ss>Z", needed: false },
+  "--minutes": { names: `the minutes of logs read, 1 to ${MINUTES_MAX} (Workers Logs' 7 days)`,
+                 needed: false },
+  "--worker": { names: `the one Worker whose logs are read: ${WORKERS.join(", ")}`,
+                needed: false },
+  "--filter": { names: `text each line read holds, any case, at most ${FILTER_MAX} characters ` +
+                       "and no control character", needed: false },
 });
 export type Own = keyof typeof OWN;
 
@@ -4164,6 +4222,21 @@ function ownValue(name: Own, text: string): unknown {
         throw refused();
       }
       return new Date(text);
+    case "--minutes":
+      if (!/^[1-9]\d{0,4}$/.test(text) || Number(text) > MINUTES_MAX) {
+        throw refused();
+      }
+      return Number(text);
+    case "--worker":
+      if (!WORKERS.includes(text)) {
+        throw refused();
+      }
+      return text;
+    case "--filter":
+      if (text.length > FILTER_MAX || /\p{Cc}/u.test(text)) {
+        throw refused();
+      }
+      return text;
   }
 }
 
@@ -4209,7 +4282,10 @@ export function parse(argv: readonly string[], env: Readonly<Record<string, stri
     generation: (own["--generation"] as Generation | undefined) ?? null,
     confirm: (own["--confirm"] as string | undefined) ?? null,
     keyring: (own["--keyring"] as string | undefined) ?? null,
-    at: (own["--at"] as Date | undefined) ?? null, env, io });
+    at: (own["--at"] as Date | undefined) ?? null,
+    minutes: (own["--minutes"] as number | undefined) ?? null,
+    worker: (own["--worker"] as string | undefined) ?? null,
+    filter: (own["--filter"] as string | undefined) ?? null, env, io });
   if (row.report !== null) {
     if (run.apply && run.reach === "public") {
       throw new Error("--public is the plan job's: it never changes anything");
