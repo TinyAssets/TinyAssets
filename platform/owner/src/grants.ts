@@ -81,6 +81,7 @@ import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contra
 import { type ConnectedApp, type Grant, MAIN_AGENT, may, type Scope } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import type { DoorRequests } from "../../contract/src/requests";
+import type { Source } from "../../contract/src/binding";
 import { keyed } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import { policyDigest } from "../../contract/src/policy-document";
@@ -316,6 +317,18 @@ export class Grants {
       throw new Refusal("refused", "outside client authority changed");
     }
     return grant;
+  }
+
+  /**
+   * The source a client's grant was recorded from: its own for life, as every admit and set
+   * checks. A held card's client has a row, which the card holds. A read.
+   */
+  source(client: string): Source["kind"] {
+    const row = this.#row(client);
+    if (row === undefined) {
+      throw new Refusal("refused", "outside client has no grant");
+    }
+    return row.source as Source["kind"];
   }
 
   /**

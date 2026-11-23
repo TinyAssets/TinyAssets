@@ -6,9 +6,8 @@
  * Order, before any object is reached:
  * 1. The credential is the owner's first-party token: validated for `/app` and issued to
  *    a first-party client. An outside credential (an API key, or an MCP token) is
- *    refused `403`, so an outside origin never reaches an owner-surface door. The one
- *    pairing of an outside origin with the session is `outside-agents`, and its credential
- *    is still this token. The socket's upgrade alone takes another: its ticket.
+ *    refused `403`, so an outside origin never reaches an owner-surface door. The socket's
+ *    upgrade alone takes another: its ticket.
  * 2. A POST of exactly `application/json`, within `EGRESS_BODY_MAX` (an upload's bytes are a
  *    `PUT` of their own, `file-bytes.ts`).
  * 3. The maintenance gate; the session is attached by `session.ts`'s rules alone.
@@ -26,8 +25,7 @@ import { EGRESS_BODY_MAX } from "../../contract/src/limits";
 import { utf8Decoder } from "../../contract/src/text";
 import { answerJson } from "./answers";
 import {
-  type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
-  socketRequest, withAccount,
+  type Bound, bindOwner, bindOwnerGrant, bindSignOut, bindTicket, socketRequest, withAccount,
 } from "./binder";
 import { FIRST_PARTY_CLIENTS } from "./config";
 import type { DoorsEnv } from "./env";
@@ -35,7 +33,7 @@ import { APP_RESOURCE, MCP_RESOURCE } from "../../contract/src/identity";
 import { type ControlRead, gating, requireFresh } from "../../contract/src/control";
 import type { JsonBody } from "../../contract/src/owner";
 import { ownerRead } from "./control";
-import { deleteOwnKey, looksLikeKey, mintKey, registeringEntry, revokeKey } from "./api-keys";
+import { deleteOwnKey, looksLikeKey, mintKey, revokeKey } from "./api-keys";
 import { CONNECT_ROUTES, DOORBELL_VERSION, sealDoorbell } from "./connect";
 import { eraseOwner } from "./erase";
 import { streamUpload } from "./file-bytes";
@@ -345,17 +343,6 @@ async function socketUpgrade(request: Request, env: DoorsEnv): Promise<Response>
   }
 }
 
-/**
- * `outside-agents`: the owner's browser registering an agent for an API key it holds, the
- * key's directory entry read for its identity (`api-keys.ts`).
- */
-async function registering({ env, owner, body, token }: Served): Promise<Response> {
-  const { key_id: id, ...register } = body;
-  const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
-  const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, owner.binding.session);
-  return answer(200, await stub.registerAgent(binding, register));
-}
-
 /** A route that answers a binder module's sequence's value as JSON. */
 function valued(value: (served: Served) => Promise<unknown>,
                 headers: HeadersInit = {}): { serve: Route } {
@@ -371,7 +358,6 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "agent/socket": { stage: "socket" },
     "files/upload/": { stage: "bytes" },
     "tools/": { serve: ownerTool },
-    "outside-agents": { serve: registering },
     "agent/socket-ticket": { serve: socketTicket },
     "sources": { body: "empty",
                  serve: async ({ sources, gate }) => answer(200, sourceList(sources, gate)) },
