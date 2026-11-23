@@ -237,7 +237,7 @@ describe("an MCP client's agent registration", () => {
   it("answers the owner app's page of the card, and tells the owner of it there", async () => {
     const r = await rig();
     const filed = await r.stub.registerPropose(r.bind(MUSE), REQUEST);
-    const page = `${APP_RESOURCE}#apps/${filed.card_id}`;
+    const page = `${APP_RESOURCE}#home/${filed.card_id}`;
     expect(filed.approve_url).toBe(page);
     expect((await r.table("owner_notices")).filter((row) => row["type"] ===
       "agent_registration").map((row) => row["detail"])).toEqual([

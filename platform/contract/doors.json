@@ -651,10 +651,13 @@
       }
     },
     {
-      "door": "actionRequest", "class": "read", "capability": null,
+      "door": "actionRequest", "class": "read", "capability": null, "dropped": true,
       "args": {
         "refused": "invalid action request", "required": { "card_id": {} }, "optional": {}
       }
+    },
+    {
+      "door": "actionRequests", "class": "read", "capability": null, "args": "none"
     },
     {
       "door": "actionApprove", "class": "work", "capability": null,

@@ -29,6 +29,7 @@
  * (`LauncherNeeds`), each read or write in the unit it is called in.
  */
 import { randomHex } from "../../contract/src/ids";
+import { waitingPage } from "../../contract/src/identity";
 import { sha256Hex } from "../../contract/src/digest";
 import { utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { LEASE_LIVED, mintToken, sealRoute } from "../../contract/src/routing-mac";
@@ -1155,8 +1156,8 @@ export class Launcher implements RunHost {
         }
         const card = refusal.facts?.["card_id"];
         this.#o.notices.once("definition_command_dropped", `${run.agent}: ${what} is left ` +
-          `out of this run: ${typeof card === "string" ? `it waits for your answer to card ${
-            card}` : refusal.message}`, now);
+          `out of this run: ${typeof card === "string" ? `it waits for your answer at ${
+            waitingPage(card)}` : refusal.message}`, now);
         return false;
       }
     };

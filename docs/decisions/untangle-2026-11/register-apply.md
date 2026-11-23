@@ -93,9 +93,10 @@ link, and the app's view of the card applies or declines it. For a full grant
 
 ## Owed
 
-- [ ] `untangle/action-answers`: the app's view of a held action call (`actionRequest`, Apply
+- [x] `untangle/action-answers`: the app's view of a held action call (`actionRequest`, Apply
   as `actionApprove`, Decline as `actionRefuse`), where the `action_request` notice links,
-  as this lane's view of a registration; researched first.
+  as this lane's view of a registration; researched first. Done as one view of both kinds,
+  Home's "Waiting for you", which this view moved to (`action-answers.md`).
 - [ ] live: once the stage serves no doors version before this one, take out
   `registerProposal`, the one-card read kept `dropped` for the doors' version before (both
   tables' rows and its handler), as `deploy/handed.ts` holds a door the doors call no more.

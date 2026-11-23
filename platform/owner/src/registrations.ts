@@ -9,7 +9,7 @@
  * verified, the call's source reference and the grant authority it was admitted under.
  * The filing is held to the rule every registration is (`Ledger.registration`), in the place
  * the client's grant acts (`centerOf`), so the owner is shown only a card that applies. Its
- * answer names the owner app's page of the card (`approveUrl`), which the client hands its
+ * answer names the owner app's page of the card (`waitingPage`), which the client hands its
  * user, and the owner is told of it there too (`agent_registration`). The owner reads the
  * cards (`list`) and applies one in session by its id and the digest it was shown (`take`,
  * then `Ledger.register`, in one transaction), or declines it (`decline`). An API key's
@@ -32,7 +32,7 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { HEX64, randomHex } from "../../contract/src/ids";
-import { appPage } from "../../contract/src/identity";
+import { waitingPage } from "../../contract/src/identity";
 import { Refusal } from "../../contract/src/refusal";
 import { CARD_REQUEST_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
@@ -101,11 +101,6 @@ type Row = {
   card_id: string; client: string; family: string; source_ref: string; generation: number;
   authenticated_at: number | null; request: string; digest: string; filed_at: number;
 };
-
-/** The owner app's page of a held card, where the owner applies or declines it. */
-export function approveUrl(cardId: string): string {
-  return appPage("apps", cardId);
-}
 
 /**
  * Where a client's agent registers (its `command_center_id`): a scoped client acts where its
@@ -216,7 +211,7 @@ export class Registrations {
                by.authenticated_at, body, shown, now);
       this.#notices.add("agent_registration", "An app you connected asks to register an " +
                         "agent, for a mailbox and rooms: approve or decline it at " +
-                        approveUrl(cardId), now);
+                        waitingPage(cardId), now);
       return { card_id: cardId, digest: shown };
     });
   }
@@ -287,7 +282,7 @@ export const registrationsDoors = Object.freeze({
     const filed = o.registrations.file(account.origin!, (binding.source as Source).ref, {
       client: account.origin!.client, generation: grant.generation,
       authenticated_at: binding.authenticated_at ?? null }, request, clock());
-    return { ...filed, approve_url: approveUrl(filed.card_id) };
+    return { ...filed, approve_url: waitingPage(filed.card_id) };
   },
   /**
    * The one card under `card_id`, for the doors' version before (`dropped`), which still

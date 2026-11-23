@@ -17,6 +17,10 @@
  *   A yes keeps the row as the call's once-approval, which its one use deletes; a no deletes
  *   it. Neither a card nor a yes has a life of its own (Fact 15): each waits as a held
  *   approval waits in its conversation on Claude, ChatGPT or an agents SDK's run state.
+ * - **The owner answers a card on its app's page** (`waitingPage`), which the refusal hands
+ *   the agent to give its user and the `action_request` notice names: the app lists the
+ *   pending cards (`list`) with every other card waiting on the owner. A yes is a widening,
+ *   in the owner's session; a no deletes a card and widens nothing, so it needs none.
  * - **A run's CLI's own tool calls are decided too** (R5 P-hooks): its pre-tool hook, where its
  *   engine's record has one (`schema.ts` `Decide`), asks the decide door of each call it
  *   matches (`runDecide`). A call is each act whose hook kinds name the tool (`acts.json`) or
@@ -55,6 +59,7 @@ import type { Origin } from "../../contract/src/binding";
 import { canonical } from "../../contract/src/canonical";
 import { actDoors } from "../../contract/src/doors";
 import { sha256Hex } from "../../contract/src/digest";
+import { waitingPage } from "../../contract/src/identity";
 import { randomHex } from "../../contract/src/ids";
 import {
   type ActionRule, policyDigest, type PolicyDocument, POLICY_LIMITS,
@@ -222,7 +227,7 @@ export interface Asked {
   readonly request: unknown;
 }
 
-/** A held call, as the owner is shown it (`actionRequest`). */
+/** A held call, as the owner is shown it (`actionRequests`). */
 export interface ActionCard {
   readonly card_id: string;
   readonly act: string;
@@ -257,6 +262,9 @@ export type ActionReceipt = {
 type PolicyRead = () => { readonly generation: number; readonly document: PolicyDocument };
 
 const CARD_ID = /^act_[0-9a-f]{32}$/;
+
+/** The pending cards' rows: not yet answered yes, asked under the generation bound. */
+const PENDING = "FROM action_requests WHERE approved_at IS NULL AND generation = ?";
 
 /**
  * `value` as JSON holds it, each of its bytes (`Uint8Array`, a file's content) as `bytes`
@@ -441,13 +449,14 @@ export class Actions {
                actor.run?.id ?? null, actor.run?.family ?? null);
       receipt("held", cardId);
       this.#notices.add("action_request", `${actor.agent ?? "an outside agent"} asks to ` +
-                        `${act} at ${asked.door}: card ${cardId}`, now);
+                        `${act} at ${asked.door}: allow or deny it at ${waitingPage(cardId)}`,
+                        now);
       return cardId;
     });
     if (held !== null) {
-      throw new Refusal("held_for_owner", `held for your owner's answer: card ${held}. The ` +
-                        "owner answers it in the TinyAssets app; once they say yes, make " +
-                        "this same call again", { facts: { card_id: held } });
+      throw new Refusal("held_for_owner", `held for your owner's answer: card ${held}. Your ` +
+                        `owner answers it at ${waitingPage(held)}: give them that link. Once ` +
+                        "they say yes, make this same call again", { facts: { card_id: held } });
     }
   }
 
@@ -483,16 +492,15 @@ export class Actions {
     if (typeof cardId !== "string" || !CARD_ID.test(cardId)) {
       return null;
     }
-    return this.#sql.exec<Row>(
-      "SELECT * FROM action_requests WHERE card_id = ? AND approved_at IS NULL AND " +
-        "generation = ?", cardId, generation,
-    ).toArray()[0] ?? null;
+    return this.#sql.exec<Row>(`SELECT * ${PENDING} AND card_id = ?`, generation, cardId)
+      .toArray()[0] ?? null;
   }
 
-  /** The pending card under `cardId`, and the digest its answer names, or null. */
-  card(cardId: unknown): { card: ActionCard; digest: string } | null {
-    const row = this.#pending(cardId, this.#policy().generation);
-    return row === null ? null : { card: JSON.parse(row.card) as ActionCard, digest: row.digest };
+  /** The pending cards of the policy's generation, oldest first, each with its answer's digest. */
+  list(): (ActionCard & { readonly digest: string })[] {
+    return this.#sql.exec<Pick<Row, "card" | "digest">>(
+      `SELECT card, digest ${PENDING} ORDER BY filed_at, rowid`, this.#policy().generation,
+    ).toArray().map((row) => ({ ...JSON.parse(row.card) as ActionCard, digest: row.digest }));
   }
 
   /**
@@ -505,7 +513,8 @@ export class Actions {
   approve(session: LiveSession, cardId: unknown, shown: unknown, now: number,
           resume: (run: string, family: string | null, prompt: string) => string | null):
       { card_id: string; approved: true; run: string | null } {
-    return this.#answer(session, cardId, shown, now, (row, card) => {
+    proven(session, "session");
+    return this.#answer(cardId, shown, now, (row, card) => {
       this.#sql.exec("UPDATE action_requests SET approved_at = ? WHERE card_id = ?", now,
                      row.card_id);
       return { card_id: row.card_id, approved: true, run: row.run === null ? null
@@ -513,23 +522,20 @@ export class Actions {
     });
   }
 
-  /** The owner's no, in its session, to the pending card shown: deleted, receipted. */
-  refuse(session: LiveSession, cardId: unknown, shown: unknown, now: number):
-      { card_id: string; approved: false } {
-    return this.#answer(session, cardId, shown, now, (row) => {
+  /** The owner's no to the pending card shown: deleted, receipted. */
+  refuse(cardId: unknown, shown: unknown, now: number): { card_id: string; approved: false } {
+    return this.#answer(cardId, shown, now, (row) => {
       this.#sql.exec("DELETE FROM action_requests WHERE card_id = ?", row.card_id);
       return { card_id: row.card_id, approved: false };
     });
   }
 
   /**
-   * The owner's answer, in its session, in one transaction: the pending card with the digest
-   * it was shown, answered by `answered`, and receipted.
+   * The owner's answer, in one transaction: the pending card with the digest it was shown,
+   * answered by `answered`, and receipted.
    */
-  #answer<T extends { approved: boolean }>(session: LiveSession, cardId: unknown,
-                                           shown: unknown, now: number,
+  #answer<T extends { approved: boolean }>(cardId: unknown, shown: unknown, now: number,
                                            answered: (row: Row, card: ActionCard) => T): T {
-    proven(session, "session");
     return this.#storage.transactionSync(() => {
       const { generation } = this.#policy();
       this.#sweep(generation);
@@ -582,14 +588,23 @@ export interface ActionsDoorNeeds {
 
 /** The `actions` doors' handlers, by door. */
 export const actionsDoors = Object.freeze({
-  /** The pending card the owner is shown, and the digest its answer names. */
+  /**
+   * The one card under `card_id`, for the doors' version before (`dropped`), which still
+   * names it until the stage serves none.
+   */
   actionRequest(o: ActionsDoorNeeds, { r }: Call<ActionCardRequest>):
       { card: ActionCard; digest: string } {
-    const held = o.actions.card(r["card_id"]);
-    if (held === null) {
+    const held = o.actions.list().find((each) => each.card_id === r["card_id"]);
+    if (held === undefined) {
       throw new Refusal("refused", "no pending action request for this card");
     }
-    return held;
+    const { digest, ...card } = held;
+    return { card, digest };
+  },
+  /** The pending held calls the owner is shown, oldest first, each with its digest. */
+  actionRequests(o: ActionsDoorNeeds, _call: Call<undefined>):
+      { cards: (ActionCard & { readonly digest: string })[] } {
+    return { cards: o.actions.list() };
   },
   /**
    * The owner's yes, in its session: the held call admitted once, whenever it is made, and a
@@ -639,9 +654,9 @@ export const actionsDoors = Object.freeze({
     }
     return deny === null ? { allow: true } : { hook: {} };
   },
-  /** The owner's no, in its session: the held call's card gone. */
-  actionRefuse(o: ActionsDoorNeeds, { session, r }: Call<ActionAnswerRequest, "session">):
+  /** The owner's no, a narrowing that needs no session: the held call's card gone. */
+  actionRefuse(o: ActionsDoorNeeds, { r }: Call<ActionAnswerRequest>):
       { card_id: string; approved: false } {
-    return o.actions.refuse(session, r["card_id"], r["digest"], clock());
+    return o.actions.refuse(r["card_id"], r["digest"], clock());
   },
 });
