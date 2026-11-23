@@ -115,8 +115,9 @@ export function recordOf(model: Model<Api>): ModelRecord {
  * The models a sealed upstream serves on every API it is sealed for, each with its whole
  * capability record (`recordOf`), its API named: its provider's catalog, or its declared
  * list. The owner object loads no catalog of its own, so this is where it learns them, at
- * connect time: it lists, prices (pi-ai's `calculateCost`, tiers included), compacts and
- * offers thinking levels by them, and gives a run the base of its model's API.
+ * connect time (`verify`) and at each of its lane's reads after (`models`), so a pin bump
+ * reaches every connection: it lists, prices (pi-ai's `calculateCost`, tiers included),
+ * compacts and offers thinking levels by them, and gives a run the base of its model's API.
  */
 export function modelInfos(catalog: Catalog, upstream: Upstream): ModelRecord[] {
   const apis = upstream.apis.map((row) => row.api);

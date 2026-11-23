@@ -1,7 +1,8 @@
 /**
  * Raw passthrough for sandbox egress (research §5.4 step 4.3), the credential check a
- * connection makes when it is set up (`verify`), and the reads of what its key can pay for
- * (`credit`) and of the models its vendor lists it served (`listing`).
+ * connection makes when it is set up (`verify`), the models its blob reaches by the catalog now
+ * (`models`), and the reads of what its key can pay for (`credit`) and of the models its vendor
+ * lists it served (`listing`).
  *
  * The sandbox's model clients speak each provider's own API to our egress door with
  * placeholder keys; the binder admits the request at the owner's object, which hands it
@@ -39,7 +40,7 @@ import {
 } from "../../contract/src/egress-scope";
 import {
   type KeyCredit, metering, MODEL_NAME, type MeterOutcome, type ModelListing, type Resealed,
-  type Reservation, type Reserve, succeeded, type Verified,
+  type Reservation, type Reserve, type SealedModels, succeeded, type Verified,
 } from "../../contract/src/gateway";
 import { taken } from "../../contract/src/handed";
 import { boundedJson } from "./answer";
@@ -665,6 +666,20 @@ function handed(models: readonly ModelRecord[], scope: ModelScope):
     models: Object.freeze(models.map(({ api: _api, ...model }) => Object.freeze(model))),
     egress: Object.freeze({ api, base_url, endpoints: scope.endpoints, meter }),
   };
+}
+
+/**
+ * The models an opened model credential's upstream serves by `catalog` now, on every API it is
+ * sealed for (`modelInfos`, each naming its API): the setup check's list, as the catalog has
+ * moved since. No call leaves the gateway. A service's key has none (`unsupported_source`).
+ */
+export async function models(env: KeyringEnv, bound: Binding, blob: unknown,
+                             catalog: Catalog): Promise<SealedModels> {
+  const { credential } = await open(env, bound, blob);
+  if (isService(credential.upstream)) {
+    throw new Refusal("unsupported_source");
+  }
+  return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)) });
 }
 
 /** The most of a key's limits answer read (`credit`). */
