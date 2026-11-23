@@ -139,9 +139,9 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
 - `.github/workflows/store-probe.yml` and `scripts/probes/storeprobe/` import `pi-durable`
   and `chord`, which have not been in the lockfile since the engine moved, so the probe
   cannot bundle; its comment names pi-ai 1.4.0. Already broken before this PR and outside the
-  catalog: its deletion is owed.
+  catalog: its deletion is owed (`untangle/store-probe`).
 - `engines-replan.md`'s file table says `egress.ts` is kept: a dated plan, not a description
-  of the code; `tasks.md`'s owed item is checked instead.
+  of the code; `tasks.md`'s owed clause is removed instead.
 
 ## Owed
 
