@@ -70,9 +70,11 @@ chosen for it is behaviour the owner should be told of (Fact 8).
 ## Design
 
 1. **`Runs.admit` tells the owner** of a run given a model its agent does not name, once the
-   run is written: `model_chosen`, "`<agent>`: its runs are given `<model>` on `<connection>`
-   (or `<engine>`'s sign-in), chosen for it because its agent.json names no model; name a model
-   in agent.json to pin one", through `noticeOnce`.
+   run is written: `model_chosen`, "`<agent>`: its runs are given `<model>` on `<connection's
+   name> (<its id>)` (or `<engine>`'s sign-in), chosen for it because its agent.json names no
+   model; name a model in agent.json to pin one", through `noticeOnce`. The connection is named
+   as `connection_listing_unmatched` names it (review: an id alone names nothing the owner's
+   app shows; its Model sources page lists names).
 2. **The app's form** says the same in one line under the engine.
 3. **The owner spec's admission** says it.
 
@@ -80,8 +82,8 @@ chosen for it is behaviour the owner should be told of (Fact 8).
 
 - No shape crosses Workers: the notice is a row of an existing table read by the existing door.
   `handed.json` lists no field this PR changes; `deploy/guards/handed.test.ts` passes.
-- The `rpc` and `rv` recorders admit runs of agents naming no model and read `noticeList`, so
-  their answers hold the new notice.
+- The `rv` recorder admits runs of agents naming no model and reads `noticeList`, so its
+  answers hold the new notice. `rpc` stays the same (CI's recorders shards on 0f88b85, review).
 
 ## Problems found
 

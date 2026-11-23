@@ -1107,13 +1107,13 @@ describe("auto and the owner's sign-ins", () => {
     const told = async () => (await r.stub.noticeList(r.bind())).notices
       .filter((notice) => notice.type === "model_chosen").map((notice) => notice.detail)
       .reverse();
-    const words = (model: string, connection: string) => `engine: its runs are given ${model} ` +
-      `on ${connection}, chosen for it because its agent.json names no model; name a model ` +
-      "in agent.json to pin one";
+    const words = (model: string, name: string, connection: string) => "engine: its runs are " +
+      `given ${model} on ${name} (${connection}), chosen for it because its agent.json names ` +
+      "no model; name a model in agent.json to pin one";
     const engine = { engine: "pi", scopes: [] };
     await ownerRun(r.stub, r.bind(), engine, "engine");
     await ownerRun(r.stub, r.bind(), engine, "engine");
-    expect(await told()).toEqual([words("gpt-5.1-codex", weaker)]);
+    expect(await told()).toEqual([words("gpt-5.1-codex", "Weaker", weaker)]);
     // An agent that names its model is not told, nor is a run refused once its model is
     // chosen (a stronger key's, over the owner's cap).
     await ownerRun(r.stub, r.bind(), { ...engine, model: "gpt-5.1-codex" }, "pinned");
@@ -1128,12 +1128,12 @@ describe("auto and the owner's sign-ins", () => {
                 day);
     expect((await failure(() => ownerRun(r.stub, r.bind(), engine, "engine"))).message)
       .toBe("owner_limit: daily_cost is spent");
-    expect(await told()).toEqual([words("gpt-5.1-codex", weaker)]);
+    expect(await told()).toEqual([words("gpt-5.1-codex", "Weaker", weaker)]);
     // Its runs given another model, the stronger key's: the owner told again.
     await r.sql("DELETE FROM model_spend");
     await ownerRun(r.stub, r.bind(), engine, "engine");
-    expect(await told()).toEqual([words("gpt-5.1-codex", weaker),
-                                  words("~anthropic/claude-fable-latest", stronger)]);
+    expect(await told()).toEqual([words("gpt-5.1-codex", "Weaker", weaker),
+                                  words("~anthropic/claude-fable-latest", "Stronger", stronger)]);
   });
 
   it("picks on a key that pays for nothing only a model its source serves such a key and its " +

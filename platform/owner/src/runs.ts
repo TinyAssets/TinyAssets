@@ -777,8 +777,12 @@ export class Runs {
       ask.origin === null ? null : JSON.stringify(ask.origin), JSON.stringify(scopes),
       chosen.connection, JSON.stringify(ask.connectors), now);
     if (ask.file.model === null) {
+      // A connection named as the owner's other notices name it: its name, then its id.
+      const place = chosen.connection === null ? `${chosen.engine}'s sign-in`
+        : `${this.#host.reachable().find((key) => key.connection === chosen.connection)!
+          .display_name} (${chosen.connection})`;
       this.#host.noticeOnce(MODEL_CHOSEN, `${ask.agent}: its runs are given ${chosen.model} on ` +
-        `${chosen.connection ?? `${chosen.engine}'s sign-in`}, ${CHOSEN_DETAIL}`);
+        `${place}, ${CHOSEN_DETAIL}`);
     }
     this.#prune();
     return { run: runId, conversation: conversationId, existing: false, engine: chosen.engine,
