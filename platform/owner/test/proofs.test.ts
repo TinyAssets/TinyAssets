@@ -56,8 +56,6 @@ async function widenings() {
       "policy.changed": refusals((proof) => policy.changed(proof, policy.read().generation,
                                                            "wake_limits", {}, "rule", now),
                                  "session"),
-      "policy.applyKeyRequest": refusals((proof) => policy.applyKeyRequest(proof, {}, [], now),
-                                         "session"),
       "registrations.take": refusals((proof) => registrations.take(proof, "card", "d"),
                                      "session"),
       // The owner itself (`OwnerSelf`).
@@ -94,8 +92,6 @@ function untyped({ grants, keys, policy, registrations, sessions, admission }: T
   policy.apply(self, "card", "d", now);
   // @ts-expect-error a policy change outside the document, the same
   policy.changed(self, 1, "wake_limits", {}, "rule", now);
-  // @ts-expect-error a held key request, the same
-  policy.applyKeyRequest(undefined, {}, [], now);
   // @ts-expect-error a held registration, the same
   registrations.take(undefined, "card", "d", now);
   // @ts-expect-error a live session is no import line
@@ -118,7 +114,7 @@ describe("a widening's proof", () => {
       "grants.set": without("session"), "grants.forgetRevoked": without("session"),
       "keys.add": without("session"), "policy.write": without("session"),
       "policy.apply": without("session"),
-      "policy.changed": without("session"), "policy.applyKeyRequest": without("session"),
+      "policy.changed": without("session"),
       "registrations.take": without("session"), "sessions.open": without("owner"),
       "sessions.extend": without("owner"), "admission.set": without("reserved"),
       "admission.setTier": without("reserved"), "policy.imported": without("import"),

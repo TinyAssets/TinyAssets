@@ -726,7 +726,8 @@
       "door": "keyMint", "class": "work", "act": { "name": "access.grant" }, "capability": null,
       "args": {
         "refused": "invalid policy request",
-        "required": { "key_id": {}, "name": {}, "scopes": {} }, "optional": { "proposal": {} }
+        "required": { "key_id": {}, "name": {}, "scopes": {} }, "optional": {},
+        "dropped": ["proposal"]
       }
     },
     {
