@@ -128,7 +128,7 @@ true`, as the spec gives it; a pull and a history refuse it, now in one place (`
 
 ## Owed
 
-- [ ] untangle/handed-types: the deploy kit's hold (`deploy/handed.ts`) reads each door
+- [x] untangle/handed-types: the deploy kit's hold (`deploy/handed.ts`) reads each door
   table field's type as well as its name, so a plan stops before an owner that refuses a type
   its serving doors hand (as this change would have over b65adb647's doors, had run
   45191373564 been rolled back before run 45200348628), and a type change takes an expand step

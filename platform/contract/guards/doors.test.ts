@@ -72,6 +72,18 @@ describe("the door table", () => {
       refused: "x", required: { path: {} }, optional: {}, dropped: ["path"] } })],
     ["dropped fields not a list", changed("fileStat", { args: {
       refused: "x", required: { path: {} }, optional: {}, dropped: "etag" } })],
+    ["a field's schema past its type", changed("fileStat", { args: {
+      refused: "x", required: { path: { type: "string", enum: ["/a"] } }, optional: {} } })],
+    ["a field's type no JSON type", changed("fileStat", { args: {
+      refused: "x", required: { path: { type: "text" } }, optional: {} } })],
+    ["a dropped type its schema names", changed("fileStat", { args: {
+      refused: "x", required: { path: { type: "string" } }, optional: {},
+      droppedTypes: { path: ["string"] } } })],
+    ["a dropped type of an untyped field", changed("fileStat", { args: {
+      refused: "x", required: { path: {} }, optional: {}, droppedTypes: { path: ["integer"] } } })],
+    ["a dropped type of a field it lists not", changed("fileStat", { args: {
+      refused: "x", required: { path: { type: "string" } }, optional: {},
+      droppedTypes: { etag: ["integer"] } } })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
   });
@@ -87,6 +99,11 @@ describe("the door table", () => {
     // Its tool lists it no more.
     expect(argsSchema(args)).toEqual({ type: "object", properties: { path: {} },
                                        required: ["path"], additionalProperties: false });
+    // A dropped type, which the owner takes and its tool serves no more.
+    const typed = { refused: "invalid file request", required: { path: { type: "string" } },
+                    optional: {}, droppedTypes: { path: ["integer", "null"] } } as const;
+    expect(doorProblems(changed("fileStat", { args: typed }))).toEqual([]);
+    expect(argsSchema(typed)["properties"]).toEqual({ path: { type: "string" } });
   });
 
   it("serves each tool its door's capability and arguments", () => {
