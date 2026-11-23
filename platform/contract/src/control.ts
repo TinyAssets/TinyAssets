@@ -1,8 +1,8 @@
 /**
  * The platform's control record: one record, `c:control`, in a KV namespace of its own
  * (`CONTROL`), which the founder edits with no deploy. The doors read it on every outside and
- * owner call, and hand the record read fresh, and its switched-on sign-ins, in the binding
- * (`doors/src/binder.ts`, `withAccount`); the owner's object at a code-mode script's tool
+ * owner call, and hand the record read fresh in the binding (`doors/src/binder.ts`,
+ * `withAccount`); the owner's object at a code-mode script's tool
  * calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start
  * and once per look (`sandbox/src/control.ts`); and a first deploy writes it closed
  * (`deploy/deploy.ts`). Each reads it here, by this module's key, parse and gates, and
@@ -198,8 +198,7 @@ export class SqlKeeper implements ControlKeeper {
  * something that outlasts the outage, on a record that may have changed since the copy (a
  * switch just turned off), so it waits for the record read fresh. Writing the record's own
  * numbers into lasting state is the other such act: a read that is not fresh hands none
- * (`freshRecord`, `sources/src/signin.ts` `signinsRead`), so no reader rewrites what it keeps.
- * Everything else runs on the copy.
+ * (`freshRecord`), so no reader rewrites what it keeps. Everything else runs on the copy.
  */
 export const FRESH_ONLY = Object.freeze({
   /** An outside client's new authorization (`doors/src/authorize.ts`). */
@@ -414,10 +413,10 @@ export function inboundGate(read: ControlRead): Control | "off" | "unavailable" 
 
 /**
  * The record a read hands the owner's object to keep as its one copy (`Binding.control`, its
- * `SqlKeeper`), which its tier numbers are read from: the text when it read well formed; null
- * when it found none or a malformed one (the object then drops its copy, and refuses every run
- * for want of numbers); none (`undefined`) when it was not read fresh, so the object keeps its
- * own (`FRESH_ONLY`).
+ * `SqlKeeper`), which its tier numbers and sign-in switches are read from: the text when it
+ * read well formed; null when it found none or a malformed one (the object then drops its
+ * copy, refuses every run for want of numbers and starts no sign-in); none (`undefined`) when
+ * it was not read fresh, so the object keeps its own (`FRESH_ONLY`).
  */
 export function freshRecord(read: ControlRead): string | null | undefined {
   return read.kind === "kept" || read.kind === "unreadable" ? undefined

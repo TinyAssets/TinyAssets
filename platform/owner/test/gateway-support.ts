@@ -17,7 +17,7 @@ import type { ConnectService } from "../../contract/src/gateway";
 import type { ModelRecord } from "../../contract/src/model-record";
 import type { Binding } from "../../contract/src/binding";
 import { signedIn } from "./ledger-support";
-import { admittedOwner, EVERY_SIGNIN, gateFor, OPEN_RECORD } from "./support";
+import { admittedOwner, EVERY_SIGNIN_RECORD, gateFor } from "./support";
 import type { OwnerDO } from "../src/owner-do";
 
 export { ANTHROPIC, OPENAI };
@@ -116,7 +116,7 @@ export async function gated() {
   const stub: DurableObjectStub<OwnerDO> = await admittedOwner(name);
   const bind = (extra: Partial<Binding> = {}): Binding =>
     ({ owner: name, caller: name, origin: null,
-       ...("sandbox" in extra ? {} : { control: OPEN_RECORD, signins: EVERY_SIGNIN }), ...extra });
+       ...("sandbox" in extra ? {} : { control: EVERY_SIGNIN_RECORD }), ...extra });
   const { session: cookie } = await stub.sessionOpen(bind({ authenticated_at: signedIn() }));
   const session = (): Binding => bind({ session: cookie });
 

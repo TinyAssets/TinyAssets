@@ -21,19 +21,17 @@ import { failure, jsonObject, mediaType } from "./kit";
 import { profileOf } from "./mcp";
 import { answered, asJson } from "./refused";
 import { callDoor } from "./tools";
-import type { Sources } from "../../sources/src/schema";
 
 const TOOL_PATH = /^\/api\/tools\/([a-z_]{1,64})$/;
 
-export async function serveApi(request: Request, env: DoorsEnv, sources: Sources):
-    Promise<Response> {
+export async function serveApi(request: Request, env: DoorsEnv): Promise<Response> {
   const bound = await presentedKey(env, request);
   if (bound === null) {
     return failure(401, "a valid API key is required",
                    { "WWW-Authenticate": "Bearer realm=\"tinyassets-api\"" });
   }
   return answered(asJson, async () => {
-    const held = await outsideAccount(env, bound, sources);
+    const held = await outsideAccount(env, bound);
     const { tools, withheld } = await profileOf(held);
     const match = TOOL_PATH.exec(new URL(request.url).pathname);
     const tool = match === null ? undefined

@@ -103,9 +103,9 @@ waits for `untangle/start-faults`, which holds the owner's `signins.ts` and `lau
 
 ## Owed
 
-- [ ] The sign-in switches folded into the one kept copy: the binding's `signins` and the
+- [x] The sign-in switches folded into the one kept copy: the binding's `signins` and the
   owner's `platform_signins` go, the switches read from `control_kept`
-  (`untangle/owner-control-signins`, after `untangle/start-faults`).
+  (`untangle/owner-control-signins`, `owner-control-signins.md`: no record kept, no sign-in on).
 - [ ] Slice B1, the edge switch: two WAF custom rules on the zone, `TinyAssets kill: outside`
   (the doors' outside paths) and `TinyAssets kill: all` (every doors path and the egress
   host), their expressions rendered from `contract/identity.json` with a guard holding them

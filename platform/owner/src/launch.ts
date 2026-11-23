@@ -72,7 +72,7 @@ import type { Usable } from "./auto";
 import { networkOutcome, startOutcome, vendorHosts } from "./sandbox";
 import { type Held, LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";
-import { type Signins, switchedOn } from "./signins";
+import type { Signins } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
 import {
   type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, type SandboxStart,
@@ -766,17 +766,6 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * The switched-on sign-ins, read by the lane itself from the control record the object
-   * binds (`CONTROL`), and kept: so a source switched off stops powering the
-   * lane's runs (a schedule's, a mail's, a waiting one's) at its next pass, though the owner
-   * makes no door call (`ControlGate.signins`, fail-closed).
-   */
-  async #laneSignins(): Promise<void> {
-    const on = await this.#o.control().signins();
-    await this.#o.door(() => switchedOn(this.#o.storage, on, clock()));
-  }
-
-  /**
    * The `runs` lane's pass: runs whose runner was lost settled `unknown`; then each waiting
    * run whose turn came started, oldest first, through the same admission as a door's (one
    * its turn refuses settles `failed`, the refusal in the owner's notices); then each mail
@@ -805,7 +794,10 @@ export class Launcher implements RunHost {
   }
 
   async #pass(until: number): Promise<void> {
-    await this.#laneSignins();
+    // The lane reads the control record itself (`CONTROL`), so its kept copy, whose tiers and
+    // switched-on sign-ins the lane's runs take, moves though the owner makes no door call: a
+    // source switched off stops powering a schedule's, a mail's or a waiting run at this pass.
+    await this.#o.control().read();
     await this.#o.door(() => this.runs.lost(clock()));
     await this.reapply();
     while (clock() < until) {

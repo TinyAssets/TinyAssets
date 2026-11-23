@@ -13,8 +13,6 @@ import {
   CONTROL_KEY, type Control, MAINTENANCE, OUTSIDE_OFF, outsideOpen, ownerOpen, parseControl,
   staleRefusal,
 } from "../../contract/src/control";
-import { bundledSources } from "../../sources/src/catalog";
-import { signinsRead } from "../../sources/src/signin";
 import type { DoorsEnv } from "../src/env";
 import { mintKeyFor } from "./keys";
 import {
@@ -291,9 +289,16 @@ describe("the record unreadable, served from the doors' kept copy", () => {
     expect((await api(key, unreadable())).status).toBe(503);
   });
 
-  it("hands the owner's object no tier numbers and no sign-in switches to keep", () => {
-    const control = parseControl(OPEN)!;
-    expect(signinsRead(bundledSources(), { kind: "kept", control, read_at: 1 })).toBeUndefined();
-    expect(signinsRead(bundledSources(), { kind: "malformed" })).toEqual([]);
+  it("offers no vendor sign-in on a record not read fresh, nor with none at all", async () => {
+    const app = await signInApp({ owner: owner() });
+    const offered = async (environment: DoorsEnv = doorsEnv): Promise<string[]> => {
+      const listed = await (await ownerPost("sources", app, {}, environment)).json() as {
+        sources: { id: string; signin: { enabled: boolean } | null }[] };
+      return listed.sources.filter((source) => source.signin?.enabled).map(({ id }) => id);
+    };
+    expect(await offered()).toContain("claude-code");
+    expect(await offered(unreadable())).toEqual([]);
+    await writeControl(env.CONTROL, null);
+    expect(await offered()).toEqual([]);
   });
 });

@@ -316,23 +316,23 @@ describe("the code door", () => {
         const keeper = objectKeeper(write.storage, write.quiet);
         return [await new ControlGate(down, keeper).refusal("outside", owner),
                 await new ControlGate(down, keeper).refusal("owner", owner),
-                await new ControlGate(down, keeper).signins()];
+                (await new ControlGate(down, keeper).read()).kind];
       });
     // An object that never read the record keeps no copy: every gate closed.
     const unread = `owner-${crypto.randomUUID()}`;
     expect(await gates(env.OWNER.getByName(unread), unread))
-      .toEqual([OUTSIDE_OFF, MAINTENANCE, undefined]);
+      .toEqual([OUTSIDE_OFF, MAINTENANCE, "unreadable"]);
     const r = await onRig();
     expect(await ran(r, r.bind(MUSE), { script: "return 1;" }))
       .toMatchObject({ ok: true, value: 1 });
-    // The door's read kept: the copy admits as the record did, and hands no switches to keep.
-    expect(await gates(r.stub, r.owner)).toEqual([null, null, undefined]);
+    // The door's read kept: the copy admits as the record did, served as kept.
+    expect(await gates(r.stub, r.owner)).toEqual([null, null, "kept"]);
     // A kill flipped before the outage holds through it.
     await writeControl(env.CONTROL, { ...OPEN, outside: "off" });
     later(CONTROL_FRESH_MS / 1000 + 1);
     expect((await failure(() => ran(r, r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
-    expect(await gates(r.stub, r.owner)).toEqual([OUTSIDE_OFF, null, undefined]);
+    expect(await gates(r.stub, r.owner)).toEqual([OUTSIDE_OFF, null, "kept"]);
   });
 
   it("serves a script's calls from one read of the control record within a second",

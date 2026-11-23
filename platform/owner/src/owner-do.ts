@@ -183,7 +183,7 @@ import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
 import { pinned, refuseRestoring, restoreDoors, restoreNamespace, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
-import { Signins, signinsDoors, switchedOn } from "./signins";
+import { Signins, signinsDoors } from "./signins";
 import { Starter, starterDoors } from "./starter";
 import { carried } from "./starter-package";
 import { migrate } from "../../contract/src/migrate";
@@ -798,9 +798,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     const binding = held.binding;
     const { owner, caller, origin } = binding;
-    // The switched-on sign-ins, as the binder read them from the control record: kept for
-    // the lane's runs (written only when they changed).
-    switchedOn(this.#storage, binding.signins, clock());
     if (caller !== owner && !(serves.visitors === true && origin === null)) {
       throw new Refusal("refused", "the account answers its owner's own callers only");
     }
@@ -1395,7 +1392,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     }
     // The control record as the binder read it fresh (an account's, an inbound event's and
     // the import's bindings carry it): the object's one copy, whose tier numbers the files byte
-    // quota and every run read, written only when it changed.
+    // quota and every run read, and whose sign-in switches every sign-in and run, written only
+    // when it changed.
     if (given.control !== undefined) {
       const unread = this.#admission.tiers() === null;
       new SqlKeeper(this.#storage.sql).keep(given.control, clockMs());

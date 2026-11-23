@@ -92,17 +92,11 @@ export interface Binding {
    * The platform's control record as the binder read it fresh for this call (`freshRecord`):
    * its text, well formed, or null when it found none or a malformed one. Never a request
    * field. The object keeps it as its one copy of the record (`control_kept`), which its tier
-   * numbers are read from (`admission.ts`); the owner's tier is the object's own row. None
-   * when the binder could not read the record fresh: the object keeps its own.
+   * numbers (`admission.ts`) and its switched-on sign-ins (`signins.ts`) are read from; the
+   * owner's tier is the object's own row. None when the binder could not read the record
+   * fresh: the object keeps its own, and starts no sign-in.
    */
   readonly control?: string | null;
-  /**
-   * The served records whose vendor sign-in the platform's control record switches on, as
-   * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
-   * object keeps the last list it was handed for the runs its own lane starts. None when the
-   * binder could not read the record fresh (`signinsRead`): then no sign-in starts.
-   */
-  readonly signins?: unknown;
   /**
    * The first-party grant the owner's token was issued under, and that token's expiry
    * (whole seconds), from the provider's own unwrap: a socket ticket's binding, and a
@@ -139,16 +133,14 @@ export interface Binding {
 // error. A parser refuses anything else as `invalid`. The two doors that take no binding
 // (`UNBOUND_DOORS`, `doors.ts`) take the kind `none`.
 
-/** The control record and switched-on sign-ins a door's binding carries, as the binder read. */
-type Gated = Pick<Binding, "control" | "signins">;
-
 /**
  * The owner's own account, acting itself or through a verified outside client (an MCP
  * client or an API key), or another owner visiting; its first-party token's grant, a fresh
- * sign-in's time, and the browser's session cookie where one rode the request.
+ * sign-in's time, the browser's session cookie where one rode the request, and the control
+ * record as the binder read it.
  */
 export type AccountBinding = Pick<Binding, "owner" | "caller" | "origin" | "source"
-  | "authenticated_at" | "session" | "grant" | "expires_at" | "vendor"> & Gated;
+  | "authenticated_at" | "session" | "grant" | "expires_at" | "vendor" | "control">;
 /** The owner in its live session: an account binding with its session cookie. */
 export type SessionBinding = AccountBinding & { readonly session: string };
 /** A sandbox's token of kind `T` at its own doors. */
@@ -162,8 +154,8 @@ export type SyncBinding = TokenBinding<"sync">;
 export type RunBinding = Pick<Binding, "owner" | "caller"> & {
   readonly origin: null; readonly sandbox: Extract<SandboxToken, { kind: "egress" }>;
   readonly run: string };
-/** An inbound event's route, at its binding's revision. */
-export type InboundBinding = Pick<Binding, "owner" | "caller"> & Gated & {
+/** An inbound event's route, at its binding's revision, and the control record as read. */
+export type InboundBinding = Pick<Binding, "owner" | "caller" | "control"> & {
   readonly origin: null; readonly inbound: NonNullable<Binding["inbound"]> };
 /**
  * The platform's reserved caller for an owner, with no outside client and no session: its
@@ -247,7 +239,7 @@ export function accountBinding(value: unknown): AccountBinding {
   const kind = "account";
   const given = fields(value, kind, ["owner", "caller", "origin"],
                        ["source", "authenticated_at", "session", "grant", "expires_at", "vendor",
-                        "control", "signins"]);
+                        "control"]);
   const has = (key: string) => key in given;
   return Object.freeze({
     owner: principal(given["owner"]), caller: principal(given["caller"]),
@@ -260,7 +252,6 @@ export function accountBinding(value: unknown): AccountBinding {
     ...(has("expires_at") ? { expires_at: integer(given["expires_at"], 0, kind) } : {}),
     ...(has("vendor") ? { vendor: vendor(given["vendor"], kind) } : {}),
     ...(has("control") ? { control: record(given["control"], kind) } : {}),
-    ...(has("signins") ? { signins: given["signins"] } : {}),
   });
 }
 
@@ -340,7 +331,7 @@ export function runBinding(value: unknown): RunBinding {
 export function inboundBinding(value: unknown): InboundBinding {
   const kind = "inbound";
   const given = fields(value, kind, ["owner", "caller", "origin", "inbound"],
-                       ["control", "signins"]);
+                       ["control"]);
   const owner = own(given, kind);
   const { binding, revision } = fields(given["inbound"], kind, ["binding", "revision"]);
   return Object.freeze({
@@ -348,7 +339,6 @@ export function inboundBinding(value: unknown): InboundBinding {
     inbound: Object.freeze({ binding: hex(binding, HEX32, kind),
                              revision: integer(revision, 1, kind) }),
     ...("control" in given ? { control: record(given["control"], kind) } : {}),
-    ...("signins" in given ? { signins: given["signins"] } : {}),
   });
 }
 

@@ -59,7 +59,7 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,602,017,219.25 bytes, 46.02% of the 10 GB: 398.0 MB under
+**The worst case that ships is 4,602,015,376.5 bytes, 46.02% of the 10 GB: 398.0 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 The rooms as rows (`rooms`, `room_members`, and `archive_purges` by room; owner migration 19,
 `untangle-2026-11/shapes.md`) take 27.2 MB of it at `maxRooms`.

@@ -203,8 +203,9 @@ export async function startOf(stub: DurableObjectStub<OwnerDO>, run: string):
 let sent = 0;
 
 /**
- * A run of `agent` (its `agent.json` written as `file` first, when given) by the owner, with
- * the tier numbers in the binding; its receipt and its recorded start.
+ * A run of `agent` (its `agent.json` written as `file` first, when given) by the owner, on
+ * the binding's control record (`OPEN`'s, the founder's tiers, when it hands none); its
+ * receipt and its recorded start.
  */
 export async function ownerRun(stub: DurableObjectStub<OwnerDO>, binding: Binding,
                                file?: Record<string, unknown>, agent = "main",
@@ -213,7 +214,7 @@ export async function ownerRun(stub: DurableObjectStub<OwnerDO>, binding: Bindin
   if (file !== undefined) {
     await defineAgent(stub, binding, agent, file);
   }
-  const run = await stub.agentSubmit({ ...binding, control: OPEN_RECORD }, {
+  const run = await stub.agentSubmit({ ...binding, control: binding.control ?? OPEN_RECORD }, {
     message: "do the thing", client_send_id: `send-${++sent}`, agent_id: agent, ...extra });
   return { run, start: await startOf(stub, run.run_id) };
 }

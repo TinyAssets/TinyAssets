@@ -38,8 +38,6 @@ import { createHash } from "node:crypto";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { OPEN_RECORD } from "../../ci/fixtures";
-import { bundledSources } from "../../sources/src/catalog";
-import { signinsOn } from "../../sources/src/signin";
 import {
   type Binding, type Origin, PLATFORM_CALLER, type SandboxToken,
 } from "../../contract/src/binding";
@@ -745,13 +743,9 @@ export class LegOwner extends OwnerDO {
   }
 }
 
-const SIGNINS = Object.freeze(signinsOn(
-  bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
-
 /** The owner's own binding, as the doors hand it. */
 function owner(name: string): Binding {
-  return { owner: name, caller: name, origin: null, control: OPEN_RECORD, signins: SIGNINS } as
-    unknown as Binding;
+  return { owner: name, caller: name, origin: null, control: OPEN_RECORD } as unknown as Binding;
 }
 
 /** The doors' import binding for `name` (`bindImport`): the platform, a bundle, the tiers. */
