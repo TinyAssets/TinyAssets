@@ -18,15 +18,17 @@
   mints no key with one; no tool, skill or agent prompt names the type (`policy-answers.md`
   research). The doors' `mintKey` (`doors/src/api-keys.ts`) forwarded a `proposal` only when the
   browser's body carried one.
-- **What the stage serves.** No deploy since run 45217169623, which serves 5d7073f70 on all six
-  Workers (`policy-answers.md` 7; `gh run list --workflow platform-deploy.yml`, 2026-11-23). At
-  5d7073f70, at 1685c187d (the doors before that run) and at b8424315e, `contract/doors.json`
+- **What the stage serves.** Run 45225234784 deployed 1ae659350 (`origin/main`, #5833) on all
+  six Workers, 2026-11-23 (its apply then stopped at the platform canary, after every Worker was
+  at 100%), so its rollback targets are 5d7073f70's versions (run 45217169623). At 1ae659350,
+  at 5d7073f70, at 1685c187d and at b8424315e, `contract/doors.json`
   lists `keyMint`'s `proposal` as optional and `mintKey` forwards it when sent. So the doors at
   the serving version do not "never send" it: they send it exactly when a caller does, which no
   screen of theirs does. The field must stay taken one deploy.
-- **The hold.** `handedHold` of this tree against `sideAt` of 5d7073f70 and 1685c187d is `[]`
-  (as before this change; b8424315e's one problem, `actionRequest`, is #5832's and refused by
-  `rollbackAsk`). With `proposal` taken out instead of dropped, against 5d7073f70 it is
+- **The hold.** `handedHold` of this tree against `sideAt` of 1ae659350, 5d7073f70 and
+  1685c187d is `[]` (as before this change; b8424315e's one problem, `actionRequest`, is #5832's
+  and refused by `rollbackAsk`). With `proposal` taken out instead of dropped, against 1ae659350
+  and 5d7073f70 it is
   "keyMint no longer takes proposal, which the doors' version before hands: drop it first".
 - **Existing pending `api_key_request` cards.** None can have been filed by the app or any
   told agent; any that exist are ordinary policy proposal cards (`policy-answers.md` research):
@@ -51,9 +53,9 @@
    doors-live test that applied a card through a mint.
 4. **Pending `api_key_request` cards stay as they are**: no migration. They are policy proposal
    cards the owner declines on Home; nothing applies them.
-5. **Deploy pairings.** The owner deploys before the doors. New owner with doors 5d7073f70: a
+5. **Deploy pairings.** The owner deploys before the doors. New owner with doors 1ae659350: a
    `proposal` any caller sends is taken and left out, the key minted as asked, the card left
-   pending to decline. A rollback takes the doors back first, then the owner to 5d7073f70,
+   pending to decline. A rollback takes the doors back first, then the owner to 1ae659350,
    which applies one as before. No pairing refuses a mint.
 
 ## Problems, under the fix that removes each
