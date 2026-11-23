@@ -3462,7 +3462,7 @@ const rollbackAsk = step<"cloudflare" | "account">(async ({ run, say }, got) => 
         before!.tag ?? "with nothing"}, ${unknown}; every plan after a rollback to it would ` +
         "stop there, so nothing is rolled back. Roll forward with a fix, or close the control " +
         "record's gates (--mode control); a rollback by hand (wrangler versions deploy " +
-        `${before!.version}@100%, checklist.md) leaves the kit planning nothing until that ` +
+        `${before!.version}@100% --name ${name}, checklist.md) leaves the kit planning nothing until that ` +
         "Worker serves a version this kit tagged of a commit holding contract/handed.json");
     }
   }
