@@ -54,14 +54,23 @@ differences are data.
 ## Problems found (untangle step 2), with the fix above each
 
 - **A source record marks the models its catalog lists that answer no interactive call
-  (`not_interactive`, model patterns in the ranking's grammar), and `auto` ranks none of them
-  (`sources/src/ranking.ts` `interactive`, read by `owner/src/auto.ts` `ranked`).** The
-  OpenRouter record marks `*:batch`. It is the source's fact, not the ranking's: an owner's
-  own ranking replaces the platform's whole and would re-admit them. It is read on the owner
-  side, at admission, so the stage's existing connection is fixed with no reconnect.
-  - `auto.ts` `ranked` made every listed model a candidate, so a batch variant led.
+  (`not_interactive`, model patterns in the ranking's grammar), and `auto` never picks one on
+  its own (`sources/src/ranking.ts` `interactive`, read by `owner/src/runs.ts` `choose`'s
+  `auto` loop, beside the unranked notice's `file.model === null` rule).** The OpenRouter
+  record marks `*:batch`. It is the source's fact, not the ranking's: an owner's own ranking
+  replaces the platform's whole and would re-admit them. It is read on the owner side, at
+  admission, so the stage's existing connection is fixed with no reconnect.
+  - `choose` took the strongest listed model, so a batch variant led.
   - The ranking's `matcher` built a regex, and `place` matched the id and its tail by hand:
     now one matcher does both, for the ranking and the record alike.
+- **Decided in review: `ranked` still ranks every listed model.** The first head filtered in
+  `ranked`, which `choose` reads twice: an `auto` agent naming a `:batch` model was refused
+  `no_source`, against the spec's "SHALL pick only among the sources that offer it", and a
+  named engine's `keyFor` refused a named connection listing only batch models. Only `auto`'s
+  own pick skips; a model the agent names, and every named-engine candidate, are its own
+  choice.
+- Review: the record checker's model pattern is `contract/src/model-record.ts` `MODEL_ID`
+  (it was a copy), and the tests run on real records with no pin of which records carry marks.
 - The sources guard (`sources/guards/ranking.test.ts`) holds every `not_interactive` pattern to
   a model its provider's catalog lists (a stale pattern fails), and every key source to a
   ranked model a run can call (an over-broad one fails). The record checker
@@ -69,8 +78,9 @@ differences are data.
 - Left, with reasons:
   - The gateway still lists batch variants among a connection's models (the app's list, and a
     named model). Dropping them there needs the sealed upstream to carry the patterns (a
-    contract change), and leaves every existing connection as it is until a reconnect. An
-    agent that names one is its own choice.
+    contract change), and leaves every existing connection as it is until a reconnect. A
+    model the agent names, or a connection it names on its engine, is its own choice, and
+    runs.
   - The seven zero-priced routers and the `:free` variants are interactive; nothing changes
     for them.
 

@@ -10,9 +10,9 @@
  * aggregator's `vendor/model`). A model ranks at the first entry it matches (`place`); one no
  * entry matches is unknown (`null`), never placed by a guess.
  *
- * What `auto` may rank at all is the source's, not the ranking's: a model its source record
- * marks `not_interactive`, by the same patterns, answers no run's turn, so it is no
- * candidate (`interactive`), whatever ranking the owner holds.
+ * What `auto` may pick on its own is the source's, not the ranking's: a model its source
+ * record marks `not_interactive`, by the same patterns, answers no run's turn, so `auto`
+ * skips it unless the agent names it (`interactive`), whatever ranking the owner holds.
  */
 import { keyed } from "../../contract/src/checks";
 import { Refusal } from "../../contract/src/refusal";
