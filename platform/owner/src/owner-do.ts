@@ -113,7 +113,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { requestFields, takesRequest, takesStop } from "../../contract/src/doors";
-import type { DoorMethods } from "./door-map";
+import type { AnswerIn, DoorMethods, DoorRows } from "./door-map";
 import {
   type Binds, CALLER_BINDINGS, type CallerKind, type OwnerRow, ownerRow, ownerRows, type TakenBy,
 } from "./door-steps";
@@ -181,6 +181,8 @@ import { exportDoors } from "./export";
 import { boundSandbox } from "./sandbox";
 import { SandboxTime, sandboxTimeDoors } from "./sandbox-time";
 import type { OwnerDoors } from "../../contract/src/owner-doors";
+import type { OwnerAnswer } from "../../contract/src/owner";
+import type { UnreadAnswers } from "../../contract/src/requests";
 import { pinned, refuseRestoring, restoreDoors, restoreNamespace, restoring } from "./restore";
 import { Sessions, sessionsDoors } from "./sessions";
 import { Signins, signinsDoors } from "./signins";
@@ -438,6 +440,17 @@ function handlerOf(row: OwnerRow): Handled {
 
 /** The object's doors, each defined from its row when the class loads (`#call`). */
 export interface OwnerDO extends DoorMethods<typeof HANDLERS> {}
+
+/**
+ * The doors whose handler leaves out a field its row's answer marks `unread`, which the doors'
+ * version before may still read (`contract/doors.json`, `deploy/handed.ts`): `tsc` refuses
+ * any, as `implements OwnerDoors` holds the rest of each answer.
+ */
+type Unanswered = { [D in keyof DoorRows & keyof UnreadAnswers]:
+  [AnswerIn<typeof HANDLERS, D>] extends [OwnerAnswer<D>] ? never : D
+}[keyof DoorRows & keyof UnreadAnswers];
+type None<D extends never> = D;
+export type UnreadAnswered = None<Unanswered>;
 
 export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
   /** The one write gate: every owner write is one synchronous unit. */

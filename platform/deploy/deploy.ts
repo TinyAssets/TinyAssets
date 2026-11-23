@@ -1969,8 +1969,8 @@ const UNKNOWN_CODE = "which names no commit, and Cloudflare notes it as no secre
  * (`codeOf`): from each Worker's 100% until a later one's, that one's version before talks to it
  * (`WORKERS`). Any refusal stops the run before any change, each named; so does a serving
  * version whose code is unknown, or a commit this checkout lacks. A Worker no version of which
- * serves (`rolled`'s first deploy) holds nothing. The plan's line names each commit read, and
- * each door field held by its name alone.
+ * serves (`rolled`'s first deploy) holds nothing. The plan's line names each commit read, each
+ * door field held by its name alone, and each door whose answer nothing holds.
  */
 async function servedHold(got: Pick<Values, "cloudflare" | "account">, run: Run,
                           rolled: readonly Rolled[]): Promise<string> {
@@ -2005,7 +2005,7 @@ async function servedHold(got: Pick<Values, "cloudflare" | "account">, run: Run,
     }
     return sides.get(commit)!;
   };
-  const { problems, untyped } = handedHold(then, TREE);
+  const { problems, untyped, undeclared } = handedHold(then, TREE);
   if (problems.length > 0) {
     throw new Error(`the run's Workers and the versions the stage serves refuse what the other ` +
                     `hands across the deploy, so nothing is changed: ${problems.join("; ")}`);
@@ -2014,7 +2014,9 @@ async function servedHold(got: Pick<Values, "cloudflare" | "account">, run: Run,
     `(contract/handed.json, contract/doors.json), read from git: ${read.length === 0
       ? "none serves yet" : read.join(", ")}: none refuses the other${untyped.length === 0 ? ""
       : `; held by name alone, the doors' version before declaring no type: ${
-        untyped.join(", ")}`}`;
+        untyped.join(", ")}`}${undeclared.length === 0 ? ""
+      : `; answers held by nothing, the doors' version before declaring none: ${
+        undeclared.join(", ")}`}`;
 }
 
 /** The doors' smoke at a share below 100 (`canary.ts --smoke`), as a plan names it. */

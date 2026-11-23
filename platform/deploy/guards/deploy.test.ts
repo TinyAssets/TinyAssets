@@ -2835,6 +2835,19 @@ describe("the rollout record and mode rollback", () => {
     expect((await runMode(world({ held: true, before: typed({}) }), "dark", ["--public"], PUBLIC))
       .plan).toContain(`${HELD_HOLD}; held by name alone, the doors' version before declaring ` +
                        "no type: boardDigest after");
+    // An answer: the doors serving read a field of tierRead's answer this owner answers not.
+    const reading = (answer: object | undefined) => ({ [DOOR_TABLE]: JSON.stringify({
+      doors: table.doors.map((row) => row.door !== "tierRead" ? row : { ...row, answer }) }) });
+    await stops(world({ held: true, before: reading({ required: { tier: { type: "string" },
+                                                                  plan: { type: "string" } },
+                                                      optional: {} }) }),
+                "so nothing is changed: tierRead no longer answers plan, which the doors' " +
+                "version before reads");
+    // One whose doors serving declare no answer is held by nothing, and the plan says so.
+    expect((await runMode(world({ held: true, before: reading(undefined) }), "dark", ["--public"],
+                          PUBLIC)).plan)
+      .toContain(`${HELD_HOLD}; answers held by nothing, the doors' version before declaring ` +
+                 "none: tierRead");
     // A commit with no handed.json, a version no tag names a commit of, and a commit this
     // checkout lacks, are unknown.
     await stops(world({ held: true, before: { [HANDED]: null } }),

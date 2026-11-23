@@ -14,6 +14,7 @@
 import { serve } from "../src/doors";
 import type { DoorsEnv } from "../src/env";
 import { callDoor, type DoorName } from "../src/tools";
+import { asTested } from "./answers";
 import { TEST_SOURCES } from "./sources";
 
 const HARNESS = "https://e2e.internal";
@@ -40,8 +41,9 @@ export default {
       const name = url.pathname.slice("/starter/".length);
       const owner = env.OWNER.getByName(name);
       const binding = { owner: name, caller: name, origin: null };
-      const door = <D extends DoorName>(called: D, asked?: unknown) =>
-        callDoor(owner, binding, called, asked, new AbortController().signal);
+      const door = async <D extends DoorName>(called: D, asked?: unknown) =>
+        asTested(called, await callDoor(owner, binding, called, asked,
+                                        new AbortController().signal));
       const files: Record<string, boolean> = {};
       for (const path of SEEDED) {
         files[path] = (await door("fileStat", { path })).entry !== null;

@@ -20,6 +20,10 @@
         "name": "inbox_digest", "title": "Inbox digest", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read what is new for this agent in one call: its unacknowledged mail, oldest first, and the rows of the owner's rooms changed after a cursor, each with the head of its body. Acknowledge mail with mailbox_ack; a mail body cut to fit (truncated true) is read on with mailbox_read's body_offset and message_id; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the rooms again whole, then go on from the cursor given. A connection has mail once it is a registered agent: file one with agent_register, for the owner to approve."
+      },
+      "answer": {
+        "required": { "mail": { "type": "object" }, "rooms": { "type": "object" } },
+        "optional": {}
       }
     },
     {
@@ -38,7 +42,8 @@
         "name": "board_digest", "title": "Board digest", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read the owner's board rows changed after a cursor in one call, each with its etag and the head of its body. Claim a row with collection_write on its etag; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the board again whole (collection_list of the board collection, after left out), then go on from the cursor given."
-      }
+      },
+      "answer": { "required": { "rows": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "mailboxRead", "class": "read", "capability": "read_graph",
@@ -107,6 +112,13 @@
         "name": "agents_list", "title": "List agents", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "List the agents registered for this connection, the owner's own agents, each with the room_id it is reached in (null until this connection is a registered agent: agent_register), and which of the owner's AI apps are connected to TinyAssets, each one not connected with its connect_url, the page with its connect step. One answer holds as many as fit; when it carries next, read again with after set to it for the rest."
+      },
+      "answer": {
+        "required": {
+          "agents": { "type": "array" }, "owner_agents": { "type": "array" },
+          "apps": { "type": "array" }
+        },
+        "optional": {}
       }
     },
     {
@@ -271,7 +283,8 @@
         "name": "file_stat", "title": "File info", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read one file's or directory's entry, or null where nothing is, where file_read refuses a missing path (not_found): so it tells whether to create a file (file_write with expected_etag \"\")."
-      }
+      },
+      "answer": { "required": { "entry": { "type": ["object", "null"] } }, "optional": {} }
     },
     {
       "door": "fileList", "class": "read", "capability": "read_files",
@@ -290,7 +303,8 @@
         "name": "file_list", "title": "List directory", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "List a directory's entries by name. With head_chars, each small file also carries the start of its text, enough to read its title and description."
-      }
+      },
+      "answer": { "required": { "entries": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "fileText", "class": "read", "capability": "read_files",
@@ -385,7 +399,8 @@
         "name": "file_write", "title": "Write file", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
         "description": "Write a whole file of the user's TinyAssets workspace: its text replaces what is there, at the file's current etag, or \"\" to create a file that is not there yet. A conflict answers the file as it now stands. At most 4 MiB of text."
-      }
+      },
+      "answer": { "required": {}, "optional": { "entry": { "type": "object" } } }
     },
     {
       "door": "fileEdit", "class": "work", "capability": "write_files",
@@ -430,6 +445,13 @@
         "name": "file_usage", "title": "File usage", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read the owner's file usage and quotas."
+      },
+      "answer": {
+        "required": {
+          "entries": { "type": "integer" }, "chunk_bytes": { "type": "integer" },
+          "inline_bytes": { "type": "integer" }
+        },
+        "optional": {}
       }
     },
     {
@@ -552,6 +574,15 @@
         "name": "converse", "title": "Talk with an agent", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": false, "openWorldHint": false,
         "description": "Send a message to one of the owner's agents: a run of its engine in a new conversation, or in one of yours by conversation_id. A retry with the same client_send_id is the same run. Waits up to wait_ms for the run to end, then answers the run as it stands; run_status reads it later."
+      },
+      "answer": {
+        "required": {
+          "run_id": { "type": "string" }, "conversation_id": { "type": "string" },
+          "state": { "type": "string" }, "engine": { "type": "string" },
+          "model": { "type": ["string", "null"] }, "result": { "type": ["string", "null"] },
+          "error": { "type": ["string", "null"] }, "code": { "type": ["string", "null"] }
+        },
+        "optional": {}
       }
     },
     {
@@ -587,6 +618,15 @@
         "name": "run_status", "title": "Run status", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read one of your runs, its state and its result once done, or one of your schedules."
+      },
+      "answer": {
+        "required": {},
+        "optional": {
+          "run_id": { "type": "string" }, "state": { "type": "string" },
+          "engine": { "type": "string" }, "model": { "type": ["string", "null"] },
+          "result": { "type": ["string", "null"] }, "error": { "type": ["string", "null"] },
+          "code": { "type": ["string", "null"] }
+        }
       }
     },
     {
@@ -602,6 +642,15 @@
         "name": "run_cancel", "title": "Cancel run", "readOnlyHint": false,
         "destructiveHint": true, "idempotentHint": true, "openWorldHint": false,
         "description": "Cancel one of your runs (its engine is stopped), or one of your schedules."
+      },
+      "answer": {
+        "required": {},
+        "optional": {
+          "run_id": { "type": "string" }, "state": { "type": "string" },
+          "engine": { "type": "string" }, "model": { "type": ["string", "null"] },
+          "result": { "type": ["string", "null"] }, "error": { "type": ["string", "null"] },
+          "code": { "type": ["string", "null"] }
+        }
       }
     },
     {
@@ -620,7 +669,8 @@
       }
     },
     {
-      "door": "sessionOpen", "class": "read", "capability": null, "args": "none"
+      "door": "sessionOpen", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "session": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "sessionExtend", "class": "read", "capability": null, "args": "none"
@@ -646,6 +696,13 @@
         "refused": "an export request is at most its cursor and its export_id", "required": {},
         "optional": { "cursor": { "type": ["string", "null"] }, "export_id": { "type": "string" } },
         "undefinedAllowed": true
+      },
+      "answer": {
+        "required": {
+          "export_id": { "type": "string" }, "lines": { "type": "array" },
+          "next": { "type": ["string", "null"] }, "pending": { "type": "boolean" }
+        },
+        "optional": {}
       }
     },
     {
@@ -666,7 +723,14 @@
       "door": "gatewayReseal", "class": "admission", "capability": null, "args": "none"
     },
     {
-      "door": "policyRead", "class": "read", "capability": null, "args": "none"
+      "door": "policyRead", "class": "read", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "generation": { "type": "integer" }, "policy": { "type": "object" },
+          "codemode": { "type": "object" }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "policyReceipts", "class": "read", "capability": null, "args": "none"
@@ -690,7 +754,8 @@
       }
     },
     {
-      "door": "policyProposals", "class": "read", "capability": null, "args": "none"
+      "door": "policyProposals", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "cards": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "policyApply", "class": "work", "act": { "name": "security.change" },
@@ -721,7 +786,8 @@
       }
     },
     {
-      "door": "actionRequests", "class": "read", "capability": null, "args": "none"
+      "door": "actionRequests", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "cards": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "actionApprove", "class": "work", "capability": null,
@@ -729,7 +795,8 @@
         "refused": "invalid action request",
         "required": { "card_id": { "type": "string" }, "digest": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "run": { "type": ["string", "null"] } }, "optional": {} }
     },
     {
       "door": "actionRefuse", "class": "reduce", "capability": null,
@@ -740,7 +807,8 @@
       }
     },
     {
-      "door": "grantList", "class": "read", "capability": null, "args": "none"
+      "door": "grantList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "clients": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "grantSet", "class": "work", "act": { "name": "access.grant" }, "capability": null,
@@ -759,6 +827,13 @@
       "args": {
         "refused": "invalid policy request", "required": { "client": { "type": "string" } },
         "optional": {}
+      },
+      "answer": {
+        "required": {
+          "client": { "type": "string" }, "revoked": { "type": "boolean" },
+          "generation": { "type": "integer" }, "revision": { "type": "integer" }
+        },
+        "optional": {}
       }
     },
     {
@@ -766,7 +841,8 @@
       "args": {
         "refused": "invalid policy request", "required": { "client": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "forgotten": { "type": "boolean" } }, "optional": {} }
     },
     {
       "door": "grantForgetRevoked", "class": "reduce", "capability": null,
@@ -784,17 +860,26 @@
           "scopes": { "type": "array" }
         },
         "optional": {}, "dropped": ["proposal"]
+      },
+      "answer": {
+        "required": {
+          "name": { "type": "string" }, "created_at": { "type": "integer" },
+          "scopes": { "type": "array" }
+        },
+        "optional": {}
       }
     },
     {
-      "door": "keyList", "class": "read", "capability": null, "args": "none"
+      "door": "keyList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "keys": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "ownerErase", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid policy request", "required": { "confirm": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "erasing": { "type": "boolean" } }, "optional": {} }
     },
     {
       "door": "erasureBegin", "class": "admission", "capability": null,
@@ -804,7 +889,12 @@
       }
     },
     {
-      "door": "erasureOutside", "class": "admission", "capability": null, "args": "none"
+      "door": "erasureOutside", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": { "keys": { "type": "array" }, "routes": { "type": "array" } },
+        "optional": {},
+        "nullable": true
+      }
     },
     {
       "door": "erasureOutsideDone", "class": "admission", "capability": null, "args": "none"
@@ -814,14 +904,29 @@
     },
     {
       "door": "inboundCreate", "class": "work", "act": { "name": "access.grant" },
-      "capability": null, "args": "loose"
+      "capability": null, "args": "loose",
+      "answer": {
+        "required": {
+          "binding_id": { "type": "string" }, "revision": { "type": "integer" },
+          "route": { "type": "string" }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "inboundSet", "class": "work", "act": { "name": "access.grant" }, "capability": null,
-      "args": "loose"
+      "args": "loose",
+      "answer": {
+        "required": {
+          "binding_id": { "type": "string" }, "revision": { "type": "integer" },
+          "route": { "type": "string" }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "inboundRevoke", "class": "reduce", "capability": null, "args": "loose"
+      "door": "inboundRevoke", "class": "reduce", "capability": null, "args": "loose",
+      "answer": { "required": { "route": { "type": ["string", "null"] } }, "optional": {} }
     },
     {
       "door": "inboundAccept", "class": "work", "capability": null,
@@ -832,12 +937,23 @@
           "body": { "type": "bytes" }, "headers": { "type": "object" }
         },
         "optional": {}
+      },
+      "answer": {
+        "required": { "state": { "type": "string" } },
+        "optional": { "error": { "type": "string" } }
       }
     },
     {
       "door": "fileUploadTarget", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request", "required": { "intent_id": { "type": "string" } },
+        "optional": {}
+      },
+      "answer": {
+        "required": {
+          "namespace": { "type": "string" }, "key": { "type": "string" },
+          "chunks": { "type": "array" }, "pending": { "type": "array" }
+        },
         "optional": {}
       }
     },
@@ -863,10 +979,12 @@
           },
           "optional": {}, "refused": "invalid ledger request"
         }
-      }
+      },
+      "answer": { "required": { "display_name": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "registerProposals", "class": "read", "capability": null, "args": "none"
+      "door": "registerProposals", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "cards": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "registerDecline", "class": "reduce", "capability": null,
@@ -913,39 +1031,70 @@
     },
     {
       "door": "connectionPrepare", "class": "work", "act": { "name": "security.change" },
-      "capability": null, "args": "loose"
+      "capability": null, "args": "loose",
+      "answer": {
+        "required": { "connection": { "type": "string" }, "version": { "type": "integer" } },
+        "optional": { "flow": { "type": "object" } }
+      }
     },
     {
       "door": "connectionCommit", "class": "work", "act": { "name": "security.change" },
-      "capability": null, "args": "loose"
+      "capability": null, "args": "loose",
+      "answer": { "required": { "display_name": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "connectionRevoke", "class": "reduce", "act": { "name": "security.change" },
       "capability": null, "args": "loose"
     },
     {
-      "door": "connectionList", "class": "read", "capability": null, "args": "none"
+      "door": "connectionList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "connections": { "type": "array" } }, "optional": {} }
     },
     {
-      "door": "flowFinish", "class": "work", "capability": null, "args": "loose"
+      "door": "flowFinish", "class": "work", "capability": null, "args": "loose",
+      "answer": {
+        "required": {
+          "connection": { "type": "string" }, "version": { "type": "integer" },
+          "verifier": { "type": "string" }, "redirect_uri": { "type": "string" },
+          "source": { "type": "string" }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "noticeList", "class": "read", "capability": null, "args": "none"
+      "door": "noticeList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "notices": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "starterReceipts", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "admissionSet", "class": "admission", "capability": null, "args": "loose"
+      "door": "admissionSet", "class": "admission", "capability": null, "args": "loose",
+      "answer": { "required": { "state": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "ownerState", "class": "admission", "capability": null, "args": "none"
+      "door": "ownerState", "class": "admission", "capability": null, "args": "none",
+      "answer": { "required": { "state": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "toolProfile", "class": "read", "capability": null, "args": "none"
+      "door": "toolProfile", "class": "read", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "profile": { "type": "string" }, "tools": { "type": "array" },
+          "withheld": { "type": "array" }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "definitionRead", "class": "read", "capability": "read_files", "args": "none"
+      "door": "definitionRead", "class": "read", "capability": "read_files", "args": "none",
+      "answer": {
+        "required": {
+          "agent": { "type": "string" }, "instructions": { "type": ["bytes", "null"] },
+          "soul": { "type": ["bytes", "null"] }, "skills": { "type": "array" }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "mailChain", "class": "read", "capability": null,
@@ -959,7 +1108,8 @@
       }
     },
     {
-      "door": "wakeEvents", "class": "read", "capability": "read_graph", "args": "loose"
+      "door": "wakeEvents", "class": "read", "capability": "read_graph", "args": "loose",
+      "answer": { "required": { "events": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "wakeSubscribe", "class": "work", "capability": "read_graph",
@@ -986,6 +1136,10 @@
       "args": {
         "refused": "invalid file request", "required": { "path": { "type": "string" } },
         "optional": { "etag": { "type": "string" } }
+      },
+      "answer": {
+        "required": { "entry": { "type": "object" } },
+        "optional": { "inline": { "type": "bytes" } }
       }
     },
     {
@@ -997,7 +1151,8 @@
           "first": { "type": "integer" }, "count": { "type": "integer" }
         },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "chunks": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "fileUploadBegin", "class": "work", "capability": "write_files",
@@ -1072,13 +1227,23 @@
           "check": { "type": "boolean" }, "tool_name": { "type": "string" },
           "tool_input": { "type": ["string", "number", "boolean", "object", "array", "null"] }
         }
-      }
+      },
+      "answer": { "required": {}, "optional": { "hook": { "type": "object" } } }
     },
     {
       "door": "signinStart", "class": "work", "capability": null,
       "args": {
         "refused": "invalid run request", "required": { "engine": { "type": "string" } },
         "optional": { "authority": { "type": "string" }, "mode": { "type": "string" } }
+      },
+      "answer": {
+        "required": {},
+        "optional": {
+          "started": { "type": "boolean" }, "code": { "type": ["string", "null"] },
+          "id": { "type": "string" }, "state": { "type": "string" },
+          "url": { "type": ["string", "null"] }, "host": { "type": ["string", "null"] },
+          "accepts_code": { "type": "boolean" }
+        }
       }
     },
     {
@@ -1099,13 +1264,21 @@
       }
     },
     {
-      "door": "signinList", "class": "read", "capability": null, "args": "none"
+      "door": "signinList", "class": "read", "capability": null, "args": "none",
+      "answer": {
+        "required": { "signins": { "type": "array" }, "engines": { "type": "array" } },
+        "optional": {}
+      }
     },
     {
       "door": "runList", "class": "read", "capability": null,
       "args": {
         "refused": "invalid run request", "required": {},
         "optional": { "before": { "type": "integer" }, "limit": { "type": "integer" } }
+      },
+      "answer": {
+        "required": { "runs": { "type": "array" }, "next": { "type": ["integer", "null"] } },
+        "optional": {}
       }
     },
     {
@@ -1123,7 +1296,8 @@
       "args": {
         "refused": "invalid run request", "required": { "conversation_id": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "ticket": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "socketsEnd", "class": "reduce", "capability": null, "args": "none"
@@ -1132,7 +1306,8 @@
       "door": "tierSet", "class": "admission", "capability": null, "args": "loose"
     },
     {
-      "door": "tierRead", "class": "read", "capability": null, "args": "none"
+      "door": "tierRead", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "tier": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "restoreSource", "class": "admission", "capability": null, "args": "none"
@@ -1146,7 +1321,11 @@
       }
     },
     {
-      "door": "restoreStep", "class": "admission", "capability": null, "args": "none"
+      "door": "restoreStep", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": { "done": { "type": "boolean" } },
+        "optional": { "keys": { "type": "array" } }
+      }
     },
     {
       "door": "restorePin", "class": "admission", "capability": null,
@@ -1182,10 +1361,26 @@
       }
     },
     {
-      "door": "egressOpen", "class": "work", "capability": null, "args": "loose"
+      "door": "egressOpen", "class": "work", "capability": null, "args": "loose",
+      "answer": {
+        "required": { "ok": { "type": "boolean" } },
+        "optional": {
+          "reservation": { "type": "string" }, "blob": { "type": "string" },
+          "version": { "type": "integer" }, "metered": { "type": "boolean" },
+          "ended": { "type": "stream" }, "code": { "type": "string" },
+          "receipt": { "type": ["string", "null"] }
+        }
+      }
     },
     {
-      "door": "egressReserve", "class": "work", "capability": null, "args": "loose"
+      "door": "egressReserve", "class": "work", "capability": null, "args": "loose",
+      "answer": {
+        "required": { "ok": { "type": "boolean" } },
+        "optional": {
+          "metering": { "type": "object" }, "code": { "type": "string" },
+          "receipt": { "type": ["string", "null"] }
+        }
+      }
     },
     {
       "door": "egressBeat", "class": "reduce", "capability": null, "args": "loose"
@@ -1265,6 +1460,13 @@
           "chunks": { "type": "array" }
         },
         "optional": {}
+      },
+      "answer": {
+        "required": { "skipped": { "type": "boolean" } },
+        "optional": {
+          "intent_id": { "type": "string" }, "namespace": { "type": "string" },
+          "key": { "type": "string" }, "chunks": { "type": "array" }, "pending": { "type": "array" }
+        }
       }
     },
     {
@@ -1299,10 +1501,12 @@
       "args": {
         "refused": "invalid import request",
         "required": { "part": { "type": "string" }, "page": { "type": "integer" } }, "optional": {}
-      }
+      },
+      "answer": { "required": { "more": { "type": "boolean" } }, "optional": {} }
     },
     {
-      "door": "importDiscard", "class": "import", "capability": null, "args": "none"
+      "door": "importDiscard", "class": "import", "capability": null, "args": "none",
+      "answer": { "required": { "namespace": { "type": ["string", "null"] } }, "optional": {} }
     }
   ]
 }

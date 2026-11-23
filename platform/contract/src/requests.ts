@@ -1,7 +1,7 @@
 /**
- * Each owner door's request whose row lists its fields, by door: written by
- * `npm run generate` from the door table (`doors.json`), which says what each means.
- * Edit the table, never this file.
+ * Each owner door's request whose row lists its fields, and each answer whose row
+ * declares one, by door: written by `npm run generate` from the door table
+ * (`doors.json`), which says what each means. Edit the table, never this file.
  */
 
 export interface DoorRequests {
@@ -316,3 +316,198 @@ export interface DoorRequests {
   readonly importNotice: { readonly detail: string };
   readonly importCheck: { readonly part: string; readonly page: number };
 }
+
+/** What the doors read of each answer its row declares: its fields, but `unread` ones. */
+export interface DoorAnswers {
+  readonly inboxDigest: { readonly mail: object; readonly rooms: object };
+  readonly boardDigest: { readonly rows: readonly (string | number | boolean | object | null)[] };
+  readonly outsideAgents: {
+    readonly agents: readonly (string | number | boolean | object | null)[];
+    readonly owner_agents: readonly (string | number | boolean | object | null)[];
+    readonly apps: readonly (string | number | boolean | object | null)[];
+  };
+  readonly fileStat: { readonly entry: object | null };
+  readonly fileList: { readonly entries: readonly (string | number | boolean | object | null)[] };
+  readonly fileWrite: { readonly entry?: object } & object;
+  readonly fileUsage: {
+    readonly entries: number;
+    readonly chunk_bytes: number;
+    readonly inline_bytes: number;
+  };
+  readonly agentSubmit: {
+    readonly run_id: string;
+    readonly conversation_id: string;
+    readonly state: string;
+    readonly engine: string;
+    readonly model: string | null;
+    readonly result: string | null;
+    readonly error: string | null;
+    readonly code: string | null;
+  };
+  readonly agentStatus: {
+    readonly run_id?: string;
+    readonly state?: string;
+    readonly engine?: string;
+    readonly model?: string | null;
+    readonly result?: string | null;
+    readonly error?: string | null;
+    readonly code?: string | null;
+  } & object;
+  readonly agentCancel: {
+    readonly run_id?: string;
+    readonly state?: string;
+    readonly engine?: string;
+    readonly model?: string | null;
+    readonly result?: string | null;
+    readonly error?: string | null;
+    readonly code?: string | null;
+  } & object;
+  readonly sessionOpen: { readonly session: string };
+  readonly ownerExport: {
+    readonly export_id: string;
+    readonly lines: readonly (string | number | boolean | object | null)[];
+    readonly next: string | null;
+    readonly pending: boolean;
+  };
+  readonly policyRead: {
+    readonly generation: number;
+    readonly policy: object;
+    readonly codemode: object;
+  };
+  readonly policyProposals: {
+    readonly cards: readonly (string | number | boolean | object | null)[];
+  };
+  readonly actionRequests: {
+    readonly cards: readonly (string | number | boolean | object | null)[];
+  };
+  readonly actionApprove: { readonly run: string | null };
+  readonly grantList: { readonly clients: readonly (string | number | boolean | object | null)[] };
+  readonly grantRevoke: {
+    readonly client: string;
+    readonly revoked: boolean;
+    readonly generation: number;
+    readonly revision: number;
+  };
+  readonly grantForget: { readonly forgotten: boolean };
+  readonly keyMint: {
+    readonly name: string;
+    readonly created_at: number;
+    readonly scopes: readonly (string | number | boolean | object | null)[];
+  };
+  readonly keyList: { readonly keys: readonly (string | number | boolean | object | null)[] };
+  readonly ownerErase: { readonly erasing: boolean };
+  readonly erasureOutside: {
+    readonly keys: readonly (string | number | boolean | object | null)[];
+    readonly routes: readonly (string | number | boolean | object | null)[];
+  } | null;
+  readonly inboundCreate: {
+    readonly binding_id: string;
+    readonly revision: number;
+    readonly route: string;
+  };
+  readonly inboundSet: {
+    readonly binding_id: string;
+    readonly revision: number;
+    readonly route: string;
+  };
+  readonly inboundRevoke: { readonly route: string | null };
+  readonly inboundAccept: { readonly state: string; readonly error?: string };
+  readonly fileUploadTarget: {
+    readonly namespace: string;
+    readonly key: string;
+    readonly chunks: readonly (string | number | boolean | object | null)[];
+    readonly pending: readonly (string | number | boolean | object | null)[];
+  };
+  readonly registerAgent: { readonly display_name: string };
+  readonly registerProposals: {
+    readonly cards: readonly (string | number | boolean | object | null)[];
+  };
+  readonly connectionPrepare: {
+    readonly connection: string;
+    readonly version: number;
+    readonly flow?: object;
+  };
+  readonly connectionCommit: { readonly display_name: string };
+  readonly connectionList: {
+    readonly connections: readonly (string | number | boolean | object | null)[];
+  };
+  readonly flowFinish: {
+    readonly connection: string;
+    readonly version: number;
+    readonly verifier: string;
+    readonly redirect_uri: string;
+    readonly source: string;
+  };
+  readonly noticeList: { readonly notices: readonly (string | number | boolean | object | null)[] };
+  readonly admissionSet: { readonly state: string };
+  readonly ownerState: { readonly state: string };
+  readonly toolProfile: {
+    readonly profile: string;
+    readonly tools: readonly (string | number | boolean | object | null)[];
+    readonly withheld: readonly (string | number | boolean | object | null)[];
+  };
+  readonly definitionRead: {
+    readonly agent: string;
+    readonly instructions: Uint8Array | null;
+    readonly soul: Uint8Array | null;
+    readonly skills: readonly (string | number | boolean | object | null)[];
+  };
+  readonly wakeEvents: { readonly events: readonly (string | number | boolean | object | null)[] };
+  readonly fileRead: { readonly entry: object; readonly inline?: Uint8Array };
+  readonly fileReadChunks: {
+    readonly chunks: readonly (string | number | boolean | object | null)[];
+  };
+  readonly runDecide: { readonly hook?: object } & object;
+  readonly signinStart: {
+    readonly started?: boolean;
+    readonly code?: string | null;
+    readonly id?: string;
+    readonly state?: string;
+    readonly url?: string | null;
+    readonly host?: string | null;
+    readonly accepts_code?: boolean;
+  } & object;
+  readonly signinList: {
+    readonly signins: readonly (string | number | boolean | object | null)[];
+    readonly engines: readonly (string | number | boolean | object | null)[];
+  };
+  readonly runList: {
+    readonly runs: readonly (string | number | boolean | object | null)[];
+    readonly next: number | null;
+  };
+  readonly socketTicket: { readonly ticket: string };
+  readonly tierRead: { readonly tier: string };
+  readonly restoreStep: {
+    readonly done: boolean;
+    readonly keys?: readonly (string | number | boolean | object | null)[];
+  };
+  readonly egressOpen: {
+    readonly ok: boolean;
+    readonly reservation?: string;
+    readonly blob?: string;
+    readonly version?: number;
+    readonly metered?: boolean;
+    readonly ended?: ReadableStream<Uint8Array>;
+    readonly code?: string;
+    readonly receipt?: string | null;
+  };
+  readonly egressReserve: {
+    readonly ok: boolean;
+    readonly metering?: object;
+    readonly code?: string;
+    readonly receipt?: string | null;
+  };
+  readonly importFileBegin: {
+    readonly skipped: boolean;
+    readonly intent_id?: string;
+    readonly namespace?: string;
+    readonly key?: string;
+    readonly chunks?: readonly (string | number | boolean | object | null)[];
+    readonly pending?: readonly (string | number | boolean | object | null)[];
+  };
+  readonly importCheck: { readonly more: boolean };
+  readonly importDiscard: { readonly namespace: string | null };
+}
+
+/** The answer fields the owner still answers, the doors reading them no more (`unread`). */
+export type UnreadAnswers = Record<never, never>;

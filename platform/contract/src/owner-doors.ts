@@ -5,7 +5,7 @@
  */
 import type { Binding } from "./binding.ts";
 import type { DoorAnswer, DoorLoose, DoorRequest, DoorTypes } from "./owner.ts";
-import type { DoorRequests } from "./requests.ts";
+import type { DoorAnswers, DoorRequests } from "./requests.ts";
 
 /** The owner's object, as the doors reach it (`binder.ts` alone looks one up by name). */
 export interface OwnerDoors extends Rpc.DurableObjectBranded {
@@ -419,15 +419,22 @@ type Loose =
 /** The doors the doors call no more, which the object still takes, its types with it. */
 type Dropped = "policyProposal";
 /** What `DoorTypes` may say of a door, by its row. */
-type Parts<D> = "answer" | (D extends keyof DoorRequests ? "values" | "handed"
-  : D extends Loose ? "loose" : never);
+type Parts<D> = (D extends keyof DoorAnswers ? "answer" : never)
+  | (D extends keyof DoorRequests ? "values" | "handed"
+    : D extends Loose ? "loose" : never);
 /** The fields a door's row lists (any of a choice's). */
 type Fields<D> = D extends keyof DoorRequests
   ? DoorRequests[D] extends infer R ? R extends unknown ? keyof R : never : never : never;
+/** The fields of an answer, any of its arms'. */
+type Keys<A> = A extends object ? keyof A : never;
 /** What an entry of `DoorTypes` says that its row leaves no room for. */
 type Stray<D extends keyof DoorTypes> = Exclude<keyof DoorTypes[D], Parts<D>>
   | (DoorTypes[D] extends { readonly values: infer V }
-    ? Exclude<keyof V, Fields<D>> : never);
+    ? Exclude<keyof V, Fields<D>> : never)
+  | (DoorTypes[D] extends { readonly answer: infer A } ? D extends keyof DoorAnswers
+    ? Exclude<Keys<A>, Keys<DoorAnswers[D]>>
+      | ([DoorAnswer<D>] extends [DoorAnswers[D]] ? never : "a type wider than its row's")
+    : never : never);
 
 /**
  * The doors `DoorTypes` names: `tsc` refuses one that is no door of the table, or one whose

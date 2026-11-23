@@ -71,6 +71,7 @@ import { clock } from "./clock";
 import { type Account, type Call, type LiveSession, proven } from "./door";
 import type { OwnerStorage } from "./gate";
 import type { Notices } from "./notices";
+import type { DecideAnswer } from "../../contract/src/owner";
 import type { DoorRequests } from "../../contract/src/requests";
 
 /**
@@ -604,7 +605,7 @@ export const actionsDoors = Object.freeze({
    * be, and the record's `deny`, its `{reason}` the refusal's message, refuses it.
    */
   runDecide(o: ActionsDoorNeeds, { account, request }: Call<DoorRequests["runDecide"]>):
-      { tools: string[]; generation: number } | { allow: true } | { hook: object } {
+      DecideAnswer {
     const actor = decidedActor(account);
     if (account.run === null || actor === null) {
       throw new Refusal("refused", "only a run's own hook asks its decide door");
