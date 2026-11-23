@@ -432,12 +432,14 @@ jobs:
   # change to compare. Each shard records its part of base and head at once. Required through
   # `required-tests`' needs; held by platform/ci/guards/legs.test.ts.
   #
-  # timeout-minutes is a watchdog: about 6 x the slowest shard's measured time, as
-  # `platform-tests`' (docs/decisions/untangle-2026-11/ci-recorders.md).
+  # timeout-minutes is a watchdog, held under the queue's ceiling (`required-tests`' watchdog):
+  # 6 x the slowest shard would be past it, so it is at the ceiling, 3.5 x the slowest
+  # shard's 513 s (merge-group run 44924361778), in 300 Tests runs from 2026-11-21 to
+  # 2026-11-23 (docs/decisions/untangle-2026-11/dry-run-timeout.md).
   platform-recorders:
     name: platform-recorders
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: read
@@ -493,13 +495,16 @@ jobs:
   # the one run of a PR merged onto the main it lands on
   # (docs/decisions/untangle-2026-11/dry-run-queue.md). Deleted at the cutover with dry-run.ts.
   #
-  # timeout-minutes is a watchdog, as the platform legs' are: the slowest legs took 23 s, the
-  # slowest leg 344 s (owner 2/2, run 44888783406) and the checks 107 s, in ten runs of
-  # the old `Cutover dry run` workflow on 2026-11-21 (44888783406 to 44904009707).
+  # timeout-minutes is a watchdog, as the platform legs' are, held under the queue's ceiling
+  # (`required-tests`' watchdog). The legs job took 29 s at its slowest, so 3; the checks
+  # 109 s, so 11; and the dry run's legs the ceiling less the legs job's, 3.7 x the
+  # slowest leg's 436 s (owner 2/2, run 45092062586), where 6 x would be past it. In 300
+  # Tests runs from 2026-11-21 to 2026-11-23
+  # (docs/decisions/untangle-2026-11/dry-run-timeout.md).
   cutover-dry-run-legs:
     name: cutover-dry-run-legs
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 3
     outputs:
       matrix: ${{ steps.legs.outputs.matrix }}
     defaults:
@@ -520,7 +525,7 @@ jobs:
     name: cutover-dry-run
     needs: cutover-dry-run-legs
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 27
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.cutover-dry-run-legs.outputs.matrix) }}
@@ -545,7 +550,7 @@ jobs:
   cutover-dry-run-checks:
     name: cutover-dry-run-checks
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 11
     steps:
       - uses: actions/checkout@v4
         with:
@@ -578,8 +583,12 @@ jobs:
   # for anything the table does not cover), so the split is complete and
   # disjoint by construction. Packed so, the slowest shard's tests took 569 to
   # 621 s in the junits of whole-surface runs 43940676068, 43939779247,
-  # 43769559562 and 43705715555, about 15 minutes of its 30 with the image build
-  # (docs/decisions/untangle-2026-11/shard-2-time.md).
+  # 43769559562 and 43705715555, about 15 minutes of its 26 with the image build
+  # (docs/decisions/untangle-2026-11/shard-2-time.md). A shard and `select`, which it
+  # waits on, share the queue's ceiling (`required-tests`' watchdog): 4 and 26, about
+  # 2 x select's slowest 125 s (merge-group run 44989843138) and 1.7 x the slowest
+  # shard's 917 s (push run 45071657634), in 300 Tests runs from 2026-11-21 to 2026-11-23
+  # (docs/decisions/untangle-2026-11/dry-run-timeout.md).
   #
   # Not pytest-xdist: parallelism is across RUNNERS, so no two shards share a
   # process, temp dir or sqlite file — the in-process nondeterminism documented
@@ -619,7 +628,7 @@ jobs:
     name: select
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 4
     outputs:
       digest: ${{ steps.pick.outputs.digest }}
       scope: ${{ steps.pick.outputs.scope }}
@@ -692,7 +701,7 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: select
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 26
     strategy:
       # One red shard must not cancel the rest: the aggregate would then report
       # missing shards instead of the actual failures.
@@ -967,7 +976,16 @@ jobs:
     # Pinned by test_required_tests_cannot_decline_to_report.
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The queue's ceiling. The queue fails a group whose required checks have not reported
+    # within its check timeout (docs/ops/merge-queue-ruleset.json). So this job's watchdog,
+    # added to the longest chain of watchdogs it waits on, is within it
+    # (platform/ci/guards/required-checks.test.ts): a job that hangs is killed by its own
+    # watchdog and named here, not left to the queue's timeout. A runner's wait to pick a
+    # job up counts toward the queue's timeout and no watchdog. Its own, 5, is 3 x its
+    # slowest run's 92 s (push run 45000387004, of 300 Tests runs from 2026-11-21 to
+    # 2026-11-23); the rest of the queue's timeout is the ceiling of the jobs it waits on
+    # (docs/decisions/untangle-2026-11/dry-run-timeout.md).
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v4
