@@ -10,7 +10,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { type AnswerRead, answerReads, readerProgram, unanswered } from "../../ci/kit/answer-reads";
 import { PLATFORM } from "../../ci/paths";
@@ -49,9 +49,57 @@ function declared(): string[] {
       .map((field) => `${row.door}.${field}`)).sort();
 }
 
+
+/** A probe of the doors and of the app, compiled beside them: each kind of read, and refusal. */
+const PROBE = "doors/src/zz-probe.ts";
+const APP_PROBE = "doors/app/zz-probe.js";
+const PROBES = Object.freeze({
+  [PROBE]: [
+    'import type { DoorAnswer } from "../../contract/src/owner";',
+    'declare const decided: DoorAnswer<"runDecide">;',
+    'declare const listed: DoorAnswer<"connectionList">;',
+    "declare const passed: object;",
+    "declare function keep(listing: { connections: unknown }): void;",
+    'export const asked = "verdict" in decided;',
+    'export const bare = "x" in passed;',
+    "export const told = (decided as { verdict: string }).verdict;",
+    "export const said = (decided as unknown as { verdict: string }).verdict;",
+    "keep(listed);",
+    "declare function loose(value: any): void;",
+    "declare const key: string;",
+    "loose(listed);",
+    "export const whole = (listed as any).connections;",
+    "export const keyed = listed[key];",
+    "export interface Typed {",
+    "  readonly grantList: { readonly clients: string };",
+    "  readonly noticeList: object;",
+    "  readonly tierRead: { readonly tier: string };",
+    "}",
+    "export class Owner {",
+    "  async grantList() { return { clients: [] as string[] }; }",
+    "  async tierRead() { return { tier: 'free' }; }",
+    "}",
+  ].join("\n"),
+  [APP_PROBE]: [
+    'import { call } from "/app/static/api.js";',
+    'const { notices, gone } = await call("notices");',
+    "export { notices, gone };",
+    "function shown(view) { return view.later; }",
+    'export const later = shown(await call("notices"));',
+    "const path = String(gone);",
+    "export const lost = (await call(path)).field;",
+  ].join("\n"),
+});
+
 describe("the owner's answers the doors read", () => {
+  /** The readers, and the probe beside them, compiled once. */
+  let readers: ReturnType<typeof readerProgram>;
+  beforeAll(() => {
+    readers = readerProgram(READERS, SERVED, PROBES);
+  });
+
   it("are what the table declares: every field it declares read, and no other", () => {
-    const { reads, undeclared, unheld } = answerReads(readerProgram(READERS, SERVED), READERS);
+    const { reads, undeclared, unheld } = answerReads(readers, READERS);
     const read = named(reads);
     expect(read.filter((each) => !declared().includes(each)), "read, not declared").toEqual([]);
     expect(declared().filter((each) => !read.includes(each)), "declared, not read").toEqual([]);
@@ -65,45 +113,20 @@ describe("the owner's answers the doors read", () => {
   });
 
   it("find each read, and each read no type holds, in a probe of the doors and of the app", () => {
-    const probe = "doors/src/zz-probe.ts";
-    const app = "doors/app/zz-probe.js";
-    const found = readerProgram([probe, app], SERVED, {
-      [probe]: [
-        'import type { DoorAnswer } from "../../contract/src/owner";',
-        'declare const decided: DoorAnswer<"runDecide">;',
-        'declare const listed: DoorAnswer<"connectionList">;',
-        "declare const passed: object;",
-        "declare function keep(listing: { connections: unknown }): void;",
-        'export const asked = "verdict" in decided;',
-        'export const bare = "x" in passed;',
-        "export const told = (decided as { verdict: string }).verdict;",
-        "export const said = (decided as unknown as { verdict: string }).verdict;",
-        "keep(listed);",
-        "export interface Typed {",
-        "  readonly grantList: { readonly clients: string };",
-        "  readonly noticeList: object;",
-        "  readonly tierRead: { readonly tier: string };",
-        "}",
-        "export class Owner {",
-        "  async grantList() { return { clients: [] as string[] }; }",
-        "  async tierRead() { return { tier: 'free' }; }",
-        "}",
-      ].join("\n"),
-      [app]: [
-        'import { call } from "/app/static/api.js";',
-        'const { notices, gone } = await call("notices");',
-        "export { notices, gone };",
-      ].join("\n"),
-    });
-    const { reads, undeclared, unheld } = answerReads(found, [probe, app]);
+    const { reads, undeclared, unheld } = answerReads(readers, [PROBE, APP_PROBE]);
     expect(named(reads)).toEqual(["connectionList.connections", "noticeList.notices"]);
     expect(undeclared.map(({ door, field, at }) => `${at}: ${door}.${field}`)).toEqual([
       "doors/src/zz-probe.ts:6: runDecide.verdict", "doors/app/zz-probe.js:2: noticeList.gone"]);
     expect(unheld).toEqual([
       'doors/src/zz-probe.ts:7: an `in` check of "x" on a bare object',
       "doors/src/zz-probe.ts:8: a cast of an answer to { verdict: string; }",
-      "doors/src/zz-probe.ts:9: a cast of an answer to { verdict: string; }"]);
-    expect(unanswered(found, `${probe}#Typed`, `${probe}#Owner`)).toEqual([
+      "doors/src/zz-probe.ts:9: a cast of an answer to { verdict: string; }",
+      "doors/src/zz-probe.ts:13: an answer handed to any",
+      "doors/src/zz-probe.ts:14: a cast of an answer to any",
+      "doors/src/zz-probe.ts:15: a read of an answer by a key no type names",
+      "doors/app/zz-probe.js:5: an answer handed to any",
+      'doors/app/zz-probe.js:7: a read of "field" from never']);
+    expect(unanswered(readers, `${PROBE}#Typed`, `${PROBE}#Owner`)).toEqual([
       "grantList: Owner answers { clients: string[]; }", "noticeList: Owner has no such door"]);
   });
 });

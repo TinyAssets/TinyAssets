@@ -197,7 +197,7 @@ async function fileWrite({ owner: { binding, stub }, body: request }: Served) {
  * nothing sealed, no endpoint, no argv. A sign-in shows as offered only on a record read fresh,
  * as the owner's object starts one (`FRESH_ONLY`; none on a missing record, `signinsOn`).
  */
-function sourceList(sources: Sources, gate: ControlRead): unknown {
+function sourceList(sources: Sources, gate: ControlRead) {
   const switchedOn = signinsOn(sources, gate.kind === "read" ? gate.control : null);
   return {
     sources: sources.ids().map((id) => {
@@ -445,10 +445,11 @@ export type AppPath = Exclude<keyof ReturnType<typeof routes>, `${string}/`>
   | `tools/${keyof ToolDoors}` | keyof typeof CONNECT_ROUTES;
 /**
  * What the owner surface answers at `path`: its door's answer, a tool's door's, or its
- * sequence's value, which the owner app's calls read (`app/api.js` `call`).
+ * sequence's value, which the owner app's calls read (`app/api.js` `call`); nothing at a path
+ * no call names (every path, as a script's untyped string is).
  */
-export type AppAnswer<P extends AppPath> =
-  P extends `tools/${infer T extends keyof ToolDoors}` ? DoorAnswer<ToolDoors[T]>
+export type AppAnswer<P extends AppPath> = [AppPath] extends [P] ? never
+  : P extends `tools/${infer T extends keyof ToolDoors}` ? DoorAnswer<ToolDoors[T]>
     : P extends keyof typeof CONNECT_ROUTES ? Value<Awaited<ReturnType<(typeof CONNECT_ROUTES)[P]>>>
       : P extends keyof ReturnType<typeof routes> ? Valued<ReturnType<typeof routes>[P]> : never;
 

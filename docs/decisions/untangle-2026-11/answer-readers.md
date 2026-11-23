@@ -60,9 +60,11 @@ read by eye (`egress.ts` `"hook" in answer`), and `app.js`/`api.js` read call by
 
 **The declared set == what the paired readers read**, at every commit, both ways: every read
 field declared, every declared field read. A read the guard cannot type is no read it can hold,
-so two such reads are refused outright: an `in` check on a bare `object` (an answer whose row
-declares none), and a cast of an answer to a type of the code's own (`as`, `as unknown as`,
-a JSDoc cast).
+so such reads are refused outright: an `in` check on a bare `object` (an answer whose row
+declares none), a cast of an answer to a type of the code's own (`as`, `as unknown as`,
+`as any`, a JSDoc cast), an answer handed to `any` (a script's untyped parameter), a read of
+an answer by a key no type names, and a read from `unknown` or `never` (a route whose value
+is untyped, a script's call of a path it does not name).
 
 ## Design, from the research (decided before building)
 
@@ -97,6 +99,9 @@ the same set; a reader with no type is refused rather than passed.
   - The declared set was found once by hand and held by nothing at a commit.
   - An `in` check on an answer compiled whatever field it named.
   - A cast of an answer, or an `in` on an undeclared one, read what no type held.
+  - Review: an answer handed to `any` (an untyped helper in a script), cast to `any`, read by a
+    computed key, or a read from `unknown` (`sourceList` answered `unknown`, a path no call
+    names) read what no type held, and passed.
 - **The app is typed by the routes it calls.**
   - `call` answered `any`, so the app's reads were a list kept by reading.
   - A route's value was erased into a `Response` (`answer(200, ...)` in every sequence, and
@@ -121,13 +126,20 @@ the same set; a reader with no type is refused rather than passed.
   the contract (`untangle/answer-depth`, owed by `door-answers.md`).
 - **A raw `fetch` of the owner surface** outside `api.js` and `connected.js` would be untyped:
   nothing in the app does one, and every served script is in the guard's program.
+- **What the compiler cannot see, and what holds it.** `tsc` holds the doors' code to the
+  types, so only the app's scripts (no `checkJs`) can read what no type has; every such read
+  goes through `any`, `unknown`, a cast or a computed key, each refused. Left seen by no one:
+  enumeration and reflection (`Object.keys`, `for in`, `Reflect.get`, `Object.hasOwn`), and a
+  generic helper's read (`get(answer, "field")`), which reads no field by its type. A declared
+  field read only so is reported as not read, which fails loudly.
 - **`fetch` in the contract**: the ban on the runtime's I/O names is lexical, and a tool is
   named `fetch`; `requests.ts` (`ToolDoors`) is that name's one home (`contract/guards/rules.ts`).
 
 ## As built
 
 - `ci/kit/answer-reads.ts`: `readerProgram`, `answerReads`, `unanswered`.
-- `doors/guards/answer-reads.test.ts`: the three tests above.
+- `doors/guards/answer-reads.test.ts`: the three tests above, the readers and the probe
+  compiled once.
 - `contract/requests.ts`: `ToolDoors`; `contract/doors.json`: `agentSubmit`, `agentCancel`
   `unread: ["result"]`; `contract/guards/rules.ts`: `fetch`'s home.
 - `doors/src/app.ts`: `Route` answers a value, `Headed` or a `Response`; `valued` is gone;

@@ -322,6 +322,9 @@ function ownLayers(layer: Layer, ws: string, layers: readonly Layer[],
     && pattern.replaceAll("<ws>", ws).replaceAll("<worker>", ws).startsWith(`platform/${ws}/`)));
 }
 
+/** A script whose JSDoc types it (JavaScript), by its name. */
+const SCRIPT_DOCS = /\.[cm]?jsx?$/;
+
 /**
  * What a script names as a module, every way: each specifier, or null where it is computed.
  * TypeScript's own pre-processor reads the named ones (imports and re-exports, type ones
@@ -331,9 +334,6 @@ function ownLayers(layer: Layer, ws: string, layers: readonly Layer[],
  * and for the types a script's JSDoc imports by path (`@type {import("…").T}`), which the
  * pre-processor does not read.
  */
-/** A script whose JSDoc types it (JavaScript), by its name. */
-const SCRIPT_DOCS = /\.[cm]?jsx?$/;
-
 function specifiers(path: string, source: string): (string | null)[] {
   const named = ts.preProcessFile(source, true, true);
   const found: (string | null)[] = [

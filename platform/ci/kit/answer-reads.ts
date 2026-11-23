@@ -18,8 +18,11 @@
  *   turn. Handing it to the answer's own type, or to one with no fields (`unknown`, `object`),
  *   reads nothing: whatever reads it from there is found where it does.
  *
- * Two reads no type holds are refused outright (`unheld`): an `in` check on a bare `object`
- * (the answer of a row that declares none), and a cast of an answer to a type of its own.
+ * Reads no type holds are refused outright (`unheld`): an `in` check on a bare `object` (the
+ * answer of a row that declares none), a cast of an answer to a type of its own (`any` among
+ * them), an answer handed to `any` (a script's untyped parameter), a read of an answer by a key
+ * no type names, and any read from `unknown` or `never` (what a script's call of a path no
+ * route types answers).
  */
 import { join, relative } from "node:path";
 
@@ -184,6 +187,9 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
    * or, where no arm of `type` has it, a read of a field no answer arm declares.
    */
   const read = (type: ts.Type, name: string, node: ts.Node): void => {
+    if ((type.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Never)) !== 0) {
+      unheld.push(`${where(node)}: a read of "${name}" from ${checker.typeToString(type)}`);
+    }
     const had = armsOf(type, false).some((arm) => checker.getPropertyOfType(arm, name));
     for (const [arm, doors] of answersIn(type)) {
       const field = checker.getPropertyOfType(arm, name);
@@ -201,7 +207,11 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
       return;
     }
     const target = checker.getContextualType(node);
-    if (target === undefined || (target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+    if (target !== undefined && (target.flags & ts.TypeFlags.Any) !== 0) {
+      unheld.push(`${where(node)}: an answer handed to any`);
+      return;
+    }
+    if (target === undefined || (target.flags & ts.TypeFlags.Unknown) !== 0
         || answersIn(target, true).length > 0) {
       return;
     }
@@ -228,7 +238,7 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
     const target = checker.getTypeAtLocation(node);
     if (answersIn(checker.getTypeAtLocation(inner)).length > 0
         && answersIn(target).length === 0
-        && (target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0) {
+        && (target.flags & ts.TypeFlags.Unknown) === 0) {
       unheld.push(`${where(node)}: a cast of an answer to ${checker.typeToString(target)}`);
     }
   };
@@ -236,9 +246,16 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
   const visit = (node: ts.Node): void => {
     if (ts.isPropertyAccessExpression(node)) {
       read(checker.getTypeAtLocation(node.expression), node.name.text, node);
-    } else if (ts.isElementAccessExpression(node)
-               && ts.isStringLiteralLike(node.argumentExpression)) {
-      read(checker.getTypeAtLocation(node.expression), node.argumentExpression.text, node);
+    } else if (ts.isElementAccessExpression(node)) {
+      const type = checker.getTypeAtLocation(node.expression);
+      const key = checker.getTypeAtLocation(node.argumentExpression);
+      const names = (key.isUnion() ? key.types : [key]).map((each) =>
+        each.isStringLiteral() ? each.value : undefined);
+      if (names.every((name) => name !== undefined)) {
+        names.forEach((name) => read(type, name, node));
+      } else if (answersIn(type).length > 0) {
+        unheld.push(`${where(node)}: a read of an answer by a key no type names`);
+      }
     } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InKeyword
                && ts.isStringLiteralLike(node.left)) {
       const type = checker.getTypeAtLocation(node.right);
@@ -250,19 +267,20 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
       const type = checker.getTypeAtLocation(node);
       for (const element of node.elements) {
         const name = element.propertyName ?? element.name;
-        if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) {
+        if (element.dotDotDotToken === undefined
+            && (ts.isIdentifier(name) || ts.isStringLiteralLike(name))) {
           read(type, name.text, element);
         }
       }
-    } else if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
-      cast(node, node.expression);
-    } else if (ts.isParenthesizedExpression(node) && ts.getJSDocTypeTag(node) !== undefined) {
+    } else if (isCast(node)) {
       cast(node, node.expression);
     }
     if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) {
       handed(node.expression);
     } else if (ts.isExpression(node) && !ts.isPropertyAccessExpression(node.parent)
-               && !ts.isElementAccessExpression(node.parent)) {
+               && !ts.isElementAccessExpression(node.parent) && !isCast(node.parent)
+               && !ts.isParenthesizedExpression(node.parent)
+               && !ts.isAwaitExpression(node.parent)) {
       handed(node);
     }
     ts.forEachChild(node, visit);
@@ -271,6 +289,13 @@ export function answerReads(program: ts.Program, files: readonly string[]): Answ
     visit(sourceOf(program, path));
   }
   return { reads, undeclared, unheld };
+}
+
+/** A cast: `as`, `<T>`, or a JSDoc `@type` on a parenthesized expression. */
+function isCast(node: ts.Node):
+    node is ts.AsExpression | ts.TypeAssertion | ts.ParenthesizedExpression {
+  return ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
+    || (ts.isParenthesizedExpression(node) && ts.getJSDocTypeTag(node) !== undefined);
 }
 
 function sourceOf(program: ts.Program, path: string): ts.SourceFile {
