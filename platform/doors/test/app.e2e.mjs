@@ -373,6 +373,8 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await form.getByLabel(/^Runs on/).selectOption("api_key");
   const connection = form.getByLabel(/^API key connection/);
   const groq = await connection.locator("option", { hasText: "groq" }).getAttribute("value");
+  const keyName = (await connection.locator("option", { hasText: "groq" }).innerText())
+    .replace(/ [(]groq[)]$/, "");
   await connection.selectOption(groq);
   await form.getByRole("checkbox", { name: "Read your files" }).check();
   // Every change the making sends, in order: the agent is its agent.json, so that is the
@@ -389,6 +391,8 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await page.waitForURL(`${ORIGIN}/app#agents/helper`);
   await page.getByRole("link", { name: "agent.json" }).waitFor();
   await page.getByRole("link", { name: "AGENTS.md" }).waitFor();
+  await page.locator("main p", { hasText: "A run you start now: " }).waitFor();
+  const previewed = await page.locator("main").innerText();
   page.off("request", onRequest);
   assert.deepEqual(changes, [["tools/file_mkdir", "/workspace/agents/helper"],
                              ["files/write", "/workspace/agents/helper/AGENTS.md"],
@@ -417,8 +421,13 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
                               message: { role: "assistant", content: "Hello from pi" } } }],
                         end: { exit_code: 0 } });
   await page.locator(".said.agent", { hasText: "Hello from pi" }).waitFor();
-  // Every run is given its model, never its engine's own default, and the owner sees which.
+  // Every run is given its model, never its engine's own default, and the owner sees which:
+  // on the agent's page before the run, attended and unattended alike, and on its line.
   assert.equal(typeof start.model, "string");
+  for (const who of ["A run you start now", "A run on a schedule, or on mail not from you, now"]) {
+    assert.ok(previewed.includes(`${who}: pi (${start.model}) on ${keyName} (${groq}).`),
+              previewed);
+  }
   assert.ok((await page.locator("main").innerText())
     .includes(`Run succeeded on pi (${start.model})`));
   await shot("agent");

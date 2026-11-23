@@ -1282,6 +1282,17 @@
       }
     },
     {
+      "door": "agentModel", "class": "read", "capability": null,
+      "args": {
+        "refused": "invalid run request",
+        "required": { "agent_id": { "type": "string" } }, "optional": {}
+      },
+      "answer": {
+        "required": { "attended": { "type": "object" }, "unattended": { "type": "object" } },
+        "optional": {}
+      }
+    },
+    {
       "door": "signinReport", "class": "work", "capability": null,
       "args": {
         "refused": "invalid sign-in report", "required": { "signins": { "type": "array" } },

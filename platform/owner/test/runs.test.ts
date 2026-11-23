@@ -15,6 +15,7 @@ import { egressTokenOf } from "../../contract/src/egress";
 import { waitingPage } from "../../contract/src/identity";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
+import { servedRecord } from "../../sources/src/served";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { AGENT_DISABLED, AGENT_UNDEFINED } from "../../contract/src/agent-definition";
 import { AUTHORITY_CHANGED } from "../src/authority";
@@ -1144,6 +1145,49 @@ describe("auto and the owner's sign-ins", () => {
     await ownerRun(r.stub, r.bind(), engine, "engine");
     expect(await told()).toEqual([words("gpt-5.1-codex", "Weaker", weaker),
                                   words("~anthropic/claude-fable-latest", "Stronger", stronger)]);
+  });
+
+  it("shows the owner which model its agent's next run is given, attended and unattended, " +
+     "telling nothing and refusing nothing", async () => {
+    const [base] = await catalog(OPENAI);
+    const r = await gated();
+    const models = [{ ...base!, id: "gpt-5.1-codex" }];
+    await r.gateway.arm("models", { answer: { models } });
+    const key = await r.connect("sk-good", OPENAI, "Weaker", models, "openrouter_user_models_v1");
+    await defineAgent(r.stub, r.bind(), "engine", { engine: "pi", scopes: [] });
+    await defineAgent(r.stub, r.bind(), "coder", { engine: "codex",
+                                                   credential: "vendor_login_in_sandbox",
+                                                   scopes: [] });
+    await defineAgent(r.stub, r.bind(), "gone", { engine: "pi", model: "gone-1", scopes: [] });
+    const preview = (agent: string) => r.stub.agentModel(r.bind(), { agent_id: agent });
+    const notices = async () => (await r.stub.noticeList(r.bind())).notices;
+    const before = await notices();
+    const given = { engine: "pi", model: "gpt-5.1-codex", place: `Weaker (${key})` };
+    expect(await preview("engine")).toEqual({ attended: given, unattended: given });
+    // A refusal its run would meet is the preview's answer, never its refusal.
+    expect(await preview("coder")).toEqual({
+      attended: { engine: "codex", model: servedRecord("codex")!.cli.login!.model.id,
+                  place: "codex's sign-in" },
+      unattended: { refused: UNATTENDED_REFUSED } });
+    const unlisted = { refused: `${NO_SOURCE} (no connected key lists gone-1)` };
+    expect(await preview("gone")).toEqual({ attended: unlisted, unattended: unlisted });
+    // A ranking that ranks none of its models: the preview tells nothing, and the run it
+    // previewed is given that model and tells it, the key named by its name and id.
+    await ownerFile(r.stub, r.bind(), RANKING, JSON.stringify({ version: 2, about: "",
+      tiers: [[{ provider: "*", model: "none-*" }]] }));
+    expect(await preview("engine")).toEqual({ attended: given, unattended: given });
+    expect(await notices()).toEqual(before);
+    expect((await ownerRun(r.stub, r.bind(), undefined, "engine")).run)
+      .toMatchObject({ engine: "pi", model: "gpt-5.1-codex" });
+    expect((await notices()).filter((notice) => notice.type === "model_unranked")
+      .map((notice) => notice.detail))
+      .toEqual([`gpt-5.1-codex (Weaker (${key})): no entry of the model ranking ranks it, so ` +
+                `it ranked below every ranked model; rank it in ${RANKING}`]);
+    expect((await failure(() => preview("nobody"))).message).toBe(AGENT_UNDEFINED);
+    // The owner's alone: an outside client is refused.
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    expect((await failure(() => r.stub.agentModel(client, { agent_id: "engine" }))).message)
+      .toBe("only the owner may see which model its agents' runs are given");
   });
 
   it("picks on a key that pays for nothing only a model its source serves such a key and its " +

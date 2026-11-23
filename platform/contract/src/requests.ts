@@ -267,6 +267,7 @@ export interface DoorRequests {
   readonly signinCode: { readonly id: string; readonly code: string };
   readonly signinCancel: { readonly id: string };
   readonly runList: { readonly before?: number; readonly limit?: number };
+  readonly agentModel: { readonly agent_id: string };
   readonly signinReport: { readonly signins: readonly unknown[] };
   readonly socketTicket: { readonly conversation_id: string };
   readonly restoreBegin: { readonly namespace: string; readonly gen: string };
@@ -475,6 +476,7 @@ export interface DoorAnswers {
     readonly runs: readonly (string | number | boolean | object | null)[];
     readonly next: number | null;
   };
+  readonly agentModel: { readonly attended: object; readonly unattended: object };
   readonly socketTicket: { readonly ticket: string };
   readonly tierRead: { readonly tier: string };
   readonly restoreStep: {

@@ -355,6 +355,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     Promise<DoorAnswer<"signinCancel">>;
   signinList(binding: Binding): Promise<DoorAnswer<"signinList">>;
   runList(binding: Binding, request: DoorRequest<"runList">): Promise<DoorAnswer<"runList">>;
+  agentModel(binding: Binding, request: DoorRequest<"agentModel">):
+    Promise<DoorAnswer<"agentModel">>;
   signinReport(binding: Binding, request: DoorRequest<"signinReport">):
     Promise<DoorAnswer<"signinReport">>;
   sandboxRung(): Promise<DoorAnswer<"sandboxRung">>;

@@ -95,7 +95,7 @@ import { periods } from "./money";
 import type { RunMeter } from "./sandbox-time";
 import { SIGNIN_OFF, switchedOn } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
-import { utf8Bytes } from "../../contract/src/text";
+import { agentId, utf8Bytes } from "../../contract/src/text";
 import type { Account, Call, Door, DoorUnits, ObjectReads } from "./door";
 import type { OwnerEnv } from "./env";
 import type { Launcher } from "./launch";
@@ -296,6 +296,23 @@ export interface Admitted {
   /** The input it starts on (a waiting run's, as it was kept). */
   readonly prompt: string;
 }
+
+/** The source a run is given (`choose`): its engine, credential, connection and model. */
+interface Source {
+  readonly engine: string;
+  readonly credential: CredentialKind;
+  readonly connection: string | null;
+  /** A key's source record; null on the vendor's own sign-in. */
+  readonly source: string | null;
+  readonly model: string;
+}
+
+/**
+ * What a run would be given now (`preview`): its engine, model and where it runs (`#place`),
+ * or the words of the refusal it would be refused with.
+ */
+export type ModelPreview = { readonly engine: string; readonly model: string;
+                             readonly place: string } | { readonly refused: string };
 
 /** The source a run was given, its id and secret: what its environment is made from. */
 interface Chosen {
@@ -777,12 +794,8 @@ export class Runs {
       ask.origin === null ? null : JSON.stringify(ask.origin), JSON.stringify(scopes),
       chosen.connection, JSON.stringify(ask.connectors), now);
     if (ask.file.model === null) {
-      // A connection named as the owner's other notices name it: its name, then its id.
-      const place = chosen.connection === null ? `${chosen.engine}'s sign-in`
-        : `${this.#host.reachable().find((key) => key.connection === chosen.connection)!
-          .display_name} (${chosen.connection})`;
       this.#host.noticeOnce(MODEL_CHOSEN, `${ask.agent}: its runs are given ${chosen.model} on ` +
-        `${place}, ${CHOSEN_DETAIL}`);
+        `${this.#place(chosen.engine, chosen.connection)}, ${CHOSEN_DETAIL}`);
     }
     this.#prune();
     return { run: runId, conversation: conversationId, existing: false, engine: chosen.engine,
@@ -1064,9 +1077,54 @@ export class Runs {
    * own, `SIGNIN_LAPSED`); the sandbox's start checks it (`SIGNIN_REQUIRED`). Sources rank
    * by `ask.ranking` (`auto.ts`).
    */
-  choose(ask: Pick<Ask, "file" | "ranking" | "unattended" | "origin">, now: number):
-      { engine: string; credential: CredentialKind; connection: string | null;
-        source: string | null; model: string } {
+  choose(ask: Pick<Ask, "file" | "ranking" | "unattended" | "origin">, now: number): Source {
+    const picked = this.#pick(ask, now);
+    if (picked instanceof Refusal) {
+      throw picked;
+    }
+    const { unranked, ...chosen } = picked;
+    // A model the ranking does not rank is run only after every ranked one, and the owner
+    // is told, once while the notice is kept; one the agent names is its own choice.
+    if (unranked !== null) {
+      this.#host.noticeOnce(MODEL_UNRANKED, `${unranked.model} (${
+        this.#place(unranked.source, unranked.connection)}): ${UNRANKED_DETAIL}`);
+    }
+    return chosen;
+  }
+
+  /**
+   * What the owner's own run of `file` would be given now (`agentModel`), attended and
+   * unattended: `choose`'s pick, each its engine, model and place, or the words of the refusal
+   * it would be refused with. A read: it tells nothing.
+   */
+  preview(file: AgentFile, ranking: Ranking, now: number):
+      { attended: ModelPreview; unattended: ModelPreview } {
+    const one = (unattended: boolean): ModelPreview => {
+      const picked = this.#pick({ file, ranking, unattended, origin: null }, now);
+      return picked instanceof Refusal ? { refused: picked.message }
+        : { engine: picked.engine, model: picked.model,
+            place: this.#place(picked.engine, picked.connection) };
+    };
+    return { attended: one(false), unattended: one(true) };
+  }
+
+  /**
+   * Where a run runs, as the owner's notices and its app name it: a key's connection by its
+   * name and id, else `engine`'s sign-in.
+   */
+  #place(engine: string, connection: string | null): string {
+    return connection === null ? `${engine}'s sign-in`
+      : `${this.#host.reachable().find((key) => key.connection === connection)!.display_name} (${
+        connection})`;
+  }
+
+  /**
+   * `choose`'s pick, telling nothing and throwing nothing: the source, or the refusal that says
+   * why there is none, and the candidate picked when no entry ranks its model and the agent
+   * names none (`unranked`). A read.
+   */
+  #pick(ask: Pick<Ask, "file" | "ranking" | "unattended" | "origin">, now: number):
+      (Source & { readonly unranked: Candidate | null }) | Refusal {
     const { file, unattended } = ask;
     const authority = authorityOf(ask.origin);
     const sources = bundledSources();
@@ -1109,18 +1167,12 @@ export class Runs {
       }
       return true;
     };
-    // A model the ranking does not rank is run only after every ranked one, and the owner
-    // is told, once while the notice is kept; one the agent names is its own choice.
-    const picked = (candidate: Candidate) => {
-      if (candidate.place === null && file.model === null) {
-        this.#host.noticeOnce(MODEL_UNRANKED, `${candidate.model} (${candidate.connection
-          ?? `${candidate.source}'s sign-in`}): ${UNRANKED_DETAIL}`);
-      }
-    };
+    const unranked = (candidate: Candidate) =>
+      candidate.place === null && file.model === null ? candidate : null;
     if (file.engine !== AUTO) {
       const record = servedRecord(file.engine);
       if (record === undefined) {
-        throw new Refusal("no_source", `${NO_SOURCE} (${file.engine} is no served engine)`);
+        return new Refusal("no_source", `${NO_SOURCE} (${file.engine} is no served engine)`);
       }
       const credentials: readonly CredentialKind[] = file.credential !== null
         ? [file.credential] : file.connection !== null ? ["api_key"] : record.cli.credential;
@@ -1133,15 +1185,15 @@ export class Runs {
           // even where it is signed in (review H1). A sign-in not known signed out is
           // admitted: the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
           if (!this.#signinOn(file.engine)) {
-            throw new Refusal("signin_off", `${SIGNIN_OFF} (${file.engine})`);
+            return new Refusal("signin_off", `${SIGNIN_OFF} (${file.engine})`);
           }
           if (!client && signins.get(file.engine)?.signed_in === false) {
-            throw lapsed(file.engine);
+            return lapsed(file.engine);
           }
           // A record runs on the sign-in exactly when it has one (the record check), so its
           // plan's model is there.
           return { engine: file.engine, credential, connection: null, source: null,
-                   model: file.model ?? record.cli.login!.model.id };
+                   model: file.model ?? record.cli.login!.model.id, unranked: null };
         }
         // The connection the file names (the run's environment then refuses an engine that
         // runs no key of its provider), else the strongest whose source lists the engine.
@@ -1150,9 +1202,8 @@ export class Runs {
            || (sources.get(candidate.source)?.engines ?? []).includes(file.engine))
           && takes(candidate));
         if (key !== undefined) {
-          picked(key);
           return { engine: file.engine, credential, connection: key.connection,
-                   source: key.source, model: key.model };
+                   source: key.source, model: key.model, unranked: unranked(key) };
         }
       }
     } else {
@@ -1182,11 +1233,10 @@ export class Runs {
           : file.connection === null ? covering.get(candidate.provider) : undefined;
         if (plan !== undefined && allows(plan.engine, "vendor_login_in_sandbox")) {
           if (signins.get(plan.engine)?.signed_in !== true) {
-            throw lapsed(plan.engine);  // stops picking it, and never falls back silently
+            return lapsed(plan.engine);  // stops picking it, and never falls back silently
           }
-          picked(candidate);
           return { engine: plan.engine, credential: "vendor_login_in_sandbox", connection: null,
-                   source: null, model: file.model ?? plan.model };
+                   source: null, model: file.model ?? plan.model, unranked: unranked(candidate) };
         }
         if (candidate.connection === null) {
           continue;  // a plan its record does not allow here (unattended)
@@ -1194,9 +1244,9 @@ export class Runs {
         const engine = (sources.get(candidate.source)?.engines ?? [])
           .find((name) => allows(name, "api_key"));
         if (engine !== undefined) {
-          picked(candidate);
           return { engine, credential: "api_key", connection: candidate.connection,
-                   source: candidate.source, model: candidate.model };
+                   source: candidate.source, model: candidate.model,
+                   unranked: unranked(candidate) };
         }
       }
     }
@@ -1204,7 +1254,7 @@ export class Runs {
     // so do keys that list only models an agent must name.
     const unlisted = file.model !== null
       && !keys.some((key) => key.models.some((model) => model.id === file.model));
-    throw unattendedOnly ? new Refusal("unattended_refused", UNATTENDED_REFUSED)
+    return unattendedOnly ? new Refusal("unattended_refused", UNATTENDED_REFUSED)
       : new Refusal("no_source", unlisted ? `${NO_SOURCE} (no connected key lists ${file.model})`
         : unpicked ? `${NO_SOURCE} (${UNPICKED})` : NO_SOURCE);
   }
@@ -1888,6 +1938,10 @@ export interface RunListRequest {
   readonly before?: number;
   readonly limit?: number;
 }
+/** One of the owner's agents, whose next run's model is read (`agentModel`). */
+export interface ModelRequest {
+  readonly agent_id: string;
+}
 /** A past run in the caller's list: its receipt without its result (its own door's). */
 export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
 
@@ -2111,6 +2165,20 @@ export const runsDoors = Object.freeze({
   runList(o: RunsDoorNeeds, { account, r }: Call<RunListRequest>):
       { runs: RunListed[]; next: number | null } {
     return o.runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
+  },
+  /**
+   * Which model the owner's own next run of one of its agents would be given, attended and
+   * unattended (`Runs.preview`), from its `agent.json` and ranking as its admission reads them.
+   * A read: no notice is told and nothing is refused but the agent's read.
+   */
+  async agentModel(o: RunsDoorNeeds, door: Door<ModelRequest>):
+      Promise<{ attended: ModelPreview; unattended: ModelPreview }> {
+    const agent = await o.door(() => agentId(door.check().r["agent_id"]));
+    const read = await o.launcher.readAgent(agent);
+    return o.door(() => {
+      door.check();
+      return o.runs.preview(read.file, read.ranking, clock());
+    });
   },
   /**
    * The platform's line rang this owner (slice S; `sandbox/src/slots.ts`, through the doors
