@@ -42,7 +42,10 @@ integers to strings, and a plan of #5829 over b65adb647's doors would have passe
   before, which the run's own plan held its owner against, so it needs no hold of its own.
   New doors never talk to an owner before them, so widening a field is never a pairing to hold.
 - The table answers nothing: a door's answer is the owner module's, with no schema. So the
-  door table is held one way, the doors' requests; the shapes' answers stay held by name.
+  door table is held one way, the doors' requests; the shapes' answers stay held by name. The
+  doors do read some door answers field by field (`contract/src/owner.ts` `DoorTypes` `answer`:
+  `tierRead`'s `tier`, `sessionOpen`'s `session`, the restore doors' answers), typed for `tsc`
+  alone, which no hold reads at a serving commit (owed below, from the review).
 
 ### How #5810, #5821, #5825 and #5826 took a name in steps
 
@@ -66,7 +69,8 @@ integers to strings, and a plan of #5829 over b65adb647's doors would have passe
   where `integer` is taken by `number` as JSON Schema has it. A field the tree's owner lists
   as dropped takes any value (`requestFields` leaves it out); one it no longer takes at all is
   the names' problem, said once.
-- **The owner answers ⊆ the doors read:** no door answer is data, so nothing to hold here.
+- **The owner answers ⊆ the doors read:** no door answer is data, so nothing holds it here,
+  names or types; the answers the doors read are owed (below).
 - **Required and optional** are held as before: no field newly required that the doors' version
   before does not always hand, none taken no more.
 - **A field with no declared type (`{}`).** At the owner it takes any value: what JSON Schema and
@@ -123,7 +127,29 @@ integers to strings, and a plan of #5829 over b65adb647's doors would have passe
   integer cursors, and names an untyped field), `contract/guards/doors.test.ts` (the table's
   new rules).
 
+## Review (2026-11-23)
+
+- Run on the real commits, the hold refuses #5822 over b65adb647's doors, naming four fields
+  (`inboxDigest`, `boardDigest` and `collectionPull` `after`, `collectionHistory` `before`, as
+  integer), and passes the stage's b8424315e and the rollback target 9bb0b1b32 against this
+  tree, none held by name alone: the fallback is not live today.
+- **The table's types are a declaration the owner's code is not held to.** `requestFields`
+  holds a request's names to the table (so `dropped` is what the owner takes), but each
+  field's type is checked again in its module's code, and `droppedTypes` says the owner takes a
+  type that only a hand edit of that code makes true, as #5822's owner took integer cursors in
+  code alone (`collections.ts` `cursorsOf().from`, until #5829) where the table said `string`;
+  and the 148 `{}` fields are held by no type, silently. One fix behind both: the owner's fields step
+  refuses a value its schema's types and `droppedTypes` do not name, and each `{}` field
+  declares its type. It changes outside callers' refusal words across the doors, so it is
+  owed, not built here.
+
 ## Owed
+
+- [ ] untangle/door-types-owner: the owner's fields step (`requestFields`) holds each field's
+  value to its schema's types and `droppedTypes`, as it holds names, and the 148 `{}` fields
+  declare their types; then the module type checks it repeats go. Research first (Fact 14).
+- [ ] untangle/door-answers: the door answers the doors read (`DoorTypes` `answer`) become data
+  the hold reads at a serving commit (`handed.json` shapes, owner to doors), held as answers.
 
 - [ ] untangle/handed-shape-types: each shape parser reads its fields' types from
   `contract/handed.json` as it reads their names (`taken`), so the hold holds a shape's types as
