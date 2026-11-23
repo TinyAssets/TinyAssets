@@ -16,8 +16,11 @@
  * - where its module reads it whole (`loose`), the parameters its module takes, spelled once
  *   here (`AdmissionRequest`, `TierRequest`, the connections', the inbound bindings', the
  *   egress door's);
- * - what the doors, or their tests, read of its answer (`answer`), or an object they pass on
- *   as it came (as JSON, or as an RPC result).
+ * - where the row declares the answer the doors read (`DoorAnswers`, its fields and their
+ *   JSON types, which the deploy kit holds across serving versions, `deploy/handed.ts`), what
+ *   they, or their tests, read of it narrower than those (`answer`: a literal, a union's arms,
+ *   a list's items, an object's fields); where it declares none, an object they pass on as it
+ *   came (as JSON, or as an RPC result).
  *
  * Beside them are the answers the egress door reads field by field (`EgressOpened`,
  * `EgressReserved`, `EgressRefusal`) and the billed event the E2B hook routes
@@ -31,7 +34,7 @@ import type { Outcome } from "./egress.ts";
 import type { PolicyDocument } from "./policy-document.ts";
 import type { CheckPart } from "./import-message.ts";
 import type { Metering, MeterOutcome } from "./gateway.ts";
-import type { DoorRequests } from "./requests.ts";
+import type { DoorAnswers, DoorRequests, UnreadAnswers } from "./requests.ts";
 import type { EgressCode } from "./refusal.ts";
 import type { Events } from "./wake-records.ts";
 
@@ -145,12 +148,7 @@ export interface OwnerStateAnswer {
  * a restore that holds the owner reads), and the kid its data key is under, read from the
  * key's own header (null with no key). The platform asks again until `left` is 0.
  */
-export interface RewrapAnswer {
-  readonly rewrapped: boolean;
-  readonly roots: number;
-  readonly left: number;
-  readonly kid: string | null;
-}
+export type RewrapAnswer = DoorAnswers["dataKeyRewrap"];
 
 /**
  * A rotation's sweep of one owner under the gateway keyring (`gatewayReseal`, the operator's
@@ -159,11 +157,7 @@ export interface RewrapAnswer {
  * and the gateway's active kid as it answered (null with no blob). Asked again until `left`
  * is 0.
  */
-export interface ResealAnswer {
-  readonly resealed: number;
-  readonly left: number;
-  readonly kid: string | null;
-}
+export type ResealAnswer = DoorAnswers["gatewayReseal"];
 
 /**
  * One blob sealed under the gateway's ring, as the owner's sweep left it: the active kid the
@@ -228,10 +222,7 @@ export interface RestoreSource {
  * Another namespace of the owner held by its object's own (`restoreHold`): the namespace that
  * holds it, and the one held.
  */
-export interface RestoreHeld {
-  readonly namespace: string;
-  readonly held: string;
-}
+export type RestoreHeld = DoorAnswers["restoreHold"];
 
 /** A page of what the owner's object names in the bucket (`restoreNames`), from the `from`th. */
 export type RestoreNamesRequest = DoorRequests["restoreNames"];
@@ -278,14 +269,7 @@ export type EraseRequest = DoorRequests["erasureBegin"];
  * owner), whether the wipe may go on (that generation finished), and the words that confirm
  * the wipe while one is due (`pinned` once written, or `failed`), else null.
  */
-export interface RestoreHold {
-  readonly step: string;
-  readonly namespace: string;
-  readonly gen: string;
-  readonly fresh: string | null;
-  readonly written: boolean;
-  readonly confirm: string | null;
-}
+export type RestoreHold = DoorAnswers["restorePin"];
 
 /**
  * A connection to prepare: its source record's id, kind, display name and pi-ai provider,
@@ -397,38 +381,27 @@ export type SettleSent = {
 /**
  * What the door table cannot say of a door the doors call, by door: the values the doors build
  * into its row's fields narrower than its types (`values`), that they hand a parsed body on
- * (`handed`), a loose door's parameters after its binding (`loose`), and what they or their
- * tests read of its answer (`answer`), held to the owner's own by `OwnerDO implements
- * OwnerDoors`. `tsc` refuses an entry for no door of the table, or one its row leaves no room
- * for: `values` or `handed` but on a field list, a field the row does not list, `loose` but on
- * a loose door (`owner-doors.ts`). A door with no entry takes its row's fields, each of its
- * type, and answers an object the doors pass on.
+ * (`handed`), a loose door's parameters after its binding (`loose`), and the fields of its
+ * answer that they or their tests read narrower than its row's types (`answer`: a literal, a
+ * union's arms, a list's items, an object's fields), held to the owner's own by `OwnerDO
+ * implements OwnerDoors`. `tsc` refuses an entry for no door of the table, or one its row
+ * leaves no room for: `values` or `handed` but on a field list, a field the row does not list,
+ * `loose` but on a loose door, `answer` but on a row that declares one, or a field of it the
+ * row's answer does not read (`owner-doors.ts`). A door with no entry takes its row's fields,
+ * each of its type, and answers its row's answer, or an object the doors pass on.
  */
 export interface DoorTypes {
-  readonly sandboxBilled: {
-    readonly loose: [event: BilledEvent];
-    readonly answer: { readonly counted: boolean };
-  };
-  readonly admissionSet: {
-    readonly loose: [request: AdmissionRequest];
-    readonly answer: { readonly state: string };
-  };
+  readonly sandboxBilled: { readonly loose: [event: BilledEvent] };
+  readonly admissionSet: { readonly loose: [request: AdmissionRequest] };
   readonly tierSet: {
     readonly loose: [request: TierRequest];
     readonly answer: { readonly tier: TierName };
   };
   readonly ownerState: { readonly answer: OwnerStateAnswer };
-  readonly dataKeyRewrap: { readonly answer: RewrapAnswer };
-  readonly gatewayReseal: { readonly answer: ResealAnswer };
   readonly restoreSource: { readonly answer: RestoreSource };
   readonly restoreBegin: { readonly answer: RestoreAnswer };
   readonly restoreStep: { readonly answer: RestoreAnswer };
-  readonly restorePin: { readonly answer: RestoreHold };
-  readonly restoreWipe: { readonly answer: RestoreHold };
   readonly restoreNames: { readonly answer: RestoreNames };
-  readonly restoreHold: { readonly answer: RestoreHeld };
-  readonly sessionOpen: { readonly answer: { readonly session: string } };
-  readonly sessionClose: { readonly answer: { readonly closed: number } };
   readonly socketTicket: { readonly handed: true };
   readonly ownerErase: { readonly answer: { readonly erasing: true } };
   readonly erasureBegin: { readonly answer: { readonly erasing: true } };
@@ -450,67 +423,41 @@ export interface DoorTypes {
       readonly arguments: { readonly command_center_id: string; readonly board?: boolean;
                             readonly rooms?: readonly string[] } };
   };
-  readonly keyMint: {
-    readonly answer: { readonly name: string; readonly created_at: number;
-                       readonly scopes: readonly object[] };
-  };
+  readonly keyMint: { readonly answer: { readonly scopes: readonly object[] } };
   readonly keyList: { readonly answer: { readonly keys: readonly { readonly key_id: string }[] } };
-  readonly grantRevoke: {
-    readonly answer: { readonly client: string; readonly revoked: boolean;
-                       readonly generation: number; readonly revision: number };
-  };
-  readonly grantForget: { readonly answer: { readonly forgotten: boolean } };
   readonly grantSet: { readonly handed: true };
-  readonly registerAgent: { readonly handed: true; readonly answer: { readonly agent_id: string } };
+  readonly registerAgent: { readonly handed: true };
   readonly inboundAccept: {
     readonly values: { readonly headers: Readonly<Record<string, string>> };
     readonly answer: InboundAnswer;
   };
-  readonly inboundCreate: {
-    readonly loose: [request: InboundCreateRequest | JsonBody];
-    readonly answer: InboundRoute;
-  };
-  readonly inboundSet: {
-    readonly loose: [request: InboundSetRequest | JsonBody];
-    readonly answer: InboundRoute;
-  };
-  readonly inboundRevoke: {
-    readonly loose: [request: BindingRequest | JsonBody];
-    readonly answer: { readonly route: string | null };
-  };
+  readonly inboundCreate: { readonly loose: [request: InboundCreateRequest | JsonBody] };
+  readonly inboundSet: { readonly loose: [request: InboundSetRequest | JsonBody] };
+  readonly inboundRevoke: { readonly loose: [request: BindingRequest | JsonBody] };
   readonly connectionPrepare: {
     readonly loose: [request: ConnectionPrepareRequest];
-    readonly answer: { readonly connection: string; readonly version: number;
-                       readonly flow?: { readonly state: string; readonly code_challenge: string;
+    readonly answer: { readonly flow?: { readonly state: string; readonly code_challenge: string;
                                          readonly expires_at: number } };
   };
   readonly connectionCommit: { readonly loose: [request: ConnectionCommitRequest] };
   readonly connectionRevoke: { readonly loose: [request: ConnectionRequest] };
-  readonly flowFinish: {
-    readonly loose: [request: FlowFinishRequest];
-    readonly answer: { readonly connection: string; readonly version: number;
-                       readonly verifier: string; readonly redirect_uri: string;
-                       readonly source: string };
-  };
+  readonly flowFinish: { readonly loose: [request: FlowFinishRequest] };
   readonly tierRead: { readonly answer: { readonly tier: TierName } };
   readonly fileRead: {
     readonly handed: true;
     readonly answer: {
       readonly entry: { readonly size: number; readonly mode: number; readonly writer: string;
                         readonly mtime_ms: number };
-      readonly inline?: Uint8Array;
       readonly chunks?: readonly { readonly sha256: string }[] };
   };
   readonly ownerExport: {
     readonly handed: true;
-    readonly answer: { readonly export_id: string; readonly lines: readonly string[];
-                       readonly next: string | null; readonly pending: boolean };
+    readonly answer: { readonly lines: readonly string[] };
   };
   readonly exportEnd: { readonly loose: [request: { readonly export_id: string }] };
   readonly agentDoorbell: { readonly values: { readonly rooms: readonly string[] } };
   readonly fileUploadTarget: {
     readonly answer: {
-      readonly namespace: string; readonly key: string;
       readonly chunks: readonly { readonly sha256: string; readonly size: number }[];
       readonly pending: readonly string[] };
   };
@@ -525,11 +472,7 @@ export interface DoorTypes {
   };
   readonly importFileStored: { readonly values: { readonly chunks: readonly string[] } };
   readonly importFileCommit: { readonly values: { readonly mode: 0 | 1 } };
-  readonly importCheck: {
-    readonly values: { readonly part: CheckPart };
-    readonly answer: { readonly more: boolean };
-  };
-  readonly importDiscard: { readonly answer: { readonly namespace: string | null } };
+  readonly importCheck: { readonly values: { readonly part: CheckPart } };
   readonly egressOpen: {
     readonly loose: [request: EgressRequest];
     readonly answer: EgressOpened | EgressRefusal;
@@ -581,7 +524,7 @@ export interface DoorTypes {
         readonly vcpu_seconds: number; readonly gb_seconds: number }[] };
   };
   readonly policyRead: {
-    readonly answer: { readonly generation: number; readonly policy: PolicyDocument;
+    readonly answer: { readonly policy: PolicyDocument;
                        readonly notes: readonly { readonly holds_at: readonly string[];
                                                   readonly not_enforced: readonly string[] }[];
                        readonly hooks: { readonly holds_at: readonly string[];
@@ -612,7 +555,6 @@ export interface DoorTypes {
     readonly answer: { readonly notices: readonly { readonly type: string;
                                                     readonly detail: string }[] };
   };
-  readonly starterReceipts: { readonly answer: { readonly version: number } };
   readonly signinList: {
     readonly answer: {
       readonly engines: readonly { readonly engine: string; readonly signed_in: boolean }[] };
@@ -642,13 +584,26 @@ export type DoorRequest<D extends keyof DoorRequests> =
 export type DoorLoose<D extends string> =
   TypesOf<D> extends { readonly loose: infer P extends readonly unknown[] } ? P
     : [request: unknown];
-/** What the doors, or their tests, read of a door's answer, else an object they pass on. */
-export type DoorAnswer<D extends string> =
-  TypesOf<D> extends { readonly answer: infer A } ? A : object;
+/**
+ * `answer`'s fields, each `narrow`'s where it names one, arm by arm of either (and null where
+ * `answer` is).
+ */
+type Narrowed<Answer, Narrow> = Answer extends object
+  ? Narrow extends object ? Omit<Answer, keyof Narrow> & Narrow : never : Answer;
+/**
+ * What the doors, or their tests, read of a door's answer: its row's (`DoorAnswers`, but its
+ * `unread` fields), each field `DoorTypes` `answer` narrows its narrowing (`owner-doors.ts`
+ * holds each to its row's type); an object they pass on where the row declares none.
+ */
+export type DoorAnswer<D extends string> = D extends keyof DoorAnswers
+  ? TypesOf<D> extends { readonly answer: infer A } ? Narrowed<DoorAnswers[D], A> : DoorAnswers[D]
+  : object;
+/**
+ * What the owner answers of a door: what the doors read (`DoorAnswer`), and the fields its row
+ * marks `unread`, which the doors' version before may still read (`owner/src/owner-do.ts`).
+ */
+export type OwnerAnswer<D extends string> = DoorAnswer<D>
+  & (D extends keyof UnreadAnswers ? UnreadAnswers[D] | null : unknown);
 
 /** An inbound binding as the doors keep its route: its id, revision and route token. */
-export interface InboundRoute {
-  readonly binding_id: string;
-  readonly revision: number;
-  readonly route: string;
-}
+export type InboundRoute = DoorAnswers["inboundCreate"];

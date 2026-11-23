@@ -107,7 +107,8 @@
         "name": "agents_list", "title": "List agents", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "List the agents registered for this connection, the owner's own agents, each with the room_id it is reached in (null until this connection is a registered agent: agent_register), and which of the owner's AI apps are connected to TinyAssets, each one not connected with its connect_url, the page with its connect step. One answer holds as many as fit; when it carries next, read again with after set to it for the rest."
-      }
+      },
+      "answer": { "required": { "owner_agents": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "registerPropose", "class": "work", "capability": null,
@@ -161,7 +162,8 @@
         "name": "collection_get", "title": "Get collection row", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read one row of a collection. One answer holds at most 50000 characters: a body that does not fit is cut, with truncated true and body_next_offset; read the rest by calling again with body_offset set to it and etag set to the row's etag, which refuses the read if the row changed meanwhile."
-      }
+      },
+      "answer": { "required": { "row": { "type": ["object", "null"] } }, "optional": {} }
     },
     {
       "door": "collectionPull", "class": "read", "capability": "read_graph",
@@ -271,7 +273,8 @@
         "name": "file_stat", "title": "File info", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
         "description": "Read one file's or directory's entry, or null where nothing is, where file_read refuses a missing path (not_found): so it tells whether to create a file (file_write with expected_etag \"\")."
-      }
+      },
+      "answer": { "required": { "entry": { "type": ["object", "null"] } }, "optional": {} }
     },
     {
       "door": "fileList", "class": "read", "capability": "read_files",
@@ -620,22 +623,26 @@
       }
     },
     {
-      "door": "sessionOpen", "class": "read", "capability": null, "args": "none"
+      "door": "sessionOpen", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "session": { "type": "string" } }, "optional": {} }
     },
     {
       "door": "sessionExtend", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "sessionClose", "class": "reduce", "capability": null, "args": "none"
+      "door": "sessionClose", "class": "reduce", "capability": null, "args": "none",
+      "answer": { "required": { "closed": { "type": "integer" } }, "optional": {} }
     },
     {
       "door": "sessionCloseAll", "class": "reduce", "capability": null, "args": "none"
     },
     {
-      "door": "sandboxBilled", "class": null, "capability": null, "args": "loose"
+      "door": "sandboxBilled", "class": null, "capability": null, "args": "loose",
+      "answer": { "required": { "counted": { "type": "boolean" } }, "optional": {} }
     },
     {
-      "door": "sandboxDays", "class": "read", "capability": null, "args": "loose"
+      "door": "sandboxDays", "class": "read", "capability": null, "args": "loose",
+      "answer": { "required": { "days": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "storageUsage", "class": "read", "capability": null, "args": "none"
@@ -646,6 +653,13 @@
         "refused": "an export request is at most its cursor and its export_id", "required": {},
         "optional": { "cursor": { "type": ["string", "null"] }, "export_id": { "type": "string" } },
         "undefinedAllowed": true
+      },
+      "answer": {
+        "required": {
+          "export_id": { "type": "string" }, "lines": { "type": "array" },
+          "next": { "type": ["string", "null"] }, "pending": { "type": "boolean" }
+        },
+        "optional": {}
       }
     },
     {
@@ -660,13 +674,35 @@
       "door": "exportEnd", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "dataKeyRewrap", "class": "admission", "capability": null, "args": "none"
+      "door": "dataKeyRewrap", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "rewrapped": { "type": "boolean" }, "roots": { "type": "integer" },
+          "left": { "type": "integer" }, "kid": { "type": ["string", "null"] }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "gatewayReseal", "class": "admission", "capability": null, "args": "none"
+      "door": "gatewayReseal", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "resealed": { "type": "integer" }, "left": { "type": "integer" },
+          "kid": { "type": ["string", "null"] }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "policyRead", "class": "read", "capability": null, "args": "none"
+      "door": "policyRead", "class": "read", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "generation": { "type": "integer" }, "policy": { "type": "object" },
+          "notes": { "type": "array" }, "hooks": { "type": "object" },
+          "codemode": { "type": "object" }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "policyReceipts", "class": "read", "capability": null, "args": "none"
@@ -690,7 +726,8 @@
       }
     },
     {
-      "door": "policyProposals", "class": "read", "capability": null, "args": "none"
+      "door": "policyProposals", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "cards": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "policyApply", "class": "work", "act": { "name": "security.change" },
@@ -740,7 +777,8 @@
       }
     },
     {
-      "door": "grantList", "class": "read", "capability": null, "args": "none"
+      "door": "grantList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "clients": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "grantSet", "class": "work", "act": { "name": "access.grant" }, "capability": null,
@@ -759,6 +797,13 @@
       "args": {
         "refused": "invalid policy request", "required": { "client": { "type": "string" } },
         "optional": {}
+      },
+      "answer": {
+        "required": {
+          "client": { "type": "string" }, "revoked": { "type": "boolean" },
+          "generation": { "type": "integer" }, "revision": { "type": "integer" }
+        },
+        "optional": {}
       }
     },
     {
@@ -766,7 +811,8 @@
       "args": {
         "refused": "invalid policy request", "required": { "client": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "forgotten": { "type": "boolean" } }, "optional": {} }
     },
     {
       "door": "grantForgetRevoked", "class": "reduce", "capability": null,
@@ -784,27 +830,42 @@
           "scopes": { "type": "array" }
         },
         "optional": {}, "dropped": ["proposal"]
+      },
+      "answer": {
+        "required": {
+          "name": { "type": "string" }, "created_at": { "type": "integer" },
+          "scopes": { "type": "array" }
+        },
+        "optional": {}
       }
     },
     {
-      "door": "keyList", "class": "read", "capability": null, "args": "none"
+      "door": "keyList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "keys": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "ownerErase", "class": "reduce", "capability": null,
       "args": {
         "refused": "invalid policy request", "required": { "confirm": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "erasing": { "type": "boolean" } }, "optional": {} }
     },
     {
       "door": "erasureBegin", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid erasure request", "required": { "confirm": { "type": "string" } },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "erasing": { "type": "boolean" } }, "optional": {} }
     },
     {
-      "door": "erasureOutside", "class": "admission", "capability": null, "args": "none"
+      "door": "erasureOutside", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": { "keys": { "type": "array" }, "routes": { "type": "array" } },
+        "optional": {},
+        "nullable": true
+      }
     },
     {
       "door": "erasureOutsideDone", "class": "admission", "capability": null, "args": "none"
@@ -814,14 +875,29 @@
     },
     {
       "door": "inboundCreate", "class": "work", "act": { "name": "access.grant" },
-      "capability": null, "args": "loose"
+      "capability": null, "args": "loose",
+      "answer": {
+        "required": {
+          "binding_id": { "type": "string" }, "revision": { "type": "integer" },
+          "route": { "type": "string" }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "inboundSet", "class": "work", "act": { "name": "access.grant" }, "capability": null,
-      "args": "loose"
+      "args": "loose",
+      "answer": {
+        "required": {
+          "binding_id": { "type": "string" }, "revision": { "type": "integer" },
+          "route": { "type": "string" }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "inboundRevoke", "class": "reduce", "capability": null, "args": "loose"
+      "door": "inboundRevoke", "class": "reduce", "capability": null, "args": "loose",
+      "answer": { "required": { "route": { "type": ["string", "null"] } }, "optional": {} }
     },
     {
       "door": "inboundAccept", "class": "work", "capability": null,
@@ -832,12 +908,26 @@
           "body": { "type": "bytes" }, "headers": { "type": "object" }
         },
         "optional": {}
+      },
+      "answer": {
+        "required": { "state": { "type": "string" } },
+        "optional": {
+          "receipt": { "type": "string" }, "deduped": { "type": "boolean" },
+          "error": { "type": "string" }
+        }
       }
     },
     {
       "door": "fileUploadTarget", "class": "work", "capability": "write_files",
       "args": {
         "refused": "invalid file request", "required": { "intent_id": { "type": "string" } },
+        "optional": {}
+      },
+      "answer": {
+        "required": {
+          "namespace": { "type": "string" }, "key": { "type": "string" },
+          "chunks": { "type": "array" }, "pending": { "type": "array" }
+        },
         "optional": {}
       }
     },
@@ -863,10 +953,12 @@
           },
           "optional": {}, "refused": "invalid ledger request"
         }
-      }
+      },
+      "answer": { "required": { "agent_id": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "registerProposals", "class": "read", "capability": null, "args": "none"
+      "door": "registerProposals", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "cards": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "registerDecline", "class": "reduce", "capability": null,
@@ -913,7 +1005,11 @@
     },
     {
       "door": "connectionPrepare", "class": "work", "act": { "name": "security.change" },
-      "capability": null, "args": "loose"
+      "capability": null, "args": "loose",
+      "answer": {
+        "required": { "connection": { "type": "string" }, "version": { "type": "integer" } },
+        "optional": { "flow": { "type": "object" } }
+      }
     },
     {
       "door": "connectionCommit", "class": "work", "act": { "name": "security.change" },
@@ -927,25 +1023,58 @@
       "door": "connectionList", "class": "read", "capability": null, "args": "none"
     },
     {
-      "door": "flowFinish", "class": "work", "capability": null, "args": "loose"
+      "door": "flowFinish", "class": "work", "capability": null, "args": "loose",
+      "answer": {
+        "required": {
+          "connection": { "type": "string" }, "version": { "type": "integer" },
+          "verifier": { "type": "string" }, "redirect_uri": { "type": "string" },
+          "source": { "type": "string" }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "noticeList", "class": "read", "capability": null, "args": "none"
+      "door": "noticeList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "notices": { "type": "array" } }, "optional": {} }
     },
     {
-      "door": "starterReceipts", "class": "read", "capability": null, "args": "none"
+      "door": "starterReceipts", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "version": { "type": "integer" } }, "optional": {} }
     },
     {
-      "door": "admissionSet", "class": "admission", "capability": null, "args": "loose"
+      "door": "admissionSet", "class": "admission", "capability": null, "args": "loose",
+      "answer": { "required": { "state": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "ownerState", "class": "admission", "capability": null, "args": "none"
+      "door": "ownerState", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "state": { "type": "string" }, "reasons": { "type": "array" },
+          "tier": { "type": "string" }, "restore": { "type": ["string", "null"] },
+          "runs": { "type": "integer" }, "stored_bytes": { "type": "integer" }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "toolProfile", "class": "read", "capability": null, "args": "none"
+      "door": "toolProfile", "class": "read", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "profile": { "type": "string" }, "tools": { "type": "array" },
+          "withheld": { "type": "array" }
+        },
+        "optional": {}
+      }
     },
     {
-      "door": "definitionRead", "class": "read", "capability": "read_files", "args": "none"
+      "door": "definitionRead", "class": "read", "capability": "read_files", "args": "none",
+      "answer": {
+        "required": {
+          "agent": { "type": "string" }, "instructions": { "type": ["bytes", "null"] },
+          "soul": { "type": ["bytes", "null"] }, "skills": { "type": "array" }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "mailChain", "class": "read", "capability": null,
@@ -959,7 +1088,8 @@
       }
     },
     {
-      "door": "wakeEvents", "class": "read", "capability": "read_graph", "args": "loose"
+      "door": "wakeEvents", "class": "read", "capability": "read_graph", "args": "loose",
+      "answer": { "required": { "events": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "wakeSubscribe", "class": "work", "capability": "read_graph",
@@ -986,6 +1116,10 @@
       "args": {
         "refused": "invalid file request", "required": { "path": { "type": "string" } },
         "optional": { "etag": { "type": "string" } }
+      },
+      "answer": {
+        "required": { "entry": { "type": "object" } },
+        "optional": { "inline": { "type": "bytes" }, "chunks": { "type": "array" } }
       }
     },
     {
@@ -997,7 +1131,8 @@
           "first": { "type": "integer" }, "count": { "type": "integer" }
         },
         "optional": {}
-      }
+      },
+      "answer": { "required": { "chunks": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "fileUploadBegin", "class": "work", "capability": "write_files",
@@ -1072,6 +1207,13 @@
           "check": { "type": "boolean" }, "tool_name": { "type": "string" },
           "tool_input": { "type": ["string", "number", "boolean", "object", "array", "null"] }
         }
+      },
+      "answer": {
+        "required": {},
+        "optional": {
+          "tools": { "type": "array" }, "generation": { "type": "integer" },
+          "allow": { "type": "boolean" }, "hook": { "type": "object" }
+        }
       }
     },
     {
@@ -1099,7 +1241,8 @@
       }
     },
     {
-      "door": "signinList", "class": "read", "capability": null, "args": "none"
+      "door": "signinList", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "engines": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "runList", "class": "read", "capability": null,
@@ -1129,13 +1272,23 @@
       "door": "socketsEnd", "class": "reduce", "capability": null, "args": "none"
     },
     {
-      "door": "tierSet", "class": "admission", "capability": null, "args": "loose"
+      "door": "tierSet", "class": "admission", "capability": null, "args": "loose",
+      "answer": { "required": { "tier": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "tierRead", "class": "read", "capability": null, "args": "none"
+      "door": "tierRead", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "tier": { "type": "string" } }, "optional": {} }
     },
     {
-      "door": "restoreSource", "class": "admission", "capability": null, "args": "none"
+      "door": "restoreSource", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": {
+          "namespace": { "type": ["string", "null"] }, "generations": { "type": "array" },
+          "state": { "type": "string" }, "begins": { "type": "boolean" },
+          "restore": { "type": ["object", "null"] }
+        },
+        "optional": {}
+      }
     },
     {
       "door": "restoreBegin", "class": "admission", "capability": null,
@@ -1143,10 +1296,26 @@
         "refused": "invalid restore request",
         "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
         "optional": {}
+      },
+      "answer": {
+        "required": { "step": { "type": "string" }, "done": { "type": "boolean" } },
+        "optional": {
+          "failed": { "type": "string" }, "gen": { "type": "string" },
+          "rows": { "type": "integer" }, "chunks": { "type": "integer" },
+          "keys": { "type": "array" }, "state": { "type": "string" }, "reasons": { "type": "array" }
+        }
       }
     },
     {
-      "door": "restoreStep", "class": "admission", "capability": null, "args": "none"
+      "door": "restoreStep", "class": "admission", "capability": null, "args": "none",
+      "answer": {
+        "required": { "step": { "type": "string" }, "done": { "type": "boolean" } },
+        "optional": {
+          "failed": { "type": "string" }, "gen": { "type": "string" },
+          "rows": { "type": "integer" }, "chunks": { "type": "integer" },
+          "keys": { "type": "array" }, "state": { "type": "string" }, "reasons": { "type": "array" }
+        }
+      }
     },
     {
       "door": "restorePin", "class": "admission", "capability": null,
@@ -1154,12 +1323,28 @@
         "refused": "invalid restore request",
         "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
         "optional": {}
+      },
+      "answer": {
+        "required": {
+          "step": { "type": "string" }, "namespace": { "type": "string" },
+          "gen": { "type": "string" }, "fresh": { "type": ["string", "null"] },
+          "written": { "type": "boolean" }, "confirm": { "type": ["string", "null"] }
+        },
+        "optional": {}
       }
     },
     {
       "door": "restoreWipe", "class": "admission", "capability": null,
       "args": {
         "refused": "invalid restore request", "required": { "confirm": { "type": "string" } },
+        "optional": {}
+      },
+      "answer": {
+        "required": {
+          "step": { "type": "string" }, "namespace": { "type": "string" },
+          "gen": { "type": "string" }, "fresh": { "type": ["string", "null"] },
+          "written": { "type": "boolean" }, "confirm": { "type": ["string", "null"] }
+        },
         "optional": {}
       }
     },
@@ -1171,6 +1356,13 @@
       "args": {
         "refused": "invalid restore request", "required": { "from": { "type": "integer" } },
         "optional": {}
+      },
+      "answer": {
+        "required": {
+          "chunks": { "type": "array" }, "generations": { "type": "array" },
+          "next": { "type": ["integer", "null"] }
+        },
+        "optional": {}
       }
     },
     {
@@ -1179,13 +1371,34 @@
         "refused": "invalid restore request",
         "required": { "namespace": { "type": "string" }, "gen": { "type": "string" } },
         "optional": {}
+      },
+      "answer": {
+        "required": { "namespace": { "type": "string" }, "held": { "type": "string" } },
+        "optional": {}
       }
     },
     {
-      "door": "egressOpen", "class": "work", "capability": null, "args": "loose"
+      "door": "egressOpen", "class": "work", "capability": null, "args": "loose",
+      "answer": {
+        "required": { "ok": { "type": "boolean" } },
+        "optional": {
+          "reservation": { "type": "string" }, "connection": { "type": "string" },
+          "blob": { "type": "string" }, "version": { "type": "integer" },
+          "generation": { "type": "integer" }, "metered": { "type": "boolean" },
+          "ended": { "type": "stream" }, "code": { "type": "string" },
+          "receipt": { "type": ["string", "null"] }
+        }
+      }
     },
     {
-      "door": "egressReserve", "class": "work", "capability": null, "args": "loose"
+      "door": "egressReserve", "class": "work", "capability": null, "args": "loose",
+      "answer": {
+        "required": { "ok": { "type": "boolean" } },
+        "optional": {
+          "metering": { "type": "object" }, "code": { "type": "string" },
+          "receipt": { "type": ["string", "null"] }
+        }
+      }
     },
     {
       "door": "egressBeat", "class": "reduce", "capability": null, "args": "loose"
@@ -1194,7 +1407,8 @@
       "door": "egressSettle", "class": "reduce", "capability": null, "args": "loose"
     },
     {
-      "door": "egressReceipts", "class": "read", "capability": null, "args": "none"
+      "door": "egressReceipts", "class": "read", "capability": null, "args": "none",
+      "answer": { "required": { "receipts": { "type": "array" } }, "optional": {} }
     },
     {
       "door": "fileSyncCommit", "class": "work", "act": { "name": "workspace.files" },
@@ -1265,6 +1479,13 @@
           "chunks": { "type": "array" }
         },
         "optional": {}
+      },
+      "answer": {
+        "required": { "skipped": { "type": "boolean" } },
+        "optional": {
+          "intent_id": { "type": "string" }, "namespace": { "type": "string" },
+          "key": { "type": "string" }, "chunks": { "type": "array" }, "pending": { "type": "array" }
+        }
       }
     },
     {
@@ -1299,10 +1520,12 @@
       "args": {
         "refused": "invalid import request",
         "required": { "part": { "type": "string" }, "page": { "type": "integer" } }, "optional": {}
-      }
+      },
+      "answer": { "required": { "more": { "type": "boolean" } }, "optional": {} }
     },
     {
-      "door": "importDiscard", "class": "import", "capability": null, "args": "none"
+      "door": "importDiscard", "class": "import", "capability": null, "args": "none",
+      "answer": { "required": { "namespace": { "type": ["string", "null"] } }, "optional": {} }
     }
   ]
 }

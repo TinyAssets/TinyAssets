@@ -15,6 +15,13 @@
  *   owner's fields step every call (`requestFields`); a type the doors' version before may
  *   still hand, which the schema names no more, is listed beside it (`droppedTypes`).
  *
+ * - its answer as the doors read it (`answer`), where they read one field by field: the fields
+ *   the owner answers always and those it answers when it has them, each its JSON type
+ *   (`fieldTypes`), whether it may answer null instead, and the fields it still answers that
+ *   the doors read no more (`unread`), for the doors' version before (`deploy/handed.ts`).
+ *   `tsc` holds the doors' reads and the owner's handlers to it (`contract/requests.ts`
+ *   writes its types); a row with none is an answer the doors pass on whole.
+ *
  * A door the doors call no more is marked `dropped`: the object still takes it, for the
  * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
  *
@@ -100,12 +107,28 @@ export interface Args {
 }
 
 /**
- * The types a field's schema may name: JSON's, and `bytes`, a `Uint8Array`, which only RPC
- * carries (the doors' own calls), so no tool's field names it: `/mcp` serves JSON Schema.
+ * The types a field's schema may name: JSON's, and those only RPC carries (the doors' own
+ * calls), `bytes`, a `Uint8Array`, and `stream`, a `ReadableStream` of bytes, which no tool's
+ * field names: `/mcp` serves JSON Schema.
  */
 const FIELD_TYPES = Object.freeze(["string", "integer", "number", "boolean", "object",
-                                   "array", "null", "bytes"] as const);
+                                   "array", "null", "bytes", "stream"] as const);
 export type FieldType = (typeof FIELD_TYPES)[number];
+/** The field types only RPC carries. */
+const RPC_TYPES: readonly FieldType[] = Object.freeze(["bytes", "stream"]);
+
+/**
+ * A door's answer as the doors read it: the fields the owner answers every time and those it
+ * answers when it has them, each a schema of its type (`fieldTypes`); whether it may answer
+ * null in place of them; and the fields it still answers, as listed, which the doors read no
+ * more, until the doors the stage serves read them no more (`deploy/handed.ts`).
+ */
+export interface Answer {
+  readonly required: Readonly<Record<string, JsonSchema>>;
+  readonly optional: Readonly<Record<string, JsonSchema>>;
+  readonly nullable?: true;
+  readonly unread?: readonly string[];
+}
 
 /**
  * The types the field `name`'s schema names, or null where it names none (a table before
@@ -136,7 +159,7 @@ export function takesType(taken: readonly FieldType[], type: FieldType): boolean
 /** Each type in a refusal's words. */
 const TYPE_WORDS: Readonly<Record<FieldType, string>> = Object.freeze({
   string: "a string", integer: "an integer", number: "a number", boolean: "true or false",
-  object: "an object", array: "a list", null: "null", bytes: "bytes",
+  object: "an object", array: "a list", null: "null", bytes: "bytes", stream: "a stream",
 });
 
 /** The type `value` is, as a field's schema names it (`integer` for a whole number); else null. */
@@ -149,6 +172,9 @@ function typeOf(value: unknown): FieldType | null {
   }
   if (value instanceof Uint8Array) {
     return "bytes";
+  }
+  if (value instanceof ReadableStream) {
+    return "stream";
   }
   if (object(value)) {
     return "object";
@@ -190,6 +216,8 @@ export interface DoorRow {
   /** The act a call of this door is, and when (`acts.json`). */
   readonly act?: { readonly name: string; readonly when?: Condition };
   readonly args: DoorArgs;
+  /** Its answer as the doors read it, where they read one field by field. */
+  readonly answer?: Answer;
   readonly tool?: ToolInfo;
   /** Its work runs while its caller waits: it takes the caller's stop after its request. */
   readonly stop?: true;
@@ -200,8 +228,8 @@ export interface DoorRow {
   readonly dropped?: true;
 }
 
-const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool", "stop",
-                                "dropped"]);
+const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "answer", "tool",
+                                "stop", "dropped"]);
 const TOOL_KEYS = Object.freeze(["name", "title", "description", "destructiveHint",
   "idempotentHint", "openWorldHint", "readOnlyHint"]);
 
@@ -273,6 +301,45 @@ function argsProblems(value: unknown): string[] {
   return problems;
 }
 
+/** Each way a door's answer breaks the table's rules. */
+function answerProblems(value: unknown): string[] {
+  if (!keyed(value, ["required", "optional"], ["nullable", "unread"])) {
+    return ["an answer is its required and optional fields, whether null, and its unread ones"];
+  }
+  const problems: string[] = [];
+  const listed: string[] = [];
+  for (const part of ["required", "optional"] as const) {
+    const fields = value[part];
+    if (!object(fields)) {
+      problems.push(`answer ${part} fields that are not schemas`);
+      continue;
+    }
+    for (const [name, schema] of Object.entries(fields)) {
+      listed.push(name);
+      try {
+        if (fieldTypes(name, schema) === null) {
+          problems.push(`answer ${name}'s schema names no type`);
+        }
+      } catch (error) {
+        problems.push(`answer ${(error as Error).message}`);
+      }
+    }
+  }
+  if (listed.length === 0 || new Set(listed).size !== listed.length) {
+    problems.push("an answer lists each field once, and at least one");
+  }
+  if ("nullable" in value && value["nullable"] !== true) {
+    problems.push("an answer's nullable is true");
+  }
+  const unread = value["unread"];
+  if (unread !== undefined && (!Array.isArray(unread) || unread.length === 0
+      || new Set(unread).size !== unread.length
+      || unread.some((name) => typeof name !== "string" || !listed.includes(name)))) {
+    problems.push("unread answer fields that are not a list of the fields it answers");
+  }
+  return problems;
+}
+
 /** Each way `rows` breaks the table's rules, as `door: what`. */
 export function doorProblems(rows: unknown): string[] {
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -330,6 +397,11 @@ export function doorProblems(rows: unknown): string[] {
         say(problem);
       }
     }
+    if ("answer" in row) {
+      for (const problem of answerProblems(row["answer"])) {
+        say(problem);
+      }
+    }
     const tool = row["tool"];
     if (tool !== undefined) {
       if (!keyed(tool, TOOL_KEYS)) {
@@ -344,9 +416,9 @@ export function doorProblems(rows: unknown): string[] {
       if (args !== "none" && !(object(served) && "refused" in served)) {
         say("a tool's door takes its fields, or none");
       } else if (object(served) && [served["required"], served["optional"]].some((fields) =>
-        object(fields) && Object.values(fields).some((schema) =>
-          object(schema) && [schema["type"]].flat().includes("bytes")))) {
-        say("a tool's field names bytes, which JSON Schema has not");
+        object(fields) && Object.values(fields).some((schema) => object(schema)
+          && [schema["type"]].flat().some((type) => RPC_TYPES.includes(type as FieldType))))) {
+        say("a tool's field names a type only RPC carries, which JSON Schema has not");
       }
     }
   }

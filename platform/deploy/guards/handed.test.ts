@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import { baseOf, fileAt } from "../../ci/history";
-import type { Args, DoorArgs, DoorRow } from "../../contract/src/doors";
+import type { Answer, Args, DoorArgs, DoorRow } from "../../contract/src/doors";
 import type { Shape } from "../../contract/src/handed";
 import { type Before, handedHold, type Side, sideAt, TREE } from "../handed";
 
@@ -201,12 +201,13 @@ describe("the door table, the doors' requests to the owner", () => {
 
   it("holds by name alone, and says so, a field the doors' version before types not", () => {
     const untyped = table(door({ refused: "x", required: { path: {} }, optional: {} }));
+    const none = { problems: [], untyped: [], undeclared: [] };
     expect(handedHold(() => untyped, table(door(fields(["path"], []))))).toEqual(
-      { problems: [], untyped: ["fileStat path"] });
-    expect(handedHold(() => untyped, untyped)).toEqual({ problems: [], untyped: [] });
+      { ...none, untyped: ["fileStat path"] });
+    expect(handedHold(() => untyped, untyped)).toEqual(none);
     // Only the doors' version before hands the owner a request.
     expect(handedHold((worker) => worker === "doors" ? null : untyped,
-                      table(door(fields(["path"], []))))).toEqual({ problems: [], untyped: [] });
+                      table(door(fields(["path"], []))))).toEqual(none);
     // A schema the hold cannot read is not guessed at.
     const ranged = table(door({ refused: "x", required: { path: { type: "string", maxLength: 9 } },
                                 optional: {} }));
@@ -226,6 +227,67 @@ describe("the door table, the doors' requests to the owner", () => {
     expect(held(split, both)).toEqual([]);
     // Split from one list, each side is held to all of it.
     expect(held(both, split)).toHaveLength(6);
+  });
+});
+
+describe("the door table's answers, which the doors' version before reads of the owner's", () => {
+  /** `tierRead`, its answer `answer` (none where undefined). */
+  const tierRead = (answer?: Answer): DoorRow =>
+    ({ door: "tierRead", class: "read", capability: null, args: "none",
+       ...answer === undefined ? {} : { answer } });
+  const reads = (required: Record<string, unknown>, optional: Record<string, unknown> = {},
+                 more: Partial<Answer> = {}) =>
+    side({}, [tierRead({ required, optional, ...more } as Answer)]);
+  const TIER = reads({ tier: { type: "string" } });
+  const MESSAGE = (what: string) => `tierRead ${what}, which the doors' version before reads`;
+  const STEP = "mark it unread first (answered, read no more), and take it out once the stage " +
+    "serves no doors version that reads it";
+
+  it("refuses an owner that no longer answers a field the doors' version before reads, until " +
+     "it is marked unread", () => {
+    // policyProposal's digest and registerProposal's request went with their doors (#5832,
+    // #5821); a field of a door kept goes this way.
+    expect(held(TIER, reads({ plan: { type: "string" } }))).toEqual(
+      [`${MESSAGE("no longer answers tier")}: ${STEP}`]);
+    expect(held(TIER, side({}, [tierRead()]))).toEqual(
+      [`${MESSAGE("no longer answers tier")}: ${STEP}`]);
+    const unread = reads({ tier: { type: "string" } }, {}, { unread: ["tier"] });
+    expect(held(TIER, unread)).toEqual([]);
+    expect(held(unread, reads({ plan: { type: "string" } }))).toEqual([]);
+    // An answer newly read, or newly answered, is never paired with a reader before it.
+    expect(held(TIER, reads({ tier: { type: "string" }, plan: { type: "string" } }))).toEqual([]);
+  });
+
+  it("refuses a field read as always answered that the owner answers not always, a type the " +
+     "reader takes not, and a null it reads not", () => {
+    expect(held(TIER, reads({}, { tier: { type: "string" } }))).toEqual(
+      [`tierRead answers tier not always, which the doors' version before reads as always ` +
+       `answered: answer that under a new name, and ${STEP}`]);
+    expect(held(reads({}, { tier: { type: "string" } }), TIER)).toEqual([]);
+    // Widening what the owner answers is a narrowing for the reader.
+    expect(held(TIER, reads({ tier: { type: ["string", "null"] } }))).toEqual(
+      [`tierRead answers tier as null, which the doors' version before does not read: answer ` +
+       `that under a new name, and ${STEP}`]);
+    expect(held(reads({ tier: { type: ["string", "null"] } }), TIER)).toEqual([]);
+    // An integer is a number the reader takes; a number is no integer.
+    const count = (type: string) => reads({ tier: { type } });
+    expect(held(count("number"), count("integer"))).toEqual([]);
+    expect(held(count("integer"), count("number"))).toHaveLength(1);
+    expect(held(TIER, reads({ tier: { type: "string" } }, {}, { nullable: true }))).toEqual(
+      ["tierRead may answer null, which the doors' version before does not read: answer it by " +
+       "a door of a new name, and drop this one first"]);
+  });
+
+  it("names a door whose version before declares no answer, and holds none of a dropped door",
+     () => {
+    expect(handedHold(() => side({}, [tierRead()]), TIER)).toEqual(
+      { problems: [], untyped: [], undeclared: ["tierRead"] });
+    expect(handedHold(() => side({}, [tierRead()]), side({}, [tierRead()])).undeclared)
+      .toEqual([]);
+    // The doors' version before calls a dropped door no more, so reads none of its answer.
+    expect(held(side({}, [{ ...tierRead({ required: { tier: { type: "string" } },
+                                           optional: {} }), dropped: true }]),
+                side({}, [tierRead()]))).toEqual([]);
   });
 });
 

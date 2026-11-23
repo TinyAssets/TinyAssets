@@ -91,6 +91,22 @@ describe("the door table", () => {
     ["a dropped type of a field it lists not", changed("fileStat", { args: {
       refused: "x", required: { path: { type: "string" } }, optional: {},
       droppedTypes: { etag: ["integer"] } } })],
+    ["a tool's field of a stream", changed("fileStat", { args: {
+      refused: "x", required: { path: { type: "stream" } }, optional: {} } })],
+    ["an answer with no field list", changed("tierRead", { answer: { required: {} } })],
+    ["an answer of no field", changed("tierRead", { answer: { required: {}, optional: {} } })],
+    ["an answer key of no part", changed("tierRead", { answer: {
+      required: { tier: { type: "string" } }, optional: {}, always: ["tier"] } })],
+    ["an answer field whose schema names no type", changed("tierRead", { answer: {
+      required: { tier: {} }, optional: {} } })],
+    ["an answer field's schema past its type", changed("tierRead", { answer: {
+      required: { tier: { type: "string", enum: ["free"] } }, optional: {} } })],
+    ["an answer field both required and optional", changed("tierRead", { answer: {
+      required: { tier: { type: "string" } }, optional: { tier: { type: "string" } } } })],
+    ["an answer's nullable other than true", changed("tierRead", { answer: {
+      required: { tier: { type: "string" } }, optional: {}, nullable: false } })],
+    ["an unread answer field it answers not", changed("tierRead", { answer: {
+      required: { tier: { type: "string" } }, optional: {}, unread: ["plan"] } })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
   });
@@ -111,6 +127,17 @@ describe("the door table", () => {
                     optional: {}, droppedTypes: { path: ["integer", "null"] } } as const;
     expect(doorProblems(changed("fileStat", { args: typed }))).toEqual([]);
     expect(argsSchema(typed)["properties"]).toEqual({ path: { type: "string" } });
+  });
+
+  it("takes an answer as the doors read it: its fields, null, and the ones they read no more",
+     () => {
+    const answer = { required: { tier: { type: "string" } }, optional: {
+      ended: { type: "stream" }, inline: { type: ["bytes", "null"] } } };
+    expect(doorProblems(changed("tierRead", { answer }))).toEqual([]);
+    expect(doorProblems(changed("tierRead", { answer: { ...answer, nullable: true,
+                                                        unread: ["tier"] } }))).toEqual([]);
+    expect(doorRow("tierRead").answer).toEqual(
+      { required: { tier: { type: "string" } }, optional: {} });
   });
 
   it("takes each field only as a type its schema names, or its dropped types", () => {

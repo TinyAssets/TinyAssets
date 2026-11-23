@@ -25,7 +25,11 @@
  * requires no field it did not always hand. A field the version before types not, and the owner
  * does, is held by its name alone, and the plan names it. A door's request its own module reads
  * (`loose`) is held by that module's shapes here. The shapes declare no types: their parsers
- * check them in code.
+ * check them in code. The table's answers (`answer`, which the doors read of the owner's) are
+ * held the other way: the owner answers every field the doors' version before reads (a field
+ * they read no more is first marked `unread`: answered, not read), always where it read it so,
+ * as JSON types it reads, and null only where it read null; a door whose version before
+ * declares no answer is held by nothing, and the plan names it.
  *
  * The one exception is the cutover's: the doors and shapes the version before's manifest
  * (`cutover.json`) names in its `cutover` phase's edits of the two files may go at once, since
@@ -35,7 +39,7 @@
  */
 import tree from "../contract/handed.json" with { type: "json" };
 import table from "../contract/doors.json" with { type: "json" };
-import { type Args, type DoorArgs, type DoorRow, fieldTypes, takesType }
+import { type Answer, type Args, type DoorArgs, type DoorRow, fieldTypes, takesType }
   from "../contract/src/doors.ts";
 import { type Listed, type Shape, takes } from "../contract/src/handed.ts";
 
@@ -158,7 +162,10 @@ function schemaOf(args: Args, name: string): unknown {
     : Object.hasOwn(args.optional, name) ? args.optional[name] : undefined;
 }
 
-/** A hold across a deploy: each way it refuses, and each door field held by name alone. */
+/**
+ * A hold across a deploy: each way it refuses, each door field held by name alone, and each
+ * door whose answer nothing holds.
+ */
 export interface Hold {
   readonly problems: readonly string[];
   /**
@@ -166,6 +173,68 @@ export interface Hold {
    * does not: what was handed is unknown, so only its name is held.
    */
   readonly untyped: readonly string[];
+  /**
+   * Each door whose answer the tree's row declares and the doors' version before's does not:
+   * what it reads is unknown, so nothing holds it.
+   */
+  readonly undeclared: readonly string[];
+}
+
+/** No problem, and nothing held short. */
+const HELD: Hold = Object.freeze({ problems: [], untyped: [], undeclared: [] });
+
+/** The holds `holds` as one. */
+function joined(holds: readonly Hold[]): Hold {
+  return { problems: holds.flatMap((each) => each.problems),
+           untyped: holds.flatMap((each) => each.untyped),
+           undeclared: holds.flatMap((each) => each.undeclared) };
+}
+
+/** A field the doors' version before reads no more, as a refusal's step says it. */
+const UNREAD_STEP = "mark it unread first (answered, read no more), and take it out once the " +
+  "stage serves no doors version that reads it";
+
+/**
+ * Each way the tree's owner answers `door` short of what the doors' version before reads of
+ * it (`was`), the tree's answer `now`: every field it reads (but those it marks `unread`)
+ * still answered, always where it read it so, as types it reads, and null only where it read
+ * null. A version before that declares no answer is held by nothing, and named.
+ */
+function answerHold(door: string, was: Answer | undefined, now: Answer | undefined): Hold {
+  if (was === undefined) {
+    return now === undefined ? HELD : { ...HELD, undeclared: [door] };
+  }
+  const problems: string[] = [];
+  const { required, optional } = now ?? { required: {}, optional: {} };
+  for (const [name, schema] of [...Object.entries(was.required),
+                                ...Object.entries(was.optional)]) {
+    if ((was.unread ?? []).includes(name)) {
+      continue;
+    }
+    const held = Object.hasOwn(required, name) ? required[name]
+      : Object.hasOwn(optional, name) ? optional[name] : undefined;
+    if (held === undefined) {
+      problems.push(`${door} no longer answers ${name}, which the doors' version before ` +
+                    `reads: ${UNREAD_STEP}`);
+      continue;
+    }
+    if (Object.hasOwn(was.required, name) && !Object.hasOwn(required, name)) {
+      problems.push(`${door} answers ${name} not always, which the doors' version before ` +
+                    `reads as always answered: answer that under a new name, and ${UNREAD_STEP}`);
+    }
+    const read = fieldTypes(name, schema) ?? [];
+    const refused = (fieldTypes(name, held) ?? []).filter((type) => !takesType(read, type));
+    if (refused.length > 0) {
+      problems.push(`${door} answers ${name} as ${refused.join(" or ")}, which the doors' ` +
+                    `version before does not read: answer that under a new name, and ${
+                      UNREAD_STEP}`);
+    }
+  }
+  if (now?.nullable === true && was.nullable !== true) {
+    problems.push(`${door} may answer null, which the doors' version before does not read: ` +
+                  "answer it by a door of a new name, and drop this one first");
+  }
+  return { ...HELD, problems };
 }
 
 /**
@@ -195,13 +264,13 @@ function typeHold(named: string, was: Args, now: Args): Hold {
         "longer handed), and take it out once the stage serves no doors version that hands it");
     }
   }
-  return { problems, untyped };
+  return { ...HELD, problems, untyped };
 }
 
 /** Each way the tree's arguments of `door` refuse what the doors' version before hands it. */
 function argsProblems(door: string, then: DoorArgs, now: DoorArgs): Hold {
   if (then === "loose" || now === "loose" || now === "none") {
-    return { problems: [], untyped: [] };
+    return HELD;
   }
   const sides = requestSides(now);
   const paired = (side: string): [string, Args][] => Object.entries(sides)
@@ -209,16 +278,16 @@ function argsProblems(door: string, then: DoorArgs, now: DoorArgs): Hold {
     .map(([key, args]) => [side || key, args]);
   const named = (side: string) => side === "" ? door : `${door} (${side})`;
   if (then === "none") {
-    return { problems: paired("").filter(([, args]) => args.omitted !== true
+    return { ...HELD, problems: paired("").filter(([, args]) => args.omitted !== true
                                          || Object.keys(args.required).length > 0)
       .map(([side]) => `${named(side)} takes a request now, which the doors' version before ` +
                        "calls it without: take none, or an omitted one, until the stage serves " +
-                       "no doors version that calls it without"), untyped: [] };
+                       "no doors version that calls it without") };
   }
   const pairs = Object.entries(requestSides(then)).flatMap(([side, was]) =>
     paired(side).map(([key, args]) => ({ key, was, args,
                                          types: typeHold(named(key), was, args) })));
-  return { untyped: pairs.flatMap(({ types }) => types.untyped),
+  return { ...HELD, untyped: pairs.flatMap(({ types }) => types.untyped),
            problems: pairs.flatMap(({ key, was, args, types }) => [
       ...fieldProblems(argsFields(was), argsFields(args), {
         untaken: (field) => `${named(key)} no longer takes ${field}, which the doors' version ` +
@@ -236,19 +305,23 @@ function argsProblems(door: string, then: DoorArgs, now: DoorArgs): Hold {
     ]) };
 }
 
-/** Each way the tree's owner refuses what the doors' version before `then` calls it with. */
+/**
+ * Each way the tree's owner refuses what the doors' version before `then` calls it with, or
+ * answers it short of what it reads.
+ */
 function doorProblems(then: Before, now: Side): Hold {
   const rows = new Map(now.doors.map((row) => [row.door, row]));
-  const held = then.doors.map((was): Hold => {
+  return joined(then.doors.map((was): Hold => {
     const row = rows.get(was.door);
-    return row !== undefined ? argsProblems(was.door, was.args, row.args)
-      : { untyped: [], problems: was.dropped === true || then.cutover.doors.has(was.door) ? []
+    if (row === undefined) {
+      return { ...HELD, problems: was.dropped === true || then.cutover.doors.has(was.door) ? []
         : [`the door ${was.door} is gone, which the doors' version before calls: drop it ` +
            "first (the owner takes it, the doors call it no more), and take it out once the " +
            "stage serves no doors version that calls it"] };
-  });
-  return { problems: held.flatMap((each) => each.problems),
-           untyped: held.flatMap((each) => each.untyped) };
+    }
+    return joined([argsProblems(was.door, was.args, row.args),
+                   was.dropped === true ? HELD : answerHold(was.door, was.answer, row.answer)]);
+  }));
 }
 
 // --- The whole hold --------------------------------------------------------------------------
@@ -263,7 +336,7 @@ export function handedHold(then: (worker: string) => Before | null, now: Side): 
                     "before them, and the deploy order deploys the doors first");
   }
   const doors = then("doors");
-  const table = doors === null ? { problems: [], untyped: [] } : doorProblems(doors, now);
+  const table = doors === null ? HELD : doorProblems(doors, now);
   const problems = WORKERS.flatMap((worker) => {
     const side = then(worker);
     if (side === null) {
@@ -280,5 +353,5 @@ export function handedHold(then: (worker: string) => Before | null, now: Side): 
         `serves no ${shape.from} version whose shapes hand it`);
     return [...listed, ...gone, ...worker === "doors" ? table.problems : []];
   });
-  return { problems, untyped: table.untyped };
+  return { ...table, problems };
 }
