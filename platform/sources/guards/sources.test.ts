@@ -133,6 +133,28 @@ describe("the source records", () => {
     expect(() => sourceRecord({ ...claude, not_interactive: ["*"] })).toThrow(SourceRecordError);
   });
 
+  it("say how a key reports what it can pay for only as a gateway source's read at a GET its " +
+     "endpoints allow, refusal statuses and free model patterns", () => {
+    const credit = openrouter["credit"] as Record<string, unknown>;
+    const at = (change: Record<string, unknown>) =>
+      sourceRecord({ ...openrouter, credit: { ...credit, ...change } });
+    expect(at({}).credit).toEqual(credit);
+    const test = { path: ["data", "is_free_tier"], equals: true };
+    for (const bad of [{ url: "https://openrouter.ai/api/v1/elsewhere" },
+                       { url: "https://evil.test/api/v1/key" }, { url: "http://openrouter.ai/x" },
+                       { none_when: [] }, { none_when: [{ path: [], equals: true }] },
+                       { none_when: [{ path: ["data"], equals: 1 }] },
+                       { none_when: [{ path: ["data"], at_most: "0" }] },
+                       { none_when: [{ ...test, at_most: 0 }] },
+                       { none_when: Array.from({ length: 9 }, () => test) },
+                       { refused: [] }, { refused: [402, 402] }, { refused: [200] },
+                       { free: [] }, { free: ["*:free", "*:free"] }, { free: ["a b"] },
+                       { cite: "http://openrouter.ai/docs" }, { extra: 1 }]) {
+      expect(() => at(bad), JSON.stringify(bad)).toThrow(SourceRecordError);
+    }
+    expect(() => sourceRecord({ ...claude, credit })).toThrow(SourceRecordError);
+  });
+
   it("take an issuer, bare or with a path, and its RFC 9207 flag", () => {
     for (const issuer of ["https://auth.openai.com", "https://auth.openai.com/tenant"]) {
       const record = sourceRecord({ ...rfc6749, oauth: {

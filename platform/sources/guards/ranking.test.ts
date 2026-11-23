@@ -2,15 +2,15 @@
  * The model ranking (`src/ranking.ts`): the platform's file read whole, every engine that
  * signs in ranked by its plan's model (so no plan is ever unknown on the platform's
  * ranking), a model a run can call of every bundled key source's catalog ranked, what a
- * source marks as not interactive, where a model is placed, and a file that is no ranking
- * refused whole.
+ * source marks as not interactive or serves a key that pays for nothing, where a model is
+ * placed, and a file that is no ranking refused whole.
  */
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
 import { bundledRecords } from "../src/catalog";
 import { sourceRecord } from "../src/check";
-import { interactive, rankingOf, shippedRanking } from "../src/ranking";
+import { pickable, rankingOf, shippedRanking } from "../src/ranking";
 import { planProvider, served, signsIn } from "../src/served";
 import shipped from "../src/model-ranking.json" with { type: "json" };
 
@@ -39,7 +39,7 @@ describe("the platform's ranking", () => {
       .toEqual(expect.arrayContaining(["mistral", "groq", "cerebras", "openrouter"]));
     for (const record of keyed) {
       const provider = record.upstream!.provider;
-      expect(catalog(provider).some((id) => interactive(record, id)
+      expect(catalog(provider).some((id) => pickable(record, id, null)
         && shippedRanking().place(provider, id) !== null), record.id).toBe(true);
     }
   });
@@ -51,15 +51,42 @@ describe("the platform's ranking", () => {
     for (const record of marked) {
       const ids = catalog(record.upstream!.provider);
       for (const pattern of record.not_interactive!) {
-        expect(ids.some((id) => !interactive({ ...record, not_interactive: [pattern] }, id)),
+        expect(ids.some((id) => !pickable({ ...record, not_interactive: [pattern] }, id, null)),
                pattern).toBe(true);
       }
     }
     const openrouter = marked.find((record) => record.id === "openrouter_user_models_v1")!;
-    expect(interactive(openrouter, "anthropic/claude-fable-5.1:batch")).toBe(false);
-    expect(interactive(openrouter, "~anthropic/claude-fable-latest")).toBe(true);
-    expect(interactive(openrouter, "nvidia/nemotron-3-ultra-550b-a55b:free")).toBe(true);
-    expect(interactive(undefined, "anthropic/claude-fable-5.1:batch")).toBe(true);
+    expect(pickable(openrouter, "anthropic/claude-fable-5.1:batch", null)).toBe(false);
+    expect(pickable(openrouter, "~anthropic/claude-fable-latest", null)).toBe(true);
+    expect(pickable(openrouter, "nvidia/nemotron-3-ultra-550b-a55b:free", null)).toBe(true);
+    expect(pickable(undefined, "anthropic/claude-fable-5.1:batch", null)).toBe(true);
+  });
+
+  it("serves a key that pays for nothing only models its source's catalog lists and prices " +
+     "at zero, and at least one", () => {
+    const reporting = bundledRecords().map(sourceRecord).filter((record) =>
+      record.credit !== undefined);
+    expect(reporting.map((record) => record.id)).toContain("openrouter_user_models_v1");
+    for (const record of reporting) {
+      const listed = builtinProviders().find((entry) => entry.id === record.upstream!.provider)!
+        .getModels();
+      for (const pattern of record.credit!.free) {
+        const one = { ...record, not_interactive: [], credit: { ...record.credit!,
+                                                                free: [pattern] } };
+        const served = listed.filter((model) => pickable(one, model.id, false));
+        expect(served.length, pattern).toBeGreaterThan(0);
+        expect(served.filter(({ cost }) => cost.input + cost.output + cost.cacheRead
+          + cost.cacheWrite !== 0).map((model) => model.id), pattern).toEqual([]);
+      }
+      expect(listed.some((model) => pickable(record, model.id, false)), record.id).toBe(true);
+    }
+    const openrouter = reporting.find((record) => record.id === "openrouter_user_models_v1")!;
+    expect(pickable(openrouter, "nvidia/nemotron-3-ultra-550b-a55b:free", false)).toBe(true);
+    // A priced model, and a router the catalog prices at zero that routes to priced ones.
+    for (const id of ["~anthropic/claude-fable-latest", "openrouter/auto"]) {
+      expect(pickable(openrouter, id, false), id).toBe(false);
+      expect(pickable(openrouter, id, true), id).toBe(true);
+    }
   });
 });
 

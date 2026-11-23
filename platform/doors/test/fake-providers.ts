@@ -23,7 +23,8 @@
  *   `x-goog-api-key` starting `AIza-good`.
  * - OpenRouter's key exchange (`openrouter.ai/api/v1/auth/keys`): JSON in; the code
  *   `or-good` buys `sk-or-bought`, `or-badkey` a key with a space; any other is `403`. Its model list: `200` for a bearer
- *   key starting `sk-or-`.
+ *   key starting `sk-or-`; its key's limits (`openrouter.ai/api/v1/key`) the free tier for one
+ *   starting `sk-or-free`, no limit for any other starting `sk-or-`.
  * - A test OAuth server (`auth.test/token`): the code `good-code` gets `at-good`, any
  *   other `invalid_grant`. OpenAI's model list (`api.openai.com/v1/models`): `200` for
  *   the bearer `at-good`.
@@ -322,6 +323,11 @@ export default {
         return keyExchange(request);
       case "openrouter.ai/api/v1/models/user":
         return listed(bearer(request).startsWith("sk-or-"), bearer(request));
+      case "openrouter.ai/api/v1/key":
+        return bearer(request).startsWith("sk-or-")
+          ? Response.json({ data: { is_free_tier: bearer(request).startsWith("sk-or-free"),
+                                    limit_remaining: null } })
+          : listed(false, bearer(request));
       case "auth.test/token":
         return token(request);
       case "api.openai.com/v1/models":
