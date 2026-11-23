@@ -15,7 +15,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    * mail with mailbox_ack; a mail body cut to fit (truncated true) is read on with mailbox_read's
    * body_offset and message_id; read a whole row with collection_get. An answer with reset true
    * means a deletion past the cursor is no longer kept: read the rooms again whole, then go on from
-   * the cursor given.
+   * the cursor given. A connection has mail once it is a registered agent: file one with
+   * agent_register, for the owner to approve.
    */
   inboxDigest(binding: Binding, request: DoorRequest<"inboxDigest">):
     Promise<DoorAnswer<"inboxDigest">>;
@@ -23,7 +24,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    * Read the owner's board rows changed after a cursor in one call, each with its etag and the head
    * of its body. Claim a row with collection_write on its etag; read a whole row with
    * collection_get. An answer with reset true means a deletion past the cursor is no longer kept:
-   * read the board again whole (collection_pull), then go on from the cursor given.
+   * read the board again whole (collection_list of the board collection from after 0), then go on
+   * from the cursor given.
    */
   boardDigest(binding: Binding, request: DoorRequest<"boardDigest">):
     Promise<DoorAnswer<"boardDigest">>;
@@ -31,7 +33,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    * Read this agent's unacknowledged mailbox messages, oldest first. One answer holds at most 50000
    * characters: a message whose body does not fit is cut, with truncated true and body_next_offset;
    * read the rest by calling again with body_offset set to it and message_id set to that message's,
-   * before acknowledging it.
+   * before acknowledging it. A connection has a mailbox once it is a registered agent: file one
+   * with agent_register, for the owner to approve.
    */
   mailboxRead(binding: Binding, request: DoorRequest<"mailboxRead">):
     Promise<DoorAnswer<"mailboxRead">>;
@@ -46,15 +49,17 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    */
   roomPost(binding: Binding, request: DoorRequest<"roomPost">): Promise<DoorAnswer<"roomPost">>;
   /**
-   * List the agents registered for this connection, the owner's own agents, each with the id its
-   * rooms name, and which of the owner's AI apps are connected to TinyAssets, each one not
-   * connected with its connect_url, the page with its connect step. One answer holds as many as
-   * fit; when it carries next, read again with after set to it for the rest.
+   * List the agents registered for this connection, the owner's own agents, each with the room_id
+   * it is reached in (null until this connection is a registered agent: agent_register), and which
+   * of the owner's AI apps are connected to TinyAssets, each one not connected with its
+   * connect_url, the page with its connect step. One answer holds as many as fit; when it carries
+   * next, read again with after set to it for the rest.
    */
   outsideAgents(binding: Binding, request?: DoorRequest<"outsideAgents">):
     Promise<DoorAnswer<"outsideAgents">>;
   /**
-   * File this connection's agent registration for the owner to approve.
+   * File this connection's agent registration for the owner to approve. Once approved, the
+   * connection is that agent: it has a mailbox, and posts in its rooms.
    */
   registerPropose(binding: Binding, request: DoorRequest<"registerPropose">):
     Promise<DoorAnswer<"registerPropose">>;
@@ -104,7 +109,9 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   collectionClear(binding: Binding, request: DoorRequest<"collectionClear">):
     Promise<DoorAnswer<"collectionClear">>;
   /**
-   * Read one file's or directory's entry.
+   * Read one file's or directory's entry, or null where nothing is, where file_read refuses a
+   * missing path (not_found): so it tells whether to create a file (file_write with expected_etag
+   * "").
    */
   fileStat(binding: Binding, request: DoorRequest<"fileStat">): Promise<DoorAnswer<"fileStat">>;
   /**
@@ -173,7 +180,9 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    */
   fileMkdir(binding: Binding, request: DoorRequest<"fileMkdir">): Promise<DoorAnswer<"fileMkdir">>;
   /**
-   * Remove a file or directory against its current etag.
+   * Remove a file or directory against its current etag. A directory goes only with recursive true
+   * (refused is_directory when empty, not_empty with its contents). A path removed since its etag
+   * was read answers conflict null.
    */
   fileRemove(binding: Binding, request: DoorRequest<"fileRemove">):
     Promise<DoorAnswer<"fileRemove">>;

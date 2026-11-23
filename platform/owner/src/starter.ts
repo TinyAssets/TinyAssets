@@ -39,7 +39,7 @@
  * single-flight on its lane.
  */
 import { definitionFileOf, definitionWidening } from "../../contract/src/agent-definition";
-import { FileFault, Refusal } from "../../contract/src/refusal";
+import { Refusal } from "../../contract/src/refusal";
 import { contentIdOf } from "../../contract/src/content";
 import { type Content, type Files, lostSwap } from "./files";
 import { clock } from "./clock";
@@ -199,7 +199,7 @@ export class Starter {
                             `could not all be written, and are tried again: ${why}`);
         }
       });
-      if (!(error instanceof Refusal || error instanceof FileFault)) {
+      if (!(error instanceof Refusal)) {
         console.error("the starter pass failed; it runs again later");  // no paths or ids
       }
     }

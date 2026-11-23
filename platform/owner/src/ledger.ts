@@ -106,7 +106,7 @@ import {
 import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
-import { Refusal, type RefusalCode } from "../../contract/src/refusal";
+import { NOT_AN_AGENT, Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
   agentsPage, asIs, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow,
@@ -1452,7 +1452,7 @@ export class Ledger {
   #self(actor: Actor): string {
     const me = this.#identity(actor);
     if (me === null) {
-      throw new Refusal("refused", "this outside identity is not one enabled agent");
+      throw new Refusal("refused", NOT_AN_AGENT);
     }
     return me;
   }

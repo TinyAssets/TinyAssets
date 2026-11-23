@@ -3,7 +3,7 @@
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
-import { Refusal, refusalOf } from "../../contract/src/refusal";
+import { NOT_AN_AGENT, Refusal, refusalOf } from "../../contract/src/refusal";
 import { BUSY, slotBusy } from "../../contract/src/slots";
 
 import { env } from "cloudflare:workers";
@@ -255,7 +255,7 @@ describe("a mint", () => {
                                                  content: "beat" });
     const refused = await write();
     expect(refused.status).toBe(403);
-    expect(await refused.json()).toEqual({ error: "this outside identity is not one enabled agent" });
+    expect(await refused.json()).toEqual({ error: NOT_AN_AGENT });
     expect((await appPost("outside-agents", o.token, o.session, {
       key_id, command_center_id: "cc", display_name: "Laptop", delivery_method: "pull",
       recipe_id: null })).status).toBe(200);

@@ -43,6 +43,20 @@ function frontOf(text: string): Map<string, string> {
   return keys;
 }
 
+/**
+ * Each index line's link in a seeded `index.md` that names neither a seeded file nor a directory holding
+ * one, as `index: link`. An index is the map an agent reads first; the knowledge skill gives a
+ * directory its line when it makes it.
+ */
+function unseeded(files: Bundled["files"]): string[] {
+  const paths = files.map((file) => file.path);
+  return files.filter((file) => file.path.endsWith("/index.md")).flatMap((file) =>
+    [...file.text.matchAll(/^\* \[[^\]]*\]\((\/workspace\/[^)\s]*)\)/gm)].map((found) => found[1]!)
+      .filter((link) => !paths.some((path) => link.endsWith("/") ? path.startsWith(link)
+                                                                : path === link))
+      .map((link) => `${file.path}: ${link}`));
+}
+
 describe("the starter package", () => {
   it("refuses to bundle a path dropped without being retired (review R2-L4)", () => {
     const copy = mkdtempSync(join(tmpdir(), "starter-"));
@@ -133,6 +147,14 @@ describe("the starter package", () => {
     expect(Object.keys(hooks.hooks)).toEqual(Object.keys(HOOK_EVENTS));
     expect(Object.values(agentHooks(fileAt("/agents/main/hooks.json").text).hooks).flat())
       .toEqual([]);
+  });
+
+  it("links from an index only to what it seeds: a path made later gets its line then", () => {
+    expect(unseeded(bundled.files)).toEqual([]);
+    const withKnowledge = bundled.files.map((file) => file.path === "/workspace/index.md"
+      ? { ...file, text: `${file.text}* [Knowledge](/workspace/knowledge/index.md) - pages\n` }
+      : file);
+    expect(unseeded(withKnowledge)).toEqual(["/workspace/index.md: /workspace/knowledge/index.md"]);
   });
 
   it("is portable: AGENTS.md plain and small, each skill an Agent Skills folder", () => {

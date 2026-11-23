@@ -16,6 +16,7 @@ import {
   archiveDue, hotFull, LEDGER_LIMITS, type Ledger, moveTake, postRoom,
   sealable,
 } from "../src/ledger";
+import { NOT_AN_AGENT } from "../../contract/src/refusal";
 import { OWNER } from "../src/authority";
 import { sqlIn } from "../../ci/workerd";
 import { clock } from "../src/clock";
@@ -290,7 +291,7 @@ describe("the ledger's bounds", () => {
         const refusals = new Map<string, number>();
         const allowed = new Set([
           "FULL", BUSY, "room is not an enabled agent's dm",
-          "this outside identity is not one enabled agent",
+          NOT_AN_AGENT,
           "agent not found", "ack is past this reader's mail",
         ]);
         const idOf = (who: Origin) => ledger.agents(who).find((a) => a.disabled_reason === null)

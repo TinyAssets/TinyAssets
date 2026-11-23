@@ -147,7 +147,7 @@ import { Bodies } from "./bodies";
 import { Collections, collectionsDoors } from "./collections";
 import { Connections, connectionsDoors } from "./connections";
 import type { RingAnswer } from "../../contract/src/gateway";
-import { ERASING, Refusal } from "../../contract/src/refusal";
+import { ERASING, NOT_AN_AGENT, Refusal } from "../../contract/src/refusal";
 import {
   type FileReaction, Files, filesDoors, type SandboxLease, type SyncCommitRequest, SYNC_FENCED,
   syncIgnoreReaction,
@@ -1285,7 +1285,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     const mine = this.#ledger.agents(account.origin)
       .filter((agent) => agent.disabled_reason === null);
     if (mine.length !== 1) {
-      throw new Refusal("refused", "this outside identity is not one enabled agent");
+      throw new Refusal("refused", NOT_AN_AGENT);
     }
     return mine[0]!.command_center_id;
   }

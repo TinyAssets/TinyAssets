@@ -82,6 +82,12 @@ export const REFUSALS = Object.freeze({
   events_raced: Object.freeze({ status: 503, retryAfterS: 1, transient: true }),
   // Another writer changed the file under each try.
   file_busy: Object.freeze({ status: 409 }),
+  // A file door's path of the wrong kind, or one in the way (`FileFault`); a missing one is
+  // `not_found`.
+  is_directory: Object.freeze({ status: 409 }),
+  not_directory: Object.freeze({ status: 409 }),
+  exists: Object.freeze({ status: 409 }),
+  not_empty: Object.freeze({ status: 409 }),
   // The files plane's one technical ceiling: its index in the object is full (`manifest.ts`
   // `INDEX_BYTES`). Room comes only from deleting files or old versions: never an upgrade.
   file_index_full: Object.freeze({ status: 507 }),
@@ -432,9 +438,9 @@ export function namedRefusal(error: unknown): error is Error & { readonly name: 
 }
 
 /**
- * What `call` answers, or `refused` when it is refused (a fault, 5xx or no refusal, still
- * throws): a key rotation's sweep counts a blob its ring no longer opens left and goes on, so
- * one never keeps the owner's other blobs under a retiring kid.
+ * What `call` answers, or `refused` when it is refused (a 5xx or no refusal still throws): a
+ * key rotation's sweep counts a blob its ring no longer opens left and goes on, so one never
+ * keeps the owner's other blobs under a retiring kid.
  */
 export async function orRefused<T, R>(call: Promise<T>, refused: R): Promise<T | R> {
   try {
@@ -448,33 +454,37 @@ export async function orRefused<T, R>(call: Promise<T>, refused: R): Promise<T |
 }
 
 /**
- * What a POSIX call would fail with: the path is missing, or of the wrong kind. Not a
- * refusal: the file doors answer it as their own protocol does (the sync agent's, `404`
- * with its code). Its message is its code, then words for people.
+ * What a POSIX call would fail with: the path is missing, or of the wrong kind. A refusal of
+ * its own code, so every door answers it as it answers any refusal, but the sync agent's,
+ * which answers it as its protocol does (`404` with its code, `doors/src/egress.ts`). Its
+ * message is its code, then words for people.
  */
 export const FAULT_CODES = Object.freeze(["not_found", "is_directory", "not_directory",
                                           "exists", "not_empty"] as const);
 export type FaultCode = (typeof FAULT_CODES)[number];
 
-export class FileFault extends Error {
-  override readonly name = "FileFault";
-  readonly code: FaultCode;
+export class FileFault extends Refusal {
+  declare readonly code: FaultCode;
 
   constructor(code: FaultCode, message: string) {
-    super(`${code}: ${message}`);
-    this.code = code;
+    super(code, `${code}: ${message}`);
   }
 }
 
-/** The fault `error` is, here or as it crossed RPC (its own `code`), or null. */
+/** The fault `error` is, here or as it crossed RPC (a refusal of a fault's code), or null. */
 export function faultOf(error: unknown): FaultCode | null {
-  if (!(error instanceof Error) || error.name !== "FileFault") {
-    return null;
-  }
-  const code = (error as Error & { code?: unknown }).code;
-  return typeof code === "string" && (FAULT_CODES as readonly string[]).includes(code)
-    ? code as FaultCode : null;
+  const code = refusalOf(error)?.code;
+  return (FAULT_CODES as readonly unknown[]).includes(code) ? code as FaultCode : null;
 }
 
 /** What every door and lane answers while the owner is erased (`owner/src/erasure.ts`). */
 export const ERASING = "this owner is being erased";
+
+/**
+ * What the owner's doors answer an outside client that is no enabled agent: never registered,
+ * or disabled. An agent is the card its client files and the owner applies
+ * (`owner/src/registrations.ts`).
+ */
+export const NOT_AN_AGENT = "this connection has no registered agent, which a mailbox, its " +
+  "rooms and a narrowed grant's work need: file one with agent_register, for the owner to " +
+  "approve";
