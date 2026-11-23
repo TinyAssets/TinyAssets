@@ -31,27 +31,30 @@ export interface CostRates {
   readonly cacheWrite: number;
 }
 
-/** The fields of pi-ai 1.4.0's `Model` the record keeps, as pi-ai types them. */
+/** The fields of pi-ai's `Model` the record keeps, as pi-ai types them. */
 export interface ModelRecord {
   readonly id: string;
   readonly name: string;
   readonly reasoning: boolean;
-  readonly thinkingLevelMap?: { readonly [level in ThinkingLevel]?: string | null };
-  readonly promptCache?: { readonly short?: number; readonly long?: number };
+  readonly thinkingLevelMap?: { readonly [level in ThinkingLevel]?: string | null | undefined };
+  readonly promptCache?: { readonly short?: number | undefined;
+                           readonly long?: number | undefined };
   readonly input: ("text" | "image")[];
   readonly inputLimits?: {
-    readonly maxRequestBytes?: number;
+    readonly maxRequestBytes?: number | undefined;
     readonly images?: {
-      readonly resize?: { readonly maxWidth?: number; readonly maxHeight?: number;
-                          readonly maxBytes?: number; readonly jpegQuality?: number };
-      readonly maxPerMessage?: number;
-      readonly maxPerRequest?: number;
-    };
+      readonly resize?: { readonly maxWidth?: number | undefined;
+                          readonly maxHeight?: number | undefined;
+                          readonly maxBytes?: number | undefined;
+                          readonly jpegQuality?: number | undefined } | undefined;
+      readonly maxPerMessage?: number | undefined;
+      readonly maxPerRequest?: number | undefined;
+    } | undefined;
   };
   readonly contextWindow: number;
   readonly maxTokens: number;
   readonly cost: CostRates & {
-    readonly tiers?: (CostRates & { readonly inputTokensAbove: number })[];
+    readonly tiers?: (CostRates & { readonly inputTokensAbove: number })[] | undefined;
   };
 }
 

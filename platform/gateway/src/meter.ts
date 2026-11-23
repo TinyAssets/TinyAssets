@@ -36,13 +36,11 @@
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
-import { apiRules, type ApiRules, takesFetch } from "../../contract/src/api-rules";
+import { apiRules, type ApiRules } from "../../contract/src/api-rules";
 import { valueAtPath } from "../../contract/src/checks";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
 import type { Meter, Upstream } from "../../contract/src/egress-scope";
-
-import { within } from "./egress";
 
 /** The model id and output cap the learning run asks with: neither is any real value. */
 const MODEL_MARK = "ta-meter-model-0e7f";
@@ -96,14 +94,12 @@ async function run(catalog: Catalog, upstream: Upstream, apiKey: string, model: 
   const models = createModels({ authContext: NO_AMBIENT });
   models.setProvider(providerFor(catalog, upstream));
   const events: AssistantMessageEvent[] = [];
-  await within(respond, async () => {
-    const stream = models.streamSimple(model, context(), {
-      apiKey, maxTokens, maxRetries: 0, ...(takesFetch(upstream.api) ? { fetch: respond } : {}),
-    } as never);
-    for await (const event of stream) {
-      events.push(event);
-    }
-  });
+  const stream = models.streamSimple(model, context(), {
+    apiKey, maxTokens, maxRetries: 0, fetch: respond,
+  } as never);
+  for await (const event of stream) {
+    events.push(event);
+  }
   return events;
 }
 
@@ -328,7 +324,9 @@ type AssistantUsage = Extract<AssistantMessageEvent, { type: "done" }>["message"
  * provider's dated snapshot of the named model, most often) is settled at the named
  * model's price when that one is concrete: named alone, not a `fallbacks` list nor a
  * router; else null. A router's call (`routed`) is priced at the served model alone, and is
- * null unless the answer names another model the catalog prices above nothing.
+ * null unless the answer names another model the catalog prices above nothing. An answer
+ * that carries the vendor's own bill (pi-ai's `usage.cost.totalFromProvider`: OpenRouter's
+ * reported cost) is settled at that bill alone.
  */
 export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey: string,
                                    model: Model<Api>,
@@ -359,8 +357,9 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
     return null;  // no usage reported: what it cost is unknown
   }
   const served = last.message.responseModel;
-  // pi-ai's own price of the named model, with everything it prices beyond the token rates
-  // (a service tier's multiplier among them); a dearer served model is scaled the same.
+  // The vendor's own bill when pi-ai read one (`totalFromProvider`), else pi-ai's price of
+  // the named model, with everything it prices beyond the token rates (a service tier's
+  // multiplier among them), by which a dearer served model is scaled the same.
   const named = usage.cost.total;
   const base = costOn(model, usage);
   const ratio = base > 0 ? named / base : 1;
@@ -368,7 +367,10 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
   const record = other ? meteredRecord(catalog, upstream, served) : null;
   const priced = record === null ? null : costOn(record, usage) * ratio;
   let cost = named;
-  if (routed) {
+  if (usage.cost.totalFromProvider === true) {
+    // The bill is for whatever served the call, a router's route or a fallback among them:
+    // no catalog price is put over it.
+  } else if (routed) {
     if (priced === null || !(priced > 0)) {
       return null;  // no word of a priced model it routed to
     }

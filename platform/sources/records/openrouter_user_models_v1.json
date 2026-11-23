@@ -98,7 +98,8 @@
       "models": [
         "auto",
         "openrouter/auto",
-        "openrouter/auto-beta"
+        "openrouter/auto-beta",
+        "openrouter/auto-code"
       ],
       "to": [
         "*"
