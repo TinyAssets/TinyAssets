@@ -45,7 +45,7 @@ which the platform lockfile has not installed since slice D, so the probe cannot
 1. **Delete the probe and its workflow**, not repair it: it measures a design ADR-034 deleted,
    so on current packages there is no `ThreadStore` or pi Session to probe, and no live question
    left for it. Its results live in `store-probe.md` ("Found", "Results"); the code is at
-   `14ec3e8f6`, the last commit that held it (run 1 ran `2c4a7d404`).
+   `14ec3e8f6`, a commit on main that holds it (run 1 ran `2c4a7d404`).
 2. **`store-probe.md` stays as the record**, as `cap-probe.md` and `facet-probe.md` do: its
    header says the probe is answered and deleted and links the code at `14ec3e8f6`; P8 and P5
    read as lapsed with the thread stores; the lines that ran the deleted scripts name them at
