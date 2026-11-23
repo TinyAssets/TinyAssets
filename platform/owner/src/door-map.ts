@@ -109,10 +109,12 @@ export interface DoorRows {
     { readonly module: "ledger"; readonly caller: "session"; readonly gate: "door" };
   readonly actionRequest:
     { readonly module: "actions"; readonly caller: "owner"; readonly gate: "door" };
+  readonly actionRequests:
+    { readonly module: "actions"; readonly caller: "owner"; readonly gate: "door" };
   readonly actionApprove:
     { readonly module: "actions"; readonly caller: "session"; readonly gate: "synced" };
   readonly actionRefuse:
-    { readonly module: "actions"; readonly caller: "session"; readonly gate: "door" };
+    { readonly module: "actions"; readonly caller: "owner"; readonly gate: "door" };
   readonly grantList:
     { readonly module: "grants"; readonly caller: "owner"; readonly gate: "door" };
   readonly grantSet:
@@ -558,6 +560,7 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "policyWakeLimits">>;
   actionRequest(binding: Binding, request: RequestIn<H, "actionRequest">):
     Promise<AnswerIn<H, "actionRequest">>;
+  actionRequests(binding: Binding): Promise<AnswerIn<H, "actionRequests">>;
   actionApprove(binding: Binding, request: RequestIn<H, "actionApprove">):
     Promise<AnswerIn<H, "actionApprove">>;
   actionRefuse(binding: Binding, request: RequestIn<H, "actionRefuse">):

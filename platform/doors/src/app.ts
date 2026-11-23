@@ -387,7 +387,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "notices": { door: "noticeList", body: "empty" },
     "policy": { door: "policyRead", body: "empty" },
     "policy/write": { door: "policyWrite" },
-    "actions/request": { door: "actionRequest" },
+    "actions": { door: "actionRequests", body: "empty" },
     "actions/approve": { door: "actionApprove" },
     "actions/refuse": { door: "actionRefuse" },
     "registrations": { door: "registerProposals", body: "empty" },

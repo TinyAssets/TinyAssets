@@ -173,12 +173,23 @@ function planLine(name, numbers) {
 
 async function home(arg = null) {
   const turn = turnOf("home", arg);
-  const [account, { notices }] = await Promise.all([call("account"), call("notices")]);
+  if (arg !== null) {
+    return waitingOne(arg);
+  }
+  const [account, { notices }, cards] = await Promise.all([call("account"), call("notices"),
+                                                           waitingCards()]);
+  const names = await namesFor(cards);
   const used = account.usage.chunk_bytes + account.usage.inline_bytes;
   const mine = account.tiers?.[account.tier] ?? null;
   const upgrade = new URLSearchParams(location.search).get("upgrade") === "1";
   paint(turn,
        h("h1", {}, "Home"),
+       h("section", {},
+         h("h2", {}, "Waiting for you"),
+         h("p", { class: "muted" }, "What your agents and connected apps ask you to answer. " +
+           "Nothing here happens until you say yes."),
+         cards.length === 0 ? h("p", { class: "muted" }, "Nothing is waiting for your answer.")
+           : cards.map((card) => asking(card, names, () => home()))),
        h("section", {},
          h("h2", {}, `Your plan: ${account.tier === "paid" ? "Paid" : "Free"}`),
          mine === null
@@ -200,6 +211,108 @@ async function home(arg = null) {
            : h("ul", {}, notices.slice().reverse().map((n) =>
              h("li", {}, h("b", {}, n.type.replace(/_/g, " ")), " ", linked(n.detail), " ",
                h("small", {}, when(n.at)))))));
+}
+
+// -- Waiting for you: every card an agent or an app asks the owner to answer ----------
+
+/** What the asking app is called: its connected app's name, else "an app". */
+function appOf(client, names) {
+  const app = names.clients.find((c) => c.client === client);
+  return app === undefined ? "an app" : appName(app, names.known);
+}
+
+/**
+ * The kinds of card that wait on the owner's answer, as data: the route listing a kind's
+ * pending cards (each with its id, the digest shown and when it was filed), what its card
+ * shows, and its two answers, each a route its id and digest are posted to, the button's
+ * words and what is said once it answered. A kind's yes is in the owner's session.
+ */
+const KINDS = Object.freeze([
+  { list: "registrations",
+    title: (card) => card.request.display_name,
+    asker: (card, names) => appOf(card.client, names),
+    lines: (card, names) => {
+      const client = names.clients.find((c) => c.client === card.client);
+      const { delivery_method: delivery, recipe_id: recipe, command_center_id: space } =
+        card.request;
+      return [`Gets its mail by: ${delivery}`, `Recipe: ${recipe ?? "none"}`, `Space: ${space}`,
+              `What its app may do: ${client === undefined ? "nothing now" : access(client)}`];
+    },
+    note: () => "Applying gives this app its own mailbox and rooms with you.",
+    yes: { words: "Apply", route: "registrations/apply",
+           said: (agent) => `Applied: ${agent.display_name} has its mailbox and rooms.` },
+    no: { words: "Decline", route: "registrations/decline",
+          said: (_, card) => `Declined: ${card.request.display_name} is not registered.` } },
+  { list: "actions",
+    title: (card) => card.says,
+    asker: (card, names) => card.agent === null ? appOf(card.client, names)
+      : card.client === null ? card.agent
+      : `${card.agent}, started by ${appOf(card.client, names)}`,
+    lines: (card) => [`Act: ${card.act}`, `At: ${card.door}`,
+                      card.conversation === null ? null : `In conversation: ${card.conversation}`,
+                      h("pre", {}, card.request),
+                      card.cut ? "The call asks more than is shown here." : null],
+    note: (card) => card.conversation === null
+      ? "Allowing it lets this one call through, once, the next time its agent makes it."
+      : "Allowing it lets this one call through, once, and resumes its run.",
+    yes: { words: "Allow once", route: "actions/approve",
+           said: (answer) => answer.run === null
+             ? "Allowed once: its agent's next try of this call goes through."
+             : `Allowed once: its run resumes (${answer.run}).` },
+    no: { words: "Deny", route: "actions/refuse", said: () => "Denied: the call is not made." } },
+]);
+
+/** Every pending card of every kind, oldest first, each with its kind. */
+async function waitingCards() {
+  const lists = await Promise.all(KINDS.map((kind) => call(kind.list)));
+  return lists.flatMap(({ cards }, at) => cards.map((card) => ({ card, kind: KINDS[at] })))
+    .sort((a, b) => a.card.filed_at - b.card.filed_at);
+}
+
+/** What the cards' askers are named by: the connected apps, and the apps TinyAssets knows. */
+async function namesFor(cards) {
+  if (cards.length === 0) {
+    return { clients: [], known: [] };
+  }
+  const [{ clients }, { apps: known }] = await Promise.all([call("grants"),
+                                                           call("tools/agents_list")]);
+  return { clients, known };
+}
+
+/**
+ * One waiting card, as its kind shows it, with the owner's two answers, each posting the
+ * card's id and the digest shown; `after` shows the screen again.
+ */
+function asking({ card, kind }, names, after) {
+  const answer = { card_id: card.card_id, digest: card.digest };
+  const reply = (side, props) => action(side.words, async () => {
+    say(side.said(await call(side.route, answer), card));
+    await after();
+  }, report, props);
+  return h("div", { class: "card" },
+    h("b", {}, kind.title(card)), " ",
+    h("small", {}, `asked by ${kind.asker(card, names)}, ${when(card.filed_at)}`),
+    h("ul", {}, kind.lines(card, names).filter((line) => line !== null)
+      .map((line) => h("li", {}, line))),
+    h("p", { class: "muted" }, kind.note(card)),
+    h("div", { class: "row" }, reply(kind.yes), reply(kind.no, { class: "danger" })));
+}
+
+/** Why a card's page shows no card: nothing waits under its id any more. */
+const NOT_WAITING = "This is not waiting for your answer any more: it was answered, it was " +
+  "asked again since, or what it was asked under changed (the asking app's access, or your " +
+  "rules). If it is still wanted, its agent or app can ask again.";
+
+/** One card's page, where a refusal, an `approve_url` and a notice lead. */
+async function waitingOne(cardId) {
+  const turn = turnOf("home", cardId);
+  const cards = (await waitingCards()).filter(({ card }) => card.card_id === cardId);
+  const names = await namesFor(cards);
+  paint(turn,
+       h("p", {}, h("a", { href: "#home" }, "Everything waiting")),
+       h("h1", {}, "Waiting for your answer"),
+       h("section", {}, cards.length === 0 ? h("p", { class: "muted" }, NOT_WAITING)
+         : asking(cards[0], names, () => waitingOne(cardId))));
 }
 
 /** A notice's words, each page of this app it names a link to that page. */
@@ -784,7 +897,7 @@ function serverKey() {
     }, report)));
 }
 
-// -- Connected apps: code mode, each client's tools, registrations, revokes -----------
+// -- Connected apps: code mode, each client's tools, revokes --------------------------
 
 /** An app by the vendor its sign-in named (`apps.json`), unless the owner renamed it. */
 function appName(client, known) {
@@ -798,67 +911,12 @@ function access(client) {
     : client.scopes.map((s) => `${s.capability} in ${s.universe} as ${s.agent}`).join("; ");
 }
 
-/** Why a registration's page shows no card: nothing waits under its id any more. */
-const NOT_WAITING = "This registration is not waiting any more: it was applied or declined, " +
-  "its app asked again since, or its app's access changed. If you still want it, ask the app " +
-  "to register again.";
-
-/**
- * A registration an app's agent asks for, as its client filed it (`agent_register`): what its
- * agent would be, and what its app may do, with the owner's two answers, each by the card's
- * id and the digest shown (`registrations/apply` in the owner's session, and
- * `registrations/decline`); `after` shows the screen again.
- */
-function asking(card, clients, known, after) {
-  const client = clients.find((c) => c.client === card.client);
-  const { display_name: name, delivery_method: delivery, recipe_id: recipe,
-          command_center_id: space } = card.request;
-  const answer = { card_id: card.card_id, digest: card.digest };
-  return h("div", { class: "card" },
-    h("b", {}, name), " ",
-    h("small", {}, `asked by ${client === undefined ? "an app" : appName(client, known)}, ` +
-      when(card.filed_at)),
-    h("ul", {},
-      h("li", {}, `Gets its mail by: ${delivery}`),
-      h("li", {}, `Recipe: ${recipe ?? "none"}`),
-      h("li", {}, `Space: ${space}`),
-      h("li", {}, `What its app may do: ${client === undefined ? "nothing now" : access(client)}`)),
-    h("p", { class: "muted" }, "Applying gives this app its own mailbox and rooms with you."),
-    h("div", { class: "row" },
-      action("Apply", async () => {
-        const agent = await call("registrations/apply", answer);
-        say(`Applied: ${agent.display_name} has its mailbox and rooms.`);
-        await after();
-      }, report),
-      action("Decline", async () => {
-        await call("registrations/decline", answer);
-        say(`Declined: ${name} is not registered.`);
-        await after();
-      }, report, { class: "danger" })));
-}
-
-/** One registration's page, where `agent_register`'s approve_url and its notice lead. */
-async function registration(cardId) {
-  const turn = turnOf("apps", cardId);
-  const [{ cards }, { clients }, { apps: known }] = await Promise.all([
-    call("registrations"), call("grants"), call("tools/agents_list")]);
-  const card = cards.find((each) => each.card_id === cardId);
-  paint(turn,
-       h("p", {}, h("a", { href: "#apps" }, "All connected apps")),
-       h("h1", {}, "Agent registration"),
-       h("section", {}, card === undefined ? h("p", { class: "muted" }, NOT_WAITING)
-         : asking(card, clients, known, () => registration(cardId))));
-}
-
 async function apps(arg = null) {
   const turn = turnOf("apps", arg);
-  if (arg !== null) {
-    return registration(arg);
-  }
   const [policy, { clients }, { tools }, { agents: mains, owner_agents: owned, apps: known },
-         { kinds }, { cards }] = await Promise.all([
+         { kinds }] = await Promise.all([
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
-    call("agent/doorbell/kinds"), call("registrations")]);
+    call("agent/doorbell/kinds")]);
   const document_ = policy.policy;
   const codemode = h("input", { type: "checkbox", checked: policy.codemode.on });
   const custom = document_.tools?.custom ?? null;
@@ -903,12 +961,6 @@ async function apps(arg = null) {
            const chosen = picks.map((p) => p.firstChild).filter((c) => c.checked).map((c) => c.value);
            return write(every.checked ? rest : { ...rest, tools: { custom: chosen } });
          }, report)),
-       h("section", {},
-         h("h2", {}, "Agents asking to join"),
-         h("p", { class: "muted" }, "An app you connected may ask for an agent of its own: a " +
-           "mailbox and rooms with you. Nothing is registered until you apply it."),
-         cards.length === 0 ? h("p", { class: "muted" }, "No app is asking.")
-           : cards.map((card) => asking(card, clients, known, () => apps()))),
        h("section", {},
          h("h2", {}, "Your main agents"),
          h("p", { class: "muted" }, "A main agent is an app's own agent (a Claude scheduled " +

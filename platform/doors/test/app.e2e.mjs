@@ -32,7 +32,7 @@ import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts"
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
 import { EGRESS_HOST, EGRESS_ORIGIN } from "../../contract/src/egress.ts";
-import { appPage, HOST, ORIGIN } from "../../contract/src/identity.ts";
+import { HOST, ORIGIN, waitingPage } from "../../contract/src/identity.ts";
 import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
@@ -748,10 +748,12 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.locator(".message.good", { hasText: "Saved." }).waitFor();
   assert.equal(await page.locator("section", { hasText: "Code mode" }).getByRole("checkbox")
     .isChecked(), true);
-  // No main agent has joined, so no wake-up is offered, and none asks to.
+  // Nothing waits on the owner.
+  await page.goto(`${ORIGIN}/app#home`);
+  await page.getByText("Nothing is waiting for your answer.").waitFor();
+  // No main agent has joined, so no wake-up is offered.
   await page.goto(`${ORIGIN}/app#apps`);
   await page.getByText("No main agent has joined yet.").waitFor();
-  await page.getByText("No app is asking.").waitFor();
   // "Every tool" holds every pick on, fixed, so no choice is silently dropped.
   const picks = page.locator("section", { hasText: "Tools your connected apps see" });
   assert.equal(await picks.getByRole("checkbox", { name: /Every tool/ }).isChecked(), true);
@@ -797,8 +799,9 @@ test("a connected app whose agent was deleted says so on its row, and its save n
   }
 });
 
-test("a registration's page, where its approve_url and its notice lead, shows what it asks " +
-     "for and sends each answer by the card shown", { timeout: 60_000 }, async () => {
+test("every card waiting on the owner is on Home, and its page, where a refusal, an " +
+     "approve_url and a notice lead, shows what it asks and sends each answer by the card " +
+     "shown", { timeout: 60_000 }, async () => {
   // No app connects in this harness, so the doors' cards, grants and notices are answered with
   // one app's; each answer goes to the real doors, which hold no such card.
   const client = { client: "c".repeat(64), source: "mcp", mode: "scoped", revision: 1,
@@ -810,49 +813,70 @@ test("a registration's page, where its approve_url and its notice lead, shows wh
                  family: "f".repeat(64), source_ref: "conn", filed_at: 1_700_000_000,
                  request: { command_center_id: "work", display_name: "Muse Agent",
                             delivery_method: "pull", recipe_id: null } };
-  const page_ = appPage("apps", card.card_id);
+  const held = { card_id: `act_${"2".repeat(32)}`, digest: "e".repeat(64), act: "workspace.files",
+                 says: "Changing the owner's files.", door: "fileMkdir", agent: "main",
+                 client: client.client, conversation: "conv-1",
+                 request: '{"expected_etag":null,"path":"/workspace/held"}', cut: false,
+                 generation: 1, filed_at: 1_700_000_100 };
+  const pages = [card, held].map((each) => waitingPage(each.card_id));
   const fakes = [
-    ["**/app/api/registrations", { cards: [card] }], ["**/app/api/grants", { clients: [client] }],
-    ["**/app/api/notices", { notices: [{ seq: 1, at: card.filed_at, type: "agent_registration",
-      detail: `An app you connected asks to register an agent: approve or decline it at ${
-        page_}` }] }]];
+    ["**/app/api/registrations", { cards: [card] }], ["**/app/api/actions", { cards: [held] }],
+    ["**/app/api/grants", { clients: [client] }],
+    ["**/app/api/notices", { notices: [
+      { seq: 1, at: card.filed_at, type: "agent_registration",
+        detail: `An app you connected asks to register an agent: approve or decline it at ${
+          pages[0]}` },
+      { seq: 2, at: held.filed_at, type: "action_request",
+        detail: `main asks to workspace.files at fileMkdir: allow or deny it at ${pages[1]}` }] }]];
   const answered = fakes.map(([path, json]) => [path, (route) => route.fulfill({ json })]);
   for (const [path, handler] of answered) {
     await page.route(path, handler);
   }
   try {
-    // The notice on Home links to the card's page.
+    // Home lists both, oldest first, in one view.
     await page.goto(`${ORIGIN}/app#home`);
-    await page.getByRole("link", { name: page_ }).click();
-    await page.getByRole("heading", { name: "Agent registration" }).waitFor();
-    assert.equal(new URL(page.url()).hash, `#apps/${card.card_id}`);
-    const shown = page.locator(".card", { hasText: "Muse Agent" });
-    for (const line of ["asked by Muse", "Gets its mail by: pull", "Recipe: none",
-                        "Space: work", "What its app may do: read_graph in work as main"]) {
-      await shown.getByText(line, { exact: false }).waitFor();
+    const waiting = page.locator("section", { hasText: "Waiting for you" }).locator(".card");
+    await waiting.nth(1).waitFor();
+    assert.deepEqual((await waiting.allInnerTexts()).map((text) => text.split("\n")[0]),
+                     ["Muse Agent", "Changing the owner's files."]);
+    for (const [shown, lines, answers] of [
+      [card, ["asked by Muse", "Gets its mail by: pull", "Recipe: none", "Space: work",
+              "What its app may do: read_graph in work as main"],
+       [["Apply", "registrations/apply"], ["Decline", "registrations/decline"]]],
+      [held, ["asked by main, started by Muse", "Act: workspace.files", "At: fileMkdir",
+              "In conversation: conv-1", '"path":"/workspace/held"', "resumes its run"],
+       [["Allow once", "actions/approve"], ["Deny", "actions/refuse"]]],
+    ]) {
+      // Each notice on Home links to its card's page.
+      await page.goto(`${ORIGIN}/app#home`);
+      const at = waitingPage(shown.card_id);
+      await page.getByRole("link", { name: at }).click();
+      await page.getByRole("heading", { name: "Waiting for your answer" }).waitFor();
+      assert.equal(new URL(page.url()).hash, `#home/${shown.card_id}`);
+      const one = page.locator(".card");
+      assert.equal(await one.count(), 1);
+      for (const line of lines) {
+        await one.getByText(line, { exact: false }).waitFor();
+      }
+      for (const [button, path] of answers) {
+        const sent = page.waitForRequest((request) => request.url().endsWith(`/app/api/${path}`));
+        await one.getByRole("button", { name: button }).click();
+        assert.deepEqual((await sent).postDataJSON(), { card_id: shown.card_id,
+                                                        digest: shown.digest });
+        await page.locator("#notice .message.bad", { hasText: "not the pending card shown" })
+          .waitFor();
+      }
     }
-    for (const [button, path] of [["Apply", "registrations/apply"],
-                                  ["Decline", "registrations/decline"]]) {
-      const sent = page.waitForRequest((request) => request.url().endsWith(`/app/api/${path}`));
-      await shown.getByRole("button", { name: button }).click();
-      assert.deepEqual((await sent).postDataJSON(), { card_id: card.card_id,
-                                                      digest: card.digest });
-      await page.locator("#notice .message.bad",
-                         { hasText: "registration is not the pending card shown" }).waitFor();
-    }
-    // The list under Connected apps shows the same card.
-    await page.goto(`${ORIGIN}/app#apps`);
-    await page.locator("section", { hasText: "Agents asking to join" })
-      .locator(".card", { hasText: "Muse Agent" }).waitFor();
   } finally {
     for (const [path, handler] of answered) {
       await page.unroute(path, handler);
     }
   }
   // A page whose card no longer waits says so, with no answer to give.
-  await page.goto(appPage("apps", card.card_id));
-  await page.getByText(/^This registration is not waiting any more/).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Apply" }).count(), 0);
+  await page.goto(`${ORIGIN}/app#home`);
+  await page.goto(waitingPage(held.card_id));
+  await page.getByText(/^This is not waiting for your answer any more/).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Allow once" }).count(), 0);
 });
 
 // -- Attacks on the app, kept as tests -----------------------------------------------------

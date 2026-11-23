@@ -227,7 +227,7 @@ The doors Worker SHALL serve the owner app at `/app`, `/app/signed-in`, `/app/co
 - **THEN** the doors answer `404`, and the assets are reached for nothing
 
 ### Requirement: The owner app's routes are each one door
-The owner surface SHALL serve the owner app's reads and settings, each one owner door behind the first-party token: `account` (the owner's tier with the control record's numbers and the file usage), `notices`, `policy`, `policy/write`, `grants`, `grants/set`, `files/read`, `files/write` (text, against etags), `sources`, `capabilities`, `tools`, `agent/doorbell/kinds`, `registrations` (the pending agent registration cards), `registrations/apply` (one applied, in session, by its id and digest) and `registrations/decline`, and `tools/<name>` (one table tool, the owner as itself). A revoke SHALL go by `grants/revoke` alone.
+The owner surface SHALL serve the owner app's reads and settings, each one owner door behind the first-party token: `account` (the owner's tier with the control record's numbers and the file usage), `notices`, `policy`, `policy/write`, `grants`, `grants/set`, `files/read`, `files/write` (text, against etags), `sources`, `capabilities`, `tools`, `agent/doorbell/kinds`, `registrations` (the pending agent registration cards), `registrations/apply` (one applied, in session, by its id and digest) and `registrations/decline`, `actions` (the pending held calls), `actions/approve` (one allowed once, in session, by its id and digest) and `actions/refuse`, and `tools/<name>` (one table tool, the owner as itself). A revoke SHALL go by `grants/revoke` alone.
 
 #### Scenario: Any owner-surface answer opened as a page
 - **WHEN** a browser opens an owner-surface answer as a document

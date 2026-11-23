@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
-import { appPage } from "../../contract/src/identity";
+import { waitingPage } from "../../contract/src/identity";
 import { NOT_AN_AGENT } from "../../contract/src/refusal";
 import { wakeKinds } from "../../contract/src/wake-records";
 import { mcpOrigin } from "../src/binder";
@@ -352,7 +352,7 @@ describe("an app's agent registration, answered in the owner app", () => {
     const tokens = await connect(await registerClient("Muse"), { owner: who });
     expect(await mailbox(tokens)).toEqual([NOT_AN_AGENT, NOT_AN_AGENT]);
     const filed = await file(tokens);
-    expect(filed.approve_url).toBe(appPage("apps", filed.card_id));
+    expect(filed.approve_url).toBe(waitingPage(filed.card_id));
     const { notices } = await answered(await appPost("notices", token, null, {})) as
       { notices: { type: string; detail: string }[] };
     expect(notices.filter((n) => n.type === "agent_registration")
@@ -428,5 +428,82 @@ describe("an app's agent registration, answered in the owner app", () => {
                                         { card_id: filed.card_id, digest: filed.digest })))
       .toMatchObject({ command_center_id: "work" });
     expect(await mailbox(tokens)).toEqual([null, null]);
+  });
+});
+
+describe("an agent's held call, answered in the owner app", () => {
+  /** A card as the owner is shown it. */
+  type Shown = { card_id: string; digest: string; act: string; door: string };
+
+  /** The owner's rule, written in session: every call of `workspace.files` asks. */
+  async function asking(token: string, session: string): Promise<void> {
+    const read = await answered(await appPost("policy", token, null, {}));
+    await answered(await appPost("policy/write", token, session, {
+      expected_generation: read["generation"],
+      policy: { ...read["policy"] as object, actions: [{ act: "workspace.files", do: "ask" }] } }));
+  }
+
+  /** `tokens`' client makes a directory: null once it is made, else its refusal's first line. */
+  async function mkdir(tokens: Tokens, path: string): Promise<string | null> {
+    const result = await legacyTool(tokens.access_token, "file_mkdir",
+                                    { path, expected_etag: null });
+    return result.isError === true ? result.content[0]!.text.split("\n")[0]! : null;
+  }
+
+  /** The card a refusal names. */
+  function cardOf(refused: string | null): string {
+    return /card (act_[0-9a-f]{32})/.exec(refused ?? "")![1]!;
+  }
+
+  /** The pending held calls, as the app shows them. */
+  async function cards(token: string): Promise<Shown[]> {
+    return (await answered(await appPost("actions", token, null, {})))["cards"] as Shown[];
+  }
+
+  it("names its page to the agent and the owner, and once allowed there in session the " +
+     "call goes through", async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    await asking(token, session);
+    const refused = await mkdir(tokens, "/workspace/asked");
+    const card = cardOf(refused);
+    expect(refused).toBe(`held for your owner's answer: card ${card}. Your owner answers it ` +
+      `at ${waitingPage(card)}: give them that link. Once they say yes, make this same call ` +
+      "again");
+    const { notices } = await answered(await appPost("notices", token, null, {})) as
+      { notices: { type: string; detail: string }[] };
+    expect(notices.filter((n) => n.type === "action_request")
+      .map((n) => n.detail.endsWith(` ${waitingPage(card)}`))).toEqual([true]);
+    const [shown, ...more] = await cards(token);
+    expect([shown, more]).toMatchObject([{ card_id: card, act: "workspace.files",
+                                           door: "fileMkdir" }, []]);
+    const answer = { card_id: card, digest: shown!.digest };
+    expect(await answered(await appPost("actions/approve", token, null, answer), 403))
+      .toEqual({ error: "interactive owner session required" });
+    expect(await answered(await appPost("actions/approve", token, session, answer)))
+      .toEqual({ card_id: card, approved: true, run: null });
+    expect(await cards(token)).toEqual([]);
+    expect(await mkdir(tokens, "/workspace/asked")).toBeNull();
+  });
+
+  it("is denied there with no session, only as the card shown, and the call stays held",
+     async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    await asking(token, session);
+    const card = cardOf(await mkdir(tokens, "/workspace/denied"));
+    const [{ digest }] = await cards(token) as [Shown];
+    expect(await answered(await appPost("actions/refuse", token, null,
+                                        { card_id: card, digest: "0".repeat(64) }), 403))
+      .toEqual({ error: "action request is not the pending card shown" });
+    expect(await answered(await appPost("actions/refuse", token, null, { card_id: card, digest })))
+      .toEqual({ card_id: card, approved: false });
+    expect(await cards(token)).toEqual([]);
+    expect(await answered(await appPost("actions/approve", token, session,
+                                        { card_id: card, digest }), 403))
+      .toEqual({ error: "action request is not the pending card shown" });
+    expect(cardOf(await mkdir(tokens, "/workspace/denied"))).not.toBe(card);
   });
 });
