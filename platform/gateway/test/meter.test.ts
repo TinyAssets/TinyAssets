@@ -8,10 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import {
-  apiRules, fallbackList, freeCall, manyChoices, paidTool, tierMultiplier,
+  apiRules, declaredApi, fallbackList, freeCall, manyChoices, paidTool, tierMultiplier,
 } from "../../contract/src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import { egressTarget, meteredCall, meteredModel } from "../../contract/src/egress-scope";
+import {
+  egressTarget, meteredCall, meteredModel, type Upstream,
+} from "../../contract/src/egress-scope";
 import {
   clamped, describes, learnMeter, meteredRecord, meteredUsage, Meters, sentHeaders, snapshotOf,
 } from "../src/meter";
@@ -166,7 +168,19 @@ describe("the meter pi-ai's adapter teaches", () => {
       expect(egressTarget(scope, meter!.method, path), id).not.toBeNull();
     });
 
-  it.each(keys.map((record) => [record.id, record] as const))(
+  /**
+   * A declared endpoint on each API a declared endpoint may speak: each API with a row is
+   * one some source record speaks (`api-rules.ts` `APIS`).
+   */
+  const declaredOn = [...new Set(keys.map((record) => record.upstream!.api))]
+    .filter(declaredApi).map((api): readonly [string, { upstream: Upstream }] => [
+      `declared ${api}`, { upstream: {
+        provider: "custom", api, base_url: "https://llm.example.com/v1",
+        auth: { header: "authorization", scheme: "Bearer" },
+        models: [{ id: "local-1", name: "Local", reasoning: false, input: ["text"],
+                   contextWindow: 32000, maxTokens: 4096,
+                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } }]);
+  it.each([...keys.map((record) => [record.id, record] as const), ...declaredOn])(
     "learns the %s source's call through the fetch it hands pi-ai, never the global one",
     async (id, { upstream }) => {
       const reached: string[] = [];
@@ -388,6 +402,19 @@ describe("what a metered call could escape its reservation by", () => {
                                       ...BIG, cost: 0.01, is_byok: true,
                                       cost_details: { upstream_inference_cost: 0.4 } })));
     expect(byok!.cost).toBeCloseTo(0.41, 9);
+    // The bill is for what served it: a cheap name a dear fallback served, a router's route,
+    // or a model the catalog does not price, each settles at the bill, never the catalog's.
+    const dear = catalog.provider("openrouter")!.getModels()
+      .filter((each) => each.api === "openai-completions")
+      .reduce((a, b) => (b.cost.output > a.cost.output ? b : a));
+    const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
+    for (const [named, served, pricing] of [[model, dear.id, LISTED], [router, dear.id, ROUTED],
+                                            [router, "someone/unlisted", ROUTED]] as const) {
+      expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", named, 200, SSE,
+                                streamOf(completion(served, { ...BIG, cost: 0.42,
+                                                              is_byok: false })), pricing))
+        .toEqual({ tokens: 250_000, cost: 0.42, served });
+    }
   });
 
   it("meters an API only while its rules describe pi-ai's own call", () => {

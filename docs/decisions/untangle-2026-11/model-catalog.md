@@ -62,9 +62,11 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
   one, and the only reason for the gateway's global-fetch interposer (`egress.ts`) and its
   three module-state exemptions, owed as `untangle/gateway-interposer` in `tasks.md`.
 - **OpenRouter's billed cost** (1.5.0, #9980): its adapters put the answer's reported `cost`
-  (with the upstream cost on a BYOK key) in `usage.cost.total`. The meter settles a call at
-  that total (`meter.ts` `meteredUsage`'s `named`), so an OpenRouter call now settles at what
-  OpenRouter billed where the answer reports it, and at the catalog's price where not.
+  (with the upstream cost on a BYOK key) in `usage.cost.total` and marks it
+  `totalFromProvider`, when the answer's usage carries `is_byok` and a finite, non-negative
+  `cost`; otherwise the catalog's price, unmarked. The meter settles a marked total alone
+  (review, below), so an OpenRouter call settles at what OpenRouter billed where the answer
+  reports it, and at the catalog's price, by the router and served-model rules, where not.
 - **A new router at zero:** 1.6.0 lists `openrouter/auto-code` at zero, OpenRouter's Auto
   Code (released 2026-11-05), "the same engine" as the Auto Router, "billed at the price of
   the model that serves it" (its model page and the Auto Router guide, which names it among
@@ -74,8 +76,9 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
   the gateway calls changed shape. pi-ai's `personalizeOpenRouterCatalog` (the catalog
   filtered by `/models/user` and repriced by it) exists in both and is not wired to any
   provider.
-- **Sizes:** the gateway bundles every catalog; pi-ai's data grew about 5%. The memory leg
-  and the sizes leg are CI's.
+- **Sizes:** the gateway bundles every catalog and adapter; its dry-run bundle grew from
+  4,016 to 4,520 KiB (549 to 608 KiB gzipped; review), the owner's by 4 KiB. The memory leg
+  passed; the sizes leg is CI's.
 - 1.6.0 was published 2026-11-20 and `agents` 0.34.0 the same day; the repo has no rule on a
   release's age, and both move forward only (agents' upgrade note: no rollback past it once a
   Pi harness conversation runs on it; the owner runs none).
@@ -133,6 +136,14 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
   npm's placement, which moves with peers. It now holds the one copy's version and integrity.
 - OpenRouter's billed cost reaching the meter had no test; one now holds it (a non-BYOK and a
   BYOK answer).
+- Review: the meter took the bill as the named model's price and kept its own rules over it.
+  The served-model ratio (meant for a service tier) became bill over catalog, so a cheap name
+  a dear fallback served settled at the dear one's catalog price times that ratio ($863 for a
+  $0.42 bill, the test's models), and a router's call ignored the
+  bill for the served model's catalog price: two rules for one price. A marked bill is now
+  the call's price alone, whatever served it (`meteredUsage`), held for a fallback, a router
+  and an unlisted route. The global-fetch test also learns a declared endpoint on each API
+  one may speak (the lazy adapters, which the interposer also held).
 
 ## Left, with reasons
 
@@ -151,9 +162,9 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
   among them). Its own research: one record on both APIs (each model's API from the catalog,
   the meter's and the egress scope's rules by the model's API) or a second record.
 - [ ] untangle/listing-records: a connection keeps the catalog records of its connect, so a
-  pin bump reaches only new connections. Once #5833 lands, its daily listing read can answer
-  each listed model's record from the gateway's current catalog, so every connection moves
-  with the pin without a reconnect.
+  pin bump reaches only new connections. #5833's daily listing read (landed) can answer each
+  listed model's record from the gateway's current catalog, so every connection moves with
+  the pin without a reconnect.
 - [ ] untangle/pi-ai-watch: a scheduled draft PR when pi-ai publishes (as `okf-watch` does
   for the starter's spec), so the catalog lags by a review, not by a month.
 - [ ] untangle/store-probe: delete the store probe or rebuild it on what the owner runs.
