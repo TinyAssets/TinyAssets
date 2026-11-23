@@ -172,7 +172,7 @@ describe("the owner surface's answers", () => {
     const { capabilities } = await answered(await appPost("capabilities", app.access_token,
                                                           null, {})) as
       { capabilities: { id: string; words: string }[] };
-    // A run's and a key's capabilities are one list: both forms show it whole.
+    // The agent form shows a run's capabilities whole.
     expect(capabilities.map((c) => c.id)).toEqual([...RUN_CAPABILITIES]);
     expect(capabilities.every((c) => c.words.length > 0)).toBe(true);
   });

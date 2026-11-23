@@ -230,6 +230,38 @@ describe("a mint", () => {
       o: o.owner, h: sha256Hex(parseKey(key)!.secret), c: created_at });
   });
 
+  it("naming no scopes, makes a full key, as an MCP client's: it writes and reads the " +
+     "owner's files", async () => {
+    const o = await signedIn();
+    const { key, key_id } = await (await appPost("keys", o.token, o.session,
+                                                 { name: "canary", scopes: [] })).json<
+      { key: string; key_id: string }>();
+    expect(await grantRow(o.owner, key_id)).toEqual([
+      { source: "api_key", mode: "full", revoked_at: null }]);
+    const path = "/workspace/beat.txt";
+    expect((await api(key, "file_write", { path, expected_etag: "", content: "beat" })).status)
+      .toBe(200);
+    expect(await (await api(key, "file_read", { path })).json()).toMatchObject({ text: "beat" });
+  });
+
+  it("naming scopes, makes a key that acts only as its registered agent, in its command " +
+     "center", async () => {
+    const o = await signedIn();
+    const { key, key_id } = await (await appPost("keys", o.token, o.session, { name: "laptop",
+      scopes: ["read_files", "write_files"].map((capability) =>
+        ({ universe: "cc", agent: "main", capability })) })).json<
+      { key: string; key_id: string }>();
+    const write = () => api(key, "file_write", { path: "/workspace/beat.txt", expected_etag: "",
+                                                 content: "beat" });
+    const refused = await write();
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: "this outside identity is not one enabled agent" });
+    expect((await appPost("outside-agents", o.token, o.session, {
+      key_id, command_center_id: "cc", display_name: "Laptop", delivery_method: "pull",
+      recipe_id: null })).status).toBe(200);
+    expect((await write()).status).toBe(200);
+  });
+
   it("writes no entry when the grant is refused", async () => {
     const o = await signedIn();
     let puts = 0;

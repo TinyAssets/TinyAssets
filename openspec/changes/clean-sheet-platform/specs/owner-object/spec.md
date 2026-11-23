@@ -443,7 +443,7 @@ A run's held call SHALL be bound to the run's conversation: the owner's yes SHAL
 - **THEN** the run settles `succeeded` with the code `tool_deferred`, and nothing is posted to the owner's room
 
 ### Requirement: Every outside call is admitted against its client's grant
-The object SHALL admit each call from an outside client against that client's grant before any door acts: an MCP client's first verified call records it `full`, an API key with no grant is refused, a revoked client is refused, and after a revoke only a sign-in made after it is admitted. Only the owner in its session SHALL change a grant; the owner's account MAY revoke one without a session.
+The object SHALL admit each call from an outside client against that client's grant before any door acts: an MCP client's first verified call records it `full`, an API key's mint writes it `full` too unless the mint names scopes (a scoped key acting only once registered as an agent), an API key with no grant is refused, a revoked client is refused, and after a revoke only a sign-in made after it is admitted. Only the owner in its session SHALL change a grant; the owner's account MAY revoke one without a session.
 
 #### Scenario: A grant revoked and granted again
 - **WHEN** the owner revokes a client's grant and then grants it `full` again

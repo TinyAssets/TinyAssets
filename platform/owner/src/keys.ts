@@ -5,9 +5,10 @@
  * holds only its client hash (`grants.ts`); this row holds what the owner is shown: the key
  * id, its name, its mint time and its last use, and when it was revoked.
  *
- * - **Mint** (`OwnerDO.keyMint`): the key's grant (`Grants.set`, source `api_key`, scoped,
- *   revision 0) and this row in one unit, the live keys counted in that unit, so two
- *   concurrent mints cannot pass the count by one. The count is the owner's set clients'
+ * - **Mint** (`OwnerDO.keyMint`): the key's grant (`Grants.set`, source `api_key`, revision
+ *   0; full, as an MCP client's first call records one, unless the mint names scopes) and
+ *   this row in one unit, the live keys counted in that unit, so two concurrent mints
+ *   cannot pass the count by one. The count is the owner's set clients'
  *   own bound (`GRANT_LIMITS.maxOwnerClients`, the 10 GB's share: each key's grant is an
  *   owner-set client), held equal by a test. An agent's held key request (a policy card,
  *   `api_key_request`) is applied with the grant, once, its scopes the card's.
@@ -141,7 +142,8 @@ export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
   readonly keys: Keys;
   readonly grants: {
     set(session: LiveSession, change: { readonly client: string; readonly source: "api_key";
-                                        readonly mode: "scoped"; readonly scopes: unknown;
+                                        readonly mode: "full" | "scoped";
+                                        readonly scopes: unknown;
                                         readonly expected_revision: 0; readonly name: string },
         now: number): { readonly scopes: Scope[]; readonly revision: number };
   };
@@ -153,9 +155,9 @@ export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
 export const keysDoors = Object.freeze({
   /**
    * Mint an API key's record and its grant, in the owner's session, in one unit: the live
-   * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, scoped,
-   * revision 0), an agent's held key request applied with it when one is named
-   * (`proposal`), and the key's row. The binder then writes the key's directory entry and
+   * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, revision 0;
+   * scoped when it names scopes, else full), an agent's held key request applied with it
+   * when one is named (`proposal`), and the key's row. The binder then writes the key's directory entry and
    * shows its secret once (`doors/src/api-keys.ts`); the object never sees the secret.
    */
   keyMint(o: KeysDoorNeeds, { session, r }: Call<KeyMintRequest, "session">):
@@ -163,11 +165,13 @@ export const keysDoors = Object.freeze({
     const key = keyId(r["key_id"]);
     const name = keyName(r["name"]);
     const now = Math.floor(clock());  // whole seconds: the directory entry's mint time
+    // A grant names scopes exactly when it is scoped (`Grants.set`); with none it is full.
+    const mode = Array.isArray(r["scopes"]) && r["scopes"].length > 0 ? "scoped" : "full";
     return o.storage.transactionSync(() => {
       const row = o.keys.add(session, key, apiKeyOrigin(key).client, name, now);
       const set = o.grants.set(session, {
-        client: apiKeyOrigin(key).client, source: "api_key", mode: "scoped",
-        scopes: r["scopes"], expected_revision: 0, name,
+        client: apiKeyOrigin(key).client, source: "api_key", mode, scopes: r["scopes"],
+        expected_revision: 0, name,
       }, now);
       if (r["proposal"] !== undefined) {
         o.policy.applyKeyRequest(session, r["proposal"], set.scopes, now);
