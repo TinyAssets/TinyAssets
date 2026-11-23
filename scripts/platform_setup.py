@@ -147,11 +147,6 @@ class Gh:
 # --- the production secrets ----------------------------------------------------------------
 
 
-def make_mac() -> str:
-    """32 random bytes, base64url: `ROUTING_MAC_KEY` (`contract/src/routing-mac.ts`)."""
-    return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
-
-
 def make_token() -> str:
     return secrets.token_urlsafe(32)
 
@@ -165,8 +160,7 @@ def make_keyring() -> str:
 
 # The secrets this setup makes, each by its kind: the deploy's facts (`platform.json`).
 PLATFORM_FACTS = Path(__file__).resolve().parent.parent / "platform" / "deploy" / "platform.json"
-MAKERS: dict[str, Callable[[], str]] = {"mac": make_mac, "token": make_token,
-                                        "keyring": make_keyring}
+MAKERS: dict[str, Callable[[], str]] = {"token": make_token, "keyring": make_keyring}
 MADE: dict[str, Callable[[], str]] = {
     name: MAKERS[kind] for name, kind in
     json.loads(PLATFORM_FACTS.read_text(encoding="utf-8"))["made"]["secrets"].items()}

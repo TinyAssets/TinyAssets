@@ -79,8 +79,8 @@ export const LIMITS = Object.freeze({ subrequests: 10_000_000 });
 /**
  * The owner Worker's top level: an environment's keys, the schema, the environments, the
  * services `SERVICES` allows, and
- * - one secret, declared by name (it binds nothing): the routing key the sandbox tokens are
- *   MAC'd under (`contract/src/routing-mac.ts`), the doors Worker's too;
+ * - one secret, declared by name (it binds nothing): the routing keyring the sandbox tokens
+ *   are MAC'd under (`contract/src/routing-mac.ts`), the doors Worker's too;
  * - one class, `OwnerDO`, SQLite-backed;
  * - one KV namespace, `CONTROL`;
  * - one queue, the erasure queue's producer (slice L), whose one consumer, the doors Worker,
@@ -94,7 +94,7 @@ export const CONFIG = Object.freeze({
   keys: Object.freeze([...ENV_KEYS, "$schema", "env", "services", "secrets", "kv_namespaces",
                        "queues"]),
   flags: Object.freeze({ carries: Object.freeze([NO_EXPORTS]) }),
-  secrets: Object.freeze(["ROUTING_MAC_KEY"]),
+  secrets: Object.freeze(["ROUTING_KEYRING"]),
   classes: Object.freeze(["OwnerDO"]),
   kv: Object.freeze(["CONTROL"]),
   queues: Object.freeze({ producers: Object.freeze(["ERASURES"]), consumes: false }),

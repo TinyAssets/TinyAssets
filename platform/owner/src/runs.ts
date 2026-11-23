@@ -85,7 +85,7 @@ import {
   QUEUE_ROWS, RESULT_BYTES,
 } from "../../contract/src/limits";
 import { type Candidate, type Plan, ranked, type Usable } from "./auto";
-import type { Ranking } from "../../sources/src/ranking";
+import { interactive, type Ranking } from "../../sources/src/ranking";
 import { nextOccurrence, parseCron } from "./cron";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
@@ -1029,9 +1029,10 @@ export class Runs {
    * 4.1): its named engine, on its named credential (else its record's credentials in
    * order, a key's run on the named connection, else the strongest connected one whose
    * source lists the engine); or for `auto`, the strongest connected source that lists an
-   * engine. An unattended run takes only a credential its record allows unattended. The
-   * sign-ins read are the run's own sandbox's (`authority`'s): the owner's own sandbox's
-   * (`engine_signins`), or an outside client's, as its own runner reported them on its live
+   * engine, on a model a run can call turn by turn unless the agent names one. An unattended
+   * run takes only a credential its record allows unattended. The sign-ins read are the
+   * run's own sandbox's (`authority`'s): the owner's own sandbox's (`engine_signins`), or an
+   * outside client's, as its own runner reported them on its live
    * lease. A login is never copied: a client's `auto` run uses a plan only where that
    * client's sandbox is known signed in itself, else the owner's keys. An agent that names
    * the vendor's sign-in is admitted unless its sandbox is known signed out (the owner's
@@ -1130,8 +1131,12 @@ export class Runs {
         }
       };
       for (const candidate of ranked(keys, [...plans.values()], ask.ranking)) {
+        // A key's model its source record marks `not_interactive` answers no run's turn, so
+        // `auto` never picks it on its own; one the agent names is its own choice.
         if ((file.connection !== null && candidate.connection !== file.connection)
-            || (file.model !== null && candidate.model !== file.model)) {
+            || (file.model !== null && candidate.model !== file.model)
+            || (file.model === null && candidate.connection !== null
+                && !interactive(sources.get(candidate.source), candidate.model))) {
           continue;
         }
         const plan = candidate.connection === null ? plans.get(candidate.source)

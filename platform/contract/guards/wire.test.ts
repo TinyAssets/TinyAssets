@@ -1,8 +1,9 @@
 /**
  * The values one Worker sends and another reads, each read by its one checker beside it: the
  * egress host's doors (`egressDoor`, each id by its grammar in `ids.ts`) read back every URL
- * the contract makes; a sealed route holds only an authority (`AUTHORITY`); an owner message
- * is exactly its owner; and the owner names only the platform makes are reserved.
+ * the contract makes; a sealed route holds only an authority (`AUTHORITY`), under the kid it
+ * was sealed by; an owner message is exactly its owner; and the owner names only the platform
+ * makes are reserved.
  */
 import { describe, expect, it } from "vitest";
 
@@ -11,13 +12,17 @@ import { decideCredential, decideDoor, egressBaseUrl, egressDoor, runUrls, signi
 import { FOREIGN_OWNER, REHEARSAL_OWNER, reservedOwner } from "../src/ids";
 import { ownerMessage } from "../src/queues";
 import { refusalOf } from "../src/refusal";
-import { openRoute, SEALED_ROUTE, sealRoute } from "../src/routing-mac";
+import { ringText } from "../src/envelope";
+import { openRoute, routeShaped, sealRoute } from "../src/routing-mac";
 
 const RUN = `run_${"1".repeat(32)}`;
 const SECRET = "2".repeat(64);
 const CONNECTION = `c${"3".repeat(24)}`;
 const SIGNIN = `si_${"4".repeat(32)}`;
-const KEY = Buffer.alloc(32, 7).toString("base64url");
+/** A routing keyring of `kids`, each key its own fill, `active` the one it seals under. */
+const ring = (active: string, kids: readonly string[]) => ringText({ active, keys: new Map(
+  kids.map((kid) => [kid, new Uint8Array(32).fill(Number(kid.slice(1)))])) });
+const KEY = ring("k1", ["k1"]);
 
 const path = (url: string) => new URL(url).pathname;
 
@@ -86,17 +91,57 @@ describe("the egress host's doors", () => {
 });
 
 describe("a sealed route", () => {
-  it("holds the owner's own authority or a client's, and opens to it", () => {
+  it("holds the owner's own authority or a client's, and opens to it", async () => {
     for (const authority of ["owner", "a".repeat(64)]) {
-      const sealed = sealRoute(KEY, { owner: "user_a", authority });
-      expect(SEALED_ROUTE.test(sealed)).toBe(true);
-      expect(openRoute(KEY, sealed)).toEqual({ owner: "user_a", authority });
+      const sealed = await sealRoute(KEY, { owner: "user_a", authority });
+      expect(routeShaped(sealed)).toBe(true);
+      expect(await openRoute(KEY, sealed)).toEqual({ owner: "user_a", authority });
     }
   });
 
-  it("is never made for any other authority", () => {
+  it("fits the longest owner and authority in the shape the sandbox Worker takes", async () => {
+    const owner = "\u{1F600}".repeat(512);
+    const sealed = await sealRoute(KEY, { owner, authority: "a".repeat(64) });
+    expect(routeShaped(sealed)).toBe(true);
+    expect(await openRoute(KEY, sealed)).toEqual({ owner, authority: "a".repeat(64) });
+    for (const bad of [`${sealed}${"A".repeat(1024)}`, "", "a route", `${sealed}\n`, null]) {
+      expect(routeShaped(bad)).toBe(false);
+    }
+  });
+
+  it("is taken by the sandbox Worker in any format the owner seals", () => {
+    // The format before the ring (kid-less, base64url of a nonce, the sealed route and its
+    // tag): the sandbox deploys before the owner, so it takes what the owner's version before
+    // seals.
+    expect(routeShaped(Buffer.alloc(12 + 40 + 16, 7).toString("base64url"))).toBe(true);
+  });
+
+  it("is sealed under the ring's active kid and opens under any ring that holds it", async () => {
+    const sealed = await sealRoute(ring("k1", ["k1", "k2"]), { owner: "user_a",
+                                                                authority: "owner" });
+    expect(sealed.split(".")[1]).toBe("k1");
+    for (const held of [ring("k2", ["k1", "k2"]), ring("k1", ["k1"])]) {
+      expect(await openRoute(held, sealed)).toEqual({ owner: "user_a", authority: "owner" });
+    }
+    const newer = await sealRoute(ring("k2", ["k1", "k2"]), { owner: "user_a",
+                                                               authority: "owner" });
+    expect(newer.split(".")[1]).toBe("k2");
+    expect(await openRoute(ring("k2", ["k2"]), newer)).toEqual({ owner: "user_a",
+                                                                 authority: "owner" });
+    // A ring that no longer holds its kid, or holds another key under it, opens nothing.
+    expect(await openRoute(ring("k2", ["k2"]), sealed)).toBeNull();
+    expect(await openRoute(ringText({ active: "k1", keys: new Map([["k1",
+      new Uint8Array(32).fill(9)]]) }), sealed)).toBeNull();
+  });
+
+  it("is never made for any other authority, nor under no keyring", async () => {
     for (const authority of ["client", "A".repeat(64), "a".repeat(63)]) {
-      expect(() => sealRoute(KEY, { owner: "user_a", authority })).toThrow(/authority/);
+      await expect(sealRoute(KEY, { owner: "user_a", authority })).rejects.toThrow(/authority/);
+    }
+    for (const none of [undefined, "", Buffer.alloc(32, 7).toString("base64url")]) {
+      await expect(sealRoute(none, { owner: "user_a", authority: "owner" }))
+        .rejects.toThrow(/ROUTING_KEYRING/);
+      await expect(openRoute(none, "v1.k1.x.y")).rejects.toThrow(/ROUTING_KEYRING/);
     }
   });
 });

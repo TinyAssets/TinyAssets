@@ -120,11 +120,14 @@ export async function gated() {
   const { session: cookie } = await stub.sessionOpen(bind({ authenticated_at: signedIn() }));
   const session = (): Binding => bind({ session: cookie });
 
-  /** Connect a pasted key: prepare, seal, the models, commit; returns the connection. */
+  /**
+   * Connect a pasted key: prepare, seal, the models, commit; returns the connection. Its
+   * source record is `source`, by default the one named as its provider.
+   */
   const connect = async (key: string, record: Source = ANTHROPIC, display = "Key",
-                         models?: ModelRecord[]) => {
+                         models?: ModelRecord[], source = record.upstream.provider) => {
     const prepared = await stub.connectionPrepare(session(), {
-      source: record.upstream.provider, kind: "api_key", display_name: display,
+      source, kind: "api_key", display_name: display,
       provider: record.upstream.provider, revocable: false });
     const sealed = await env.CONNECT.seal(name, prepared.connection, 1, key, record);
     const committed = await stub.connectionCommit(session(), {

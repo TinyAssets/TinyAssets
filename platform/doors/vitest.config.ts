@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
@@ -12,8 +11,11 @@ import { auxiliary, fake, fakeConfig, main, once, pool } from "../ci/workers";
 import { QUEUES } from "../contract/src/queue-names";
 import { AUTHKIT } from "./test/fake-providers";
 
-/** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), the doors' and the owner's. */
-const ROUTING_KEY = randomBytes(32).toString("base64url");
+/**
+ * The sandbox tokens' routing keyring (`ROUTING_KEYRING`), the doors' and the owner's: a
+ * rotated ring, so `k1` is an older kid the doors still verify.
+ */
+const ROUTING_RING = keyring("k2", ["k1", "k2"]);
 
 /** The shared inbound app's signing secret (`shared-apps.json`'s Slack), for the tests. */
 const SLACK_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
@@ -51,7 +53,7 @@ export default defineConfig({
       // The owner's SANDBOX is the owner suite's fake sandbox Worker
       // (`ci/fake-sandbox.ts`), whose record a test reads through SANDBOX_LOG. GATEWAY
       // reaches the real gateway Worker (its `ConnectGateway` entrypoint, as the config names
-      // it). ROUTING_MAC_KEY is both the doors' and the owner's, as their configs share it.
+      // it). ROUTING_KEYRING is both the doors' and the owner's, as their configs share it.
       // The doors' and each auxiliary Worker have every binding their configs give them
       // (`main`, `auxiliary`), and the tests state each secret: none is read from the host.
       // The import consumer's tests take a bundle the importer's builder made in Node
@@ -62,7 +64,7 @@ export default defineConfig({
           cloudflareTest(once(async () => pool(main(join(PLATFORM, "doors"), {
               durableObjects: { OWNER: { className: "OwnerDO", scriptName: OWNER_GATE,
                                          useSQLite: true } },
-              bindings: { ...AUTHKIT, ROUTING_MAC_KEY: ROUTING_KEY,
+              bindings: { ...AUTHKIT, ROUTING_KEYRING: ROUTING_RING,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret", OPERATOR_KEYRING,
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
@@ -74,7 +76,7 @@ export default defineConfig({
               outboundService: fakeConfig(FAKE_PROVIDERS).name,
               workers: [
                 await auxiliary(join(PLATFORM, "owner"), {
-                  bindings: { ROUTING_MAC_KEY: ROUTING_KEY },
+                  bindings: { ROUTING_KEYRING: ROUTING_RING },
                   serviceBindings: { SANDBOX: fakeConfig(FAKE_SANDBOX).name } }),
                 ownerGate(OWNER_GATE),
                 await auxiliary(join(PLATFORM, "gateway"),

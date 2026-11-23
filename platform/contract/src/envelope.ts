@@ -178,15 +178,21 @@ export function ringText(ring: Ring): string {
  * back under its own name.
  */
 export function ringWith(ring: Ring, key: Uint8Array): Ring {
-  let highest = 0n;
+  const newest = newestKid(ring);
+  const active = `k${newest === null ? 1n : BigInt(newest.slice(1)) + 1n}`;
+  return Object.freeze({ active, keys: new Map([...ring.keys, [active, key]]) });
+}
+
+/** The kid of the ring's highest `k<n>`, the one `ringWith` added last; null for none. */
+export function newestKid(ring: Ring): string | null {
+  let newest: { kid: string; n: bigint } | null = null;
   for (const kid of ring.keys.keys()) {
     const n = NUMBERED.exec(kid)?.[1];
-    if (n !== undefined && BigInt(n) > highest) {
-      highest = BigInt(n);
+    if (n !== undefined && BigInt(n) > (newest?.n ?? 0n)) {
+      newest = { kid, n: BigInt(n) };
     }
   }
-  const active = `k${highest + 1n}`;
-  return Object.freeze({ active, keys: new Map([...ring.keys, [active, key]]) });
+  return newest?.kid ?? null;
 }
 
 function aad(domain: Domain, kid: string): Uint8Array {

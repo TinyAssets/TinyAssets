@@ -429,7 +429,7 @@ export interface ConversationRequest {
  * owner's (its runs' and its sign-ins'), and the key a ticket is minted under.
  */
 export interface RelayDoorNeeds extends Pick<DoorUnits, "door">, Pick<ObjectReads, "owner"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
+  readonly env: Pick<OwnerEnv, "ROUTING_KEYRING">;
   readonly relay: Relay;
   readonly tickets: Pick<Tickets, "mint" | "endGrant">;
   readonly runs: Pick<Runs, "owns">;
@@ -460,7 +460,7 @@ export const relayDoors = Object.freeze({
     if (expires <= now) {
       throw new Refusal("ticket_refused", TICKET_REFUSED);
     }
-    const minted = mintToken(o.env.ROUTING_MAC_KEY, "socket", o.owner(), expires);
+    const minted = mintToken(o.env.ROUTING_KEYRING, "socket", o.owner(), expires);
     return { ticket: minted.token, conversation_id: conversation as string,
              expires_at: o.tickets.mint(minted.hash, conversation as string, grant,
                                             tokenExpires, now) };

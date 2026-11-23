@@ -33,7 +33,7 @@ interface Env {
   readonly DRIVER: Fetcher;
   readonly CONNECT: ConnectService;
   readonly OWNER: DurableObjectNamespace<LegOwner>;
-  readonly ROUTING_MAC_KEY: string;
+  readonly ROUTING_KEYRING: string;
 }
 
 const MIB = 1024 * 1024;
@@ -120,7 +120,7 @@ export default class Tools extends WorkerEntrypoint<Env> {
     if (new URL(request.url).pathname === "/token") {
       return Response.json({
         host: EGRESS_HOST, path: `/r/${RUN}/${SECRET}/c/${CONNECTION}/v1/messages`,
-        token: mintToken(this.env.ROUTING_MAC_KEY, "egress", OWNER, LEASE_LIVED).token });
+        token: mintToken(this.env.ROUTING_KEYRING, "egress", OWNER, LEASE_LIVED).token });
     }
     const sealed = await this.env.CONNECT.seal(OWNER, CONNECTION, 1, KEY, ANTHROPIC);
     await this.env.OWNER.getByName(OWNER).hold(sealed.blob);

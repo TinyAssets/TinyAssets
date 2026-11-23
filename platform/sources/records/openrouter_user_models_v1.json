@@ -39,6 +39,9 @@
   "engines": [
     "pi"
   ],
+  "not_interactive": [
+    "*:batch"
+  ],
   "oauth": {
     "protocol": "pkce_user_key_v1",
     "authorization_endpoint": "https://openrouter.ai/auth",

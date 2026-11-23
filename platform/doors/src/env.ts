@@ -23,7 +23,7 @@ export interface DoorsEnv {
   readonly OWNER_ISSUER: string;
   readonly FOREIGN_ISSUERS: string;
   readonly UPSTREAM: string;
-  readonly ROUTING_MAC_KEY: string;
+  readonly ROUTING_KEYRING: string;
   readonly WORKOS_API_KEY: string;
   readonly E2B_WEBHOOK_SECRET: string;
   readonly OPERATOR_KEYRING: string;

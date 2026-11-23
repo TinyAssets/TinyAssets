@@ -417,6 +417,12 @@ export interface SourceRecord {
   readonly oauth?: OAuthSpec;
   /** A gateway source's: the CLI records that can run on its key, through the egress door. */
   readonly engines?: readonly string[];
+  /**
+   * A gateway source's model patterns, a ranking's (`ranking.ts`), of the models its catalog
+   * lists that answer no interactive call (a vendor's batch-priced variants): `auto` picks
+   * none of them unless the agent names one (`interactive`).
+   */
+  readonly not_interactive?: readonly string[];
   readonly cli?: CliSpec;
 }
 
