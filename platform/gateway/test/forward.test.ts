@@ -18,7 +18,7 @@ import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { serviceSource, type Source } from "../../contract/src/egress-scope";
 import {
-  credit, forwardMetered, forwardRead, listing, strength, verify,
+  credit, forwardMetered, forwardRead, listing, verify,
 } from "../src/forward";
 import { redaction } from "../src/redact";
 import { seal, type Binding } from "../src/keyring";
@@ -598,10 +598,9 @@ describe("listing", () => {
   const READ = { url: "https://models.test/models", rows: ["data"], id: ["id"],
                  score: ["benchmarks", "artificial_analysis", "intelligence_index"] };
   const { score: _score, ...UNSCORED } = READ;
-  const read = async (key: string, record: Source = LISTED, asked: unknown = READ,
-                      reader: typeof listing | typeof strength = listing) => {
+  const read = async (key: string, record: Source = LISTED, asked: unknown = READ) => {
     const env = ring("k1");
-    return reader(env, ALICE, await sealed(env, ALICE, key, record), asked)
+    return listing(env, ALICE, await sealed(env, ALICE, key, record), asked)
       .catch((caught: unknown) => caught);
   };
 
@@ -636,14 +635,6 @@ describe("listing", () => {
       expect(await read("sk-listed", LISTED, bad), JSON.stringify(bad))
         .toMatchObject({ code: "invalid_request" });
     }
-  });
-
-  it("answers an owner before #5833's strength read with the scored models alone",
-     async () => {
-    expect(await read("sk-listed", LISTED, READ, strength)).toEqual({ scores: [
-      { id: "nvidia/nemotron-3.5-super-vl:free", score: 13.6 }] });
-    expect(await read("sk-listed", LISTED, UNSCORED, strength))
-      .toMatchObject({ code: "invalid_request" });
   });
 });
 

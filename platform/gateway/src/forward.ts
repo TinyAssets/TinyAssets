@@ -32,7 +32,7 @@ import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
   allows, creditRead, egressHeaders, type EgressScope, egressTarget, isService,
-  type ListedModel, listedBy, listingRead, type Meter, meteredCall, meteredModel,
+  listedBy, listingRead, type Meter, meteredCall, meteredModel,
   type ModelScope, paysBy, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
@@ -649,35 +649,13 @@ export async function listing(env: KeyringEnv, bound: Binding, blob: unknown,
   if (!keyed(value, ...taken("listing_read"))) {
     throw new Refusal("invalid_request");
   }
-  return Object.freeze({ models: Object.freeze(await listed(env, bound, blob, value)) });
-}
-
-/**
- * The read of the same listing an owner before #5833 called (`strength_read`, its score path
- * required, which the owner hands no more): the scored models alone. It goes once the stage
- * serves an owner whose shapes mark it so (`untangle-2026-11/served-models-contract.md`).
- */
-export async function strength(env: KeyringEnv, bound: Binding, blob: unknown,
-                               value: unknown):
-    Promise<{ readonly scores: readonly { readonly id: string; readonly score: number }[] }> {
-  if (!keyed(value, ...taken("strength_read"))) {
-    throw new Refusal("invalid_request");
-  }
-  const scores = (await listed(env, bound, blob, value)).flatMap(({ id, score }) =>
-    score === null ? [] : [Object.freeze({ id, score })]);
-  return Object.freeze({ scores: Object.freeze(scores) });
-}
-
-/** A listing read's models (`listedBy`), or `upstream_error` for an answer of another shape. */
-async function listed(env: KeyringEnv, bound: Binding, blob: unknown, value: unknown):
-    Promise<ListedModel[]> {
   const read = listingRead(value);
   const models = listedBy(read, await sealedRead(env, bound, blob, read.url,
                                                  LISTING_ANSWER_MAX));
   if (models === null) {
     throw new Refusal("upstream_error");
   }
-  return models;
+  return Object.freeze({ models: Object.freeze(models) });
 }
 
 /**
