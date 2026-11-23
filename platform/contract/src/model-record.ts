@@ -37,7 +37,8 @@ export interface ModelRecord {
   readonly name: string;
   readonly reasoning: boolean;
   readonly thinkingLevelMap?: { readonly [level in ThinkingLevel]?: string | null | undefined };
-  readonly promptCache?: { readonly short?: number | undefined; readonly long?: number | undefined };
+  readonly promptCache?: { readonly short?: number | undefined;
+                           readonly long?: number | undefined };
   readonly input: ("text" | "image")[];
   readonly inputLimits?: {
     readonly maxRequestBytes?: number | undefined;
