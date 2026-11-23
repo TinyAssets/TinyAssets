@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { MCP_RESOURCE } from "../../contract/src/identity";
 import { DEFINITION_BYTES_MAX } from "../../contract/src/limits";
+import { NOT_AN_AGENT } from "../../contract/src/refusal";
 import { slotBusy } from "../../contract/src/slots";
 import { mcpOrigin } from "../src/binder";
 import { now } from "../src/config";
@@ -180,10 +181,8 @@ describe.each([
       const refused = await client.callTool({ name, arguments: args });
       expect(refused.isError).toBe(true);
       expect(refused.content).toEqual([{ type: "text",
-        text: "this connection has no registered agent, which a mailbox, its rooms and a " +
-              "narrowed grant's work need: file one with agent_register, for the owner to " +
-              "approve\nThis refusal is final: the same call is refused again until what it " +
-              "names changes." }]);
+        text: `${NOT_AN_AGENT}\nThis refusal is final: the same call is refused again until ` +
+              "what it names changes." }]);
     }
     const invalid = await client.callTool({ name: "mailbox_read",
                                             arguments: { limit: 5, owner: "bob" } });
@@ -233,7 +232,7 @@ describe.each([
   it("answers a refusal for the moment as the tool's error, telling the model when to call " +
      "again, and the call made again succeeds", async () => {
     const alice = owner();
-    const { key } = await mintKeyFor(alice);
+    const { key, key_id } = await mintKeyFor(alice);
     const client = await mcpClient({ access_token: key }, mode);
     await refuseOnce("outsideAgents", alice, slotBusy());
     const busy = await client.callTool({ name: "agents_list", arguments: {} });
@@ -242,7 +241,7 @@ describe.each([
                                     "is temporary: try the same call again in 1 second." }]);
     const again = await client.callTool({ name: "agents_list", arguments: {} });
     expect(again.isError).toBeFalsy();
-    expect(answerOf(again)).toMatchObject({ agents: [] });
+    expect(answerOf(again)).toMatchObject({ agents: [{ source_ref: key_id }] });
     await client.close();
   });
 
@@ -257,7 +256,7 @@ describe.each([
       .toEqual(profileNames("custom").filter((name) => name !== "code"));
     const listed = await client.callTool({ name: "agents_list", arguments: {} });
     expect(listed.isError).toBeFalsy();
-    expect(answerOf(listed)).toMatchObject({ agents: [] });
+    expect(answerOf(listed)).toMatchObject({ agents: [{ source_ref: key_id }] });
     const [profiled] = await crossed(alice, "toolProfile");
     expect(profiled!.binding).toMatchObject({
       owner: alice, caller: alice, origin: apiKeyOrigin(key_id),

@@ -324,6 +324,27 @@ describe("a restore", () => {
       .toEqual([gen.gen]);
   });
 
+  it("fences a scoped key with its agent, as the owner's revoke does, and keeps an app's",
+     async () => {
+    const o = await owner();
+    await o.stub.keyMint(o.session(), { key_id: "0123456789abcdef", name: "laptop",
+      scopes: [{ universe: "cc", agent: "main", capability: "read_graph" }] });
+    await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const s = storesOn(state);
+      await s.gate.write(() => registerOn(s, MUSE, { command_center_id: "alpha",
+        display_name: "Muse", delivery_method: "pull", recipe_id: null }));
+    });
+    const agents = (stub: Stub) => sqlIn(stub, "SELECT source FROM outside_agents ORDER BY 1");
+    expect(await agents(o.stub)).toEqual([{ source: "api_key" }, { source: "mcp" }]);
+    const gen = await generate(o.stub);
+    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
+    const stub = await lose(o);
+    await stub.restoreBegin(platform(o.name), { namespace: space!["ns"] as string,
+                                                gen: gen.gen });
+    await stepped(stub, o.name);
+    expect(await agents(stub)).toEqual([{ source: "mcp" }]);
+  });
+
   it("reads a generation the owner wrote through, its log's rows given way to by the base's, " +
      "staging at most what the capture counted", async () => {
     const o = await owner();

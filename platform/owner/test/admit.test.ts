@@ -120,8 +120,7 @@ describe("the key store", () => {
     expect(MAX_KEYS).toBe(GRANT_LIMITS.maxOwnerClients);
     const r = await rig();
     const mint = (keyId: string) => r.stub.keyMint(r.session(null), {
-      key_id: keyId, name: "k", scopes: [{ universe: "cc", agent: "main",
-                                             capability: "read_graph" }] });
+      key_id: keyId, name: "k", scopes: [] });
     for (let i = 0; i < MAX_KEYS; i++) {
       await mint(i.toString(16).padStart(16, "0"));
     }

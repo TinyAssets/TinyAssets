@@ -80,6 +80,37 @@ export interface StandingGrant {
 }
 
 /**
+ * Where a full grant's agent registers when its client names no place: its grant holds
+ * everywhere, so the name only keeps one identity's agent one row across its filings.
+ */
+export const HOME_CENTER = "main";
+
+/**
+ * Where a client's agent registers (its `command_center_id`): a scoped client acts where its
+ * agent is (`OwnerDO.#universe`), so a narrowed grant's agent registers in the space its
+ * scopes name, the one `named` among several; a full grant holds everywhere, so its agent
+ * registers where `named` says, else in `HOME_CENTER`.
+ */
+export function centerOf(grant: StandingGrant, named: unknown): unknown {
+  if (grant.mode !== "scoped") {
+    return named ?? HOME_CENTER;
+  }
+  const spaces = [...new Set(grant.scopes.map((scope) => scope.universe))];
+  if (named === undefined && spaces.length === 1) {
+    return spaces[0];
+  }
+  if (named === undefined) {
+    throw new Refusal("invalid", "this connection's grant names more than one space: name " +
+                      `one of ${spaces.join(", ")} as command_center_id`);
+  }
+  if (!spaces.includes(named as string)) {
+    throw new Refusal("refused", "this connection's agent registers in a space its grant " +
+                      `names: ${spaces.join(", ")}`);
+  }
+  return named;
+}
+
+/**
  * One of the owner's AI apps as any of its agents sees it (`agents_list`): an `apps.json`
  * app, whether a live MCP grant names it (`connections` of them, the latest used at
  * `last_used`), whether a CIMD host verified one, and where its connect step is; or

@@ -273,7 +273,7 @@ describe("a key's tool profiles", () => {
     await o.policy(true);
     const ran = await api("code", { script: "return (await tools.agents_list({})).agents;" });
     expect([ran.status, await ran.json()]).toEqual([200, expect.objectContaining({
-      ok: true, value: [] })]);
+      ok: true, value: [expect.objectContaining({ source_ref: key_id })] })]);
     expect(await listed({ access_token: key })).toEqual(profileNames("custom"));
     await o.profile(apiKeyOrigin(key_id).client, "directory");
     expect((await api("code", { script: "return 1;" })).status).toBe(404);

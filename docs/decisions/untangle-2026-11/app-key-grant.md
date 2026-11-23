@@ -87,5 +87,5 @@ option A, and an honest screen.
 
 ## Owed
 
-- [ ] Scoped keys come with an outside agent's registration: the screen offers capabilities with an agent's display name, and the mint registers the key in the same unit as its grant, the triples' universe the registration's command center and their agent the grant's: `untangle/scoped-key-agent`.
+- [x] Scoped keys come with an outside agent's registration: the screen offers capabilities with an agent's display name, and the mint registers the key in the same unit as its grant, the triples' universe the registration's command center and their agent the grant's: `untangle/scoped-key-agent`. Done as the mint's registration, by `Ledger.register`, where `centerOf` puts the scopes; the screen's capabilities not built, a scoped key coming from an agent's key request (`scoped-key-agent.md`).
 - [ ] live: after the next deploy of the doors and owner, a key minted on the stage with a name alone passes the platform canary's keyed checks.
