@@ -486,9 +486,12 @@ export const ERASING = "this owner is being erased";
 
 /**
  * What the owner's doors answer an outside client that is no enabled agent: never registered,
- * or disabled. An agent is the card its client files and the owner applies
- * (`owner/src/registrations.ts`).
+ * or disabled. An app's agent is the card its client files and the owner applies
+ * (`owner/src/registrations.ts`); an API key's is made at its mint when it names scopes
+ * (`owner/src/keys.ts`), so a key without one (a full key, or a scoped key minted before
+ * that) is answered with the owner's remedy, since a key files no card.
  */
 export const NOT_AN_AGENT = "this connection has no registered agent, which a mailbox, its " +
   "rooms and a narrowed grant's work need: file one with agent_register, for the owner to " +
-  "approve";
+  "approve; an API key has one only when minted with scopes, so ask the owner to mint a " +
+  "new key";

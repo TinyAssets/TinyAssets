@@ -496,8 +496,8 @@ It never counts as "absent".
      any other id is refused at the gate, with no owner made.
   5. **Each account signs in and mints one API key** (as after `routes` above, step 4); store
      the probe keys (`TA_PROBE_KEY` and the rest) and run the platform's canary keyed. A key
-     the list shows with scopes (not "everything") is registered as no agent, so it acts
-     nowhere: turn it off and mint another.
+     minted with scopes before its agent was made at its mint (`scoped-key-agent.md`) is
+     refused as no registered agent: turn it off and mint another.
   6. **The end:** each stage account's own erasure in the owner app, then `handback` of the
      stage's route record, the one the next `routes` plan or a refused handback names. It
      deletes the stage host's routes and DNS record, detaches the

@@ -3,7 +3,7 @@
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
-import { NOT_AN_AGENT, Refusal, refusalOf } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { BUSY, slotBusy } from "../../contract/src/slots";
 
 import { env } from "cloudflare:workers";
@@ -207,8 +207,9 @@ describe("the key format", () => {
       c: now() - 86_400 }));
     const response = await api(imported, "agents_list", {});
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ agents: [], owner_agents: [],
-                                            apps: expect.any(Array) });
+    expect(await response.json()).toEqual({
+      agents: [expect.objectContaining({ source_ref: key_id })], owner_agents: [],
+      apps: expect.any(Array) });
   });
 });
 
@@ -244,22 +245,43 @@ describe("a mint", () => {
     expect(await (await api(key, "file_read", { path })).json()).toMatchObject({ text: "beat" });
   });
 
-  it("naming scopes, makes a key that acts only as its registered agent, in its command " +
-     "center", async () => {
+  it("naming scopes, makes a key whose agent is registered at its mint, in the space its " +
+     "scopes name: it writes and reads its mailbox at once, and goes with its revoke",
+     async () => {
     const o = await signedIn();
     const { key, key_id } = await (await appPost("keys", o.token, o.session, { name: "laptop",
-      scopes: ["read_files", "write_files"].map((capability) =>
+      scopes: ["read_files", "write_files", "read_graph"].map((capability) =>
         ({ universe: "cc", agent: "main", capability })) })).json<
       { key: string; key_id: string }>();
-    const write = () => api(key, "file_write", { path: "/workspace/beat.txt", expected_etag: "",
-                                                 content: "beat" });
-    const refused = await write();
-    expect(refused.status).toBe(403);
-    expect(await refused.json()).toEqual({ error: NOT_AN_AGENT });
-    expect((await appPost("outside-agents", o.token, o.session, {
-      key_id, command_center_id: "cc", display_name: "Laptop", delivery_method: "pull",
-      recipe_id: null })).status).toBe(200);
-    expect((await write()).status).toBe(200);
+    expect((await api(key, "file_write", { path: "/workspace/beat.txt", expected_etag: "",
+                                           content: "beat" })).status).toBe(200);
+    expect((await api(key, "mailbox_read", { limit: 5 })).status).toBe(200);
+    const agents = async () => (await (await appPost("tools/agents_list", o.token, o.session,
+                                                     {})).json<{ agents: {
+      outside_client: string; command_center_id: string; display_name: string;
+      source: string; delivery_method: string }[] }>()).agents
+      .filter((agent) => agent.outside_client === apiKeyOrigin(key_id).client);
+    expect(await agents()).toEqual([expect.objectContaining({
+      command_center_id: "cc", display_name: "laptop", source: "api_key",
+      delivery_method: "pull" })]);
+    expect((await appPost("grants/revoke", o.token, null,
+                          { client: apiKeyOrigin(key_id).client })).status).toBe(200);
+    expect(await agents()).toEqual([]);
+  });
+
+  it("refuses a scoped mint whose agent cannot register, keeping nothing of it", async () => {
+    const o = await signedIn();
+    let puts = 0;
+    const counted = directoryWith({ put: async () => { puts++; } });
+    const response = await call(new Request(url("/app/api/keys"), {
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
+                                 Authorization: `Bearer ${o.token}`,
+                                 Cookie: `__Host-ta-owner=${o.session}` },
+      body: JSON.stringify({ name: "laptop", scopes: ["cc", "dd"].map((universe) =>
+        ({ universe, agent: "main", capability: "read_graph" })) }) }), counted);
+    expect(response.status).toBe(400);
+    expect(puts).toBe(0);
+    expect((await grantsOf(o.owner)).filter((row) => row.source === "api_key")).toEqual([]);
   });
 
   it("writes no entry when the grant is refused", async () => {

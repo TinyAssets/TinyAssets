@@ -624,6 +624,7 @@ export interface GrantsDoorNeeds extends Pick<ObjectReads, "storage"> {
   readonly keys: Pick<Keys, "revoked" | "forgotten">;
   readonly ledger: {
     suppressClient(client: string, now: number): void;
+    removeKeyAgents(client: string, now: number): unknown;
     /** One of the owner's live agents by name, else refused (`no_agent`, `agent_retired`). */
     liveNative(agent: string): unknown;
     /** The owner's live agents (`all` false). */
@@ -642,6 +643,17 @@ function endClient(o: GrantsDoorNeeds, client: string): void {
   o.registrations.endClient(client);
   // And its runs (ADR-034 decision 6): their grants gone in this unit, their CLIs stopped.
   o.launcher.endClient(client, clock());
+}
+
+/**
+ * In the revoke's transaction, what goes with a revoked client: the key it is, revoked, with
+ * that key's agent (`Ledger.removeKeyAgents`); and revoked rows past their bound forgotten,
+ * keys with them.
+ */
+function revokedWith(o: GrantsDoorNeeds, client: string): void {
+  o.keys.revoked(client, Math.floor(clock()));
+  o.ledger.removeKeyAgents(client, clock());
+  evictRevoked(o);
 }
 
 /** In the revoke's transaction: revoked rows past their bound forgotten, keys with them. */
@@ -685,8 +697,7 @@ export const grantsDoors = Object.freeze({
         endClient(o, set.client);
       }
       if (set.mode === "revoked") {
-        o.keys.revoked(set.client, Math.floor(clock()));
-        evictRevoked(o);
+        revokedWith(o, set.client);
       }
       return set;
     });
@@ -700,8 +711,7 @@ export const grantsDoors = Object.freeze({
     return o.storage.transactionSync(() => {
       const revoked = o.grants.revoke(r["client"], clock());
       endClient(o, revoked.client);
-      o.keys.revoked(revoked.client, Math.floor(clock()));
-      evictRevoked(o);
+      revokedWith(o, revoked.client);
       return revoked;
     });
   },
