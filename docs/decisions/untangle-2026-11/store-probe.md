@@ -50,8 +50,10 @@ which the platform lockfile has not installed since slice D, so the probe cannot
    header says the probe is answered and deleted and links the code at `14ec3e8f6`; P8 and P5
    read as lapsed with the thread stores; the lines that ran the deleted scripts name them at
    that commit.
-3. **The isolation guard's synthetic workflow** requires `scripts/incident_issue.js`, the
-   script `deploy-prod.yml` requires the same way, instead of the deleted probe's `door.js`.
+3. **The isolation guard's synthetic workflow** requires a synthetic `scripts/probes/probe/step.js`,
+   as its other cases name synthetic files, instead of the deleted probe's `door.js`. The one real
+   script a workflow requires, `scripts/incident_issue.js`, is no fixture: the cutover deletes it,
+   and the guard then refuses the import unless the manifest names it.
 4. **`model-catalog.md`'s owed line is ticked.**
 
 ## Problems, under the fix that removes each
@@ -65,8 +67,8 @@ which the platform lockfile has not installed since slice D, so the probe cannot
   - `store-probe.md` cites the deleted paths as runnable (`node .../local.mjs`, `delete.sh` by hand).
 - Tests.
   - `ci/guards/isolation.test.ts`'s "allows a step the repository's scripts" named a script this
-    change deletes (a hidden link from a fixture to a probe); it names a script a workflow
-    really requires.
+    change deletes (a hidden link from a fixture to a probe); it names a synthetic script, so
+    it holds the layer rule (`ci/kit/layers.ts` `INLINE`) whatever scripts the tree keeps.
 
 ## Found and left
 
