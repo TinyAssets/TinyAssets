@@ -62,7 +62,7 @@ export interface DoorRequests {
   readonly grantRevoke: DoorFields<"client">;
   readonly grantForget: DoorFields<"client">;
   readonly grantForgetRevoked: DoorFields<"clients">;
-  readonly keyMint: DoorFields<"key_id" | "name" | "scopes", "proposal">;
+  readonly keyMint: DoorFields<"key_id" | "name" | "scopes">;
   readonly ownerErase: DoorFields<"confirm">;
   readonly erasureBegin: DoorFields<"confirm">;
   readonly inboundAccept: DoorFields<"event_id" | "event_at" | "body" | "headers">;

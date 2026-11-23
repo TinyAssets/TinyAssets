@@ -79,7 +79,7 @@
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind.
  */
 import { FILE_DEFAULTS, type FileDefaults } from "../../contract/src/file-defaults";
-import { keyed, object, whole } from "../../contract/src/checks";
+import { object, whole } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import {
   CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, MODEL_DEFAULTS, policyDigest,
@@ -538,32 +538,6 @@ export class Policy {
                                  decision: "ask", outcome: "requested" }, now);
       return { card_id: card, request_digest: digest, generation };
     });
-  }
-
-  /**
-   * In the mint's unit (`keyMint`), in the owner's session: an agent's held key request
-   * applied with its key's grant, once (the Python's `_apply_key_request`). The card must
-   * be pending, an `api_key_request` whose scopes are exactly the grant's, with
-   * the digest the owner was shown; it is marked applied here.
-   */
-  applyKeyRequest(session: LiveSession, proposal: unknown, scopes: unknown, now: number): void {
-    proven(session, "session");
-    if (!keyed(proposal, ["request_id", "digest"])
-        || !cardId(proposal["request_id"]) || !cardId(proposal["digest"])) {
-      throw new Refusal("invalid", "invalid proposal apply");
-    }
-    const held = this.#sql.exec<{ digest: string; document: string }>(
-      "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-        "AND applied_at IS NULL", proposal["request_id"] as string,
-    ).toArray()[0];
-    const change: unknown = held === undefined ? {} : JSON.parse(held.document);
-    if (held === undefined || held.digest !== proposal["digest"] || !object(change)
-        || change["type"] !== "api_key_request"
-        || canonical(change["scopes"]) !== canonical(scopes)) {
-      throw new Refusal("refused", "proposal is not the pending card shown");
-    }
-    this.#sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
-                   proposal["request_id"] as string);
   }
 
   /** The pending proposals, oldest first, each as the owner is shown it. */

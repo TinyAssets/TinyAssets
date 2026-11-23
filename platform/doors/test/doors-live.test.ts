@@ -11,7 +11,7 @@ import { createHash, createHmac } from "node:crypto";
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
+import { PLATFORM_CALLER } from "../../contract/src/binding";
 import { parseRing } from "../../contract/src/envelope";
 import {
   type OperatorAnswer, operatorAnswer, type OperatorArgs, signOperator,
@@ -32,7 +32,7 @@ import { until } from "../../ci/workerd";
 import {
  admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorsEnv,
  failNextForget, forgotten, held,
- OPEN, OPEN_RECORD,
+ OPEN,
  grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
  signInApp,
  url,
@@ -47,10 +47,6 @@ const SLACK_SECRET = (env as unknown as Record<string, string>)["INBOUND_SLACK_S
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
-}
-
-function ownerBinding(who: string): Binding {
-  return { owner: who, caller: who, origin: null, control: OPEN_RECORD };
 }
 
 /** An owner signed in to its app, with its `main` agent defined. */
@@ -432,33 +428,6 @@ describe("the key store", () => {
       method: "POST", headers: { Authorization: `Bearer ${minted.key}`,
                                  "Content-Type": "application/json" }, body: "{}" }));
     expect(refused.status).toBe(401);
-  });
-
-  it("applies an agent's held key request with its grant, once", async () => {
-    const who = owner();
-    const app = await signInApp({ owner: who });
-    const stub = doorsEnv.OWNER.getByName(who);
-    const change = { type: "api_key_request", scopes: SCOPES };
-    const proposed = async (request_id: string) =>
-      (await ownDoor(who, "policyProposals")).cards.find((card) => card.card_id === request_id)!;
-    await ownDoor(who, "policyPropose", { change, request_id: "card-key-1" });
-    const { digest } = await proposed("card-key-1");
-    const proposal = { request_id: "card-key-1", digest };
-    const first = await appPost("keys", app.access_token, app.session,
-                                { name: "agent key", scopes: SCOPES, proposal });
-    expect(first.status).toBe(200);
-    const again = await appPost("keys", app.access_token, app.session,
-                                { name: "agent key", scopes: SCOPES, proposal });
-    expect(again.status).toBe(403);
-    expect(await again.json()).toEqual({ error: "proposal is not the pending card shown" });
-    const other = [{ universe: "cc", agent: "main", capability: "write_graph" }];
-    await ownDoor(who, "policyPropose", { change, request_id: "card-key-2" });
-    const held = await proposed("card-key-2");
-    const widened = await appPost("keys", app.access_token, app.session, {
-      name: "agent key", scopes: other,
-      proposal: { request_id: "card-key-2", digest: held.digest } });
-    expect(widened.status).toBe(403);
-    expect((await stub.keyList(ownerBinding(who))).keys).toHaveLength(1);
   });
 });
 
