@@ -840,7 +840,7 @@ A unit SHALL read the rows it decides on, or re-check them in its own statements
 - **THEN** the write is refused and nothing is written
 
 ### Requirement: A model connection holds only a blob the gateway sealed
-The object SHALL hold a model connection's credential only as the blob the gateway sealed for that owner, connection and version, never a plaintext key or token: the binder hands a pasted key to the gateway's `seal` and an OAuth code to its `exchange`, and `connectionCommit` takes the blob, its kid, the models the gateway's setup check listed with their metadata, the egress scope it listed (the sealed base URL and endpoints, within 16 KiB, required but for a failed setup), and an OAuth access expiry in clear.
+The object SHALL hold a model connection's credential only as the blob the gateway sealed for that owner, connection and version, never a plaintext key or token: the binder hands a pasted key to the gateway's `seal` and an OAuth code to its `exchange`, and `connectionCommit` takes the blob, its kid, the models the gateway's setup check listed with their metadata, the egress scope it listed (each sealed API's base URL and the endpoints, within 16 KiB, required but for a failed setup; a scope of one API in the spelling before scopes named their APIs read as its one row), and an OAuth access expiry in clear.
 
 #### Scenario: A pasted key is connected and used
 - **WHEN** the owner connects a key and the sandbox's calls use it through the egress door
@@ -1174,7 +1174,7 @@ A run SHALL name its CLI record, its credential and, on an API key, its connecti
 - **THEN** the record checker refuses it, so a run's record and its key never set one variable
 
 ### Requirement: The sandbox's model clients hold placeholder keys
-A run's start (its `config`) SHALL hand an API-key run, for its connection, a base URL on the egress door (`https://egress.tinyassets.io/r/<run>/c/<connection>` and the sealed base URL's path, the run in the path so the door holds each call to its run's own connection) and a placeholder key `ta_ph_<connection>_<random>` that carries no secret, as `<PROVIDER>_BASE_URL`, `<PROVIDER>_API_KEY` and `TA_<CONNECTION>_*`, and as the engine's own variables from its record (Gemini CLI's `GOOGLE_GEMINI_BASE_URL`, the door and the connection alone, and `GEMINI_API_KEY`).
+A run's start (its `config`) SHALL hand an API-key run, for its connection, a base URL on the egress door (`https://egress.tinyassets.io/r/<run>/c/<connection>` and the path of the sealed base URL of the API its model speaks, its connection's first API for a run that names none, the run in the path so the door holds each call to its run's own connection) and a placeholder key `ta_ph_<connection>_<random>` that carries no secret, as `<PROVIDER>_BASE_URL`, `<PROVIDER>_API_KEY` and `TA_<CONNECTION>_*`, and as the engine's own variables from its record (Gemini CLI's `GOOGLE_GEMINI_BASE_URL`, the door and the connection alone, and `GEMINI_API_KEY`).
 
 #### Scenario: Two Anthropic connections
 - **WHEN** the owner has two Anthropic connections and a run is on one

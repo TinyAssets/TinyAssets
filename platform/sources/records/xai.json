@@ -6,8 +6,12 @@
     "api_key"
   ],
   "provider": "xai",
-  "api": "openai-responses",
-  "base_url": "https://api.x.ai/v1",
+  "apis": [
+    {
+      "api": "openai-responses",
+      "base_url": "https://api.x.ai/v1"
+    }
+  ],
   "auth": {
     "header": "authorization",
     "scheme": "Bearer"

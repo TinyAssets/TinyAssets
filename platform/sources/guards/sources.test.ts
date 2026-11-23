@@ -4,8 +4,9 @@
  * - Every file is in the catalog (`sources/src/records.ts`), and every record passes the schema
  *   (`sourceRecord`), whose gateway part is the gateway's own check: so a record naming an
  *   API with no row in the gateway's table (`api-rules.ts`) fails here, from that one list.
- * - pi-ai's catalog supplies a known provider: a record of one restates its base URL and
- *   speaks an API its catalog has models for, so a record overrides only as `custom`.
+ * - pi-ai's catalog supplies a known provider: a record of one speaks APIs its catalog has
+ *   models for and restates each one's models' base URL, so a record overrides only as
+ *   `custom`.
  * - A record that breaks the schema fails loudly, naming itself.
  * - An engine record (`cli`) pins its install by a lock committed beside the records
  *   (`sources/locks/<id>/`), keeps every secret path outside `/workspace` and outside its
@@ -85,7 +86,8 @@ describe("the source records", () => {
     expect(catalogOf(bundledRecords()).ids()).toHaveLength(records.size);
   });
 
-  it("restate pi-ai's catalog for a known provider, and speak an API it has models for", () => {
+  it("restate pi-ai's catalog for a known provider: each API's base URL, that of its models",
+     () => {
     const providers = builtinProviders();
     const gateway = [...records.values()].map(sourceRecord)
       .filter((record): record is SourceRecord & Required<Pick<SourceRecord, "upstream">> =>
@@ -94,10 +96,13 @@ describe("the source records", () => {
     for (const { id, upstream } of gateway) {
       expect(upstream.provider, id).not.toBe("custom");
       const provider = providers.find((entry) => entry.id === upstream.provider);
-      expect(provider?.baseUrl, id).toBe(upstream.base_url);
-      expect(provider!.getModels().filter((model) => model.api === upstream.api).length, id)
-        .toBeGreaterThan(0);
-      expect(supportedApis(), id).toContain(upstream.api);
+      for (const { api, base_url } of upstream.apis) {
+        const spoken = provider!.getModels().filter((model) => model.api === api);
+        expect(spoken.length, `${id} ${api}`).toBeGreaterThan(0);
+        expect([...new Set(spoken.map((model) => model.baseUrl))], `${id} ${api}`)
+          .toEqual([base_url]);
+        expect(supportedApis(), id).toContain(api);
+      }
     }
   });
 
@@ -188,9 +193,9 @@ describe("the source records", () => {
   it("are copies, so a reader cannot change the bundled data", () => {
     const first = catalogOf(bundledRecords()).get("groq")!;
     expect(Object.isFrozen(first)).toBe(true);
-    expect(() => { (first.upstream as { base_url: string }).base_url = "https://evil.test"; })
-      .toThrow();
-    expect(catalogOf(bundledRecords()).get("groq")!.upstream!.base_url)
+    const [api] = first.upstream!.apis as unknown as { base_url: string }[];
+    expect(() => { api!.base_url = "https://evil.test"; }).toThrow();
+    expect(catalogOf(bundledRecords()).get("groq")!.upstream!.apis[0]!.base_url)
       .toBe("https://api.groq.com/openai/v1");
     expect(catalogOf(bundledRecords()).get("Groq")).toBeUndefined();
     expect(catalogOf(bundledRecords()).get("nope")).toBeUndefined();

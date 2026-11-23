@@ -7,7 +7,8 @@
  * context window, output limit, reasoning flag, thinking-level map (pi's
  * `getSupportedThinkingLevels` offers `xhigh` and `max` only from it), prompt-cache
  * lifetimes, and prices with their long-context tiers (pi-ai's `calculateCost` reads
- * them). Left out: `provider`, `api` and `baseUrl` (the sealed upstream's), and `headers`,
+ * them), and the API it speaks (`api`), whose base a run on it is given, of its source's
+ * sealed APIs. Left out: `provider` and `baseUrl` (the sealed upstream's), and `headers`,
  * `compat` and the sampling parameters, which shape the upstream request and which the
  * gateway's own adapter applies from its own copy of the record; the owner's pi-messages
  * client reads none of them.
@@ -17,6 +18,7 @@
  * owner's object holds every model a connection serves to (`owner/src/connections.ts`): one
  * checker, so a record the gateway lists is one the object commits.
  */
+import { apiRules } from "./api-rules.ts";
 import { count, shape } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 
@@ -34,6 +36,11 @@ export interface CostRates {
 /** The fields of pi-ai's `Model` the record keeps, as pi-ai types them. */
 export interface ModelRecord {
   readonly id: string;
+  /**
+   * The API it speaks, one its source is sealed for. Absent where that is the source's one
+   * API: a declared endpoint's own list, and a connection's committed before models named it.
+   */
+  readonly api?: string;
   readonly name: string;
   readonly reasoning: boolean;
   readonly thinkingLevelMap?: { readonly [level in ThinkingLevel]?: string | null | undefined };
@@ -167,10 +174,12 @@ function inputLimits(value: unknown): NonNullable<ModelRecord["inputLimits"]> {
 /** A declared model's record, checked whole: `invalid_source` for anything else. */
 export function checkedRecord(value: unknown): ModelRecord {
   const fields = shape(value, ["id", "name", "reasoning", "input", "contextWindow", "maxTokens",
-                               "cost"], ["thinkingLevelMap", "promptCache", "inputLimits"]);
+                               "cost"], ["api", "thinkingLevelMap", "promptCache", "inputLimits"]);
   if (typeof fields["reasoning"] !== "boolean" || typeof fields["id"] !== "string"
       || !MODEL_ID.test(fields["id"]) || typeof fields["name"] !== "string"
-      || !NAME.test(fields["name"]) || fields["name"].length > NAME_UNITS) {
+      || !NAME.test(fields["name"]) || fields["name"].length > NAME_UNITS
+      || (fields["api"] !== undefined
+          && (typeof fields["api"] !== "string" || apiRules(fields["api"]) === null))) {
     throw new Refusal("invalid_source");
   }
   const input = fields["input"];
@@ -181,6 +190,7 @@ export function checkedRecord(value: unknown): ModelRecord {
   }
   return Object.freeze({
     id: fields["id"],
+    ...(fields["api"] === undefined ? {} : { api: fields["api"] as string }),
     name: fields["name"],
     reasoning: fields["reasoning"],
     ...(fields["thinkingLevelMap"] === undefined ? {}

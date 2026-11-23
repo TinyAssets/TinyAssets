@@ -30,11 +30,14 @@
  * whether a hook that cannot start lets the call through; or why none holds.
  *
  * A gateway source (`api_key`, `oauth`) names the pi-ai provider (`custom` for a declared
- * endpoint), the API its models speak, the base URL, how the secret is sent (`auth`), the
- * setup check (`verify_url`), the only endpoints the secret may reach, and its `engines`:
- * the CLI records that can run on it through the egress door. pi-ai's catalog
- * supplies a known provider's base URL and models, and a record of one restates them
- * (the sources guard holds the two equal); only a `custom` record declares its own models.
+ * endpoint), the APIs its models speak, each at its base URL (`apis`, all at one origin), how
+ * the secret is sent (`auth`), the setup check (`verify_url`), the only endpoints the secret
+ * may reach, and its `engines`: the CLI records that can run on it through the egress door.
+ * One connection serves every API of its source: a run is given the base of its model's API
+ * (`contract/src/egress.ts` `sealedBase`), and a run naming no model the first, which a record
+ * lists as the one its engine's default model speaks. pi-ai's catalog supplies a known
+ * provider's base URLs and models, and a record of one restates them (the sources guard holds
+ * each API's base equal to its models'); only a `custom` record declares its own models.
  * Those values are what the gateway seals with the secret. They are checked by the
  * gateway's own `source` (so its API table, its endpoint and URL grammar are the
  * one rule), in the checker and again in the gateway when it seals.

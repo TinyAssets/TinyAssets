@@ -31,13 +31,13 @@
  *   lets out (`egress_endpoint_refused`);
  * - a service's every call on its sealed URL is free (it reaches no model), a read (`GET`,
  *   `HEAD`: a model list) is free, as is a call its API's rules cite as free
- *   (`freeCall`: a token count); any other call must be its source's model
- *   call as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
+ *   (`freeOn`: a token count); any other call must be one of its source's model
+ *   calls as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
  * - at most `EGRESS_LIMITS.open` open at once, whichever runs opened them (`egress_rate`):
- *   each open call is a row the owner-bound guard costs;
- * - and a model call's API has the rules the gateway meters it by (`egress_unmetered`).
+ *   each open call is a row the owner-bound guard costs; a model call is held to the rules
+ *   of the API whose model call it is (`scopeApi`), which every sealed API has.
  *   Then one open row, uncharged, the blob at its version and the stream's end signal. A
  *   refusal is kept as a receipt row, the newest `refusalsKept` of them.
  *
@@ -86,9 +86,9 @@ import { keyed } from "../../contract/src/checks";
 import { taken } from "../../contract/src/handed";
 import { CONNECTION_ID, HEX32, randomHex, RUN_ID } from "../../contract/src/ids";
 
-import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
+import { apiRules, tierMultiplier } from "../../contract/src/api-rules";
 import {
-  type EgressScope, egressTarget, meteredCall, meteredModel,
+  type EgressScope, egressTarget, freeOn, meteredCall, meteredModel, modelApi, scopeApi,
 } from "../../contract/src/egress-scope";
 
 import type { OwnerStorage } from "./gate";
@@ -452,14 +452,14 @@ export class Egress {
     // A connector's server only while the owner's egress lets it out, as at the run's
     // admission (`agentServers`): a narrowed policy holds a live run's server too.
     const target = egressTarget(scope, request.method, request.path);
-    if (target === null || (connector && !this.#deps.reaches(scope.base_url))) {
+    if (target === null || ("kind" in scope && !this.#deps.reaches(scope.base_url))) {
       return refuse("egress_endpoint_refused");
     }
-    // A service's call reaches no model; nor does a read of a sealed endpoint, or a call its
-    // API's rules cite as free (a token count); every other call must be the source's model
-    // call as pi-ai makes it, which the gateway meters.
+    // A service's call reaches no model; nor does a read of a sealed endpoint, or a call an
+    // API's rules cite as free (a token count); every other call must be one of the source's
+    // model calls as pi-ai makes it, which the gateway meters by that API's rules.
     const free = "kind" in scope
-      || freeCall(apiRules(scope.api), connection.provider, request.method, target.pathname);
+      || freeOn(scope, connection.provider, request.method, target.pathname);
     if (!free && (!meteredCall(scope, request.method, target.pathname)
                   || connection.models.length === 0)) {
       return refuse("egress_unmetered");
@@ -471,11 +471,7 @@ export class Egress {
         >= EGRESS_LIMITS.open) {
       return refuse("egress_rate");
     }
-    // A model call's API must have rules the gateway meters it by; its charge waits for the
-    // gateway's parse of its body (`reserve`).
-    if (!free && !("kind" in scope) && apiRules(scope.api) === null) {
-      return refuse("egress_unmetered");
-    }
+    // A model call's charge waits for the gateway's parse of its body (`reserve`).
     const reservation = this.#record(sandbox, request, lease, generation, now,
                                      { version: credential.version });
     const { readable, writable } = new IdentityTransformStream();
@@ -514,15 +510,19 @@ export class Egress {
     };
     const connection = this.#deps.connection(row.connection_id);
     const scope = connection === null || "kind" in connection.scope ? null : connection.scope;
-    const rules = scope === null ? null : apiRules(scope.api);
-    if (connection === null || scope === null || rules === null || scope.meter === null) {
+    // The API whose model call it is (admitted as one, `scopeApi`), held to its rules alone.
+    const api = scope === null ? null : scopeApi(scope, row.method, row.path);
+    const rules = api === null ? null : apiRules(api.api);
+    if (connection === null || scope === null || api === null || rules === null) {
       return refuse("egress_connection_refused");
     }
     // The model the call names, where its API's rules read it (the body, as the gateway's
-    // parse read it, or the path), and its tier: the call is reserved for them alone.
+    // parse read it, or the path), and its tier: the call is reserved for them alone. It is
+    // one the connection lists on that API.
     const path = rules.model === null
-      ? meteredModel(scope.meter, row.method, row.path, {}) : null;
-    const model = connection.models.find((entry) => entry.id === request.model);
+      ? meteredModel(api.meter!, row.method, row.path, {}) : null;
+    const model = connection.models.find((entry) => entry.id === request.model
+      && modelApi(scope, entry)?.api === api.api);
     // What its source record says bounds it: the model itself, or a router's routes.
     const by = model === undefined ? null
       : pricedBy(bundledSources().get(connection.source), connection.models, model);

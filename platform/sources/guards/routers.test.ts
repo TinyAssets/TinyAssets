@@ -30,7 +30,8 @@ describe("a source's routers", () => {
   it("are models its catalog lists at zero, each routing to models it lists", () => {
     expect(routing.map((record) => record.id)).toEqual(["openrouter_user_models_v1"]);
     for (const record of routing) {
-      const models = listed(record.upstream!.provider, record.upstream!.api);
+      const models = record.upstream!.apis.flatMap((row) =>
+        listed(record.upstream!.provider, row.api));
       for (const router of record.routers!) {
         for (const pattern of router.models) {
           const matched = models.filter((model) => matcher(pattern)(model.id));

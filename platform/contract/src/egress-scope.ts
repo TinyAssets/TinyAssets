@@ -17,7 +17,7 @@
  * `ServiceScope`): a key the owner gave for one URL of an outside service, an MCP server of
  * its agents' (`serviceSource`), sent with no metering and only to that URL.
  */
-import { type ApiRules, apiRules, declaredApi } from "./api-rules.ts";
+import { type ApiRules, apiRules, declaredApi, freeCall } from "./api-rules.ts";
 import { keyed, list, object, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
@@ -36,13 +36,24 @@ export interface AuthTemplate {
   readonly scheme: string;
 }
 
-/** A model source's data, sealed with its secret. */
+/**
+ * One API a model source's models speak: pi-ai's API id, and the base URL its models are at
+ * (pi-ai's catalog has a provider's models at a base each API's adapter appends its path to).
+ */
+export interface UpstreamApi {
+  readonly api: string;
+  readonly base_url: string;
+}
+
+/**
+ * A model source's data, sealed with its secret: the vendor's (its provider, how its key is
+ * sent, its setup check) once, and each API its models speak, all at one origin, since a call
+ * through the egress door names its path alone. A declared endpoint speaks one.
+ */
 export interface Upstream {
   /** A pi-ai provider id, or `custom` for a declared endpoint. */
   readonly provider: string;
-  /** The pi-ai API id its models speak. */
-  readonly api: string;
-  readonly base_url: string;
+  readonly apis: readonly UpstreamApi[];
   readonly auth: AuthTemplate;
   /** A `GET` that answers 2xx when the secret is good; one of the endpoints. */
   readonly verify_url?: string;
@@ -121,6 +132,8 @@ export const SECRET_MAX = 16 * 1024;
 export const ENDPOINTS_MAX = 16;
 const PATHS_MAX = 64;
 const MODELS_MAX = 64;
+/** The most APIs one source may name: more than the gateway runs (`api-rules.ts`). */
+const APIS_MAX = 8;
 const URL_MAX = 2048;
 
 /** Whether `host` (as the URL parser gives it) is an IP literal rather than a name. */
@@ -239,29 +252,51 @@ export function upstream(value: unknown, endpoints: readonly Endpoint[]):
 }
 
 /**
- * A model source's upstream; a declared endpoint (`custom`) only on an API with a declared
- * adapter.
+ * A source's APIs, each a supported one (`supported`) at its own base URL, every base at one
+ * origin among `endpoints`, no API twice.
  */
-function modelUpstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
-  const fields = shape(value, ["provider", "api", "base_url", "auth"], ["verify_url", "models"]);
-  const provider = text(fields["provider"], ID);
-  const base = httpsUrl(fields["base_url"]);
-  if (!endpoints.some((entry) => entry.origin === base.origin)) {
+function upstreamApis(value: unknown, endpoints: readonly Endpoint[]): readonly UpstreamApi[] {
+  const apis = list(value, 1, APIS_MAX, (row) => {
+    const fields = shape(row, ["api", "base_url"]);
+    httpsUrl(fields["base_url"]);
+    return Object.freeze({ api: supported(text(fields["api"], ID)),
+                           base_url: fields["base_url"] as string });
+  });
+  const origins = new Set(apis.map((row) => new URL(row.base_url).origin));
+  if (origins.size !== 1 || !endpoints.some((entry) => origins.has(entry.origin))
+      || new Set(apis.map((row) => row.api)).size !== apis.length) {
     throw new Refusal("invalid_source");
   }
+  return Object.freeze(apis);
+}
+
+/**
+ * A model source's upstream; a declared endpoint (`custom`) speaks one API, one with a
+ * declared adapter. One spelled as before an upstream named its APIs (`api`, `base_url`) is
+ * read as its one row: blobs sealed so, sources the doors' version before hands, and those the
+ * gateway still seals so (`gateway/src/credential.ts` `sealedForm`), until no rollback needs
+ * it.
+ */
+function modelUpstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
+  const old = object(value) && "api" in value;
+  const fields = old
+    ? shape(value, ["provider", "api", "base_url", "auth"], ["verify_url", "models"])
+    : shape(value, ["provider", "apis", "auth"], ["verify_url", "models"]);
+  const provider = text(fields["provider"], ID);
+  const apis = upstreamApis(old ? [{ api: fields["api"], base_url: fields["base_url"] }]
+    : fields["apis"], endpoints);
   const verify = fields["verify_url"];
   if (verify !== undefined && !allows(endpoints, "GET", httpsUrl(verify, true))) {
     throw new Refusal("invalid_source");
   }
   const custom = provider === "custom";
-  const api = supported(text(fields["api"], ID));
-  if (custom !== (fields["models"] !== undefined) || (custom && !declaredApi(api))) {
+  if (custom !== (fields["models"] !== undefined)
+      || (custom && (apis.length !== 1 || !declaredApi(apis[0]!.api)))) {
     throw new Refusal("invalid_source");
   }
   return Object.freeze({
     provider,
-    api,
-    base_url: fields["base_url"] as string,
+    apis,
     auth: authTemplate(fields["auth"]),
     ...(verify === undefined ? {} : { verify_url: verify as string }),
     ...(custom ? { models: Object.freeze(list(fields["models"], 1, MODELS_MAX, checkedRecord)) } : {}),
@@ -337,19 +372,26 @@ const SERVICE_RULES: CallRules = Object.freeze({
   query: Object.freeze({}), headers: SERVICE_HEADERS, betas: Object.freeze({}),
 });
 
-/**
- * The rules `scope`'s calls are held to: a service's the transport's, else its API's
- * (`ApiRules`), which every scope's API has (`supported`).
- */
-function callRules(scope: EgressScope): CallRules {
-  if ("kind" in scope) {
-    return SERVICE_RULES;
-  }
-  const rules = apiRules(scope.api);
+/** An API's rules, which every scope's API has (`supported`). */
+function rulesOf(api: string): ApiRules {
+  const rules = apiRules(api);
   if (rules === null) {
-    throw new Error(`the scope's API ${scope.api} has no rules`);
+    throw new Error(`the scope's API ${api} has no rules`);
   }
   return rules;
+}
+
+/**
+ * The rules a call of `method path` on `scope` is held to, any one of which may take a value:
+ * a service's, the transport's; a model call's (`scopeApi`), its API's alone; any other (a
+ * read, a free call), those of every API the scope speaks, each of which may make it.
+ */
+function callRules(scope: EgressScope, method: string, path: string): readonly CallRules[] {
+  if ("kind" in scope) {
+    return [SERVICE_RULES];
+  }
+  const own = scopeApi(scope, method, path);
+  return own === null ? scope.apis.map((row) => rulesOf(row.api)) : [rulesOf(own.api)];
 }
 
 /**
@@ -597,13 +639,31 @@ export interface ServiceScope {
   readonly endpoints: readonly Endpoint[];
 }
 
-/** A model source's scope. */
+/** One sealed API of a model source's scope. */
+export interface ScopeApi {
+  /** pi-ai's id: its rules (`api-rules.ts`) shape every metered call on it. */
+  readonly api: string;
+  /** Where its models are: the base a run on one of them is given (`egress.ts`). */
+  readonly base_url: string;
+  /** pi-ai's own model call for the API (`meter.ts`), or null: none on it can be metered. */
+  readonly meter: Meter | null;
+}
+
+/** A model source's scope: its sealed APIs, all at one origin, and its endpoints. */
 export interface ModelScope {
-  /** The sealed API, pi-ai's id: its rules (`api-rules.ts`) shape every metered call. */
+  readonly apis: readonly ScopeApi[];
+  readonly endpoints: readonly Endpoint[];
+}
+
+/**
+ * A model scope of one API, spelled as scopes were before they named their APIs, which
+ * `egressScope` reads as its one row: what the owner's object took before, and what the
+ * gateway still hands for a source of one API while the stage may serve such an owner.
+ */
+export interface OneApiScope {
   readonly api: string;
   readonly base_url: string;
   readonly endpoints: readonly Endpoint[];
-  /** pi-ai's own model call for the sealed API (`meter.ts`), or null: none can be metered. */
   readonly meter: Meter | null;
 }
 
@@ -652,25 +712,29 @@ export function egressScope(value: unknown): EgressScope {
                            base_url: serviceBase(fields["kind"], fields["base_url"], endpoints),
                            endpoints });
   }
-  const fields = shape(value, ["api", "base_url", "endpoints", "meter"]);
+  // A scope committed before it named its APIs (`api`, `base_url`, `meter`) is its one row;
+  // it goes once no stored connection holds one.
+  const old = object(value) && "api" in value;
+  const fields = old ? shape(value, ["api", "base_url", "endpoints", "meter"])
+    : shape(value, ["apis", "endpoints"]);
   const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
-  const base = httpsUrl(fields["base_url"]);
-  if (!endpoints.some((entry) => entry.origin === base.origin)) {
-    throw new Refusal("invalid_source");
-  }
-  return Object.freeze({ api: supported(text(fields["api"], ID, 64)),
-                         base_url: fields["base_url"] as string, endpoints,
-                         meter: meterOf(fields["meter"]) });
+  const rows = list(old ? [{ api: fields["api"], base_url: fields["base_url"],
+                             meter: fields["meter"] }] : fields["apis"], 1, APIS_MAX,
+                    (row) => shape(row, ["api", "base_url", "meter"]));
+  const apis = upstreamApis(rows.map(({ api, base_url }) => ({ api, base_url })), endpoints);
+  return Object.freeze({
+    apis: Object.freeze(apis.map((row, index) =>
+      Object.freeze({ ...row, meter: meterOf(rows[index]!["meter"]) }))),
+    endpoints });
 }
 
-/**
- * Whether `method path` (its target's path, `egressTarget`) is the scope's metered model
- * call: its meter's method, and its path with a model id (no separator) where the meter
- * names one. The gateway reads the model id the same way (`meteredModel`); this is the
- * owner's check at open.
- */
-export function meteredCall(scope: ModelScope, method: string, path: string): boolean {
-  const meter = scope.meter;
+/** The origin every call on `scope` goes to: its APIs' one origin (`upstreamApis`). */
+function scopeOrigin(scope: EgressScope): string {
+  return new URL("kind" in scope ? scope.base_url : scope.apis[0]!.base_url).origin;
+}
+
+/** Whether `method path` is `meter`'s call: its method, and its path with a model id there. */
+function meters(meter: Meter | null, method: string, path: string): boolean {
   if (meter === null || method !== meter.method) {
     return false;
   }
@@ -680,6 +744,42 @@ export function meteredCall(scope: ModelScope, method: string, path: string): bo
   }
   return path.startsWith(head!) && path.endsWith(tail) && path.length > head!.length + tail.length
     && /^[^/:?#]+$/.test(path.slice(head!.length, path.length - tail.length));
+}
+
+/**
+ * The scope's API whose model call `method path` (its target's path, `egressTarget`) is:
+ * its meter's method, and its path with a model id (no separator) where the meter names one;
+ * null for a call no API meters. The gateway reads the model id the same way
+ * (`meteredModel`); this is the owner's check at open, and both hold the call to that API's
+ * rules alone.
+ */
+export function scopeApi(scope: ModelScope, method: string, path: string): ScopeApi | null {
+  return scope.apis.find((row) => meters(row.meter, method, path)) ?? null;
+}
+
+/**
+ * The scope's API `model` speaks: the one its record names, or, naming none, the scope's one
+ * API (`ModelRecord.api`); null for an API the scope is not sealed for.
+ */
+export function modelApi(scope: ModelScope, model: Pick<ModelRecord, "api">): ScopeApi | null {
+  if (model.api === undefined) {
+    return scope.apis.length === 1 ? scope.apis[0]! : null;
+  }
+  return scope.apis.find((row) => row.api === model.api) ?? null;
+}
+
+/** Whether `method path` is one of the scope's metered model calls (`scopeApi`). */
+export function meteredCall(scope: ModelScope, method: string, path: string): boolean {
+  return scopeApi(scope, method, path) !== null;
+}
+
+/**
+ * Whether a call is one the scope's provider does not bill on any API it speaks (`freeCall`:
+ * a read, or a cited free call such as a token count).
+ */
+export function freeOn(scope: ModelScope, provider: string, method: string,
+                       path: string): boolean {
+  return scope.apis.some((row) => freeCall(rulesOf(row.api), provider, method, path));
 }
 
 /**
@@ -724,14 +824,14 @@ const CREDENTIAL_PARAMS: readonly string[] = Object.freeze(["key", "api_key", "a
  * URL parser so what is sent is what was read: each credential parameter dropped, or null
  * when any other is not allowed or holds a value its rule does not take.
  */
-function keptQuery(allowed: Readonly<Record<string, RegExp>>,
+function keptQuery(allowed: readonly Readonly<Record<string, RegExp>>[],
                    params: URLSearchParams): string | null {
   const kept = new URLSearchParams();
   for (const [name, value] of params) {
     if (CREDENTIAL_PARAMS.includes(name.toLowerCase())) {
       continue;
     }
-    if (!Object.hasOwn(allowed, name) || !allowed[name]!.test(value)) {
+    if (!allowed.some((rules) => Object.hasOwn(rules, name) && rules[name]!.test(value))) {
       return null;
     }
     kept.append(name, value);
@@ -750,7 +850,7 @@ export function egressTarget(scope: EgressScope, method: string, path: string): 
   if (!path.startsWith("/")) {
     return null;
   }
-  const origin = new URL(scope.base_url).origin;
+  const origin = scopeOrigin(scope);
   let target: URL;
   try {
     target = new URL(path, origin);
@@ -760,7 +860,8 @@ export function egressTarget(scope: EgressScope, method: string, path: string): 
   if (target.origin !== origin || !allows(scope.endpoints, method, target)) {
     return null;
   }
-  const query = keptQuery(callRules(scope).query, target.searchParams);
+  const query = keptQuery(callRules(scope, method, target.pathname).map((rules) => rules.query),
+                          target.searchParams);
   if (query === null) {
     return null;
   }
@@ -804,9 +905,10 @@ function headerRule(rules: Readonly<Record<string, RegExp>>, name: string): RegE
  * other is dropped, every credential header among them, since no list names one: the sealed
  * one is the gateway's to set.
  */
-export function egressHeaders(scope: EgressScope, free: boolean, sent: Headers): Headers {
-  const rules = callRules(scope);
-  const lists = [BASE_HEADERS, rules.headers, ...(free ? [rules.betas, BODY_HEADERS] : [])];
+export function egressHeaders(scope: EgressScope, method: string, path: string, free: boolean,
+                              sent: Headers): Headers {
+  const lists = [BASE_HEADERS, ...callRules(scope, method, path).flatMap((rules) =>
+    [rules.headers, ...(free ? [rules.betas] : [])]), ...(free ? [BODY_HEADERS] : [])];
   const kept = new Headers();
   for (const [name, value] of sent) {
     if (lists.some((list) => headerRule(list, name)?.test(value) === true)) {

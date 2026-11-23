@@ -46,6 +46,10 @@ describe("the price beyond tokens", () => {
     ["openai-completions", { tools: [{ type: "function", function: { name: "f" } }] },
      { web_search_options: {} }],
     ["openai-completions", {}, { plugins: [{ id: "web" }] }],
+    // OpenRouter's, on both its APIs: a plugin, and a router-run tool loop of several calls.
+    ["openai-completions", {}, { deferred_tools: { protocol: "v1", profile: "portable" } }],
+    ["anthropic-messages", {}, { plugins: [{ id: "web" }] }],
+    ["anthropic-messages", {}, { deferred_tools: { protocol: "v1", profile: "portable" } }],
     ["google-generative-ai", { tools: [{ functionDeclarations: [] }] },
      { tools: [{ googleSearch: {} }] }],
     ["google-generative-ai", {}, { tools: [{ codeExecution: {} }] }],

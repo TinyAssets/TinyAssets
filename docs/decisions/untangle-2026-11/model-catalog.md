@@ -156,7 +156,7 @@ pi is no longer the engine the platform runs, but pi-ai is more than a catalog t
 
 ## Owed
 
-- [ ] untangle/openrouter-messages: OpenRouter's Claude models are on `anthropic-messages`
+- [x] untangle/openrouter-messages: OpenRouter's Claude models are on `anthropic-messages`
   (OpenRouter's `/api/v1/messages`) in pi-ai's catalog, and a sealed upstream speaks one API,
   so an OpenRouter connection lists none of them (20 in 1.6.0, `anthropic/claude-opus-5.5`
   among them). Its own research: one record on both APIs (each model's API from the catalog,
