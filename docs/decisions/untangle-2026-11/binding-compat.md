@@ -129,10 +129,9 @@ and nothing caught it but a reviewer's chance read.
   version of each Worker that binds it (`rollout`'s `before` tag) read from git (the plan and
   apply jobs fetching full history), and the run's owner held to that commit's `bindings.json`
   and `doors.json` with `handedProblems` moved where both read it; then a contract step's wait
-  is the kit's, not a log's (`process/handed-deploy`; done, `handed-deploy.md`).
+  is the kit's, not a log's (`process/handed-deploy`).
 - [x] Every other strict cross-Worker parser in data under the same rule: the loose doors'
   modules (`egress.ts`, `connections.ts`, `reports.ts`, `sandbox-time.ts`), the gateway's
   inputs (`doorbellInput`, `ringRequest`, `authorizationGrant`, `metering`), and the answers a
   caller parses (`started`, `networkOutcome`, `meterRead`, `#keepResealed`, the doors' refusal
-  facts), whose rule runs the other way (`process/handed-shapes`; done in `handed-deploy.md`,
-  where `reports.ts` is the runner protocol's).
+  facts), whose rule runs the other way (`process/handed-shapes`).
