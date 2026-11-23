@@ -97,6 +97,6 @@ chosen for it is behaviour the owner should be told of (Fact 8).
 
 ## Owed
 
-- [ ] untangle/agent-model-preview: the app's agent page shows which model the agent's next
+- [x] untangle/agent-model-preview: the app's agent page shows which model the agent's next
   run would be given, read-only, from `choose` without its notices or refusals, for the owner's
   own attended and unattended runs.

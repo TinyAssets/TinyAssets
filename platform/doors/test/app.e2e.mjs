@@ -373,6 +373,8 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await form.getByLabel(/^Runs on/).selectOption("api_key");
   const connection = form.getByLabel(/^API key connection/);
   const groq = await connection.locator("option", { hasText: "groq" }).getAttribute("value");
+  const keyName = (await connection.locator("option", { hasText: "groq" }).innerText())
+    .replace(/ [(]groq[)]$/, "");
   await connection.selectOption(groq);
   await form.getByRole("checkbox", { name: "Read your files" }).check();
   // Every change the making sends, in order: the agent is its agent.json, so that is the
@@ -389,6 +391,8 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await page.waitForURL(`${ORIGIN}/app#agents/helper`);
   await page.getByRole("link", { name: "agent.json" }).waitFor();
   await page.getByRole("link", { name: "AGENTS.md" }).waitFor();
+  await page.locator("main p", { hasText: "A run you start now: " }).waitFor();
+  const previewed = await page.locator("main").innerText();
   page.off("request", onRequest);
   assert.deepEqual(changes, [["tools/file_mkdir", "/workspace/agents/helper"],
                              ["files/write", "/workspace/agents/helper/AGENTS.md"],
@@ -417,8 +421,13 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
                               message: { role: "assistant", content: "Hello from pi" } } }],
                         end: { exit_code: 0 } });
   await page.locator(".said.agent", { hasText: "Hello from pi" }).waitFor();
-  // Every run is given its model, never its engine's own default, and the owner sees which.
+  // Every run is given its model, never its engine's own default, and the owner sees which:
+  // on the agent's page before the run, attended and unattended alike, and on its line.
   assert.equal(typeof start.model, "string");
+  for (const who of ["A run you start now", "A run on your schedule, now"]) {
+    assert.ok(previewed.includes(`${who}: pi (${start.model}) on ${keyName} (${groq}).`),
+              previewed);
+  }
   assert.ok((await page.locator("main").innerText())
     .includes(`Run succeeded on pi (${start.model})`));
   await shot("agent");
@@ -1263,6 +1272,21 @@ async function holding(pattern, body) {
     await page.unroute(pattern, handler);
   }
 }
+
+test("an agent whose agent.json is refused keeps its page, its runs' lines saying why",
+     { timeout: 60_000 }, async () => {
+  const path = "/workspace/agents/helper/agent.json";
+  const read = await api("files/read", { path });
+  const broke = await api("files/write", { path, expected_etag: read.body.entry.etag, text: "{" });
+  await page.goto(`${ORIGIN}/app#agents/helper`);
+  await page.locator("main p", { hasText: "A run on your schedule, now: refused, " }).waitFor();
+  await page.getByRole("link", { name: "agent.json" }).waitFor();
+  const lines = await page.locator("main p", { hasText: ": refused, " }).allInnerTexts();
+  assert.deepEqual(lines.map((line) => line.split(": refused, ")[0]),
+                   ["A run you start now", "A run on your schedule, now"], lines.join(" | "));
+  assert.equal((await api("files/write", { path, expected_etag: broke.body.entry.etag,
+                                           text: read.body.text })).status, 200);
+});
 
 test("a save re-lists its own folder, never the folder the owner went to since",
      { timeout: 60_000 }, async () => {

@@ -197,6 +197,8 @@
     { "door": "signinList", "caller": "owner", "action": "see its sign-ins", "handler": "signins",
       "gate": "door" },
     { "door": "runList", "caller": "account", "scope": "agent", "handler": "runs", "gate": "door" },
+    { "door": "agentModel", "caller": "owner", "action": "see which model its agents' runs are given",
+      "handler": "runs", "gate": "units", "seeded": true },
     { "door": "signinReport", "caller": "runner", "closed": "egress_lease_closed",
       "handler": "signins", "gate": "door" },
     { "door": "sandboxRung", "handler": "runs", "gate": "units" },

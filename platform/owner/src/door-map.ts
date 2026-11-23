@@ -233,6 +233,8 @@ export interface DoorRows {
     { readonly module: "signins"; readonly caller: "owner"; readonly gate: "door" };
   readonly runList:
     { readonly module: "runs"; readonly caller: "account"; readonly gate: "door" };
+  readonly agentModel:
+    { readonly module: "runs"; readonly caller: "owner"; readonly gate: "units" };
   readonly signinReport:
     { readonly module: "signins"; readonly caller: "runner"; readonly gate: "door" };
   readonly sandboxRung:
@@ -671,6 +673,8 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "signinCancel">>;
   signinList(binding: Binding): Promise<AnswerIn<H, "signinList">>;
   runList(binding: Binding, request: RequestIn<H, "runList">): Promise<AnswerIn<H, "runList">>;
+  agentModel(binding: Binding, request: RequestIn<H, "agentModel">):
+    Promise<AnswerIn<H, "agentModel">>;
   signinReport(binding: Binding, request: RequestIn<H, "signinReport">):
     Promise<AnswerIn<H, "signinReport">>;
   sandboxRung(): Promise<AnswerIn<H, "sandboxRung">>;
