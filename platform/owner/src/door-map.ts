@@ -153,6 +153,10 @@ export interface DoorRows {
     { readonly module: "ledger"; readonly caller: "session"; readonly gate: "synced" };
   readonly registerProposal:
     { readonly module: "registrations"; readonly caller: "owner"; readonly gate: "door" };
+  readonly registerProposals:
+    { readonly module: "registrations"; readonly caller: "owner"; readonly gate: "door" };
+  readonly registerDecline:
+    { readonly module: "registrations"; readonly caller: "owner"; readonly gate: "door" };
   readonly disableAgent:
     { readonly module: "ledger"; readonly caller: "session"; readonly gate: "synced" };
   readonly agentDoorbell:
@@ -357,8 +361,10 @@ export interface DoorMethods<H> {
   outsideAgents(binding: Binding, request?: RequestIn<H, "outsideAgents">):
     Promise<AnswerIn<H, "outsideAgents">>;
   /**
-   * File this connection's agent registration for the owner to approve. Once approved, the
-   * connection is that agent: it has a mailbox, and posts in its rooms.
+   * File this connection's agent registration for the owner to approve. The answer's approve_url is
+   * the owner's page to approve it: give it to your user, who opens it signed in to TinyAssets.
+   * Once approved, the connection is that agent: it has a mailbox, and posts in its rooms. Filing
+   * again replaces the one waiting.
    */
   registerPropose(binding: Binding, request: RequestIn<H, "registerPropose">):
     Promise<AnswerIn<H, "registerPropose">>;
@@ -591,6 +597,9 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "registerAgent">>;
   registerProposal(binding: Binding, request: RequestIn<H, "registerProposal">):
     Promise<AnswerIn<H, "registerProposal">>;
+  registerProposals(binding: Binding): Promise<AnswerIn<H, "registerProposals">>;
+  registerDecline(binding: Binding, request: RequestIn<H, "registerDecline">):
+    Promise<AnswerIn<H, "registerDecline">>;
   disableAgent(binding: Binding, request: RequestIn<H, "disableAgent">):
     Promise<AnswerIn<H, "disableAgent">>;
   agentDoorbell(binding: Binding, request: RequestIn<H, "agentDoorbell">):

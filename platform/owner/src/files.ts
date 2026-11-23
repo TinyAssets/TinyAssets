@@ -127,7 +127,7 @@ import { joined } from "./bytes";
 import { clock, inTime } from "./clock";
 import { fitted, jsonBytes } from "../../contract/src/encoded";
 import { slotted } from "../../contract/src/slots";
-import { APP_RESOURCE } from "../../contract/src/identity";
+import { appPage } from "../../contract/src/identity";
 
 
 /**
@@ -2865,7 +2865,7 @@ function fileWriter(account: Account): string {
 
 /** The owner app's page of the folder holding `path`: where a citation of it points. */
 export function fileUrl(path: string): string {
-  return `${APP_RESOURCE}#data/${encodeURIComponent(parentOf(path))}`;
+  return appPage("data", parentOf(path));
 }
 
 /** A non-negative whole number of a request, or its default. */

@@ -11,13 +11,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { until } from "../../ci/workerd";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
+import { appPage } from "../../contract/src/identity";
+import { NOT_AN_AGENT } from "../../contract/src/refusal";
 import { wakeKinds } from "../../contract/src/wake-records";
 import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../../sources/src/catalog";
 import { profileNames, toolNames } from "../../contract/src/doors";
 import {
-  appPost, call, connect, doorsEnv, OPEN, OPEN_RECORD, ownDoor, registerClient,
-  serveFirstPartyDocument, setControl, signInApp, TIERS, type Tokens, url,
+  answerOf, appPost, call, connect, doorsEnv, legacyTool, OPEN, OPEN_RECORD, ownDoor,
+  registerClient, serveFirstPartyDocument, setControl, signInApp, TIERS, type Tokens, url,
 } from "./support";
 
 function owner(): string {
@@ -315,5 +317,116 @@ describe("the owner app's sources and tools routes", () => {
     const tokens = await connect(await registerClient(), { owner: who });
     expect((await appPost("tools/agents_list", tokens.access_token, null, {})).status).toBe(403);
     expect((await appPost("sources", tokens.access_token, null, {})).status).toBe(403);
+  });
+});
+
+describe("an app's agent registration, answered in the owner app", () => {
+  /** A card as the client files it and as the owner is shown it. */
+  type Filed = { card_id: string; digest: string; approve_url: string };
+  type Shown = { card_id: string; digest: string; request: Record<string, unknown> };
+
+  /** `tokens`' client files its agent's card, naming no place. */
+  async function file(tokens: Tokens, display_name = "Muse"): Promise<Filed> {
+    return answerOf(await legacyTool(tokens.access_token, "agent_register", {
+      display_name, delivery_method: "pull", recipe_id: null })) as unknown as Filed;
+  }
+
+  /** The pending cards, as the app shows them. */
+  async function cards(token: string): Promise<Shown[]> {
+    return (await answered(await appPost("registrations", token, null, {})))["cards"] as Shown[];
+  }
+
+  /** Whether the client's mailbox answers: its digest and its read, each refused or not. */
+  async function mailbox(tokens: Tokens): Promise<(string | null)[]> {
+    return Promise.all([["inbox_digest", { limit: 5, after: 0 }], ["mailbox_read", { limit: 5 }]]
+      .map(async ([name, args]) => {
+        const result = await legacyTool(tokens.access_token, name as string, args);
+        return result.isError === true ? result.content[0]!.text.split("\n")[0]! : null;
+      }));
+  }
+
+  it("is filed with its page, which the owner is told of, and once applied there in session " +
+     "the connection has its mailbox", async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    expect(await mailbox(tokens)).toEqual([NOT_AN_AGENT, NOT_AN_AGENT]);
+    const filed = await file(tokens);
+    expect(filed.approve_url).toBe(appPage("apps", filed.card_id));
+    const { notices } = await answered(await appPost("notices", token, null, {})) as
+      { notices: { type: string; detail: string }[] };
+    expect(notices.filter((n) => n.type === "agent_registration")
+      .map((n) => n.detail.endsWith(` ${filed.approve_url}`))).toEqual([true]);
+    // A full grant's agent registers in main: its client names no place.
+    expect(await cards(token)).toMatchObject([{ card_id: filed.card_id, digest: filed.digest,
+      request: { command_center_id: "main", display_name: "Muse", delivery_method: "pull",
+                 recipe_id: null } }]);
+    const answer = { card_id: filed.card_id, digest: filed.digest };
+    expect(await answered(await appPost("registrations/apply", token, null, answer), 403))
+      .toEqual({ error: "interactive owner session required" });
+    expect(await answered(await appPost("registrations/apply", token, session, answer)))
+      .toMatchObject({ display_name: "Muse", command_center_id: "main", disabled_reason: null });
+    expect([await cards(token), await mailbox(tokens)]).toEqual([[], [null, null]]);
+  });
+
+  it("is declined there, and the connection stays without a mailbox", async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    const { card_id, digest } = await file(tokens);
+    expect(await answered(await appPost("registrations/decline", token, null,
+                                        { card_id, digest })))
+      .toEqual({ card_id, declined: true });
+    expect(await cards(token)).toEqual([]);
+    expect(await answered(await appPost("registrations/apply", token, session,
+                                        { card_id, digest }), 403))
+      .toEqual({ error: "registration is not the pending card shown" });
+    expect(await mailbox(tokens)).toEqual([NOT_AN_AGENT, NOT_AN_AGENT]);
+  });
+
+  it("refuses a page whose card no longer waits, or never did", async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const tokens = await connect(await registerClient("Muse"), { owner: who });
+    const first = await file(tokens);
+    const again = await file(tokens, "Muse Two");  // filing again replaces the card
+    expect((await cards(token)).map((card) => card.card_id)).toEqual([again.card_id]);
+    for (const [path, stale] of [
+      ["registrations/apply", { card_id: first.card_id, digest: first.digest }],
+      ["registrations/decline", { card_id: first.card_id, digest: first.digest }],
+      ["registrations/apply", { card_id: again.card_id, digest: first.digest }],
+      ["registrations/apply", { card_id: "card_" + "0".repeat(32), digest: again.digest }],
+    ] as const) {
+      expect(await answered(await appPost(path, token, session, stale), 403), path)
+        .toEqual({ error: "registration is not the pending card shown" });
+    }
+    expect(await answered(await appPost("registrations/apply", token, session,
+                                        { card_id: "nope" }), 400))
+      .toEqual({ error: "invalid ledger request" });
+    expect(await mailbox(tokens)).toEqual([NOT_AN_AGENT, NOT_AN_AGENT]);
+  });
+
+  it("lands a narrowed grant's agent in the space its scopes name, where it then reads its " +
+     "mail", async () => {
+    const who = owner();
+    const { access_token: token, session } = await signInApp({ owner: who });
+    const client = await registerClient("Muse");
+    const tokens = await connect(client, { owner: who });
+    const origin = await mcpOrigin(client.clientId, client.redirectUri);
+    // Its first call records its grant, full, for the owner to narrow.
+    expect(await mailbox(tokens)).toEqual([NOT_AN_AGENT, NOT_AN_AGENT]);
+    const { clients } = await answered(await appPost("grants", token, null, {})) as
+      { clients: Record<string, unknown>[] };
+    const row = clients.find((c) => c["client"] === origin.client)!;
+    await answered(await appPost("grants/set", token, session, {
+      client: origin.client, source: "mcp", mode: "scoped", expected_revision: row["revision"],
+      name: "Muse", scopes: ["read_graph", "write_graph"].map((capability) =>
+        ({ universe: "work", agent: "main", capability })) }));
+    const filed = await file(tokens);
+    expect((await cards(token))[0]!.request["command_center_id"]).toBe("work");
+    expect(await answered(await appPost("registrations/apply", token, session,
+                                        { card_id: filed.card_id, digest: filed.digest })))
+      .toMatchObject({ command_center_id: "work" });
+    expect(await mailbox(tokens)).toEqual([null, null]);
   });
 });

@@ -58,8 +58,10 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   outsideAgents(binding: Binding, request?: DoorRequest<"outsideAgents">):
     Promise<DoorAnswer<"outsideAgents">>;
   /**
-   * File this connection's agent registration for the owner to approve. Once approved, the
-   * connection is that agent: it has a mailbox, and posts in its rooms.
+   * File this connection's agent registration for the owner to approve. The answer's approve_url is
+   * the owner's page to approve it: give it to your user, who opens it signed in to TinyAssets.
+   * Once approved, the connection is that agent: it has a mailbox, and posts in its rooms. Filing
+   * again replaces the one waiting.
    */
   registerPropose(binding: Binding, request: DoorRequest<"registerPropose">):
     Promise<DoorAnswer<"registerPropose">>;
@@ -286,8 +288,9 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
     Promise<DoorAnswer<"fileUploadStored">>;
   registerAgent(binding: Binding, request: DoorRequest<"registerAgent">):
     Promise<DoorAnswer<"registerAgent">>;
-  registerProposal(binding: Binding, request: DoorRequest<"registerProposal">):
-    Promise<DoorAnswer<"registerProposal">>;
+  registerProposals(binding: Binding): Promise<DoorAnswer<"registerProposals">>;
+  registerDecline(binding: Binding, request: DoorRequest<"registerDecline">):
+    Promise<DoorAnswer<"registerDecline">>;
   disableAgent(binding: Binding, request: DoorRequest<"disableAgent">):
     Promise<DoorAnswer<"disableAgent">>;
   agentDoorbell(binding: Binding, request: DoorRequest<"agentDoorbell">):
@@ -410,7 +413,7 @@ type Loose =
       | "admissionSet" | "wakeEvents" | "signinEvents" | "tierSet" | "egressOpen" | "egressReserve"
       | "egressBeat" | "egressSettle";
 /** The doors the doors call no more, which the object still takes, its types with it. */
-type Dropped = never;
+type Dropped = "registerProposal";
 /** What `DoorTypes` may say of a door, by its row. */
 type Parts<D> = "answer" | (D extends keyof DoorRequests ? "values" | "handed"
   : D extends Loose ? "loose" : never);

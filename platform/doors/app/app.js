@@ -3,7 +3,7 @@
 // the owner reads and writes here as text, and everything else is one door's answer shown
 // in plain words. Every request goes to this origin only.
 import {
-  call, follow, randomText, Refused, signIn, signOut, signedIn, whenSignedOut,
+  call, follow, randomText, Refused, RESOURCE, signIn, signOut, signedIn, whenSignedOut,
 } from "/app/static/api.js";
 import { action, bytes, eventShown, field, fill, h, when } from "/app/static/view.js";
 
@@ -198,8 +198,14 @@ async function home(arg = null) {
          h("h2", {}, "Notices"),
          notices.length === 0 ? h("p", { class: "muted" }, "Nothing to tell you.")
            : h("ul", {}, notices.slice().reverse().map((n) =>
-             h("li", {}, h("b", {}, n.type.replace(/_/g, " ")), ` ${n.detail} `,
+             h("li", {}, h("b", {}, n.type.replace(/_/g, " ")), " ", linked(n.detail), " ",
                h("small", {}, when(n.at)))))));
+}
+
+/** A notice's words, each page of this app it names a link to that page. */
+function linked(text) {
+  return text.split(/(\s+)/).map((word) => word.startsWith(`${RESOURCE}#`)
+    ? h("a", { href: word }, word) : word);
 }
 
 // -- Agents ---------------------------------------------------------------------------
@@ -778,14 +784,81 @@ function serverKey() {
     }, report)));
 }
 
-// -- Connected apps: code mode, each client's tools, revokes --------------------------
+// -- Connected apps: code mode, each client's tools, registrations, revokes -----------
+
+/** An app by the vendor its sign-in named (`apps.json`), unless the owner renamed it. */
+function appName(client, known) {
+  return client.name || known.find((app) => app.id === client.vendor)?.name
+    || client.client.slice(0, 12);
+}
+
+/** What a client's grant lets it do, in words: everything, or each scope. */
+function access(client) {
+  return client.mode === "full" ? "Everything"
+    : client.scopes.map((s) => `${s.capability} in ${s.universe} as ${s.agent}`).join("; ");
+}
+
+/** Why a registration's page shows no card: nothing waits under its id any more. */
+const NOT_WAITING = "This registration is not waiting any more: it was applied or declined, " +
+  "its app asked again since, or its app's access changed. If you still want it, ask the app " +
+  "to register again.";
+
+/**
+ * A registration an app's agent asks for, as its client filed it (`agent_register`): what its
+ * agent would be, and what its app may do, with the owner's two answers, each by the card's
+ * id and the digest shown (`registrations/apply` in the owner's session, and
+ * `registrations/decline`); `after` shows the screen again.
+ */
+function asking(card, clients, known, after) {
+  const client = clients.find((c) => c.client === card.client);
+  const { display_name: name, delivery_method: delivery, recipe_id: recipe,
+          command_center_id: space } = card.request;
+  const answer = { card_id: card.card_id, digest: card.digest };
+  return h("div", { class: "card" },
+    h("b", {}, name), " ",
+    h("small", {}, `asked by ${client === undefined ? "an app" : appName(client, known)}, ` +
+      when(card.filed_at)),
+    h("ul", {},
+      h("li", {}, `Gets its mail by: ${delivery}`),
+      h("li", {}, `Recipe: ${recipe ?? "none"}`),
+      h("li", {}, `Space: ${space}`),
+      h("li", {}, `What its app may do: ${client === undefined ? "nothing now" : access(client)}`)),
+    h("p", { class: "muted" }, "Applying gives this app its own mailbox and rooms with you."),
+    h("div", { class: "row" },
+      action("Apply", async () => {
+        const agent = await call("registrations/apply", answer);
+        say(`Applied: ${agent.display_name} has its mailbox and rooms.`);
+        await after();
+      }, report),
+      action("Decline", async () => {
+        await call("registrations/decline", answer);
+        say(`Declined: ${name} is not registered.`);
+        await after();
+      }, report, { class: "danger" })));
+}
+
+/** One registration's page, where `agent_register`'s approve_url and its notice lead. */
+async function registration(cardId) {
+  const turn = turnOf("apps", cardId);
+  const [{ cards }, { clients }, { apps: known }] = await Promise.all([
+    call("registrations"), call("grants"), call("tools/agents_list")]);
+  const card = cards.find((each) => each.card_id === cardId);
+  paint(turn,
+       h("p", {}, h("a", { href: "#apps" }, "All connected apps")),
+       h("h1", {}, "Agent registration"),
+       h("section", {}, card === undefined ? h("p", { class: "muted" }, NOT_WAITING)
+         : asking(card, clients, known, () => registration(cardId))));
+}
 
 async function apps(arg = null) {
   const turn = turnOf("apps", arg);
+  if (arg !== null) {
+    return registration(arg);
+  }
   const [policy, { clients }, { tools }, { agents: mains, owner_agents: owned, apps: known },
-         { kinds }] = await Promise.all([
+         { kinds }, { cards }] = await Promise.all([
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
-    call("agent/doorbell/kinds")]);
+    call("agent/doorbell/kinds"), call("registrations")]);
   const document_ = policy.policy;
   const codemode = h("input", { type: "checkbox", checked: policy.codemode.on });
   const custom = document_.tools?.custom ?? null;
@@ -810,9 +883,7 @@ async function apps(arg = null) {
     await apps();
   };
   const outside = clients.filter((c) => c.source !== "api_key" && c.mode !== "revoked");
-  // Each app by the vendor its sign-in named (`apps.json`), unless the owner renamed it.
-  const named = (c) => c.name || known.find((app) => app.id === c.vendor)?.name
-    || c.client.slice(0, 12);
+  const named = (c) => appName(c, known);
   const unconnected = known.filter((app) => app.id !== null && !app.connected);
   paint(turn,
        h("h1", {}, "Connected apps"),
@@ -832,6 +903,12 @@ async function apps(arg = null) {
            const chosen = picks.map((p) => p.firstChild).filter((c) => c.checked).map((c) => c.value);
            return write(every.checked ? rest : { ...rest, tools: { custom: chosen } });
          }, report)),
+       h("section", {},
+         h("h2", {}, "Agents asking to join"),
+         h("p", { class: "muted" }, "An app you connected may ask for an agent of its own: a " +
+           "mailbox and rooms with you. Nothing is registered until you apply it."),
+         cards.length === 0 ? h("p", { class: "muted" }, "No app is asking.")
+           : cards.map((card) => asking(card, clients, known, () => apps()))),
        h("section", {},
          h("h2", {}, "Your main agents"),
          h("p", { class: "muted" }, "A main agent is an app's own agent (a Claude scheduled " +

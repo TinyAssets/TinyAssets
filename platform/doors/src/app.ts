@@ -390,6 +390,9 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "actions/request": { door: "actionRequest" },
     "actions/approve": { door: "actionApprove" },
     "actions/refuse": { door: "actionRefuse" },
+    "registrations": { door: "registerProposals", body: "empty" },
+    "registrations/apply": { door: "registerAgent" },
+    "registrations/decline": { door: "registerDecline" },
     "grants": { door: "grantList", body: "empty" },
     "grants/set": { serve: grantSet },
     "capabilities": { body: "empty", ...valued(async () => ({

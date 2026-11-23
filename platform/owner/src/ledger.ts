@@ -506,6 +506,14 @@ interface Registration {
   readonly recipe_id: unknown;
 }
 
+/** A registration as an agent registers with it: each field checked, its name as kept. */
+export type Registered = {
+  readonly command_center_id: string;
+  readonly display_name: string;
+  readonly delivery_method: string;
+  readonly recipe_id: string | null;
+};
+
 /** An agent's file, whose agent is a ledger identity while it exists. */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
@@ -1266,11 +1274,12 @@ export class Ledger {
     }
   }
 
-  register(origin: Origin | null, source: unknown, request: Registration,
-           now: number = clock()): Agent {
-    const verified = registrant(source, origin);
-    const client = origin!.client;
-    const family = origin!.family;
+  /**
+   * `request` as an agent registers with it, or refused: the one rule every registration
+   * (`register`) and every held card's filing (`registerPropose`) hold, so the owner is shown
+   * only a card that applies. A read of nothing.
+   */
+  registration(request: Registration): Registered {
     const commandCenter = printable(request.command_center_id, COMMAND_CENTER_MAX,
                                     "command_center_id");
     const recipe = request.recipe_id === null ? null
@@ -1288,6 +1297,17 @@ export class Ledger {
       throw new Refusal("refused",
                         `only ${admittedMethods().join(", ")} delivery are available yet`);
     }
+    return { command_center_id: commandCenter, display_name: name, delivery_method: method,
+             recipe_id: recipe };
+  }
+
+  register(origin: Origin | null, source: unknown, request: Registration,
+           now: number = clock()): Agent {
+    const verified = registrant(source, origin);
+    const client = origin!.client;
+    const family = origin!.family;
+    const { command_center_id: commandCenter, display_name: name, delivery_method: method,
+            recipe_id: recipe } = this.registration(request);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = sql.exec<Agent>(
