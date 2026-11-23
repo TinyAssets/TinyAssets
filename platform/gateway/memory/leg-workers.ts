@@ -67,7 +67,7 @@ export class LegOwner extends DurableObject<Env> implements EgressDoors {
   async egressReserve(_binding: unknown, ...[call]: DoorLoose<"egressReserve">):
       Promise<DoorAnswer<"egressReserve">> {
     return { ok: true, metering: { max_output_tokens: 1000, input_bytes: 64 * MIB,
-                                   model: call.model, tier: call.tier } };
+                                   model: call.model, tier: call.tier, routed: false } };
   }
 
   async egressBeat(): Promise<DoorAnswer<"egressBeat">> {

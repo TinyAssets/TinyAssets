@@ -38,7 +38,7 @@ export interface Ranking {
  * A model pattern as a test of a model id: `*` is any run of characters, nothing else
  * special, matched whole against the id and against its part after the last `/`.
  */
-function matcher(pattern: string): (id: string) => boolean {
+export function matcher(pattern: string): (id: string) => boolean {
   const whole = new RegExp(`^${pattern.split("*").map((part) =>
     part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
   return (id) => whole.test(id) || whole.test(id.slice(id.lastIndexOf("/") + 1));

@@ -795,6 +795,53 @@ describe("a call's reservation", () => {
                                                   max_output_tokens: dearest.model.maxTokens });
   });
 
+  it("holds a router's call at the dearest model it may route to, as routed, and refuses a " +
+     "model its vendor prices at nothing that is neither a router nor free", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENROUTER as never, "Key", undefined,
+                                       "openrouter_user_models_v1");
+    const [{ models: listed }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
+                                              connection)) as [{ models: string }];
+    const models = JSON.parse(listed) as ModelRecord[];
+    const router = models.find((model) => model.id === "openrouter/auto")!;
+    const free = models.find((model) => model.id.endsWith(":free"))!;
+    expect(router.cost).toMatchObject({ input: 0, output: 0 });
+    const lease = await leased(r);
+    const path = "/api/v1/chat/completions";
+    const call = (model: string) => admitted(r, lease, connection, { path, model });
+    expect((await call(router.id)).metering).toMatchObject({ model: router.id, routed: true });
+    // A router to free models alone holds nothing, and settles, as a free model named alone.
+    expect((await call("openrouter/free")).metering).toMatchObject({ routed: false });
+    expect((await call(free.id)).metering).toMatchObject({ model: free.id, routed: false });
+    // The router's input held at its own window, its output at its own cap, each token at
+    // the dearest rate of any model the connection lists.
+    const holds = egressPrice(models, router.contextWindow, router.maxTokens);
+    expect(holds).toBeGreaterThan(egressPrice([router], router.contextWindow, router.maxTokens));
+    expect((await charges(r)).map((row) => row["est_cost"])).toEqual([holds, 0, 0]);
+    // A call fanned out to several models, and a router no vendor page was read for.
+    for (const model of ["openrouter/fusion", "typesafe/jev-router"]) {
+      expect(await refusedWith(r, lease.as(), connection, { path, model }), model)
+        .toBe("egress_unknown_model");
+    }
+  });
+
+  it("holds a router's call to the owner's caps, which a free model's call passes", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENROUTER as never, "Key", undefined,
+                                       "openrouter_user_models_v1");
+    const lease = await cappedLeased(r, { ...ROOMY, turn_cost: 1_000 });
+    const path = "/api/v1/chat/completions";
+    expect(await refusedWith(r, lease.as(), connection, { path, model: "openrouter/auto" }))
+      .toBe("egress_spend_refused");
+    expect((await charges(r)).at(-1)).toMatchObject({ rule: "run_cost" });
+    const [{ models: listed }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
+                                              connection)) as [{ models: string }];
+    const free = (JSON.parse(listed) as ModelRecord[])
+      .find((model) => model.id.endsWith(":free"))!;
+    expect((await admitted(r, lease, connection, { path, model: free.id })).metering)
+      .toMatchObject({ routed: false });
+  });
+
   it("refuses a model the connection does not list, or a tier pi-ai cannot price", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good", OPENAI);

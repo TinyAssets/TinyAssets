@@ -71,7 +71,7 @@ export function granting(asked: unknown[] = [], fields: Partial<Metering> = {}):
   return async (call) => {
     asked.push(call);
     return { metering: { max_output_tokens: 100, input_bytes: EGRESS_BODY_MAX, model: call.model,
-                         tier: call.tier, ...fields } };
+                         tier: call.tier, routed: false, ...fields } };
   };
 }
 

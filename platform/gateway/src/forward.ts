@@ -48,7 +48,9 @@ import {
   tierMultiplier, unpricedOption,
 } from "../../contract/src/api-rules";
 import { keyed, valueAtPath } from "../../contract/src/checks";
-import { clamped, meteredRecord, meteredUsage, Meters } from "./meter";
+import {
+  clamped, meteredRecord, meteredUsage, Meters, type Pricing,
+} from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
 import {
   gatewaySlots, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
@@ -201,11 +203,11 @@ export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unkn
 
 /** A metered call ready to send, or the code it is refused with. */
 type Prepared = { readonly refused: GatewayCode }
-  | { readonly upload: Upload; readonly model: Model<Api>; readonly listed: boolean };
+  | { readonly upload: Upload; readonly model: Model<Api>; readonly pricing: Pricing };
 
 /** A metered call's body serialized once it is checked, reserved and clamped, or its code. */
 type Serialized = { readonly refused: GatewayCode }
-  | { readonly text: string; readonly model: Model<Api>; readonly listed: boolean };
+  | { readonly text: string; readonly model: Model<Api>; readonly pricing: Pricing };
 
 /**
  * The metered call's body, read (at most `length` bytes) and weighed, serialized
@@ -229,7 +231,7 @@ async function prepared(request: Request, length: number, upstream: Upstream,
     return call;
   }
   const bytes = new TextEncoder().encode(call.text);
-  return { upload: uploaded(bytes, ended), model: call.model, listed: call.listed };
+  return { upload: uploaded(bytes, ended), model: call.model, pricing: call.pricing };
 }
 
 /**
@@ -314,10 +316,10 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   if (read.bytes > terms.input_bytes) {
     return { refused: "invalid_request" };
   }
-  const listed = fallbackList(rules, parsed);
+  const pricing = { fallbacks: fallbackList(rules, parsed), routed: terms.routed };
   const text = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
                                       terms.max_output_tokens, upstream.api));
-  return { text, model, listed };
+  return { text, model, pricing };
 }
 
 /**
@@ -372,8 +374,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     return refused("unmetered", resealed);
   }
   let body: BodyInit | null = READS.includes(request.method) ? null : request.body;
-  let model: Model<Api> | null = null;
-  let listed = false;
+  // The metered call's model and what prices it, once it is ready to send.
+  let call: { readonly model: Model<Api>; readonly pricing: Pricing } | null = null;
   let upload: Upload | null = null;
   let held: AbortSignal | null = null;
   if (metered !== null) {
@@ -420,7 +422,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       hold.release();
       return refused(ready.refused, resealed);
     }
-    ({ upload, model, listed } = ready);
+    ({ upload } = ready);
+    call = ready;
     body = upload.body;
     // Past its deadline, or stopped, the upload ends there.
     held = AbortSignal.any([cancelled.signal,
@@ -475,7 +478,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   }
   let outcome: Promise<MeterOutcome> = Promise.resolve(UNKNOWN);
   let source = upstream.body;
-  if (metered !== null && model !== null && priced !== null) {
+  if (metered !== null && call !== null && priced !== null) {
     if (upstream.status < 200 || upstream.status >= 300) {
       // A refusal before any output: the provider produced nothing.
       outcome = Promise.resolve(FAILED);
@@ -488,8 +491,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       // one whose tier cannot be read, a cut, is unknown by the rejection below).
       const tierPriced = servedPriced(rules, toTier);
       outcome = Promise.all([meteredUsage(metered.catalog, priced,
-                                          bearer(credential), model, upstream.status,
-                                          new Headers(upstream.headers), toMeter, listed),
+                                          bearer(credential), call.model, upstream.status,
+                                          new Headers(upstream.headers), toMeter, call.pricing),
                              tierPriced])
         .then(([usage, tier]): MeterOutcome => (usage === null || !tier.priced ? UNKNOWN
           : { state: "succeeded", tokens: usage.tokens,

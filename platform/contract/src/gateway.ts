@@ -75,13 +75,17 @@ export interface Verified {
 
 /**
  * What a metered call is held to: the output cap its reservation leaves, its body's size,
- * and the model and tier (its tier option's value, or null) it was reserved for.
+ * the model and tier (its tier option's value, or null) it was reserved for, and whether
+ * that model is a router that may route to a priced model (`routed`): one its vendor bills as
+ * the model it routes each call to, so the call is priced by the model its answer says served
+ * it, never the router's own listed price (`sources/src/routers.ts`).
  */
 export interface Metering {
   readonly max_output_tokens: number;
   readonly input_bytes: number;
   readonly model: string;
   readonly tier: string | null;
+  readonly routed: boolean;
 }
 
 /** A model id or a tier option's value, as a call names it and a reservation holds it. */
@@ -95,12 +99,16 @@ function named(value: unknown): value is string {
 export function metering(value: unknown): Metering {
   if (!keyed(value, ...taken("metering"))
       || !whole(value["input_bytes"], 1) || !whole(value["max_output_tokens"], 1)
-      || !named(value["model"]) || (value["tier"] !== null && !named(value["tier"]))) {
+      || !named(value["model"]) || (value["tier"] !== null && !named(value["tier"]))
+      || (value["routed"] !== undefined && typeof value["routed"] !== "boolean")) {
     throw new Refusal("internal");
   }
+  // `routed` is handed `always` (`handed.json`): an owner's version before hands none, and
+  // reserved no router but at its listed price.
   return Object.freeze({ input_bytes: value["input_bytes"],
                          max_output_tokens: value["max_output_tokens"], model: value["model"],
-                         tier: value["tier"] as string | null });
+                         tier: value["tier"] as string | null,
+                         routed: value["routed"] === true });
 }
 
 /** How a metered call ended, as the owner's object settles it. */

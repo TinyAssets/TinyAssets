@@ -4,13 +4,14 @@
  * the gateway's suite and in the owner's, which runs the real gateway beside it.
  *
  * It answers in each provider's own wire format, so pi-ai's real adapters parse it:
- * Anthropic Messages, OpenAI Responses and Google Generative AI, each as SSE. A model call's
- * reply is chosen by a `cmd:` word in the request body (the test's user message):
+ * Anthropic Messages, OpenAI Responses, Google Generative AI and OpenRouter's chat
+ * completions, each as SSE. A model call's reply is chosen by a `cmd:` word in the request
+ * body (the test's user message):
  *
  * - `cmd:echo`, and a body with no `cmd:` word: the reply's text is JSON of what it received
  *   (path, the credential headers, the output-token cap, the service tier), so a test reads
  *   back what the gateway sent; the word `tier` (`steer`) names the tier an Anthropic answer
- *   says it served.
+ *   says it served, and the word `served` the model an answer says served it (a router's).
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  *
@@ -112,6 +113,26 @@ function openaiFormat(): Format {
   };
 }
 
+/** Chat completions, as OpenRouter streams them: every chunk names the model that served it. */
+function completionsFormat(): Format {
+  let served = "";
+  const chunk = (fields: Record<string, unknown>) => sse([[null, {
+    id: "gen_fake", object: "chat.completion.chunk", model: served, ...fields }]]);
+  return {
+    start: (model) => {
+      served = model;
+      return chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "" },
+                                 finish_reason: null }] });
+    },
+    text: (delta) => chunk({ choices: [{ index: 0, delta: { content: delta },
+                                         finish_reason: null }] }),
+    finish: () => chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })
+      + chunk({ choices: [], usage: { prompt_tokens: USAGE.input, completion_tokens: USAGE.output,
+                                      total_tokens: USAGE.input + USAGE.output } })
+      + "data: [DONE]\n\n",
+  };
+}
+
 function googleFormat(): Format {
   return {
     start: () => "",
@@ -176,7 +197,9 @@ async function model(request: Request, format: Format): Promise<Response> {
   // OpenAI's Responses answer names the tier it served the call at, as the API does; an
   // Anthropic answer names its served tier in its usage when the word `tier` asks.
   const served = word(request, "tier");
-  const payload = (format.start(name) + format.text(reply.slice(0, half))
+  // The answer names the model the word `served` names (a router's pick), or the one named.
+  const payload = (format.start(word(request, "served") ?? name)
+    + format.text(reply.slice(0, half))
     + format.text(reply.slice(half)) + format.finish(reply))
     .replace('"status":"completed",', tier === null ? '"status":"completed",'
       : `"status":"completed","service_tier":${JSON.stringify(tier === "auto" ? "default" : tier)},`)
@@ -489,6 +512,9 @@ export default {
     }
     if (url.hostname === "generativelanguage.googleapis.com") {
       return model(request, googleFormat());
+    }
+    if (url.hostname === "openrouter.ai") {
+      return model(request, completionsFormat());
     }
     return new Response(`no fake for ${url.hostname}`, { status: 599 });
   },
