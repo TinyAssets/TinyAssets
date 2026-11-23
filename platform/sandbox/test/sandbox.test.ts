@@ -4,11 +4,11 @@
  * on the vendor's sign-in with none there is `signin_required`; past the concurrency ceiling
  * or behind an owner that waited longer a run waits in the platform's line, never refused,
  * until a freed sandbox rings it; a release pauses an idle sandbox, and one whose pause did
- * not land, or whose released lease's jobs were still ending, is reaped by the look; the look renews a sandbox before its runtime ceiling, at a
- * quiet moment or forced at the edge, resumes one paused while a lease runs in it, and is
- * armed again on every path; an erasure kills every sandbox of the owner, paused and strays
- * included. The runner is the Worker's own, by digest: a
- * create uploads and installs it before its first command, a resume with it there sends
+ * not land, or whose released lease's jobs were still ending, is reaped by the look; the look
+ * renews a sandbox before its runtime ceiling, at a quiet moment or forced at the edge,
+ * resumes one paused while a lease runs in it, and is armed again on every path; an erasure
+ * kills every sandbox of the owner, paused and strays included. The runner is the Worker's
+ * own, by digest: a create uploads and installs it before its first command, a resume with it there sends
  * nothing more, an absent one is installed and asked again, bytes not their digest launch
  * nothing, and a sandbox on another runner keeps it while anything lives and adopts the
  * Worker's at the first start that finds nothing living, whatever protocol the other speaks;

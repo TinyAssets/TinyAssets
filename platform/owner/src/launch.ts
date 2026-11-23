@@ -677,7 +677,7 @@ export class Launcher implements RunHost {
     })());
   }
 
-  /** In a unit: the lease given back if it is still live, its streams ended, its sandbox released. */
+  /** In a unit: the lease given back if it lives, its streams ended and its sandbox released. */
   #giveBack(leaseId: string, epoch: number): void {
     if (this.#o.files.leaseRelease(leaseId, epoch).released) {
       this.#o.egress.end("lease", (live) => live.lease === leaseId);

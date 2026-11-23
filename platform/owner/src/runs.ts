@@ -47,9 +47,9 @@
  *
  * **Settle** (`settle`), once, in a unit: `succeeded` from the runner's end with exit 0 and
  * no error event, `failed` otherwise (a cancelled run's is `cancelled`, whatever failed it
- * after the cancel; a revoked or changed
- * client grant's `revoked`, at once), `unknown` when the runner was lost (its lease lapsed,
- * its own heartbeat lapsed, or a start whose answer never came). Unknown is never
+ * after the cancel; a revoked or changed client grant's `revoked`, at once), `unknown` when
+ * the runner was lost (its lease lapsed, its own heartbeat lapsed, or a start whose answer
+ * never came). Unknown is never
  * replayed. The run grant goes with it (a cancel revokes it at once), and the lease when no
  * live run holds it any more; every settle prunes the receipts to `RUNS_KEPT`.
  * There is no platform deadline: a run's lease's tokens live while its heartbeat renews it
