@@ -236,6 +236,14 @@ export interface ModelListing {
   readonly models: readonly ListedModel[];
 }
 
+/**
+ * The models a sealed credential's upstream serves now: the gateway's current catalog on every
+ * API the blob was sealed for, or its declared list, each record naming its API.
+ */
+export interface SealedModels {
+  readonly models: readonly ModelRecord[];
+}
+
 /** The default entrypoint, as the owner's object binds it (`GATEWAY`). */
 export interface GatewayService {
   /**
@@ -252,6 +260,13 @@ export interface GatewayService {
    */
   listing(owner: string, connection: string, version: number, blob: string,
           read: ListingRead): Promise<ModelListing>;
+  /**
+   * The models a connection's blob is sealed to reach, by the gateway's catalog now
+   * (`SealedModels`): what its setup check listed, as the catalog has moved since. No call
+   * leaves the gateway.
+   */
+  models(owner: string, connection: string, version: number, blob: string):
+    Promise<SealedModels>;
   /** An OAuth credential refreshed; the result is bound to `version + 1`. */
   refresh(owner: string, connection: string, version: number, blob: string):
     Promise<Refreshed>;

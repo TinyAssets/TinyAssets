@@ -21,8 +21,9 @@ import {
 } from "./support";
 import { steer } from "./fake-upstream";
 import type { Reserve } from "../../contract/src/gateway";
-import type { Source, Upstream } from "../../contract/src/egress-scope";
+import { serviceSource, type Source, type Upstream } from "../../contract/src/egress-scope";
 import { builtinCatalog } from "../src/catalog";
+import { isModelType } from "@earendil-works/pi-ai/models";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
 /** The doors' connect entrypoint (the doors and owner suites reach it over a real binding). */
@@ -418,6 +419,38 @@ describe("the gateway Worker", () => {
     expect(asked).toHaveLength(1);
   });
 
+  it("lists a blob's models by the catalog now, on the APIs it was sealed for alone",
+     async () => {
+    const catalog = builtinCatalog().provider("openrouter")!.getModels();
+    const chat = (api: string) => catalog
+      .filter((model) => model.api === api && isModelType(model, "chat"))
+      .map((model) => model.id);
+    const listed = async (record: Source) => {
+      const blob = (await connect.seal("alice", C1, 1, "sk-or", record)).blob;
+      const { models } = await gateway.models("alice", C1, 1, blob);
+      return models.map((model) => [model.id, model.api]);
+    };
+    // A blob sealed for chat completions reaches no Claude model on the Messages API,
+    // whatever the catalog holds: only a new seal adds an API.
+    expect(await listed(OPENROUTER))
+      .toEqual(chat("openai-completions").map((id) => [id, "openai-completions"]));
+    expect(chat("anthropic-messages").length).toBeGreaterThan(0);
+    const both: Source = {
+      upstream: { ...OPENROUTER.upstream as Upstream,
+                  apis: [{ api: "openai-completions", base_url: "https://openrouter.ai/api/v1" },
+                         { api: "anthropic-messages", base_url: "https://openrouter.ai/api" }] },
+      endpoints: [{ origin: "https://openrouter.ai",
+                    paths: ["/api/v1/chat/completions", "/api/v1/messages"], methods: ["POST"] }] };
+    expect(new Set((await listed(both)).map(([id]) => id)))
+      .toEqual(new Set([...chat("openai-completions"), ...chat("anthropic-messages")]));
+    // A service's key reaches no model.
+    const service = (await connect.seal("alice", C1, 1, "sk-svc",
+                                        serviceSource("https://mcp.example.com/mcp/", {
+                                          header: "authorization", scheme: "Bearer" }))).blob;
+    expect(await rejected(() => gateway.models("alice", C1, 1, service)))
+      .toBe("unsupported_source");
+  });
+
   it("settles a call at the bill its answer reports up to METERED_COST_MAX, and past it " +
      "unknown", async () => {
     const egress = new EgressGateway(createExecutionContext(), env);
@@ -572,7 +605,7 @@ describe("the gateway Worker", () => {
       .toEqual(["constructor", "forward"]);
     // The owner's object: its connections' upkeep and its wakes, and no seal or forward.
     expect(Object.getOwnPropertyNames(Gateway.prototype).sort())
-      .toEqual(["constructor", "credit", "fetch", "listing", "refresh", "reseal",
+      .toEqual(["constructor", "credit", "fetch", "listing", "models", "refresh", "reseal",
                 "resealDoorbell", "revokeAtProvider", "ringDoorbell"]);
   });
 
