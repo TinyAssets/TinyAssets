@@ -531,6 +531,33 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
   await card.getByRole("button", { name: /^Sign in/ }).waitFor();
 });
 
+test("a sign-in that could not start says why in plain words, in view of its button",
+     { timeout: 60_000 }, async () => {
+  const script = (answer) => mf.dispatchFetch(`https://e2e.internal/script/${WHO}`, {
+    method: "POST", body: JSON.stringify({ signinAnswer: answer }) });
+  // A short window, so the button is well below the top of the page, as on a phone.
+  await page.setViewportSize({ width: 400, height: 500 });
+  await script({ started: false, code: "sandbox_unconfigured" });
+  try {
+    await page.goto(`${ORIGIN}/app#sources`);
+    const card = page.locator(".card", { hasText: "Claude" })
+      .filter({ has: page.locator(".signin") }).first();
+    const button = card.getByRole("button", { name: /^Sign in/ });
+    await button.scrollIntoViewIfNeeded();
+    await button.click();
+    const message = page.locator("#notice .message.bad",
+                                 { hasText: "TinyAssets cannot start sandboxes yet" });
+    await message.waitFor();
+    assert.equal((await message.textContent()).includes("sandbox_unconfigured"), false);
+    const { top, bottom } = await message.evaluate((el) => el.getBoundingClientRect());
+    assert.ok(top >= 0 && bottom <= 500, `the refusal is out of view (${top} to ${bottom})`);
+    assert.ok(await page.evaluate(() => window.scrollY > 0), "the page was not scrolled");
+  } finally {
+    await script({ started: true });
+    await page.setViewportSize({ width: 1280, height: 720 });
+  }
+});
+
 test("a sign-in whose socket drops is followed on a new socket, and ends as it ends " +
      "(task 68)", { timeout: 120_000 }, async () => {
   // The app's sockets, kept so the test can drop one as a network would.

@@ -1038,8 +1038,8 @@ describe("the deploy kit's facts", () => {
     }
   });
 
-  it("writes the dark record (`control.json`) when none is held, every outside door closed",
-     async () => {
+  it("writes the dark record (`control.json`) when none is held: every outside door closed, " +
+     "the sandbox's numbers set", async () => {
     const w = world();
     await runMode(w, "dark", ["--yes"]);
     const written = [...w.kv].filter(([key]) => key.endsWith(`/${CONTROL_KEY}`))
@@ -1049,6 +1049,8 @@ describe("the deploy kit's facts", () => {
     expect(control).toMatchObject({ outside: "off", ordinary: "canary", canary: [],
                                     inbound: false });
     expect(control?.tiers).not.toBeNull();
+    // With no sandbox numbers, every start is refused `sandbox_unconfigured`.
+    expect(control?.sandbox).not.toBeNull();
   });
 
   it("stops loudly on a held record no reader takes, and never writes over it", async () => {

@@ -201,8 +201,9 @@ import {
   restoreFrom, rotate, type RotationRecord, rotationKey, rotationRecord, RUN_MS, WAIT_MS,
 } from "./operator.ts";
 /**
- * The control record a first deploy writes when there is none: every outside door closed, and
- * the founder's tier numbers. The founder's data, so a file of its own, which the tests read too.
+ * The control record a first deploy writes when there is none: every outside door closed, the
+ * founder's tier numbers, and the sandbox's numbers at E2B's lowest plan (Hobby), so a sandbox
+ * starts on any plan. The founder's data, so a file of its own, which the tests read too.
  */
 import DARK_CONTROL from "./control.json" with { type: "json" };
 

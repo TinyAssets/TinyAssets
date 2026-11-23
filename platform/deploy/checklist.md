@@ -173,7 +173,11 @@ It never counts as "absent".
    with `rollback` of the stopped run (below), then dispatch again.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
-   off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
+   off. It also holds your tier numbers and the sandbox's numbers, without which no sandbox
+   starts (`sandbox_unconfigured`): E2B Hobby's, the lowest plan's, so they hold on any plan
+   (a 3,600 s runtime ceiling, 20 sandboxes at once, and a 600 s renewal window). On a
+   larger E2B plan, raise the first two to its own with mode `control` (Pro: 86,400 and
+   100); E2B's API key cannot read them. It is `platform/deploy/control.json`, as is. If the
    record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:** the doors'
    callback (`signin.callback` in `platform/contract/identity.json`), with the checks in
