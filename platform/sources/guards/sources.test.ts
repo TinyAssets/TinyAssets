@@ -123,6 +123,16 @@ describe("the source records", () => {
     expect(() => at("\u{1F511}".repeat(129))).toThrow(SourceRecordError);
   });
 
+  it("mark models not interactive only as a gateway source's list of model patterns", () => {
+    const at = (not_interactive: unknown) => sourceRecord({ ...openrouter, not_interactive });
+    expect(at(["*:batch", "x/*"]).not_interactive).toEqual(["*:batch", "x/*"]);
+    for (const bad of [[], ["*:batch", "*:batch"], "*:batch", [""], ["a b"], [1],
+                       Array.from({ length: 17 }, (_, n) => `m${n}`)]) {
+      expect(() => at(bad), JSON.stringify(bad)).toThrow(SourceRecordError);
+    }
+    expect(() => sourceRecord({ ...claude, not_interactive: ["*"] })).toThrow(SourceRecordError);
+  });
+
   it("take an issuer, bare or with a path, and its RFC 9207 flag", () => {
     for (const issuer of ["https://auth.openai.com", "https://auth.openai.com/tenant"]) {
       const record = sourceRecord({ ...rfc6749, oauth: {

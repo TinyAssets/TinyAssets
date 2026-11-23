@@ -1057,6 +1057,35 @@ describe("auto and the owner's sign-ins", () => {
       .toMatchObject({ credential: "api_key" });
   });
 
+  it("never picks on its own a model the key's source record marks not interactive; one the " +
+     "agent names runs", async () => {
+    // The stage finding of 2026-11-23: an OpenRouter key whose catalog lists Claude Fable
+    // only as its batch variants and as `~…-latest`. The models are put on the fake upstream's
+    // source; the rule reads the connection's source record, OpenRouter's.
+    const [base] = await catalog(OPENAI);
+    const listed = (...ids: string[]) => ids.map((id) => ({ ...base!, id }));
+    const BATCH = "anthropic/claude-fable-5.1:batch";
+    const r = await gated();
+    await r.connect("sk-good", OPENAI, "OpenRouter",
+                    listed(BATCH, "~anthropic/claude-fable-latest"), "openrouter_user_models_v1");
+    await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
+      .toMatchObject({ credential: "api_key", model: "~anthropic/claude-fable-latest" });
+    expect((await ownerRun(r.stub, r.bind(), { ...AUTO_AGENT, model: BATCH }, "pinned")).run)
+      .toMatchObject({ credential: "api_key", model: BATCH });
+    // A key listing only batch variants: `auto` has no source, and an agent naming the
+    // connection on its engine still runs on it.
+    const s = await gated();
+    const only = await s.connect("sk-good", OPENAI, "Batch only", listed(BATCH),
+                                 "openrouter_user_models_v1");
+    await defineAgent(s.stub, s.bind(), "helper", AUTO_AGENT);
+    expect((await failure(() => ownerRun(s.stub, s.bind(), undefined, "helper"))).message)
+      .toMatch(/^no_source/);
+    expect((await ownerRun(s.stub, s.bind(), { engine: "pi", connection: only, scopes: [] },
+                           "named")).run)
+      .toMatchObject({ engine: "pi", credential: "api_key" });
+  });
+
   it("takes a sign-in report only from the sandbox, for engines that sign in, each once",
      async () => {
     const r = await gated();
