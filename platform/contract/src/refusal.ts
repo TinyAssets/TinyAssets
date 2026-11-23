@@ -75,7 +75,7 @@ export const REFUSALS = Object.freeze({
   conflict: REFUSED,
   conversation_busy: REFUSED,
   credential_refresh_failed: REFUSED,
-  // A cursor no answer in its order gave (made up, altered, another feed's, not a string), or
+  // A cursor no answer in its order gave (made up, altered, another feed's), or
   // one from before the object was restored that a pull or a history cannot reset: read again
   // from the start, the cursor left out.
   cursor_invalid: Object.freeze({ status: 400 }),

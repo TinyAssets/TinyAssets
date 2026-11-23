@@ -8,7 +8,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { CHUNK_BYTES, INLINE_BYTES } from "../../contract/src/limits";
-import { type Entry, UNREAD_CHANGE, UNREAD_WRITE } from "../src/files";
+import type { Entry } from "../src/files";
 import {
   APPEND_UNITS, OWNER_POOL_UNITS, OWNER_RESERVE_UNITS, OWNER_WAITERS,
 } from "../src/holds";
@@ -163,7 +163,7 @@ describe("a whole write (file_write) from an outside agent", () => {
     const before = await textOf(r, "/workspace/USER.md");
     expect((await failure(() => r.stub.fileWrite(r.bind(MUSE), {
       path: "/workspace/USER.md", expected_etag: null, content: "# replaced\n" }))).message)
-      .toBe(UNREAD_WRITE);
+      .toBe("invalid file request: expected_etag is a string");
     const created = await r.stub.fileWrite(r.bind(MUSE), {
       path: "/workspace/USER.md", expected_etag: "", content: "# replaced\n" });
     expect(created).toHaveProperty("conflict");
@@ -187,7 +187,7 @@ describe("a remove, rename or restore from an outside agent", () => {
       () => r.stub.fileRestore(r.bind(MUSE), { path: NOTES, version: made.entry.version,
                                                expected_etag: null }),
     ]) {
-      expect((await failure(call)).message).toBe(UNREAD_CHANGE);
+      expect((await failure(call)).message).toBe("invalid file request: expected_etag is a string");
     }
     expect(await textOf(r, NOTES)).toBe("one\n");
     // At the etag it read, each lands.

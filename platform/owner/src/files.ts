@@ -2905,24 +2905,6 @@ export const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
  */
 export const APPEND_TRIES = MAX_OPEN_INTENTS;
 
-/**
- * An outside agent's or a run's remove, rename or restore with no etag: it never removes,
- * moves or overwrites an entry it did not read (as `UNREAD_WRITE`).
- */
-export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\" where there " +
-  "is none: read it first (file_stat, fetch or file_read)";
-
-/** A change by an outside client or a run names the etag it read; the owner's app need not. */
-function heldToRead(account: Account, asked: unknown): void {
-  if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
-    throw new Refusal("invalid", UNREAD_CHANGE);
-  }
-}
-
-/** An outside agent's or a run's whole write with no etag: it never replaces a file unread. */
-export const UNREAD_WRITE = "expected_etag is the file's current etag, or \"\" to create it " +
-  "only when absent: read the file first (fetch, file_read or file_stat)";
-
 function fileConflicted<T>(act: () => T): T | FileConflicted {
   try {
     return act();
@@ -2968,13 +2950,6 @@ function inlineOf(plan: Edited, hold: <T>(work: () => Promise<T>) => Promise<T>)
     throw new Error("an inline edit's output is one chunk");
   }
   return hold(() => plan.make(0));
-}
-
-export function flag(value: unknown, what: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new Refusal("invalid", `${what} is true or false`);
-  }
-  return value;
 }
 
 /**
@@ -3617,18 +3592,14 @@ export const filesDoors = Object.freeze({
    * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
    * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement). An
    * outside client or a run writes at the etag it read, or `""` to create a file only when it
-   * is absent, never with no etag at all: a replacement never lands over a file
-   * the agent did not read. The owner's own app may still write with none.
+   * is absent, never with no etag at all (its row's fields by who asks): a replacement never
+   * lands over a file the agent did not read. The owner itself may write with none.
    */
   async fileWrite(o: FilesDoorNeeds, door: Door<FileWriteRequest>):
       Promise<{ entry: Entry } | FileConflicted> {
     const { account, r, content } = await o.door(() => {
       const { account, binding, r } = door.check();
       ownersTree(o, binding, account, "FILES.write", door.request, r["path"]);
-      const asked = r["expected_etag"];
-      if ((account.origin !== null || account.run !== null) && typeof asked !== "string") {
-        throw new Refusal("invalid", UNREAD_WRITE);
-      }
       const given = r["content"];
       const content = typeof given === "string" ? new TextEncoder().encode(given) : given;
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
@@ -3777,25 +3748,20 @@ export const filesDoors = Object.freeze({
   fileRemove(o: FilesDoorNeeds, { account, r, binding, request }: Call<RemoveRequest>):
       { removed: number } | FileConflicted {
     ownersTree(o, binding, account, "FILES.remove", request, r["path"]);
-    heldToRead(account, r["expected_etag"]);
     return fileConflicted(() => o.files.remove(r["path"], {
-      expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
-      writer: fileWriter(account) }));
+      expected: r["expected_etag"], recursive: request.recursive, writer: fileWriter(account) }));
   },
   fileRename(o: FilesDoorNeeds, { account, r, binding, request }: Call<RenameRequest>):
       { entry: Entry } | FileConflicted {
     ownersTree(o, binding, account, "FILES.rename", request, r["from"], r["to"]);
-    heldToRead(account, r["expected_etag"]);
     return fileConflicted(() => ({
       entry: o.files.rename(r["from"], r["to"], {
-        expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
-        writer: fileWriter(account) }),
+        expected: r["expected_etag"], replace: request.replace, writer: fileWriter(account) }),
     }));
   },
   fileRestore(o: FilesDoorNeeds, { account, r, binding, request }: Call<RestoreRequest>):
       { entry: Entry } | FileConflicted {
     ownersTree(o, binding, account, "FILES.restore", request, r["path"]);
-    heldToRead(account, r["expected_etag"]);
     return fileConflicted(() => ({
       entry: o.files.restore(r["path"], r["version"], {
         expected: r["expected_etag"], writer: fileWriter(account) }),

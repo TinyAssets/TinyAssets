@@ -80,6 +80,7 @@ import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
 import { type ConnectedApp, type Grant, MAIN_AGENT, may, type Scope } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
+import type { DoorRequests } from "../../contract/src/requests";
 import { keyed } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import { policyDigest } from "../../contract/src/policy-document";
@@ -684,7 +685,7 @@ export const grantsDoors = Object.freeze({
    * the grant's own, kept, is not checked, so no save waits on it, a narrowing or revoke among
    * them.
    */
-  grantSet(o: GrantsDoorNeeds, { session, r }: Call<GrantChange, "session">):
+  grantSet(o: GrantsDoorNeeds, { session, r }: Call<DoorRequests["grantSet"], "session">):
       { client: string; mode: string; scopes: Scope[]; profile: string; agent: string;
         generation: number; revision: number } {
     return o.storage.transactionSync(() => {

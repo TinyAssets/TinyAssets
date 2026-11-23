@@ -96,7 +96,8 @@ describe("an MCP client's agent registration", () => {
       ...REQUEST, extra: 1 } as never))).message).toBe("invalid ledger request");
     // A filing is held to the rule its apply is, so the owner is shown only a card that applies.
     for (const [asked, reason] of [
-      [{ recipe_id: { nested: 1 } }, "recipe_id is 1 to 128 printable characters"],
+      [{ recipe_id: { nested: 1 } }, "invalid ledger request: recipe_id is a string or null"],
+      [{ recipe_id: "" }, "recipe_id is 1 to 128 printable characters"],
       [{ delivery_method: "pigeon" }, "unknown delivery method"],
       [{ display_name: "sk-secret" }, "display_name is required: letters, digits, spaces, " +
                                       "dots, dashes"],

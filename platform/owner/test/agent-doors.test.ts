@@ -47,19 +47,19 @@ describe("the owner's agent definitions", () => {
     await r.stub.fileMkdir(r.session(null), { path: "/workspace/agents/other",
                                               expected_etag: null });
     const made = await r.stub.fileWrite(r.session(null), { path: OTHER, expected_etag: "",
-      content: bytes(JSON.stringify({ engine: "auto", scopes: ["read_files"] })) });
+      content: JSON.stringify({ engine: "auto", scopes: ["read_files"] }) });
     const etag = "entry" in made ? made.entry.etag : "";
     // The default grant edits that agent's agent.json, its instructions and its skills, moves
     // and removes them: every agent may do what any other may.
     const widened = await r.stub.fileWrite(client, { path: OTHER, expected_etag: etag,
-      content: bytes(JSON.stringify({ engine: "auto", scopes: ["read_files", "run_graph"] })) });
+      content: JSON.stringify({ engine: "auto", scopes: ["read_files", "run_graph"] }) });
     expect("entry" in widened && widened.entry.writer).toBe(`client:${MUSE.client}`);
     const notes = await r.stub.fileWrite(client, { path: AGENTS_MD.replace("main", "other"),
-      expected_etag: "", content: bytes("Be brief.") });
+      expected_etag: "", content: "Be brief." });
     expect(notes).toHaveProperty("entry");
     await r.stub.fileMkdir(client, { path: "/workspace/skills/x", expected_etag: null });
     expect(await r.stub.fileWrite(client, { path: "/workspace/skills/x/SKILL.md",
-      expected_etag: "", content: bytes("# x") })).toHaveProperty("entry");
+      expected_etag: "", content: "# x" })).toHaveProperty("entry");
     // An outside agent changes an entry at the etag it read.
     const etagOf = async (path: string) =>
       (await r.stub.fileStat(r.bind(null), { path })).entry!.etag;
@@ -78,23 +78,23 @@ describe("the owner's agent definitions", () => {
     const now = (await r.stub.fileStat(r.bind(null), { path: OTHER })).entry!.etag;
     for (const call of [
       () => r.stub.fileWrite(client, { path: OTHER, expected_etag: now,
-                                       content: bytes(JSON.stringify({ engine: "auto",
-                                         scopes: ALL_SCOPES })) }),
+                                       content: JSON.stringify({ engine: "auto",
+                                         scopes: ALL_SCOPES }) }),
       () => r.stub.fileMkdir(client, { path: "/workspace/agents/new", expected_etag: null }),
-      () => r.stub.fileRemove(client, { path: OTHER, expected_etag: null, recursive: false }),
+      () => r.stub.fileRemove(client, { path: OTHER, expected_etag: now, recursive: false }),
       () => r.stub.fileRename(client, { from: OTHER, to: "/workspace/out.json",
-                                        expected_etag: null, replace: false }),
+                                        expected_etag: now, replace: false }),
       () => r.stub.fileRestore(client, { path: OTHER, version: 1, expected_etag: now }),
       () => r.stub.fileUploadCommit(client, { intent_id: "intent_x",
         path: "/workspace/prompts/p.md", expected_etag: null }),
       () => r.stub.fileWrite(client, { path: "/workspace/.agents/skills/y/SKILL.md",
-                                       expected_etag: "", content: bytes("PLANTED") }),
+                                       expected_etag: "", content: "PLANTED" }),
     ]) {
       expect(await refused(call)).toBe(AGENTS_OWNER_ONLY);
     }
     expect((await r.stub.fileStat(r.bind(null), { path: OTHER })).entry!.etag).toBe(now);
     expect(await r.stub.fileWrite(client, { path: "/workspace/mine.md", expected_etag: "",
-                                            content: bytes("mine") })).toHaveProperty("entry");
+                                            content: "mine" })).toHaveProperty("entry");
   });
 
   it("take the owner's own change only in its live session, refused and receipted without",
@@ -111,9 +111,9 @@ describe("the owner's agent definitions", () => {
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/agents/helper",
                                            expected_etag: null });
     const made = await r.stub.fileWrite(r.bind(null), { path: AGENT_JSON, expected_etag: "",
-      content: bytes(JSON.stringify({ engine: "auto", scopes: ["read_files"] })) });
+      content: JSON.stringify({ engine: "auto", scopes: ["read_files"] }) });
     const etag = "entry" in made ? made.entry.etag : "";
-    const widened = bytes(JSON.stringify({ engine: "auto", scopes: ["read_files", "run_graph"] }));
+    const widened = JSON.stringify({ engine: "auto", scopes: ["read_files", "run_graph"] });
     expect(await refused(() => r.stub.fileWrite(bare, { path: AGENT_JSON, expected_etag: etag,
                                                         content: widened }))).toBe(SESSION);
     expect(await refused(() => r.stub.fileRemove(bare, { path: AGENT_JSON, expected_etag: etag,
@@ -134,7 +134,7 @@ describe("the owner's agent definitions", () => {
     expect((await r.stub.fileRead(r.bind(null), { path: AGENT_JSON })).entry.etag).toBe(etag);
     // Outside the owner's trees, the bare token writes as before.
     expect(await r.stub.fileWrite(bare, { path: "/workspace/notes.md", expected_etag: "",
-                                          content: bytes("mine") })).toHaveProperty("entry");
+                                          content: "mine" })).toHaveProperty("entry");
   });
 
   it("hold the owner's goals as every other agent tree: a default (full) grant writes them, " +
@@ -147,10 +147,10 @@ describe("the owner's agent definitions", () => {
     // The default grant makes the goals' directory, writes a goal, moves and removes one.
     await r.stub.fileMkdir(client, { path: GOALS_DIR, expected_etag: null });
     const made = await r.stub.fileWrite(client, { path: GOAL, expected_etag: "",
-      content: bytes("---\ntype: Goal\ngoal: active\nstatus: draft\n---\n## Done when\n") });
+      content: "---\ntype: Goal\ngoal: active\nstatus: draft\n---\n## Done when\n" });
     expect("entry" in made && made.entry.writer).toBe(`client:${MUSE.client}`);
     expect(await r.stub.fileWrite(client, { path: `${GOALS_DIR}/b.md`, expected_etag: "",
-      content: bytes("# b") })).toHaveProperty("entry");
+      content: "# b" })).toHaveProperty("entry");
     const etagOf = async (path: string) =>
       (await r.stub.fileStat(r.bind(null), { path })).entry!.etag;
     expect(await r.stub.fileRename(client, { from: `${GOALS_DIR}/b.md`,
@@ -167,24 +167,24 @@ describe("the owner's agent definitions", () => {
       expected_revision: row!.revision, name: "" });
     const etag = (await r.stub.fileStat(r.bind(null), { path: GOAL })).entry!.etag;
     expect(await r.stub.fileWrite(client, { path: "/workspace/mine.md", expected_etag: "",
-                                            content: bytes("mine") })).toHaveProperty("entry");
+                                            content: "mine" })).toHaveProperty("entry");
     for (const call of [
       () => r.stub.fileWrite(client, { path: GOAL, expected_etag: etag,
-                                       content: bytes("## Agreed\nanything") }),
+                                       content: "## Agreed\nanything" }),
       () => r.stub.fileWrite(client, { path: `${GOALS_DIR}/new.md`, expected_etag: "",
-                                       content: bytes("# new") }),
-      () => r.stub.fileRemove(client, { path: GOAL, expected_etag: null, recursive: false }),
+                                       content: "# new" }),
+      () => r.stub.fileRemove(client, { path: GOAL, expected_etag: etag, recursive: false }),
       () => r.stub.fileRename(client, { from: GOAL, to: "/workspace/out.md",
-                                        expected_etag: null, replace: false }),
+                                        expected_etag: etag, replace: false }),
       () => r.stub.fileRename(client, { from: "/workspace/mine.md", to: `${GOALS_DIR}/x.md`,
-                                        expected_etag: null, replace: false }),
+                                        expected_etag: etag, replace: false }),
     ]) {
       expect(await refused(call)).toBe(AGENTS_OWNER_ONLY);
     }
     expect((await r.stub.fileStat(r.bind(null), { path: GOAL })).entry!.etag).toBe(etag);
     // The owner, in its session, still writes them.
     expect(await r.stub.fileWrite(r.session(null), { path: GOAL, expected_etag: etag,
-      content: bytes("## Agreed\n") })).toHaveProperty("entry");
+      content: "## Agreed\n" })).toHaveProperty("entry");
   });
 
   it("serve a main agent an absent AGENTS.md or SOUL.md as none, and refuse a folder at either " +
@@ -218,7 +218,7 @@ describe("the owner's agent definitions", () => {
     for (const [name, text] of [["agent.json", JSON.stringify({ engine: "auto" })],
                                 ["AGENTS.md", "Work."]]) {
       await r.stub.fileWrite(r.session(null), { path: `${work}/${name}`, expected_etag: "",
-                                                content: bytes(text!) });
+                                                content: text! });
     }
     expect(await read()).toMatchObject({ agent: "main" });
     const listed = async () => (await r.stub.grantList(r.bind(null))).clients
@@ -244,7 +244,7 @@ describe("the owner's agent definitions", () => {
     expect(await listed()).toMatchObject({ agent: "work", agent_live: false,
                                            profile: "directory" });
     await r.stub.fileWrite(r.session(null), { path: `${work}/agent.json`, expected_etag: "",
-                                              content: bytes(JSON.stringify({ engine: "auto" })) });
+                                              content: JSON.stringify({ engine: "auto" }) });
     expect(await listed()).toMatchObject({ agent: "work", agent_live: true });
     expect(await read()).toMatchObject({ agent: "work" });
     // Naming it anew once it is gone is refused.
@@ -263,10 +263,10 @@ describe("the owner's agent definitions", () => {
     await r.admit(MUSE);
     const made = await r.stub.fileWrite(r.bind(MUSE), { path: "/workspace/agentsX/AGENTS.md",
                                                         expected_etag: "",
-                                                        content: bytes("mine") });
+                                                        content: "mine" });
     expect("entry" in made && made.entry.writer).toBe(`client:${MUSE.client}`);
     expect((await failure(() => r.stub.fileWrite(r.bind(MUSE), {
-      path: "/workspaceX/a.md", expected_etag: "", content: bytes("x") }))).code)
+      path: "/workspaceX/a.md", expected_etag: "", content: "x" }))).code)
       .toBe("invalid");
   });
 });

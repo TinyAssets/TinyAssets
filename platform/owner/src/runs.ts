@@ -1948,20 +1948,14 @@ export const runsDoors = Object.freeze({
       const { account, binding, r, agent, universe } = door.check();
       const input = runText(r["input"], "an input");
       const client = account.origin?.client ?? null;
-      const at = r["at"] ?? null;
-      const cron = r["cron"] ?? null;
-      if (at !== null && (typeof at !== "number" || !Number.isFinite(at))) {
-        throw new Refusal("invalid", "at is a time in seconds since the epoch");
-      }
-      if (cron !== null && typeof cron !== "string") {
-        throw new Refusal("invalid", "cron is a cron expression");
-      }
+      const at = door.request.at ?? null;
+      const cron = door.request.cron ?? null;
       if (at === null && cron === null) {
         return { now: true as const, agent, input, client };
       }
       const { stamp, origin } = initiated(binding, account, universe, agent);
       return { now: false as const, schedule: o.runs.schedule({
-        agent, input, at: at as number | null, cron: cron as string | null, stamp, origin },
+        agent, input, at, cron, stamp, origin },
                                                                   clock()) };
     });
     if (!asked.now) {

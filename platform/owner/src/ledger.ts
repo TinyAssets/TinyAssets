@@ -136,6 +136,7 @@ import type { FileReaction } from "./files";
 import type { Heads } from "./pages";
 import type { Events } from "../../contract/src/wake-records";
 import type { Resealed } from "../../contract/src/gateway";
+import type { DoorRequests } from "../../contract/src/requests";
 
 const OUTSIDE_ID = /^agent_[0-9a-f]{16}$/;
 const NATIVE_ID = /^ta_[0-9a-f]{16}$/;
@@ -1385,12 +1386,9 @@ export class Ledger {
    * what is left). Its open wakes are suppressed and its subscriptions erased. The owner
    * disables any agent; an outside caller (`origin`) only its own.
    */
-  disable(agentId: unknown, reason: unknown, origin: Origin | null = null,
+  disable(agentId: string, reason: unknown, origin: Origin | null = null,
           now: number = clock()): Agent {
     printable(reason, 200, "reason");
-    if (typeof agentId !== "string") {
-      throw new Refusal("invalid", "agent_id is an agent id");
-    }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const agent = this.#agent(agentId);
@@ -1418,10 +1416,7 @@ export class Ledger {
    * range of
    * that agent's rows.
    */
-  remove(agentId: unknown, now: number = clock()): { agent_id: string; messages: number } {
-    if (typeof agentId !== "string") {
-      throw new Refusal("invalid", "agent_id is an agent id");
-    }
+  remove(agentId: string, now: number = clock()): { agent_id: string; messages: number } {
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const agent = this.#agent(agentId);
@@ -1456,10 +1451,7 @@ export class Ledger {
   }
 
   /** Owner policy: an agent's hourly wake cap and batch window. */
-  setWakeLimits(agentId: unknown, maxWakesPerHour: unknown, batchWindowS: unknown): Agent {
-    if (typeof agentId !== "string") {
-      throw new Refusal("invalid", "agent_id is an agent id");
-    }
+  setWakeLimits(agentId: string, maxWakesPerHour: unknown, batchWindowS: unknown): Agent {
     const { low: hourLow, high: hourHigh } = WAKE_SETTINGS.maxWakesPerHour;
     if (maxWakesPerHour !== null && !whole(maxWakesPerHour, hourLow, hourHigh)) {
       throw new Refusal("invalid",
@@ -3599,10 +3591,10 @@ export const ledgerDoors = Object.freeze({
    * row where the ledger reads them, and changed like any policy write: in the owner's
    * session, against the policy generation, receipted.
    */
-  policyWakeLimits(o: LedgerDoorNeeds, { session, r }: Call<WakeLimitsRequest, "session">):
+  policyWakeLimits(o: LedgerDoorNeeds, { session, r, request }: Call<WakeLimitsRequest, "session">):
       { agent: Agent; generation: number } {
     return o.storage.transactionSync(() => {
-      const agent = o.ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
+      const agent = o.ledger.setWakeLimits(request.agent_id, r["max_wakes_per_hour"],
                                                r["batch_window_s"]);
       const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
                        batch_window_s: agent.batch_window_s };
@@ -3620,7 +3612,7 @@ export const ledgerDoors = Object.freeze({
    * together with the owner's session.
    */
   registerAgent(o: LedgerDoorNeeds, { account: { origin }, session, r, binding }:
-                  Call<Registration | CardApply, "session">): Agent {
+                  Call<DoorRequests["registerAgent"], "session">): Agent {
     if (origin === null) {
       return o.storage.transactionSync(() => {
         const card = o.registrations.take(session, r["card_id"], r["digest"]);
@@ -3634,8 +3626,9 @@ export const ledgerDoors = Object.freeze({
    * The owner disables any agent in its session. An outside client cannot reach it: it
    * holds no owner session, and its call never carries one.
    */
-  disableAgent(o: LedgerDoorNeeds, { account: { origin }, r }: Call<DisableRequest>): Agent {
-    return o.ledger.disable(r["agent_id"], r["reason"], origin);
+  disableAgent(o: LedgerDoorNeeds, { account: { origin }, r, request }: Call<DisableRequest>):
+      Agent {
+    return o.ledger.disable(request.agent_id, r["reason"], origin);
   },
   /**
    * Only the owner itself, in its session, sets an agent's doorbell where its wake kind's
@@ -3660,8 +3653,9 @@ export const ledgerDoors = Object.freeze({
     return ({ unsubscribed: o.ledger.unsubscribe(null, r["subscription_id"]) });
   },
   /** Only the owner itself, in its session, deletes an agent. */
-  deleteAgent(o: LedgerDoorNeeds, { r }: Call<AgentRequest>): { agent_id: string; messages: number } {
-    return o.ledger.remove(r["agent_id"]);
+  deleteAgent(o: LedgerDoorNeeds, { request }: Call<AgentRequest>):
+      { agent_id: string; messages: number } {
+    return o.ledger.remove(request.agent_id);
   },
   /**
    * The owner's view of a mail chain (agents' mail to each other included), from any of its
@@ -3709,17 +3703,17 @@ export const ledgerDoors = Object.freeze({
    * The subscription is stored under the id the door derived, its lifetime as granted. The
    * answer never holds the callback.
    */
-  wakeSubscribe(o: LedgerDoorNeeds, { account, r, held }: Call<SubscribeRequest>):
+  wakeSubscribe(o: LedgerDoorNeeds, { account, r, held, request }: Call<SubscribeRequest>):
       { subscription_id: string; agent_id: string; expires_at: number | null } {
     if (account.origin === null || account.run !== null) {
       throw new Refusal("refused", "only an agent's own client subscribes its doorbell");
     }
-    if (typeof r["name"] !== "string" || eventKind(r["name"]) === null) {
+    if (eventKind(request.name) === null) {
       throw new Refusal("invalid", "unknown event");
     }
-    const args = r["arguments"] as Record<string, unknown> | null;
+    const args = r["arguments"] as Readonly<Record<string, unknown>>;
     const follow = follows(args, ["command_center_id"]);
-    const center = args?.["command_center_id"];
+    const center = args["command_center_id"];
     if (typeof center !== "string") {
       throw new Refusal("invalid", "invalid subscription arguments");
     }

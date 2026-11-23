@@ -116,6 +116,9 @@ export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: 
   if (typeof name !== "string" || name.trim() === "") {
     throw new Refusal("invalid", `key name required (at most ${KEY_NAME_MAX} characters)`);
   }
+  if (!Array.isArray(scopes)) {
+    throw new Refusal("invalid", "a key's scopes are a list: none for a full key");
+  }
   const minted = newKey();
   const row = await stub.keyMint(binding, { key_id: minted.keyId, name, scopes });
   await putKey(env, minted.keyId,
