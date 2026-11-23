@@ -408,9 +408,9 @@ export interface DoorMethods<H> {
   collectionClear(binding: Binding, request: RequestIn<H, "collectionClear">):
     Promise<AnswerIn<H, "collectionClear">>;
   /**
-   * Read one file's or directory's entry, or null where nothing is: the one file tool that answers
-   * a missing path rather than refusing it (not_found), so it tells whether to create a file
-   * (file_write with expected_etag "").
+   * Read one file's or directory's entry, or null where nothing is, where file_read refuses a
+   * missing path (not_found): so it tells whether to create a file (file_write with expected_etag
+   * "").
    */
   fileStat(binding: Binding, request: RequestIn<H, "fileStat">): Promise<AnswerIn<H, "fileStat">>;
   /**
@@ -483,8 +483,8 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "fileMkdir">>;
   /**
    * Remove a file or directory against its current etag. A directory goes only with recursive true
-   * (refused is_directory when empty, not_empty with its contents); a missing path is refused
-   * not_found.
+   * (refused is_directory when empty, not_empty with its contents). A path removed since its etag
+   * was read answers conflict null.
    */
   fileRemove(binding: Binding, request: RequestIn<H, "fileRemove">):
     Promise<AnswerIn<H, "fileRemove">>;

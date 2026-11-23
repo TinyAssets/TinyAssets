@@ -78,7 +78,8 @@ describe("the sync doors", () => {
       .json() as { outcomes: { outcome: string }[] };
     expect(committed.outcomes.map((outcome) => outcome.outcome)).toEqual(["committed"]);
     const missing = await door("read", { path: "/workspace/none.md" }, as);
-    expect(missing.status).toBe(404);
+    expect([missing.status, await missing.json()])
+      .toEqual([404, { error: { code: "not_found", message: "not_found" } }]);
     // Another lease's id is fenced.
     const fenced = await door("commit", { lease_id: "0".repeat(32), epoch: 1,
                                           ops: [{ op: "remove", path: "/workspace/out.md",

@@ -207,9 +207,12 @@ describe.each([
       "names changes.";
     const skills = answerOf(await client.callTool({ name: "file_stat", arguments: {
       path: "/workspace/.agents" } })) as { entry: { etag: string } };
-    // A missing path is the one file tool's answer, file_stat's; every other refuses it, named.
+    // A stat answers a missing path, and a remove at its old etag a conflict; a read refuses it.
     expect(answerOf(await client.callTool({ name: "file_stat", arguments: {
       path: "/workspace/gone.md" } }))).toEqual({ entry: null });
+    expect(answerOf(await client.callTool({ name: "file_remove", arguments: {
+      path: "/workspace/gone.md", expected_etag: written.entry.etag, recursive: false } })))
+      .toEqual({ conflict: null });
     for (const [name, args, said] of [
       ["file_read", { path: "/workspace/gone.md" }, "not_found: no such file"],
       ["fetch", { id: "/workspace/gone.md" }, "not_found: no such file"],

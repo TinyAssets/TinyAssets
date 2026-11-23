@@ -61,8 +61,10 @@ first in its words. The sync agent's door still answers it in its own protocol (
 read through `refusalOf`). The two `instanceof Refusal || instanceof FileFault` checks
 (`files.ts` sync ops, `starter.ts`) are one test now.
 
-**Consistent across read, stat and remove (6).** `file_read`, `fetch` and `file_remove` refuse
-a missing path `not_found`. `file_stat` answers `{entry: null}`: a stat says what stands, and
+**Consistent across read, stat and remove (6).** `file_read` and `fetch` refuse a missing path
+`not_found`. `file_remove` of a path removed since its etag was read answers `{conflict:
+null}`, as every etag-held write does; only `expected_etag: ""` is refused `not_found`
+(review). `file_stat` answers `{entry: null}`: a stat says what stands, and
 the app and the agents read it to learn whether to create (`file_write` with
 `expected_etag: ""`). Its description now says so. `file_remove` of a folder without
 `recursive` is refused by design (`Files.#remove`: `is_directory` when empty, `not_empty`

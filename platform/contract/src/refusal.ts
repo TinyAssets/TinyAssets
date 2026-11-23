@@ -438,9 +438,9 @@ export function namedRefusal(error: unknown): error is Error & { readonly name: 
 }
 
 /**
- * What `call` answers, or `refused` when it is refused (a fault, 5xx or no refusal, still
- * throws): a key rotation's sweep counts a blob its ring no longer opens left and goes on, so
- * one never keeps the owner's other blobs under a retiring kid.
+ * What `call` answers, or `refused` when it is refused (a 5xx or no refusal still throws): a
+ * key rotation's sweep counts a blob its ring no longer opens left and goes on, so one never
+ * keeps the owner's other blobs under a retiring kid.
  */
 export async function orRefused<T, R>(call: Promise<T>, refused: R): Promise<T | R> {
   try {
