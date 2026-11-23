@@ -128,8 +128,6 @@
     { "door": "fileUploadStored", "caller": "account", "handler": "files", "gate": "door" },
     { "door": "registerAgent", "caller": "session", "rule": "OUTSIDE_AGENTS.register",
       "action": null, "registering": true, "handler": "ledger", "gate": "synced" },
-    { "door": "registerProposal", "caller": "owner", "action": "read its agents' registrations",
-      "handler": "registrations", "gate": "door" },
     { "door": "registerProposals", "caller": "owner", "action": "read its agents' registrations",
       "handler": "registrations", "gate": "door" },
     { "door": "registerDecline", "caller": "owner", "action": "decline its agents' registrations",

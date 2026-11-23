@@ -117,8 +117,8 @@ mechanism for both kinds of the owner's answer, not a second view beside it.
   no list, no decline and no screen; each joins `KINDS` with its list door and a no, as a held
   call does here, researched first.
 - [ ] live: once the stage serves no doors version before this one, take out `actionRequest`,
-  the one-card read kept `dropped` (both tables' rows and its handler), with
-  `register-apply.md`'s `registerProposal`.
+  the one-card read kept `dropped` (both tables' rows and its handler), as
+  `drop-register-proposal.md` took out `registerProposal`.
 - [ ] live: after the next deploy of the doors and the owner, on the stage: with an `ask`
   rule on `workspace.files`, claude.ai's `file_mkdir` is held with the card's page in its
   message, the owner allows it once on Home, and claude.ai's same call then goes through.
