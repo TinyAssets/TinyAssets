@@ -382,6 +382,26 @@ function scoresOf(row: Row): ReadonlyMap<string, number> {
 }
 
 /**
+ * The models of `models` that `listing` lists, as `connection_listing` keeps them: each one's
+ * id and score, in `models`' order; `failed` for a listing that lists none of them.
+ */
+function listedJson(models: readonly ModelRecord[], listing: ModelListing): string | "failed" {
+  const served = new Map<string, number | null>();
+  for (const { id, score } of listing.models) {
+    if (!served.has(id)) {
+      served.set(id, score);
+    }
+  }
+  const kept = models.flatMap(({ id }) => served.has(id) ? [[id, served.get(id)!] as const] : []);
+  if (kept.length === 0) {
+    console.error("a connection's listing read listed none of its models; it is read again " +
+                  "later");
+    return "failed";
+  }
+  return JSON.stringify(kept);
+}
+
+/**
  * The gateway's listing answer, checked: each model a model id and its score a finite number
  * or null (`listed_model`).
  */
@@ -1202,25 +1222,9 @@ export class Connections {
    */
   #listed(id: string, outcome: ModelListing | "none" | "failed", now: number): void {
     const row = this.#row(id)!;
-    let listed: string | null = null;
-    if (outcome !== "none" && outcome !== "failed") {
-      const served = new Map<string, number | null>();
-      for (const { id: model, score } of outcome.models) {
-        if (!served.has(model)) {
-          served.set(model, score);
-        }
-      }
-      const kept = (JSON.parse(row.models) as ModelRecord[]).flatMap(({ id: model }) =>
-        served.has(model) ? [[model, served.get(model)!] as const] : []);
-      if (kept.length === 0) {
-        console.error("a connection's listing read listed none of its models; it is read " +
-                      "again later");
-        outcome = "failed";
-      } else {
-        listed = JSON.stringify(kept);
-      }
-    }
-    if (outcome === "failed") {
+    const listed = outcome === "none" ? null : outcome === "failed" ? outcome
+      : listedJson(JSON.parse(row.models) as ModelRecord[], outcome);
+    if (listed === "failed") {
       this.#sql.exec("UPDATE connection_listing SET due = ? WHERE connection = ?",
                      now + CONNECTION_LIMITS.listingRetryS, id);
       return;
