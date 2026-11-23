@@ -2209,7 +2209,7 @@ interface EdgeChange {
  * leaves it: absent, its action, name or expression another, or on or off otherwise. The ones
  * to turn on come first, so a change of the rule on never leaves none on between them.
  */
-export function edgeChanges(held: CustomRules, kill: Kill): EdgeChange[] {
+function edgeChanges(held: CustomRules, kill: Kill): EdgeChange[] {
   return EDGE_RULES.flatMap((rule): EdgeChange[] => {
     const now = held.rules.find((each) => each.ref === rule.ref);
     const want = { ref: rule.ref, description: rule.description, expression: rule.expression,
