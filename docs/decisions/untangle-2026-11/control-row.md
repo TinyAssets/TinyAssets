@@ -57,8 +57,9 @@ waits for `untangle/start-faults`, which holds the owner's `signins.ts` and `lau
 5. **The founder's checklist line** (`deploy/checklist.md`, mode `control`): a kill flipped
    while KV is down reaches no kept copy; the kill that needs no KV is an edge switch, none
    exists yet, and until it lands a hand-made WAF custom rule is the one that reads no KV.
-6. **The owner tests run on the record a deployed platform holds.** Their setup
-   (`test/gates.ts`) writes `OPEN` before each test: the object's own reads now keep the copy
+6. **The owner tests run on a record with the founder's tiers.** Their setup
+   (`test/gates.ts`) writes `OPEN` with outside access off before each test (the doorbell
+   closed, as an empty namespace had it): the object's own reads now keep the copy
    its tiers come from, so an empty namespace dropped the numbers a test's binding handed at
    the lane's first pass. The records the code-door, doorbell, sign-in and mail tests write
    carry the founder's tiers, and the two tier-room tests write their numbers to the record
@@ -85,6 +86,20 @@ waits for `untangle/start-faults`, which holds the owner's `signins.ts` and `lau
   rule of their own or go; the sandbox starts nothing on a missing record either way.
 - The edge switch itself, which needs the founder's token scope (Zone WAF Edit) or two rules
   he makes once by hand, and a read of the zone's free rule slots.
+- The kept copy is the last write, not the newest record: a door's read at a location KV has
+  not reached yet can overwrite the object's newer own read (the record carries no version).
+  KV's 60 s bounds it, as it bounds every reader's fresh read; the next fresh read restores it.
+- Migration 27 makes the owner forward-only: a rollback stops at it (`forwardOnly`), as at
+  migrations 25 and 26.
+
+## Review (2026-11-22)
+
+- A missing or malformed record fails closed: no run is admitted (`numbers()`, `tier_unread`),
+  no waiting run starts (`#capacity`), and no file byte is added (`BOUNDS`, `tier_unread`).
+- The owner tests' start record (`test/gates.ts`) has outside access off, as the empty
+  namespace main's tests ran on: with it on, the object's own `wakes` alarm rang the wakes the
+  wakes, grants and schedule tests drive by hand (CI, owner 1/2 and 2/2). Code-door's tests
+  write `OPEN` again. No production path changed: the doorbell's gate is the same read.
 
 ## Owed
 

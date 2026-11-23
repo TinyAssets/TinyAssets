@@ -15,7 +15,7 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OPEN, writeControl } from "../../ci/fixtures";
 import { type ControlStore, MAINTENANCE, OUTSIDE_OFF } from "../../contract/src/control";
@@ -76,6 +76,11 @@ function ran(r: Rig, binding: Binding, request: { script: string },
              stop: ReadableStream<Uint8Array> = new IdentityTransformStream().readable) {
   return r.stub.codeRun(binding, request, stop);
 }
+
+// Outside access on, as the founder's admin path writes it: the outside clients' calls pass.
+beforeEach(async () => {
+  await writeControl(env.CONTROL, OPEN);
+});
 
 afterEach(() => {
   vi.useRealTimers();
