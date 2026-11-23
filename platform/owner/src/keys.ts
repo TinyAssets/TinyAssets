@@ -33,11 +33,10 @@ import { KEY_NAME_MAX, MAX_KEYS } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
-import type { Scope } from "./authority";
+import { centerOf, type Scope } from "./authority";
 import { type Call, type LiveSession, type ObjectReads, proven } from "./door";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "./clock";
-import { centerOf } from "./registrations";
 
 /** How stale a key's `last_used_at` may be before a call marks it again. */
 const USE_INTERVAL_S = 60;

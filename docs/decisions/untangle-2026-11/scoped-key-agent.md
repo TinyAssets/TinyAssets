@@ -106,6 +106,11 @@ owner's approval, so a scoped key gets its agent at mint, by the one path an age
     `keys/delete` was refused once it had revoked the key.
 - The refusal names a remedy the caller can follow.
   - `NOT_AN_AGENT` told an API key to file `agent_register`, which refuses API keys.
+- Where a grant's agent registers is the grant's rule, so it lives with the grant's triples.
+  - The mint first imported `centerOf` from `registrations.ts`, a module only the object may
+    reach (the owner's `policy-boundary` guard, red on CI). `centerOf` and `HOME_CENTER` read
+    only a grant, as `may` does, so they moved to `authority.ts`, which the keys and the
+    cards both import (review).
 - Tests.
   - `doors/test/api-keys.test.ts`'s scoped-key test registered through `outside-agents`; it
     now shows the agent made at mint, the key writing and reading its mailbox at once, and the
@@ -129,6 +134,12 @@ owner's approval, so a scoped key gets its agent at mint, by the one path an age
 - The owner may later name another agent on a key's grant (`grantSet` `agent`), which leaves
   triples naming `main`. Connected apps lists no key (`source !== "api_key"`), so no screen
   does it; it is any scoped grant's, as `registered-agent.md` left it.
+- The restore's fence removes the agents of the keys it revokes (`Grants.revokeAll` returns
+  only clients not already revoked). A generation captured before this deploy may hold the
+  agent of a key revoked before it; such an agent is restored, and goes with that key's
+  `keys/delete` (its `grantRevoke` runs the revoke's removal again). Stage only.
+- A full key that calls a mailbox gets `NOT_AN_AGENT`, whose "mint a new key" gives it none
+  while the screen mints full keys only: `untangle/key-agent-change` (owed below).
 - `centerOf`'s refusal for scopes naming several spaces says "name one ... as
   `command_center_id`", a field the mint does not take. No screen mints such a key; owed
   below with the key request's answer.

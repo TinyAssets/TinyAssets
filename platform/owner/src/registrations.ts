@@ -40,7 +40,7 @@ import type { OwnerStorage } from "./gate";
 import { codePoints } from "../../contract/src/text";
 import { type Call, type LiveSession, proven } from "./door";
 import type { Source } from "../../contract/src/binding";
-import type { StandingGrant } from "./authority";
+import { centerOf } from "./authority";
 import { clock } from "./clock";
 import type { Notices } from "./notices";
 
@@ -65,12 +65,6 @@ interface CardLimits {
 export const CARD_LIMITS: CardLimits = Object.freeze({
   maxPending: 200, perClient: 10, maxRequest: CARD_REQUEST_MAX,
 });
-
-/**
- * Where a full grant's agent registers when its client names no place: its grant holds
- * everywhere, so the name only keeps one identity's agent one row across its filings.
- */
-export const HOME_CENTER = "main";
 
 /** What a registration asks for: the fields of every registration's request. */
 type Asked = "command_center_id" | "display_name" | "delivery_method" | "recipe_id";
@@ -102,31 +96,6 @@ type Row = {
   card_id: string; client: string; family: string; source_ref: string; generation: number;
   authenticated_at: number | null; request: string; digest: string; filed_at: number;
 };
-
-/**
- * Where a client's agent registers (its `command_center_id`): a scoped client acts where its
- * agent is (`OwnerDO.#universe`), so a narrowed grant's agent registers in the space its
- * scopes name, the one `named` among several; a full grant holds everywhere, so its agent
- * registers where `named` says, else in `HOME_CENTER`.
- */
-export function centerOf(grant: StandingGrant, named: unknown): unknown {
-  if (grant.mode !== "scoped") {
-    return named ?? HOME_CENTER;
-  }
-  const spaces = [...new Set(grant.scopes.map((scope) => scope.universe))];
-  if (named === undefined && spaces.length === 1) {
-    return spaces[0];
-  }
-  if (named === undefined) {
-    throw new Refusal("invalid", "this connection's grant names more than one space: name " +
-                      `one of ${spaces.join(", ")} as command_center_id`);
-  }
-  if (!spaces.includes(named as string)) {
-    throw new Refusal("refused", "this connection's agent registers in a space its grant " +
-                      `names: ${spaces.join(", ")}`);
-  }
-  return named;
-}
 
 export class Registrations {
   readonly #storage: OwnerStorage;
