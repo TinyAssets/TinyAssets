@@ -29,7 +29,7 @@ import { CONNECTION_ID, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { CONNECTION_BLOB_MAX } from "../../contract/src/limits";
 import { principal, utf8Decoder } from "../../contract/src/text";
 
-import { type Credential, credential } from "./credential";
+import { type Credential, credential, sealable } from "./credential";
 import type { GatewayEnv } from "./env";
 import type { Resealed, Sealed } from "../../contract/src/gateway";
 import { Refusal } from "../../contract/src/refusal";
@@ -116,7 +116,7 @@ async function resealWith(keys: Ring, bound: Binding, value: unknown): Promise<R
 
 export async function seal(env: KeyringEnv, bound: Binding,
                            plaintext: Credential): Promise<Sealed> {
-  return sealWith(ring(env), bound, credential(plaintext));
+  return sealWith(ring(env), bound, sealable(plaintext));
 }
 
 /**
@@ -125,8 +125,9 @@ export async function seal(env: KeyringEnv, bound: Binding,
  * `credential_refused`, with no detail of which.
  */
 export async function open(env: KeyringEnv, bound: Binding, blob: unknown): Promise<Opened> {
-  const { value, kid, resealed } = await openValue(env, bound, blob, credential);
-  return Object.freeze({ credential: value, kid, ...(resealed === undefined ? {} : { resealed }) });
+  const { value, kid, resealed } = await openValue(env, bound, blob, sealable);
+  return Object.freeze({ credential: credential(value), kid,
+                         ...(resealed === undefined ? {} : { resealed }) });
 }
 
 /**
@@ -183,5 +184,5 @@ export async function resealValue<T>(env: KeyringEnv, bound: Binding, value: unk
 export async function reseal(env: KeyringEnv, bound: Binding,
                              plaintext: Credential): Promise<Resealed> {
   return resealValue(env, bound, Object.freeze({ ...plaintext, sealed_at: Date.now() }),
-                     credential);
+                     sealable);
 }

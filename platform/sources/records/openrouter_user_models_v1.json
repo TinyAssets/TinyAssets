@@ -8,8 +8,16 @@
     "api_key"
   ],
   "provider": "openrouter",
-  "api": "openai-completions",
-  "base_url": "https://openrouter.ai/api/v1",
+  "apis": [
+    {
+      "api": "openai-completions",
+      "base_url": "https://openrouter.ai/api/v1"
+    },
+    {
+      "api": "anthropic-messages",
+      "base_url": "https://openrouter.ai/api"
+    }
+  ],
   "auth": {
     "header": "authorization",
     "scheme": "Bearer"
@@ -19,7 +27,8 @@
     {
       "origin": "https://openrouter.ai",
       "paths": [
-        "/api/v1/chat/completions"
+        "/api/v1/chat/completions",
+        "/api/v1/messages"
       ],
       "methods": [
         "POST"

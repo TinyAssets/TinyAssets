@@ -77,7 +77,8 @@ export function keyring(active = "k1", kids: readonly string[] = [active],
 
 /** Anthropic's API, as a source record gives it to the gateway. */
 export const ANTHROPIC: Source = Object.freeze({
-  upstream: { provider: "anthropic", api: "anthropic-messages", base_url: "https://api.anthropic.com",
+  upstream: { provider: "anthropic",
+              apis: [{ api: "anthropic-messages", base_url: "https://api.anthropic.com" }],
               auth: { header: "x-api-key", scheme: "" },
               verify_url: "https://api.anthropic.com/v1/models" },
   endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages", "/v1/models"],
@@ -86,7 +87,8 @@ export const ANTHROPIC: Source = Object.freeze({
 
 /** OpenAI's API, as a source record gives it to the gateway. */
 export const OPENAI: Source = Object.freeze({
-  upstream: { provider: "openai", api: "openai-responses", base_url: "https://api.openai.com/v1",
+  upstream: { provider: "openai",
+              apis: [{ api: "openai-responses", base_url: "https://api.openai.com/v1" }],
               auth: { header: "authorization", scheme: "Bearer" } },
   endpoints: [{ origin: "https://api.openai.com", paths: ["/v1/responses", "/v1/models"],
                 methods: ["GET", "POST"] }],

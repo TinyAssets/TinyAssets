@@ -120,7 +120,7 @@ const OPENED = new Map<string, Omit<Opened, "lease">>();
  * the one the test calls, or a run on the owner's own sign-in when the owner holds none.
  */
 async function leased(r: Gated, roomy = true,
-                      run?: Omit<SandboxRun, "run" | "secret">): Promise<Leased> {
+                      run?: Omit<SandboxRun, "run" | "secret" | "model">): Promise<Leased> {
   if (roomy) {
     await capped(r, ROOMY);
   }
@@ -714,19 +714,22 @@ describe("the sync token", () => {
 
 /** Google's record, as the gateway's tests seal it: its model named in the path. */
 const GOOGLE = Object.freeze({
-  upstream: { provider: "google", api: "google-generative-ai",
-              base_url: "https://generativelanguage.googleapis.com/v1beta",
+  upstream: { provider: "google",
+              apis: [{ api: "google-generative-ai",
+                       base_url: "https://generativelanguage.googleapis.com/v1beta" }],
               auth: { header: "x-goog-api-key", scheme: "" } },
   endpoints: [{ origin: "https://generativelanguage.googleapis.com", paths: ["/v1beta/models/*"],
                 methods: ["POST"] }],
 });
 
-/** OpenRouter's record, as the bundled source seals it: chat completions by key. */
+/** OpenRouter's record, as the bundled source seals it: chat completions and Messages by key. */
 const OPENROUTER = Object.freeze({
-  upstream: { provider: "openrouter", api: "openai-completions",
-              base_url: "https://openrouter.ai/api/v1",
+  upstream: { provider: "openrouter",
+              apis: [{ api: "openai-completions", base_url: "https://openrouter.ai/api/v1" },
+                     { api: "anthropic-messages", base_url: "https://openrouter.ai/api" }],
               auth: { header: "authorization", scheme: "Bearer" } },
   endpoints: [{ origin: "https://openrouter.ai", paths: ["/api/v1/chat/completions",
+                                                          "/api/v1/messages",
                                                           "/api/v1/models/user"],
                 methods: ["GET", "POST"] }],
 });
@@ -759,9 +762,36 @@ describe("a call's reservation", () => {
     const opened = await admitted(r, lease, connection, { path, model: normal.model.id });
     expect(opened.metering).toMatchObject({ model: normal.model.id });
     // A Responses call that names no tier is held at the dearest its API allows.
-    const tiered = apiRules(record.upstream.api)!.tier;
+    const tiered = apiRules(record.upstream.apis[0]!.api)!.tier;
     expect((await charges(r))[0])
       .toMatchObject({ est_cost: Math.ceil(normal.holds * (tiered?.absent ?? 1)) });
+  });
+
+  it("admits each API's model call on a source of two, each reserved for a model of its API",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENROUTER as never);
+    const [row] = await r.sql("SELECT models FROM connections WHERE id = ?", connection) as
+      { models: string }[];
+    const models = JSON.parse(row!.models) as { id: string; api?: string }[];
+    const claude = models.find((model) => model.id === "anthropic/claude-opus-5.5")!;
+    const chat = models.find((model) => model.api === "openai-completions"
+      && !model.id.startsWith("openrouter/") && !model.id.endsWith(":free"))!;
+    expect(claude.api).toBe("anthropic-messages");
+    const lease = await leased(r);
+    expect((await admitted(r, lease, connection, { path: "/api/v1/messages",
+                                                   model: claude.id })).metering)
+      .toMatchObject({ model: claude.id });
+    expect((await admitted(r, lease, connection, { path: "/api/v1/chat/completions",
+                                                   model: chat.id })).metering)
+      .toMatchObject({ model: chat.id });
+    // A model of the other API is not this call's.
+    expect(await refusedWith(r, lease.as(), connection, { path: "/api/v1/chat/completions",
+                                                          model: claude.id }))
+      .toBe("egress_unknown_model");
+    expect(await refusedWith(r, lease.as(), connection, { path: "/api/v1/messages",
+                                                          model: chat.id }))
+      .toBe("egress_unknown_model");
   });
 
   it("reads a model a path names, as Google's API names it", async () => {
@@ -1550,6 +1580,20 @@ describe("the sandbox's lease", () => {
     expect(config.env["ANTHROPIC_CUSTOM_HEADERS"]).toBe(`x-ta-run: ${secretOf(start)}`);
     expect(config.env["ANTHROPIC_API_KEY"]).toMatch(new RegExp(`^ta_ph_${connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(config)).not.toContain("sk-good");
+  });
+
+  it("gives a run the base of its model's API on a source of two, the first for none",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENROUTER as never);
+    const base = async (model?: string) => (await ownerRun(r.stub, r.bind(), {
+      engine: "pi", credential: "api_key", connection, scopes: [],
+      ...(model === undefined ? {} : { model }) })).start.config.env["OPENROUTER_BASE_URL"];
+    const door = (run: string) => `https://egress.tinyassets.io/r/${run}`;
+    expect(await base("anthropic/claude-opus-5.5")).toMatch(
+      new RegExp(`^${door("run_[0-9a-f]{32}")}/[0-9a-f]{64}/c/${connection}/api$`));
+    expect(await base()).toMatch(
+      new RegExp(`^${door("run_[0-9a-f]{32}")}/[0-9a-f]{64}/c/${connection}/api/v1$`));
   });
 
   it("gives a run on the owner's own sign-in no key, though the owner has one", async () => {

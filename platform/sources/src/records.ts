@@ -9,7 +9,6 @@ import googleAiStudio from "../records/google_ai_studio.json";
 import groq from "../records/groq.json";
 import mistral from "../records/mistral.json";
 import openai from "../records/openai.json";
-import openrouterMessages from "../records/openrouter_messages.json";
 import openrouterUserModelsV1 from "../records/openrouter_user_models_v1.json";
 import pi from "../records/pi.json";
 import xai from "../records/xai.json";
@@ -28,7 +27,6 @@ export const RECORDS: readonly unknown[] = Object.freeze([
   groq,
   mistral,
   openai,
-  openrouterMessages,
   openrouterUserModelsV1,
   pi,
   xai,

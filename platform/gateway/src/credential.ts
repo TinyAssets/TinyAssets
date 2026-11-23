@@ -12,7 +12,7 @@
  */
 import { count, list, shape } from "../../contract/src/checks";
 import {
-  CLIENT_KEYS, CLIENT_OPTIONAL, endpoint, type Endpoint, ENDPOINTS_MAX, oauthClient,
+  CLIENT_KEYS, CLIENT_OPTIONAL, endpoint, type Endpoint, ENDPOINTS_MAX, isService, oauthClient,
   type OAuthClient, scope, secret, type ServiceUpstream, upstream, type Upstream,
 } from "../../contract/src/egress-scope";
 import { Refusal } from "../../contract/src/refusal";
@@ -74,6 +74,29 @@ export function credential(value: unknown): Credential {
     // Falls through to the one refusal below.
   }
   throw new Refusal("credential_refused");
+}
+
+/**
+ * The plaintext a credential is sealed as: a model source of one API in the spelling before
+ * an upstream named its APIs (`api`, `base_url`), which the gateway's version before opens, so
+ * a rollback past this release keeps every such connection; one of several as it is. The
+ * old spelling goes once no rollback needs it (`openrouter-messages.md`).
+ */
+export function sealedForm(credential: Credential): unknown {
+  const upstream = credential.upstream;
+  if (isService(upstream) || upstream.apis.length > 1) {
+    return credential;
+  }
+  const { apis: [only], ...rest } = upstream;
+  return Object.freeze({ ...credential, upstream: Object.freeze({
+    provider: rest.provider, api: only!.api, base_url: only!.base_url, auth: rest.auth,
+    ...(rest.verify_url === undefined ? {} : { verify_url: rest.verify_url }),
+    ...(rest.models === undefined ? {} : { models: rest.models }) }) });
+}
+
+/** A credential checked (`credential`) and in its sealed spelling (`sealedForm`). */
+export function sealable(value: unknown): unknown {
+  return sealedForm(credential(value));
 }
 
 export function bearer(credential: Credential): string {

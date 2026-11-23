@@ -40,7 +40,7 @@ import { apiRules, type ApiRules } from "../../contract/src/api-rules";
 import { valueAtPath } from "../../contract/src/checks";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
-import type { Meter, Upstream } from "../../contract/src/egress-scope";
+import type { Meter, Upstream, UpstreamApi } from "../../contract/src/egress-scope";
 
 /** The model id and output cap the learning run asks with: neither is any real value. */
 const MODEL_MARK = "ta-meter-model-0e7f";
@@ -82,10 +82,10 @@ function pathsOf(value: unknown, mark: unknown, at: readonly string[] = []): str
   return Object.entries(value).flatMap(([key, inner]) => pathsOf(inner, mark, [...at, key]));
 }
 
-/** The models pi-ai's provider for the source serves on its sealed API. */
-function apiModels(catalog: Catalog, upstream: Upstream): Model<Api>[] {
+/** The models pi-ai's provider for the source serves on one of its sealed APIs. */
+function apiModels(catalog: Catalog, upstream: Upstream, row: UpstreamApi): Model<Api>[] {
   return providerFor(catalog, upstream).getModels()
-    .filter((model): model is Model<Api> => model.api === upstream.api);
+    .filter((model): model is Model<Api> => model.api === row.api);
 }
 
 /** One run of pi-ai's adapter for `model`, its every request answered by `fetch`. */
@@ -109,9 +109,9 @@ async function run(catalog: Catalog, upstream: Upstream, apiKey: string, model: 
  * its body, or no model id where one can be found), which is then never metered. A call
  * learns through its `Meters`, once per model.
  */
-export async function learnMeter(catalog: Catalog, upstream: Upstream, apiKey: string,
-                                 model: Model<Api>): Promise<Meter | null> {
-  const probe = { ...model, id: MODEL_MARK, baseUrl: upstream.base_url, maxTokens: TOKENS_MARK };
+export async function learnMeter(catalog: Catalog, upstream: Upstream, row: UpstreamApi,
+                                 apiKey: string, model: Model<Api>): Promise<Meter | null> {
+  const probe = { ...model, id: MODEL_MARK, baseUrl: row.base_url, maxTokens: TOKENS_MARK };
   const seen: { first: { method: string; url: string; body: string } | null } = { first: null };
   const capture: FetchFunction = async (input, init) => {
     const request = new Request(input, init);
@@ -140,7 +140,7 @@ export async function learnMeter(catalog: Catalog, upstream: Upstream, apiKey: s
   if (output.length !== 1 || segments.length > 2 || (segments.length === 1 && named.length !== 1)) {
     return null;
   }
-  const rules = apiRules(upstream.api);
+  const rules = apiRules(row.api);
   const modelField = segments.length === 2 ? null : named[0]!;
   if (rules === null || !describes(rules, output[0]!, body, modelField)) {
     return null;
@@ -154,20 +154,22 @@ export async function learnMeter(catalog: Catalog, upstream: Upstream, apiKey: s
 }
 
 /**
- * One call's meters for its sealed source: pi-ai's call learned (`learnMeter`) at most once
- * for each model of the source's API in the call, whatever asks for it: the path choice
- * (`any`), the named model's own meter (`of`) and the setup check. Made for each call and
- * never kept: a meter is learned with the call's own credential.
+ * One call's meters for one API its source is sealed for (`row`): pi-ai's call learned
+ * (`learnMeter`) at most once for each model of that API in the call, whatever asks for it:
+ * the path choice (`any`), the named model's own meter (`of`) and the setup check. Made for
+ * each call and never kept: a meter is learned with the call's own credential.
  */
 export class Meters {
   readonly #catalog: Catalog;
   readonly #upstream: Upstream;
+  readonly #row: UpstreamApi;
   readonly #apiKey: string;
   readonly #learned = new Map<string, Promise<Meter | null>>();
 
-  constructor(catalog: Catalog, upstream: Upstream, apiKey: string) {
+  constructor(catalog: Catalog, upstream: Upstream, row: UpstreamApi, apiKey: string) {
     this.#catalog = catalog;
     this.#upstream = upstream;
+    this.#row = row;
     this.#apiKey = apiKey;
   }
 
@@ -175,7 +177,7 @@ export class Meters {
   of(model: Model<Api>): Promise<Meter | null> {
     let meter = this.#learned.get(model.id);
     if (meter === undefined) {
-      meter = learnMeter(this.#catalog, this.#upstream, this.#apiKey, model);
+      meter = learnMeter(this.#catalog, this.#upstream, this.#row, this.#apiKey, model);
       this.#learned.set(model.id, meter);
     }
     return meter;
@@ -186,7 +188,7 @@ export class Meters {
    * output, or null for none: each run is local, so every model of the API may be asked.
    */
   async any(): Promise<Meter | null> {
-    for (const candidate of apiModels(this.#catalog, this.#upstream)) {
+    for (const candidate of apiModels(this.#catalog, this.#upstream, this.#row)) {
       const meter = await this.of(candidate);
       if (meter !== null) {
         return meter;
@@ -202,9 +204,9 @@ export class Meters {
  * bundled source record's sealed auth header and scheme to them. Null when no model of the
  * source can be asked.
  */
-export async function sentHeaders(catalog: Catalog, upstream: Upstream,
+export async function sentHeaders(catalog: Catalog, upstream: Upstream, row: UpstreamApi,
                                   apiKey: string): Promise<Headers | null> {
-  const [model] = apiModels(catalog, upstream);
+  const [model] = apiModels(catalog, upstream, row);
   if (model === undefined) {
     return null;
   }
@@ -214,7 +216,7 @@ export async function sentHeaders(catalog: Catalog, upstream: Upstream,
     return new Response("{}", { status: 400, headers: { "content-type": "application/json" } });
   };
   try {
-    await run(catalog, upstream, apiKey, { ...model, baseUrl: upstream.base_url }, capture,
+    await run(catalog, upstream, apiKey, { ...model, baseUrl: row.base_url }, capture,
               TOKENS_MARK);
   } catch {
     // The adapter reports the refusal as its stream's error; a throw is the same.
@@ -259,7 +261,7 @@ function objectAt(body: Record<string, unknown>, path: readonly string[]): Recor
  * never copied.
  */
 export function clamped(meter: Meter, body: Record<string, unknown>, cap: number,
-                        { provider, api }: Pick<Upstream, "provider" | "api">):
+                        { provider, api }: { readonly provider: string; readonly api: string }):
     Record<string, unknown> {
   const rules = apiRules(api);
   const aliases = [meter.output_field,
@@ -294,11 +296,11 @@ export function clamped(meter: Meter, body: Record<string, unknown>, cap: number
   return body;
 }
 
-/** The catalog's record of the model `id`, on the sealed API, or null. */
-export function meteredRecord(catalog: Catalog, upstream: Upstream, id: string):
-    Model<Api> | null {
-  const found = apiModels(catalog, upstream).find((model) => model.id === id);
-  return found === undefined ? null : { ...found, baseUrl: upstream.base_url };
+/** The catalog's record of the model `id`, on one sealed API at its sealed base, or null. */
+export function meteredRecord(catalog: Catalog, upstream: Upstream, row: UpstreamApi,
+                              id: string): Model<Api> | null {
+  const found = apiModels(catalog, upstream, row).find((model) => model.id === id);
+  return found === undefined ? null : { ...found, baseUrl: row.base_url };
 }
 
 /**
@@ -366,7 +368,10 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
   const base = costOn(model, usage);
   const ratio = base > 0 ? named / base : 1;
   const other = typeof served === "string" && served !== "" && served !== model.id;
-  const record = other ? meteredRecord(catalog, upstream, served) : null;
+  // The served model on the named one's API (`meteredRecord` gave it that API's base).
+  const record = other ? meteredRecord(catalog, upstream,
+                                       { api: model.api, base_url: model.baseUrl }, served)
+    : null;
   const priced = record === null ? null : costOn(record, usage) * ratio;
   let cost = named;
   if (usage.cost.totalFromProvider === true) {

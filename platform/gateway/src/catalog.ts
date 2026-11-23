@@ -4,8 +4,8 @@
  * The gateway holds no provider code: a credential's sealed `upstream.provider` names a
  * pi-ai built-in provider, whose factory brings its catalog (base URLs, model metadata,
  * prices) and its adapter. A declared endpoint (sealed with its own models) is a pi-ai
- * `createProvider` over the sealed models with pi-ai's own adapter for the sealed API.
- * Either way the request goes to the sealed `base_url`, never the catalog's.
+ * `createProvider` over the sealed models with pi-ai's own adapter for its one sealed API.
+ * Either way the request goes to its API's sealed `base_url`, never the catalog's.
  *
  * Auth never comes from the environment: the collection the gateway streams through is
  * given an auth context with no variables and no files, so the opened credential is the
@@ -20,7 +20,7 @@ import { createProvider, isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
 import { type DeclaredApi, declaredApi } from "../../contract/src/api-rules";
-import type { Upstream } from "../../contract/src/egress-scope";
+import type { Upstream, UpstreamApi } from "../../contract/src/egress-scope";
 import { Refusal } from "../../contract/src/refusal";
 import type { ModelRecord } from "../../contract/src/model-record";
 
@@ -58,7 +58,9 @@ const DECLARED = Object.freeze({
 
 function declaredProvider(upstream: Upstream, declared: readonly ModelRecord[]):
     Provider | undefined {
-  const { api, provider: id, base_url: baseUrl } = upstream;
+  // A declared endpoint speaks one API (`egress-scope.ts` `modelUpstream`).
+  const [{ api, base_url: baseUrl }] = upstream.apis as [UpstreamApi];
+  const id = upstream.provider;
   if (!declaredApi(api)) {
     return undefined;
   }
@@ -97,10 +99,10 @@ export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
  * kept fields, each as pi-ai has it.
  */
 export function recordOf(model: Model<Api>): ModelRecord {
-  const { id, name, reasoning, thinkingLevelMap, promptCache, input, inputLimits,
+  const { id, api, name, reasoning, thinkingLevelMap, promptCache, input, inputLimits,
           contextWindow, maxTokens, cost } = model;
   return Object.freeze({
-    id, name, reasoning,
+    id, api, name, reasoning,
     ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap }),
     ...(promptCache === undefined ? {} : { promptCache }),
     input: input.filter((kind) => kind === "text" || kind === "image"),
@@ -110,15 +112,16 @@ export function recordOf(model: Model<Api>): ModelRecord {
 }
 
 /**
- * The models a sealed upstream serves, each with its whole capability record
- * (`recordOf`): its provider's catalog, or its declared list. The owner object
- * loads no catalog of its own, so this is where it learns them, at connect time: it lists,
- * prices (pi-ai's `calculateCost`, tiers included), compacts and offers thinking levels by
- * them.
+ * The models a sealed upstream serves on every API it is sealed for, each with its whole
+ * capability record (`recordOf`), its API named: its provider's catalog, or its declared
+ * list. The owner object loads no catalog of its own, so this is where it learns them, at
+ * connect time: it lists, prices (pi-ai's `calculateCost`, tiers included), compacts and
+ * offers thinking levels by them, and gives a run the base of its model's API.
  */
 export function modelInfos(catalog: Catalog, upstream: Upstream): ModelRecord[] {
+  const apis = upstream.apis.map((row) => row.api);
   return providerFor(catalog, upstream).getModels()
     .filter((model): model is Model<Api> =>
-      model.api === upstream.api && isModelType(model, "chat"))
+      apis.includes(model.api) && isModelType(model, "chat"))
     .map(recordOf);
 }

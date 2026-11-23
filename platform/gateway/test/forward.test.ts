@@ -14,6 +14,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
 import { builtinCatalog, modelInfos, recordOf } from "../src/catalog";
 import { checkedRecord } from "../../contract/src/model-record";
+import { apiRules } from "../../contract/src/api-rules";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { serviceSource, type Source } from "../../contract/src/egress-scope";
@@ -478,7 +479,9 @@ describe("verify", () => {
     expect(verified.models.map((model) => model.id)).toEqual(catalog.map((model) => model.id));
     expect(verified.models.length).toBeGreaterThan(0);
     // Where sandbox egress may forward it: the sealed base URL and endpoints, no secret.
-    expect(verified.egress).toEqual({ api: ANTHROPIC.upstream.api, base_url: ANTHROPIC.upstream.base_url,
+    // A source of one API is handed as the owner's version before took it (`handed`).
+    expect(verified.egress).toEqual({ api: "anthropic-messages",
+                                      base_url: "https://api.anthropic.com",
                                       endpoints: ANTHROPIC.endpoints, meter: {
                                         method: "POST", path: "/v1/messages",
                                         model_field: ["model"], output_field: ["max_tokens"] } });
@@ -496,11 +499,37 @@ describe("verify", () => {
       .toBe(true);
   });
 
+  it("hands a source of several APIs as one scope, each API's meter learned, and each model " +
+     "naming its API", async () => {
+    const env = ring("k1");
+    const both: Source = {
+      upstream: { provider: "openrouter",
+                  apis: [{ api: "openai-completions", base_url: "https://openrouter.ai/api/v1" },
+                         { api: "anthropic-messages", base_url: "https://openrouter.ai/api" }],
+                  auth: { header: "authorization", scheme: "Bearer" },
+                  verify_url: "https://openrouter.ai/api/v1/models/user" },
+      endpoints: [{ origin: "https://openrouter.ai",
+                    paths: ["/api/v1/chat/completions", "/api/v1/messages", "/api/v1/models/user"],
+                    methods: ["GET", "POST"] }] };
+    const verified = await verify(env, ALICE, await sealed(env, ALICE, "sk-good", both),
+                                  builtinCatalog());
+    expect(verified.egress).toMatchObject({ apis: [
+      { api: "openai-completions", base_url: "https://openrouter.ai/api/v1",
+        meter: { method: "POST", path: "/api/v1/chat/completions" } },
+      { api: "anthropic-messages", base_url: "https://openrouter.ai/api",
+        meter: { method: "POST", path: "/api/v1/messages" } }], endpoints: both.endpoints });
+    const apiOf = new Map(verified.models.map((model) => [model.id, model.api]));
+    expect(apiOf.get("anthropic/claude-opus-5.5")).toBe("anthropic-messages");
+    expect(apiOf.get("openrouter/auto")).toBe("openai-completions");
+    expect(new Set(apiOf.values())).toEqual(new Set(["openai-completions", "anthropic-messages"]));
+  });
+
   it("lists records every one of which a declared endpoint could declare, for every " +
      "built-in catalog", () => {
     let records = 0;
     for (const provider of builtinProviders()) {
-      for (const model of provider.getModels()) {
+      // A model of an API the gateway runs: none other is sealed, so none is listed.
+      for (const model of provider.getModels().filter((each) => apiRules(each.api) !== null)) {
         if (isModelType(model, "chat")) {
           expect(checkedRecord(JSON.parse(JSON.stringify(recordOf(model))))).toEqual(recordOf(model));
           records += 1;

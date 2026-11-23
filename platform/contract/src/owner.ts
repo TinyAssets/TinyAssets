@@ -323,7 +323,7 @@ export interface ConnectionCommitRequest {
   /** The setup check's code, when it failed after the provider issued the credential. */
   readonly failed?: string;
   /**
-   * Where the credential may be forwarded (the setup check's `egress`: its sealed base URL
+   * Where the credential may be forwarded (the setup check's `egress`: its sealed base URLs
    * and endpoints); every commit but a failed one carries it.
    */
   readonly egress?: unknown;

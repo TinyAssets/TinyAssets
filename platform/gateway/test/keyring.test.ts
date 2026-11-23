@@ -170,11 +170,14 @@ describe("the blobs main sealed (ci/keyring-vectors.json)", () => {
   const { owner, connection, version } = VECTORS.gateway.binding;
   const bound = binding(owner, connection, version);
 
+  // As today's code reads it: its one API a row of the upstream's `apis`.
+  const held = credential(VECTORS.gateway.credential);
+
   it("open as the credential they hold, an older kid's resealed to the active one", async () => {
     expect(await open(rotated, bound, VECTORS.gateway.k2))
-      .toEqual({ credential: VECTORS.gateway.credential, kid: "k2" });
+      .toEqual({ credential: held, kid: "k2" });
     const old = await open(rotated, bound, VECTORS.gateway.k1);
-    expect([old.credential, old.resealed?.kid]).toEqual([VECTORS.gateway.credential, "k2"]);
+    expect([old.credential, old.resealed?.kid]).toEqual([held, "k2"]);
     expect((await open(retired, bound, VECTORS.gateway.k2)).kid).toBe("k2");
     await refused(() => open(retired, bound, VECTORS.gateway.k1));
   });

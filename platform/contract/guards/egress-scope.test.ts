@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  allows, egressScope, type Endpoint, keySource, serviceSource,
+  allows, egressHeaders, egressScope, egressTarget, type Endpoint, keySource, type ModelScope,
+  modelApi, scopeApi, serviceSource, source,
 } from "../src/egress-scope";
 
 const ENDPOINTS: readonly Endpoint[] = Object.freeze([
@@ -86,5 +87,62 @@ describe("a service's key", () => {
       expect(() => keySource({ upstream: { kind: "service", base_url: base, auth: AUTH },
                                endpoints: sealed })).toThrow("invalid_source");
     }
+  });
+});
+
+describe("a model source of several APIs", () => {
+  const AUTH = { header: "authorization", scheme: "Bearer" };
+  const endpoints = [{ origin: "https://router.example.com",
+                       paths: ["/api/v1/chat/completions", "/api/v1/messages", "/api/v1/models"],
+                       methods: ["GET", "POST"] }];
+  const apis = [{ api: "openai-completions", base_url: "https://router.example.com/api/v1" },
+                { api: "anthropic-messages", base_url: "https://router.example.com/api" }];
+  const meter = (path: string) => ({ method: "POST", path, model_field: ["model"],
+                                     output_field: ["max_tokens"] });
+  const scope = egressScope({ apis: [
+    { ...apis[0]!, meter: meter("/api/v1/chat/completions") },
+    { ...apis[1]!, meter: meter("/api/v1/messages") }], endpoints }) as ModelScope;
+
+  it("is sealed with each API at its base, all at one origin, no API twice", () => {
+    expect(source({ upstream: { provider: "router", apis, auth: AUTH }, endpoints }, false)
+      .upstream.apis).toEqual(apis);
+    for (const bad of [
+      [apis[0], { ...apis[1]!, base_url: "https://other.example.com/api" }],
+      [apis[0], { ...apis[1]!, api: "openai-completions" }],
+      [apis[0], { ...apis[1]!, api: "bedrock-converse-stream" }], []]) {
+      expect(() => source({ upstream: { provider: "router", apis: bad, auth: AUTH }, endpoints },
+                          false)).toThrow("invalid_source");
+    }
+  });
+
+  it("reads a blob or a scope of one API spelled before upstreams named their APIs", () => {
+    expect(source({ upstream: { provider: "router", ...apis[0]!, auth: AUTH }, endpoints },
+                  false).upstream).toEqual({ provider: "router", apis: [apis[0]], auth: AUTH });
+    expect(egressScope({ ...apis[0]!, endpoints, meter: null }))
+      .toEqual({ apis: [{ ...apis[0]!, meter: null }], endpoints });
+  });
+
+  it("holds a model call to the API whose call it is, and a read to every API's rules", () => {
+    expect(scopeApi(scope, "POST", "/api/v1/messages")?.api).toBe("anthropic-messages");
+    expect(scopeApi(scope, "POST", "/api/v1/chat/completions")?.api).toBe("openai-completions");
+    expect(scopeApi(scope, "GET", "/api/v1/models")).toBeNull();
+    // `beta=true` is the Messages API's query, never chat completions'.
+    expect(egressTarget(scope, "POST", "/api/v1/messages?beta=true")).not.toBeNull();
+    expect(egressTarget(scope, "POST", "/api/v1/chat/completions?beta=true")).toBeNull();
+    expect(egressTarget(scope, "GET", "/api/v1/models?beta=true")).not.toBeNull();
+    const sent = new Headers({ "anthropic-version": "2023-06-01" });
+    expect(egressHeaders(scope, "POST", "/api/v1/messages", false, sent)
+      .get("anthropic-version")).toBe("2023-06-01");
+    expect(egressHeaders(scope, "POST", "/api/v1/chat/completions", false, sent)
+      .has("anthropic-version")).toBe(false);
+  });
+
+  it("says which of its APIs a model speaks: the one it names, or a scope's one", () => {
+    expect(modelApi(scope, { api: "anthropic-messages" })?.base_url)
+      .toBe("https://router.example.com/api");
+    expect(modelApi(scope, {})).toBeNull();
+    expect(modelApi(scope, { api: "openai-responses" })).toBeNull();
+    const one = egressScope({ ...apis[0]!, endpoints, meter: null }) as ModelScope;
+    expect(modelApi(one, {})?.api).toBe("openai-completions");
   });
 });

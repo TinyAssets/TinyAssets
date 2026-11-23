@@ -515,6 +515,13 @@ export default {
     if (url.hostname === "generativelanguage.googleapis.com") {
       return model(request, googleFormat());
     }
+    if (url.hostname === "openrouter.ai" && url.pathname === "/api/v1/models/user") {
+      return request.headers.get("authorization") === "Bearer sk-good"
+        ? Response.json({ data: [] }) : Response.json({ error: "no" }, { status: 401 });
+    }
+    if (url.hostname === "openrouter.ai" && url.pathname === "/api/v1/messages") {
+      return model(request, anthropicFormat());
+    }
     if (url.hostname === "openrouter.ai") {
       return model(request, completionsFormat());
     }

@@ -18,7 +18,7 @@ import { agentMcp } from "../../contract/src/agent-definition";
 import { agentServers, BOUNDARY_NOTE, narrows, networkDocument } from "../src/network";
 import {
   ALL_TRAFFIC, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
-  generationOf, SANDBOX_HEADER, sandboxEnv, withEgressToken,
+  generationOf, SANDBOX_HEADER, sandboxEnv, sealedBase, withEgressToken,
 } from "../../contract/src/egress";
 
 const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.k1.${
@@ -146,23 +146,36 @@ describe("a narrowing", () => {
   });
 });
 
-const ANTHROPIC = { api: "anthropic-messages", base_url: "https://api.anthropic.com",
+const ANTHROPIC = { apis: [{ api: "anthropic-messages", base_url: "https://api.anthropic.com",
+                             meter: null }],
                     endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages"],
-                                  methods: ["POST"] }], meter: null };
-const OPENAI = { api: "openai-responses", base_url: "https://api.openai.com/v1",
+                                  methods: ["POST"] }] };
+const OPENAI = { apis: [{ api: "openai-responses", base_url: "https://api.openai.com/v1",
+                          meter: null }],
                  endpoints: [{ origin: "https://api.openai.com", paths: ["/v1/responses"],
-                               methods: ["POST"] }], meter: null };
-const GROQ = { api: "openai-completions", base_url: "https://api.groq.com/openai/v1/",
+                               methods: ["POST"] }] };
+const GROQ = { apis: [{ api: "openai-completions", base_url: "https://api.groq.com/openai/v1/",
+                        meter: null }],
                endpoints: [{ origin: "https://api.groq.com", paths: ["/openai/v1/chat/completions"],
-                             methods: ["POST"] }], meter: null };
+                             methods: ["POST"] }] };
+/** OpenRouter's two APIs, at two bases of one origin. */
+const OPENROUTER = { apis: [{ api: "openai-completions", base_url: "https://openrouter.ai/api/v1",
+                              meter: null },
+                            { api: "anthropic-messages", base_url: "https://openrouter.ai/api",
+                              meter: null }],
+                     endpoints: [{ origin: "https://openrouter.ai",
+                                   paths: ["/api/v1/chat/completions", "/api/v1/messages"],
+                                   methods: ["POST"] }] };
 const C1 = `c${"1".repeat(24)}`;
 const C2 = `c${"2".repeat(24)}`;
 const C3 = `c${"3".repeat(24)}`;
 const C4 = `c${"4".repeat(24)}`;
 const C5 = `c${"5".repeat(24)}`;
-const GOOGLE = { api: "google-generative-ai", base_url: "https://generativelanguage.googleapis.com/v1beta",
+const GOOGLE = { apis: [{ api: "google-generative-ai",
+                          base_url: "https://generativelanguage.googleapis.com/v1beta",
+                          meter: null }],
                  endpoints: [{ origin: "https://generativelanguage.googleapis.com",
-                               paths: ["/v1beta/models/*"], methods: ["POST"] }], meter: null };
+                               paths: ["/v1beta/models/*"], methods: ["POST"] }] };
 
 describe("the agent's own MCP servers under the egress policy", () => {
   const MCP = agentMcp(JSON.stringify({ mcpServers: {
@@ -301,8 +314,8 @@ describe("a sandbox token", () => {
 
 /** `engine`'s run on `credential`, on `connection` when it is a key's. */
 const run = (engine: string, credential: "vendor_login_in_sandbox" | "api_key",
-             connection: string | null = null) =>
-  ({ ...runEnv(bundledSources(), engine, credential), connection, run: R, secret: S });
+             connection: string | null = null, api: string | null = null) =>
+  ({ ...runEnv(bundledSources(), engine, credential), connection, api, run: R, secret: S });
 
 /** The run the environments are made for: its path is in every base URL. */
 const R = `run_${"0".repeat(32)}`;
@@ -316,8 +329,8 @@ const KEYS = bundledRecords().map(sourceRecord)
   .filter((record) => record.connect.includes("api_key"));
 const EVERY = KEYS.map((key, index) => ({
   connection: `c${String(index + 1).padStart(24, "0")}`, provider: key.upstream!.provider,
-  egress: { api: key.upstream!.api, base_url: key.upstream!.base_url,
-            endpoints: key.endpoints!, meter: null } }));
+  egress: { apis: key.upstream!.apis.map((row) => ({ ...row, meter: null })),
+            endpoints: key.endpoints! } }));
 
 describe("the sandbox's model clients' environment", () => {
   it("gives a run on the vendor's own sign-in no key and no base URL, for every CLI", () => {
@@ -371,7 +384,7 @@ describe("the sandbox's model clients' environment", () => {
         if (vars.base_url !== null) {
           expect(env[vars.base_url], `${key.id} → ${engine}`).toBe(vars.base === "connection"
             ? egressBaseUrl(own.connection, null, R, inPath)
-            : egressBaseUrl(own.connection, own.egress, R, inPath));
+            : egressBaseUrl(own.connection, sealedBase(own.egress, null), R, inPath));
         }
         // No other connection's placeholder, nor its base URL, is in the run's environment.
         for (const other of EVERY.filter((entry) => entry !== own)) {
@@ -413,7 +426,7 @@ describe("the sandbox's model clients' environment", () => {
     // Two names for one variable that disagree, or a name the credential forbids, fail.
     expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
                             { run: R, secret: S, credential: "api_key", connection: C2,
-                              forbid_env: [],
+                              api: null, forbid_env: [],
                               api_key_env: { openai: { base_url: "OPENAI_BASE_URL",
                                                        api_key: "K", base: "connection" } } }))
       .toThrow(/two values/);
@@ -456,12 +469,25 @@ describe("the sandbox's model clients' environment", () => {
   });
 
   it("refuses a connection id or a placeholder that is not one", () => {
-    expect(() => egressBaseUrl("c1", ANTHROPIC, R, S)).toThrow("invalid connection");
-    expect(() => egressBaseUrl(C1, ANTHROPIC, "run_x", S)).toThrow("invalid run");
-    expect(() => egressBaseUrl(C1, ANTHROPIC, R, "5e")).toThrow("invalid run secret");
+    const anthropic = sealedBase(ANTHROPIC, null);
+    expect(() => egressBaseUrl("c1", anthropic, R, S)).toThrow("invalid connection");
+    expect(() => egressBaseUrl(C1, anthropic, "run_x", S)).toThrow("invalid run");
+    expect(() => egressBaseUrl(C1, anthropic, R, "5e")).toThrow("invalid run secret");
     expect(() => sandboxEnv([{ connection: C1, provider: "openai", egress: OPENAI }],
                             () => "not hex", run("codex", "api_key", C1))).toThrow();
-    expect(egressBaseUrl(C1, GROQ, R, S)).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/openai/v1`);
+    expect(egressBaseUrl(C1, sealedBase(GROQ, null), R, S))
+      .toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/openai/v1`);
+  });
+
+  it("gives a run on a source of several APIs the base of its model's API, the first for " +
+     "none, and refuses an API its connection is not sealed for", () => {
+    const at = (api: string | null) =>
+      sandboxEnv([{ connection: C1, provider: "openrouter", egress: OPENROUTER }],
+                 () => "ab".repeat(16), run("pi", "api_key", C1, api))["OPENROUTER_BASE_URL"];
+    expect(at("anthropic-messages")).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/api`);
+    expect(at("openai-completions")).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/api/v1`);
+    expect(at(null)).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/api/v1`);
+    expect(() => at("openai-responses")).toThrow(Refusal);
   });
 
   it("takes the run's secret as a header only where a record says so, and only so", () => {

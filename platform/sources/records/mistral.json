@@ -6,8 +6,12 @@
     "api_key"
   ],
   "provider": "mistral",
-  "api": "mistral-conversations",
-  "base_url": "https://api.mistral.ai",
+  "apis": [
+    {
+      "api": "mistral-conversations",
+      "base_url": "https://api.mistral.ai"
+    }
+  ],
   "auth": {
     "header": "authorization",
     "scheme": "Bearer"

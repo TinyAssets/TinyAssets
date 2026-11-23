@@ -290,6 +290,8 @@ interface Chosen {
   readonly engine: string;
   readonly credential: CredentialKind;
   readonly connection: string | null;
+  /** The model it is given, or null: its engine's own default. */
+  readonly model: string | null;
   readonly secret: string;
 }
 
@@ -713,7 +715,7 @@ export class Runs {
     // The run's environment, before anything is written: a run its record refuses writes
     // nothing.
     const config = prepare({ run: runId, engine: chosen.engine, credential: chosen.credential,
-                             connection: chosen.connection, secret });
+                             connection: chosen.connection, model: chosen.model, secret });
     // Written from here: nothing above refused.
     const authority = authorityOf(ask.origin);
     const live = this.#host.lease(now, authority);

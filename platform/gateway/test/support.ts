@@ -33,8 +33,9 @@ export const C2 = `c${"2".repeat(24)}`;
 export const ALICE: Binding = Object.freeze({ owner: "alice", connection: C1, version: 1 });
 
 export const GOOGLE: Source = Object.freeze({
-  upstream: { provider: "google", api: "google-generative-ai",
-              base_url: "https://generativelanguage.googleapis.com/v1beta",
+  upstream: { provider: "google",
+              apis: [{ api: "google-generative-ai",
+                       base_url: "https://generativelanguage.googleapis.com/v1beta" }],
               auth: { header: "x-goog-api-key", scheme: "" } },
   endpoints: [{ origin: "https://generativelanguage.googleapis.com", paths: ["/v1beta/models/*"],
                 methods: ["POST"] }],
@@ -51,19 +52,20 @@ export async function sealed(env: KeyringEnv, bound: Binding, secret: string,
   return (await seal(env, bound, apiKey(secret, record))).blob;
 }
 
-/** The first model of `record`'s provider and API whose call pi-ai caps, so it is metered. */
+/** The first model of `record`'s provider and first API whose call pi-ai caps, so it is metered. */
 export async function meterable(record: Source, key: string):
     Promise<{ id: string; meter: Meter }> {
   const catalog = builtinCatalog();
+  const [row] = record.upstream.apis;
   for (const candidate of catalog.provider(record.upstream.provider)!.getModels()
-    .filter((model) => model.api === record.upstream.api)) {
-    const meter = await learnMeter(catalog, record.upstream, key,
-                                   meteredRecord(catalog, record.upstream, candidate.id)!);
+    .filter((model) => model.api === row!.api)) {
+    const meter = await learnMeter(catalog, record.upstream, row!, key,
+                                   meteredRecord(catalog, record.upstream, row!, candidate.id)!);
     if (meter !== null) {
       return { id: candidate.id, meter };
     }
   }
-  throw new Error(`no metered ${record.upstream.api} model in the catalog`);
+  throw new Error(`no metered ${row!.api} model in the catalog`);
 }
 
 /** A reserve that grants each call it is asked for, as asked, recording each ask. */

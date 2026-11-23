@@ -22,7 +22,7 @@
 import { keyed, object, whole } from "./checks.ts";
 import { taken } from "./handed.ts";
 import type {
-  CreditRead, EgressScope, ListedModel, ListingRead, ServiceSource, Source,
+  CreditRead, EgressScope, ListedModel, ListingRead, OneApiScope, ServiceSource, Source,
 } from "./egress-scope.ts";
 import type { ModelRecord } from "./model-record.ts";
 import { Refusal } from "./refusal.ts";
@@ -64,12 +64,12 @@ export interface Revoked {
 
 /**
  * What a setup check found: the credential works, the models it can be asked for, and
- * where sandbox egress may forward it (`egress`, its sealed base URL and endpoints), which
+ * where sandbox egress may forward it (`egress`, its sealed APIs' base URLs and endpoints), which
  * the owner's object keeps to refuse an endpoint not sealed before any forward.
  */
 export interface Verified {
   readonly models: readonly ModelRecord[];
-  readonly egress: EgressScope;
+  readonly egress: EgressScope | OneApiScope;
   readonly resealed?: Resealed;
 }
 

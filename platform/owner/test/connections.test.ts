@@ -719,7 +719,7 @@ function servedRecords(): Promise<{ name: string; models: ModelRecord[] }[]> {
       .map((model) => `${provider.id} ${model.api}`)))].map(async (served) => {
     const [provider, api] = served.split(" ") as [string, string];
     const models = await catalog({
-      upstream: { provider, api, base_url: "https://catalog.test/v1",
+      upstream: { provider, apis: [{ api, base_url: "https://catalog.test/v1" }],
                   auth: { header: "authorization", scheme: "Bearer" } },
       endpoints: [{ origin: "https://catalog.test", paths: ["/v1/*"], methods: ["GET", "POST"] }],
     });
@@ -749,7 +749,8 @@ describe("the largest built-in catalog", () => {
     expect(largest!.count * 2).toBeLessThanOrEqual(CONNECTION_LIMITS.maxModels);
     const base = new URL(largest!.baseUrl);
     const record: Source = {
-      upstream: { provider: largest!.provider, api: largest!.api, base_url: largest!.baseUrl,
+      upstream: { provider: largest!.provider,
+                  apis: [{ api: largest!.api, base_url: largest!.baseUrl }],
                   auth: { header: "authorization", scheme: "Bearer" } },
       endpoints: [{ origin: base.origin, paths: [`${base.pathname.replace(/\/$/, "")}/*`],
                     methods: ["GET", "POST"] }],

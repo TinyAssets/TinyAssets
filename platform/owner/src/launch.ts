@@ -40,6 +40,7 @@ import type { PolicyDocument } from "../../contract/src/policy-document";
 import { LEASE_TTL_S, PLACE_BYTES } from "../../contract/src/limits";
 import { slotted, type SlotPool } from "../../contract/src/slots";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
+import { modelApi } from "../../contract/src/egress-scope";
 import { bundledSources } from "../../sources/src/catalog";
 import { type Ranking, rankingOf, shippedRanking } from "../../sources/src/ranking";
 import { runEnv } from "../../sources/src/run-env";
@@ -150,6 +151,8 @@ export interface SandboxRun {
   readonly credential: CredentialKind;
   /** An API-key run's connection; absent on the vendor's own sign-in. */
   readonly connection?: string;
+  /** The model it is given, or null: its engine's own default. */
+  readonly model: string | null;
 }
 
 /** A run as the owner's rules decide its calls (`actions.ts`): its id, agent and conversation. */
@@ -524,6 +527,7 @@ export class Launcher implements RunHost {
                                        clock(), (chosen) =>
         this.#runConfig({ run: chosen.run, secret: chosen.secret,
                           engine: chosen.engine, credential: chosen.credential,
+                          model: chosen.model,
                           ...(chosen.connection === null ? {}
                             : { connection: chosen.connection }) }), waiting);
       taken(admitted.run);  // the input it was asked on is its own now (a mail's, taken)
@@ -1177,6 +1181,24 @@ export class Launcher implements RunHost {
    * its credential and an API-key run's connection, with the owner's egress policy and its
    * generation: refused (`invalid`) when the record does not run on that credential.
    */
+  /**
+   * The API of the model an API-key run is given (`EngineRun.api`), whose base it is handed;
+   * null for a run that names none, or a model its connection does not list (its calls are
+   * refused at the door), which are given the connection's first API.
+   */
+  #runApi(run: SandboxRun): string | null {
+    if (run.connection === undefined || run.model === null) {
+      return null;
+    }
+    const egress = this.#o.connections.egressible()
+      .find((entry) => entry.connection === run.connection)?.egress;
+    const model = this.#o.connections.usable()
+      .find((entry) => entry.connection === run.connection)?.models
+      .find((entry) => entry.id === run.model);
+    return egress === undefined || "kind" in egress || model === undefined ? null
+      : modelApi(egress, model)?.api ?? null;
+  }
+
   #runConfig(run: SandboxRun): RunConfig {
     let engine;
     try {
@@ -1187,7 +1209,7 @@ export class Launcher implements RunHost {
     const keyed = sandboxEnv(this.#o.connections.egressible(),
                              () => randomHex(16),
                              { ...engine, run: run.run, secret: run.secret,
-                               connection: run.connection ?? null });
+                               connection: run.connection ?? null, api: this.#runApi(run) });
     // The record's own variables are never shaped like a key's, so the two never meet.
     const shared = Object.keys(keyed).find((name) => Object.hasOwn(engine.env, name));
     if (shared !== undefined) {

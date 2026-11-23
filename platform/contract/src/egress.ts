@@ -332,8 +332,8 @@ export function envStem(name: string): string {
  * (none when its base URL comes by a file template) and key variable, and whether its base
  * URL is the sealed one on the door (`sealed`) or the door and the connection alone
  * (`connection`: its SDK appends the API version itself, as Gemini CLI's `@google/genai`
- * client appends `/v1beta`); and the variables the credential forbids. No provider is
- * named here.
+ * client appends `/v1beta`); the API of the model it runs, whose base it is given; and the
+ * variables the credential forbids. No provider is named here.
  */
 export interface EngineRun {
   /** The run itself, whose path its base URLs carry, so each call names its run. */
@@ -344,6 +344,13 @@ export interface EngineRun {
   readonly secret_header?: { readonly env: string; readonly value: string };
   readonly credential: "vendor_login_in_sandbox" | "api_key";
   readonly connection: string | null;
+  /**
+   * The API of the model an API-key run is given (its record's `api`, `modelApi`): its base is
+   * the run's on a source that speaks several. Null for a run that names no model, which is
+   * given its connection's first API (its record lists first the one its engine's own default
+   * model speaks).
+   */
+  readonly api: string | null;
   readonly api_key_env: Readonly<Record<string, {
     readonly base_url: string | null; readonly api_key: string;
     readonly base: "sealed" | "connection" }>>;
@@ -351,17 +358,34 @@ export interface EngineRun {
 }
 
 /**
- * The base URL a run's clients use for a connection: the door, the run, the connection, the
- * sealed path (or, with no scope, the door, the run and the connection alone). The run is in
- * the path so that each call names its run, and the door holds it to that run's own
- * connection: simultaneous runs each spend on their own.
+ * The sealed base URL a run on `egress` is given: a service's one URL; a model source's, that
+ * of the API its model speaks (`EngineRun.api`; its first, for a run that names none). An API
+ * the scope is not sealed for fails loudly.
  */
-export function egressBaseUrl(connection: string, egress: EgressScope | null, run: string,
+export function sealedBase(egress: EgressScope, api: string | null): string {
+  if ("kind" in egress) {
+    return egress.base_url;
+  }
+  const row = api === null ? egress.apis[0] : egress.apis.find((entry) => entry.api === api);
+  if (row === undefined) {
+    throw new Refusal("run_config_invalid", "the run's model speaks an API its connection " +
+                                            "is not sealed for");
+  }
+  return row.base_url;
+}
+
+/**
+ * The base URL a run's clients use for a connection: the door, the run, the connection, the
+ * path of `base` (its sealed base URL, `sealedBase`; or, with none, the door, the run and the
+ * connection alone). The run is in the path so that each call names its run, and the door
+ * holds it to that run's own connection: simultaneous runs each spend on their own.
+ */
+export function egressBaseUrl(connection: string, base: string | null, run: string,
                               secret: string | undefined): string {
   if (!CONNECTION_ID.test(connection)) {
     throw new Refusal("invalid", "invalid connection");
   }
-  const path = egress === null ? "/" : new URL(egress.base_url).pathname;
+  const path = base === null ? "/" : new URL(base).pathname;
   return `${EGRESS_ORIGIN}${runPath(run, secret)}/${CONNECTION_SEGMENT}/${connection}${
     path === "/" ? "/" : path.replace(/\/+$/, "")}`;
 }
@@ -421,7 +445,7 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
   };
   // The secret in the path, unless the CLI sends it as a header (`RUN_HEADER`).
   const inPath = run.secret_header === undefined ? run.secret : undefined;
-  const base = egressBaseUrl(connection, egress, run.run, inPath);
+  const base = egressBaseUrl(connection, sealedBase(egress, run.api), run.run, inPath);
   const part = random();
   if (!/^[0-9a-f]{16,64}$/.test(part)) {
     throw new Error("a placeholder's random part is 16 to 64 hex");
