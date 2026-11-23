@@ -3,7 +3,7 @@
  * service's key (a connector, `SERVICE_PROVIDER`: no models, never metered, its scope one URL
  * of an outside service, bound to a run by `network.ts` `connectorsOf`): what each one is,
  * the blob the gateway sealed its credential into, the OAuth flows that connect one, the
- * refresh lease, and the `connections` lane's housekeeping.
+ * refresh lease, what each one's key can pay for, and the `connections` lane's housekeeping.
  *
  * **No plaintext enters the object.** The binder hands a pasted key to `GATEWAY.seal`
  * and an OAuth code to `GATEWAY.exchange`; the object stores only what comes back, the
@@ -54,6 +54,17 @@
  * compare-and-swap, never while a refresh holds the lease, so a reseal of the old tokens
  * can never overwrite the refreshed ones.
  *
+ * **What a key can pay for.** A source whose record says how its key reports it (`credit`)
+ * has each active connection's answer kept (`connection_credit`): whether the key pays for a
+ * priced model, null until known. The lane reads it once a connection is active, a connection
+ * made before this was kept among them, so none needs a reconnect: the gateway's `credit`, at
+ * the record's URL, where the sealed endpoints allow it. A model call its provider refused
+ * with one of the record's `refused` statuses (`refused`, at its settle) says the key pays for
+ * nothing too, which is how a connection sealed before its record named the read learns it.
+ * A key that pays for nothing is read again every `creditRecheckS`, so credit bought shows
+ * within that; one that pays is not read again until a refusal says otherwise. `auto` reads it
+ * (`usable`; `sources/src/ranking.ts` `pickable`), and so does the owner's view.
+ *
  * Every write is a unit of the object's gate, and each unit reads what it acts on: a door's
  * body, or a step between the lane's or a call's outside calls. Bounds: `maxConnections`
  * live (pending, active or failed) connections; the newest `maxRevokedKept` revoked ones
@@ -72,8 +83,11 @@ import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { fields } from "../../contract/src/doors";
 import { type ShapeName, taken } from "../../contract/src/handed";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
+import { bundledSources } from "../../sources/src/catalog";
 
-import type { GatewayService, Refreshed } from "../../contract/src/gateway";
+import type {
+  CreditRead, GatewayService, KeyCredit, Refreshed,
+} from "../../contract/src/gateway";
 import type {
   ConnectionCommitRequest, ConnectionPrepareRequest, ConnectionRequest, FlowFinishRequest,
   ResealAnswer, Swept,
@@ -109,6 +123,15 @@ interface ConnectionLimits {
   readonly revokeMs: number;
   /** Provider revokes one lane pass takes. */
   readonly revokesPerPass: number;
+  /**
+   * How long a key that pays for nothing, or whose read failed, waits before it is read
+   * again: credit bought is seen within it, at one read an hour while it pays for nothing.
+   */
+  readonly creditRecheckS: number;
+  /** How long the lane waits on one credit read: the rest of its hung timeout. */
+  readonly creditMs: number;
+  /** Credit reads one lane pass takes. */
+  readonly creditReadsPerPass: number;
 }
 
 /**
@@ -132,6 +155,9 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   revokeRetryS: 300,
   revokeMs: LANE_CALL_MS,
   revokesPerPass: 8,
+  creditRecheckS: 3600,
+  creditMs: LANE_CALL_MS,
+  creditReadsPerPass: 8,
 });
 
 /** What the owner is shown of a connection: never its blob. */
@@ -150,6 +176,12 @@ export interface ConnectionView {
   /** Whether its provider can be asked to revoke its credential (RFC 7009). */
   readonly provider_revocable: boolean;
   readonly provider_revoke_pending: boolean;
+  /**
+   * Whether its key can pay for a priced model, as its source reports it or a refused call
+   * said: false, `auto` picks on it only the models its source serves such a key; null, not
+   * known (or its source reports nothing).
+   */
+  readonly pays: boolean | null;
 }
 
 /** A prepared connection; for OAuth, the flow begun with it. */
@@ -174,8 +206,12 @@ type Row = {
   expires_at: number | null; lease_id: string | null; lease_until: number | null;
   created_at: number; pending_until: number | null; revoked_at: number | null;
   revoke_due: number | null; revoke_tries: number; revocable: number;
-  egress: string | null;
+  egress: string | null; pays: number | null;
 };
+
+/** Every connection's row, with what its key pays for (`connection_credit`). */
+const ROWS = "SELECT c.*, k.pays AS pays FROM connections c " +
+  "LEFT JOIN connection_credit k ON k.connection = c.id";
 
 /** How a provider revoke ended: confirmed, impossible (no endpoint), or not confirmed. */
 type RevokeOutcome = "revoked" | "not_revocable" | "failed";
@@ -263,7 +299,12 @@ function view(row: Row): ConnectionView {
     models: (JSON.parse(row.models) as ModelRecord[]).map((model) => model.id),
     expires_at: row.expires_at, created_at: row.created_at, revoked_at: row.revoked_at,
     provider_revocable: row.revocable === 1, provider_revoke_pending: row.revoke_due !== null,
+    pays: paysOf(row),
   };
+}
+
+function paysOf(row: Row): boolean | null {
+  return row.pays === null ? null : row.pays === 1;
 }
 
 export class Connections {
@@ -292,7 +333,7 @@ export class Connections {
   }
 
   #row(id: string): Row | undefined {
-    return this.#sql.exec<Row>("SELECT * FROM connections WHERE id = ?", id).toArray()[0];
+    return this.#sql.exec<Row>(`${ROWS} WHERE c.id = ?`, id).toArray()[0];
   }
 
   #changed(): void {
@@ -449,6 +490,7 @@ export class Connections {
   secretsLost(): void {
     this.#sql.exec("UPDATE connections SET status = 'error', pending_until = NULL WHERE " +
                      "status IN ('pending', 'active')");
+    this.#sql.exec("DELETE FROM connection_credit");
   }
 
   /**
@@ -483,6 +525,7 @@ export class Connections {
       if (!owed) {
         this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", id);
       }
+      this.#sql.exec("DELETE FROM connection_credit WHERE connection = ?", id);
       this.#sql.exec("UPDATE connection_flows SET status = 'cancelled', verifier = NULL " +
                        "WHERE connection_id = ? AND status = 'open'", id);
       this.#pruneRevoked();
@@ -501,8 +544,7 @@ export class Connections {
 
   /** Every connection, newest first, without its blob. */
   list(): ConnectionView[] {
-    return this.#sql.exec<Row>("SELECT * FROM connections ORDER BY created_at DESC, id")
-      .toArray().map(view);
+    return this.#sql.exec<Row>(`${ROWS} ORDER BY c.created_at DESC, c.id`).toArray().map(view);
   }
 
   /**
@@ -566,11 +608,12 @@ export class Connections {
       return this.#usable.usable;
     }
     const usable = Object.freeze(this.#sql.exec<Row>(
-      "SELECT * FROM connections WHERE status = 'active' ORDER BY created_at, id").toArray()
+      `${ROWS} WHERE c.status = 'active' ORDER BY c.created_at, c.id`).toArray()
       .map((row) => Object.freeze({
         connection: row.id, source: row.source, provider: row.provider,
         display_name: row.display_name, created_at: row.created_at,
         models: Object.freeze(JSON.parse(row.models) as ModelRecord[]),
+        pays: paysOf(row),
       })));
     this.#usable = { revision: this.#revision, usable };
     return usable;
@@ -864,12 +907,18 @@ export class Connections {
 
   // -- the `connections` lane ------------------------------------------------------
 
-  /** When the lane next has work: a flow or pending row to sweep, or a revoke due. */
+  /**
+   * When the lane next has work: a flow or pending row to sweep, a revoke due, an active
+   * connection whose credit was never considered, or a credit read due.
+   */
   next(now: number): number | null {
     const next = this.#sql.exec<{ at: number | null }>(
       "SELECT MIN(at) AS at FROM (SELECT MIN(expires_at) AS at FROM connection_flows " +
         "UNION ALL SELECT MIN(pending_until) FROM connections WHERE pending_until IS NOT NULL " +
-        "UNION ALL SELECT MIN(revoke_due) FROM connections WHERE revoke_due IS NOT NULL)")
+        "UNION ALL SELECT MIN(revoke_due) FROM connections WHERE revoke_due IS NOT NULL " +
+        "UNION ALL SELECT MIN(c.created_at) FROM connections c WHERE c.status = 'active' " +
+        "AND NOT EXISTS (SELECT 1 FROM connection_credit k WHERE k.connection = c.id) " +
+        "UNION ALL SELECT MIN(due) FROM connection_credit WHERE due IS NOT NULL)")
       .one().at;
     return next === null ? null : Math.max(next, now);
   }
@@ -906,6 +955,137 @@ export class Connections {
       }
       await this.#write(() => this.#revokeOutcome(id, owed.version, outcome, clock()));
     }
+    for (const id of await this.#write(() => this.#dueCredits(clock()))) {
+      if (clock() >= until) {
+        break;
+      }
+      const owed = await this.#write(() => this.#creditOwed(id, clock()));
+      if (owed === null) {
+        continue;
+      }
+      const { credential, read } = owed;
+      let outcome: KeyCredit | "none" | "failed" = "failed";
+      try {
+        const reading = this.#gateway.credit(this.#owner(), id, credential.version,
+                                             credential.blob, read);
+        const answer = await inTime(reading, CONNECTION_LIMITS.creditMs);
+        if (answer === "late") {
+          reading.catch(() => undefined);
+        } else if (typeof answer?.pays === "boolean") {
+          outcome = answer;
+        } else {
+          console.error("a connection's credit read answered no verdict");
+        }
+      } catch (error) {
+        // A blob sealed before its record named the read reaches no such endpoint: nothing
+        // to read on it, so a refused call is what tells.
+        const code = refusalOf(error)?.code;
+        if (code === "endpoint_refused") {
+          outcome = "none";
+        } else {
+          console.error(`a connection's credit read failed (${code ?? "no code"}); it is ` +
+                        "read again later");
+        }
+      }
+      await this.#write(() => this.#credited(id, credential.version, outcome, clock()));
+    }
+  }
+
+  /**
+   * In a unit: each active connection never considered gets its credit row, due now, and the
+   * connections whose credit read is due, oldest due first, at most `creditReadsPerPass`.
+   */
+  #dueCredits(now: number): string[] {
+    this.#sql.exec("INSERT INTO connection_credit (connection, due) SELECT id, ? FROM " +
+                     "connections WHERE status = 'active' AND id NOT IN " +
+                     "(SELECT connection FROM connection_credit)", now);
+    return this.#sql.exec<{ connection: string }>(
+      "SELECT connection FROM connection_credit WHERE due IS NOT NULL AND due <= ? " +
+        "ORDER BY due LIMIT ?", now, CONNECTION_LIMITS.creditReadsPerPass).toArray()
+      .map((row) => row.connection);
+  }
+
+  /**
+   * In a unit: a due credit read's blob and its source record's read, re-read; null, and no
+   * read due, for a connection no longer active or a source that reports no credit.
+   */
+  #creditOwed(id: string, now: number): { credential: Credential; read: CreditRead } | null {
+    const due = this.#sql.exec<{ due: number | null }>(
+      "SELECT due FROM connection_credit WHERE connection = ?", id).toArray()[0]?.due ?? null;
+    if (due === null || due > now) {
+      return null;
+    }
+    const row = this.#row(id);
+    const credit = row === undefined ? undefined : bundledSources().get(row.source)?.credit;
+    if (row?.status !== "active" || credit === undefined) {
+      this.#sql.exec("UPDATE connection_credit SET due = NULL WHERE connection = ?", id);
+      return null;
+    }
+    try {
+      return { credential: this.credential(id, clockMs()),
+               read: { url: credit.url, none_when: credit.none_when } };
+    } catch (error) {
+      // An OAuth token expired meanwhile: read again once a call has refreshed it.
+      if (refusalOf(error)?.code !== "credential_expired") {
+        throw error;
+      }
+      this.#sql.exec("UPDATE connection_credit SET due = ? WHERE connection = ?",
+                     now + CONNECTION_LIMITS.creditRecheckS, id);
+      return null;
+    }
+  }
+
+  /**
+   * In a unit: a credit read's outcome, for the connection at `version` still active: a
+   * verdict kept, read again after `creditRecheckS` when it pays for nothing; nothing to read
+   * on its blob (`none`), no read due; a failure, read again after `creditRecheckS`.
+   */
+  #credited(id: string, version: number, outcome: KeyCredit | "none" | "failed",
+            now: number): void {
+    if (!this.current(id, version)) {
+      return;
+    }
+    if (outcome === "none" || outcome === "failed") {
+      this.#sql.exec("UPDATE connection_credit SET due = ? WHERE connection = ?",
+                     outcome === "none" ? null : now + CONNECTION_LIMITS.creditRecheckS, id);
+      return;
+    }
+    this.#pays(id, outcome.pays, now);
+  }
+
+  /**
+   * In a unit: the connection's key pays, or pays for nothing, as learned at `now`: then it
+   * is read again after `creditRecheckS`, and the owner is told when it starts to.
+   */
+  #pays(id: string, pays: boolean, now: number): void {
+    const row = this.#row(id)!;
+    this.#sql.exec("UPDATE connection_credit SET pays = ?, due = ? WHERE connection = ?",
+                   pays ? 1 : 0, pays ? null : now + CONNECTION_LIMITS.creditRecheckS, id);
+    if (paysOf(row) !== pays) {
+      this.#changed();
+      if (!pays) {
+        this.#notices.add("connection_free_only",
+                          `${row.display_name} (${id}): its key pays for no priced model, so ` +
+                            "auto runs only the models its source serves free on it; add " +
+                            "credit at the provider", now);
+      }
+    }
+  }
+
+  /**
+   * In a unit: a call on the connection ended with the provider's `status`; one of its source
+   * record's `refused` statuses says the key pays for nothing, as a read would.
+   */
+  refused(id: string, status: number | null, now: number): void {
+    const row = this.#row(id);
+    const credit = row === undefined ? undefined : bundledSources().get(row.source)?.credit;
+    if (row?.status !== "active" || status === null || credit === undefined
+        || !credit.refused.includes(status)) {
+      return;
+    }
+    this.#sql.exec("INSERT INTO connection_credit (connection) VALUES (?) " +
+                     "ON CONFLICT (connection) DO NOTHING", id);
+    this.#pays(id, false, now);
   }
 
   /** In a unit: flows past their expiry, and pending connections never committed. */

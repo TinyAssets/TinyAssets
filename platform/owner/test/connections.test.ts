@@ -1079,6 +1079,75 @@ describe("the platform's reseal sweep", () => {
   });
 });
 
+describe("what a key can pay for", () => {
+  /** OpenRouter's record, which says how its key reports what it pays for. */
+  const OPENROUTER = "openrouter_user_models_v1";
+  const pays = async (r: Gated) => (await r.stub.connectionList(r.session())).connections
+    .map((view) => view.pays);
+  const kept = (r: Gated) => r.sql("SELECT pays, due IS NOT NULL AS due FROM connection_credit");
+  const told = async (r: Gated) => (await r.stub.noticeList(r.bind())).notices
+    .filter((notice) => notice.type === "connection_free_only").length;
+
+  it("is read once a connection is active, and read again while its key pays for nothing",
+     async () => {
+    const r = await gated();
+    await r.gateway.arm("credit", { answer: { pays: false } });
+    await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
+    await lanes(r);
+    expect(await pays(r)).toEqual([false]);
+    expect(await kept(r)).toEqual([{ pays: 0, due: 1 }]);
+    expect(await told(r)).toBe(1);
+    // The read its record names, with the connection's blob.
+    const [sent] = (await r.gateway.calls()).filter((call) => call.method === "credit");
+    expect((sent!.args as unknown[])[4]).toEqual({ url: "https://openrouter.ai/api/v1/key",
+                                                   none_when: expect.any(Array) });
+    // Credit bought: the next read says it pays, and nothing is read again.
+    await r.gateway.arm("credit", { answer: { pays: true } });
+    await r.sql("UPDATE connection_credit SET due = 0");
+    await lanes(r);
+    expect(await pays(r)).toEqual([true]);
+    expect(await kept(r)).toEqual([{ pays: 1, due: 0 }]);
+  });
+
+  it("is never read for a source that reports nothing, and goes with its revoke", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await lanes(r);
+    expect(await pays(r)).toEqual([null]);
+    expect(await kept(r)).toEqual([{ pays: null, due: 0 }]);
+    expect((await r.gateway.calls()).filter((call) => call.method === "credit")).toEqual([]);
+    await r.stub.connectionRevoke(r.session(), { connection });
+    expect(await kept(r)).toEqual([]);
+  });
+
+  it("is learned from a refused call, by a connection sealed before its record named the " +
+     "read too", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENAI, "OpenRouter", undefined, OPENROUTER);
+    // Its sealed endpoints hold no read: nothing is sent, and nothing is read again.
+    await lanes(r);
+    expect(await pays(r)).toEqual([null]);
+    expect(await kept(r)).toEqual([{ pays: null, due: 0 }]);
+    const binding = await sandboxOf(r);
+    const settle = async (status: number) => {
+      const answer = await r.stub.egressOpen(binding, listing(connection));
+      if (!answer.ok) {
+        throw new Error(`refused ${answer.code}`);
+      }
+      await r.stub.egressSettle(binding, { reservation: answer.reservation, outcome: "complete",
+                                           status, bytes: 1, spend: { state: "failed" } });
+    };
+    // A rate limit says nothing of credit; the record's payment refusal does.
+    await settle(429);
+    expect(await pays(r)).toEqual([null]);
+    await settle(402);
+    expect(await pays(r)).toEqual([false]);
+    expect(await told(r)).toBe(1);
+    await settle(402);
+    expect(await told(r)).toBe(1);
+  });
+});
+
 describe("the plaintext key", () => {
   it("never reaches the object's storage, its gateway calls or its logs", async () => {
     const r = await gated();

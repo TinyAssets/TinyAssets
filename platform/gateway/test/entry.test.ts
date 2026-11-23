@@ -483,7 +483,7 @@ describe("the gateway Worker", () => {
       .toEqual(["constructor", "forward"]);
     // The owner's object: its connections' upkeep and its wakes, and no seal or forward.
     expect(Object.getOwnPropertyNames(Gateway.prototype).sort())
-      .toEqual(["constructor", "fetch", "refresh", "reseal", "resealDoorbell",
+      .toEqual(["constructor", "credit", "fetch", "refresh", "reseal", "resealDoorbell",
                 "revokeAtProvider", "ringDoorbell"]);
   });
 

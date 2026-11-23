@@ -12,8 +12,9 @@ import {
 import { object, valueAtPath, whole } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
 import {
-  ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
+  allows, ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
 } from "../../contract/src/egress-scope";
+import { type CreditRead, creditRead } from "../../contract/src/gateway";
 import { HEX64 } from "../../contract/src/ids";
 import { MODEL_ID as MODEL_PATTERN } from "../../contract/src/model-record";
 import {
@@ -23,7 +24,7 @@ import { CREDENTIAL_NAME, forbids, SOURCE_ID } from "../../contract/src/text";
 
 import { CODE_LOADING_ENV, RUN_BASICS } from "./run-env";
 import {
-  type ApiKeyEnv, type CliSpec, type ConnectMethod, type Decide, type Definition,
+  type ApiKeyEnv, type CliSpec, type ConnectMethod, type Credit, type Decide, type Definition,
   type DefinitionHooks, type DefinitionNative, type DefinitionSkills,
   type Engine, type HostedUse,
   type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
@@ -1464,6 +1465,39 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
   return Object.freeze(fields) as unknown as LoginSpec;
 }
 
+/**
+ * A gateway source's `credit` (`schema.ts` `Credit`): its read by the gateway's own rule
+ * (`creditRead`), a `GET` its endpoints allow; 1 to 8 distinct HTTP error statuses; 1 to 16
+ * distinct model patterns, each a model id's characters (`*` among them), the gateway's rule;
+ * and the vendor's page.
+ */
+function creditSpec(check: ReturnType<typeof checker>, value: unknown, sealed: Source):
+    Credit {
+  const fields = check.keys(value, "credit", ["url", "none_when", "refused", "free", "cite"]);
+  let read: CreditRead;
+  try {
+    read = creditRead({ url: fields["url"], none_when: fields["none_when"] });
+  } catch {
+    return check.fail("credit's url and none_when are refused by the gateway's own check");
+  }
+  if (!allows(sealed.endpoints, "GET", new URL(read.url))) {
+    check.fail("credit.url is a GET its endpoints allow");
+  }
+  const refused = fields["refused"];
+  if (!Array.isArray(refused) || refused.length < 1 || refused.length > 8
+      || !refused.every((status) => whole(status, 400, 599))
+      || new Set(refused).size !== refused.length) {
+    check.fail("credit.refused lists HTTP error statuses, at least one, each once");
+  }
+  const free = check.strings(fields["free"], "credit.free", MODEL_PATTERN, 16);
+  if (free.length === 0 || new Set(free).size !== free.length) {
+    check.fail("credit.free lists model patterns, at least one, each once");
+  }
+  return Object.freeze({ ...read, refused: Object.freeze([...refused as number[]]),
+                         free: Object.freeze(free),
+                         cite: check.https(fields["cite"], "credit.cite") });
+}
+
 /** One record, checked whole: a copy, frozen, or a `SourceRecordError`. */
 export function sourceRecord(value: unknown): SourceRecord {
   const copy: unknown = structuredClone(value);
@@ -1485,7 +1519,7 @@ export function sourceRecord(value: unknown): SourceRecord {
     : check.keys(copy, "the record",
                  [...base, ...GATEWAY_KEYS.filter((key) => key !== "models"), "engines",
                   ...(connect.includes("oauth") ? ["oauth"] : [])],
-                 [...optional, "models", "not_interactive"]);
+                 [...optional, "models", "not_interactive", "credit"]);
   const record: Record<string, unknown> = {
     id,
     display_name: check.text(fields["display_name"], TEXT, "display_name"),
@@ -1531,6 +1565,9 @@ export function sourceRecord(value: unknown): SourceRecord {
       check.fail("not_interactive lists model patterns, at least one, each once");
     }
     record["not_interactive"] = Object.freeze(patterns);
+  }
+  if (fields["credit"] !== undefined) {
+    record["credit"] = creditSpec(check, fields["credit"], checked);
   }
   if (connect.includes("oauth")) {
     const oauth = oauthSpec(check, fields["oauth"]);

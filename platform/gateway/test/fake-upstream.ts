@@ -22,7 +22,7 @@
  * first token). A request with an `id` is recorded as it arrives, read back from
  * `https://status.test/cancelled?id=<id>` (`arrived`), so a test acts once the provider has
  * it; `auth.test` is a token endpoint; `keys.test` is a key-exchange endpoint (OpenRouter's
- * PKCE flow); `evil.test` records everything it receives, read back from
+ * PKCE flow); `credit.test/key` a key's limits (`keyLimits`); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
  * code: its module state (the cancel registry, the evil log) is the fake's, never the
  * gateway's. `doorbell.test`, and Claude's `/fire` path on `api.anthropic.com`, are a
@@ -239,6 +239,24 @@ async function token(request: Request): Promise<Response> {
   return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
 }
 
+/**
+ * A key's limits (`credit.test/key`, in OpenRouter's `GET /api/v1/key` shape), by the key
+ * sent: `sk-free` on the free tier, `sk-paid` with no limit, `sk-dry` with none left,
+ * `sk-odd` an answer of another shape, `sk-redirect` a redirect; any other is refused.
+ */
+function keyLimits(request: Request): Response {
+  const key = request.headers.get("authorization")?.replace(/^Bearer /, "");
+  const data = { "sk-free": { is_free_tier: true, limit_remaining: null },
+                 "sk-paid": { is_free_tier: false, limit_remaining: null },
+                 "sk-dry": { is_free_tier: false, limit_remaining: 0 },
+                 "sk-odd": { free: true } }[key ?? ""];
+  if (key === "sk-redirect") {
+    return new Response(null, { status: 307, headers: { location: "https://evil.test/key" } });
+  }
+  return data === undefined ? Response.json({ error: "no" }, { status: 401 })
+    : Response.json({ data: { label: "sk-or-v1-...", usage: 0, ...data } });
+}
+
 /** A key-exchange endpoint (OpenRouter's PKCE flow): JSON in, `{key}` out. */
 async function keyExchange(request: Request): Promise<Response> {
   const body = JSON.parse(await request.text()) as Record<string, string>;
@@ -410,6 +428,9 @@ export default {
     }
     if (url.hostname === "keys.test") {
       return keyExchange(request);
+    }
+    if (url.hostname === "credit.test" && url.pathname === "/key") {
+      return keyLimits(request);
     }
     if (url.hostname === "auth.test") {
       if (url.pathname === "/revoke") {

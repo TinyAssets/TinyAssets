@@ -1,6 +1,7 @@
 /**
- * Raw passthrough for sandbox egress (research §5.4 step 4.3), and the credential check
- * a connection makes when it is set up (`verify`).
+ * Raw passthrough for sandbox egress (research §5.4 step 4.3), the credential check a
+ * connection makes when it is set up (`verify`), and the read of what its key can pay for
+ * (`credit`).
  *
  * The sandbox's model clients speak each provider's own API to our egress door with
  * placeholder keys; the binder admits the request at the owner's object, which hands it
@@ -30,13 +31,14 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
-  egressHeaders, type EgressScope, egressTarget, isService, type Meter, meteredCall,
+  allows, egressHeaders, type EgressScope, egressTarget, isService, type Meter, meteredCall,
   meteredModel, type ModelScope, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
-  metering, MODEL_NAME, type MeterOutcome, type Resealed, type Reservation, type Reserve,
-  type Verified,
+  creditRead, type KeyCredit, metering, MODEL_NAME, type MeterOutcome, paysBy, type Resealed,
+  type Reservation, type Reserve, type Verified,
 } from "../../contract/src/gateway";
+import { boundedJson } from "./answer";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import { codeOf, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
@@ -606,4 +608,48 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
                          egress: modelScope(upstream, credential.endpoints, await new Meters(
                            catalog, upstream, bearer(credential)).any()),
                          ...kept });
+}
+
+/** The most of a key's limits answer read (`credit`). */
+const CREDIT_ANSWER_MAX = 64 * 1024;
+
+/**
+ * What an opened model credential's key can pay for (`CreditRead`, checked here): a `GET` of
+ * the read's URL, only where the sealed endpoints allow one (`endpoint_refused`), sent as
+ * `verify` sends; a 2xx answer's JSON, read to `CREDIT_ANSWER_MAX`, held to the read's
+ * tests. Anything else is the upstream outcome's fixed code, and an answer of another shape
+ * `upstream_error`. A service's key reports no limits (`unsupported_source`).
+ */
+export async function credit(env: KeyringEnv, bound: Binding, blob: unknown,
+                             value: unknown): Promise<KeyCredit> {
+  const read = creditRead(value);
+  const { credential } = await open(env, bound, blob);
+  if (isService(credential.upstream)) {
+    throw new Refusal("unsupported_source");
+  }
+  const target = new URL(read.url);
+  if (!allows(credential.endpoints, "GET", target)) {
+    throw new Refusal("endpoint_refused");
+  }
+  let answer: Response;
+  try {
+    answer = await nativeFetch(target, {
+      method: "GET",
+      headers: new Headers([[credential.upstream.auth.header, authValue(credential)],
+                            ["accept", "application/json"]]),
+      redirect: "manual",
+      signal: timeout(VERIFY_DEADLINE_MS),
+    });
+  } catch {
+    throw new Refusal("upstream_unreachable");
+  }
+  if (answer.status < 200 || answer.status >= 300) {
+    await answer.body?.cancel();
+    throw new Refusal(upstreamCode(answer.status));
+  }
+  const pays = paysBy(read, await boundedJson(answer, CREDIT_ANSWER_MAX));
+  if (pays === null) {
+    throw new Refusal("upstream_error");
+  }
+  return Object.freeze({ pays });
 }

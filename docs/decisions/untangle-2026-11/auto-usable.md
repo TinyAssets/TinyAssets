@@ -103,4 +103,4 @@ differences are data.
 ## Owed
 
 - [ ] live: at the stage's next run, OpenRouter's `/api/v1/chat/completions` on an `:batch` id answers no interactive call (or does; then the record's `not_interactive` goes), and what its variant guide says `:batch` is.
-- [ ] untangle/auto-credit: `auto` on a key that can only call free models, by one of the options above, researched first; the stage key's limits read once (`GET /api/v1/key`) say which case the stage is in.
+- [x] untangle/auto-credit (built, option 1: `auto-credit.md`): `auto` on a key that can only call free models, by one of the options above, researched first; the stage key's limits read once (`GET /api/v1/key`) say which case the stage is in.
