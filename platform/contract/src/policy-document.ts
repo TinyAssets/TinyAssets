@@ -1,6 +1,7 @@
 /**
- * The owner's policy document: its tables, its defaults, its digest and the one validator
- * every write and read of it holds it to (`validate`). The contract's, so the owner's object
+ * The owner's policy document: its tables, its defaults, its digest, the one validator
+ * every write and read of it holds it to (`validate`), and how an agent's proposal changes it
+ * (`edited`). The contract's, so the owner's object
  * (`owner/src/policy.ts`, which stores, receipts and applies it) and the cutover's importer
  * (`platform/import/policy.ts`, which maps every old owner's document to these rules and
  * holds what it writes to them) hold a document to the same rules.
@@ -372,4 +373,145 @@ export function validate(document: unknown): PolicyDocument {
     throw new Refusal("refused", "the policy document is too large");
   }
   return document as unknown as PolicyDocument;
+}
+
+const ACTION_RULES = Object.freeze(["actions"]);
+const DESTINATIONS = Object.freeze(["egress", "destinations"]);
+/**
+ * The lists whose entries a change adds and removes, by their places, each entry a whole rule.
+ * Not the `tools` table's `custom`: left out, it is every tool, so an entry added to it or
+ * taken from it means nothing of its own; the owner sets it whole.
+ */
+const LISTS: readonly (readonly string[])[] = Object.freeze([ACTION_RULES, DESTINATIONS]);
+/**
+ * Every list of the document, by its place: a `set` names none, nor anything holding one, so
+ * no change replaces a list whole.
+ */
+const LIST_PLACES: readonly (readonly string[])[] = Object.freeze([
+  ACTION_RULES, DESTINATIONS, Object.freeze(["tools", "custom"])]);
+
+const CHANGE_REFUSED = "invalid policy change: it sets settings, nested as the policy is " +
+  "(set, null for the default), and adds or removes action rules (actions) and egress " +
+  "destinations (egress.destinations), naming at least one, and sets no list";
+
+/** Whether `value` is a list or holds one: what a `set` never names. */
+function holdsList(value: unknown): boolean {
+  return Array.isArray(value) || (object(value) && Object.values(value).some(holdsList));
+}
+
+/**
+ * Whether a `set` of `value` at `path` would replace or remove a list: `path` is a list's
+ * place, or holds one and `value` is no table to merge into it. Read from the places, never
+ * from the owner's document, so a refusal tells an agent nothing of what the owner set.
+ */
+function replacesList(path: readonly string[], value: unknown): boolean {
+  return holdsList(value) || LIST_PLACES.some((place) =>
+    path.every((key, at) => place[at] === key)
+    && (place.length === path.length || !object(value)));
+}
+
+/**
+ * `target`'s own value under `key`, and `value` put there as its own: a key a change names is
+ * the change's data, never the object's prototype (`__proto__`).
+ */
+function own(target: unknown, key: string): unknown {
+  return object(target) && Object.hasOwn(target, key) ? target[key] : undefined;
+}
+function put(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true,
+                                       configurable: true });
+}
+
+/**
+ * `patch` merged into `target`, at `path` of the document (RFC 7396), naming no list; how many
+ * settings it names.
+ */
+function merged(target: Record<string, unknown>, patch: Record<string, unknown>,
+                path: readonly string[] = []): number {
+  let named = 0;
+  for (const [key, value] of Object.entries(patch)) {
+    if (replacesList([...path, key], value)) {
+      throw new Refusal("invalid", CHANGE_REFUSED);
+    }
+    if (object(value)) {
+      const held = own(target, key);
+      const into = object(held) ? held : {};
+      put(target, key, into);
+      named += merged(into, value, [...path, key]);
+    } else {
+      if (value === null) {
+        delete target[key];
+      } else {
+        put(target, key, value);
+      }
+      named += 1;
+    }
+  }
+  return named;
+}
+
+/** The entries `part` (a change's `add` or `remove`) names, for each of `LISTS`, or refused. */
+function entries(part: unknown): unknown[][] {
+  const lists = LISTS.map((): unknown[] => []);
+  const walk = (value: unknown, path: readonly string[]): void => {
+    const list = LISTS.findIndex((place) => canonical(place) === canonical(path));
+    if (list >= 0 && Array.isArray(value)) {
+      lists[list] = value;
+    } else if (object(value)
+               && LISTS.some((place) => path.every((key, at) => place[at] === key))) {
+      for (const [key, inner] of Object.entries(value)) {
+        walk(inner, [...path, key]);
+      }
+    } else {
+      throw new Refusal("invalid", CHANGE_REFUSED);
+    }
+  };
+  if (part !== undefined) {
+    walk(part, []);
+  }
+  return lists;
+}
+
+/**
+ * `document` with an agent's proposed `change` (`policy_propose`) made, validated whole. A
+ * change names only what it changes, as the major agents' rule suggestions do
+ * (`untangle-2026-11/policy-proposal-shape.md`): `set`, a JSON merge patch (RFC 7396) of the
+ * settings, nested as the document is, null putting a setting back to its default; `add` and
+ * `remove`, entries of `LISTS` at their places. The settings it sets are merged, the entries
+ * it removes taken out, then those it adds put in unless there already. An agent reads no
+ * policy, so a change replaces nothing it does not name, and an entry added that is there, or
+ * removed that is not, changes nothing and is no fault: no answer tells an agent what the
+ * owner's rules hold. Refused when it is no such change, names nothing, or leaves a document
+ * `validate` refuses.
+ */
+export function edited(document: PolicyDocument, change: unknown): PolicyDocument {
+  if (!keyed(change, [], ["set", "add", "remove"])
+      || (change["set"] !== undefined && !object(change["set"]))) {
+    throw new Refusal("invalid", CHANGE_REFUSED);
+  }
+  const next = structuredClone(document) as unknown as Record<string, unknown>;
+  const set = object(change["set"]) ? merged(next, change["set"]) : 0;
+  const [added, removed] = [entries(change["add"]), entries(change["remove"])];
+  if (set + added.flat().length + removed.flat().length === 0) {
+    throw new Refusal("invalid", CHANGE_REFUSED);
+  }
+  LISTS.forEach((place, list) => {
+    const table = place.slice(0, -1).reduce<unknown>((at, key) => own(at, key), next);
+    const key = place.at(-1)!;
+    const before = own(table, key);
+    const gone = new Set(removed[list]!.map((entry) => canonical(entry)));
+    const after = (Array.isArray(before) ? before : [])
+      .filter((entry) => !gone.has(canonical(entry)));
+    const held = new Set(after.map((entry) => canonical(entry)));
+    for (const entry of added[list]!) {
+      if (!held.has(canonical(entry))) {
+        held.add(canonical(entry));
+        after.push(entry);
+      }
+    }
+    if (object(table) && (before !== undefined || after.length > 0)) {
+      put(table, key, after);
+    }
+  });
+  return validate(next);
 }

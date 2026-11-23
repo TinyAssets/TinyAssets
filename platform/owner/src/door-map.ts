@@ -103,8 +103,6 @@ export interface DoorRows {
     { readonly module: "policy"; readonly caller: "owner"; readonly gate: "door" };
   readonly policyWrite:
     { readonly module: "policy"; readonly caller: "session"; readonly gate: "units" };
-  readonly policyProposal:
-    { readonly module: "policy"; readonly caller: "owner"; readonly gate: "door" };
   readonly policyProposals:
     { readonly module: "policy"; readonly caller: "owner"; readonly gate: "door" };
   readonly policyApply:
@@ -375,9 +373,10 @@ export interface DoorMethods<H> {
   registerPropose(binding: Binding, request: RequestIn<H, "registerPropose">):
     Promise<AnswerIn<H, "registerPropose">>;
   /**
-   * Propose a change to the owner's policy, for the owner to apply or decline. The answer's
-   * approve_url is the owner's page of it: give it to your user, who opens it signed in to
-   * TinyAssets.
+   * Propose a change to the owner's settings, for the owner to apply or decline: name only what
+   * changes (a rule or host to add or remove, a setting to set), as a "don't ask again" suggestion
+   * does; applying it changes nothing else, whatever the owner has set. The answer's approve_url is
+   * the owner's page of it: give it to your user, who opens it signed in to TinyAssets.
    */
   policyPropose(binding: Binding, request: RequestIn<H, "policyPropose">):
     Promise<AnswerIn<H, "policyPropose">>;
@@ -562,8 +561,6 @@ export interface DoorMethods<H> {
   policyReceipts(binding: Binding): Promise<AnswerIn<H, "policyReceipts">>;
   policyWrite(binding: Binding, request: RequestIn<H, "policyWrite">):
     Promise<AnswerIn<H, "policyWrite">>;
-  policyProposal(binding: Binding, request: RequestIn<H, "policyProposal">):
-    Promise<AnswerIn<H, "policyProposal">>;
   policyProposals(binding: Binding): Promise<AnswerIn<H, "policyProposals">>;
   policyApply(binding: Binding, request: RequestIn<H, "policyApply">):
     Promise<AnswerIn<H, "policyApply">>;

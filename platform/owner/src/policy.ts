@@ -5,7 +5,7 @@
  *
  * Ported from `PolicyStore` in `tinyassets/broker/policy.py` (origin/main 1fd430857):
  * `read`, `write` (with a held proposal's one apply), `receipts`, `receipt_proposal`,
- * `proposal`, `receipt_refusal` and `_validate`, whose rules it keeps. Only the owner,
+ * `proposal` (as `list`), `receipt_refusal` and `_validate`, whose rules it keeps. Only the owner,
  * in its own protected session (`sessions.ts`), writes policy; the object checks that
  * session itself before any write here runs.
  *
@@ -18,12 +18,14 @@
  * - A fresh object starts from the default document at generation 1, put there by its
  *   migration: the Python's bootstrap, legacy upgrade and per-owner failure isolation
  *   have no counterpart, since the object is the account.
- * - An agent's proposal is receipted and held for the owner as a card (its `request_id`, or
- *   one minted when it names none), which the owner answers on its app's page
+ * - An agent's proposal names only what it changes (`edited`), checked against the policy as
+ *   it stands when filed, and is receipted and held for the owner as a card (its
+ *   `request_id`, or one minted when it names none), which the owner answers on its app's page
  *   (`waitingPage`): the proposal's answer names it, and so does the `policy_proposal`
  *   notice. The owner reads the pending cards (`list`), applies one at most once in its
- *   session (`apply`), or declines it (`decline`), a narrowing that needs no session. A held
- *   card never changes; a full pending set lets the oldest go.
+ *   session (`apply`), made onto the policy as it stands then, or declines it (`decline`), a
+ *   narrowing that needs no session. A held card never changes; a full pending set lets the
+ *   oldest go.
  * - A refused owner-session call leaves a `refusal` receipt with the digest of what was
  *   asked, never the session proof, written after the refused change rolled back.
  * - The optional `actions` table holds the owner's action rules, each on an act (`acts.json`):
@@ -63,8 +65,9 @@
  *   (`receiptsPerBucket`): owner changes, agent proposals and refusals each apart, so
  *   neither an agent nor a refused stranger can push the owner's changes out. The
  *   Python kept every receipt and listed two buckets.
- * - A held proposal applies only as a `policy_proposal` card, which the Python's apply
- *   path checked and its write did not.
+ * - A held proposal is a change naming only what it changes, made onto the policy as it
+ *   stands (`edited`); the Python's was a whole document at a generation, which replaced what
+ *   an agent that reads no policy left out.
  * - One outside client holds at most `pendingPerClient` of the pending proposals, so it
  *   cannot fill the set the owner's agents propose into; the Python had one set.
  * - An entry's values are flat (strings, numbers, booleans, null), as every value the
@@ -82,7 +85,7 @@ import { FILE_DEFAULTS, type FileDefaults } from "../../contract/src/file-defaul
 import { object, whole } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import {
-  CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, MODEL_DEFAULTS, policyDigest,
+  CODEMODE_DEFAULTS, DEFAULT_POLICY_DIGEST, edited, MODEL_DEFAULTS, policyDigest,
   type PolicyDocument, POLICY_LIMITS, type SourceCeilings, validate,
 } from "../../contract/src/policy-document";
 import { Refusal } from "../../contract/src/refusal";
@@ -363,26 +366,20 @@ export class Policy {
   }
 
   /**
-   * The owner's yes, in its session, to the pending card shown: its change written, once, as
-   * the owner's write. Only a `policy_proposal` applies, a whole document made against the
-   * policy as it stands; any other change waits for the owner to decline it, or to make it.
+   * The owner's yes, in its session, to the pending card shown: its change made onto the
+   * policy as it stands (`edited`) and written, once, as the owner's write. One that no longer
+   * makes a policy (an act since gone, a card filed before a change was a delta) is refused in
+   * its words, and waits for the owner to decline it.
    */
   apply(session: LiveSession, card: unknown, shown: unknown, now: number): PolicyState {
     proven(session, "session");
     return this.#storage.transactionSync(() => {
       const { card_id: applied, change } = this.#shown(card, shown);
-      if (change["type"] !== "policy_proposal") {
-        throw new Refusal("refused", "this proposal is not a whole set of rules to apply: " +
-                          "make the change it asks yourself, or decline it");
-      }
-      if (change["expected_generation"] !== this.#generation()) {
-        throw new Refusal("refused", "this proposal was made against your rules before a " +
-                          "later change, so it no longer applies: decline it, or make the " +
-                          "change yourself");
-      }
+      const { generation, document } = this.read();
+      const next = edited(document, change);
       this.#sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
                      applied);
-      return this.#write(session.hash, change["expected_generation"], change["policy"], now);
+      return this.#write(session.hash, generation, next, now);
     });
   }
 
@@ -477,8 +474,10 @@ export class Policy {
   }
 
   /**
-   * An agent's proposal, receipted and held for the owner under its card: `requestId`, the
-   * proposer's own for its retries, or one minted. Refiling a held card with another change
+   * An agent's proposal, a change naming only what it changes, refused unless it makes a
+   * policy of the one as it stands (`edited`), receipted and held for the owner under its card:
+   * `requestId`, the proposer's own for its retries, or one minted. Refiling a held card with
+   * another change
    * is refused (the same change again is a no-op); all but the newest applied ones are pruned
    * first, and a new card at a bound lets the oldest pending one go to make its room: the
    * proposer's own at its share, else the oldest of its class's (outside clients' or the
@@ -486,7 +485,7 @@ export class Policy {
    * A new card is noticed with its page (`policy_proposal`).
    */
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
-      { card_id: string; request_digest: string; generation: number } {
+      { card_id: string; request_digest: string } {
     if (!object(change) || codePoints(canonical(change)) > POLICY_LIMITS.maxChange) {
       throw new Refusal("invalid", "invalid policy proposal");
     }
@@ -494,10 +493,10 @@ export class Policy {
       throw new Refusal("invalid", "invalid policy proposal");
     }
     const card = requestId ?? `pol_${randomHex(16)}`;
-    const generation = this.#generation();
     const digest = policyDigest(change);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
+      edited(this.read().document, change);
       const over = this.#usage().applied_proposals - POLICY_LIMITS.appliedProposals;
       if (over > 0) {
         sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +
@@ -534,9 +533,9 @@ export class Policy {
                           "you connected"} asks to change your settings: apply or decline ` +
                           `it at ${waitingPage(card)}`, now);
       }
-      this.receipt("proposal", { request_digest: digest, generation, rule: "owner_policy",
+      this.receipt("proposal", { request_digest: digest, rule: "owner_policy",
                                  decision: "ask", outcome: "requested" }, now);
-      return { card_id: card, request_digest: digest, generation };
+      return { card_id: card, request_digest: digest };
     });
   }
 
@@ -571,9 +570,6 @@ export interface PolicyWriteRequest {
 export interface ProposeRequest {
   readonly change: Change;
   readonly request_id?: string;
-}
-export interface CardRequest {
-  readonly request_id: string;
 }
 /** The owner's answer to a held proposal: its card, and the digest it was shown. */
 export interface ProposalAnswerRequest {
@@ -626,7 +622,7 @@ export const policyDoors = Object.freeze({
    * client proposes only with `propose_policy` granted where its agent is.
    */
   policyPropose(o: PolicyDoorNeeds, { account, r }: Call<ProposeRequest>):
-      { card_id: string; request_digest: string; generation: number; approve_url: string } {
+      { card_id: string; request_digest: string; approve_url: string } {
     const filed = o.policy.propose(r["change"], r["request_id"] ?? null,
                                    account.origin?.client ?? OWNER, clock());
     return { ...filed, approve_url: waitingPage(filed.card_id) };
@@ -651,17 +647,6 @@ export const policyDoors = Object.freeze({
   /** The pending proposals the owner is shown, oldest first, each with its digest. */
   policyProposals(o: PolicyDoorNeeds, _call: Call<undefined>): { cards: ProposalCard[] } {
     return { cards: o.policy.list() };
-  },
-  /**
-   * The one card under `request_id`, for the doors' version before (`dropped`), which still
-   * names it until the stage serves none.
-   */
-  policyProposal(o: PolicyDoorNeeds, { r }: Call<CardRequest>): { change: Change; digest: string } {
-    const held = o.policy.list().find((card) => card.card_id === r["request_id"]);
-    if (held === undefined) {
-      throw new Refusal("refused", "no pending proposal for this card");
-    }
-    return { change: held.change, digest: held.digest };
   },
   /** The owner's yes, in its session: the held proposal applied once, as its write. */
   async policyApply(o: PolicyDoorNeeds, door: Door<ProposalAnswerRequest, "session">):

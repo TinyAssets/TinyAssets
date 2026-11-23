@@ -524,15 +524,14 @@ describe("an agent's policy proposal, answered in the owner app", () => {
   }
 
   it("names its page to the agent and the owner, and once applied there in session the " +
-     "owner's settings are the ones proposed", async () => {
+     "owner's settings have its change", async () => {
     const who = owner();
     const { access_token: token, session } = await signInApp({ owner: who });
     const tokens = await connect(await registerClient("Muse"), { owner: who });
     const read = await answered(await appPost("policy", token, null, {}));
-    const policy = { ...read["policy"] as object, codemode: { on: true } };
-    const filed = await propose(tokens, { type: "policy_proposal",
-                                          expected_generation: read["generation"], policy });
+    const filed = await propose(tokens, { set: { codemode: { on: true } } });
     const card = filed["card_id"] as string;
+    expect(Object.keys(filed).sort()).toEqual(["approve_url", "card_id", "request_digest"]);
     expect(filed["approve_url"]).toBe(waitingPage(card));
     const { notices } = await answered(await appPost("notices", token, null, {})) as
       { notices: { type: string; detail: string }[] };
@@ -552,7 +551,8 @@ describe("an agent's policy proposal, answered in the owner app", () => {
     const who = owner();
     const { access_token: token, session } = await signInApp({ owner: who });
     const tokens = await connect(await registerClient("Muse"), { owner: who });
-    const card = (await propose(tokens, { allow: "github.com" }))["card_id"] as string;
+    const card = (await propose(tokens, { add: { egress: { destinations: [
+      { host: "github.com", port: 443 }] } } }))["card_id"] as string;
     const [{ digest }] = await cards(token) as [Shown];
     expect(await answered(await appPost("policy/decline", token, null,
                                         { card_id: card, digest: "0".repeat(64) }), 403))
