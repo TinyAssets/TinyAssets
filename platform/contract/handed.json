@@ -62,7 +62,7 @@
                       "required": ["body", "event_id", "headers"], "optional": [] },
     "metering": { "from": "owner", "to": "gateway",
                   "required": ["input_bytes", "max_output_tokens", "model", "tier"],
-                  "optional": [] },
+                  "always": ["routed"], "optional": [] },
 
     "spend_succeeded": { "from": "gateway", "to": "owner",
                          "required": ["cost", "state", "tokens"], "optional": ["served"] },
