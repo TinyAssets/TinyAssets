@@ -926,9 +926,13 @@ describe("the RPC door's fields", () => {
                                                limit: 1 } as never),
         () => stub.collectionHistory(as("bob"), { collection: "board", row_id: "t",
                                                   before: cursor } as never)]) {
+        // A cursor of no string is a malformed call, the fields step's; a string no answer
+        // gave is no cursor.
         const refused = await failure(call);
-        expect(refused.code, `cursor ${String(cursor)}`).toBe("cursor_invalid");
-        expect(refused.message).toMatch(/^cursor_invalid: /);
+        expect(refused.code, `cursor ${String(cursor)}`)
+          .toBe(typeof cursor === "string" ? "cursor_invalid" : "invalid");
+        expect(refused.message).toMatch(typeof cursor === "string" ? /^cursor_invalid: /
+          : /^invalid collection request: (after|before) is a string$/);
       }
     }
     for (const limit of [1.5, Number.POSITIVE_INFINITY, "2", 101, 0, null]) {

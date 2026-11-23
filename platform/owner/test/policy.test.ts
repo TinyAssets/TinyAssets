@@ -187,7 +187,7 @@ describe("an owner write", () => {
     [{ ...defaults(), spend: OLD.spend }, "invalid", "invalid policy document"],
     [{ ...defaults(), egress: { mode: "ask", destinations: [] } }, "invalid",
       "invalid egress policy"],
-    [[], "invalid", "invalid policy document"],
+    [[], "invalid", "invalid policy request: policy is an object"],
     [{ ...defaults(), egress: { mode: "closed", destinations: [] } }, "invalid",
       "invalid egress policy"],
     [{ ...defaults(), egress: { mode: "open" } }, "invalid", "invalid egress policy"],
@@ -375,11 +375,13 @@ describe("an agent's proposal", () => {
   it("refuses a malformed proposal, and at a full pending set lets the oldest go",
      async () => {
     const r = await rig();
-    for (const request of [{ change: [] }, { change: { big: "x".repeat(16_001) } },
-                           { change: {}, request_id: "" },
-                           { change: {}, request_id: "x".repeat(129) }]) {
+    for (const [request, reason] of [
+      [{ change: [] }, "invalid policy request: change is an object"],
+      [{ change: { big: "x".repeat(16_001) } }, "invalid policy proposal"],
+      [{ change: {}, request_id: "" }, "invalid policy proposal"],
+      [{ change: {}, request_id: "x".repeat(129) }, "invalid policy proposal"]] as const) {
       const refused = await failure(() => r.stub.policyPropose(r.bind(null), request as never));
-      expect([refused.code, refused.message]).toEqual(["invalid", "invalid policy proposal"]);
+      expect([refused.code, refused.message]).toEqual(["invalid", reason]);
     }
     expect((await failure(() => r.stub.policyPropose(r.bind(null), { request_id: "x" } as never)))
       .message).toBe("invalid policy request");
@@ -510,9 +512,11 @@ describe("wake limits as owner policy", () => {
     expect([stale.code, stale.message]).toEqual(["refused", "policy generation changed"]);
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
     expect(agent!.max_wakes_per_hour).toBe(3);  // the refused change rolled back whole
-    for (const extra of [{ expected_generation: 0 }, { expected_generation: "2" }]) {
-      expect((await failure(() => set(2, extra))).message)
-        .toBe("expected policy generation required");
+    for (const [extra, reason] of [
+      [{ expected_generation: 0 }, "expected policy generation required"],
+      [{ expected_generation: "2" }, "invalid policy request: expected_generation is an integer"],
+    ] as const) {
+      expect((await failure(() => set(2, extra))).message).toBe(reason);
     }
     const [receipt] = await kinds(r, "wake_limits");
     expect(receipt).toMatchObject({

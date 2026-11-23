@@ -33,7 +33,7 @@
  */
 import tree from "../contract/handed.json" with { type: "json" };
 import table from "../contract/doors.json" with { type: "json" };
-import { type Args, type DoorArgs, type DoorRow, fieldTypes, type JsonType }
+import { type Args, type DoorArgs, type DoorRow, fieldTypes, takesType }
   from "../contract/src/doors.ts";
 import { type Listed, type Shape, takes } from "../contract/src/handed.ts";
 
@@ -154,11 +154,6 @@ function argsFields(args: Args): Listed {
 function schemaOf(args: Args, name: string): unknown {
   return Object.hasOwn(args.required, name) ? args.required[name]
     : Object.hasOwn(args.optional, name) ? args.optional[name] : undefined;
-}
-
-/** Whether a field taken as `taken` takes a value of the JSON type `type`. */
-function takesType(taken: readonly JsonType[], type: JsonType): boolean {
-  return taken.includes(type) || (type === "integer" && taken.includes("number"));
 }
 
 /** A hold across a deploy: each way it refuses, and each door field held by name alone. */

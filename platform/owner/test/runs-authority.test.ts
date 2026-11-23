@@ -227,10 +227,10 @@ describe("one sandbox an authority", () => {
     // Its run's own file tools are held the same: no agent file, the rest as the client.
     const tools = runBinding(r, start);
     expect((await failure(() => r.stub.fileWrite(tools, {
-      path: "/workspace/agents/main/AGENTS.md", expected_etag: null,
-      content: text("planted") }))).message).toBe(AGENTS_OWNER_ONLY);
+      path: "/workspace/agents/main/AGENTS.md", expected_etag: "",
+      content: "planted" }))).message).toBe(AGENTS_OWNER_ONLY);
     expect(await r.stub.fileWrite(tools, { path: "/workspace/run-notes.txt", expected_etag: "",
-                                           content: text("mine") })).toHaveProperty("entry");
+                                           content: "mine" })).toHaveProperty("entry");
   });
 
   it("let the owner's own run edit an agent's agent.json and skills by default", async () => {
@@ -240,11 +240,16 @@ describe("one sandbox an authority", () => {
     const path = "/workspace/agents/main/agent.json";
     const { entry } = await r.stub.fileStat(r.bind(), { path });
     const widened = await r.stub.fileWrite(tools, { path, expected_etag: entry!.etag,
-      content: text(JSON.stringify(await keyed(r))) });
+      content: JSON.stringify(await keyed(r)) });
     expect(widened).toHaveProperty("entry");
+    // A run is held to the etag it read, as an outside client is: the owner's fields are the
+    // owner's own.
+    expect((await failure(() => r.stub.fileWrite(tools, { path, expected_etag: null,
+                                                          content: "{}" }))).message)
+      .toBe("invalid file request: expected_etag is a string");
     await r.stub.fileMkdir(tools, { path: "/workspace/skills/notes", expected_etag: null });
     expect(await r.stub.fileWrite(tools, { path: "/workspace/skills/notes/SKILL.md",
-      expected_etag: "", content: text("# notes") })).toHaveProperty("entry");
+      expected_etag: "", content: "# notes" })).toHaveProperty("entry");
   });
 
   it("opens a client's sandbox without ending the owner's own streams", async () => {

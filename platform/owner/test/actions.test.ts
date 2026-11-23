@@ -323,7 +323,7 @@ describe("a run's CLI's own tool call, at its hook's decide door (R5 P-hooks)", 
   it("decides the call as each act it is, every never first, at the tool as its door",
      async () => {
     const { r, o, run } = await hooked("gemini");
-    const call = (tool_name: string, tool_input: unknown) =>
+    const call = (tool_name: string, tool_input: Readonly<Record<string, unknown>>) =>
       r.stub.runDecide(run, { tool_name, tool_input });
     expect(await call("run_shell_command", { command: "ls" })).toEqual({ allow: true });
     await ruled(o, [{ act: "workspace.shell", do: "ask" },
