@@ -125,12 +125,12 @@ and nothing caught it but a reviewer's chance read.
 
 ## Owed
 
-- [ ] The kit's plan holds the run against the serving versions: for each Worker, the serving
+- [x] The kit's plan holds the run against the serving versions: for each Worker, the serving
   version of each Worker that binds it (`rollout`'s `before` tag) read from git (the plan and
   apply jobs fetching full history), and the run's owner held to that commit's `bindings.json`
   and `doors.json` with `handedProblems` moved where both read it; then a contract step's wait
   is the kit's, not a log's (`process/handed-deploy`).
-- [ ] Every other strict cross-Worker parser in data under the same rule: the loose doors'
+- [x] Every other strict cross-Worker parser in data under the same rule: the loose doors'
   modules (`egress.ts`, `connections.ts`, `reports.ts`, `sandbox-time.ts`), the gateway's
   inputs (`doorbellInput`, `ringRequest`, `authorizationGrant`, `metering`), and the answers a
   caller parses (`started`, `networkOutcome`, `meterRead`, `#keepResealed`, the doors' refusal

@@ -159,7 +159,13 @@ jobs:
       KEYRING: ${{ inputs.keyring }}
       AT: ${{ inputs.at }}
     steps:
+      # Every commit, without file contents: the plan reads what each serving Worker hands and
+      # takes at the commit its version's tag names (platform/deploy/handed.ts), each file's
+      # blob fetched as it is read.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-node@v4
         with:
@@ -268,7 +274,11 @@ jobs:
       KEYRING: ${{ inputs.keyring }}
       AT: ${{ inputs.at }}
     steps:
+      # As the plan job's: its plan made again reads the serving commits' files too.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       - uses: actions/setup-node@v4
         with:

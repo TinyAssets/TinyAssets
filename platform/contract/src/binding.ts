@@ -4,11 +4,10 @@
  * request field; and what the inbound door answers the binder. The doors make it and the
  * owner's object reads it (`owner/src/owner-do.ts`), so it is the contract's.
  */
-import table from "../bindings.json" with { type: "json" };
-
 import type { Vendor } from "./apps.ts";
-import { frozen, keyed, object, whole } from "./checks.ts";
+import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
+import { type ShapeName, taken } from "./handed.ts";
 import { HEX16, HEX32, HEX64, RUN_ID } from "./ids.ts";
 import { controlOf } from "./control.ts";
 import { Refusal, type RefusalCode } from "./refusal.ts";
@@ -132,7 +131,7 @@ export interface Binding {
 // one parser: the binder builds a kind, and the object parses a door's binding with the parser
 // of the kind it presents (`bindingKind`), once it holds that its row's caller takes that kind
 // (`owner/src/door-steps.ts`), so a field the binder sends and the parser lacks is a type
-// error. A parser takes the fields its shapes list (`bindings.json`) and refuses anything
+// error. A parser takes the fields its shapes list (`handed.json`) and refuses anything
 // else as `invalid`. The two doors that take no binding (`UNBOUND_DOORS`, `doors.ts`) take the
 // kind `none`.
 
@@ -174,31 +173,12 @@ function invalid(kind: string): never {
   throw new Refusal("invalid", `invalid ${kind} binding`);
 }
 
-/** A shape a binding is made of (`bindings.json`), by its name. */
-export type ShapeName = keyof typeof table.shapes;
-
 /**
- * A shape's fields: the ones the binder always hands, the ones it hands when it has them,
- * and the ones a release before handed that this one no longer does.
- */
-export interface Shape {
-  readonly required: readonly string[];
-  readonly optional: readonly string[];
-  readonly dropped?: readonly string[];
-}
-
-/** Each shape a binding is made of, by its name, as the data file has it, frozen whole. */
-export function bindingShapes(): Readonly<Record<ShapeName, Shape>> {
-  return frozen(table.shapes as Record<ShapeName, Shape>);
-}
-
-/**
- * `value` as a plain object of the shape `name`: every required field, any optional one, and
- * any dropped one, which its parser reads no further.
+ * `value` as a plain object of the shape `name` (`handed.json`): every required field, and any
+ * other it lists, a dropped one read no further.
  */
 function fields(value: unknown, kind: string, name: ShapeName): Record<string, unknown> {
-  const { required, optional, dropped = [] } = bindingShapes()[name];
-  return keyed(value, required, [...optional, ...dropped]) ? value : invalid(kind);
+  return keyed(value, ...taken(name)) ? value : invalid(kind);
 }
 
 function hex(value: unknown, grammar: RegExp, kind: string): string {

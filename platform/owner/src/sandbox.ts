@@ -46,6 +46,7 @@ import {
   namedRefusal, type Refusal, type RefusalCode, refusalOf,
 } from "../../contract/src/refusal";
 import { keyed, object } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import {
   type CredentialKind, NETWORK_STATES, type SandboxService, START_CODES, type Started,
 } from "../../contract/src/sandbox";
@@ -173,10 +174,10 @@ export type StartOutcome = Started
 
 /** A start's answer as the contract has it (`Started`), or undefined. */
 function started(value: unknown): Started | undefined {
-  if (keyed(value, ["started"]) && value["started"] === true) {
+  if (keyed(value, ...taken("started")) && value["started"] === true) {
     return { started: true };
   }
-  const code = keyed(value, ["code", "started"]) && value["started"] === false
+  const code = keyed(value, ...taken("not_started")) && value["started"] === false
     ? START_CODES.find((each) => each === value["code"]) : undefined;
   return code === undefined ? undefined : { started: false, code };
 }
@@ -237,8 +238,9 @@ export async function startOutcome(job: "a run" | "a sign-in", start: () => Prom
  */
 export async function networkOutcome(reapply: () => Promise<unknown>):
     Promise<"applied" | "at_resume" | "failed"> {
-  const got = await sandboxAnswer(reapply, ["state"], (value) => keyed(value, ["state"])
-    ? NETWORK_STATES.find((each) => each === value["state"]) : undefined);
+  const got = await sandboxAnswer(reapply, ["state"], (value) =>
+      keyed(value, ...taken("network_answer"))
+        ? NETWORK_STATES.find((each) => each === value["state"]) : undefined);
   if (got.kind === "answered") {
     return got.answer === "lost" ? "failed" : got.answer;
   }

@@ -168,13 +168,14 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   {
     // A Worker's own data beside its config is the deploy kit's to read: it deploys them. The
     // migration locks' kit names the Workers whose locks it runs, from the contract and the
-    // wrangler module alone, which the deploy kit may already import.
+    // wrangler module alone, which the deploy kit may already import. A file at an earlier
+    // commit (`ci/history.ts`) is what its plan reads of the versions the stage serves.
     name: "the deploy kit",
     files: ["platform/deploy/**", "!platform/deploy/guards/**",
             "!platform/deploy/vitest.config.ts", ...NOT_TESTS],
     may: ["platform/deploy/**", "!platform/deploy/guards/**", ...CONTRACT, ...SOURCES,
           "platform/sandbox/e2b/**", "platform/sandbox/template/pair.ts",
-          "platform/ci/{paths,wrangler}.ts", "platform/ci/kit/locks.ts",
+          "platform/ci/{paths,wrangler,history}.ts", "platform/ci/kit/locks.ts",
           "platform/<worker>/*.json", ...NOT_TESTS],
   },
   {

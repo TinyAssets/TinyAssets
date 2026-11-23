@@ -13,7 +13,7 @@
  *   doors' version before may still hand, taken and left out (`requestFields`).
  *
  * A door the doors call no more is marked `dropped`: the object still takes it, for the
- * doors' version before, and `OwnerDoors` lacks it (`deploy/guards/handed.test.ts`).
+ * doors' version before, and `OwnerDoors` lacks it (`deploy/handed.ts`).
  *
  * How the object takes a call, its runner's steps (who it takes, the checks after, where its
  * capability is held, the order of its scope and fields, its handler's module and its gate),
@@ -85,7 +85,7 @@ export interface Args {
   /**
    * Fields a release before listed, which the doors hand no more and the owner still takes
    * and drops, until the doors the stage serves list them no more
-   * (`deploy/guards/handed.test.ts`).
+   * (`deploy/handed.ts`).
    */
   readonly dropped?: readonly string[];
 }
@@ -121,7 +121,7 @@ export interface DoorRow {
   readonly stop?: true;
   /**
    * The doors call it no more (no tool, and no method of `OwnerDoors`); the owner still takes
-   * it, until the doors the stage serves call it no more (`deploy/guards/handed.test.ts`).
+   * it, until the doors the stage serves call it no more (`deploy/handed.ts`).
    */
   readonly dropped?: true;
 }
