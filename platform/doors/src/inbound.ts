@@ -50,7 +50,6 @@ import { controlRead } from "./control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { answer, boundedBytes, mediaType, randomToken } from "./kit";
 import { answered, asInbound, asShared } from "./refused";
-import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
 const STAMP = /^[0-9]{1,12}$/;
@@ -209,12 +208,11 @@ function delivered(accepted: InboundAnswer): Response {
 }
 
 /** `POST /hooks/inbound/<token>`. */
-export function serveInbound(request: Request, env: DoorsEnv, sources: Sources):
-    Promise<Response> {
-  return answered(asInbound, () => inbound(request, env, sources));
+export function serveInbound(request: Request, env: DoorsEnv): Promise<Response> {
+  return answered(asInbound, () => inbound(request, env));
 }
 
-async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promise<Response> {
+async function inbound(request: Request, env: DoorsEnv): Promise<Response> {
   const read = await controlRead(env);
   const gate = inboundGate(read);
   if (gate === "unavailable") {
@@ -252,8 +250,8 @@ async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promi
     if (!ordinaryAdmits(gate, entry.o)) {
       throw new Refusal("unavailable", MAINTENANCE);
     }
-    // The run an event starts is held to the switched-on sign-ins as a door's is.
-    const { binding, stub } = withAccount(bindInbound(env, entry), read, sources);
+    // The run an event starts is held to the record's tiers and sign-ins as a door's is.
+    const { binding, stub } = withAccount(bindInbound(env, entry), read);
     return delivered(await stub.inboundAccept(binding, {
       event_id: routed.eventId, event_at: routed.eventAt, body, headers }));
   });

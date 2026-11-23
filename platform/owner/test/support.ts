@@ -2,10 +2,9 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
-import { HELD_WAIT_MS, OPEN_RECORD, openRecord, TIERS } from "../../ci/fixtures";
+import { HELD_WAIT_MS, OPEN, OPEN_RECORD, openRecord, TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { bundledSources } from "../../sources/src/catalog";
-import { signinsOn } from "../../sources/src/signin";
 import { type Collections, LIMITS } from "../src/collections";
 import type { Files } from "../src/files";
 import { type Write, WriteGate } from "../src/gate";
@@ -30,11 +29,16 @@ import type { Arm, Crossed, Held } from "../../ci/gate-worker";
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
 /**
- * Every served sign-in switched on, as the doors hand them when the control record turns
- * each on: what a test's binding carries unless it names fewer (`Binding.signins`).
+ * `OPEN`'s text with the vendor sign-in of each source `on` names switched on and every other
+ * off (every one on when it names none), as a binding hands the record (`Binding.control`).
  */
-export const EVERY_SIGNIN: readonly string[] = Object.freeze(signinsOn(
-  bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
+export function signinRecord(on?: readonly string[]): string {
+  return JSON.stringify({ ...OPEN, signins: Object.fromEntries(bundledSources().ids().map(
+    (id) => [id, on === undefined || on.includes(id)])) });
+}
+
+/** Every served sign-in switched on: the record a test's binding hands unless it names one. */
+export const EVERY_SIGNIN_RECORD = signinRecord();
 
 export { OPEN_RECORD, openRecord, TIERS };
 

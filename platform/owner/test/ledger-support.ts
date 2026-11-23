@@ -11,7 +11,7 @@ import type { OwnerDO, Stores } from "../src/owner-do";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import {
-  admitted, alarmOf, atClock, EVERY_SIGNIN, laneAt, OPEN_RECORD, seeded, storesOn,
+  admitted, alarmOf, atClock, EVERY_SIGNIN_RECORD, laneAt, seeded, storesOn,
   type TestStores,
 } from "./support";
 
@@ -157,7 +157,7 @@ export async function unseededRig() {
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
     ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }),
-       control: OPEN_RECORD, ...("sandbox" in extra ? {} : { signins: EVERY_SIGNIN }), ...extra });
+       control: EVERY_SIGNIN_RECORD, ...extra });
   const { session: cookie } = await stub.sessionOpen(bind(null, { authenticated_at: signedIn() }));
   const session = (origin: Origin | null, source: Source = MCP): Binding =>
     bind(origin, { session: cookie, source });

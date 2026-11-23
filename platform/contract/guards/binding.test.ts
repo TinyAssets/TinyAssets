@@ -22,10 +22,10 @@ const BUILT: Readonly<Record<BindingKind, readonly unknown[]>> = {
   none: [undefined],
   account: [
     { owner: OWNER, caller: OWNER, origin: null },
-    { owner: OWNER, caller: "user_visitor", origin: null, control: RECORD, signins: [] },
+    { owner: OWNER, caller: "user_visitor", origin: null, control: RECORD },
     { owner: OWNER, caller: OWNER, origin: ORIGIN, source: { kind: "mcp", ref: "client-1" },
       authenticated_at: 1_700_000_000, vendor: { id: "claude", verified: true },
-      control: null, signins: null },
+      control: null },
     { owner: OWNER, caller: OWNER, origin: ORIGIN,
       source: { kind: "api_key", ref: HEX("d", 16) }, authenticated_at: 0 },
     { owner: OWNER, caller: OWNER, origin: null, grant: "grant-1", expires_at: 1_700_000_100 },
@@ -46,7 +46,7 @@ const BUILT: Readonly<Record<BindingKind, readonly unknown[]>> = {
   ],
   inbound: [
     { owner: OWNER, caller: OWNER, origin: null, inbound: { binding: HEX("3", 32), revision: 1 },
-      control: RECORD, signins: [] },
+      control: RECORD },
   ],
   reserved: [{ owner: OWNER, caller: PLATFORM_CALLER, origin: null }],
   import: [
@@ -84,7 +84,6 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
                                         control: JSON.stringify({ outside: "on" }) }],
     ["a control record not its text", { owner: OWNER, caller: OWNER, origin: null,
                                         control: JSON.parse(RECORD) }],
-    ["tier numbers beside it", { owner: OWNER, caller: OWNER, origin: null, tiers: null }],
   ],
   session: [["no session", { owner: OWNER, caller: OWNER, origin: null }]],
   egress: [
@@ -158,5 +157,18 @@ describe("each binding kind's parser", () => {
         thrown = error;
       }
       expect(refusalOf(thrown)?.code).toBe("invalid");
+    });
+
+  // The owner is deployed before the doors, so the doors' version before binds it for one
+  // deploy (`HANDED_BEFORE`): its bindings parse, the fields it still hands dropped.
+  const BEFORE = { tiers: { free: { runs: 5 } }, signins: ["claude-code"] };
+  it.each([["account", { owner: OWNER, caller: OWNER, origin: null, control: RECORD }],
+           ["session", { owner: OWNER, caller: OWNER, origin: null, session: "cookie" }],
+           ["inbound", { owner: OWNER, caller: OWNER, origin: null,
+                         inbound: { binding: HEX("3", 32), revision: 1 }, control: null }]] as const)(
+    "%s takes the doors' version before's binding, dropping its tiers and switches",
+    (kind, built) => {
+      expect(BINDING_PARSERS[kind]({ ...built, ...BEFORE })).toEqual(built);
+      expect(bindingKind({ ...built, ...BEFORE })).toBe(kind);
     });
 });

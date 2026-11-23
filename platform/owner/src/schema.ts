@@ -2619,6 +2619,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "DROP TABLE platform_tiers",
   ]),
+  // 28 (`untangle-2026-11/owner-control-signins.md`): the switched-on sign-ins the binder and
+  // the lane handed go, folded into the same kept copy (`control_kept`), which the switches
+  // are now read from (`signins.ts`, `switchedOn`). An object that keeps no copy yet starts no
+  // sign-in until its next read of the record. The platform's, not the owner's:
+  // `platform_signins` was not exported.
+  Object.freeze([
+    "DROP TABLE platform_signins",
+  ]),
 ]);
 
 /**
@@ -2700,6 +2708,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   SPEND_PERIODS,  // 25
   RESERVATIONS_DROPPED,  // 26
   null,  // 27
+  null,  // 28
 ]);
 
 /**

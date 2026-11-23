@@ -4,7 +4,7 @@
  * must have, and whether it is switched on. Checked in the sandbox's VM before a prompt
  * leaves it, and again on the trusted side.
  */
-import type { ControlRead } from "../../contract/src/control";
+import type { Control } from "../../contract/src/control";
 import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
 
 import type { SourceRecord, Sources } from "./schema";
@@ -131,32 +131,16 @@ export function signinShape(rec: SourceRecord, url: string | null,
 }
 
 /**
- * Whether a source's vendor sign-in is switched on: the control record's switch for it
- * (`signins`), or else its record's verdict on the vendor's terms for hosted use (on only
- * when `allowed`).
+ * The served records whose vendor sign-in `control` switches on, sorted: each its switch
+ * (`signins`), else its record's verdict on the vendor's terms for hosted use (on only when
+ * `allowed`); none without a record, since a switch is never taken as on unless a record says
+ * so (the owner's object with no copy kept, `owner/src/signins.ts` `switchedOn`; the doors'
+ * list on any read but a fresh one, `doors/src/app.ts`).
  */
-export function signinOn(rec: SourceRecord,
-                         switches: Readonly<Record<string, boolean>> | null): boolean {
-  const login = rec.cli?.login;
-  return login !== undefined
-    && (switches?.[rec.id] ?? login.hosted_use.verdict === "allowed");
-}
-
-/** The served records whose sign-in is switched on, sorted. */
-export function signinsOn(sources: Sources,
-                          switches: Readonly<Record<string, boolean>> | null): string[] {
-  return sources.ids().filter((id) => signinOn(sources.get(id)!, switches)).sort();
-}
-
-/**
- * The served records whose sign-in the control record, as read, switches on, for the owner's
- * object to keep: its `signins` when it reads well formed, each record's verdict when there is
- * none, and none at all when it is malformed (fail-closed: a switch is never taken as on
- * unless the record says so); no list (`undefined`) when it was not read fresh, so the object
- * keeps its own and starts no sign-in (`FRESH_ONLY`).
- */
-export function signinsRead(sources: Sources, read: ControlRead): string[] | undefined {
-  return read.kind === "kept" || read.kind === "unreadable" ? undefined
-    : read.kind === "read" ? signinsOn(sources, read.control.signins)
-      : read.kind === "missing" ? signinsOn(sources, null) : [];
+export function signinsOn(sources: Sources, control: Control | null): string[] {
+  return control === null ? [] : sources.ids().filter((id) => {
+    const login = sources.get(id)!.cli?.login;
+    return login !== undefined
+      && (control.signins?.[id] ?? login.hosted_use.verdict === "allowed");
+  }).sort();
 }

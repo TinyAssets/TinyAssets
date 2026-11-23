@@ -632,12 +632,12 @@ export class Runs {
   }
 
   /**
-   * Whether `engine`'s vendor sign-in is switched on (the control record, as the binder last
-   * handed it, kept: `switchedOn` reads no time when none is handed): a run never uses a
-   * switched-off source's vendor login.
+   * Whether `engine`'s vendor sign-in is switched on by the control record the object keeps
+   * (`switchedOn`, none with no record kept): a run never uses a switched-off source's vendor
+   * login.
    */
   #signinOn(engine: string): boolean {
-    return switchedOn(this.#storage, undefined, 0).has(engine);
+    return switchedOn(this.#storage)?.has(engine) === true;
   }
 
   get #sql(): OwnerStorage["sql"] {

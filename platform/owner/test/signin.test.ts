@@ -14,13 +14,15 @@ import { staleRefusal } from "../../contract/src/control";
 import { until } from "../../ci/workerd";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import { WriteGate } from "../src/gate";
-import { NO_CODE_WANTED, NO_SIGNIN, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins";
+import {
+  NO_CODE_WANTED, NO_SIGNIN, SIGNIN_LIVE, SIGNIN_OFF, SIGNIN_UNREAD, Signins,
+} from "../src/signins";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
   defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, whileOut,
 } from "./runs-support";
-import { drainDue, failure, gateFor } from "./support";
+import { drainDue, failure, gateFor, OPEN_RECORD, signinRecord } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
@@ -525,29 +527,49 @@ describe("a sign-in's deadline", () => {
 describe("the per-source switch, in the owner's object", () => {
   it("refuses a sign-in to a source switched off, whatever door asks", async () => {
     const r = await gated();
-    expect((await failure(() => r.stub.signinStart(r.bind({ signins: ["claude-code"] }),
-                                                   { engine: "gemini" }))).message)
+    expect((await failure(() => r.stub.signinStart(
+      r.bind({ control: signinRecord(["claude-code"]) }), { engine: "gemini" }))).message)
       .toBe(SIGNIN_OFF);
     expect((await recorder(r.stub)).signins).toEqual([]);
   });
 
-  it("starts no sign-in on switches not read fresh, the doors' kept copy, for a while",
+  it("starts no sign-in on a record not read fresh, the doors' kept copy, for a while",
      async () => {
     const r = await gated();
-    // A door that hands none was served from a kept copy: on or off, the sign-in waits.
+    // A door that hands no record was served from a kept copy: on or off, the sign-in waits.
+    const { control: _handed, ...stale } = r.bind();
     for (const engine of ["claude-code", "gemini"]) {
-      const failed = await failure(() => r.stub.signinStart(r.bind({ signins: undefined }),
-                                                           { engine }));
+      const failed = await failure(() => r.stub.signinStart(stale, { engine }));
       expect([failed.code, failed.message])
         .toEqual(["unavailable", staleRefusal("signin").message]);
     }
     expect((await recorder(r.stub)).signins).toEqual([]);
   });
 
-  it("always lets a source switched off be signed out, the switches fresh or not", async () => {
-    for (const signins of [[], undefined]) {
+  it("switches every sign-in off while the object keeps no record, and says so", async () => {
+    const r = await gated();
+    // The doors found none (a missing or malformed record): the object drops its copy, and
+    // Claude Code, which its record's verdict allows, is no more on than any other.
+    const none = r.bind({ control: null });
+    for (const engine of ["claude-code", "codex"]) {
+      const failed = await failure(() => r.stub.signinStart(none, { engine }));
+      expect([failed.code, failed.message]).toEqual(["signin_off", SIGNIN_UNREAD]);
+    }
+    expect(await r.sql("SELECT text FROM control_kept")).toEqual([]);
+    expect((await recorder(r.stub)).signins).toEqual([]);
+    // A record read again switches its sources back on.
+    expect(await r.stub.signinStart(r.bind({ control: OPEN_RECORD }), { engine: "claude-code" }))
+      .toMatchObject({ engine: "claude-code", mode: "in", state: "starting" });
+  });
+
+  it("always lets a source switched off be signed out, the record fresh, kept or none",
+     async () => {
+    for (const handed of ["fresh", "none", "kept"] as const) {
       const r = await gated();
-      expect(await r.stub.signinStart(r.bind({ signins }), { engine: "codex", mode: "out" }))
+      const { control: _handed, ...kept } = r.bind();
+      const binding = handed === "kept" ? kept
+        : r.bind({ control: handed === "fresh" ? signinRecord([]) : null });
+      expect(await r.stub.signinStart(binding, { engine: "codex", mode: "out" }))
         .toMatchObject({ engine: "codex", mode: "out", state: "starting" });
     }
   });
@@ -555,15 +577,18 @@ describe("the per-source switch, in the owner's object", () => {
   it("takes no pasted code once the source is switched off", async () => {
     const r = await gated();
     const { id } = await begun(r, "claude-code", [{ state: "open", url: CLAUDE_PAGE }]);
-    expect((await failure(() => r.stub.signinCode(r.bind({ signins: [] }),
+    expect((await failure(() => r.stub.signinCode(r.bind({ control: signinRecord([]) }),
                                                   { id, code: "abc#def" }))).message)
       .toBe(SIGNIN_OFF);
+    expect((await failure(() => r.stub.signinCode(r.bind({ control: null }),
+                                                  { id, code: "abc#def" }))).message)
+      .toBe(SIGNIN_UNREAD);
     expect((await recorder(r.stub)).codes).toEqual([]);
   });
 
   it("never runs on a switched-off source's vendor login, named or by auto", async () => {
     const r = await gated();
-    const off = r.bind({ signins: ["claude-code"] });
+    const off = r.bind({ control: signinRecord(["claude-code"]) });
     await defineAgent(r.stub, off, "coder", { engine: "codex",
                                               credential: "vendor_login_in_sandbox",
                                               scopes: [] });
@@ -582,8 +607,8 @@ describe("the per-source switch, in the owner's object", () => {
     await defineAgent(r.stub, off, "main", { engine: "auto", scopes: [] });
     expect((await failure(() => ownerRun(r.stub, off, undefined, "main"))).message)
       .toBe(NO_SOURCE);
-    // Switched on (the binder hands it), the same agent runs on the vendor's login.
-    const on = r.bind({ signins: ["claude-code", "codex"] });
+    // Switched on (the record the binder hands), the same agent runs on the vendor's login.
+    const on = r.bind({ control: signinRecord(["claude-code", "codex"]) });
     expect((await ownerRun(r.stub, on, undefined, "coder")).start)
       .toMatchObject({ engine: "codex", credential: "vendor_login_in_sandbox" });
   });
@@ -597,8 +622,9 @@ describe("the runs lane's own read of the switches", () => {
                                                               at: Date.now() / 1000 + 3600 });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
-    // A door call that hands no list (`signins` undefined) syncs the schedule to the row.
-    await r.stub.fileMkdir(r.bind({ signins: undefined }),
+    // A door call that hands no record (one not read fresh) syncs the schedule to the row.
+    const { control: _handed, ...unread } = r.bind();
+    await r.stub.fileMkdir(unread,
                            { path: `/workspace/d-${crypto.randomUUID()}`, expected_etag: null });
     await drainDue(r.stub);
     return (await recorder(r.stub)).starts;

@@ -23,23 +23,21 @@
  * sign-in's fixed states (`SIGNIN_STATES`), the record's own URL and code (`signinShape`,
  * again here, outside the VM), and a refusal's fixed reason (`SIGNIN_REFUSALS`).
  *
- * Each source's sign-in sits behind its own switch: the served records whose
- * sign-in the platform's control record switches on, as the binder hands them with every
- * call (`Binding.signins`), kept for the runs the object's own lane starts
- * (`platform_signins`). None kept, none is on.
+ * Each source's sign-in sits behind its own switch: the served records whose sign-in the
+ * control record the object keeps (`control_kept`, its one copy: `control-gate.ts`) switches
+ * on (`switchedOn`). No record kept, none is on.
  */
 import { AUTHORITY, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
+import { bundledSources } from "../../sources/src/catalog";
 import { servedRecord, signsIn } from "../../sources/src/served";
 import {
-  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
+  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape, signinsOn,
 } from "../../sources/src/signin";
 
-import { staleRefusal } from "../../contract/src/control";
+import { controlOf, SqlKeeper, staleRefusal } from "../../contract/src/control";
 import { Refusal } from "../../contract/src/refusal";
-import {
- ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
-} from "../../contract/src/limits";
+import { LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { OWNER } from "./authority";
 import type { OwnerStorage } from "./gate";
 import { isPrintable } from "../../contract/src/text";
@@ -65,6 +63,12 @@ import type { SandboxSignin } from "../../contract/src/sandbox";
 export const SIGNIN_LIVE = "signin_live: a sign-in is already in progress in that sandbox";
 /** No live sign-in of that id: it ended, or never was. */
 export const NO_SIGNIN = "no such sign-in";
+/**
+ * Every source while the object keeps no control record (`switchedOn`): a switch is never
+ * taken as on unless a record says so, as no run is admitted without its tiers (`TIER_UNREAD`).
+ */
+export const SIGNIN_UNREAD = "signin_off: no sign-in is switched on while the platform's " +
+  "control record is not known here";
 /** A source whose sign-in the platform's control record has switched off. */
 export const SIGNIN_OFF = "signin_off: signing in to this source inside a sandbox is switched " +
   "off until its vendor's terms for hosted use are verified";
@@ -330,33 +334,23 @@ function pastedCode(value: unknown): string {
 }
 
 /**
- * In a unit: the served records whose sign-in is switched on, as the binder handed them
- * (`Binding.signins`), kept (written only when they changed) for the runs the lane starts;
- * a door that handed none reads the kept ones. None kept, none is on: a switch is never
- * taken as on unless the control record, as the doors read it, says so.
+ * The served records whose vendor sign-in the control record the object keeps switches on
+ * (`control_kept`, `signinsOn`), or null when it keeps none, and then none is on. A read.
  */
-export function switchedOn(storage: OwnerStorage, handed: unknown, now: number): Set<string> {
-  const sql = storage.sql;
-  const kept = sql.exec<{ engines: string }>("SELECT engines FROM platform_signins")
-    .toArray()[0];
-  if (handed === undefined) {
-    return new Set(kept === undefined || kept.engines === "" ? [] : kept.engines.split(","));
+export function switchedOn(storage: OwnerStorage): Set<string> | null {
+  const kept = new SqlKeeper(storage.sql).kept();
+  return kept === null ? null : new Set(signinsOn(bundledSources(), controlOf(kept.text)));
+}
+
+/** `engine`'s sign-in refused unless it is switched on (`switchedOn`). */
+function requireOn(storage: OwnerStorage, engine: string): void {
+  const on = switchedOn(storage);
+  if (on === null) {
+    throw new Refusal("signin_off", SIGNIN_UNREAD);
   }
-  if (!Array.isArray(handed) || handed.length > ENGINE_SIGNINS
-      || !handed.every((id) => typeof id === "string" && signsIn(servedRecord(id)))) {
-    throw new Refusal("invalid", "the switched-on sign-ins are served records that sign in");
+  if (!on.has(engine)) {
+    throw new Refusal("signin_off", SIGNIN_OFF);
   }
-  const engines = [...new Set(handed as string[])].sort().join(",");
-  if (engines.length > SIGNIN_LIST_CHARS) {
-    throw new Refusal("invalid",
-                      `the switched-on sign-ins are at most ${SIGNIN_LIST_CHARS} characters`);
-  }
-  if (kept?.engines !== engines) {
-    sql.exec("INSERT INTO platform_signins (only, engines, read_at) VALUES (1, ?, ?) " +
-               "ON CONFLICT (only) DO UPDATE SET engines = excluded.engines, " +
-               "read_at = excluded.read_at", engines, now);
-  }
-  return new Set(engines === "" ? [] : engines.split(","));
 }
 
 /** The authority a sign-in is for: the owner's own sandbox, or one client's. */
@@ -440,14 +434,14 @@ export const signinsDoors = Object.freeze({
       if (mode !== "in" && mode !== "out") {
         throw new Refusal("invalid", "a sign-in's mode is in or out");
       }
-      // A sign-in sits behind its source's switch, read fresh (a binding that hands no
-      // switches was served from a kept copy); a sign-out never does, so a login is always
-      // removable.
-      if (mode === "in" && binding.signins === undefined) {
-        throw staleRefusal("signin");
-      }
-      if (mode === "in" && !switchedOn(o.storage, binding.signins, clock()).has(rec.id)) {
-        throw new Refusal("signin_off", SIGNIN_OFF);
+      // A sign-in sits behind its source's switch, read fresh (a binding that hands no record
+      // was served from a kept copy; one that does, the bind kept); a sign-out never does, so
+      // a login is always removable.
+      if (mode === "in") {
+        if (binding.control === undefined) {
+          throw staleRefusal("signin");
+        }
+        requireOn(o.storage, rec.id);
       }
       const authority = signinAuthority(r["authority"]);
       if (authority !== OWNER && !o.grants.live(authority)) {
@@ -543,12 +537,10 @@ export const signinsDoors = Object.freeze({
    */
   async signinCode(o: SigninsDoorNeeds, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
     const { row, code } = await o.door(() => {
-      const { binding, r } = door.check();
+      const { r } = door.check();
       const code = pastedCode(r["code"]);
       const row = o.signins.wantsCode(r["id"], clock());
-      if (!switchedOn(o.storage, binding.signins, clock()).has(row.engine)) {
-        throw new Refusal("signin_off", SIGNIN_OFF);
-      }
+      requireOn(o.storage, row.engine);
       return { row, code };
     });
     return o.sandbox.signinInput({ authority: row.authority, id: row.id, code });

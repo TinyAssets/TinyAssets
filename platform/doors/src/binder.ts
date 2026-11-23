@@ -41,8 +41,6 @@ import { FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, ownerIssuer,
 import type { DoorsEnv } from "./env";
 import { APP_RESOURCE, MCP_RESOURCE } from "../../contract/src/identity";
 import { type ControlRead, freshRecord } from "../../contract/src/control";
-import type { Sources } from "../../sources/src/schema";
-import { signinsRead } from "../../sources/src/signin";
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
@@ -273,18 +271,15 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
 /**
  * An account's or an inbound event's binding with the platform control record as the doors
  * read it to gate the call (`control.ts`): the record itself (`freshRecord`; null for none or
- * a malformed one, and the object then drops its copy, `admission.ts`), which the object keeps
- * as its one copy and reads its tier numbers from, and the served records whose vendor
- * sign-in is switched on (`signinsRead`, of the catalog the doors serve, the `sources`
- * route's own), which the object's sign-in doors and its runs' admission hold to. No request
- * names either. A record served from the doors' kept copy hands neither (`FRESH_ONLY`): the
- * object keeps its own and starts no sign-in. Both kinds' parsers take the two as the doors
- * read them, so the binding stays its kind.
+ * a malformed one, and the object then drops its copy), which the object keeps as its one copy
+ * and reads its tier numbers and its switched-on sign-ins from (`admission.ts`,
+ * `signins.ts`). No request names it. A record served from the doors' kept copy hands none
+ * (`FRESH_ONLY`): the object keeps its own and starts no sign-in. Both kinds' parsers take it
+ * as the doors read it, so the binding stays its kind.
  */
 export function withAccount<B extends AccountBinding | InboundBinding>(
-    { binding, stub }: Bound<B>, read: ControlRead, sources: Sources): Bound<B> {
-  return { binding: { ...binding, ...handed(read), signins: signinsRead(sources, read) },
-           stub };
+    { binding, stub }: Bound<B>, read: ControlRead): Bound<B> {
+  return { binding: { ...binding, ...handed(read) }, stub };
 }
 
 /** The record a binding carries for `read` (`freshRecord`), or none when it was not fresh. */

@@ -2,8 +2,8 @@
  * The platform's gates, as code mode's calls read them in the object.
  *
  * The doors read the control record (`contract/src/control.ts`, its own `CONTROL` namespace)
- * once per request (`doors/src/control.ts`), and hand the record read fresh and its
- * switched-on sign-ins in the binding (`doors/src/binder.ts`, `withAccount`). A `code` call
+ * once per request (`doors/src/control.ts`), and hand the record read fresh in the binding
+ * (`doors/src/binder.ts`, `withAccount`). A `code` call
  * then runs its script's tool calls in the object for as long as its caller waits, so the
  * object reads the same record again at each of them, with the doors' own rules: an outside
  * client's calls need outside access on and the maintenance gate to admit its owner
@@ -16,15 +16,13 @@
  *
  * Each read keeps its copy in the object's own SQLite (`objectKeeper`), which serves it when
  * KV can't be read, as the doors' keeper serves theirs. It is the object's one copy: the
- * record a binding hands is kept there too (`owner-do.ts`, its bind), and the tier numbers are
- * read from it (`admission.ts`).
+ * record a binding hands is kept there too (`owner-do.ts`, its bind), and the tier numbers and
+ * the switched-on sign-ins are read from it (`admission.ts`, `signins.ts`).
  */
 import {
   type ControlKeeper, type ControlRead, type ControlStore, MAINTENANCE, OUTSIDE_OFF,
   outsideOpen, ownerOpen, readControl, SqlKeeper,
 } from "../../contract/src/control";
-import { bundledSources } from "../../sources/src/catalog";
-import { signinsRead } from "../../sources/src/signin";
 import { clockMs } from "./clock";
 import type { OwnerStorage, Write } from "./gate";
 
@@ -54,7 +52,8 @@ export class ControlGate {
     this.#keeper = keeper;
   }
 
-  async #read(): Promise<ControlRead> {
+  /** The record as read (`readControl`), its copy kept, so the object's tiers and switches move. */
+  async read(): Promise<ControlRead> {
     const now = clockMs();
     if (this.#last === null || now - this.#last.at >= CONTROL_FRESH_MS) {
       this.#last = { at: now, read: await readControl(this.#store, this.#keeper) };
@@ -64,21 +63,10 @@ export class ControlGate {
 
   /** Why the gate refuses `owner`'s call now, or null when it admits it. */
   async refusal(gate: Gate, owner: string): Promise<string | null> {
-    const read = await this.#read();
+    const read = await this.read();
     if (gate === "outside") {
       return outsideOpen(read, owner) ? null : OUTSIDE_OFF;
     }
     return ownerOpen(read, owner) ? null : MAINTENANCE;
-  }
-
-  /**
-   * The served records whose vendor sign-in is switched on, by the doors' own rule
-   * (`signinsRead`), for the runs lane: a record that reads well
-   * formed gives its `signins` (else each record's cited verdict); none at all, the verdicts,
-   * as the doors hand them; a record that is malformed, none (fail-closed); one not read
-   * fresh, no list, so the lane keeps the one it holds.
-   */
-  async signins(): Promise<string[] | undefined> {
-    return signinsRead(bundledSources(), await this.#read());
   }
 }
