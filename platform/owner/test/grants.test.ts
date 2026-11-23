@@ -956,8 +956,9 @@ describe("a grant's tool profile", () => {
       const refused = await failure(() => r.stub.grantSet(r.session(null), {
         client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
         expected_revision: renamed.revision, name: "", profile: profile as never }));
-      expect([refused.code, refused.message])
-        .toEqual(["invalid", "a grant's profile is one of directory, custom"]);
+      expect([refused.code, refused.message]).toEqual(["invalid", typeof profile === "string"
+        ? "a grant's profile is one of directory, custom"
+        : "invalid policy request: profile is a string"]);
     }
   });
 
@@ -993,8 +994,9 @@ describe("a grant's tool profile", () => {
       const refused = await failure(() => r.stub.grantSet(r.session(null), {
         client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
         expected_revision: renamed.revision, name: "", profile: profile as never }));
-      expect([refused.code, refused.message])
-        .toEqual(["invalid", "a grant's profile is one of directory, custom"]);
+      expect([refused.code, refused.message]).toEqual(["invalid", typeof profile === "string"
+        ? "a grant's profile is one of directory, custom"
+        : "invalid policy request: profile is a string"]);
     }
   });
 

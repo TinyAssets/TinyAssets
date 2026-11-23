@@ -62,7 +62,7 @@ describe("the inbox digest", () => {
     for (const after of [0, "0".repeat(64)]) {
       expect((await failure(() => r.stub.inboxDigest(r.bind(MUSE), { limit: 10,
                                                                     after } as never))).code)
-        .toBe("cursor_invalid");
+        .toBe(after === 0 ? "invalid" : "cursor_invalid");
     }
     // Mail is since its own acknowledged cursor.
     await r.ack(MUSE, first.mail.messages.at(-1)!.seq);
@@ -358,7 +358,7 @@ describe("the board digest", () => {
     for (const after of ["0".repeat(64), altered, pulled, 0]) {
       expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), { limit: 1,
                                                                     after } as never))).code)
-        .toBe("cursor_invalid");
+        .toBe(after === 0 ? "invalid" : "cursor_invalid");
     }
     for (const bad of [{ limit: 0 }, { limit: 1, head_chars: -1 }, {}]) {
       expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), bad as never))).code)

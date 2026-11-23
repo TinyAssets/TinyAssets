@@ -76,7 +76,8 @@ describe("a directory", () => {
       .toBe("not_found: no such directory");
     for (const limit of [0, 1001, 1.5]) {
       expect((await failure(() => r.stub.fileList(r.bind(null), { dir: W, limit }))).message)
-        .toBe("limit is a whole number from 1 to 1000");
+        .toBe(limit === 1.5 ? "invalid file request: limit is an integer"
+          : "limit is a whole number from 1 to 1000");
     }
   });
 });
