@@ -32,7 +32,7 @@ import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts"
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
 import { EGRESS_HOST, EGRESS_ORIGIN } from "../../contract/src/egress.ts";
-import { HOST, ORIGIN } from "../../contract/src/identity.ts";
+import { appPage, HOST, ORIGIN } from "../../contract/src/identity.ts";
 import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
@@ -731,9 +731,10 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.locator(".message.good", { hasText: "Saved." }).waitFor();
   assert.equal(await page.locator("section", { hasText: "Code mode" }).getByRole("checkbox")
     .isChecked(), true);
-  // No main agent has joined, so no wake-up is offered.
+  // No main agent has joined, so no wake-up is offered, and none asks to.
   await page.goto(`${ORIGIN}/app#apps`);
   await page.getByText("No main agent has joined yet.").waitFor();
+  await page.getByText("No app is asking.").waitFor();
   // "Every tool" holds every pick on, fixed, so no choice is silently dropped.
   const picks = page.locator("section", { hasText: "Tools your connected apps see" });
   assert.equal(await picks.getByRole("checkbox", { name: /Every tool/ }).isChecked(), true);
@@ -777,6 +778,64 @@ test("a connected app whose agent was deleted says so on its row, and its save n
   } finally {
     await page.unroute("**/app/api/grants", listed);
   }
+});
+
+test("a registration's page, where its approve_url and its notice lead, shows what it asks " +
+     "for and sends each answer by the card shown", { timeout: 60_000 }, async () => {
+  // No app connects in this harness, so the doors' cards, grants and notices are answered with
+  // one app's; each answer goes to the real doors, which hold no such card.
+  const client = { client: "c".repeat(64), source: "mcp", mode: "scoped", revision: 1,
+                   scopes: [{ universe: "work", agent: "main", capability: "read_graph" }],
+                   revoked_at: null, vendor: null, vendor_verified: 0, name: "Muse",
+                   profile: "custom", agent: "main", agent_live: true, first_seen: 0,
+                   last_seen: 0 };
+  const card = { card_id: `card_${"1".repeat(32)}`, digest: "d".repeat(64), client: client.client,
+                 family: "f".repeat(64), source_ref: "conn", filed_at: 1_700_000_000,
+                 request: { command_center_id: "work", display_name: "Muse Agent",
+                            delivery_method: "pull", recipe_id: null } };
+  const page_ = appPage("apps", card.card_id);
+  const fakes = [
+    ["**/app/api/registrations", { cards: [card] }], ["**/app/api/grants", { clients: [client] }],
+    ["**/app/api/notices", { notices: [{ seq: 1, at: card.filed_at, type: "agent_registration",
+      detail: `An app you connected asks to register an agent: approve or decline it at ${
+        page_}` }] }]];
+  const answered = fakes.map(([path, json]) => [path, (route) => route.fulfill({ json })]);
+  for (const [path, handler] of answered) {
+    await page.route(path, handler);
+  }
+  try {
+    // The notice on Home links to the card's page.
+    await page.goto(`${ORIGIN}/app#home`);
+    await page.getByRole("link", { name: page_ }).click();
+    await page.getByRole("heading", { name: "Agent registration" }).waitFor();
+    assert.equal(new URL(page.url()).hash, `#apps/${card.card_id}`);
+    const shown = page.locator(".card", { hasText: "Muse Agent" });
+    for (const line of ["asked by Muse", "Gets its mail by: pull", "Recipe: none",
+                        "Space: work", "What its app may do: read_graph in work as main"]) {
+      await shown.getByText(line, { exact: false }).waitFor();
+    }
+    for (const [button, path] of [["Apply", "registrations/apply"],
+                                  ["Decline", "registrations/decline"]]) {
+      const sent = page.waitForRequest((request) => request.url().endsWith(`/app/api/${path}`));
+      await shown.getByRole("button", { name: button }).click();
+      assert.deepEqual((await sent).postDataJSON(), { card_id: card.card_id,
+                                                      digest: card.digest });
+      await page.locator("#notice .message.bad",
+                         { hasText: "registration is not the pending card shown" }).waitFor();
+    }
+    // The list under Connected apps shows the same card.
+    await page.goto(`${ORIGIN}/app#apps`);
+    await page.locator("section", { hasText: "Agents asking to join" })
+      .locator(".card", { hasText: "Muse Agent" }).waitFor();
+  } finally {
+    for (const [path, handler] of answered) {
+      await page.unroute(path, handler);
+    }
+  }
+  // A page whose card no longer waits says so, with no answer to give.
+  await page.goto(appPage("apps", card.card_id));
+  await page.getByText(/^This registration is not waiting any more/).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Apply" }).count(), 0);
 });
 
 // -- Attacks on the app, kept as tests -----------------------------------------------------

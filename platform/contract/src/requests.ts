@@ -17,7 +17,7 @@ export interface DoorRequests {
   readonly roomPost: DoorFields<"room_id" | "client_message_id" | "body" | "parent_id">;
   readonly outsideAgents: DoorFields<never, "after">;
   readonly registerPropose:
-    DoorFields<"command_center_id" | "display_name" | "delivery_method" | "recipe_id">;
+    DoorFields<"display_name" | "delivery_method" | "recipe_id", "command_center_id">;
   readonly policyPropose: DoorFields<"change", "request_id">;
   readonly collectionGet: DoorFields<"collection" | "row_id", "body_offset" | "etag">;
   readonly collectionPull: DoorFields<"collection" | "after" | "limit">;
@@ -69,7 +69,7 @@ export interface DoorRequests {
   readonly registerAgent:
     | DoorFields<"card_id" | "digest">
     | DoorFields<"command_center_id" | "display_name" | "delivery_method" | "recipe_id">;
-  readonly registerProposal: DoorFields<"card_id">;
+  readonly registerDecline: DoorFields<"card_id" | "digest">;
   readonly disableAgent: DoorFields<"agent_id" | "reason">;
   readonly agentDoorbell:
     DoorFields<"agent_id" | "kind" | "subscription_id" | "board" | "rooms" | "blob" | "kid"
