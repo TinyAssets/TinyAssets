@@ -77,7 +77,7 @@ import {
 } from "./config";
 import { ORIGIN } from "../../contract/src/identity";
 import type { DoorsEnv } from "./env";
-import { answer, plain, redirect } from "./kit";
+import { Headed, plain, redirect } from "./kit";
 import { clearedConnectCookie, connectBound, connectCookie } from "./session";
 import { sealedSource } from "../../sources/src/check";
 import type { ConnectMethod, OAuthSpec, SourceRecord, Sources } from "../../sources/src/schema";
@@ -183,7 +183,7 @@ async function abandoned({ bound: { binding, stub } }: ConnectContext, connectio
 }
 
 /** `connections/key`: a pasted key, sealed and checked by the gateway, its blob committed. */
-async function connectKey(context: ConnectContext): Promise<Response> {
+async function connectKey(context: ConnectContext) {
   const { env, bound: { binding, stub }, sources } = context;
   const body = fields(context.body, ["source", "key"], ["display_name"]);
   const record = connectable(sources, body["source"], "api_key");
@@ -203,8 +203,8 @@ async function connectKey(context: ConnectContext): Promise<Response> {
     // The owner holds the key: nothing was issued here, so the connection is given up.
     return abandoned(context, connection, error);
   }
-  return answer(200, await stub.connectionCommit(binding, {
-    connection, version, blob, kid, models: [...verified.models], egress: verified.egress }));
+  return stub.connectionCommit(binding, {
+    connection, version, blob, kid, models: [...verified.models], egress: verified.egress });
 }
 
 /** The key, held to the gateway's own grammar: what it would refuse is refused here first. */
@@ -222,7 +222,7 @@ function pastedKey(key: unknown): string {
  * that URL and its header and scheme, its blob committed. Its source is the server's host,
  * which the owner reads it by.
  */
-async function connectConnector(context: ConnectContext): Promise<Response> {
+async function connectConnector(context: ConnectContext) {
   const { env, bound: { binding, stub } } = context;
   const body = fields(context.body, ["url", "key", "header", "scheme"], ["display_name"]);
   const key = pastedKey(body["key"]);
@@ -257,8 +257,8 @@ async function connectConnector(context: ConnectContext): Promise<Response> {
   } catch (error) {
     return abandoned(context, connection, error);
   }
-  return answer(200, await stub.connectionCommit(binding, {
-    connection, version, blob, kid, models: [...verified.models], egress: verified.egress }));
+  return stub.connectionCommit(binding, {
+    connection, version, blob, kid, models: [...verified.models], egress: verified.egress });
 }
 
 /** The provider's authorize URL for this flow: its record's endpoint and parameters, then ours. */
@@ -288,7 +288,7 @@ function authorizeUrl(record: SourceRecord, state: string, challenge: string): s
 }
 
 /** `connections/oauth`: a pending connection and its flow, in one door, bound to this browser. */
-async function beginOAuth(context: ConnectContext): Promise<Response> {
+async function beginOAuth(context: ConnectContext) {
   const { bound: { binding, stub }, sources } = context;
   const body = fields(context.body, ["source"], ["display_name"]);
   const record = connectable(sources, body["source"], "oauth");
@@ -299,10 +299,10 @@ async function beginOAuth(context: ConnectContext): Promise<Response> {
   const flow = prepared.flow!;
   // The binding lasts as long as the flow, in whole seconds (the object's are fractional).
   const life = Math.max(0, Math.floor(flow.expires_at - now()));
-  return answer(200, { connection: prepared.connection,
-                       authorize_url: authorizeUrl(record, flow.state, flow.code_challenge),
-                       expires_at: flow.expires_at },
-                { "Set-Cookie": connectCookie(flow.state, life) });
+  return new Headed({ connection: prepared.connection,
+                      authorize_url: authorizeUrl(record, flow.state, flow.code_challenge),
+                      expires_at: flow.expires_at },
+                    { "Set-Cookie": connectCookie(flow.state, life) });
 }
 
 function page(status: number, message: string): Response {
@@ -384,7 +384,7 @@ export async function connectCallback(request: Request, sources: Sources): Promi
  * `connections/oauth/finish`: the flow used up in its session, its code exchanged and
  * committed.
  */
-async function finishOAuth(context: ConnectContext): Promise<Response> {
+async function finishOAuth(context: ConnectContext) {
   const { env, bound: { binding, stub }, sources, request } = context;
   const body = fields(context.body, ["state", "code", "redirect_uri"]);
   const { state, code, redirect_uri: arrived } = body;
@@ -435,19 +435,19 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
   const view = await stub.connectionCommit(binding, {
     connection, version, blob, kid, models: [...verified.models], expires_at,
     egress: verified.egress });
-  return answer(200, view, { "Set-Cookie": clearedConnectCookie(state) });
+  return new Headed(view, { "Set-Cookie": clearedConnectCookie(state) });
 }
 
 /** `connections/revoke`: in the object first; its lane asks the provider. */
-async function revoke({ bound: { binding, stub }, body }: ConnectContext): Promise<Response> {
+async function revoke({ bound: { binding, stub }, body }: ConnectContext) {
   const { connection } = fields(body, ["connection"]);
-  return answer(200, await stub.connectionRevoke(binding, { connection: connection as string }));
+  return stub.connectionRevoke(binding, { connection: connection as string });
 }
 
 /** `connections/list`: every connection, never its blob. */
-async function list({ bound: { binding, stub }, body }: ConnectContext): Promise<Response> {
+async function list({ bound: { binding, stub }, body }: ConnectContext) {
   fields(body, []);
-  return answer(200, await stub.connectionList(binding));
+  return stub.connectionList(binding);
 }
 
 /**
@@ -477,13 +477,15 @@ export async function verifyDoorbell(env: DoorsEnv, owner: string, subscription:
   }
 }
 
-/** The connect routes, by their path under the owner surface. */
-export const CONNECT_ROUTES: Readonly<Record<string, (context: ConnectContext) =>
-    Promise<Response>>> = Object.freeze({
+/**
+ * The connect routes, by their path under the owner surface: each answers its value as JSON,
+ * or a response of its own (`app.ts` `Route`).
+ */
+export const CONNECT_ROUTES = Object.freeze({
   "connections/key": connectKey,
   "connections/connector": connectConnector,
   "connections/oauth": beginOAuth,
   "connections/oauth/finish": finishOAuth,
   "connections/revoke": revoke,
   "connections/list": list,
-});
+}) satisfies Readonly<Record<string, (context: ConnectContext) => Promise<unknown>>>;

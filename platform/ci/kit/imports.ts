@@ -90,14 +90,20 @@ export function owns(rules: ImportRules, path: string): boolean {
 /** A specifier that names a place, not a package: an absolute path or a URL. */
 const ABSOLUTE = /^(?:\/|file:|[a-z][a-z0-9+.-]*:\/\/)/i;
 
-/** Each way `source` (at `path` from `platform/`) breaks `rules`. */
+/**
+ * Each way `source` (at `path` from `platform/`) breaks `rules`. A banned name is the runtime's,
+ * so a type's own declaration (an interface, a type alias), which no runtime runs, names none:
+ * a tool's name there (the table's `fetch`) is data.
+ */
 export function isolationProblems(rules: ImportRules, path: string, source: string): string[] {
   const file = parse(path, source);
   const problems: string[] = [];
   const report = reporter(file, problems);
-  const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node)
-        || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+  const visit = (node: ts.Node, typed = false): void => {
+    typed ||= ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node);
+    if (!typed && (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)
+        || ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node)
+        || ts.isTemplateTail(node))) {
       for (const name of rules.banned) {
         const match = name.pattern.exec(node.text);
         if (match !== null && !(name.homes ?? []).includes(path)) {
@@ -121,7 +127,7 @@ export function isolationProblems(rules: ImportRules, path: string, source: stri
     } else if (ts.isImportTypeNode(node)) {
       report(node, "imports a type by path");
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => visit(child, typed));
   };
   visit(file);
   return problems;
@@ -322,12 +328,17 @@ function ownLayers(layer: Layer, ws: string, layers: readonly Layer[],
     && pattern.replaceAll("<ws>", ws).replaceAll("<worker>", ws).startsWith(`platform/${ws}/`)));
 }
 
+/** A script whose JSDoc types it (JavaScript), by its name. */
+const SCRIPT_DOCS = /\.[cm]?jsx?$/;
+
 /**
  * What a script names as a module, every way: each specifier, or null where it is computed.
  * TypeScript's own pre-processor reads the named ones (imports and re-exports, type ones
  * too, a type imported by path, `import()`, `require()`, `import x = require()` and
  * `/// <reference path>`, as its compiler finds them, at a fifth of a full parse's cost); a
- * script that calls `import(` or `require(` at all is parsed in full for those it computes.
+ * script that calls `import(` or `require(` at all is parsed in full for those it computes,
+ * and for the types a script's JSDoc imports by path (`@type {import("…").T}`), which the
+ * pre-processor does not read.
  */
 function specifiers(path: string, source: string): (string | null)[] {
   const named = ts.preProcessFile(source, true, true);
@@ -376,6 +387,15 @@ function specifiers(path: string, source: string): (string | null)[] {
       ? "computed" : null;
   };
   const visit = (node: ts.Node): void => {
+    if (ts.isImportTypeNode(node) && (node.flags & ts.NodeFlags.JSDoc) !== 0
+        && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
+      found.push(node.argument.literal.text);
+    }
+    // A script's JSDoc is its types; a TypeScript module's is prose.
+    for (const doc of SCRIPT_DOCS.test(path) ? (node as { jsDoc?: readonly ts.Node[] }).jsDoc
+      ?? [] : []) {
+      visit(doc);
+    }
     const how = ts.isCallExpression(node) ? loads(node.expression) : null;
     if (how !== null && ts.isCallExpression(node)) {
       const first = node.arguments[0];
