@@ -181,7 +181,10 @@ It never counts as "absent".
    custom rules answered and lack it, first among them, and set back to the expression the
    tree renders when it holds another, then read back. The zone's other rules are left as
    they are. They are read with the checks too, before any change, and **a deploy stops while
-   either is on**: its smoke and canary would be refused at the edge.
+   either is on**: its smoke and canary would be refused at the edge. They are the run's first
+   Cloudflare change, after WorkOS's (step 6), so a zone at its plan's count of custom rules (5
+   on Free) refuses one there and the run stops before any storage, secret or Worker, at most
+   one of them made, off: free a rule, then dispatch again.
 
    **Then the control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
@@ -518,10 +521,10 @@ It never counts as "absent".
 - **The edge kill: mode `edge`, or a rule's switch in the dashboard.** Two WAF custom rules on
   the zone, each a Block, which Cloudflare runs before any Worker, so they stop requests while
   the doors, KV, the Durable Objects and GitHub are all down. `TinyAssets kill: outside`
-  blocks the doors' outside paths on the doors' host (`/mcp`, `/api` and `/hooks/inbound/`,
-  the ones `outside=off` and `inbound=false` close) and leaves up your app, its sign-in and
+  blocks the doors' outside paths on the doors' host (the ones `edge_kill.outside` names,
+  which `outside=off` and `inbound=false` close) and leaves up your app, its sign-in and
   E2B's hook. `TinyAssets kill: all` blocks every doors path and the egress host, so running
-  sandboxes lose their way out too. `dark` and `routes` keep both off (step 5).
+  sandboxes lose their way out and E2B's lifecycle hook is refused too. `dark` and `routes` keep both off (step 5).
   - **From GitHub:** dispatch `edge` with `kill` set to `outside`, `all` or `none` (both off).
     The plan job names each rule it turns on or off, or makes if the zone lacks it; the apply
     job turns the asked one on before the other off, then reads both back. It turns one on

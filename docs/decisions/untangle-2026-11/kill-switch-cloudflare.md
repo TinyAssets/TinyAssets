@@ -141,6 +141,11 @@ tree. No call reached Cloudflare's API.
   router's paths are `identity.json`'s.
 - Left, a decided keep: the rule that a kill turns on only while the doors are routed is a
   requirement (the old stack serves those paths on the zone), not a special case.
+- Fix (review): `edgeKept` was after the Workers, so a zone at its plan's count of custom
+  rules refused the first rule the kit lacked after every storage, secret and Worker change.
+  It is the run's first Cloudflare change now (after WorkOS's, which precedes them all); the
+  kit reads no plan limit, so the stop is Cloudflare's refusal, at most one rule made, off,
+  before it.
 - Special cases added: none beyond those; `enabled` absent reads as on, as Cloudflare runs it.
 
 ## Behaviour changed on purpose

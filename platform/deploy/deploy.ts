@@ -13,7 +13,7 @@
  *   node --experimental-strip-types platform/deploy/deploy.ts keyring-retire <file>
  *
  * - `plan`: `dark`'s checks and plan, never a change.
- * - `dark`: storage, secrets and every Worker with no public route, the edge kill's rules (off),
+ * - `dark`: the edge kill's rules (off), storage, secrets and every Worker with no public route,
  *   the control record when absent, the WorkOS redirect URI and E2B's lifecycle webhook
  *   (disabled), then the handles canary.
  * - `routes`: on a host under the zone, its DNS record; then `dark`, then the doors' routes
@@ -2295,7 +2295,8 @@ const edgeRead = step<"cloudflare" | "zone">(async (_ctx, got) => {
 /**
  * A deploy's edge kill: both rules off, as the tree renders them (`setEdge`), from the zone's
  * custom rules read again here (`edgeOff`), so a rule turned on since the run began is never
- * turned off.
+ * turned off. Its run's first Cloudflare change, so a zone at its plan's count of custom rules
+ * refuses it before any storage, secret or Worker changes.
  */
 const edgeKept = step<"cloudflare" | "zone">(async (ctx, got) => {
   await setEdge(ctx, got, await edgeOff(got), "none");
@@ -3659,15 +3660,15 @@ const READS = Steps.none.then(locks).then(zone).then(upstream).then(e2b).then(te
   .then(pairReady).then(hookListed).then(edgeRead);
 
 /**
- * A dark run: the checks and WorkOS's, then storage, secrets, the rollout record, Workers, the
- * edge kill's rules (off) and the control record.
+ * A dark run: the checks and WorkOS's, then the edge kill's rules (off), storage, secrets, the
+ * rollout record, Workers and the control record.
  */
-const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(namespaces).then(buckets)
-  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(routedNow)
-  .then(workers).then(retired).then(edgeKept).then(control).then(hookLater(""));
-const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
+const DARK_LATER = READS_LATER.then(redirectLater).then(authorize).then(edgeKept)
+  .then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged).then(secretsLater)
+  .then(rollout).then(routedNow).then(workers).then(retired).then(control).then(hookLater(""));
+const DARK = READS.then(redirect).then(authorize).then(edgeKept).then(namespaces).then(buckets)
   .then(bucketLocks).then(queues).then(staged).then(secrets).then(rollout).then(routedNow)
-  .then(workers).then(retired).then(edgeKept).then(control).then(hook(false, ""));
+  .then(workers).then(retired).then(control).then(hook(false, ""));
 
 /**
  * A routes run: the route plan read and its record kept before the first change, then the
@@ -3676,12 +3677,12 @@ const DARK = READS.then(redirect).then(authorize).then(namespaces).then(buckets)
  */
 const ROUTED_HOOK = ", after the routes";
 const ROUTES_LATER = READS_LATER.then(routePlan).then(recordedLater).then(hostRecord)
-  .then(redirectLater).then(authorize).then(namespaces).then(buckets).then(bucketLocks)
-  .then(queues).then(staged).then(secretsLater).then(rollout).then(workers).then(retired)
-  .then(edgeKept).then(control).then(handOver).then(customDomain).then(hookLater(ROUTED_HOOK));
+  .then(redirectLater).then(authorize).then(edgeKept).then(namespaces).then(buckets)
+  .then(bucketLocks).then(queues).then(staged).then(secretsLater).then(rollout).then(workers)
+  .then(retired).then(control).then(handOver).then(customDomain).then(hookLater(ROUTED_HOOK));
 const ROUTED = READS.then(routePlan).then(recorded).then(hostRecord).then(redirect)
-  .then(authorize).then(namespaces).then(buckets).then(bucketLocks).then(queues).then(staged)
-  .then(secrets).then(rollout).then(workers).then(retired).then(edgeKept).then(control)
+  .then(authorize).then(edgeKept).then(namespaces).then(buckets).then(bucketLocks).then(queues)
+  .then(staged).then(secrets).then(rollout).then(workers).then(retired).then(control)
   .then(handOver).then(customDomain).then(hook(true, ROUTED_HOOK));
 
 /**

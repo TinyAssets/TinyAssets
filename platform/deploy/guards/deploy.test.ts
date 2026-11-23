@@ -277,6 +277,9 @@ interface WorldOptions {
   readonly refusingRules?: boolean;
 }
 
+/** How many custom rules the fake zone takes, as Cloudflare's Free plan does. */
+const FREE_RULES = 5;
+
 /** The edge kill's rules as a held zone holds them: as the tree renders them, `on` on. */
 const edgeHeld = (on: string | null = null): Json[] => EDGE_RULES.map((rule) => ({
   id: `rule-${rule.name}`, version: "1", ref: rule.ref, description: rule.description,
@@ -575,6 +578,9 @@ function world(options: WorldOptions = {}) {
       const { position, ...rule } = JSON.parse(body!) as Json;
       // Added first, as the kit asks: before every other rule.
       expect(position).toEqual({ before: "" });
+      if (custom.rules.length >= FREE_RULES) {
+        return json({ success: false, errors: [{ code: 20230, message: "rule limit" }] }, 400);
+      }
       custom.rules.unshift({ id: `added-${custom.rules.length}`, ...rule });
       return json({ success: true, result: { id: "rs", rules: custom.rules } });
     }
@@ -5121,15 +5127,14 @@ describe("the edge kill", () => {
     expect(rules(["/a*", "/b*"], ["/a*"], ["/b*"])).not.toThrow();
   });
 
-  it("is made off by a dark run on a zone with no custom rules, first and read back, then " +
-     "left as it stands", async () => {
+  it("is made off by a dark run on a zone with no custom rules, before any other Cloudflare " +
+     "change, first and read back, then left as it stands", async () => {
     const w = world();
     await runMode(w, "dark", ["--yes"]);
     const made = w.events.findIndex((event) => event === "cf POST /zones/z/rulesets");
-    // After the Workers, before the control record.
-    expect(made).toBeGreaterThan(w.events.findLastIndex((event) => event.startsWith("wrangler")));
-    expect(made).toBeLessThan(w.events.findIndex((event) =>
-      event.endsWith(`/values/${encodeURIComponent(CONTROL_KEY)}`)));
+    // The run's first Cloudflare change: a zone at its plan's count refuses it before any other.
+    expect(made).toBe(w.events.findIndex((event) => /^(cf (PUT|POST|PATCH|DELETE) |wrangler )/
+      .test(event)));
     expect(states(w)).toEqual({ outside: "block as rendered off", all: "block as rendered off" });
     expect(w.custom.rules.map((rule) => rule["description"])).toEqual(
       EDGE_RULES.map((rule) => rule.description));
@@ -5173,6 +5178,19 @@ describe("the edge kill", () => {
         expect([mode, w.events.filter((event) => CHANGE.test(event))]).toEqual([mode, []]);
       }
     }
+  });
+
+  it("stops a deploy loudly on a zone at its plan's count, before any storage, secret or " +
+     "Worker", async () => {
+    const own = Array.from({ length: FREE_RULES - 1 }, (_, at) => ({
+      id: `own-${at}`, ref: `own-${at}`, description: "the founder's", action: "block",
+      expression: `ip.src eq 192.0.2.${at}`, enabled: true }));
+    const w = world({ held: true, rules: own });
+    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+      `adding the custom rule ${ALL.description} failed (400`);
+    expect(w.events.filter((event) => CHANGE.test(event) && !event.startsWith("workos ")))
+      .toEqual(["cf POST /zones/z/rulesets/rs/rules", "cf POST /zones/z/rulesets/rs/rules"]);
+    expect(w.custom.rules.slice(1)).toEqual(own);
   });
 
   it("stops a deploy on a failed rulesets listing, never reading it as none", async () => {
@@ -5658,6 +5676,9 @@ const DARK_FRESH = [
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: registered`,
   `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}: it takes them, sending ` +
   "the browser to auth.test's sign-in",
+  ...EDGE_RULES.map((rule) => `make the edge kill rule "${rule.description}", off: a Block on ${
+    rule.expression}`),
+  "read the edge kill's rules back: both off, as the tree renders them",
   ...Object.entries(NAMESPACES).map(([binding, title]) =>
     `create the KV namespace ${title} (${binding})`),
   ...BUCKETS.map((name) => `create the R2 bucket ${name}`),
@@ -5672,9 +5693,6 @@ const DARK_FRESH = [
     "at it"),
   ...WORKERS.flatMap((worker, at) => [onceLine(worker, FIRST, true),
                                        readBack(worker, [MADE_ID(at + 1), 100])]),
-  ...EDGE_RULES.map((rule) => `make the edge kill rule "${rule.description}", off: a Block on ${
-    rule.expression}`),
-  "read the edge kill's rules back: both off, as the tree renders them",
   "write the control record closed (outside off, canary none, inbound off, the founder's " +
   "tier numbers): the API answered there is none",
   `E2B lifecycle webhook ${E2B_HOOK.url}: registered, disabled`,
