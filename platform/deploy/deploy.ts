@@ -2044,34 +2044,66 @@ function servesAs(now: readonly Serving[], want: readonly Serving[]): boolean {
 }
 
 /**
- * How long a deployment just made is read back for, and how often. Cloudflare's deployments
- * listing answered the gateway's deployment at 100%, which wrangler had just made, with the
- * deployment before it (run 45065434026, 2026-11-22), and listed it by the next run's plan;
- * its docs give the listing no read-after-write, only that a deployment "takes up to a few
- * seconds" to reach every location (`version-skew.mdx`).
+ * How long what a run just made in Cloudflare is read back for, and how often. Cloudflare's
+ * deployments listing answered the gateway's deployment at 100%, which wrangler had just made,
+ * with the deployment before it (run 45065434026, 2026-11-22), and listed it by the next run's
+ * plan; its versions API answered wrangler's read of codemode's version, just uploaded, that
+ * it held no such version (runs 45184403474 and 45184872714, 2026-11-23). Its docs give
+ * neither read-after-write, only that a deployment "takes up to a few seconds" to reach every
+ * location (`version-skew.mdx`).
  */
-const READ_BACK_MS = 60_000;
-const READ_BACK_EVERY_MS = 2_000;
+const READ_BACK: Bound = Object.freeze({ ms: 60_000, everyMs: 2_000 });
+
+/** How long a bounded read (`reread`) reads for, and how often. */
+interface Bound {
+  readonly ms: number;
+  readonly everyMs: number;
+}
 
 /**
- * The Worker `name`'s deployment read (`Cloudflare.deployment`) until Cloudflare lists it
- * serving exactly `want`, in its order, every `READ_BACK_EVERY_MS`; past `READ_BACK_MS` a
- * throw naming the last read-back, `stop` after it. It reads only: nothing is deployed again.
+ * `read` every `bound.everyMs` until its answer `holds`; past `bound.ms` a throw of `late`,
+ * given the last answer. It reads only: nothing is made again.
  */
-async function readBack(run: Run, { cloudflare, account }: Pick<Values, "cloudflare" | "account">,
-                        name: string, want: readonly Serving[], stop: string): Promise<void> {
-  const until = run.io.now().getTime() + READ_BACK_MS;
+async function reread<T>(run: Run, bound: Bound, read: () => Promise<T>,
+                         holds: (answer: T) => boolean, late: (answer: T) => string):
+    Promise<void> {
+  const until = run.io.now().getTime() + bound.ms;
   for (;;) {
-    const now = await cloudflare.deployment(account, name);
-    if (servesAs(now, want)) {
+    const answer = await read();
+    if (holds(answer)) {
       return;
     }
     if (run.io.now().getTime() >= until) {
-      throw new Error(`${name}'s deployment read back as ${sharesLine(now)}, not ${
-        sharesLine(want)}, ${READ_BACK_MS / 1000} s after it was made${stop}`);
+      throw new Error(late(answer));
     }
-    await run.io.sleep(READ_BACK_EVERY_MS);
+    await run.io.sleep(bound.everyMs);
   }
+}
+
+/**
+ * The Worker `name`'s deployment read (`Cloudflare.deployment`, `reread`) until Cloudflare
+ * lists it serving exactly `want`, in its order; then a throw naming the last read-back,
+ * `stop` after it.
+ */
+async function readBack(run: Run, { cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                        name: string, want: readonly Serving[], stop: string): Promise<void> {
+  await reread(run, READ_BACK, () => cloudflare.deployment(account, name),
+               (now) => servesAs(now, want), (now) => `${name}'s deployment read back as ${
+                 sharesLine(now)}, not ${sharesLine(want)}, ${READ_BACK.ms / 1000} s after ` +
+                 `it was made${stop}`);
+}
+
+/**
+ * The Worker `name`'s version `id`, just uploaded, read (`Cloudflare.listed`, `reread`) until
+ * Cloudflare's versions API holds it, so a deployment of it is never refused for a version
+ * not yet listed; then a throw naming it, `stop` after it, nothing deployed of it.
+ */
+async function uploaded(run: Run, { cloudflare, account }: Pick<Values, "cloudflare" | "account">,
+                        name: string, id: string, stop: string): Promise<void> {
+  await reread(run, READ_BACK, () => cloudflare.listed(account, name, id), (listed) => listed,
+               () => `Cloudflare's versions API did not list ${name}'s version ${id} ${
+                 READ_BACK.ms / 1000} s after its upload, so nothing deployed it (a Cloudflare ` +
+                 `incident? check cloudflarestatus.com, then run again)${stop}`);
 }
 
 /**
@@ -2095,8 +2127,8 @@ function deployLine(rolled: Rolled, setting: readonly Setting[], reach: Reach): 
 /**
  * Each Worker deployed, bound first, touching no route, each deployment read back
  * (`readBack`) before anything follows it. A first deploy (the account's Workers
- * listing lacked it: `rolled`) is `wrangler deploy`; later ones upload a version, then deploy
- * it through the stages (`platform.json` `stages`): at each share below 100 beside the version
+ * listing lacked it: `rolled`) is `wrangler deploy`; later ones upload a version, read until
+ * Cloudflare's versions API lists it (`uploaded`), then deploy it through the stages (`platform.json` `stages`): at each share below 100 beside the version
  * it serves (`rolled`), the new one listed first, so a Durable Object assigned it keeps it as
  * the share rises; then at 100%. Each is `wrangler versions deploy`, which leaves the Worker's
  * routes as they are and syncs the settings its config gives that no version carries
@@ -2136,6 +2168,7 @@ const workers = step<"cloudflare" | "account" | "wrangler" | "stage" | "setting"
       continue;
     }
     const id = versionOf(got.wrangler(["versions", "upload", ...flags]), "versions upload");
+    await uploaded(run, got, rolled.name, id, stop);
     const deploy = async (want: Serving[]) => {
       got.wrangler(["versions", "deploy", ...want.map((each) =>
         `${each.version}@${each.percentage}`), "--yes", "--config", config]);
@@ -3114,8 +3147,7 @@ const handOver = step<"cloudflare" | "zone" | "changes">(async ({ run, say }, go
  * it asks, and each request's limit: the stage's host had its own certificate about two
  * minutes after the attach (2026-11-22).
  */
-const ANSWER_MS = 10 * 60_000;
-const ANSWER_EVERY_MS = 15_000;
+const ANSWER: Bound = Object.freeze({ ms: 10 * 60_000, everyMs: 15_000 });
 const ANSWER_REQUEST_MS = 30_000;
 
 /**
@@ -3126,7 +3158,7 @@ const ANSWER_REQUEST_MS = 30_000;
 const customDomain = step<"cloudflare" | "zone" | "account" | "wrangler" | "stage" | "kept">(
   async ({ run, say, did }, got) => {
     say(`add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then ` +
-        `wait up to ${ANSWER_MS / 60_000} minutes for the egress door's refusal on it`);
+        `wait up to ${ANSWER.ms / 60_000} minutes for the egress door's refusal on it`);
     if (!run.apply) {
       return;
     }
@@ -3175,33 +3207,28 @@ export async function egressRefusal(answer: Response): Promise<boolean> {
 }
 
 /**
- * The egress door's refusal on its host, asked every `ANSWER_EVERY_MS` until it answers, or a
- * throw past `ANSWER_MS` naming the last failure. fetch checks the certificate for the host;
+ * The egress door's refusal on its host, asked (`reread`, `ANSWER`) until it answers, or a
+ * throw naming the last failure. fetch checks the certificate for the host;
  * `Connection: close` makes each attempt a fresh connection, its name resolved again (undici
  * keeps an answered socket for the next request otherwise), as the canary's process is.
  */
 async function answering(run: Run): Promise<string> {
   const url = `https://${EGRESS_HOST}/`;
-  const until = run.io.now().getTime() + ANSWER_MS;
-  for (;;) {
-    let failed: string;
+  /** Its failure, or null once it answers with the refusal. */
+  const ask = async (): Promise<string | null> => {
     try {
       const answer = await run.io.fetch(url, { redirect: "manual", headers: { Connection: "close" },
                                                signal: AbortSignal.timeout(ANSWER_REQUEST_MS) });
-      if (await egressRefusal(answer)) {
-        return `${url} answers with the egress door's refusal`;
-      }
-      failed = `HTTP ${answer.status}, not the egress door's refusal`;
+      return await egressRefusal(answer) ? null
+        : `HTTP ${answer.status}, not the egress door's refusal`;
     } catch (error) {
-      failed = fetchFailure(error);
+      return fetchFailure(error);
     }
-    if (run.io.now().getTime() >= until) {
-      throw new Error(`${url} did not answer with the egress door's refusal within ${
-        ANSWER_MS / 60_000} minutes of the custom domain's attach: ${failed}. Run routes ` +
-        "again once it does");
-    }
-    await run.io.sleep(ANSWER_EVERY_MS);
-  }
+  };
+  await reread(run, ANSWER, ask, (failed) => failed === null, (failed) =>
+    `${url} did not answer with the egress door's refusal within ${ANSWER.ms / 60_000} ` +
+    `minutes of the custom domain's attach: ${failed}. Run routes again once it does`);
+  return `${url} answers with the egress door's refusal`;
 }
 
 /**
