@@ -424,6 +424,7 @@ function routes() {
     "agent/status": { door: "agentStatus" },
     "agent/cancel": { door: "agentCancel" },
     "runs": { door: "runList" },
+    "agent/model": { door: "agentModel" },
     "signin/start": { door: "signinStart" },
     "signin/code": { door: "signinCode" },
     "signin/cancel": { door: "signinCancel" },

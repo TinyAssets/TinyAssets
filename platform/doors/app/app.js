@@ -459,6 +459,12 @@ async function agents(arg) {
          action("Make the agent", create, report)));
 }
 
+/** What `who`, a run of an agent, would be given now (`agent/model`): where, or why none. */
+function modelLine(who, preview) {
+  return h("p", { class: "muted" }, "refused" in preview ? `${who}: refused, ${preview.refused}`
+    : `${who}: ${preview.engine} (${preview.model}) on ${preview.place}.`);
+}
+
 /**
  * This page's conversation with one agent: its id once started, its live socket, its run, what
  * was said each way, the run's frames, the view showing them, and the next read of the run.
@@ -577,16 +583,34 @@ async function agent(name) {
         entry.kind === "file"
           ? h("a", { href: "#", onclick: (event) => {
               event.preventDefault();
-              edit(editor, entry.path, listFiles).catch(report);
+              edit(editor, entry.path, shown).catch(report);
             } }, entry.path.slice(agentDir(name).length + 1))
           : `${entry.path.slice(agentDir(name).length + 1)}/`,
         h("small", {}, `${bytes(entry.size)}, changed ${new Date(entry.mtime_ms).toLocaleString()}`)))));
   };
   const newFile = h("input", { type: "text", placeholder: "skills/notes/SKILL.md" });
+  const model = h("div", {});
+  const showModel = async () => {
+    // The read is the admission's: an agent it refuses (its agent.json not one) is refused
+    // to both runs, and the page stays, its files there to fix it.
+    const { attended, unattended } = await call("agent/model", { agent_id: name })
+      .catch((error) => {
+        if (!(error instanceof Refused)) {
+          throw error;
+        }
+        return { attended: { refused: error.message }, unattended: { refused: error.message } };
+      });
+    // An outside client's run picks by its own sandbox's sign-ins: not these.
+    fill(model, modelLine("A run you start now", attended),
+         modelLine("A run on your schedule, now", unattended));
+  };
+  // A saved agent.json can change the model its runs are given.
+  const shown = () => Promise.all([listFiles(), showModel()]);
 
   paint(turn,
        h("p", {}, h("a", { href: "#agents" }, "All agents")),
        h("h1", {}, name),
+       model,
        h("section", {},
          h("h2", {}, "Talk"),
          h("p", { class: "muted" }, TALK_NOTE),
@@ -601,7 +625,7 @@ async function agent(name) {
          files,
          h("div", { class: "row" }, newFile, action("New file", async () => {
            const path = `${agentDir(name)}/${newFile.value.trim().replace(/^\/+/, "")}`;
-           await edit(editor, path, listFiles, true);
+           await edit(editor, path, shown, true);
          }, report, { class: "quiet" })),
          editor));
   showSaid();
@@ -612,7 +636,7 @@ async function agent(name) {
   if (talk.conversation !== null) {
     watch(talk.conversation).catch(report);
   }
-  await listFiles();
+  await shown();
 }
 
 /** A file's text in an editor, saved against the etag it was read at. */
