@@ -277,9 +277,9 @@ interface ApiRow {
  * with a row (`egress-scope.ts` `upstream`). Each adapter sends every request through the
  * `fetch` it is handed (the gateway's meter test learns each API-key source's call with the
  * global `fetch` refusing), and an API gets a row only once its adapter does. Every other
- * API is refused as `invalid_source`: Bedrock signs with a Node HTTP handler outside `fetch`, and
- * `openai-codex-responses` is the legacy ChatGPT backend (Sign in with ChatGPT reaches only
- * `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
+ * API is refused as `invalid_source`: Bedrock signs with a Node HTTP handler outside
+ * `fetch`, and `openai-codex-responses` is the legacy ChatGPT backend (Sign in with ChatGPT
+ * reaches only `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
  * and per-session caches kept in module state.
  */
 const APIS = Object.freeze({
