@@ -36,13 +36,11 @@
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
-import { apiRules, type ApiRules, takesFetch } from "../../contract/src/api-rules";
+import { apiRules, type ApiRules } from "../../contract/src/api-rules";
 import { valueAtPath } from "../../contract/src/checks";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
 import type { Meter, Upstream } from "../../contract/src/egress-scope";
-
-import { within } from "./egress";
 
 /** The model id and output cap the learning run asks with: neither is any real value. */
 const MODEL_MARK = "ta-meter-model-0e7f";
@@ -96,14 +94,12 @@ async function run(catalog: Catalog, upstream: Upstream, apiKey: string, model: 
   const models = createModels({ authContext: NO_AMBIENT });
   models.setProvider(providerFor(catalog, upstream));
   const events: AssistantMessageEvent[] = [];
-  await within(respond, async () => {
-    const stream = models.streamSimple(model, context(), {
-      apiKey, maxTokens, maxRetries: 0, ...(takesFetch(upstream.api) ? { fetch: respond } : {}),
-    } as never);
-    for await (const event of stream) {
-      events.push(event);
-    }
-  });
+  const stream = models.streamSimple(model, context(), {
+    apiKey, maxTokens, maxRetries: 0, fetch: respond,
+  } as never);
+  for await (const event of stream) {
+    events.push(event);
+  }
   return events;
 }
 

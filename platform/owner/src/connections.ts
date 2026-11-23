@@ -155,9 +155,9 @@ interface ConnectionLimits {
 /**
  * Flows last 10 minutes and at most 10 are open; a refresh
  * starts 3 minutes before the access token expires (research §2.6); a lease outlasts the
- * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: the largest
- * built-in catalog of pi-ai 1.4.0 has 386 (the connections test finds it by a scan, and
- * holds `MODELS_JSON_MAX` to 1,024 of the largest built-in record).
+ * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: twice pi-ai's
+ * largest built-in catalog at least (the connections test finds it by a scan, and holds
+ * `MODELS_JSON_MAX` to 1,024 of the largest built-in record).
  */
 export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   maxConnections: 50,

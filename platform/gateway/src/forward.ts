@@ -42,7 +42,6 @@ import { taken } from "../../contract/src/handed";
 import { boundedJson } from "./answer";
 import { type GatewayCode, Refusal } from "../../contract/src/refusal";
 import { codeOf, failureResponse, upstreamCode } from "./failure";
-import { nativeFetch } from "./egress";
 import {
   aliased, apiRules, fallbackList, freeCall, manyChoices, paidTool, READS, servedPriced,
   tierMultiplier, unpricedOption,
@@ -452,7 +451,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   }
   let upstream: Response;
   try {
-    upstream = await nativeFetch(target, {
+    upstream = await fetch(target, {
       method: request.method, headers, body, redirect: "manual", signal,
     });
   } catch {
@@ -594,7 +593,7 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
   const target = new URL(url);
   let answer: Response;
   try {
-    answer = await nativeFetch(target, {
+    answer = await fetch(target, {
       method: "GET",
       headers: new Headers([[credential.upstream.auth.header, authValue(credential)],
                             ["accept", "application/json"]]),
@@ -677,7 +676,7 @@ async function sealedRead(env: KeyringEnv, bound: Binding, blob: unknown, url: s
   }
   let answer: Response;
   try {
-    answer = await nativeFetch(target, {
+    answer = await fetch(target, {
       method: "GET",
       headers: new Headers([[credential.upstream.auth.header, authValue(credential)],
                             ["accept", "application/json"]]),

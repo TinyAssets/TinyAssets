@@ -32,11 +32,11 @@
  * `WebSockets` capability, the owner app's hibernating sockets, `relay.ts`: connection state
  * in each socket's attachment and module-level `WeakMap`s keyed by the live socket, never
  * SQL; it imports `capnweb`, whose transport the binder's upgrade shape never selects), pinned
- * here by version
- * and lockfile integrity (agents 0.32.0, source-read 2026-10-31: its Lifecycle chunk is
- * byte-identical to 0.31.0's); PiHarness is not loaded. Its module-level state, which objects sharing
- * an isolate share, holds no owner's data: `WeakMap`s keyed by each Lifecycle or capability
- * instance (event sinks, route transports, host invokers, bound services), one
+ * here by version and lockfile integrity (agents 0.34.0, source-read 2026-11-23: the module
+ * state of the two modules' import closure is 0.32.0's, plus the job queue's own `#inFlight`,
+ * a map per queue instance); PiHarness is not loaded. Its module-level state, which objects
+ * sharing an isolate share, holds no owner's data: `WeakMap`s keyed by each Lifecycle or
+ * capability instance (event sinks, route transports, host invokers, bound services), one
  * `AsyncLocalStorage` whose store lives only for the invocation that set it
  * (`current-agent.ts`), and `node:diagnostics_channel` channels, which publish only to
  * subscribers and this Worker has none. Lifecycle's `nanoid` pool is never drawn on, since
@@ -76,17 +76,11 @@ export const RESERVED: Readonly<Record<string, string>> = Object.freeze({
   webSocketClose: "await this.#lifecycle.webSocketClose(ws, code, reason, wasClean);",
   webSocketError: "await this.#lifecycle.webSocketError(ws, error);",
 });
-/**
- * The pinned Agents SDK, as the lockfile resolves it: under the owner's workspace, where npm
- * placed it while its required peer `@modelcontextprotocol/client` (2.4.0) differed from the
- * doors' pin; since the doors pin 2.4.0 too, it shares the root's MCP packages (the owner
- * imports none of them).
- */
+/** The pinned Agents SDK, as the lockfile resolves it, wherever npm places it. */
 export const AGENTS = Object.freeze({
-  version: "0.32.0",
-  integrity: "sha512-5g6w/XwULJrnxuEKlG7EBn4js9DVfyuu+9OhiLgZpUjW89BLhWGWY20hp+3R6U/eeEPrZs6p3RG" +
-    "BfvuKtgI77g==",
-  path: "owner/node_modules/agents",
+  version: "0.34.0",
+  integrity: "sha512-h7lm9gfdsj8oq+CheccDC0zcWf2K2D+U13B0+zrWyBFnigjNXQ2ZAHtZsg5fO7AMcQq4c9jPl" +
+    "Kc169FB1RzRGg==",
 });
 
 function agentsModule(node: ts.Node): node is ts.StringLiteralLike {
@@ -199,9 +193,10 @@ describe("alarm guard", () => {
     const lock = JSON.parse(readFileSync(join(PLATFORM, "package-lock.json"), "utf8")) as
       { packages: Record<string, { version?: string; integrity?: string;
                                    devDependencies?: Record<string, string> }> };
-    const resolved = lock.packages[AGENTS.path]!;
-    expect([resolved.version, resolved.integrity]).toEqual([AGENTS.version, AGENTS.integrity]);
-    expect(lock.packages["node_modules/agents"]).toBeUndefined();
+    const copies = Object.entries(lock.packages)
+      .filter(([path]) => path === "node_modules/agents" || path.endsWith("/node_modules/agents"));
+    expect(copies.map(([, { version, integrity }]) => [version, integrity]))
+      .toEqual([[AGENTS.version, AGENTS.integrity]]);
     const owner = JSON.parse(readFileSync(join(PLATFORM, "owner", "package.json"), "utf8")) as
       { devDependencies: Record<string, string> };
     expect(owner.devDependencies["agents"]).toBe(AGENTS.version);

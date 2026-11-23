@@ -165,9 +165,9 @@ export const RECOVERY_WINDOW_S = 30 * 86_400;
 /** An outside client's sealed credential blob (`connections.ts`), in characters. */
 export const CONNECTION_BLOB_MAX = 64 * 1024;
 /**
- * The models a connection keeps, as JSON, in bytes. The largest record of pi-ai 1.4.0's
- * built-in catalogs, whole, is 607 bytes, so `maxModels` of the largest are about 607 KiB
- * (the largest catalog is about 142 KB for its 386 models).
+ * The models a connection keeps, as JSON, in bytes: `maxModels` of the largest record of
+ * pi-ai's built-in catalogs, whole, fit (the owner's connections test scans them all and
+ * holds it, at every pin).
  */
 export const MODELS_JSON_MAX = 640 * 1024;
 /**

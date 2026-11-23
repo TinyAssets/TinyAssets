@@ -858,9 +858,7 @@ platform's tests, and `platform/deploy/` is release-critical (d3 §B2–§B4, §
   - [ ] The commitments-to-proof table, one row per commitment with its test or live check,
     every row proven before the window opens (`untangle/commitments-table`).
   - [ ] The verifiers' smaller shape fixes: a malformed header from our own gateway fails the
-    egress call loudly (`untangle/egress-reseal-loud`); the gateway's `fetch` interposer and its
-    three module-state exemptions go, pi-ai's Google adapter taking `fetch` or that API failing
-    closed (`untangle/gateway-interposer`); `Mcp.unsupported` deleted
+    egress call loudly (`untangle/egress-reseal-loud`); `Mcp.unsupported` deleted
     (`untangle/no-unsupported-mcp`); the sync's `fullGrant` default deleted, so every caller
     passes one (`untangle/owner-test-seams`); a guard against a vendor or engine id in Worker or
     runner source outside the records' data (`untangle/vendor-names-guard`); a workerd test with

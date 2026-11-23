@@ -42,7 +42,7 @@ The sealed plaintext SHALL carry the secret together with its source data: the p
 - **THEN** it is refused as `invalid_source`, so what is sealed is what every later parse reads
 
 ### Requirement: Only APIs whose every request goes through fetch run
-The gateway SHALL run only the pi-ai APIs whose every request goes through `fetch` and on which a sandbox call can be metered, each a row of one contract table (`api-rules.ts`) with its rules, how its adapter fetches and whether a declared endpoint may speak it, and SHALL refuse any other API, and a declared endpoint on an API its row does not allow, when it is sealed and when it is opened.
+The gateway SHALL run only the pi-ai APIs whose adapter sends every request through the `fetch` it is handed and on which a sandbox call can be metered, each a row of one contract table (`api-rules.ts`) with its rules and whether a declared endpoint may speak it, and SHALL refuse any other API, and a declared endpoint on an API its row does not allow, when it is sealed and when it is opened.
 
 #### Scenario: A source on Bedrock or the legacy Codex backend
 - **WHEN** a source names `bedrock-converse-stream` or `openai-codex-responses`
@@ -52,19 +52,12 @@ The gateway SHALL run only the pi-ai APIs whose every request goes through `fetc
 - **WHEN** a custom source declares its models on `mistral-conversations`
 - **THEN** sealing it is refused as `invalid_source`, though a built-in Mistral source seals
 
-### Requirement: An adapter's requests go through the scope's guard
-Each run of a pi-ai adapter the gateway makes (the meter's learning runs, `meter.ts`) SHALL run inside its own `AsyncLocalStorage` scope in which the global `fetch` is that run's own fetch, so an adapter that refuses `options.fetch` (pi-ai's Google adapters) reaches only it. Outside any scope the global `fetch` SHALL be the runtime's own. The gateway serves no model call of its own: sandbox egress is forwarded raw (`forward.ts`), never following a redirect.
+### Requirement: An adapter's requests reach only the run's own fetch
+Each run of a pi-ai adapter the gateway makes (the meter's learning runs and answer reads, `meter.ts`) SHALL hand the adapter that run's own fetch, and the adapter SHALL send every request through it, never the global `fetch`. The gateway serves no model call of its own: sandbox egress is forwarded raw (`forward.ts`), never following a redirect.
 
-#### Scenario: Inside and outside a scope
-- **WHEN** a global `fetch` is made inside a run's scope, after an await, and outside any scope
-- **THEN** the first two reach the scope's own fetch, and the last the runtime's
-
-### Requirement: The interposer is exempt from the module-state guard by its three symbols
-The interposer SHALL be exempt from the platform's module-state guard only by the gateway's own exemptions (`gateway/guards/rules.ts`, `MODULE_STATE`), each its one file, a symbol and its reason, for the three symbols it needs (the scope, the captured runtime fetch, the one write of the global): Google's SDK takes no fetch, and nothing else holds it to the seal without forking pi-ai. The scope SHALL hold no data between calls.
-
-#### Scenario: The exemption widens
-- **WHEN** the interposer's file gains another finding, or its text appears in another file
-- **THEN** the module-state guard fails CI
+#### Scenario: An adapter reaching past its fetch
+- **WHEN** each API-key source's model call is learned while the global `fetch` refuses every request
+- **THEN** every one is learned, so no adapter of an API the gateway runs reached the global `fetch`
 
 ### Requirement: Gateway errors are fixed codes
 Every error the gateway returns or throws SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw: 401 and 403 `upstream_unauthorized`, 408 `upstream_timeout`, 429 `upstream_rate_limited`, any other 4xx `upstream_rejected`, 503 and 529 `upstream_overloaded`, any other 5xx `upstream_server_error`.

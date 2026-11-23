@@ -1,8 +1,9 @@
 /**
  * Metering a sandbox's raw model call with pi-ai's own adapters: what pi-ai sends as a model
- * call for each API, learned with no network, and the usage it reads back.
+ * call for each API, learned with no network through the fetch it is handed, and the usage it
+ * reads back.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
@@ -163,6 +164,22 @@ describe("the meter pi-ai's adapter teaches", () => {
                       meter };
       expect(meteredCall(scope, meter!.method, path), id).toBe(true);
       expect(egressTarget(scope, meter!.method, path), id).not.toBeNull();
+    });
+
+  it.each(keys.map((record) => [record.id, record] as const))(
+    "learns the %s source's call through the fetch it hands pi-ai, never the global one",
+    async (id, { upstream }) => {
+      const reached: string[] = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL): Promise<Response> => {
+        reached.push(input instanceof Request ? input.url : String(input));
+        throw new Error("the global fetch");
+      });
+      try {
+        expect(await new Meters(builtinCatalog(), upstream!, "sk-x").any(), id).not.toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(reached, id).toEqual([]);
     });
 
 
@@ -354,6 +371,23 @@ describe("what a metered call could escape its reservation by", () => {
                                         streamOf(completion(dear!.id, BIG)));
     expect(fallback!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER,
                                                                    dear!.id)!, usage).total, 9);
+  });
+
+  it("settles an OpenRouter call at what its answer says OpenRouter billed", async () => {
+    const catalog = builtinCatalog();
+    const paid = catalog.provider("openrouter")!.getModels()
+      .find((model) => model.api === "openai-completions" && model.cost.output > 0)!;
+    const model = meteredRecord(catalog, OPENROUTER, paid.id)!;
+    const billed = await meteredUsage(catalog, OPENROUTER, "sk-or-x", model, 200, SSE,
+                                      streamOf(completion(paid.id, { ...BIG, cost: 0.42,
+                                                                     is_byok: false })));
+    expect(billed).toEqual({ tokens: 250_000, cost: 0.42 });
+    // On the owner's own provider key, OpenRouter's fee and the upstream's cost.
+    const byok = await meteredUsage(catalog, OPENROUTER, "sk-or-x", model, 200, SSE,
+                                    streamOf(completion(paid.id, {
+                                      ...BIG, cost: 0.01, is_byok: true,
+                                      cost_details: { upstream_inference_cost: 0.4 } })));
+    expect(byok!.cost).toBeCloseTo(0.41, 9);
   });
 
   it("meters an API only while its rules describe pi-ai's own call", () => {

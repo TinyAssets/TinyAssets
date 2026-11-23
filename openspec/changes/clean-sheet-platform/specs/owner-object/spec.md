@@ -861,7 +861,7 @@ Where a gateway source's record says where its vendor lists how strong each mode
 - **THEN** the scored model's score is kept, and an `auto` run picks it
 
 ### Requirement: A connection keeps up to 1,024 models
-A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the setup check listed it and checked whole at commit, within 640 KiB of JSON, so 1,024 of the largest built-in record (607 bytes in pi-ai 1.4.0) fit, and the largest built-in catalog (386 models) with room.
+A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the setup check listed it and checked whole at commit, within 640 KiB of JSON, so 1,024 of the largest built-in record fit, and the largest built-in catalog twice over (the connections test scans pi-ai's catalogs for both).
 
 #### Scenario: The largest built-in catalog
 - **WHEN** a key is connected for the built-in provider whose catalog is the largest

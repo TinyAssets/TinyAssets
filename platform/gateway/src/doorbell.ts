@@ -27,8 +27,7 @@
  * - `resealDoorbell`: a subscription's blob resealed under the active kid at the next
  *   version, for the owner's sweep before a kid leaves the ring.
  *
- * Every fetch is the runtime's (`global_fetch_strictly_public`): never the egress
- * interposer's, since no model call's scope is open here.
+ * Every fetch is the runtime's, public hosts only (`global_fetch_strictly_public`).
  */
 import { keyed, object } from "../../contract/src/checks";
 import { base64, base64url, fromBase64, hex } from "../../contract/src/envelope";
