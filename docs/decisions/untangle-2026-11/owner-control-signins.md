@@ -104,12 +104,28 @@ kept that names no switch for a source still takes that source's verdict, as bef
 
 ## Left, each with its reason
 
-- A version split: a doors version that still hands `signins` is refused `invalid` by this
-  owner, as a doors version handing `tiers` is since #5805. Nothing is deployed before the
-  cutover, which ships every Worker of one commit.
 - The frozen-bounds guard still names `platform_signins`' spelling of `SIGNIN_LIST_CHARS`: the
   baseline statement that made it is pinned and still spells it.
 
+## Review (2026-11-23)
+
+- **The doors' version before binds this owner for one deploy.** The stage is deployed
+  (`stage.tinyassets.io`), and the kit deploys the owner before the doors (`facts.ts`
+  `WORKERS`: each Worker after the ones it binds). From the owner's 100% until the doors' (their
+  0% soak and smoke, or a run stopped there, as run 45065970031 stopped, `deploy-readback.md`),
+  every account and inbound call comes through the doors' version before, which hands
+  `signins` (and, from before #5805, `tiers`); a parser refusing both answered every one of
+  those calls `invalid`, and a rollback could not mend it (migration 28 holds the owner, and the
+  doors' version before is the one refused). The 0% smoke passed regardless: it reaches only
+  the new doors. The account and inbound parsers now take and drop the two
+  (`binding.ts` `HANDED_BEFORE`): expand, then contract, the order the kit's `forward` rule
+  names. The import's binding is left strict: an import runs only in its window, never beside
+  a deploy.
+- The missing-record rule matches the tiers' (fail closed, `TIER_UNREAD`) and the doors'
+  outside gate; the sandbox starts no sign-in on a missing record either.
+
 ## Owed
 
-None.
+- [ ] `HANDED_BEFORE` goes, its two fields refused `invalid` again, once the doors the stage
+  serves are of this PR's commit or later (live: the stage's next deploy past this PR, then
+  `untangle/binding-handed-before`).

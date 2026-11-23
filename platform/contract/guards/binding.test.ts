@@ -84,9 +84,6 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
                                         control: JSON.stringify({ outside: "on" }) }],
     ["a control record not its text", { owner: OWNER, caller: OWNER, origin: null,
                                         control: JSON.parse(RECORD) }],
-    ["tier numbers beside it", { owner: OWNER, caller: OWNER, origin: null, tiers: null }],
-    ["sign-in switches beside it", { owner: OWNER, caller: OWNER, origin: null, control: RECORD,
-                                     signins: [] }],
   ],
   session: [["no session", { owner: OWNER, caller: OWNER, origin: null }]],
   egress: [
@@ -122,9 +119,6 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
                               inbound: { binding: HEX("3", 32), revision: 1 } }],
     ["a binding id of 64 hex", { owner: OWNER, caller: OWNER, origin: null,
                                  inbound: { binding: HEX("3", 64), revision: 1 } }],
-    ["sign-in switches beside it", { owner: OWNER, caller: OWNER, origin: null,
-                                     inbound: { binding: HEX("3", 32), revision: 1 },
-                                     control: RECORD, signins: [] }],
   ],
   reserved: [
     ["the owner's own caller", { owner: OWNER, caller: OWNER, origin: null }],
@@ -163,5 +157,18 @@ describe("each binding kind's parser", () => {
         thrown = error;
       }
       expect(refusalOf(thrown)?.code).toBe("invalid");
+    });
+
+  // The owner is deployed before the doors, so the doors' version before binds it for one
+  // deploy (`HANDED_BEFORE`): its bindings parse, the fields it still hands dropped.
+  const BEFORE = { tiers: { free: { runs: 5 } }, signins: ["claude-code"] };
+  it.each([["account", { owner: OWNER, caller: OWNER, origin: null, control: RECORD }],
+           ["session", { owner: OWNER, caller: OWNER, origin: null, session: "cookie" }],
+           ["inbound", { owner: OWNER, caller: OWNER, origin: null,
+                         inbound: { binding: HEX("3", 32), revision: 1 }, control: null }]] as const)(
+    "%s takes the doors' version before's binding, dropping its tiers and switches",
+    (kind, built) => {
+      expect(BINDING_PARSERS[kind]({ ...built, ...BEFORE })).toEqual(built);
+      expect(bindingKind({ ...built, ...BEFORE })).toBe(kind);
     });
 });

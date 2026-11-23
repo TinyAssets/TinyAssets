@@ -134,6 +134,16 @@ export interface Binding {
 // (`UNBOUND_DOORS`, `doors.ts`) take the kind `none`.
 
 /**
+ * The fields the doors' version before still hands beside the control record on an account's
+ * and an inbound event's binding, which their parsers take and drop. The deploy kit deploys
+ * the owner before the doors (`deploy/facts.ts` `WORKERS`), so from the owner's 100% until the
+ * doors' (their 0% smoke, or a run stopped there) the doors' version before binds this owner:
+ * expand, then contract (`deploy/platform.json` `forward`). They go once the doors the stage
+ * serves hand neither (`untangle-2026-11/owner-control-signins.md`, owed).
+ */
+const HANDED_BEFORE = Object.freeze(["tiers", "signins"] as const);
+
+/**
  * The owner's own account, acting itself or through a verified outside client (an MCP
  * client or an API key), or another owner visiting; its first-party token's grant, a fresh
  * sign-in's time, the browser's session cookie where one rode the request, and the control
@@ -239,7 +249,7 @@ export function accountBinding(value: unknown): AccountBinding {
   const kind = "account";
   const given = fields(value, kind, ["owner", "caller", "origin"],
                        ["source", "authenticated_at", "session", "grant", "expires_at", "vendor",
-                        "control"]);
+                        "control", ...HANDED_BEFORE]);
   const has = (key: string) => key in given;
   return Object.freeze({
     owner: principal(given["owner"]), caller: principal(given["caller"]),
@@ -331,7 +341,7 @@ export function runBinding(value: unknown): RunBinding {
 export function inboundBinding(value: unknown): InboundBinding {
   const kind = "inbound";
   const given = fields(value, kind, ["owner", "caller", "origin", "inbound"],
-                       ["control"]);
+                       ["control", ...HANDED_BEFORE]);
   const owner = own(given, kind);
   const { binding, revision } = fields(given["inbound"], kind, ["binding", "revision"]);
   return Object.freeze({
