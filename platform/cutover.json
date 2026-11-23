@@ -56,6 +56,8 @@
         { "edit": "platform/contract/doors.json", "names": ["importRows", "importFiles", "importFileBegin", "importFileStored", "importFileCommit", "importNotice", "importCheck", "importDiscard", "\"import\""], "what": "the eight import rows" },
         { "edit": "platform/contract/src/doors.ts", "names": ["\"import\"", "owner/src/import.ts"], "what": "the import class" },
         { "edit": "platform/contract/src/binding.ts", "names": ["ImportBinding", "importBinding", "IMPORT_KEY", "doors/src/import/", "owner/src/import.ts", "\"import\""], "what": "the binding's import field and the import kind" },
+        { "edit": "platform/contract/bindings.json", "names": ["\"import\"", "import_bundle"], "what": "the import kind's shapes" },
+        { "edit": "platform/contract/guards/binding.test.ts", "names": ["\"import\""], "what": "where the import kind's shapes sit" },
         { "edit": "platform/contract/src/owner.ts", "names": ["importRows", "importDiscard", "CheckPart", "doors/src/import/", "import/survey.ts"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import doors' types" },
         { "edit": "platform/contract/src/paths.ts", "names": ["IMPORTED", "platform/import/", "owner/src/import.ts", "/workspace/imported"], "what": "the imported tree's path" },
         { "edit": "platform/contract/src/files.ts", "names": ["import/window.ts"], "what": "the importer's wipe, in the object prefix's note" },

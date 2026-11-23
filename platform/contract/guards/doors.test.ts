@@ -13,7 +13,8 @@
 import { describe, expect, it } from "vitest";
 
 import raw from "../doors.json" with { type: "json" };
-import { argsSchema, doorProblems, doorRow, doorTable, toolTable } from "../src/doors";
+import { argsSchema, doorProblems, doorRow, doorTable, requestFields, toolTable }
+  from "../src/doors";
 
 const row = (name: string): Record<string, unknown> =>
   ({ ...(raw.doors.find((each) => each.door === name) as Record<string, unknown>) });
@@ -65,8 +66,27 @@ describe("the door table", () => {
     ["a stop that is not true", changed("codeRun", { stop: false })],
     ["a stop on a door that takes no binding", changed("sandboxRung", { stop: true })],
     ["a stop on a door that takes no request", changed("keyList", { stop: true })],
+    ["a dropped door with its tool", changed("fileStat", { dropped: true })],
+    ["a dropped door marked other than true", changed("keyList", { dropped: false })],
+    ["a dropped field it still lists", changed("fileStat", { args: {
+      refused: "x", required: { path: {} }, optional: {}, dropped: ["path"] } })],
+    ["dropped fields not a list", changed("fileStat", { args: {
+      refused: "x", required: { path: {} }, optional: {}, dropped: "etag" } })],
   ])("refuses %s", (_what, rows) => {
     expect(doorProblems(rows)).not.toEqual([]);
+  });
+
+  it("takes a dropped door, and a dropped field, which it takes and leaves out", () => {
+    expect(doorProblems(changed("keyList", { dropped: true }))).toEqual([]);
+    const args = { refused: "invalid file request", required: { path: {} }, optional: {},
+                   dropped: ["etag"] };
+    expect(doorProblems(changed("fileStat", { args }))).toEqual([]);
+    expect(requestFields(args, { path: "/a", etag: "e1" })).toEqual({ path: "/a" });
+    expect(requestFields(args, { path: "/a" })).toEqual({ path: "/a" });
+    expect(() => requestFields(args, { path: "/a", other: 1 })).toThrow("invalid file request");
+    // Its tool lists it no more.
+    expect(argsSchema(args)).toEqual({ type: "object", properties: { path: {} },
+                                       required: ["path"], additionalProperties: false });
   });
 
   it("serves each tool its door's capability and arguments", () => {

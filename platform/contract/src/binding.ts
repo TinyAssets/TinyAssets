@@ -4,8 +4,10 @@
  * request field; and what the inbound door answers the binder. The doors make it and the
  * owner's object reads it (`owner/src/owner-do.ts`), so it is the contract's.
  */
+import table from "../bindings.json" with { type: "json" };
+
 import type { Vendor } from "./apps.ts";
-import { keyed, object, whole } from "./checks.ts";
+import { frozen, keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { HEX16, HEX32, HEX64, RUN_ID } from "./ids.ts";
 import { controlOf } from "./control.ts";
@@ -130,18 +132,9 @@ export interface Binding {
 // one parser: the binder builds a kind, and the object parses a door's binding with the parser
 // of the kind it presents (`bindingKind`), once it holds that its row's caller takes that kind
 // (`owner/src/door-steps.ts`), so a field the binder sends and the parser lacks is a type
-// error. A parser refuses anything else as `invalid`. The two doors that take no binding
-// (`UNBOUND_DOORS`, `doors.ts`) take the kind `none`.
-
-/**
- * The fields the doors' version before still hands beside the control record on an account's
- * and an inbound event's binding, which their parsers take and drop. The deploy kit deploys
- * the owner before the doors (`deploy/facts.ts` `WORKERS`), so from the owner's 100% until the
- * doors' (their 0% smoke, or a run stopped there) the doors' version before binds this owner:
- * expand, then contract (`deploy/platform.json` `forward`). They go once the doors the stage
- * serves hand neither (`untangle-2026-11/owner-control-signins.md`, owed).
- */
-const HANDED_BEFORE = Object.freeze(["tiers", "signins"] as const);
+// error. A parser takes the fields its shapes list (`bindings.json`) and refuses anything
+// else as `invalid`. The two doors that take no binding (`UNBOUND_DOORS`, `doors.ts`) take the
+// kind `none`.
 
 /**
  * The owner's own account, acting itself or through a verified outside client (an MCP
@@ -181,10 +174,31 @@ function invalid(kind: string): never {
   throw new Refusal("invalid", `invalid ${kind} binding`);
 }
 
-/** `value` as a plain object whose keys are all `required` and some of `optional`. */
-function fields(value: unknown, kind: string, required: readonly string[],
-                optional: readonly string[] = []): Record<string, unknown> {
-  return keyed(value, required, optional) ? value : invalid(kind);
+/** A shape a binding is made of (`bindings.json`), by its name. */
+export type ShapeName = keyof typeof table.shapes;
+
+/**
+ * A shape's fields: the ones the binder always hands, the ones it hands when it has them,
+ * and the ones a release before handed that this one no longer does.
+ */
+export interface Shape {
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+  readonly dropped?: readonly string[];
+}
+
+/** Each shape a binding is made of, by its name, as the data file has it, frozen whole. */
+export function bindingShapes(): Readonly<Record<ShapeName, Shape>> {
+  return frozen(table.shapes as Record<ShapeName, Shape>);
+}
+
+/**
+ * `value` as a plain object of the shape `name`: every required field, any optional one, and
+ * any dropped one, which its parser reads no further.
+ */
+function fields(value: unknown, kind: string, name: ShapeName): Record<string, unknown> {
+  const { required, optional, dropped = [] } = bindingShapes()[name];
+  return keyed(value, required, [...optional, ...dropped]) ? value : invalid(kind);
 }
 
 function hex(value: unknown, grammar: RegExp, kind: string): string {
@@ -202,13 +216,13 @@ function text(value: unknown, kind: string): string {
 
 /** A verified outside client: exactly a 64-hex client and family. */
 function origin(value: unknown, kind: string): Origin {
-  const { client, family } = fields(value, kind, ["client", "family"]);
+  const { client, family } = fields(value, kind, "origin");
   return Object.freeze({ client: hex(client, HEX64, kind), family: hex(family, HEX64, kind) });
 }
 
 /** An API key's id, or an MCP client's OAuth `client_id`. */
 function source(value: unknown, kind: string): Source {
-  const { kind: by, ref } = fields(value, kind, ["kind", "ref"]);
+  const { kind: by, ref } = fields(value, kind, "source");
   if (by === "api_key") {
     return Object.freeze({ kind: by, ref: hex(ref, HEX16, kind) });
   }
@@ -220,7 +234,7 @@ function vendor(value: unknown, kind: string): Vendor | null {
   if (value === null) {
     return null;
   }
-  const { id, verified } = fields(value, kind, ["id", "verified"]);
+  const { id, verified } = fields(value, kind, "vendor");
   return typeof id === "string" && typeof verified === "boolean"
     ? Object.freeze({ id, verified }) : invalid(kind);
 }
@@ -247,9 +261,7 @@ function platform(given: Record<string, unknown>, kind: string): string {
 /** An account binding (`AccountBinding`), or `invalid`. */
 export function accountBinding(value: unknown): AccountBinding {
   const kind = "account";
-  const given = fields(value, kind, ["owner", "caller", "origin"],
-                       ["source", "authenticated_at", "session", "grant", "expires_at", "vendor",
-                        "control", ...HANDED_BEFORE]);
+  const given = fields(value, kind, "account");
   const has = (key: string) => key in given;
   return Object.freeze({
     owner: principal(given["owner"]), caller: principal(given["caller"]),
@@ -279,13 +291,13 @@ export function sessionBinding(value: unknown): SessionBinding {
 function sandboxToken(value: unknown): SandboxToken {
   const kind = "sandbox";
   if (object(value) && "egress" in value) {
-    const given = fields(value, kind, ["kind", "token", "egress"]);
+    const given = fields(value, kind, "sync_token");
     return given["kind"] === "sync"
       ? Object.freeze({ kind: "sync", token: hex(given["token"], HEX64, kind),
                         egress: hex(given["egress"], HEX64, kind) })
       : invalid(kind);
   }
-  const given = fields(value, kind, ["kind", "token", "generation"], ["secret", "runner"]);
+  const given = fields(value, kind, "egress_token");
   if (given["kind"] !== "egress" || ("secret" in given && "runner" in given)) {
     return invalid(kind);
   }
@@ -306,7 +318,7 @@ export function noBinding(value: unknown): undefined {
 /** A sandbox's token binding of `token`'s kind, or `invalid`. */
 function tokenBinding<T extends SandboxToken["kind"]>(value: unknown, token: T): TokenBinding<T> {
   const kind = "sandbox";
-  const given = fields(value, kind, ["owner", "caller", "origin", "sandbox"]);
+  const given = fields(value, kind, "sandbox");
   const owner = own(given, kind);
   const sandbox = sandboxToken(given["sandbox"]);
   return sandbox.kind === token
@@ -328,7 +340,7 @@ export function syncBinding(value: unknown): SyncBinding {
 /** A run binding (`RunBinding`), or `invalid`. */
 export function runBinding(value: unknown): RunBinding {
   const kind = "run";
-  const given = fields(value, kind, ["owner", "caller", "origin", "sandbox", "run"]);
+  const given = fields(value, kind, "run");
   const owner = own(given, kind);
   const sandbox = sandboxToken(given["sandbox"]);
   return sandbox.kind === "egress"
@@ -340,10 +352,9 @@ export function runBinding(value: unknown): RunBinding {
 /** An inbound binding (`InboundBinding`), or `invalid`. */
 export function inboundBinding(value: unknown): InboundBinding {
   const kind = "inbound";
-  const given = fields(value, kind, ["owner", "caller", "origin", "inbound"],
-                       ["control", ...HANDED_BEFORE]);
+  const given = fields(value, kind, "inbound");
   const owner = own(given, kind);
-  const { binding, revision } = fields(given["inbound"], kind, ["binding", "revision"]);
+  const { binding, revision } = fields(given["inbound"], kind, "inbound_route");
   return Object.freeze({
     owner, caller: owner, origin: null,
     inbound: Object.freeze({ binding: hex(binding, HEX32, kind),
@@ -355,16 +366,16 @@ export function inboundBinding(value: unknown): InboundBinding {
 /** A reserved binding (`ReservedBinding`), an erasure's too, or `invalid`. */
 export function reservedBinding(value: unknown): ReservedBinding {
   const kind = "reserved";
-  const owner = platform(fields(value, kind, ["owner", "caller", "origin"]), kind);
+  const owner = platform(fields(value, kind, "reserved"), kind);
   return Object.freeze({ owner, caller: PLATFORM_CALLER, origin: null });
 }
 
 /** An import binding (`ImportBinding`), or `invalid`. */
 export function importBinding(value: unknown): ImportBinding {
   const kind = "import";
-  const given = fields(value, kind, ["owner", "caller", "origin", "import"], ["control"]);
+  const given = fields(value, kind, "import");
   const owner = platform(given, kind);
-  const { bundle } = fields(given["import"], kind, ["bundle"]);
+  const { bundle } = fields(given["import"], kind, "import_bundle");
   return Object.freeze({ owner, caller: PLATFORM_CALLER, origin: null,
                          import: Object.freeze({ bundle: hex(bundle, HEX64, kind) }),
                          ...("control" in given ? { control: record(given["control"], kind) }

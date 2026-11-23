@@ -112,7 +112,7 @@ import { rehearsalRun } from "../../contract/src/import-message";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import { fields, takesRequest, takesStop } from "../../contract/src/doors";
+import { requestFields, takesRequest, takesStop } from "../../contract/src/doors";
 import type { DoorMethods } from "./door-map";
 import {
   type Binds, CALLER_BINDINGS, type CallerKind, type OwnerRow, ownerRow, ownerRows, type TakenBy,
@@ -1250,11 +1250,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     if (args === "none" || args === "loose") {
       return {};
     }
-    const held = "refused" in args ? args : account.origin === null ? args.owner : args.outside;
-    const asked = held.omitted === true && (request === undefined || request === null) ? {}
-      : request;
-    return fields(asked, Object.keys(held.required), Object.keys(held.optional), held.refused,
-                  held.undefinedAllowed === true);
+    return requestFields("refused" in args ? args
+      : account.origin === null ? args.owner : args.outside, request);
   }
 
   /**

@@ -1,0 +1,21 @@
+{
+  "about": "Each shape a binding is made of (contract/src/binding.ts), by its name: the fields the binder hands, always (required) and when it has them (optional), and the ones a release before handed that this one no longer does (dropped), which the owner's object still takes and drops. The binding kinds' parsers read their fields here and nowhere else, and the doors build every binding through them. The deploy kit deploys the owner before the doors (deploy/facts.ts WORKERS), so the doors' version before binds this owner until the doors' new version serves: deploy/guards/handed.test.ts holds this file, beside the door table, to taking everything the base branch's doors hand. A field the doors stop handing is dropped first, and goes once the doors the stage serves hand it no more.",
+  "shapes": {
+    "account": { "required": ["owner", "caller", "origin"],
+                 "optional": ["source", "authenticated_at", "session", "grant", "expires_at",
+                              "vendor", "control"] },
+    "origin": { "required": ["client", "family"], "optional": [] },
+    "source": { "required": ["kind", "ref"], "optional": [] },
+    "vendor": { "required": ["id", "verified"], "optional": [] },
+    "sandbox": { "required": ["owner", "caller", "origin", "sandbox"], "optional": [] },
+    "egress_token": { "required": ["kind", "token", "generation"],
+                      "optional": ["secret", "runner"] },
+    "sync_token": { "required": ["kind", "token", "egress"], "optional": [] },
+    "run": { "required": ["owner", "caller", "origin", "sandbox", "run"], "optional": [] },
+    "inbound": { "required": ["owner", "caller", "origin", "inbound"], "optional": ["control"] },
+    "inbound_route": { "required": ["binding", "revision"], "optional": [] },
+    "reserved": { "required": ["owner", "caller", "origin"], "optional": [] },
+    "import": { "required": ["owner", "caller", "origin", "import"], "optional": ["control"] },
+    "import_bundle": { "required": ["bundle"], "optional": [] }
+  }
+}

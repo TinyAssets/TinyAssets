@@ -18,7 +18,7 @@
  *   its binding but on an unbound door (`UNBOUND_DOORS`), no request, an optional one, its
  *   row's fields (`DoorRequest`) or a loose door's own parameters (`DoorLoose`), its caller's
  *   stop where its row takes one (`stop`), and the answer the doors read (`DoorAnswer`), its
- *   doc the row's tool description.
+ *   doc the row's tool description. A door the doors call no more (`dropped`) is none of it.
  */
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -130,7 +130,7 @@ function doorsSource(rows: readonly DoorRow[]): string {
     "",
     "/** The owner's object, as the doors reach it (`binder.ts` alone looks one up by name). */",
     "export interface OwnerDoors extends Rpc.DurableObjectBranded {",
-    ...rows.flatMap(door),
+    ...rows.filter((row) => row.dropped !== true).flatMap(door),
     "}",
     "",
     "/** The doors whose rows leave their parameters to their modules. */",
