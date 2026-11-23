@@ -247,6 +247,12 @@ interface WorldOptions {
    */
   readonly lagging?: number;
   /**
+   * How many of the kit's reads of a version just uploaded answer that Cloudflare holds no
+   * such version (its 100146), as Cloudflare's did live (run 45184403474); a `versions deploy`
+   * of it before then fails as wrangler's did.
+   */
+  readonly unlisted?: number;
+  /**
    * How the doors answer each message sent to the operator queue: its outcome, or none (it is
    * never answered). Each is answered at once by default, with its args as its result.
    */
@@ -433,6 +439,8 @@ function world(options: WorldOptions = {}) {
     deployments.set(script, serving);
     lag.set(script, options.lagging ?? 0);
   };
+  /** The reads left, by version, that answer it is not held (`unlisted`). */
+  const unlisted = new Map<string, number>();
   let uploads = 0;
   /** A new version of `script` tagged `tag`: its id. */
   const version = (script: string, tag: string | null): string => {
@@ -485,8 +493,10 @@ function world(options: WorldOptions = {}) {
       .exec(path);
     if (versioned !== null) {
       const held = versions.get(versioned[2]!);
-      return held === undefined || held.script !== versioned[1]
-        ? json({ success: false, errors: [{ code: 10007 }] }, 404)
+      const left = unlisted.get(versioned[2]!) ?? 0;
+      unlisted.set(versioned[2]!, Math.max(0, left - 1));
+      return held === undefined || held.script !== versioned[1] || left > 0
+        ? json({ success: false, errors: [{ code: 100146 }] }, 404)
         : json({ success: true, result: { id: versioned[2], annotations: {
           ...held.tag === null ? {} : { "workers/tag": held.tag, "workers/message": COMMIT },
           ...held.trigger === undefined ? {} : { "workers/triggered_by": held.trigger } } } });
@@ -838,6 +848,8 @@ function world(options: WorldOptions = {}) {
         stdout = `${args[0] === "deploy" ? "Current" : "Worker"} Version ID: ${id}\n`;
         if (args[0] === "deploy" && !inert.has("deploy")) {
           deploy(script, [{ version: id, percentage: 100 }]);
+        } else if (args[1] === "upload") {
+          unlisted.set(id, options.unlisted ?? 0);
         }
       } else if (script !== undefined && args[0] === "versions" && args[1] === "deploy") {
         // Each `<id>@<share>` before the flags, in the order given, as wrangler sends them.
@@ -846,6 +858,12 @@ function world(options: WorldOptions = {}) {
           expect(versions.get(version!)?.script).toBe(script);
           return { version: version!, percentage: Number(share) };
         });
+        // Wrangler reads each version before it deploys any, so one not listed deploys none.
+        const missing = specs.find((each) => (unlisted.get(each.version) ?? 0) > 0);
+        if (missing !== undefined) {
+          return { status: 1, stdout: "", stderr: "The requested Worker version could not be " +
+                   `found, please check the ID being passed and try again. [code: 100146]` };
+        }
         if (!inert.has("deploy")) {
           deploy(script, specs);
         }
@@ -3423,6 +3441,46 @@ describe("the rollout record and mode rollback", () => {
         expect(none.w.events.filter((event) => event === "sleep 2000")).toEqual([]);
       }
     });
+
+    /** The kit's reads of `worker`'s version `id` through Cloudflare's versions API. */
+    const versionReads = (w: ReturnType<typeof world>, worker: string, id: string) =>
+      w.events.filter((event) => event ===
+        `cf GET /accounts/${ACCOUNT}/workers/scripts/${NAMES[worker]}/versions/${id}`).length;
+
+    it("deploys each upload once Cloudflare's versions API lists it, as if it had at once",
+       async () => {
+      // Runs 45184403474 and 45184872714: codemode's upload, just made, was not listed yet.
+      const run = async (unlisted: number) => {
+        const w = world({ held: true, unlisted });
+        return { w, work: await runMode(w, "dark", ["--yes"], RUN) };
+      };
+      const [late, listed] = [await run(3), await run(0)];
+      expect(shares(late.w)).toEqual(shares(listed.w));
+      expect(late.work.plan).toEqual(listed.work.plan);
+      expect(serving(late.w)).toEqual(serving(listed.w));
+      for (const [at, worker] of WORKERS.entries()) {
+        expect([worker, versionReads(late.w, worker, MADE_ID(at + 1)) -
+                versionReads(listed.w, worker, MADE_ID(at + 1))]).toEqual([worker, 3]);
+        order(late.w.events, [`wrangler versions upload --config ${worker}/`,
+                              `cf GET /accounts/${ACCOUNT}/workers/scripts/${NAMES[worker]}/` +
+                                `versions/${MADE_ID(at + 1)}`,
+                              `wrangler versions deploy ${MADE_ID(at + 1)}@0 `]);
+      }
+    });
+
+    it("stops before deploying an upload Cloudflare's versions API never lists, naming it",
+       async () => {
+      const w = world({ held: true, unlisted: Number.MAX_SAFE_INTEGER });
+      await expect(runMode(w, "dark", ["--yes"], RUN)).rejects.toThrow(
+        `Cloudflare's versions API did not list ${NAMES["codemode"]}'s version ${MADE_ID(1)} ` +
+        "60 s after its upload, so nothing deployed it (a Cloudflare incident? check " +
+        "cloudflarestatus.com, then run again): the run stops here (--mode rollback --record " +
+        "7001 takes it back)");
+      // Read until the bound, and nothing deployed: no Worker serves otherwise than before.
+      expect(versionReads(w, "codemode", MADE_ID(1))).toBe(31);
+      expect(shares(w)).toEqual([]);
+      expect(serving(w)).toEqual(BEFORE_ALL);
+    });
   });
 });
 
@@ -3669,6 +3727,25 @@ describe("the parts of a run", () => {
     }
     await expect(client(api({ [listing]: ok({}) })).workers("a"))
       .rejects.toThrow(/the Workers listing failed/);
+  });
+
+  it("reads a version as not listed only when Cloudflare answers it holds none", async () => {
+    const path = `/accounts/a/workers/scripts/${DOORS}/versions/v1`;
+    const cf = (answer: CfAnswer) => client(api({ [path]: answer }));
+    const none: CfAnswer = { status: 404, body: { success: false, errors: [{ code: 100146 }] } };
+    expect(await cf(ok({ id: "v1" })).listed("a", DOORS, "v1")).toBe(true);
+    expect(await cf(none).listed("a", DOORS, "v1")).toBe(false);
+    await expect(cf(none).tag("a", DOORS, "v1")).rejects.toThrow(
+      `reading the version v1 of ${DOORS} failed: Cloudflare's versions API holds no such ` +
+      "version (100146)");
+    for (const answer of [
+      { status: 500, body: {} }, { status: 403, body: { success: false, errors: [{ code: 10000 }] } },
+      { status: 404, body: { success: false, errors: [{ code: 10007 }] } },
+      { status: 200, body: { success: false } },
+    ] as CfAnswer[]) {
+      await expect(cf(answer).listed("a", DOORS, "v1"))
+        .rejects.toThrow(`reading the version v1 of ${DOORS} failed (${answer.status}, `);
+    }
   });
 
   it("never reads a failed secret listing as no secrets, a missing Worker's neither", async () => {
