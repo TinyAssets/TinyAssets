@@ -157,7 +157,7 @@ import { Grants, grantsDoors } from "./grants";
 import { codemodeDoors } from "./codemode";
 import { definitionDoors } from "./definition";
 import {
-  actorOf, Ledger, ledgerDoors, registrant, RUN_NO_MAILBOX,
+  actorOf, Ledger, ledgerDoors, NOT_AN_AGENT, registrant, RUN_NO_MAILBOX,
 } from "./ledger";
 import { clock, clockMs } from "./clock";
 import type { OwnerEnv } from "./env";
@@ -1285,7 +1285,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> implements OwnerDoors {
     const mine = this.#ledger.agents(account.origin)
       .filter((agent) => agent.disabled_reason === null);
     if (mine.length !== 1) {
-      throw new Refusal("refused", "this outside identity is not one enabled agent");
+      throw new Refusal("refused", NOT_AN_AGENT);
     }
     return mine[0]!.command_center_id;
   }

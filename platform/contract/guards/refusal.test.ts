@@ -187,12 +187,17 @@ describe("the test of a refusal against a bug", () => {
 });
 
 describe("a file fault", () => {
-  it("is known by its own code, here and as it crossed RPC, and is no refusal", () => {
+  it("is a refusal of its own code, here and as it crossed RPC, every door answering it",
+     () => {
     const fault = new FileFault("not_directory", "a parent is not a directory");
-    expect([fault.message, faultOf(fault), refusalOf(fault)])
-      .toEqual(["not_directory: a parent is not a directory", "not_directory", null]);
-    expect(faultOf(crossed("FileFault", "exists: in the way", { code: "exists" }))).toBe("exists");
-    expect(faultOf(crossed("FileFault", "x", { code: "busy" }))).toBeNull();
-    expect(FAULT_CODES).toContain("not_found");
+    expect([fault.message, faultOf(fault), refusalOf(fault)?.code, fault.status])
+      .toEqual(["not_directory: a parent is not a directory", "not_directory",
+                "not_directory", 409]);
+    expect(faultOf(crossed("Refusal", "exists: in the way", { code: "exists" }))).toBe("exists");
+    expect(refusalOf(crossed("Refusal", "not_found: no such file", { code: "not_found" }))
+      ?.status).toBe(404);
+    expect(faultOf(crossed("Refusal", "x", { code: "busy" }))).toBeNull();
+    expect(faultOf(new Error("not_found: no such file"))).toBeNull();
+    expect([...FAULT_CODES].every((code) => Object.hasOwn(REFUSALS, code))).toBe(true);
   });
 });

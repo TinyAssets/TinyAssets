@@ -174,14 +174,56 @@ describe.each([
      async () => {
     const tokens = await connect(await registerClient(), { owner: owner() });
     const client = await mcpClient(tokens, mode);
-    const refused = await client.callTool({ name: "mailbox_read", arguments: { limit: 5 } });
-    expect(refused.isError).toBe(true);
-    expect(refused.content).toEqual([{ type: "text",
-      text: "this outside identity is not one enabled agent\nThis refusal is final: the same " +
-            "call is refused again until what it names changes." }]);
+    // A connection with no registered agent has no mailbox, and is told how it gets one.
+    for (const [name, args] of [["mailbox_read", { limit: 5 }],
+                                ["inbox_digest", { limit: 5, after: 0 }]] as const) {
+      const refused = await client.callTool({ name, arguments: args });
+      expect(refused.isError).toBe(true);
+      expect(refused.content).toEqual([{ type: "text",
+        text: "this connection has no registered agent, which a mailbox, its rooms and a " +
+              "narrowed grant's work need: file one with agent_register, for the owner to " +
+              "approve\nThis refusal is final: the same call is refused again until what it " +
+              "names changes." }]);
+    }
     const invalid = await client.callTool({ name: "mailbox_read",
                                             arguments: { limit: 5, owner: "bob" } });
     expect(invalid.isError).toBe(true);
+    await client.close();
+  });
+
+  it("answers a file fault as the tool's error with its code, a removed file's read among " +
+     "them, never as an internal error", async () => {
+    const client = await mcpClient(await connect(await registerClient(), { owner: owner() }),
+                                   mode);
+    const written = answerOf(await client.callTool({ name: "file_write", arguments: {
+      path: "/workspace/gone.md", expected_etag: "", content: "soon gone" } })) as
+      { entry: { etag: string } };
+    expect((await client.callTool({ name: "file_remove", arguments: {
+      path: "/workspace/gone.md", expected_etag: written.entry.etag, recursive: false } }))
+      .isError).toBeFalsy();
+    const made = answerOf(await client.callTool({ name: "file_mkdir", arguments: {
+      path: "/workspace/empty", expected_etag: null } })) as { entry: { etag: string } };
+    const final = "\nThis refusal is final: the same call is refused again until what it " +
+      "names changes.";
+    const skills = answerOf(await client.callTool({ name: "file_stat", arguments: {
+      path: "/workspace/.agents" } })) as { entry: { etag: string } };
+    // A missing path is the one file tool's answer, file_stat's; every other refuses it, named.
+    expect(answerOf(await client.callTool({ name: "file_stat", arguments: {
+      path: "/workspace/gone.md" } }))).toEqual({ entry: null });
+    for (const [name, args, said] of [
+      ["file_read", { path: "/workspace/gone.md" }, "not_found: no such file"],
+      ["fetch", { id: "/workspace/gone.md" }, "not_found: no such file"],
+      ["file_read", { path: "/workspace/.agents" }, "is_directory: is a directory"],
+      ["file_remove", { path: "/workspace/empty", expected_etag: made.entry.etag,
+                        recursive: false }, "is_directory: a directory is removed with recursive"],
+      ["file_remove", { path: "/workspace/.agents", expected_etag: skills.entry.etag,
+                        recursive: false },
+       "not_empty: a directory is removed with recursive"],
+    ] as const) {
+      const refused = await client.callTool({ name, arguments: args });
+      expect([name, refused.isError, refused.content]).toEqual(
+        [name, true, [{ type: "text", text: `${said}${final}` }]]);
+    }
     await client.close();
   });
 

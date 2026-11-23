@@ -2435,7 +2435,7 @@ export class Files {
           return outcome;
         });
       } catch (error) {
-        if (error instanceof Refusal || error instanceof FileFault) {
+        if (error instanceof Refusal) {
           return { path: named, outcome: "refused" as const, reason: error.message,
                    code: error.code };
         }

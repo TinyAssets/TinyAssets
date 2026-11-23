@@ -335,7 +335,7 @@ function doors(r: Rig): Record<string, (binding: Binding) => Promise<unknown>> {
 const READS = ["fileStat", "fileList", "fileRead", "fileReadChunks", "fileHistory",
                "fileChanges", "fileUsage"];
 const OWNER_ONLY = ["fileRedact", "fileHistoryPurge", "fileSyncCommit"];
-const ADMISSION = /belongs to another owner|not named|own callers only|not granted|only the owner|never carries|not one enabled agent|no grant|revoked/;
+const ADMISSION = /belongs to another owner|not named|own callers only|not granted|only the owner|never carries|no registered agent|no grant|revoked/;
 
 async function outcome(call: () => Promise<unknown>): Promise<string> {
   return call().then(() => "served", (error: Error) => error.message);

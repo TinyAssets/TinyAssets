@@ -134,6 +134,35 @@ function toolProblems(tools: readonly Tool[]): string[] {
   return problems;
 }
 
+/**
+ * Each tool a description names that a profile serving the described tool does not serve,
+ * as `tool in profile names name`. A name is a snake_case word in a tool's description or its
+ * arguments' whose first part begins some tool's name (`collection_`, `mailbox_`), and that
+ * is no argument's name (`room_id`, `body_offset`): a field an answer carries is neither.
+ */
+function unservedNames(tools: readonly Tool[]): string[] {
+  const served = new Set(tools.map((tool) => tool.name));
+  const families = new Set(tools.map((tool) => tool.name.split("_")[0]!));
+  const fieldNames = new Set(tools.flatMap((tool) =>
+    Object.keys((tool.input["properties"] ?? {}) as Record<string, unknown>)));
+  const problems: string[] = [];
+  for (const profile of Object.keys(profiles) as (keyof typeof profiles)[]) {
+    const holds = new Set(profileNames(profile));
+    for (const tool of tools.filter((each) => holds.has(each.name))) {
+      const fields = Object.values((tool.input["properties"] ?? {}) as
+        Record<string, { description?: string }>).map((field) => field.description ?? "");
+      const words = [tool.description, ...fields].join(" ").match(/\b[a-z]+(?:_[a-z]+)+\b/g);
+      for (const name of new Set(words ?? [])) {
+        if (families.has(name.split("_")[0]!) && !fieldNames.has(name)
+            && !(served.has(name) && holds.has(name))) {
+          problems.push(`${tool.name} in ${profile} names ${name}`);
+        }
+      }
+    }
+  }
+  return problems;
+}
+
 const base = toolTable()[0]!;
 
 describe("tool table guard", () => {
@@ -222,6 +251,19 @@ describe("tool table guard", () => {
     expect(DEFAULT_PROFILE).toBe("custom");
     // The directory profile cites the directories' rules it is held to.
     expect(profiles.directory.sources.join(" ")).toMatch(/openai\.com.*claude\.com/);
+  });
+
+  it("names in a description only tools of each profile that serves it", () => {
+    expect(unservedNames(toolTable())).toEqual([]);
+    expect(unservedNames(toolTable().map((tool) => tool.name === "board_digest"
+      ? { ...tool, description: `${tool.description} Read on with collection_pull.` } : tool)))
+      .toEqual(["board_digest in directory names collection_pull",
+                "board_digest in custom names collection_pull",
+                "board_digest in run names collection_pull"]);
+    // A run serves no mailbox tool, so a tool it serves names none.
+    expect(unservedNames(toolTable().map((tool) => tool.name === "board_digest"
+      ? { ...tool, description: `${tool.description} Ack with mailbox_ack.` } : tool)))
+      .toEqual(["board_digest in run names mailbox_ack"]);
   });
 
   it("serves the digests and code mode, each with its door", () => {

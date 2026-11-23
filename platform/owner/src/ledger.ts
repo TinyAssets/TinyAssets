@@ -205,6 +205,13 @@ export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed
   "acts as it and no new mail goes to or from it; its mail is kept, and it is back when the " +
   "file is";
 export const NO_AGENT = "no_agent: no such agent of the owner's";
+/**
+ * An outside client that is no enabled agent: never registered, or disabled. An agent is the
+ * card its client files and the owner applies (`registrations.ts`).
+ */
+export const NOT_AN_AGENT = "this connection has no registered agent, which a mailbox, its " +
+  "rooms and a narrowed grant's work need: file one with agent_register, for the owner to " +
+  "approve";
 const DELIVERY_METHODS: readonly string[] =
   Object.freeze(["mcp_event", "routine_fire", "webhook", "a2a", "pull"]);
 /** A wake's `changes` bits, in `CHANGES` order. */
@@ -1452,7 +1459,7 @@ export class Ledger {
   #self(actor: Actor): string {
     const me = this.#identity(actor);
     if (me === null) {
-      throw new Refusal("refused", "this outside identity is not one enabled agent");
+      throw new Refusal("refused", NOT_AN_AGENT);
     }
     return me;
   }

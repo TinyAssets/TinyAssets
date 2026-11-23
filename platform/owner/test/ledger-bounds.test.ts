@@ -13,7 +13,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
-  archiveDue, hotFull, LEDGER_LIMITS, type Ledger, moveTake, postRoom,
+  archiveDue, hotFull, LEDGER_LIMITS, type Ledger, moveTake, NOT_AN_AGENT, postRoom,
   sealable,
 } from "../src/ledger";
 import { OWNER } from "../src/authority";
@@ -290,7 +290,7 @@ describe("the ledger's bounds", () => {
         const refusals = new Map<string, number>();
         const allowed = new Set([
           "FULL", BUSY, "room is not an enabled agent's dm",
-          "this outside identity is not one enabled agent",
+          NOT_AN_AGENT,
           "agent not found", "ack is past this reader's mail",
         ]);
         const idOf = (who: Origin) => ledger.agents(who).find((a) => a.disabled_reason === null)

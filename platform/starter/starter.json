@@ -1,5 +1,5 @@
 {
- "version": 9,
+ "version": 10,
  "okf": {
   "repository": "GoogleCloudPlatform/open-knowledge-format",
   "commit": "ad30107c31c06aec8a7d5636e0d1058118604e6f",
@@ -64,7 +64,7 @@
   {
    "path": "/workspace/index.md",
    "class": "personal",
-   "text": "# The owner\n\n* [Profile](/workspace/USER.md) - who the owner is, their time zone and standing preferences, shared by every agent\n* [Goals](/workspace/goals/index.md) - what the owner wants; read before acting for them\n\n# Agents\n\n* [Agents](/workspace/agents/) - each of the owner's agents: its AGENTS.md, agent.json and persona (SOUL.md)\n* [Shared skills](/workspace/.agents/skills/) - the skills every agent of the owner's has\n\n# Work\n\n* [Knowledge](/workspace/knowledge/index.md) - what the owner and their agents know, as linked pages\n* [Projects](/workspace/projects/) - where agents keep a piece of work's notes, decisions and results, one directory each, made by the agent that starts it\n"
+   "text": "# The owner\n\n* [Profile](/workspace/USER.md) - who the owner is, their time zone and standing preferences, shared by every agent\n* [Goals](/workspace/goals/index.md) - what the owner wants; read before acting for them\n\n# Agents\n\n* [Agents](/workspace/agents/) - each of the owner's agents: its AGENTS.md, agent.json and persona (SOUL.md)\n* [Shared skills](/workspace/.agents/skills/) - the skills every agent of the owner's has\n"
   },
   {
    "path": "/workspace/goals/index.md",
