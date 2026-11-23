@@ -31,8 +31,8 @@ once #5835 dropped `keyMint`'s `proposal`).
   `actionRefuse`, `registerAgent` as the owner, `registerDecline`: `refused`, "... is not the
   pending card shown"), `policyProposal` (dropped door: `refused`), `signinCode` and
   `signinCancel` `id` (`refused`, no such sign-in), `socketTicket` (`ticket_refused`),
-  `agentStatus` and `agentCancel` (`no_run`, `no_schedule`), the sync doors' `lease_id` and
-  `epoch` (`sync_fenced`), and the collection cursors (`cursor_invalid`, which #5829 named for
+  `agentStatus` and `agentCancel` (`no_run`, `no_schedule`), the owner's own
+  `fileSyncCommit` `lease_id` and `epoch` (`sync_fenced`), and the collection cursors (`cursor_invalid`, which #5829 named for
   "a cursor no answer gave", a string or not).
 - **The 149 untyped fields' types**, each from its module's check (and the doors' TypeScript
   where they build it): 88 `string`, 30 `integer`, 17 `array`, 4 `object`, 2 `boolean`, and
@@ -64,7 +64,9 @@ once #5835 dropped `keyMint`'s `proposal`).
   sign-in reports) sends numbers for epochs, cursors, sizes and counts, strings for ids and
   paths, lists for chunks, ops, frames and reports, `{ exit_code }` for an end, `true` for a
   check, and the CLI's `tool_name` and `tool_input` as it handed them; the operator's restore and
-  erasure, and the cutover's import, build typed requests (`tsc` held them, above).
+  erasure hand on the deploy kit's arguments cast (`doors/src/operator.ts`), which the kit
+  builds of those types (`deploy/deploy.ts`), and the cutover's import builds typed requests
+  (`tsc` held them, above).
 - **Callers held to no type before**: `/api`, the app's `tools/<name>` route and code mode hand
   tool arguments as they came (`cursor-numbers.md`); `/mcp` holds them to the tool's schema (the
   MCP SDK, `doors/src/mcp.ts` `fromJsonSchema`), so an MCP caller already got invalid params
@@ -98,7 +100,8 @@ name refusal is `invalid` with the row's words (`args.refused`).
    string or null, its `fileWrite` content a string or bytes; the outside fields, the tool's
    schema, unchanged. The owner's runner reads the owner's fields only for the owner itself
    (`account.origin === null && account.run === null`), so `heldToRead` and `UNREAD_WRITE`,
-   the same rule in code, go. Rejected: widening the tools' schemas to null (outside callers
+   the same rule in code, go; `registerAgent` takes a run's call as outside too (a run holds
+   no owner session, which its door asks first). Rejected: widening the tools' schemas to null (outside callers
    told null is taken, then refused) and rewriting 113 test writes to strings with etags.
 4. **The doors' requests are typed from the table** (`contract/requests.ts` writes each field
    its schema's TypeScript type), so `tsc` holds every request the tree's doors build to the
@@ -118,9 +121,8 @@ and every code of one, is as before.
 - **Codes.** A mistyped value is `invalid` (400, "malformed") at every door. Where a module
   folded the type into a lookup it was another code: the six card doors' `card_id` and
   `digest` (`refused`, 403), `signinCode` and `signinCancel` `id` (`refused`), `socketTicket`
-  (`ticket_refused`), `agentStatus` and `agentCancel` (`no_run`, `no_schedule`), the four sync
-  doors' `lease_id` and `epoch` (`sync_fenced`; the egress door shows `egress_refused` for a
-  quiet code), the collection cursors (`cursor_invalid`, 400 as before). Each was a lookup
+  (`ticket_refused`), `agentStatus` and `agentCancel` (`no_run`, `no_schedule`), the owner's
+  own `fileSyncCommit` `lease_id` and `epoch` (`sync_fenced`), the collection cursors (`cursor_invalid`, 400 as before). Each was a lookup
   answering a malformed call as a missing thing; no caller sends one (the app and the runner
   send what the answers they read gave, `/mcp` refuses it first). Keeping each code would need a
   code per field in the table, a copy of an accident; the refusals' own contract names
@@ -210,12 +212,23 @@ and every code of one, is as before.
 - `deploy/handed.ts`: `takesType` from the contract.
 - `owner/src/owner-do.ts` `#fields`: the owner's fields for the owner itself alone.
 - `owner/src/files.ts`, `runs.ts`, `actions.ts`, `ledger.ts`, `signins.ts`, `grants.ts`,
-  `keys.ts`, `policy.ts`: the checks and types above. `doors/src/api-keys.ts`: a key's scopes a
+  `policy.ts`: the checks and types above. `doors/src/api-keys.ts`: a key's scopes a
   list before the mint. `cutover.json`: the import doors' types named in `owner.ts`.
 - Tests: `contract/guards/doors.test.ts` (each type taken and refused, `integer` under
   `number`, a dropped type, bytes, an undefined field; a field with no type and a tool's bytes
   field refused; a by-who tool served its outside fields), the owner tests whose module words
   for a mistyped value became the step's, and whose outside writes sent bytes or a null etag.
+
+## Review (2026-11-23)
+
+- The sync agent's four sync doors fence its lease in the bind step (`owner-do.ts` `#syncer`),
+  before the fields step, so a mistyped `lease_id` or `epoch` there is still `sync_fenced`
+  (checked on a probe); only the owner's own lease commit, whose module fences it after the
+  fields, answers `invalid`. The research and contract lines above are corrected to that.
+- The type check reads the request and the table alone, after the bind, account, session,
+  guard and scope steps (before the guard and scope only on `fieldsFirst` rows), so a
+  malformed value's `invalid` against a missing thing's `refused` tells a caller only what
+  it sent: no lookup's answer is reachable through it.
 
 ## Owed
 
