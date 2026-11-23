@@ -74,9 +74,9 @@ export interface Verified {
 /**
  * What a metered call is held to: the output cap its reservation leaves, its body's size,
  * the model and tier (its tier option's value, or null) it was reserved for, and whether
- * that model is a router (`routed`): one its vendor bills as the model it routes each call
- * to, so the call is priced by the model its answer says served it, never the router's own
- * listed price (`sources/src/routers.ts`).
+ * that model is a router that may route to a priced model (`routed`): one its vendor bills as
+ * the model it routes each call to, so the call is priced by the model its answer says served
+ * it, never the router's own listed price (`sources/src/routers.ts`).
  */
 export interface Metering {
   readonly max_output_tokens: number;

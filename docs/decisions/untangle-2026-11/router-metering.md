@@ -62,11 +62,13 @@ route, is the vendor's fact, so it is source-record data (Direction 2).
   `typesafe/jev-router`, and any zero-priced model a catalog update adds.
 - **The reserve holds a router's call at the dearest model it may route to**, its input at the
   router's window and its output at the router's cap, so the owner's caps bound it. It tells
-  the gateway the call is routed (`metering.routed`).
+  the gateway the call is routed (`metering.routed`) when a route is priced above zero. A
+  router to free models alone (`openrouter/free`) costs nothing whatever serves it, so it is
+  settled as a model named alone: `succeeded` at zero with its real tokens (review: routed, its
+  every answer settled `unknown`, counting its whole window to the run's tokens).
 - **The gateway prices a routed call by the served model alone**, when the catalog prices it
   above zero. Anything else (no served id, the router's own id, another router, a free model,
-  an unlisted model) is `null`, which keeps the reservation: the dearest route, or nothing for
-  the free router.
+  an unlisted model) is `null`, which keeps the reservation, the dearest route.
 - **The gateway's zero-price guesses go.** A model named alone is priced as itself.
 
 ## Problems found (untangle step 2), with the fix above each
@@ -104,6 +106,10 @@ route, is the vendor's fact, so it is source-record data (Direction 2).
     `credit.free` is ranking work (`untangle/free-model-ranking`), not metering.
   - `auto` could pick a model `pricedBy` refuses only when no ranked or scored model is
     pickable. Its call is then refused loudly at the reserve.
+  - A paid router's answer naming a free model, or a dated id of a listed one, settles
+    `unknown` at the dearest route: an over-count, never an under-count. The gateway cannot
+    tell a free model from a router by price; the live line below shows what OpenRouter's
+    routed answers name.
 
 ## Owed
 

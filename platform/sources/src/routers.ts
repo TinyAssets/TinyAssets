@@ -3,8 +3,10 @@
  * billing is record data, never code). A model is priced at its own catalog price, unless its
  * record names it a router (`routers`): its vendor bills each call as the model it routed the
  * call to, whatever the catalog lists the router at (OpenRouter lists `openrouter/auto` at zero).
- * Such a call is reserved at the dearest of the models it may route to, and settled at the
- * model its answer says served it (`gateway/src/meter.ts`, by the reservation's `routed`).
+ * Such a call is reserved at the dearest of the models it may route to, and, when one of those
+ * is priced above nothing, settled at the model its answer says served it (`routed`,
+ * `gateway/src/meter.ts`). A router to free models alone (`openrouter/free`) costs nothing
+ * whatever it routes to, so it is settled as any model named alone.
  *
  * A record that names routers says its vendor's zero is no price of its own, so a model its
  * catalog prices at zero that is neither one of its routers nor one of its `credit.free` models
@@ -34,7 +36,8 @@ function zero({ cost }: ModelRecord): boolean {
 
 /**
  * What a call of `model`, one of a connection's `models`, on a source of `record` is priced
- * by: a router's, the connection's models it may route to, routed; any other model, itself;
+ * by: a router's, the connection's models it may route to, routed when one of them is priced
+ * above nothing; any other model, itself;
  * null for a router that may route to none of them, or a model priced at zero by a vendor
  * whose zero is no price, which is neither a router nor free.
  */
@@ -44,7 +47,8 @@ export function pricedBy(record: SourceRecord | undefined, models: readonly Mode
   const router = record?.routers?.find((entry) => matches(entry.models, id));
   if (router !== undefined) {
     const to = models.filter((entry) => matches(router.to, entry.id));
-    return to.length === 0 ? null : Object.freeze({ routed: true, models: Object.freeze(to) });
+    return to.length === 0 ? null
+      : Object.freeze({ routed: !to.every(zero), models: Object.freeze(to) });
   }
   if (record?.routers !== undefined && zero(model) && !matches(record.credit?.free ?? [], id)) {
     return null;

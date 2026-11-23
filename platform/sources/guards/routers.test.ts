@@ -55,7 +55,8 @@ describe("a source's routers", () => {
     const free = models.filter((model) => model.id.endsWith(":free"));
     expect(by("openrouter/auto")).toEqual({ routed: true, models });
     expect(by("auto")).toEqual({ routed: true, models });
-    expect(by("openrouter/free")).toEqual({ routed: true, models: free });
+    // A router to free models alone costs nothing whatever serves it: settled as named alone.
+    expect(by("openrouter/free")).toEqual({ routed: false, models: free });
     expect(by(free[0]!.id)).toEqual({ routed: false, models: [free[0]] });
     expect(by(priced[0]!.id)).toEqual({ routed: false, models: [priced[0]] });
     // Every model listed at zero but neither routed nor free: no price is known for it.

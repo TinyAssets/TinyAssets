@@ -26,8 +26,8 @@
  *   an abort, a non-streaming JSON answer, which pi-ai's adapters do not parse); a `done`
  *   with no usage (zero tokens: a stream sent without its usage report); a served model the
  *   catalog does not price; and a router's call whose answer names no other model, or one
- *   the catalog prices at nothing (a router's own id, or a free model, whose reservation, a
- *   free router's, is then nothing too).
+ *   the catalog prices at nothing (a router's own id, or a free model: its reservation, the
+ *   dearest route, is kept).
  *
  * Each API's rules (`api-rules.ts`) are held against pi-ai's learned call: the output cap
  * pi-ai sets must be one the rules list, and the usage-report fields the rules set must be

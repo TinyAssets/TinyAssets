@@ -810,8 +810,8 @@ describe("a call's reservation", () => {
     const path = "/api/v1/chat/completions";
     const call = (model: string) => admitted(r, lease, connection, { path, model });
     expect((await call(router.id)).metering).toMatchObject({ model: router.id, routed: true });
-    // A router to free models alone holds nothing, as a free model named alone does.
-    expect((await call("openrouter/free")).metering).toMatchObject({ routed: true });
+    // A router to free models alone holds nothing, and settles, as a free model named alone.
+    expect((await call("openrouter/free")).metering).toMatchObject({ routed: false });
     expect((await call(free.id)).metering).toMatchObject({ model: free.id, routed: false });
     // The router's input held at its own window, its output at its own cap, each token at
     // the dearest rate of any model the connection lists.
