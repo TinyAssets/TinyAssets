@@ -353,13 +353,16 @@ It never counts as "absent".
   tagged with the run's commit (else a deploy since stops it, named); the record's tags and
   counts are Cloudflare's tags; and each version it takes a Worker back to is one the
   Worker's Deployments show serving alone just before a deployment of the run's commit.
-  Any difference stops it, named, with nothing changed.
+  Any difference stops it, named, with nothing changed. So does a version it would take a
+  Worker back to whose commit holds no `contract/handed.json`, or whose code is unknown:
+  every later plan reads what each Worker serves, so none could deploy forward from it.
 
   **A rollback by hand** (the dashboard's Deployments, Rollback, from a phone) follows the
   same rules, which Cloudflare cannot know: never to a version whose tag's `-m` or `-f`
   counts are lower than the live version's, nor past a run that set the Worker's secrets
-  (the dashboard asks to confirm changed secrets: refuse), and callers first, the doors
-  before the owner. The run's rollout record names each version before; its Deployments
+  (the dashboard asks to confirm changed secrets: refuse), nor to a commit without
+  `contract/handed.json` (the kit then plans nothing until the Worker serves one it tagged),
+  and callers first, the doors before the owner. The run's rollout record names each version before; its Deployments
   show the same one just before the run's.
 - **The platform's canary** (Fact 11, d3 §J2): `deploy/canary.ts`, run by **Platform canary**
   (`platform-canary.yml`) and by the kit after each mode. It checks the platform from
