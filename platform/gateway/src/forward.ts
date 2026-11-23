@@ -1,7 +1,7 @@
 /**
  * Raw passthrough for sandbox egress (research §5.4 step 4.3), the credential check a
- * connection makes when it is set up (`verify`), and the read of what its key can pay for
- * (`credit`).
+ * connection makes when it is set up (`verify`), and the reads of what its key can pay for
+ * (`credit`) and of how strong its vendor lists each model (`strength`).
  *
  * The sandbox's model clients speak each provider's own API to our egress door with
  * placeholder keys; the binder admits the request at the owner's object, which hands it
@@ -32,11 +32,11 @@ import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
   allows, creditRead, egressHeaders, type EgressScope, egressTarget, isService, type Meter,
-  meteredCall, meteredModel, type ModelScope, paysBy, type Upstream,
+  meteredCall, meteredModel, type ModelScope, paysBy, scoresBy, strengthRead, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
-  type KeyCredit, metering, MODEL_NAME, type MeterOutcome, type Resealed, type Reservation,
-  type Reserve, type Verified,
+  type KeyCredit, metering, MODEL_NAME, type MeterOutcome, type ModelStrength, type Resealed,
+  type Reservation, type Reserve, type Verified,
 } from "../../contract/src/gateway";
 import { taken } from "../../contract/src/handed";
 import { boundedJson } from "./answer";
@@ -48,7 +48,9 @@ import {
   tierMultiplier, unpricedOption,
 } from "../../contract/src/api-rules";
 import { keyed, valueAtPath } from "../../contract/src/checks";
-import { clamped, meteredRecord, meteredUsage, Meters } from "./meter";
+import {
+  clamped, meteredRecord, meteredUsage, Meters, type Pricing,
+} from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened } from "./keyring";
 import {
   gatewaySlots, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
@@ -201,11 +203,11 @@ export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unkn
 
 /** A metered call ready to send, or the code it is refused with. */
 type Prepared = { readonly refused: GatewayCode }
-  | { readonly upload: Upload; readonly model: Model<Api>; readonly listed: boolean };
+  | { readonly upload: Upload; readonly model: Model<Api>; readonly pricing: Pricing };
 
 /** A metered call's body serialized once it is checked, reserved and clamped, or its code. */
 type Serialized = { readonly refused: GatewayCode }
-  | { readonly text: string; readonly model: Model<Api>; readonly listed: boolean };
+  | { readonly text: string; readonly model: Model<Api>; readonly pricing: Pricing };
 
 /**
  * The metered call's body, read (at most `length` bytes) and weighed, serialized
@@ -229,7 +231,7 @@ async function prepared(request: Request, length: number, upstream: Upstream,
     return call;
   }
   const bytes = new TextEncoder().encode(call.text);
-  return { upload: uploaded(bytes, ended), model: call.model, listed: call.listed };
+  return { upload: uploaded(bytes, ended), model: call.model, pricing: call.pricing };
 }
 
 /**
@@ -314,10 +316,10 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   if (read.bytes > terms.input_bytes) {
     return { refused: "invalid_request" };
   }
-  const listed = fallbackList(rules, parsed);
+  const pricing = { fallbacks: fallbackList(rules, parsed), routed: terms.routed };
   const text = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
                                       terms.max_output_tokens, upstream.api));
-  return { text, model, listed };
+  return { text, model, pricing };
 }
 
 /**
@@ -372,8 +374,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     return refused("unmetered", resealed);
   }
   let body: BodyInit | null = READS.includes(request.method) ? null : request.body;
-  let model: Model<Api> | null = null;
-  let listed = false;
+  // The metered call's model and what prices it, once it is ready to send.
+  let call: { readonly model: Model<Api>; readonly pricing: Pricing } | null = null;
   let upload: Upload | null = null;
   let held: AbortSignal | null = null;
   if (metered !== null) {
@@ -420,7 +422,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       hold.release();
       return refused(ready.refused, resealed);
     }
-    ({ upload, model, listed } = ready);
+    ({ upload } = ready);
+    call = ready;
     body = upload.body;
     // Past its deadline, or stopped, the upload ends there.
     held = AbortSignal.any([cancelled.signal,
@@ -475,7 +478,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   }
   let outcome: Promise<MeterOutcome> = Promise.resolve(UNKNOWN);
   let source = upstream.body;
-  if (metered !== null && model !== null && priced !== null) {
+  if (metered !== null && call !== null && priced !== null) {
     if (upstream.status < 200 || upstream.status >= 300) {
       // A refusal before any output: the provider produced nothing.
       outcome = Promise.resolve(FAILED);
@@ -488,8 +491,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       // one whose tier cannot be read, a cut, is unknown by the rejection below).
       const tierPriced = servedPriced(rules, toTier);
       outcome = Promise.all([meteredUsage(metered.catalog, priced,
-                                          bearer(credential), model, upstream.status,
-                                          new Headers(upstream.headers), toMeter, listed),
+                                          bearer(credential), call.model, upstream.status,
+                                          new Headers(upstream.headers), toMeter, call.pricing),
                              tierPriced])
         .then(([usage, tier]): MeterOutcome => (usage === null || !tier.priced ? UNKNOWN
           : { state: "succeeded", tokens: usage.tokens,
@@ -613,13 +616,16 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
 
 /** The most of a key's limits answer read (`credit`). */
 const CREDIT_ANSWER_MAX = 64 * 1024;
+/**
+ * The most of a strength listing read (`strength`): a vendor's whole model listing, about
+ * 0.9 MB for OpenRouter's 477 models on 2026-11-23, with room for it to grow.
+ */
+const STRENGTH_ANSWER_MAX = 4 * 1024 * 1024;
 
 /**
- * What an opened model credential's key can pay for (`credit_read`, checked here): a `GET` of
- * the read's URL, only where the sealed endpoints allow one (`endpoint_refused`), sent as
- * `verify` sends; a 2xx answer's JSON, read to `CREDIT_ANSWER_MAX`, held to the read's
- * tests. Anything else is the upstream outcome's fixed code, and an answer of another shape
- * `upstream_error`. A service's key reports no limits (`unsupported_source`).
+ * What an opened model credential's key can pay for (`credit_read`, checked here), read by
+ * `sealedRead` to `CREDIT_ANSWER_MAX` and held to the read's tests; an answer of another
+ * shape is `upstream_error`.
  */
 export async function credit(env: KeyringEnv, bound: Binding, blob: unknown,
                              value: unknown): Promise<KeyCredit> {
@@ -627,11 +633,45 @@ export async function credit(env: KeyringEnv, bound: Binding, blob: unknown,
     throw new Refusal("invalid_request");
   }
   const read = creditRead(value);
+  const pays = paysBy(read, await sealedRead(env, bound, blob, read.url, CREDIT_ANSWER_MAX));
+  if (pays === null) {
+    throw new Refusal("upstream_error");
+  }
+  return Object.freeze({ pays });
+}
+
+/**
+ * How strong each model is, as the opened model credential's vendor lists it
+ * (`strength_read`, checked here), read by `sealedRead` to `STRENGTH_ANSWER_MAX` and held to
+ * the read's paths; an answer of another shape is `upstream_error`.
+ */
+export async function strength(env: KeyringEnv, bound: Binding, blob: unknown,
+                               value: unknown): Promise<ModelStrength> {
+  if (!keyed(value, ...taken("strength_read"))) {
+    throw new Refusal("invalid_request");
+  }
+  const read = strengthRead(value);
+  const scores = scoresBy(read,
+                          await sealedRead(env, bound, blob, read.url, STRENGTH_ANSWER_MAX));
+  if (scores === null) {
+    throw new Refusal("upstream_error");
+  }
+  return Object.freeze({ scores: Object.freeze(scores) });
+}
+
+/**
+ * A model credential's `GET` of `url`, only where its sealed endpoints allow one
+ * (`endpoint_refused`), sent as `verify` sends: a 2xx answer's JSON, read to `max`. Anything
+ * else is the upstream outcome's fixed code. A service's key has no such read
+ * (`unsupported_source`).
+ */
+async function sealedRead(env: KeyringEnv, bound: Binding, blob: unknown, url: string,
+                          max: number): Promise<unknown> {
   const { credential } = await open(env, bound, blob);
   if (isService(credential.upstream)) {
     throw new Refusal("unsupported_source");
   }
-  const target = new URL(read.url);
+  const target = new URL(url);
   if (!allows(credential.endpoints, "GET", target)) {
     throw new Refusal("endpoint_refused");
   }
@@ -651,9 +691,5 @@ export async function credit(env: KeyringEnv, bound: Binding, blob: unknown,
     await answer.body?.cancel();
     throw new Refusal(upstreamCode(answer.status));
   }
-  const pays = paysBy(read, await boundedJson(answer, CREDIT_ANSWER_MAX));
-  if (pays === null) {
-    throw new Refusal("upstream_error");
-  }
-  return Object.freeze({ pays });
+  return boundedJson(answer, max);
 }

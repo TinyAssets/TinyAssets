@@ -21,10 +21,21 @@ import {
 } from "./support";
 import { steer } from "./fake-upstream";
 import type { Reserve } from "../../contract/src/gateway";
+import type { Source } from "../../contract/src/egress-scope";
+import { builtinCatalog } from "../src/catalog";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
 /** The doors' connect entrypoint (the doors and owner suites reach it over a real binding). */
 const connect = new ConnectGateway(createExecutionContext(), env);
+
+/** OpenRouter's chat completions by key, as its record seals them. */
+const OPENROUTER: Source = Object.freeze({
+  upstream: { provider: "openrouter", api: "openai-completions",
+              base_url: "https://openrouter.ai/api/v1",
+              auth: { header: "authorization", scheme: "Bearer" } },
+  endpoints: [{ origin: "https://openrouter.ai", paths: ["/api/v1/chat/completions"],
+                methods: ["POST"] }],
+});
 
 /** An OpenAI Responses model whose output cap pi-ai sets, so its calls can be metered. */
 const responsesModel = () => meterable(OPENAI, "sk-fwd");
@@ -348,10 +359,35 @@ describe("the gateway Worker", () => {
     // An object that reserved another call than it was asked is the platform's bug: loud.
     const other: Reserve = async (asking) => ({ metering: {
       max_output_tokens: 10, input_bytes: EGRESS_BODY_MAX, model: "another-model",
-      tier: asking.tier } });
+      tier: asking.tier, routed: false } });
     const wrong = await call(text, other);
     expect([wrong.response.status, await wrong.response.json()])
       .toEqual([500, { error: { code: "internal", message: "internal" } }]);
+  });
+
+  it("settles a router's call at the model its answer says served it, as its reservation says",
+     async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const blob = (await connect.seal("alice", C1, 1, "sk-or", OPENROUTER)).blob;
+    const paid = builtinCatalog().provider("openrouter")!.getModels()
+      .find((model) => model.api === "openai-completions" && model.cost.output > 0)!;
+    const settled = async (routed: boolean, served?: string) => {
+      const answer = await egress.forward("alice", C1, 1, blob, posted("/api/v1/chat/completions",
+        JSON.stringify({ model: "openrouter/auto", stream: true,
+                         messages: [{ role: "user", content: "hi" }] }),
+        served === undefined ? {} : steer({ served })), granting([], { routed }),
+        new ReadableStream());
+      await answer.response.text();
+      return JSON.parse(await new Response(answer.outcome).text()) as
+        { state: string; cost?: number; served?: string };
+    };
+    const routed = await settled(true, paid.id);
+    expect(routed).toMatchObject({ state: "succeeded", served: paid.id });
+    expect(routed.cost).toBeGreaterThan(0);
+    // An answer naming the router itself says nothing of what it routed to: the call keeps
+    // its reservation. Reserved as no router, it is priced as the model it named.
+    expect(await settled(true)).toEqual({ state: "unknown" });
+    expect(await settled(false)).toMatchObject({ state: "succeeded", cost: 0 });
   });
 
   it("leaves a metered answer its provider goes silent on to its caller, whose leaving ends it",
@@ -484,7 +520,7 @@ describe("the gateway Worker", () => {
     // The owner's object: its connections' upkeep and its wakes, and no seal or forward.
     expect(Object.getOwnPropertyNames(Gateway.prototype).sort())
       .toEqual(["constructor", "credit", "fetch", "refresh", "reseal", "resealDoorbell",
-                "revokeAtProvider", "ringDoorbell"]);
+                "revokeAtProvider", "ringDoorbell", "strength"]);
   });
 
   it("serves no model call over fetch: /v1/messages is gone with the in-object loop",

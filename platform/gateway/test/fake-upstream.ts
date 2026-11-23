@@ -4,13 +4,14 @@
  * the gateway's suite and in the owner's, which runs the real gateway beside it.
  *
  * It answers in each provider's own wire format, so pi-ai's real adapters parse it:
- * Anthropic Messages, OpenAI Responses and Google Generative AI, each as SSE. A model call's
- * reply is chosen by a `cmd:` word in the request body (the test's user message):
+ * Anthropic Messages, OpenAI Responses, Google Generative AI and OpenRouter's chat
+ * completions, each as SSE. A model call's reply is chosen by a `cmd:` word in the request
+ * body (the test's user message):
  *
  * - `cmd:echo`, and a body with no `cmd:` word: the reply's text is JSON of what it received
  *   (path, the credential headers, the output-token cap, the service tier), so a test reads
  *   back what the gateway sent; the word `tier` (`steer`) names the tier an Anthropic answer
- *   says it served.
+ *   says it served, and the word `served` the model an answer says served it (a router's).
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  *
@@ -22,7 +23,8 @@
  * first token). A request with an `id` is recorded as it arrives, read back from
  * `https://status.test/cancelled?id=<id>` (`arrived`), so a test acts once the provider has
  * it; `auth.test` is a token endpoint; `keys.test` is a key-exchange endpoint (OpenRouter's
- * PKCE flow); `credit.test/key` a key's limits (`keyLimits`); `evil.test` records
+ * PKCE flow); `credit.test/key` a key's limits (`keyLimits`); `models.test/models` a
+ * vendor's model listing (`modelListing`); `evil.test` records
  * everything it receives, read back from `https://status.test/evil`, so a test sees whether
  * a redirect was followed. It is test code: its module state (the cancel registry, the evil log) is the fake's, never the
  * gateway's. `doorbell.test`, and Claude's `/fire` path on `api.anthropic.com`, are a
@@ -111,6 +113,26 @@ function openaiFormat(): Format {
   };
 }
 
+/** Chat completions, as OpenRouter streams them: every chunk names the model that served it. */
+function completionsFormat(): Format {
+  let served = "";
+  const chunk = (fields: Record<string, unknown>) => sse([[null, {
+    id: "gen_fake", object: "chat.completion.chunk", model: served, ...fields }]]);
+  return {
+    start: (model) => {
+      served = model;
+      return chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "" },
+                                 finish_reason: null }] });
+    },
+    text: (delta) => chunk({ choices: [{ index: 0, delta: { content: delta },
+                                         finish_reason: null }] }),
+    finish: () => chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })
+      + chunk({ choices: [], usage: { prompt_tokens: USAGE.input, completion_tokens: USAGE.output,
+                                      total_tokens: USAGE.input + USAGE.output } })
+      + "data: [DONE]\n\n",
+  };
+}
+
 function googleFormat(): Format {
   return {
     start: () => "",
@@ -175,7 +197,9 @@ async function model(request: Request, format: Format): Promise<Response> {
   // OpenAI's Responses answer names the tier it served the call at, as the API does; an
   // Anthropic answer names its served tier in its usage when the word `tier` asks.
   const served = word(request, "tier");
-  const payload = (format.start(name) + format.text(reply.slice(0, half))
+  // The answer names the model the word `served` names (a router's pick), or the one named.
+  const payload = (format.start(word(request, "served") ?? name)
+    + format.text(reply.slice(0, half))
     + format.text(reply.slice(half)) + format.finish(reply))
     .replace('"status":"completed",', tier === null ? '"status":"completed",'
       : `"status":"completed","service_tier":${JSON.stringify(tier === "auto" ? "default" : tier)},`)
@@ -255,6 +279,29 @@ function keyLimits(request: Request): Response {
   }
   return data === undefined ? Response.json({ error: "no" }, { status: 401 })
     : Response.json({ data: { label: "sk-or-v1-...", usage: 0, ...data } });
+}
+
+/**
+ * A vendor's model listing (`models.test/models`, in OpenRouter's `GET /api/v1/models/user`
+ * shape), by the key sent: `sk-listed` lists a scored model, one with no benchmarks and one
+ * whose score is null; `sk-unscored` scores none; `sk-odd` is an answer of another shape;
+ * any other is refused.
+ */
+function modelListing(request: Request): Response {
+  const key = request.headers.get("authorization")?.replace(/^Bearer /, "");
+  const scored = (id: string, score: number | null) =>
+    ({ id, benchmarks: { design_arena: [], artificial_analysis: { intelligence_index: score } } });
+  const data = {
+    "sk-listed": [scored("nvidia/nemotron-3.5-super-vl:free", 13.6),
+                  { id: "cohere/north-mini-code:free" },
+                  scored("google/gemma-4-26b-a4b-it:free", null)],
+    "sk-unscored": [{ id: "cohere/north-mini-code:free" }],
+  }[key ?? ""];
+  if (key === "sk-odd") {
+    return Response.json({ models: [] });
+  }
+  return data === undefined ? Response.json({ error: "no" }, { status: 401 })
+    : Response.json({ data });
 }
 
 /** A key-exchange endpoint (OpenRouter's PKCE flow): JSON in, `{key}` out. */
@@ -432,6 +479,9 @@ export default {
     if (url.hostname === "credit.test" && url.pathname === "/key") {
       return keyLimits(request);
     }
+    if (url.hostname === "models.test" && url.pathname === "/models") {
+      return modelListing(request);
+    }
     if (url.hostname === "auth.test") {
       if (url.pathname === "/revoke") {
         const form = new URLSearchParams(new TextDecoder().decode(await request.arrayBuffer()));
@@ -462,6 +512,9 @@ export default {
     }
     if (url.hostname === "generativelanguage.googleapis.com") {
       return model(request, googleFormat());
+    }
+    if (url.hostname === "openrouter.ai") {
+      return model(request, completionsFormat());
     }
     return new Response(`no fake for ${url.hostname}`, { status: 599 });
   },

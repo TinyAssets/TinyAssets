@@ -1089,8 +1089,8 @@ describe("auto and the owner's sign-ins", () => {
       .toMatchObject({ engine: "pi", credential: "api_key" });
   });
 
-  it("picks on a key that pays for nothing only a model its source serves such a key, and on " +
-     "one that pays the strongest", async () => {
+  it("picks on a key that pays for nothing only a model its source serves such a key, the " +
+     "strongest its vendor lists, and on one that pays the strongest", async () => {
     // The stage finding of 2026-11-23, past the batch variants: a free-tier OpenRouter key,
     // whose catalog prices a router at zero that routes to priced models.
     const [base] = await catalog(OPENAI);
@@ -1098,10 +1098,13 @@ describe("auto and the owner's sign-ins", () => {
     const FREE = "nvidia/nemotron-3-ultra-550b-a55b:free";
     const PAID = "~anthropic/claude-fable-latest";
     const models = [{ ...base!, id: PAID }, { ...base!, id: "openrouter/auto", cost: zero },
+                    { ...base!, id: "cohere/north-mini-code:free", cost: zero },
                     { ...base!, id: FREE, cost: zero }];
     const keyed = async (pays: boolean) => {
       const r = await gated();
       await r.gateway.arm("credit", { answer: { pays } });
+      // The vendor scores one free model; the other, first by id, it does not.
+      await r.gateway.arm("strength", { answer: { scores: [{ id: FREE, score: 11.8 }] } });
       await r.connect("sk-good", OPENAI, "OpenRouter", models, "openrouter_user_models_v1");
       await drainDue(r.stub);
       await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);

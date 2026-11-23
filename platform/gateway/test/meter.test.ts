@@ -26,6 +26,9 @@ const OPENROUTER = Object.freeze({
   provider: "openrouter", api: "openai-completions", base_url: "https://openrouter.ai/api/v1",
   auth: { header: "authorization", scheme: "Bearer" } });
 const SSE = new Headers({ "content-type": "text/event-stream" });
+/** A call that listed fallback models; a router's call. */
+const LISTED = Object.freeze({ fallbacks: true, routed: false });
+const ROUTED = Object.freeze({ fallbacks: false, routed: true });
 
 function chunk(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -316,20 +319,32 @@ describe("what a metered call could escape its reservation by", () => {
     const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
     expect(router.cost.input + router.cost.output).toBe(0);
     const paid = models.find((model) => model.cost.output > 0)!;
+    const free = models.find((model) => model.id.endsWith(":free"))!;
     // Routed to a paid model: priced as that model, never at the router's nothing.
     const routed = await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
-                                      streamOf(completion(paid.id, BIG)));
+                                      streamOf(completion(paid.id, BIG)), ROUTED);
     const usage = { input: 200_000, output: 50_000, cacheRead: 0, cacheWrite: 0,
                     totalTokens: 250_000,
                     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    expect(routed).toMatchObject({ served: paid.id });
     expect(routed!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER,
                                                                  paid.id)!, usage).total, 9);
     expect(routed!.cost).toBeGreaterThan(0);
-    // Served by a model the catalog does not price, or with no word of what served it.
-    expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
-                              streamOf(completion("someone/unlisted", BIG)))).toBeNull();
-    expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
-                              streamOf(completion(null, BIG)))).toBeNull();
+    // Served by a model the catalog does not price, with no word of what served it, or
+    // naming itself, another router or a free model: no price of what it routed to.
+    for (const served of ["someone/unlisted", null, router.id, "auto", "openrouter/free",
+                          free.id]) {
+      expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
+                                streamOf(completion(served, BIG)), ROUTED), String(served))
+        .toBeNull();
+    }
+    // A free model named alone is priced as itself, whether or not its answer names it.
+    for (const served of [free.id, null]) {
+      expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x",
+                                meteredRecord(catalog, OPENROUTER, free.id)!, 200, SSE,
+                                streamOf(completion(served, BIG))), String(served))
+        .toEqual({ tokens: 250_000, cost: 0 });
+    }
     // A cheap name that a dearer fallback served is priced as the dearer.
     const [cheap, dear] = [...models].filter((model) => model.cost.output > 0)
       .sort((a, b) => a.cost.output - b.cost.output).filter((_m, i, all) =>
@@ -371,14 +386,12 @@ describe("what a metered call could escape its reservation by", () => {
     // The same answer to a call that listed fallbacks: what served it is not known to cost
     // what the named model costs.
     expect(await meteredUsage(catalog, GROQ, "gsk-x", record, 200, SSE,
-                              streamOf(completion(snapshot, BIG)), true)).toBeNull();
-    // A zero-priced router served by an unlisted model stays unknown.
+                              streamOf(completion(snapshot, BIG)), LISTED)).toBeNull();
+    // A router's answer shaped as its own snapshot: a router's price is no model's.
     const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
     expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
-                              streamOf(completion("someone/unlisted", BIG)), false)).toBeNull();
-    // Even one shaped as its own snapshot: a router's price is no model's.
-    expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
-                              streamOf(completion(`${router.id}-2026-01-01`, BIG)))).toBeNull();
+                              streamOf(completion(`${router.id}-2026-01-01`, BIG)), ROUTED))
+      .toBeNull();
     // A served model the catalog lists: the dearer of the two, its id recorded.
     const listed = catalog.provider("openrouter")!.getModels()
       .filter((model) => model.api === "openai-completions" && model.cost.output > 0)
@@ -386,7 +399,7 @@ describe("what a metered call could escape its reservation by", () => {
     const [cheap, dear] = [listed[0]!, listed.at(-1)!];
     const priced = await meteredUsage(catalog, OPENROUTER, "sk-or-x",
                                       meteredRecord(catalog, OPENROUTER, cheap.id)!, 200, SSE,
-                                      streamOf(completion(dear.id, BIG)), true);
+                                      streamOf(completion(dear.id, BIG)), LISTED);
     expect(priced).toMatchObject({ served: dear.id });
     expect(priced!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER, dear.id)!,
                                                    usage).total, 9);

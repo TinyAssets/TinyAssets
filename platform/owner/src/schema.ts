@@ -2792,6 +2792,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX collection_creators ON collection_rows (collection, creator)",
     "CREATE INDEX collection_changes ON collection_rows (change)",
   ]),
+  // 32 (`connections.ts`; `untangle-2026-11/free-model-ranking.md`): how strong each active
+  // connection's models are, where its source record says where its vendor lists that
+  // (`strength`): the scores of its models the listing gave (a JSON list of id and score
+  // pairs, null until read; within `MODELS_JSON_MAX`, as each pair is shorter than its
+  // model's record), and when the `connections` lane reads it next. A row is an active
+  // connection's alone: its revoke deletes it. The lane makes one for each active connection
+  // it has not considered, the ones from before among them, so none needs a reconnect. The
+  // vendor's, read again, not the owner's: not exported.
+  Object.freeze([
+    "CREATE TABLE connection_strength (connection TEXT PRIMARY KEY CHECK " +
+      "(length(connection) = 25), scores TEXT CHECK (scores IS NULL OR (json_valid(scores) " +
+      "AND length(CAST(scores AS BLOB)) <= 655360)), due REAL) WITHOUT ROWID",
+    "CREATE INDEX connection_strength_due ON connection_strength (due) WHERE due IS NOT NULL",
+  ]),
 ]);
 
 /**
@@ -2884,6 +2898,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 29
   null,  // 30
   PRIVATE_SPACES,  // 31
+  null,  // 32
 ]);
 
 /**

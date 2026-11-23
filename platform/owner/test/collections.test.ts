@@ -94,7 +94,7 @@ describe("the revision primitive", () => {
     // A cursor is the object's own: one made up, or a digest's, is refused.
     for (const after of ["0".repeat(64), "7", (await stub.boardDigest(as("bob"), {
       limit: 1 })).cursor]) {
-      expect((await failure(() => pull(10, after))).code).toBe("invalid");
+      expect((await failure(() => pull(10, after))).code).toBe("cursor_invalid");
     }
     expect(await stub.collectionWrite(as("bob"), {
       collection: "board", row_id: "t1", body: "{}", expected_etag: "", private: false,
@@ -341,7 +341,8 @@ describe("the primitive's history", () => {
     expect(b.revision).toBe(1);
     // A deletion is told by its table, not its op: a write named `delete` is a write.
     await put("c", "1", "", "bob", "delete");
-    expect((await inObject(stub, (store) => store.changed(alice, { collection: room }, 0, 10)))
+    expect((await inObject(stub, (store) => store.changed(alice, { collection: room },
+                                                          undefined, 10)))
       .rows.map((row) => [row.row_id, row.deleted]))
       .toEqual([["a", true], ["b", true], ["a", false], ["c", false]]);
   });
@@ -466,7 +467,7 @@ describe("the primitive's history", () => {
       for (const body of bodies) {
         last = store.write(alice, alice, "board", "t", body, last.etag, false);
       }
-      const first = store.history("bob", "board", "t", false, null);
+      const first = store.history("bob", "board", "t", false, undefined);
       expect([first.entries.map((e) => e.body), first.more, first.before])
         .toEqual([bodies.slice(2), true, expect.stringMatching(/^[0-9a-f]{64}$/)]);
       const older = store.history("bob", "board", "t", false, first.before);
@@ -488,11 +489,11 @@ describe("the primitive's history", () => {
         open = store.write(alice, alice, "board", "t", `open ${n}`, open.etag, false);
         own = store.write(alice, alice, "board", "t", `own ${n}`, own.etag, true);
       }
-      const before = store.history(alice, "board", "t", false, null).entries[1]!.next;
+      const before = store.history(alice, "board", "t", false, undefined).entries[1]!.next;
       expect(store.history(alice, "board", "t", false, before).entries.map((e) => e.body))
         .toEqual(["open 1"]);
       expect((thrown(() => store.history(alice, "board", "t", true, before)) as Refusal).code)
-        .toBe("invalid");
+        .toBe("cursor_invalid");
     });
   });
 
@@ -795,9 +796,9 @@ describe("the history keys' migration", () => {
           const store = stores.collections;
           const shown = (page: { entries: { revision: number; body: string }[] }) =>
             page.entries.map((each) => [each.revision, each.body]);
-          const a = store.history(owner, "board", "a", false, null);
+          const a = store.history(owner, "board", "a", false, undefined);
           // Before a2, whose change is a negative key.
-          return [shown(a), shown(store.history("bob", "board", "b", true, null)),
+          return [shown(a), shown(store.history("bob", "board", "b", true, undefined)),
                   shown(store.history(owner, "board", "a", false, a.entries[1]!.next))];
         }),
       };
@@ -877,7 +878,7 @@ describe("the private key spaces' migration", () => {
           const hers = store.write(owner, "cara", "board", "p", "cara's", "", true);
           return [store.get("bob", "board", "p", true).row?.body,
                   store.get("bob", "board", "p", false).row, hers.revision,
-                  store.history("bob", "board", "p", true, null).entries.map((e) => e.body),
+                  store.history("bob", "board", "p", true, undefined).entries.map((e) => e.body),
                   store.get(owner, "board", "t", false).row?.body];
         }),
       };
@@ -916,27 +917,24 @@ describe("the RPC door's fields", () => {
 
   it("refuses a cursor no answer gave, or a limit that is not a whole number in range",
      async () => {
-    const { stub, as } = await ownerObject();
-    for (const [after, limit] of [["1", 1], ["", 1], [true, 1], [null, 1], ["0".repeat(64), 1],
-                                  [undefined, 1.5], [undefined, Number.POSITIVE_INFINITY],
-                                  [undefined, "2"], [undefined, 101], [undefined, 0],
-                                  [undefined, null]]) {
-      const refused = await failure(() => stub.collectionPull(as("bob"), {
-        collection: "board", after, limit } as never));
-      expect(refused.code, `after ${String(after)}, limit ${String(limit)}`).toBe("invalid");
-    }
-  });
-
-  it("reads a number, as the doors' release before hands, from the start", async () => {
     const o = await ownerObject();
+    const { stub, as } = o;
     await write(o, "bob", { row_id: "t", body: "x" });
-    for (const after of [0, 7]) {
-      expect((await o.stub.collectionPull(o.as("bob"), { collection: "board", after,
-                                                         limit: 10 } as never))
-        .rows.map((row) => row.row_id)).toEqual(["t"]);
-      expect((await o.stub.collectionHistory(o.as("bob"), { collection: "board", row_id: "t",
-                                                            before: after } as never))
-        .entries.map((entry) => entry.body)).toEqual(["x"]);
+    for (const cursor of ["1", "", true, null, 0, 7, "0".repeat(64)]) {
+      for (const call of [
+        () => stub.collectionPull(as("bob"), { collection: "board", after: cursor,
+                                               limit: 1 } as never),
+        () => stub.collectionHistory(as("bob"), { collection: "board", row_id: "t",
+                                                  before: cursor } as never)]) {
+        const refused = await failure(call);
+        expect(refused.code, `cursor ${String(cursor)}`).toBe("cursor_invalid");
+        expect(refused.message).toMatch(/^cursor_invalid: /);
+      }
+    }
+    for (const limit of [1.5, Number.POSITIVE_INFINITY, "2", 101, 0, null]) {
+      const refused = await failure(() => stub.collectionPull(as("bob"), {
+        collection: "board", limit } as never));
+      expect(refused.code, `limit ${String(limit)}`).toBe("invalid");
     }
   });
 
@@ -947,7 +945,7 @@ describe("the RPC door's fields", () => {
     const pull = (await o.stub.collectionPull(o.as("bob"), { collection: "board", limit: 1 }))
       .cursor;
     const before = await inObject(o.stub, (store, state) => {
-      const page = store.history("bob", "board", "t", false, null);
+      const page = store.history("bob", "board", "t", false, undefined);
       const held = state.storage.sql.exec<{ incarnation: string }>(
         "SELECT incarnation FROM collection_space").one().incarnation;
       expect(held).toMatch(/^[0-9a-f]{16}$/);
@@ -957,7 +955,9 @@ describe("the RPC door's fields", () => {
     for (const call of [
       () => o.stub.collectionPull(o.as("bob"), { collection: "board", after: pull, limit: 1 }),
       () => o.stub.collectionHistory(o.as("bob"), { collection: "board", row_id: "t", before })]) {
-      expect((await failure(call)).message).toMatch(/^the cursor is from before this object/);
+      const refused = await failure(call);
+      expect([refused.code, refused.message]).toEqual(["cursor_invalid", expect.stringMatching(
+        /^cursor_invalid: (after|before) is a cursor from before this object was restored/)]);
     }
     // A cursor made after it is of the new incarnation, and reads.
     const fresh = await o.stub.collectionPull(o.as("bob"), { collection: "board", limit: 1 });

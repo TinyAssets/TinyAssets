@@ -216,21 +216,21 @@ function spaceOf(caller: string, isPrivate: unknown): string {
   return isPrivate ? caller : "";
 }
 
-/** A pull's or a history's refusal of a cursor of the object before a restore. */
-const RESTORED = "the cursor is from before this object was restored: read again from the " +
-  "start, the cursor left out";
-
 /** The object's cursors, in the caller's unit (`cursorsOf`). */
 interface Cursors {
   /** A cursor at `place` in `order`, of this incarnation. */
   at(order: string, place: number): string;
   /**
    * Where the cursor `given` (the request's `field`) reads from in `order`: `none` when it is
-   * left out, or a number, which the doors' release before hands for the numbers cursors were
-   * (`untangle/cursor-numbers` takes that out); null for a cursor of an earlier incarnation
-   * (the object before a restore); refused for anything else.
+   * left out; null for a cursor of an earlier incarnation (the object before a restore);
+   * refused `cursor_invalid` for anything no answer in `order` gave.
    */
   from(order: string, given: unknown, field: string, none: number): number | null;
+  /**
+   * Where `given` reads from, as `from`, a cursor of an earlier incarnation refused
+   * `cursor_invalid` too: a pull's and a history's, which have no reset.
+   */
+  placed(order: string, given: unknown, field: string, none: number): number;
 }
 
 /**
@@ -247,17 +247,27 @@ function cursorsOf(sql: OwnerStorage["sql"]): Cursors {
     incarnation = randomHex(8);
     sql.exec("UPDATE collection_space SET incarnation = ?", incarnation);
   }
+  const from = (order: string, given: unknown, field: string, none: number) => {
+    if (given === undefined) {
+      return none;
+    }
+    const read = typeof given === "string" ? cursorPlace(key, order, given) : null;
+    if (read === null) {
+      throw new Refusal("cursor_invalid",
+                        `cursor_invalid: ${field} is a cursor an answer gave, or left out`);
+    }
+    return read.incarnation === incarnation ? read.place : null;
+  };
   return {
     at: (order, place) => cursorAt(key, order, place, incarnation),
-    from: (order, given, field, none) => {
-      if (given === undefined || typeof given === "number") {
-        return none;
+    from,
+    placed: (order, given, field, none) => {
+      const place = from(order, given, field, none);
+      if (place === null) {
+        throw new Refusal("cursor_invalid", `cursor_invalid: ${field} is a cursor from before ` +
+                          `this object was restored: read again from the start, ${field} left out`);
       }
-      const read = typeof given === "string" ? cursorPlace(key, order, given) : null;
-      if (read === null) {
-        throw new Refusal("invalid", `${field} is a cursor an answer gave, or left out`);
-      }
-      return read.incarnation === incarnation ? read.place : null;
+      return place;
     },
   };
 }
@@ -549,10 +559,7 @@ export class Collections {
     pageLimit(limit);
     const cursors = cursorsOf(this.#sql);
     const order = seqsOf(collection);
-    const from = cursors.from(order, after, "after", 0);
-    if (from === null) {
-      throw new Refusal("invalid", RESTORED);
-    }
+    const from = cursors.placed(order, after, "after", 0);
     const found = this.#sql.exec<StoredRow>(
       "SELECT * FROM collection_rows WHERE collection = ? AND seq > ? " +
         "AND space IN ('', ?) ORDER BY seq LIMIT ?",
@@ -667,10 +674,7 @@ export class Collections {
     }
     const cursors = cursorsOf(this.#sql);
     const order = historyOf(collection, row.space, rowId);
-    const from = cursors.from(order, before ?? undefined, "before", row.change + 1);
-    if (from === null) {
-      throw new Refusal("invalid", RESTORED);
-    }
+    const from = cursors.placed(order, before, "before", row.change + 1);
     // The row's chain is its key's entries: an erase took every older one. In one key,
     // revision and change rise together, so the key's index holds them in change order.
     const found = this.#sql.exec<{ change: number; revision: number; op: string;
@@ -1004,7 +1008,7 @@ export const collectionsDoors = Object.freeze({
       const offset = bodyOffset(r["body_offset"]);
       const kept = o.collections.history(caller, r["collection"] as string,
                                          r["row_id"] as string, r["private"] ?? false,
-                                         r["before"] ?? null);
+                                         r["before"]);
       const newest = kept.entries.at(-1)?.content_id;
       return { value: { kept, offset }, contents: contentsOf(kept.entries),
                offsetOf: (contentId) => contentId === newest ? offset : 0 };

@@ -13,7 +13,7 @@ import { object, valueAtPath, whole } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
 import {
   allows, type CreditRead, creditRead, ID as PROVIDER, keyExchangeSource, type Source,
-  source as gatewaySource,
+  source as gatewaySource, type StrengthRead, strengthRead,
 } from "../../contract/src/egress-scope";
 import { HEX64 } from "../../contract/src/ids";
 import { MODEL_ID as MODEL_PATTERN } from "../../contract/src/model-record";
@@ -28,7 +28,8 @@ import {
   type DefinitionHooks, type DefinitionNative, type DefinitionSkills,
   type Engine, type HostedUse,
   type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
-  type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
+  type Router, type SourceRecord, SourceRecordError, type Strength, type ToolFilter,
+  type Unattended,
 } from "./schema";
 import type { CredentialKind } from "../../contract/src/sandbox";
 
@@ -1480,9 +1481,7 @@ function creditSpec(check: ReturnType<typeof checker>, value: unknown, sealed: S
   } catch {
     return check.fail("credit's url and none_when are refused by the gateway's own check");
   }
-  if (!allows(sealed.endpoints, "GET", new URL(read.url))) {
-    check.fail("credit.url is a GET its endpoints allow");
-  }
+  sealedGet(check, sealed, read.url, "credit.url");
   const refused = fields["refused"];
   if (!Array.isArray(refused) || refused.length < 1 || refused.length > 8
       || !refused.every((status) => whole(status, 400, 599))
@@ -1496,6 +1495,52 @@ function creditSpec(check: ReturnType<typeof checker>, value: unknown, sealed: S
   return Object.freeze({ ...read, refused: Object.freeze([...refused as number[]]),
                          free: Object.freeze(free),
                          cite: check.https(fields["cite"], "credit.cite") });
+}
+
+/**
+ * A gateway source's `strength` (`schema.ts` `Strength`): its read by the gateway's own rule
+ * (`strengthRead`), a `GET` its endpoints allow, and the vendor's page.
+ */
+function strengthSpec(check: ReturnType<typeof checker>, value: unknown, sealed: Source):
+    Strength {
+  const fields = check.keys(value, "strength", ["url", "rows", "id", "score", "cite"]);
+  let read: StrengthRead;
+  try {
+    read = strengthRead({ url: fields["url"], rows: fields["rows"], id: fields["id"],
+                          score: fields["score"] });
+  } catch {
+    return check.fail("strength's url and paths are refused by the gateway's own check");
+  }
+  sealedGet(check, sealed, read.url, "strength.url");
+  return Object.freeze({ ...read, cite: check.https(fields["cite"], "strength.cite") });
+}
+
+/** A read's `url`, as `what` names it, is a `GET` the source's endpoints allow. */
+function sealedGet(check: ReturnType<typeof checker>, sealed: Source, url: string,
+                   what: string): void {
+  if (!allows(sealed.endpoints, "GET", new URL(url))) {
+    check.fail(`${what} is a GET its endpoints allow`);
+  }
+}
+
+/** A gateway source's `routers`, each a router's model patterns, where it routes, and its page. */
+function routersSpec(check: ReturnType<typeof checker>, value: unknown): readonly Router[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) {
+    return check.fail("routers lists routers, at least one");
+  }
+  const patterns = (list: unknown, what: string) => {
+    const listed = check.strings(list, what, MODEL_PATTERN, 16);
+    if (listed.length === 0 || new Set(listed).size !== listed.length) {
+      check.fail(`${what} lists model patterns, at least one, each once`);
+    }
+    return Object.freeze(listed);
+  };
+  return Object.freeze(value.map((entry, index) => {
+    const fields = check.keys(entry, `routers[${index}]`, ["models", "to", "cite"]);
+    return Object.freeze({ models: patterns(fields["models"], `routers[${index}].models`),
+                           to: patterns(fields["to"], `routers[${index}].to`),
+                           cite: check.https(fields["cite"], `routers[${index}].cite`) });
+  }));
 }
 
 /** One record, checked whole: a copy, frozen, or a `SourceRecordError`. */
@@ -1519,7 +1564,8 @@ export function sourceRecord(value: unknown): SourceRecord {
     : check.keys(copy, "the record",
                  [...base, ...GATEWAY_KEYS.filter((key) => key !== "models"), "engines",
                   ...(connect.includes("oauth") ? ["oauth"] : [])],
-                 [...optional, "models", "not_interactive", "credit"]);
+                 [...optional, "models", "not_interactive", "credit", "strength",
+                  "routers"]);
   const record: Record<string, unknown> = {
     id,
     display_name: check.text(fields["display_name"], TEXT, "display_name"),
@@ -1568,6 +1614,12 @@ export function sourceRecord(value: unknown): SourceRecord {
   }
   if (fields["credit"] !== undefined) {
     record["credit"] = creditSpec(check, fields["credit"], checked);
+  }
+  if (fields["strength"] !== undefined) {
+    record["strength"] = strengthSpec(check, fields["strength"], checked);
+  }
+  if (fields["routers"] !== undefined) {
+    record["routers"] = routersSpec(check, fields["routers"]);
   }
   if (connect.includes("oauth")) {
     const oauth = oauthSpec(check, fields["oauth"]);

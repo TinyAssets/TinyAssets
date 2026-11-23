@@ -44,7 +44,9 @@
  */
 import type { HookKind } from "../../contract/src/acts";
 import type { HookEvent } from "../../contract/src/agent-definition";
-import type { CreditRead, Endpoint, Upstream } from "../../contract/src/egress-scope";
+import type {
+  CreditRead, Endpoint, StrengthRead, Upstream,
+} from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
 
@@ -425,7 +427,25 @@ export interface SourceRecord {
   readonly not_interactive?: readonly string[];
   /** A gateway source's: how a key of it reports what it can pay for. */
   readonly credit?: Credit;
+  /** A gateway source's: where its vendor lists how strong each model is. */
+  readonly strength?: Strength;
+  /** A gateway source's: the models its vendor bills as the model each call is routed to. */
+  readonly routers?: readonly Router[];
   readonly cli?: CliSpec;
+}
+
+/**
+ * A gateway source's routers, from the vendor's page (`cite`): `models`, the patterns (a
+ * ranking's, `ranking.ts`) of the models its catalog lists at a price of zero that its vendor
+ * bills as the model it routes each call to, and `to`, the patterns of the models it may route
+ * one to. A source that names routers says its vendor's zero is no price of its own: a model
+ * its catalog prices at zero is metered only as one of its routers or one of its `credit.free`
+ * models, and no other is (`routers.ts` `pricedBy`).
+ */
+export interface Router {
+  readonly models: readonly string[];
+  readonly to: readonly string[];
+  readonly cite: string;
 }
 
 /**
@@ -445,6 +465,16 @@ export interface Credit {
   readonly none_when: CreditRead["none_when"];
   readonly refused: readonly number[];
   readonly free: readonly string[];
+  readonly cite: string;
+}
+
+/**
+ * Where a gateway source's vendor lists how strong each model is, from the vendor's page
+ * (`cite`): the read (`contract/src/egress-scope.ts` `StrengthRead`), a `GET` among the
+ * record's endpoints, whose answer's rows give each model's id and its score, higher
+ * stronger. `auto` orders the models no ranking entry places by it (`owner/src/auto.ts`).
+ */
+export interface Strength extends StrengthRead {
   readonly cite: string;
 }
 

@@ -2,7 +2,8 @@
  * Raw passthrough for sandbox egress (research §5.4), as a free call takes it: inbound
  * credentials stripped, the sealed one injected, the sealed endpoints enforced, a stalled
  * answer cut, and the secret redacted from what comes back. And the connection's setup check
- * (`verify`), and the read of what its key can pay for (`credit`).
+ * (`verify`), and the reads of what its key can pay for (`credit`) and of how strong its
+ * vendor lists each model (`strength`).
  */
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -16,7 +17,7 @@ import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { serviceSource, type Source } from "../../contract/src/egress-scope";
-import { credit, forwardMetered, forwardRead, verify } from "../src/forward";
+import { credit, forwardMetered, forwardRead, strength, verify } from "../src/forward";
 import { redaction } from "../src/redact";
 import { seal, type Binding } from "../src/keyring";
 import { steer } from "./fake-upstream";
@@ -582,6 +583,44 @@ describe("credit", () => {
                        { ...READ, url: "https://credit.test/key?key=1" },
                        { ...READ, none_when: [{ path: ["data"], equals: "yes" }] }]) {
       expect(await read("sk-free", LIMITED, bad), JSON.stringify(bad))
+        .toMatchObject({ code: "invalid_request" });
+    }
+  });
+});
+
+describe("strength", () => {
+  /** OpenAI's calls, with a vendor's model listing at `models.test` sealed beside them. */
+  const LISTED: Source = Object.freeze({ ...OPENAI, endpoints: [...OPENAI.endpoints, {
+    origin: "https://models.test", paths: ["/models"], methods: ["GET"] }] });
+  /** OpenRouter's read, as its source record has it. */
+  const READ = { url: "https://models.test/models", rows: ["data"], id: ["id"],
+                 score: ["benchmarks", "artificial_analysis", "intelligence_index"] };
+  const read = async (key: string, record: Source = LISTED, asked: unknown = READ) => {
+    const env = ring("k1");
+    return strength(env, ALICE, await sealed(env, ALICE, key, record), asked)
+      .catch((caught: unknown) => caught);
+  };
+
+  it("reads each model's score where its vendor lists one, and none for a model it scores " +
+     "not", async () => {
+    expect(await read("sk-listed")).toEqual({ scores: [
+      { id: "nvidia/nemotron-3.5-super-vl:free", score: 13.6 }] });
+  });
+
+  it("answers a refused key and an answer of another shape, or with no score, with fixed codes",
+     async () => {
+    expect(await read("sk-bad")).toMatchObject({ code: "upstream_unauthorized" });
+    expect(await read("sk-odd")).toMatchObject({ code: "upstream_error" });
+    expect(await read("sk-unscored")).toMatchObject({ code: "upstream_error" });
+  });
+
+  it("sends the key only to a GET its sealed endpoints allow, and takes only a read",
+     async () => {
+    expect(await read("sk-listed", OPENAI)).toMatchObject({ code: "endpoint_refused" });
+    for (const bad of [{ ...READ, extra: 1 }, { ...READ, rows: [] },
+                       { ...READ, url: "https://models.test/models?all=1" },
+                       { ...READ, score: ["benchmarks", "a.b"] }]) {
+      expect(await read("sk-listed", LISTED, bad), JSON.stringify(bad))
         .toMatchObject({ code: "invalid_request" });
     }
   });
