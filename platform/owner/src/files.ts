@@ -7,24 +7,24 @@
  * own data key, which this object holds only wrapped (`data_key`, made with the
  * namespace by `FILES.mintKey`): opened by the files Worker's keyring for one call at a
  * time, never here, and gone with the object at erasure (crypto-erasure, `datakey.ts`).
- * The files Worker (`FILES`) moves them and never sees a path. Everything that says what a file is lives in this object's
- * SQLite: paths, versions and history, which chunks make which content, the chunks'
- * reference counts, upload intents, quotas, the change feed and the sync lease. Files of
- * 4 KiB or less are kept inline, so reading `AGENTS.md` or a skill touches no bucket.
+ * The files Worker (`FILES`) moves them and never sees a path. Everything that says what a file is
+ * lives in this object's SQLite: paths, versions and history, which chunks make which content, the
+ * chunks' reference counts, upload intents, quotas, the change feed and the sync lease. Files of 4
+ * KiB or less are kept inline, so reading `AGENTS.md` or a skill touches no bucket.
  *
  * - Versions. Every commit is stamped with the next owner-wide `seq`, and a version is
  *   named by that seq: it never repeats across a delete, a re-create or a history prune,
  *   with no tombstone kept. Each write is a compare-and-swap on the entry's etag, as on
- *   the board (S34): `expected` null writes unconditionally, `""` only creates, and
+ *   the board: `expected` null writes unconditionally, `""` only creates, and
  *   anything else must be the current etag; a lost swap is answered with the entry as it
  *   stands ({@link fileConflict}).
  * - Content. A content id names its kind and size with its bytes (inline, or a chunk
  *   list), so no content of one kind can name another's; content already stored under
  *   an id is reused only when it is the same content, else the write fails loudly. A
- *   content is held by every entry and every kept history row naming it, in any root,
+ *   content is held by every entry and every kept history row naming it,
  *   so content anything still names is never collected.
- * - History. Every workspace change appends a history row (`file_history`), which is
- *   also the change feed; the temporary area keeps none. Retention is the owner's, off
+ * - History. Every change appends a history row (`file_history`), which is
+ *   also the change feed. Retention is the owner's, off
  *   until it sets it (Fact 15), so every version is kept by default. Set, it keeps each live
  *   path's newest `keep_versions`, and its versions younger than `retention_days` up to
  *   `keep_recent` in all; a version past those goes in the change that pushed it out. A
@@ -61,7 +61,7 @@
  *   keeps bytes alive at another's cost; an upload is told a chunk need not be sent only
  *   when its writer's own scope holds it, and commits only the chunks it sent or holds.
  * - The sandbox leases, one an authority (the owner's own work's sandbox, and each outside
- *   client's own; slice R's review H-1), each for its sandbox's runs and sync agent: a
+ *   client's own), each for its sandbox's runs and sync agent: a
  *   random `lease_id` is the claim token and a rising `epoch` (one counter for all) the
  *   fencing number, as the ledger's claims are. A sync commit is refused unless both are a
  *   live lease's; a client's sandbox writes as that client (its share) and never into the
@@ -101,13 +101,12 @@ import { refuseErasing } from "./erasure";
 import { heldGenerations } from "./restore";
 import { AGENTS_OWNER_ONLY, ownersOnly } from "./paths";
 import {
-  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within,
-  WORKSPACE,
+  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, within, WORKSPACE,
 } from "../../contract/src/paths";
-import { isPrintable, printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
+import { printable, utf8Bytes, utf8Decoder } from "../../contract/src/text";
 import { APPEND_UNITS, EDIT_MAKE_UNITS, EDIT_READ_UNITS, ownerSlots } from "./holds";
 import {
-  AUTOMATON_STATES, DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE, unappliedLines,
+  DEFAULT_IGNORES, LIST_BYTES, ruleLines, SYNC_IGNORE,
 } from "../../contract/src/sync-ignore";
 import type { Backups } from "./backup";
 import type { Collections } from "./collections";
@@ -165,8 +164,6 @@ export const INTENT_TTL_S = 86_400;
 export const PLACE_TTL_S = 600;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
-/** A temporary directory's life. */
-const TEMP_TTL_S = 7 * 86_400;
 /**
  * How late housekeeping may run after it is due, so one alarm takes everything due in
  * an hour rather than each prune or delete arming its own.
@@ -368,6 +365,13 @@ export interface SandboxLease {
    * retry clock. */
   readonly network_tried_at: number | null;
   readonly network_tried_generation: number | null;
+  /**
+   * Since when its sandbox may hold a network wider than the egress policy (s): set by a
+   * write that narrowed the policy (`leasesNarrowed`), cleared once a re-apply at or past that
+   * write's generation is applied; the lease is given back `NARROWED_WITHIN_S` on
+   * (`Launcher.reapply`). Null while it owes none.
+   */
+  readonly narrowed_at: number | null;
   /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
   readonly signins: readonly string[];
 }
@@ -386,7 +390,8 @@ type LeaseRow = {
   authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
   egress_token: string; sync_token: string; runner_token: string;
   network_generation: number | null; network_pending: number | null;
-  network_tried_at: number | null; network_tried_generation: number | null; signins: string;
+  network_tried_at: number | null; network_tried_generation: number | null;
+  narrowed_at: number | null; signins: string;
 };
 
 function leaseOf(row: LeaseRow): SandboxLease {
@@ -396,6 +401,7 @@ function leaseOf(row: LeaseRow): SandboxLease {
            network_generation: row.network_generation, network_pending: row.network_pending,
            network_tried_at: row.network_tried_at,
            network_tried_generation: row.network_tried_generation,
+           narrowed_at: row.narrowed_at,
            signins: row.signins === "" ? [] : row.signins.split(",") };
 }
 
@@ -638,6 +644,13 @@ export class Files {
   #pastFigure = false;
   /** What the sync commit in hand says its sync agent counted held back (`heldBackOf`). */
   #heldBack: HeldBack | null = null;
+  /**
+   * The housekeeping passes' chunk deletes in flight on this instance (`run`): each one's
+   * chunks, from the unit that marks them `deleting`, and its end (their rows removed, or left
+   * `deleting` for a later pass), which a placed write that met one waits for (`deleteLanded`).
+   */
+  readonly #deleting = new Set<{ readonly chunks: ReadonlySet<string>;
+                                 readonly landed: Promise<void> }>();
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, full: Full, reactions: () => readonly FileReaction[],
@@ -963,6 +976,19 @@ export class Files {
              ...this.#content(found.content_id!, found.size) };
   }
 
+  /**
+   * The file at `path`, pinned as `open` pins it, or null where nothing is, for a reader to
+   * which an absent file has a meaning of its own. Anything else there (a folder) is refused
+   * `invalid`, naming the path, never read as no file (Fact 8).
+   */
+  openFile(path: string): Content | null {
+    const entry = this.stat(path);
+    if (entry !== null && entry.kind !== "file") {
+      throw new Refusal("invalid", `${path} is not a file`);
+    }
+    return entry === null ? null : this.open(path);
+  }
+
   /** One kept version's content, pinned, as `open` gives the current one. */
   openVersion(path: unknown, version: unknown): Content & { change: Change } {
     const row = this.#version(storedPath(path), version);
@@ -1053,7 +1079,7 @@ export class Files {
   /**
    * Bytes `[from, to)` of the content `chunks` make, in order, joined: each chunk the range
    * spans read by the part of it the range needs, verified (`FILES` reads the whole chunk,
-   * rechecks its hash and answers the part: review L7), so a range holds only itself. A range
+   * rechecks its hash and answers the part), so a range holds only itself. A range
    * past the chunks is a bug.
    */
   async range(chunks: readonly ChunkRef[], from: number, to: number): Promise<Uint8Array> {
@@ -1172,17 +1198,11 @@ export class Files {
 
   // -- WRITING ------------------------------------------------------------------
 
-  /**
-   * Stamp the next version and, for a workspace path, append its history row; return
-   * the version. The temporary area keeps no history.
-   */
+  /** Stamp the next version and append its history row; return the version. */
   #record(path: string, op: string, kind: FileKind | null, contentId: string | null,
           size: number, mode: number, writer: string, now: number): number {
     const version = this.#sql.exec<{ seq: number }>(
       "UPDATE file_space SET seq = seq + 1 RETURNING seq").one().seq;
-    if (within(path, TEMP)) {
-      return version;
-    }
     this.#sql.exec(
       "INSERT INTO file_history (version, path, op, kind, content_id, size, mode, writer, at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1272,17 +1292,6 @@ export class Files {
     }
   }
 
-  /**
-   * The temporary area holds only what `tempDir` made, so every temporary entry sits in
-   * a directory that expires.
-   */
-  #temporary(path: string): void {
-    if (within(path, TEMP) && this.#sql.exec("SELECT 1 FROM file_temps WHERE name = ?",
-                                             path.split("/")[3]).toArray().length === 0) {
-      throw new Refusal("invalid", "the temporary area holds only temporary directories");
-    }
-  }
-
   /** Each missing ancestor made a directory (`parents`), or refused as missing. */
   #parents(path: string, parents: boolean, writer: string, now: number): void {
     for (const dir of ancestors(path)) {
@@ -1312,7 +1321,6 @@ export class Files {
     if (current?.kind === "dir") {
       throw new FileFault("is_directory", "is a directory");
     }
-    this.#temporary(path);
     if (size > this.#limits().max_file_bytes) {
       throw new Refusal("file_quota", FILE_TOO_LARGE);
     }
@@ -1528,7 +1536,7 @@ export class Files {
 
   /**
    * An open upload's chunk plan, each chunk's hash and size in order, and the chunks it
-   * still has to send: what the binder streams a file's bytes to `FILES` by (tasks 6.1).
+   * still has to send: what the binder streams a file's bytes to `FILES` by.
    */
   uploadPlan(intentId: unknown): { chunks: { sha256: string; size: number }[];
                                    pending: string[] } {
@@ -1949,7 +1957,6 @@ export class Files {
     if (current !== undefined) {
       return shown(current);
     }
-    this.#temporary(path);
     this.#parents(path, parents, writer, now);
     return shown(this.#upsert(path, "dir", this.#record(path, "mkdir", "dir", null, 0, 0,
                                                         writer, now),
@@ -2034,7 +2041,6 @@ export class Files {
       if (parent.kind !== "dir") {
         throw new FileFault("not_directory", "the destination's parent is not a directory");
       }
-      this.#temporary(target);
       const there = this.#entry(target);
       if (there !== undefined) {
         if (!options.replace) {
@@ -2052,7 +2058,7 @@ export class Files {
       }
       // The feed reads each source's leaving before its arrival, but the source entries
       // go last: each content is held by its new entry before its old one lets go, so a
-      // move never leaves content unreferenced, in any root.
+      // move never leaves content unreferenced.
       const tree = [moving, ...(moving.kind === "dir" ? this.#below(source) : [])];
       for (const entry of tree) {
         this.#record(pathOf(entry), "rename_from", null, null, 0, 0, options.writer, now);
@@ -2128,41 +2134,6 @@ export class Files {
       }
       return { purged: gone.length };
     });
-  }
-
-  /** A new temporary directory under `/.ta/tmp`, expired after a day. */
-  tempDir(prefix: unknown, writer: string): string {
-    // A prefix and the 16 hex after it make one path component (`MAX_NAME_BYTES`).
-    if (typeof prefix !== "string" || prefix.includes("/")
-        || utf8Bytes(prefix) > MAX_NAME_BYTES - 16 || !isPrintable(prefix)) {
-      throw new Refusal("invalid",
-                        `a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
-                        "printable characters, no slash");
-    }
-    const name = `${prefix}${randomHex(8)}`;
-    const path = `${TEMP}/${name}`;
-    this.#change(writer, (now) => {
-      this.#sql.exec("INSERT INTO file_temps (name, expires_at, writer) VALUES (?, ?, ?)", name,
-                     now + TEMP_TTL_S, writer);
-      this.#mkdir(path, "", false, writer, now);
-    });
-    return path;
-  }
-
-  /** Remove temporary directories now (an environment's `cleanup`). */
-  dropTemps(paths: readonly string[], writer: string): void {
-    this.#change(writer, (now) => {
-      for (const path of paths) {
-        this.#dropTemp(nameOf(path), writer, now);
-      }
-    });
-  }
-
-  #dropTemp(name: string, writer: string, now: number): void {
-    this.#sql.exec("DELETE FROM file_temps WHERE name = ?", name);
-    if (this.#entry(`${TEMP}/${name}`) !== undefined) {
-      this.#remove(`${TEMP}/${name}`, null, true, writer, now);
-    }
   }
 
   // -- THE SANDBOX LEASES ----------------------------------------------------------
@@ -2248,11 +2219,21 @@ export class Files {
   }
 
   /**
+   * In a unit: an egress write at `generation` narrowed the policy, so every live lease's
+   * sandbox, whose network is older, may let out a host it dropped: each owes it from `now`,
+   * or from the narrowing it already owed.
+   */
+  leasesNarrowed(generation: number, now: number): void {
+    this.#sql.exec("UPDATE sandbox_leases SET narrowed_generation = ?, narrowed_at = " +
+                     `COALESCE(narrowed_at, ?) WHERE ${LIVE_LEASE}`, generation, now, now);
+  }
+
+  /**
    * A re-apply's answer, fenced by the lease: `applied` confirms its generation (never an
-   * older one over a newer) and clears it from out; `at_resume` keeps it out (its sandbox
-   * paused, the Worker applies it as it resumes), its retry clock from `now`; a failure
-   * (`lost`, no answer) clears it, so its calls are refused again, and the lane tries again
-   * once its retry clock passes.
+   * older one over a newer), clears it from out, and clears a narrowing it covers; `at_resume`
+   * keeps it out (its sandbox paused, the Worker applies it as it resumes), its retry clock
+   * from `now`; a failure (`lost`, no answer) clears it, so its calls are refused again, and
+   * the lane tries again once its retry clock passes.
    */
   networkAnswered(leaseId: string, epoch: number, generation: number,
                   answer: "applied" | "at_resume" | "failed", now: number): void {
@@ -2263,8 +2244,12 @@ export class Files {
           "UPDATE sandbox_leases SET network_generation = MAX(COALESCE(network_generation, " +
             "0), ?), network_pending = CASE WHEN network_pending <= ? THEN NULL ELSE " +
             "network_pending END, network_tried_at = CASE WHEN network_pending <= ? THEN " +
-            `NULL ELSE network_tried_at END ${fence}`,
-          generation, generation, generation, leaseId, epoch, now);
+            "NULL ELSE network_tried_at END, narrowed_at = CASE WHEN narrowed_generation <= " +
+            "MAX(COALESCE(network_generation, 0), ?) THEN NULL ELSE narrowed_at END, " +
+            "narrowed_generation = CASE WHEN narrowed_generation <= " +
+            "MAX(COALESCE(network_generation, 0), ?) THEN NULL ELSE narrowed_generation END " +
+            fence,
+          generation, generation, generation, generation, generation, leaseId, epoch, now);
       } else if (answer === "at_resume") {
         this.#sql.exec(`UPDATE sandbox_leases SET network_tried_at = ? ${fence} AND ` +
                          "network_pending = ?", now, leaseId, epoch, now, generation);
@@ -2342,8 +2327,10 @@ export class Files {
     return before !== null;
   }
 
-  /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
-  /** Each lapsed lease's row gone: the ids of those that went. */
+  /**
+   * In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`); the ids
+   * of those that went.
+   */
   leasesLapsed(now: number): string[] {
     const gone = this.#sql.exec<{ lease_id: string }>(
       `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now).toArray();
@@ -2434,7 +2421,7 @@ export class Files {
         return this.#storage.transactionSync(() => {
           const before = this.#before(writer);
           const path = storedPath(op["path"]);
-          if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
+          if (isRoot(path) || seen.has(path)) {
             throw new Refusal("invalid", "a sync op names one workspace path, once");
           }
           seen.add(path);
@@ -2467,16 +2454,16 @@ export class Files {
    * Where a conflicting write's content goes: the blocked ancestor, or else the path,
    * under the first conflict name nothing holds, so a copy never replaces anything. The
    * copy's name is a valid path and the rest is the end of one, so only the whole path's
-   * length can fail: one that would pass 4096 bytes is refused, as that op's outcome. The sandbox keeps such a file and the sync agent
-   * reports it on every sync until it is renamed or the conflict resolved (tasks 6).
+   * length can fail: one that would pass 4096 bytes is refused, as that op's outcome. The
+   * sandbox keeps such a file and the sync agent reports it on every sync until it is renamed
+   * or the conflict resolved.
    */
   #copyPath(path: string, epoch: number): string {
     const at = this.#blocked(path) ?? path;
     const rest = path.slice(at.length);
     // Each copy is an entry, so a free name is among the first one past the entries the owner
     // holds. Every candidate starts with the name as cut for the longest suffix that count
-    // allows, so the names taken are found in one range read of the parent's entries (review
-    // rvlim N6).
+    // allows, so the names taken are found in one range read of the parent's entries.
     const most = this.#space().entries + 1;
     const longest = conflictName(nameOf(at), epoch, most);
     const cut = longest.slice(0, longest.length - `.ta-conflict-${epoch}-${most}`.length);
@@ -2601,8 +2588,8 @@ export class Files {
   }
 
   /**
-   * When housekeeping is next due, never before `now`, or null: expired intents and
-   * temporary directories, due history prunes, and due chunk deletes, each with
+   * When housekeeping is next due, never before `now`, or null: expired intents, due
+   * history prunes, and due chunk deletes, each with
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
    * change still to apply, or garbage past the owner's storage figure that it may collect
    * early. Garbage waiting on a failed delete's retry is due at that retry, never at once,
@@ -2615,7 +2602,6 @@ export class Files {
     }
     const times = [
       "SELECT MIN(expires_at) AS due FROM file_intents",
-      "SELECT MIN(expires_at) AS due FROM file_temps",
       "SELECT MIN(prune_after) AS due FROM file_history WHERE prune_after IS NOT NULL",
       "SELECT MIN(gc_after) AS due FROM file_chunks WHERE gc_after IS NOT NULL",
     ].map((query) => this.#sql.exec<{ due: number | null }>(query).one().due)
@@ -2625,7 +2611,7 @@ export class Files {
 
   /**
    * One housekeeping pass, the system's own and never refused for a quota: apply a
-   * retention change to kept rows, expire intents and temporary directories, prune due
+   * retention change to kept rows, expire intents, prune due
    * history, then delete due garbage chunks, and, while the garbage in its grace is past the
    * tier's storage figure, the oldest of it too (a technical ceiling: recovery against
    * cost, `limits-audit.md`). A delete marks its chunks `deleting` (never
@@ -2645,11 +2631,6 @@ export class Files {
                "LIMIT ?", now, HOUSEKEEPING_BATCH).toArray()) {
         this.#release(intentId);
       }
-      for (const { name } of sql.exec<{ name: string }>(
-             "SELECT name FROM file_temps WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
-             now, HOUSEKEEPING_BATCH).toArray()) {
-        this.#dropTemp(name, "system", now);
-      }
       // Due rows go only once every path is marked by the retention in force, never by one
       // a re-mark still under way is replacing (migration 8's among them).
       if (!this.#reretaining(this.#space(), this.#limits())) {
@@ -2659,6 +2640,23 @@ export class Files {
     if ((until - clock()) * 1000 < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
+    const landing = Promise.withResolvers<void>();
+    const deleting = { chunks: new Set<string>(), landed: landing.promise };
+    this.#deleting.add(deleting);
+    try {
+      await this.#deleteDue(now, until, deleting.chunks);
+    } finally {
+      this.#deleting.delete(deleting);
+      landing.resolve();
+    }
+  }
+
+  /**
+   * The housekeeping pass's chunk delete: the due chunks marked `deleting`, each added to
+   * `marked` in the unit that marks it, deleted from `FILES`, and their rows removed.
+   */
+  async #deleteDue(now: number, until: number, marked: Set<string>): Promise<void> {
+    const sql = this.#sql;
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
@@ -2689,6 +2687,7 @@ export class Files {
       for (const sha256 of found) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",
                  now + GC_RETRY_S, sha256);
+        marked.add(sha256);
       }
       return found;
     }));
@@ -2736,6 +2735,20 @@ export class Files {
   /** The owner's namespace, or null when nothing was ever stored. A read. */
   storedNamespace(): string | null {
     return this.#space().ns;
+  }
+
+  /**
+   * The end of the chunk delete in flight on this instance that takes any of `chunks`, or
+   * null when none does: a begin that met one of them `deleting` begins again once it lands
+   * (`Bodies.placing`), and one left `deleting` by a delete that failed is refused.
+   */
+  deleteLanded(chunks: readonly string[]): Promise<void> | null {
+    for (const deleting of this.#deleting) {
+      if (chunks.some((sha256) => deleting.chunks.has(sha256))) {
+        return deleting.landed;
+      }
+    }
+    return null;
   }
 
   /** Once every `FILES` write this instance has in flight has landed or failed. */
@@ -2861,7 +2874,7 @@ export function whole(value: unknown, what: string, fallback: number, high: numb
 }
 
 /**
- * A search's `next_cursor`: the stored path it resumes after, as base64url (review L5), an
+ * A search's `next_cursor`: the stored path it resumes after, as base64url, an
  * opaque token at most 5,462 characters with nothing to escape, so a path of escaped
  * characters never makes an answer too wide to go on.
  */
@@ -2887,14 +2900,14 @@ export const STRUCTURED = /\.(json|jsonc|json5|toml|ya?ml)$/i;
  * one's among them, so those in flight when it starts can beat it at most
  * `MAX_OPEN_INTENTS - 1` times before every one has landed: `MAX_OPEN_INTENTS` tries outlast
  * them. A small whole write holds no upload; one landing in each of that many windows in a
- * row is a flood, refused loudly rather than retried without end. Measured (review rvbr):
+ * row is a flood, refused loudly rather than retried without end. Measured:
  * 80 and then 300 concurrent appends to one small file all landed, none refused.
  */
 export const APPEND_TRIES = MAX_OPEN_INTENTS;
 
 /**
  * An outside agent's or a run's remove, rename or restore with no etag: it never removes,
- * moves or overwrites an entry it did not read (review R2-L3, as `UNREAD_WRITE`).
+ * moves or overwrites an entry it did not read (as `UNREAD_WRITE`).
  */
 export const UNREAD_CHANGE = "expected_etag is the entry's current etag, or \"\" where there " +
   "is none: read it first (file_stat, fetch or file_read)";
@@ -2933,7 +2946,7 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
 }
 
 /**
- * The most bytes one `file_edit` edits (ADR-037's ruling 2): no longer `WHOLE_BYTES`, since a
+ * The most bytes one `file_edit` edits (ADR-037): no longer `WHOLE_BYTES`, since a
  * chunk-wise edit's memory does not depend on the file, but the time one call takes, its
  * tightest bound. The workerd memory leg times the worst edit (the first chunk's, longer, so
  * every chunk is read, remade and put) on the real path, with the files Worker's own hashing
@@ -3028,7 +3041,7 @@ export interface SearchResult {
 export interface FetchMetadata {
   /** Its path, its id's; left out when its fields were cut to fit one answer (`fields_cut`). */
   readonly path?: string;
-  /** Whether its frontmatter's fields were cut to fit one answer (review L5). */
+  /** Whether its frontmatter's fields were cut to fit one answer. */
   readonly fields_cut?: true;
   readonly size: number;
   readonly version: number;
@@ -3059,7 +3072,7 @@ export interface FileChunksRequest {
 export interface FileWriteRequest {
   readonly path: string;
   readonly expected_etag: string | null;
-  /** The file's bytes, or its text, written as UTF-8 (`file_write`, slice BRAIN). */
+  /** The file's bytes, or its text, written as UTF-8 (`file_write`). */
   readonly content: Uint8Array | string;
   readonly mode?: number;
 }
@@ -3152,11 +3165,7 @@ export interface FileConflicted {
 
 // -- THE DOORS: the `files` rows' handlers (`owner/doors.json`) -----------------------------------
 //
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`FilesDoorNeeds`) once the row's steps held: the bind, the account, the scope
-// and the fields.
-//
-// These doors move at most two chunks a call. The HTTP and MCP doors (tasks 2) stream
+// These doors move at most two chunks a call. The HTTP and MCP doors stream
 // larger files from the binder to `FILES` itself. Another RPC may run in the object
 // whenever one awaits `FILES`, so a door that crosses to it writes its account first,
 // in a unit, and its later steps through units of their own (`Files`).
@@ -3346,17 +3355,9 @@ function syncIgnoreChanged(o: SyncIgnoreTold, present: boolean, now: number,
       held = " Its new lines may hold back files you keep from syncing their changes; " +
         "each sandbox sync reports the files they hold back.";
     }
-    // Lines past a ceiling are not applied: said here, never in silence.
-    const raw = o.files.inlineOf(change.content_id);
-    const past = raw === null ? [] : unappliedLines(new TextDecoder().decode(raw).split("\n"));
-    const states = past.filter((each) => each.reason === "states");
-    if (states.length > 0) {
-      held += ` ${states.length} line${states.length === 1 ? " is" : "s are"} past the ${
-        AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
-        `may take together, so not applied: the files they name go on syncing (${
-          states.slice(0, 3).map((each) => each.line).join(", ")}${states.length > 3
-          ? ", …" : ""}).`;
-    }
+    // The list past its bytes is not applied: said here, never in silence. Automaton lines
+    // past their states are the run's report's alone: the most read here, an inline list,
+    // takes at most a state a byte, far under `AUTOMATON_STATES`.
     if (change.size > LIST_BYTES) {
       held += ` The list past its ${LIST_BYTES.toLocaleString("en")} bytes is not applied: ` +
         "the files those lines name go on syncing.";
@@ -3396,7 +3397,6 @@ function writerNamed(o: SyncIgnoreTold, writer: string): string {
   return writer === OWNER ? "you" : writer;
 }
 
-/** The `files` doors' handlers, by door. */
 export const filesDoors = Object.freeze({
   fileStat(o: FilesDoorNeeds, { r }: Call<FileRequest>): { entry: Entry | null } {
     return { entry: o.files.stat(r["path"]) };
@@ -3468,10 +3468,10 @@ export const filesDoors = Object.freeze({
     // `truncated` with `next_offset` for file_read to go on from.
     const read = await textWindow(o, content, 0, PAGE_BYTES);
     // A file search found that is not text (a scan, an image) is answered with its metadata
-    // and no text, never refused: every id a search answers is fetchable (review L4).
+    // and no text, never refused: every id a search answers is fetchable.
     const found = frontmatter(read.text ?? "");
     const path = content.entry.path;
-    // A frontmatter too wide for one answer beside its path is cut, said so (review L5):
+    // A frontmatter too wide for one answer beside its path is cut, said so:
     // every id a search answers is fetchable, whatever its fields hold.
     let front = found;
     let cut = false;
@@ -3509,7 +3509,7 @@ export const filesDoors = Object.freeze({
       : part.bytes);
   },
   /**
-   * Text added at the end of a file (`file_append`, slice BRAIN: an outside agent's everyday
+   * Text added at the end of a file (`file_append`: an outside agent's everyday
    * write-back), the file made when absent. It never changes a byte already there, so it is
    * additive (OpenAI's `destructiveHint: false`): the file is read, the text put after it, and
    * the whole written at the etag it was read at, so two appends never lose each other; one
@@ -3557,11 +3557,8 @@ export const filesDoors = Object.freeze({
         }
         const read = await o.door((): { done: Entry } | { now: Content | null } => {
           authorize();
-          const entry = o.files.stat(path);
-          if (entry !== null && entry.kind !== "file") {
-            throw new Refusal("invalid", `${path} is a directory`);
-          }
-          const content = entry === null ? null : o.files.open(path);
+          const content = o.files.openFile(path);
+          const entry = content?.entry;
           const before = content === null ? new Uint8Array(0) : content.inline;
           if (before !== undefined && before.byteLength + added.byteLength <= INLINE_BYTES) {
             // Small: read and written in this one unit, so nothing lands between.
@@ -3620,7 +3617,7 @@ export const filesDoors = Object.freeze({
    * Write a whole file of at most one chunk (4 MiB); larger ones go by upload. Its content is
    * bytes, or text written as UTF-8 (`file_write`, an outside agent's whole replacement). An
    * outside client or a run writes at the etag it read, or `""` to create a file only when it
-   * is absent, never with no etag at all (review H1): a replacement never lands over a file
+   * is absent, never with no etag at all: a replacement never lands over a file
    * the agent did not read. The owner's own app may still write with none.
    */
   async fileWrite(o: FilesDoorNeeds, door: Door<FileWriteRequest>):
@@ -3654,7 +3651,7 @@ export const filesDoors = Object.freeze({
   },
   /**
    * One exact occurrence of `old_text` in a file's text replaced by `new_text`, at the etag
-   * the caller read (`file_edit`, slice BRAIN: a correction, as a stale directive rewritten in
+   * the caller read (`file_edit`: a correction, as a stale directive rewritten in
    * place). Text that occurs nowhere, or more than once, is refused with how many times, so
    * the caller gives more of the text around it. A chunked file is edited chunk by chunk
    * (`edit.ts`, ADR-037), each chunk read or made in a step of the isolate's units of its
@@ -3808,7 +3805,7 @@ export const filesDoors = Object.freeze({
    * What the owner stores against its one storage number (founder, 2026-11-03): every byte
    * of user content wherever it lives (`used_bytes`: chunks in R2, small files and inline
    * bodies in the object), the bound (`limit_bytes`: the tier's storage, or the owner's own
-   * lower setting; null until the binder has handed the tier numbers), and where it is:
+   * lower setting; null while the object keeps no tier numbers), and where it is:
    * mail (`messages`), collection rows and their history (`collections`), and files, the
    * rest. Platform bookkeeping (indexes, receipts, counters) is not user content.
    */
@@ -3860,7 +3857,7 @@ export const filesDoors = Object.freeze({
       Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
     const plan = await o.door(() => o.files.uploadPlan(door.check().r["intent_id"]));
-    // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
+    // The namespace and its wrapped data key, which only `FILES` opens.
     const { ns, key } = await o.files.space();
     return { namespace: ns, key, ...plan };
   },
@@ -3964,7 +3961,7 @@ export const filesDoors = Object.freeze({
   },
   /**
    * The sync agent's upload of a file past one inline write (`INLINE_BYTES`), through the
-   * files plane's own upload (slice S review M-6): begun as the lease's own writer, so its
+   * files plane's own upload: begun as the lease's own writer, so its
    * sync commit (`intent_id`) takes it, fenced by the live lease.
    */
   fileSyncUploadBegin(o: FilesDoorNeeds, { r }: Call<SyncUploadBeginRequest>):

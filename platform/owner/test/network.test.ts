@@ -1,21 +1,22 @@
 /**
- * The sandbox's network document and its model clients' environment (tasks 4 G4): pure
- * functions of the owner's state, tested exhaustively.
+ * The sandbox's network document and its model clients' environment: pure functions of the owner's
+ * state, tested exhaustively.
  */
 import { describe, expect, it } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import {
-  KEY_MIN_BYTES, LEASE_LIVED, mintToken, tokenHash, verifyToken,
+  LEASE_LIVED, mintToken, tokenHash, verifyToken,
 } from "../../contract/src/routing-mac";
 
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { sourceRecord } from "../../sources/src/check";
 import { runEnv } from "../../sources/src/run-env";
 import { EGRESS_IP_LITERAL, EGRESS_MODES } from "../../contract/src/policy-document";
-import { BOUNDARY_NOTE, networkDocument } from "../src/network";
+import { agentMcp } from "../../contract/src/agent-definition";
+import { agentServers, BOUNDARY_NOTE, narrows, networkDocument } from "../src/network";
 import {
-  ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
+  ALL_TRAFFIC, EGRESS_HOST, egressBaseUrl, egressTokenOf, GENERATION_HEADER,
   generationOf, SANDBOX_HEADER, sandboxEnv, withEgressToken,
 } from "../../contract/src/egress";
 
@@ -45,11 +46,9 @@ describe("the network document", () => {
   it("in open mode allows every name by SNI and the door, and denies all else", () => {
     const plan = networkDocument({ mode: "open", destinations: DESTINATIONS }, 3);
     expect(plan).toEqual({
-      network: { allowOut: ["*", EGRESS_HOST], denyOut: [ALL_TRAFFIC], dnsServers: ["1.1.1.1"],
+      network: { allowOut: ["*", EGRESS_HOST], denyOut: ["0.0.0.0/0"], dnsServers: ["1.1.1.1"],
                  rules: transform(3) },
       mode: "open", unexpressed: [], boundary: false, note: BOUNDARY_NOTE });
-    expect(DNS_SERVERS).toEqual(["1.1.1.1"]);
-    expect(ALL_TRAFFIC).toBe("0.0.0.0/0");
   });
 
   it("in allowlist mode allows the policy's names and the door, once each, in order", () => {
@@ -114,6 +113,35 @@ describe("the network document", () => {
   });
 });
 
+describe("a narrowing", () => {
+  const allow = (...hosts: string[]) => ({ mode: "allowlist" as const,
+                                           destinations: hosts.map((host) => ({ host,
+                                                                                port: 443 })) });
+  const open = { mode: "open" as const, destinations: [] };
+
+  it("is a write after which a name the network let out is not let out", () => {
+    expect(narrows(open, allow("pypi.org"))).toBe(true);
+    expect(narrows(allow("pypi.org", "example.com"), allow("pypi.org"))).toBe(true);
+    expect(narrows(allow("pypi.org"), allow("example.com"))).toBe(true);
+    // A name on 80 opens it on 443 too: dropping its last port drops the name.
+    expect(narrows({ mode: "allowlist", destinations: [{ host: "pypi.org", port: 80 }] },
+                   allow())).toBe(true);
+  });
+
+  it("is not a write that keeps or adds every name, or opens the network", () => {
+    expect(narrows(allow("pypi.org"), allow("pypi.org", "example.com"))).toBe(false);
+    expect(narrows(allow("pypi.org"), open)).toBe(false);
+    expect(narrows(open, open)).toBe(false);
+    expect(narrows(allow(), allow())).toBe(false);
+    // Another port of a kept name, or a port E2B cannot filter by name, lets nothing less out.
+    expect(narrows(allow("pypi.org"), { mode: "allowlist", destinations: [
+      { host: "pypi.org", port: 80 }] })).toBe(false);
+    expect(narrows({ mode: "allowlist", destinations: [{ host: "db.example.com",
+                                                           port: 5432 }] }, allow()))
+      .toBe(false);
+  });
+});
+
 const ANTHROPIC = { api: "anthropic-messages", base_url: "https://api.anthropic.com",
                     endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages"],
                                   methods: ["POST"] }], meter: null };
@@ -131,6 +159,38 @@ const C5 = `c${"5".repeat(24)}`;
 const GOOGLE = { api: "google-generative-ai", base_url: "https://generativelanguage.googleapis.com/v1beta",
                  endpoints: [{ origin: "https://generativelanguage.googleapis.com",
                                paths: ["/v1beta/models/*"], methods: ["POST"] }], meter: null };
+
+describe("the agent's own MCP servers under the egress policy", () => {
+  const MCP = agentMcp(JSON.stringify({ mcpServers: {
+    listed: { url: "https://pypi.org/mcp" },
+    on80: { url: "https://example.com:80/mcp" },
+    unlisted: { url: "https://mcp.other.example/mcp" },
+    port: { url: "https://pypi.org:8443/mcp" },
+    ip: { url: "https://10.0.0.1/mcp" },
+    local: { command: "uvx", args: ["some-mcp"] },
+  } }));
+
+  it("keeps in allowlist mode a server whose host is listed on 80 or 443, and every " +
+     "command, and says why each other is left out", () => {
+    const { servers, dropped } = agentServers(MCP, { mode: "allowlist",
+                                                     destinations: DESTINATIONS });
+    expect(Object.keys(servers)).toEqual(["listed", "on80", "local"]);
+    expect(servers["local"]).toEqual({ command: "uvx", args: ["some-mcp"], env: {} });
+    expect(dropped).toEqual([
+      { name: "unlisted", host: "mcp.other.example",
+        why: "its host is not on your egress allowlist" },
+      { name: "port", host: "pypi.org:8443",
+        why: "the sandbox's network lets a name out on ports 80 and 443 alone" },
+      { name: "ip", host: "10.0.0.1", why: "the sandbox's network lets no IP address out" }]);
+  });
+
+  it("keeps in open mode every server the network can name, as networkDocument lets out",
+     () => {
+    const { servers, dropped } = agentServers(MCP, { mode: "open", destinations: [] });
+    expect(Object.keys(servers)).toEqual(["listed", "on80", "unlisted", "local"]);
+    expect(dropped.map((each) => each.name)).toEqual(["port", "ip"]);
+  });
+});
 
 describe("a sandbox token", () => {
   const EXPIRES = 2_000_000_000;
@@ -195,7 +255,6 @@ describe("a sandbox token", () => {
   });
 
   it("takes a routing key of 32 bytes, and none shorter", () => {
-    expect(KEY_MIN_BYTES).toBe(32);
     const thirtyTwo = Buffer.alloc(32, 3).toString("base64url");
     const minted = mintToken(thirtyTwo, "egress", "user_01HZ", EXPIRES);
     expect(verifyToken(thirtyTwo, "egress", minted.token)).not.toBeNull();
@@ -239,7 +298,7 @@ describe("the sandbox's model clients' environment", () => {
     const engines = bundledRecords().map(sourceRecord)
       .filter((record) => record.cli?.credential.includes("vendor_login_in_sandbox"));
     expect(engines.map((record) => record.id).sort())
-      .toEqual(["claude-code", "codex", "gemini", "kimi"]);
+      .toEqual(["claude-code", "codex", "gemini"]);
     // Every API-key variable any record names, and the rule's for every provider.
     const keyNames = bundledRecords().map(sourceRecord).flatMap((record) =>
       Object.values(record.cli?.api_key_env ?? {}).flatMap((vars) =>
@@ -341,7 +400,7 @@ describe("the sandbox's model clients' environment", () => {
   });
 
   it("never meets a record's own variable: the checker refuses a record setting any name " +
-     "a key's environment sets (slice E's owed case)", () => {
+     "a key's environment sets", () => {
     // Every name `sandboxEnv` could set for an engine's run: the rule's for each provider
     // its record runs a key of, the connection's, and the record's own key variables.
     let refused = 0;
@@ -399,8 +458,14 @@ describe("the sandbox's model clients' environment", () => {
       .toThrow(/run_secret_env/);
     expect(planted(codex, { unattended_argv: ["--x={run_secret}"] })).toThrow(/run_secret/);
     // A record that runs on no key takes no header variable.
-    const kimi = records.find((record) => record.id === "kimi")!;
-    expect(planted(kimi, { run_secret_env: { env: "X_HEADERS", value: "x-ta-run: {run_secret}" } }))
+    const keyless = JSON.parse(JSON.stringify(codex)) as { cli: Record<string, unknown> };
+    keyless.cli["credential"] = ["vendor_login_in_sandbox"];
+    delete keyless.cli["api_key_env"];
+    delete (keyless.cli["unattended"] as Record<string, unknown>)["api_key"];
+    delete (keyless.cli["per_credential"] as Record<string, unknown>)["api_key"];
+    expect(planted(keyless, {})).not.toThrow();
+    expect(planted(keyless, { run_secret_env: { env: "X_HEADERS",
+                                                value: "x-ta-run: {run_secret}" } }))
       .toThrow(/run_secret_env/);
   });
 });

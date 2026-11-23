@@ -1,5 +1,5 @@
 /**
- * The owner app's own routes on the owner surface (the app slice), each one door: the
+ * The owner app's own routes on the owner surface, each one door: the
  * account (tier, the control record's numbers, file usage), notices, policy (code mode's
  * switch and the owner's custom tools), a client's profile (`grants/set`, never a revoke),
  * an agent's files as text, the source records' public facts, the tool table's names, and
@@ -16,8 +16,8 @@ import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../../sources/src/catalog";
 import { profileNames, toolNames } from "../../contract/src/doors";
 import {
-  appPost, call, connect, doorsEnv, OPEN, ownDoor, registerClient, serveFirstPartyDocument,
-  setControl, signInApp, TIERS, type Tokens, url,
+  appPost, call, connect, doorsEnv, OPEN, OPEN_RECORD, ownDoor, registerClient,
+  serveFirstPartyDocument, setControl, signInApp, TIERS, type Tokens, url,
 } from "./support";
 
 function owner(): string {
@@ -76,7 +76,7 @@ describe("the owner app's account route", () => {
     const account = await answered(await appPost("account", app.access_token, null, {}));
     expect(account["tier"]).toBe("free");
     expect(account["tiers"]).toEqual(TIERS);
-    // A new owner holds its starter files (the starter slice), as many as its seed has written.
+    // A new owner holds its starter files, as many as its seed has written.
     expect(account["usage"]).toMatchObject({ entries: expect.any(Number),
                                              chunk_bytes: expect.any(Number),
                                              inline_bytes: expect.any(Number) });
@@ -124,7 +124,8 @@ describe("the owner app's settings routes", () => {
     const app = await signInApp({ owner: who });
     const client = await registerClient("Listed");
     const tokens = await connect(client, { owner: who });
-    expect(await listed(tokens)).toEqual(profileNames("custom"));
+    // Custom, code withheld: code mode is off by default.
+    expect(await listed(tokens)).toEqual(profileNames("custom").filter((n) => n !== "code"));
     const origin = await mcpOrigin(client.clientId, client.redirectUri);
     const { clients } = await answered(await appPost("grants", app.access_token, null, {})) as
       { clients: Record<string, unknown>[] };
@@ -154,7 +155,7 @@ describe("the owner app's settings routes", () => {
 });
 
 describe("the owner surface's answers", () => {
-  it("are never sniffed or framed, refusals and connect routes alike (review L7)", async () => {
+  it("are never sniffed or framed, refusals and connect routes alike", async () => {
     const app = await signInApp({ owner: owner() });
     for (const response of [await appPost("account", app.access_token, null, {}),
                             await appPost("no/such/route", app.access_token, null, {}),
@@ -224,7 +225,7 @@ describe("the owner app's file routes", () => {
       .toBe(text);
   });
 
-  it("take no change to an agent's definition from the token alone (review M1)", async () => {
+  it("take no change to an agent's definition from the token alone", async () => {
     const app = await signInApp({ owner: owner() });
     const { access_token: token, session } = app;
     await answered(await appPost("tools/file_mkdir", token, session,
@@ -260,7 +261,7 @@ describe("the owner app's file routes", () => {
     const who = owner();
     const app = await signInApp({ owner: who });
     await doorsEnv.OWNER.getByName(who).fileWrite(
-      { owner: who, caller: who, origin: null, tiers: TIERS },
+      { owner: who, caller: who, origin: null, control: OPEN_RECORD },
       { path: "/workspace/blob.bin", expected_etag: null,
         content: new Uint8Array([0xff, 0xfe, 0x00]) });
     expect(await answered(await appPost("files/read", app.access_token, null,

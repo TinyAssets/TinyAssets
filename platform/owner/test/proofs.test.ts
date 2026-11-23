@@ -1,8 +1,8 @@
 /**
- * The widenings' proofs (`door.ts`; S30, N10, P0-3): each widening takes the proof its
- * caller made as its first argument, refused by `tsc` (each `@ts-expect-error` below fails
- * `tsc` the day its call compiles) and at run time (`proven`) without it; and a row's call
- * carries only its own caller's proof, so a door of another caller cannot make the widening.
+ * The widenings' proofs (`door.ts`): each widening takes the proof its caller made as its first
+ * argument, refused by `tsc` (each `@ts-expect-error` below fails `tsc` the day its call compiles)
+ * and at run time (`proven`) without it; and a row's call carries only its own caller's proof, so a
+ * door of another caller cannot make the widening.
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -57,7 +57,7 @@ async function widenings() {
                                  "session"),
       "policy.applyKeyRequest": refusals((proof) => policy.applyKeyRequest(proof, {}, [], now),
                                          "session"),
-      "registrations.take": refusals((proof) => registrations.take(proof, "card", "d", now),
+      "registrations.take": refusals((proof) => registrations.take(proof, "card", "d"),
                                      "session"),
       // The owner itself (`OwnerSelf`).
       "sessions.open": refusals((proof) => sessions.open(proof, Math.floor(now), now), "owner"),
@@ -125,7 +125,7 @@ describe("a widening's proof", () => {
     const r = await rig();
     const tried = await inStores(r.stub, ({ grants, policy, sessions, admission }) => {
       const now = clock();
-      // The session check a handler can reach answers the row's hash, not a proof (A1-A4).
+      // The session check a handler can reach answers the row's hash, not a proof.
       const live = sessions.live(r.cookie, now) as never;
       const generation = policy.read().generation;
       const { live: unbound } = sessions;
@@ -135,7 +135,7 @@ describe("a widening's proof", () => {
           Reflect.get(sessions, "live").call(sessions, r.cookie, now) as never, CHANGE, now)),
         bound: outcome(() => grants.set(unbound.bind(sessions)(r.cookie, now) as never, CHANGE,
                                         now)),
-        // A kind built at run time: a split key's JSON, a computed key (A5-A7).
+        // A kind built at run time: a split key's JSON, a computed key.
         parsed: outcome(() => admission.setTier(JSON.parse(`{"pro${""}ved":"reserved"}`),
                                                 { tier: "paid" })),
         computed: outcome(() => admission.set({ ["pro" + "ved"]: "reserved" } as never,
@@ -183,7 +183,7 @@ describe("a widening's proof", () => {
   });
 
   it("is carried only by its own caller's rows: an owner's door holds no live session", () => {
-    // Every owner row's call, whichever door (N10: the owner's account alone sets no grant).
+    // Every owner row's call, whichever door (the owner's account alone sets no grant).
     type OwnerDoor = { [D in DoorName]: CallerOf<D> extends "owner" ? D : never }[DoorName];
     const ownerDoor: HandlerOf<OwnerDoor, GrantsDoorNeeds> = (o, call) => {
       // @ts-expect-error an owner row's call carries the owner itself, never a live session

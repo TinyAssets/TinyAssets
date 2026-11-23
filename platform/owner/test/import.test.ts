@@ -1,5 +1,5 @@
 /**
- * The cutover's import doors (`src/import.ts`, slice 3), on the real object: taken only from
+ * The cutover's import doors (`src/import.ts`), on the real object: taken only from
  * the platform's reserved caller with an import binding and only while the owner is
  * `pending`, every other caller and state refused (terminal); each step through the
  * object's own write path, idempotent from the owner's state (a run again skips, another file
@@ -29,7 +29,7 @@ import {
 } from "../../contract/src/policy-document";
 import { erasuresSent } from "./erasure-support";
 import { recorder } from "./runs-support";
-import { failure, gateFor, spaceOf, TIERS } from "./support";
+import { failure, gateFor, OPEN_RECORD, openRecord, spaceOf } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
 const BUNDLE = "b".repeat(64);
@@ -45,10 +45,11 @@ function pending(owner = `owner-${crypto.randomUUID()}`, namespace: DurableObjec
 /** The mtime the import's files keep: the old stack's, never the write's own time. */
 const MTIME = Date.UTC(2024, 0, 2, 3, 4, 5);
 
-/** The doors' import binding (`bindImport`): the platform, the bundle, the control's tiers. */
-const importing = (owner: string, tiers: unknown = TIERS): Binding =>
-  ({ owner, caller: PLATFORM_CALLER, origin: null, import: { bundle: BUNDLE }, tiers });
-const own = (owner: string): Binding => ({ owner, caller: owner, origin: null, tiers: TIERS });
+/** The doors' import binding (`bindImport`): the platform, the bundle, the control record. */
+const importing = (owner: string, control: string | null = OPEN_RECORD): Binding =>
+  ({ owner, caller: PLATFORM_CALLER, origin: null, import: { bundle: BUNDLE }, control });
+const own = (owner: string): Binding =>
+  ({ owner, caller: owner, origin: null, control: OPEN_RECORD });
 
 const POLICY = { ...JSON.parse(DEFAULT_POLICY_JSON) as PolicyDocument,
                  actions: [{ act: "people.message", do: "ask" as const }] };
@@ -216,7 +217,7 @@ describe("the import's files", () => {
 
   it("writes the imported tree alone, each inline file its content id", async () => {
     const { stub, owner } = pending();
-    for (const path of ["/workspace/agents/main/AGENTS.md", "/workspace/notes.md", "/.ta/tmp/x"]) {
+    for (const path of ["/workspace/agents/main/AGENTS.md", "/workspace/notes.md"]) {
       expect((await failure(() => stub.importFiles(importing(owner),
                                                    { entries: [inline(path, "x")] }))).code)
         .toBe("refused");
@@ -277,8 +278,8 @@ describe("the import's files", () => {
     expect((await failure(() => stub.importFiles(importing(owner, null), { entries }))).code)
       .toBe("tier_unread");
     const tiny = { free: { runs: 1, storage_bytes: 2 }, paid: { runs: 1, storage_bytes: 2 } };
-    expect((await failure(() => stub.importFiles(importing(owner, tiny), { entries }))).code)
-      .toBe("storage_full");
+    expect((await failure(() => stub.importFiles(importing(owner, openRecord(tiny)),
+                                                 { entries }))).code).toBe("storage_full");
     expect(await stub.importFiles(importing(owner), { entries })).toEqual({ written: 1, skipped: 0 });
   });
 });

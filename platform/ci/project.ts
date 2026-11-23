@@ -38,7 +38,7 @@ export function project(workspace: string, name: ProjectName, extra: Extra = {})
 }
 
 /**
- * A workspace's recorders' folder (`npm run record`, `record.ts`): its `*.record.ts`, which no
+ * A workspace's recorders' folder (`record.ts`): its `*.record.ts`, which no
  * project's `include` names, and the config that runs them, `record.config.ts`.
  */
 export const RECORDS = "test/record";

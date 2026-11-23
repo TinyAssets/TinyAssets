@@ -40,9 +40,7 @@ import { FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, ownerIssuer,
 } from "./config";
 import type { DoorsEnv } from "./env";
 import { APP_RESOURCE, MCP_RESOURCE } from "../../contract/src/identity";
-import { type ControlRead, tiersOf } from "../../contract/src/control";
-import type { Sources } from "../../sources/src/schema";
-import { signinsRead } from "../../sources/src/signin";
+import { type ControlRead, freshRecord } from "../../contract/src/control";
 import type { KeyEntry, RouteEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
@@ -80,11 +78,10 @@ type Built = Exclude<BindingKind, "none">;
 
 /**
  * The outside identity an MCP client resolves to: `client` from the issuer and its
- * `client_id` (the Python's `issuer \0 client`), `family` from those and the redirect
- * URI, the installation boundary, so a re-authorization of one installation keeps its
- * agents' mailbox (research §1.4). A loopback redirect's port is dropped first: a native
- * client listens on whatever port is free (RFC 8252 §7.3), so its port names no
- * installation.
+ * `client_id`, `family` from those and the redirect URI, the installation boundary, so a
+ * re-authorization of one installation keeps its agents' mailbox (research §1.4). A
+ * loopback redirect's port is dropped first: a native client listens on whatever port is
+ * free (RFC 8252 §7.3), so its port names no installation.
  */
 export function mcpOrigin(clientId: string, redirectUri: string):
     { client: string; family: string } {
@@ -122,8 +119,8 @@ export function installationOf(redirectUri: string): string {
  * The owner a verified upstream sign-in names, from its issuer and subject, against an
  * explicit allow-list. The owner issuer's (AuthKit's) subject is the owner id as it
  * stands, so today's owners keep theirs. A listed foreign issuer's subject (Sign in with
- * ChatGPT, say, once its slice lists it) is namespaced by that issuer, so two providers'
- * subjects never name one owner; linking it to an existing owner is that slice's act.
+ * ChatGPT, say, once listed) is namespaced by that issuer, so two providers' subjects never
+ * name one owner; no sign-in links it to an existing owner.
  * Any other issuer is refused loudly, so an `iss` that differs from the configured one
  * by so much as a trailing slash can never move an owner into a new, empty account.
  */
@@ -227,7 +224,7 @@ function egressToken(tokenHash: string, generation: number, presented: Presented
 }
 
 /**
- * The in-VM sync agent's call (slice S's runner) by its sync token, verified at the door
+ * The in-VM sync agent's call by its sync token, verified at the door
  * (`routing-mac.ts`, the `sync` kind), with the egress token E2B's transform set beside it
  * (verified as the egress doors verify it): the owner both name, and the SHA-256 of each
  * one's secret, which the object checks are its one live lease's (`#syncer`), so a sync
@@ -272,25 +269,29 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
 }
 
 /**
- * An account's or an inbound event's binding with what the platform control record holds
- * for this call, as the doors read it to gate the call (`control.ts`): its tier numbers
- * (`tiersOf`; null for none, and the object then forgets the numbers it kept and refuses,
- * `admission.ts`), which the run doors' admission reads, and the served records whose vendor
- * sign-in is switched on (`signinsRead`, of the catalog the doors serve, the `sources`
- * route's own), which the object's sign-in doors and its runs' admission hold to. No request
- * names either. Both kinds' parsers take the two as the doors read them, so the binding
- * stays its kind.
+ * An account's or an inbound event's binding with the platform control record as the doors
+ * read it to gate the call (`control.ts`): the record itself (`freshRecord`; null for none or
+ * a malformed one, and the object then drops its copy), which the object keeps as its one copy
+ * and reads its tier numbers and its switched-on sign-ins from (`admission.ts`,
+ * `signins.ts`). No request names it. A record served from the doors' kept copy hands none
+ * (`FRESH_ONLY`): the object keeps its own and starts no sign-in. Both kinds' parsers take it
+ * as the doors read it, so the binding stays its kind.
  */
 export function withAccount<B extends AccountBinding | InboundBinding>(
-    { binding, stub }: Bound<B>, read: ControlRead, sources: Sources): Bound<B> {
-  return { binding: { ...binding, tiers: tiersOf(read), signins: signinsRead(sources, read) },
-           stub };
+    { binding, stub }: Bound<B>, read: ControlRead): Bound<B> {
+  return { binding: { ...binding, ...handed(read) }, stub };
+}
+
+/** The record a binding carries for `read` (`freshRecord`), or none when it was not fresh. */
+function handed(read: ControlRead): Pick<Binding, "control"> {
+  const control = freshRecord(read);
+  return control === undefined ? {} : { control };
 }
 
 /**
  * The owner's first-party token, bound with the grant it was issued under (`grantId`, from
  * the provider's own unwrap of that token) and its expiry: a socket ticket's binding, so
- * the object ties the socket to the device's grant (A6, salvaged).
+ * the object ties the socket to the device's grant.
  */
 export function bindOwnerGrant(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
                                grantId: string): Bound {
@@ -390,20 +391,23 @@ export function bindPlatformFor(env: DoorsEnv, owner: string): Bound {
 /**
  * The platform's own binding for `owner` at the cutover's import (`import/`): the reserved
  * caller (`PLATFORM_CALLER`) with the bundle whose message the consumer verified under
- * `IMPORT_KEY`, and the control record's tier numbers, which the files plane's quota reads, as
- * every account door's binding carries them. The owner's object takes it at its import doors
- * alone, and only while the owner is pending.
+ * `IMPORT_KEY`, and the control record as `read` (`freshRecord`), whose tier numbers the
+ * files plane's quota reads, as every account door's binding carries it: none when it was not
+ * read fresh, so an outage keeps the copy the owner's object holds. The import passes no gate:
+ * it runs dark, before `routes`. The owner's object takes it at its import doors alone, and
+ * only while the owner is pending.
  */
-export function bindImport(env: DoorsEnv, owner: string, bundle: string, tiers: unknown): Bound {
-  return bound(env, "import", { owner, caller: PLATFORM_CALLER, origin: null,
-                                import: { bundle }, tiers });
+export function bindImport(env: DoorsEnv, owner: string, bundle: string,
+                           read: ControlRead): Bound {
+  return bound(env, "import", { owner, caller: PLATFORM_CALLER, origin: null, import: { bundle },
+                                ...handed(read) });
 }
 
 /**
  * An inbound event's route as the directory holds it (`inbound.ts`): the owner it names, on
  * its own account, with the binding and revision the entry carries, which the object holds
- * against its own (`inboundAccept` alone takes it); the control record's tier numbers ride
- * it for the run the mail starts.
+ * against its own (`inboundAccept` alone takes it); the control record rides it
+ * (`withAccount`) for the run the mail starts.
  */
 export function bindInbound(env: DoorsEnv, entry: RouteEntry): Bound<InboundBinding> {
   return bound(env, "inbound", { owner: entry.o, caller: entry.o, origin: null,

@@ -4,31 +4,22 @@
  * must have, and whether it is switched on. Checked in the sandbox's VM before a prompt
  * leaves it, and again on the trusted side.
  */
-import type { ControlRead } from "../../contract/src/control";
+import type { Control } from "../../contract/src/control";
 import { SIGNIN_CODE_MAX, SIGNIN_URL_MAX } from "../../contract/src/limits";
 
 import type { SourceRecord, Sources } from "./schema";
 
-/** The hosts a record's sign-in may send the owner to: its login hosts, and its region's. */
-export function signinHosts(rec: SourceRecord, region: string | null): string[] {
-  const cli = rec.cli;
-  if (cli === undefined) {
-    return [];
-  }
-  return [...cli.hosts.login, ...(region === null ? [] : cli.regions?.[region]?.hosts.login ?? [])];
-}
-
 /**
- * A sign-in's states, the only ones a frame from the VM may carry (review M1): no text the
- * VM chose leaves it but the record's own URL and code.
+ * A sign-in's states, the only ones a frame from the VM may carry: no text the VM chose
+ * leaves it but the record's own URL and code.
  */
 export const SIGNIN_STATES = Object.freeze(["starting", "open", "code_sent", "signed_in",
                                             "signed_out", "failed", "cancelled", "refused",
                                             "expired"] as const);
 
 /**
- * Why a sign-in was refused, each in plain words (review L6): the reason a refusal carries,
- * one of these keys, never a text the VM chose.
+ * Why a sign-in was refused, each in plain words: the reason a refusal carries, one of these
+ * keys, never a text the VM chose.
  */
 export const SIGNIN_REFUSALS = Object.freeze({
   url: "it showed a link that is not the vendor's own sign-in page",
@@ -72,19 +63,20 @@ const UNRESERVED = /^[A-Za-z0-9._~-]{1,128}$/;
 /**
  * Why a sign-in's prompt is not the record's own shape (a `SigninRefusal`), or null. The URL:
  * visible ASCII at most `SIGNIN_URL_MAX`, matching the record's `url_pattern` whole,
- * `https` on one of the record's `url.hosts` that is among its login hosts (and the chosen
- * region's), no user, password, port or fragment, its path the record's `url.path` exactly, each of the record's `url.params`
- * present with exactly its value, the record's `url.free` parameters each at most once with
- * an unreserved value (a state, a PKCE challenge, a user code: never a URL, so no redirect
- * chain), and no other parameter (so no other OAuth client's page). The code: a device
- * code's characters, at most `SIGNIN_CODE_MAX`. Neither credential-shaped
+ * `https` on one of the record's `url.hosts` that is among its login hosts, no user,
+ * password, port or fragment, its path the record's `url.path` exactly, each of the
+ * record's `url.params` present with exactly its value, the record's `url.free` parameters
+ * each at most once with an unreserved value (a state, a PKCE challenge, a user code: never
+ * a URL, so no redirect chain), and no other parameter (so no other OAuth client's page).
+ * The code: a device code's characters, at most `SIGNIN_CODE_MAX`. Neither credential-shaped
  * (`credentialLike`). Checked in the VM before a prompt leaves it, and again by the owner's
  * object before the owner sees it.
  */
-export function signinShape(rec: SourceRecord, region: string | null, url: string | null,
+export function signinShape(rec: SourceRecord, url: string | null,
                             code: string | null): SigninRefusal | null {
-  const login = rec.cli?.login;
-  if (login === undefined) {
+  const cli = rec.cli;
+  const login = cli?.login;
+  if (cli === undefined || login === undefined) {
     return "state";
   }
   if (url !== null) {
@@ -101,7 +93,7 @@ export function signinShape(rec: SourceRecord, region: string | null, url: strin
     if (whole === null || whole[1] !== url || parsed.protocol !== "https:"
         || parsed.username !== "" || parsed.password !== "" || parsed.port !== ""
         || parsed.hash !== "" || url.includes("#")
-        || !signinHosts(rec, region).includes(parsed.hostname)
+        || !cli.hosts.login.includes(parsed.hostname)
         || !login.url.hosts.includes(parsed.hostname) || parsed.pathname !== login.url.path) {
       return "url";
     }
@@ -139,30 +131,16 @@ export function signinShape(rec: SourceRecord, region: string | null, url: strin
 }
 
 /**
- * Whether a source's vendor sign-in is switched on: the control record's switch for it
- * (`signins`), or else its record's verdict on the vendor's terms for hosted use (on only
- * when `allowed`).
+ * The served records whose vendor sign-in `control` switches on, sorted: each its switch
+ * (`signins`), else its record's verdict on the vendor's terms for hosted use (on only when
+ * `allowed`); none without a record, since a switch is never taken as on unless a record says
+ * so (the owner's object with no copy kept, `owner/src/signins.ts` `switchedOn`; the doors'
+ * list on any read but a fresh one, `doors/src/app.ts`).
  */
-export function signinOn(rec: SourceRecord,
-                         switches: Readonly<Record<string, boolean>> | null): boolean {
-  const login = rec.cli?.login;
-  return login !== undefined
-    && (switches?.[rec.id] ?? login.hosted_use.verdict === "allowed");
-}
-
-/** The served records whose sign-in is switched on, sorted. */
-export function signinsOn(sources: Sources,
-                          switches: Readonly<Record<string, boolean>> | null): string[] {
-  return sources.ids().filter((id) => signinOn(sources.get(id)!, switches)).sort();
-}
-
-/**
- * The served records whose sign-in the control record, as read, switches on: its `signins`
- * when it reads well formed, each record's verdict when there is none, and none at all when it
- * is malformed or unreadable (fail-closed: a switch is never taken as on unless the record
- * says so).
- */
-export function signinsRead(sources: Sources, read: ControlRead): string[] {
-  return read.kind === "read" ? signinsOn(sources, read.control.signins)
-    : read.kind === "missing" ? signinsOn(sources, null) : [];
+export function signinsOn(sources: Sources, control: Control | null): string[] {
+  return control === null ? [] : sources.ids().filter((id) => {
+    const login = sources.get(id)!.cli?.login;
+    return login !== undefined
+      && (control.signins?.[id] ?? login.hosted_use.verdict === "allowed");
+  }).sort();
 }

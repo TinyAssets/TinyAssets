@@ -1,13 +1,12 @@
 /**
- * The owner's own agents as ledger identities (slice ID), in workerd, with the recording
- * sandbox: each `agent.json` an identity that follows its file, mail to one starting its run
- * through slice R's admission (its conversation the thread's, its input the mail, attended
- * only when a person sent it, its result the reply to a person's or client's mail, its
- * authority the sender's), mail past the tier waiting its turn, a revoked sender's mail
- * starting nothing, a run reading no mailbox, two agents taking turns only by deliberate
- * posts, the owner's view of their chain, and what bounds agents that mail each other: the
- * tier and the owner's own limits, never a cap of the platform's. The review's attack tests
- * (H1, H2, H3, M1, M2) are here as the fixed behaviour.
+ * The owner's own agents as ledger identities, in workerd, with the recording sandbox: each
+ * `agent.json` an identity that follows its file, mail to one starting its run through the runs'
+ * admission (its conversation the thread's, its input the mail, attended only when a person sent
+ * it, its result the reply to a person's or client's mail, its authority the sender's), mail past
+ * the tier waiting its turn, a revoked sender's mail starting nothing, a run reading no mailbox,
+ * two agents taking turns only by deliberate posts, the owner's view of their chain, and what
+ * bounds agents that mail each other: the tier and the owner's own limits, never a cap of the
+ * platform's.
  */
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -15,22 +14,26 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { toolsNamed } from "../../contract/src/doors";
 import {
-  AGENT_RETIRED, type Ledger, LEDGER_LIMITS, MAIL_HEADER_BYTES, mailInput, NO_AGENT,
+  AGENT_RETIRED, type Ledger, LEDGER_LIMITS, MAIL_HEADER_BYTES, mailInput,
   RUN_NO_MAILBOX,
 } from "../src/ledger";
 import { nativeId } from "../../contract/src/binding";
 import type { Binding } from "../../contract/src/binding";
 import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/runs";
 import { gated, type Gated } from "./gateway-support";
-import { MCP, MUSE, registerOn, rig, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding, startOf,
-         TIERS, whileOut } from "./runs-support";
+import { MCP, MUSE, registerOn, rig, signedIn, dm } from "./ledger-support";
+import {
+  ALL_SCOPES, defineAgent, OPEN_RECORD, ownerRun, recorder, runBinding, runnerBinding, startOf,
+  whileOut,
+} from "./runs-support";
 import { clock } from "../src/clock";
-import { LANE_PASS_S } from "../src/schedule";
-import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
-import { OWNER_WAITERS, ownerSlots } from "../src/holds";
-import { writeControl } from "../../ci/fixtures";
-import { clockAt, drainDue, failure, starterSeed } from "./support";
+import { LANE_PASS_S, LANE_RETRY_S } from "../src/schedule";
+import { PLACE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
+import { slotBusy } from "../../contract/src/slots";
+import { ownerSlots } from "../src/holds";
+import { OPEN, writeControl } from "../../ci/fixtures";
+import { sqlIn } from "../../ci/workerd";
+import { clockAt, drainDue, failure, laneAt, starterSeed } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude Code on the owner's own sign-in, which its record allows unattended. */
@@ -55,7 +58,7 @@ let sent = 0;
 
 /** The owner's mail in `room`, with the tier numbers the binder hands. */
 function ownerMail(r: Gated, room: string, body: string, parent: string | null = null) {
-  return r.stub.roomPost(r.bind({ tiers: TIERS }), {
+  return r.stub.roomPost(r.bind({ control: OPEN_RECORD }), {
     room_id: room, client_message_id: `m-${++sent}`, body, parent_id: parent });
 }
 
@@ -127,7 +130,7 @@ async function muse(r: Gated, grant: { mode: "full" | "scoped";
     recipe_id: null });
   const agent = await r.stub.registerAgent(r.session(), { card_id, digest });
   return { client: r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn(),
-                            tiers: TIERS }), agent: agent.agent_id };
+                            control: OPEN_RECORD }), agent: agent.agent_id };
 }
 
 describe("an agent's identity", () => {
@@ -142,7 +145,7 @@ describe("an agent's identity", () => {
     await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: [] });
     expect(await identity(r, "main")).toEqual(main);
     // Mail to it starts its run; the run's result is its reply, in the owner's mailbox.
-    const ping = await ownerMail(r, `dm:${main.agent_id}`, "ping");
+    const ping = await ownerMail(r, dm(main.agent_id), "ping");
     await drainDue(r.stub);
     await end(r, await newest(r), "pong");
     const page = await r.stub.mailboxRead(r.bind(), { limit: 10 });
@@ -150,7 +153,7 @@ describe("an agent's identity", () => {
       .toEqual([[main.agent_id, ping.message_id, "pong"]]);
     // A second message to it, which its run takes (the lane runs on the post's own ring,
     // so it is let run first, never raced), then the file goes while that run is live.
-    const late = await r.stub.roomPost(r.bind(), { room_id: `dm:${main.agent_id}`,
+    const late = await r.stub.roomPost(r.bind(), { room_id: dm(main.agent_id),
                                                     client_message_id: "late", body: "later",
                                                     parent_id: null });
     await drainDue(r.stub);
@@ -167,7 +170,7 @@ describe("an agent's identity", () => {
     // untaken mail fails: `retire`'s own test); new mail to it is refused, fixed code.
     expect(await r.sql("SELECT state, unacked FROM ledger_recipients WHERE message_id = ?",
                        late.message_id)).toEqual([{ state: "read", unacked: 0 }]);
-    expect((await failure(() => ownerMail(r, `dm:${main.agent_id}`, "anyone?"))).message)
+    expect((await failure(() => ownerMail(r, dm(main.agent_id), "anyone?"))).message)
       .toBe(AGENT_RETIRED);
     await drainDue(r.stub);
     expect(await starts(r)).toHaveLength(2);
@@ -190,8 +193,9 @@ describe("an agent's identity", () => {
                                            expected_etag: moving.etag, replace: false });
     expect((await identity(r, "main")).retired_at).not.toBeNull();
     expect((await identity(r, "helper")).retired_at).toBeNull();
-    expect((await failure(() => ownerMail(r, "dm:ta_0123456789abcdef", "who?"))).message)
-      .toBe(NO_AGENT);
+    // No agent of that id: no room names it.
+    expect((await failure(() => ownerMail(r, dm("ta_0123456789abcdef"), "who?"))).message)
+      .toBe("room is not an enabled agent's dm");
   });
 });
 
@@ -242,13 +246,40 @@ describe("the ledger's bounds on identities", () => {
   });
 });
 
+describe("agents_list's rooms", () => {
+  it("names each agent's room with the caller, and on the caller's own entry its room with " +
+     "the owner: the rooms its posts land in, made by the first", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const { client, agent } = await muse(r, { mode: "full", scopes: [] });
+    const main = await identity(r, "main");
+    const owner = await r.stub.outsideAgents(r.bind());
+    expect([owner.owner_agents.find((a) => a.agent === "main")!.room_id,
+            owner.agents.find((a) => a.agent_id === agent)!.room_id])
+      .toEqual([dm(main.agent_id), dm(agent)]);
+    const muses = await r.stub.outsideAgents(client);
+    expect([muses.owner_agents.find((a) => a.agent === "main")!.room_id,
+            muses.agents.find((a) => a.agent_id === agent)!.room_id])
+      .toEqual([dm(agent, main.agent_id), dm(agent)]);
+    expect(await sqlIn(r.stub, "SELECT room_id FROM rooms")).toEqual([]);
+    // Muse reaches the owner on its own entry's room; the post makes the room.
+    const posted = await r.stub.roomPost(client, { room_id: dm(agent), client_message_id: "a1",
+                                                   body: "hello", parent_id: null });
+    expect(posted.recipients).toEqual(["owner"]);
+    expect(await sqlIn(r.stub, "SELECT room_id FROM rooms")).toEqual([{ room_id: dm(agent) }]);
+    // Held by the owner, it counts in Muse's share of the owner's mailbox.
+    expect((await r.stub.outsideAgents(r.bind())).agents
+      .find((a) => a.agent_id === agent)!.unacked_to_owner).toBe(1);
+  });
+});
+
 describe("mail to an agent", () => {
   it("from the owner starts a run in the thread's conversation, and the reply lands in the " +
      "thread", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const main = await identity(r, "main");
-    const ping = await ownerMail(r, `dm:${main.agent_id}`, "what is 2 + 2?");
+    const ping = await ownerMail(r, dm(main.agent_id), "what is 2 + 2?");
     expect(ping.recipients).toEqual([main.agent_id]);
     // The post rang the lane: the run starts on the mail, unattended, as the owner's.
     await drainDue(r.stub);
@@ -257,7 +288,7 @@ describe("mail to an agent", () => {
     expect(first).toMatchObject({ agent: "main", unattended: false, authority: "owner",
                                   session_id: null });
     // Its input: its own mail's envelope, then the body verbatim.
-    expect(told(first)).toEqual({ from: "owner (owner owner)", room: `dm:${main.agent_id}`,
+    expect(told(first)).toEqual({ from: "owner (owner owner)", room: dm(main.agent_id),
                                   message: ping.message_id, body: "what is 2 + 2?" });
     const run = await receipt(r, first.run);
     expect(run).toMatchObject({ initiator: "mail", state: "running", mail: ping.message_id });
@@ -270,12 +301,12 @@ describe("mail to an agent", () => {
     expect(await r.sql("SELECT state, unacked FROM ledger_recipients WHERE message_id = ?",
                        ping.message_id)).toEqual([{ state: "replied", unacked: 0 }]);
     const page = await r.stub.mailboxRead(r.bind(), { limit: 10 });
-    expect(page.messages).toMatchObject([{ room_id: `dm:${main.agent_id}`,
+    expect(page.messages).toMatchObject([{ room_id: dm(main.agent_id),
                                            sender_kind: "native", sender_id: main.agent_id,
                                            parent_id: ping.message_id, chain_depth: 1,
                                            body: "4" }]);
     // The owner answers the reply: the same conversation, its engine's session resumed.
-    await ownerMail(r, `dm:${main.agent_id}`, "and 3 + 3?", page.messages[0]!.message_id);
+    await ownerMail(r, dm(main.agent_id), "and 3 + 3?", page.messages[0]!.message_id);
     await drainDue(r.stub);
     const second = await newest(r);
     expect(second.run).not.toBe(first.run);
@@ -283,7 +314,7 @@ describe("mail to an agent", () => {
     expect(told(second).body).toBe("and 3 + 3?");
     expect((await receipt(r, second.run)).conversation_id).toBe(run.conversation_id);
     // A new thread is a new conversation.
-    await ownerMail(r, `dm:${main.agent_id}`, "something else");
+    await ownerMail(r, dm(main.agent_id), "something else");
     await drainDue(r.stub);
     expect((await receipt(r, (await newest(r)).run)).conversation_id)
       .not.toBe(run.conversation_id);
@@ -295,7 +326,7 @@ describe("mail to an agent", () => {
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const main = await identity(r, "main");
     const long = "q".repeat(PLACE_BYTES) + "?";
-    const ping = await ownerMail(r, `dm:${main.agent_id}`, long);
+    const ping = await ownerMail(r, dm(main.agent_id), long);
     expect(await r.sql("SELECT body, content_id IS NOT NULL AS placed FROM message_bodies " +
                        "WHERE message_id = ?", ping.message_id)).toEqual([{ body: "", placed: 1 }]);
     await drainDue(r.stub);
@@ -320,11 +351,11 @@ describe("mail to an agent", () => {
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const main = await identity(r, "main");
     for (let i = 0; i < 5; i++) {
-      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+      await ownerMail(r, dm(main.agent_id), `job ${i}`);
     }
     // Past a chunk: bounded by the body bound alone, as any mail.
     const long = "w".repeat(5 * 1024 * 1024) + "!";
-    await ownerMail(r, `dm:${main.agent_id}`, long);
+    await ownerMail(r, dm(main.agent_id), long);
     await drainDue(r.stub);
     expect(await r.sql("SELECT prompt, bytes FROM run_inputs")).toEqual([{ prompt: "", bytes: 0 }]);
     await end(r, (await starts(r))[0]!, "done 0");
@@ -334,34 +365,39 @@ describe("mail to an agent", () => {
   });
 
   it("waits on through a full slot pool: a long mail's waiting run, its body's read refused " +
-     "busy at its turn, keeps waiting and starts once the pool frees (review F1)", async () => {
+     "busy at its turn, never waiting on the pool, keeps waiting and starts once the pool " +
+     "frees", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const main = await identity(r, "main");
     for (let i = 0; i < 5; i++) {
-      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+      await ownerMail(r, dm(main.agent_id), `job ${i}`);
     }
     const long = "w".repeat(5 * 1024 * 1024) + "!";
-    await ownerMail(r, `dm:${main.agent_id}`, long);
+    await ownerMail(r, dm(main.agent_id), long);
     await drainDue(r.stub);
-    // The isolate's pool full in its larger class, and its queue at its waiters: the body's
-    // read at the run's turn is refused `busy` at once, a transient refusal.
+    // The isolate's pool full in its larger class, and no call waiting for it: the body's
+    // read at the run's turn takes its units now or is refused `busy` (a transient refusal).
     const pool = ownerSlots();
     const held = await pool.acquire(pool.capacity - pool.reserve, "", undefined, true);
-    const stop = new AbortController();
-    const queued = Array.from({ length: OWNER_WAITERS }, () =>
-      pool.acquire(1, "", stop.signal, true).then((slot) => slot.release(), () => undefined));
     try {
       await end(r, (await starts(r))[0]!, "done 0");
-      await drainDue(r.stub).catch(() => undefined);  // the pass fails, as a busy pool's does
+      // The pass holds the lane until the refusal's Retry-After, never failed for it. The
+      // pool's units stay held through it, so a read that waited would be refused only by the
+      // pool's own timer, `SLOT_WAIT_MS` on: finishing inside it is the never-waiting.
+      const before = Date.now();
+      const began = clock();
+      await drainDue(r.stub);
+      expect(Date.now() - before).toBeLessThan(SLOT_WAIT_MS);
       expect(await r.sql("SELECT state, code FROM runs WHERE state NOT IN ('running', " +
                          "'succeeded')")).toEqual([{ state: "waiting", code: null }]);
+      const held = (await laneAt(r.stub, "runs"))!;
+      expect(held).toBeGreaterThanOrEqual(began + slotBusy().retryAfter!);
+      expect(held).toBeLessThan(began + LANE_RETRY_S);
     } finally {
-      stop.abort();
       held.release();
-      await Promise.all(queued);
     }
-    // The lane's next try, as its backoff brings it once the pool has freed.
+    // The lane's next try, as its hold brings it once the pool has freed.
     await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
     await drainDue(r.stub);
     expect(told((await starts(r)).at(-1)!).body).toBe(long);
@@ -379,7 +415,7 @@ describe("mail to an agent", () => {
       { universe: "alpha", agent: "main", capability: "converse" },
       { universe: "alpha", agent: "main", capability: "read_graph" },
       { universe: "alpha", agent: "main", capability: "write_graph" }] });
-    const room = `dm:${agent}+${main.agent_id}`;
+    const room = dm(agent, main.agent_id);
     const hello = await r.stub.roomPost(client, { room_id: room, client_message_id: "c-1",
                                                   body: "hello main", parent_id: null });
     expect(hello.recipients).toEqual([main.agent_id]);
@@ -421,8 +457,8 @@ describe("mail to an agent", () => {
       .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
     // Nor post in a room that is not its own.
     expect((await failure(() => r.stub.roomPost(client, {
-      room_id: `dm:${main.agent_id}`, client_message_id: "c-3", body: "x",
-      parent_id: null }))).message).toBe("an outside agent posts only in its own dm room");
+      room_id: dm(main.agent_id), client_message_id: "c-3", body: "x",
+      parent_id: null }))).message).toBe("room is not an enabled agent's dm");
   });
 
   it("from a client holds its run's run doors to that client's grant, where the run acts",
@@ -436,7 +472,7 @@ describe("mail to an agent", () => {
       { universe: "alpha", agent: "main", capability: "converse" },
       { universe: "alpha", agent: "main", capability: "write_graph" },
       { universe: "alpha", agent: "main", capability: "run_graph" }] });
-    await r.stub.roomPost(client, { room_id: `dm:${agent}+${main.agent_id}`,
+    await r.stub.roomPost(client, { room_id: dm(agent, main.agent_id),
                                     client_message_id: "c-1", body: "hi", parent_id: null });
     await drainDue(r.stub);
     const start = await newest(r);
@@ -461,7 +497,7 @@ describe("mail to an agent", () => {
     });
     clockAt(clock() + 600);
     for (let i = 0; i < 3; i++) {
-      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+      await ownerMail(r, dm(main.agent_id), `job ${i}`);
     }
     // The pass's first start is out at the sandbox while the clock passes the pass's end.
     await whileOut(r.name, "start", () => runDurableObjectAlarm(r.stub), async () => {
@@ -479,7 +515,7 @@ describe("mail to an agent", () => {
     const main = await identity(r, "main");
     // Seven threads to one agent on the free tier's five runs.
     for (let i = 0; i < 7; i++) {
-      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+      await ownerMail(r, dm(main.agent_id), `job ${i}`);
     }
     await drainDue(r.stub);
     expect(await r.sql("SELECT state, COUNT(*) AS n FROM runs GROUP BY state ORDER BY state"))
@@ -500,7 +536,7 @@ describe("mail to an agent", () => {
     await r.sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) " +
                   "INSERT INTO run_inputs (run, prompt, bytes) SELECT printf('run_%032x', i), " +
                   "'x', 1 FROM n", QUEUE_ROWS - 1);
-    const held = await ownerMail(r, `dm:${main.agent_id}`, "job 7");
+    const held = await ownerMail(r, dm(main.agent_id), "job 7");
     await drainDue(r.stub);
     expect(await r.sql("SELECT state, unacked FROM ledger_recipients WHERE message_id = ?",
                        held.message_id)).toEqual([{ state: "held_cap", unacked: 1 }]);
@@ -523,7 +559,7 @@ describe("mail to an agent", () => {
     const main = await identity(r, "main");
     const { client, agent } = await muse(r, { mode: "full", scopes: [] });
     const posted = await r.stub.roomPost(client, {
-      room_id: `dm:${agent}+${main.agent_id}`, client_message_id: "c-1", body: "run this",
+      room_id: dm(agent, main.agent_id), client_message_id: "c-1", body: "run this",
       parent_id: null });
     // The owner revokes Muse before the lane delivers its mail.
     await r.stub.grantRevoke(r.bind(), { client: MUSE.client });
@@ -541,7 +577,7 @@ describe("mail to an agent", () => {
   });
 });
 
-describe("a run and the mailbox (review H1)", () => {
+describe("a run and the mailbox", () => {
   it("reads and acks none: a client's run never sees the owner's mail, and queued mail " +
      "stays the lane's", async () => {
     const r = await gated();
@@ -549,7 +585,7 @@ describe("a run and the mailbox (review H1)", () => {
     await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
     const main = await identity(r, "main");
     // The owner's private mail to main, answered by an owner-authority run.
-    await ownerMail(r, `dm:${main.agent_id}`, "owner secret: the vault code is 1234");
+    await ownerMail(r, dm(main.agent_id), "owner secret: the vault code is 1234");
     await drainDue(r.stub);
     await end(r, await newest(r), "noted");
     // Muse, scoped to main only, mails main.
@@ -557,22 +593,22 @@ describe("a run and the mailbox (review H1)", () => {
       { universe: "alpha", agent: "main", capability: "converse" },
       { universe: "alpha", agent: "main", capability: "read_graph" },
       { universe: "alpha", agent: "main", capability: "write_graph" }] });
-    // It is shown only the owner's agents its grant covers (review L2).
+    // It is shown only the owner's agents its grant covers.
     expect((await r.stub.outsideAgents(client)).owner_agents.map((a) => a.agent))
       .toEqual(["main"]);
-    await r.stub.roomPost(client, { room_id: `dm:${agent}+${main.agent_id}`,
+    await r.stub.roomPost(client, { room_id: dm(agent, main.agent_id),
                                     client_message_id: "c-1", body: "hello", parent_id: null });
     await drainDue(r.stub);
     const musesRun = await newest(r);
     expect(musesRun.authority).toBe(MUSE.client);
     // A second owner mail arrives while Muse's run is live.
-    const late = await ownerMail(r, `dm:${main.agent_id}`, "owner secret two");
+    const late = await ownerMail(r, dm(main.agent_id), "owner secret two");
     const asRun = runBinding(r, musesRun);
     expect((await failure(() => r.stub.mailboxRead(asRun, { limit: 10 }))).message)
       .toBe(RUN_NO_MAILBOX);
     expect((await failure(() => r.stub.mailboxAck(asRun, { through: 1 }))).message)
       .toBe(RUN_NO_MAILBOX);
-    // Nor its digest, whose mail part is a mailbox read (slice M on ID).
+    // Nor its digest, whose mail part is a mailbox read.
     expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10, after: 0 }))).message)
       .toBe(RUN_NO_MAILBOX);
     // A malformed request is refused for its fields first, then for the run, as each of these
@@ -598,14 +634,12 @@ describe("a run and the mailbox (review H1)", () => {
   });
 });
 
-describe("attendance (review H2)", () => {
+describe("attendance", () => {
   it("is the mail's: the owner's own mail runs on a source that runs attended only, another " +
      "agent's mail does not", async () => {
     const r = await gated();
     // Codex's sign-in switched on in the control record, which the lane reads itself.
-    await writeControl(env.CONTROL, {
-      outside: "on", ordinary: "all", canary: [], inbound: false, signins: { codex: true } });
-    onTestFinished(() => writeControl(env.CONTROL, null));
+    await writeControl(env.CONTROL, { ...OPEN, signins: { codex: true } });
     await defineAgent(r.stub, r.bind(), "coder", { engine: "codex",
                                                    credential: "vendor_login_in_sandbox",
                                                    scopes: [] });
@@ -614,17 +648,17 @@ describe("attendance (review H2)", () => {
     const alice = await identity(r, "alice");
     // The owner's door and the owner's mail are both a person's: both run, attended.
     await ownerRun(r.stub, r.bind(), undefined, "coder");
-    await ownerMail(r, `dm:${coder.agent_id}`, "hi coder");
+    await ownerMail(r, dm(coder.agent_id), "hi coder");
     await drainDue(r.stub);
     expect((await starts(r)).map((start) => [start.agent, start.unattended]))
       .toEqual([["coder", false], ["coder", false]]);
     // Alice's run mails coder: no person sent it, so codex's sign-in may not take it.
-    await ownerMail(r, `dm:${alice.agent_id}`, "ask coder");
+    await ownerMail(r, dm(alice.agent_id), "ask coder");
     await drainDue(r.stub);
     const a1 = await newest(r);
     expect(a1).toMatchObject({ agent: "alice", unattended: false });
     const asked = await r.stub.roomPost(runBinding(r, a1), {
-      room_id: `dm:${[alice.agent_id, coder.agent_id].sort().join("+")}`,
+      room_id: dm(alice.agent_id, coder.agent_id),
       client_message_id: "q", body: "a question", parent_id: null });
     await drainDue(r.stub);
     expect((await starts(r)).length).toBe(3);
@@ -634,7 +668,7 @@ describe("attendance (review H2)", () => {
   });
 });
 
-describe("agents mailing each other (review H3, M1)", () => {
+describe("agents mailing each other", () => {
   it("take turns only by deliberate posts: a result wakes no agent, and the owner sees the " +
      "chain", async () => {
     const r = await gated();
@@ -642,9 +676,9 @@ describe("agents mailing each other (review H3, M1)", () => {
     await defineAgent(r.stub, r.bind(), "bob", SIGNED_IN);
     const alice = await identity(r, "alice");
     const bob = await identity(r, "bob");
-    const room = `dm:${[alice.agent_id, bob.agent_id].sort().join("+")}`;
+    const room = dm(alice.agent_id, bob.agent_id);
     // The owner asks alice; her run asks bob, deliberately, in their room.
-    await ownerMail(r, `dm:${alice.agent_id}`, "start a game with bob");
+    await ownerMail(r, dm(alice.agent_id), "start a game with bob");
     await drainDue(r.stub);
     const kickoff = await newest(r);
     const opened = await r.stub.roomPost(runBinding(r, kickoff), {
@@ -712,16 +746,16 @@ describe("agents mailing each other (review H3, M1)", () => {
   });
 
   it("tell a woken run who wrote, the room and the message, all it needs to answer, and " +
-     "nothing past its own mail (review N1)", async () => {
+     "nothing past its own mail", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "alice", SIGNED_IN);
     await defineAgent(r.stub, r.bind(), "bob", SIGNED_IN);
     const alice = await identity(r, "alice");
     const bob = await identity(r, "bob");
-    await ownerMail(r, `dm:${alice.agent_id}`, "ask bob");
+    await ownerMail(r, dm(alice.agent_id), "ask bob");
     await drainDue(r.stub);
     const a1 = await newest(r);
-    const room = `dm:${[alice.agent_id, bob.agent_id].sort().join("+")}`;
+    const room = dm(alice.agent_id, bob.agent_id);
     const asked = await r.stub.roomPost(runBinding(r, a1), {
       room_id: room, client_message_id: "q", body: "what is 2+2?", parent_id: null });
     await end(r, a1, "asked");
@@ -755,8 +789,8 @@ describe("agents mailing each other (review H3, M1)", () => {
       scopes: ALL_SCOPES.filter((scope) => scope !== "converse") });
     const alice = await identity(r, "alice");
     const bob = await identity(r, "bob");
-    const room = `dm:${[alice.agent_id, bob.agent_id].sort().join("+")}`;
-    await ownerMail(r, `dm:${alice.agent_id}`, "ask bob");
+    const room = dm(alice.agent_id, bob.agent_id);
+    await ownerMail(r, dm(alice.agent_id), "ask bob");
     await drainDue(r.stub);
     const a1 = await newest(r);
     await r.stub.roomPost(runBinding(r, a1), { room_id: room, client_message_id: "q",
@@ -792,7 +826,7 @@ describe("agents mailing each other (review H3, M1)", () => {
     // waiting its turn (past the inputs' queue too, its mail is held in the ledger, and a
     // full mailbox refuses more, loudly, to whoever sends it).
     for (const id of ids) {
-      await ownerMail(r, `dm:${id.agent_id}`, "go");
+      await ownerMail(r, dm(id.agent_id), "go");
     }
     await drainDue(r.stub);
     expect(await r.sql("SELECT state, COUNT(*) AS n FROM runs GROUP BY state ORDER BY state"))
@@ -804,8 +838,8 @@ describe("agents mailing each other (review H3, M1)", () => {
     }
     // Two agents on a key taking turns: each turn a deliberate post, each run admitted under
     // the owner's own spending caps.
-    const room = `dm:${[ids[0]!.agent_id, ids[1]!.agent_id].sort().join("+")}`;
-    await ownerMail(r, `dm:${ids[0]!.agent_id}`, "play with a2");
+    const room = dm(ids[0]!.agent_id, ids[1]!.agent_id);
+    await ownerMail(r, dm(ids[0]!.agent_id), "play with a2");
     await drainDue(r.stub);
     const a1 = await newest(r);
     await r.stub.roomPost(runBinding(r, a1), { room_id: room, client_message_id: "serve",
@@ -839,7 +873,7 @@ describe("agents mailing each other (review H3, M1)", () => {
   });
 });
 
-describe("a mail run's input (review N4)", () => {
+describe("a mail run's input", () => {
   it("fences the body by its message's id, so a forged envelope, even a fenced one, sits " +
      "wholly inside the real fence", () => {
     const fake = "msg_00000000000000000000000000000000";
@@ -888,7 +922,7 @@ describe("a retired agent's mail", () => {
     const r = await rig();
     const ids = await r.inLedger((ledger: Ledger) => {
       ledger.appear("main");
-      const room = `dm:${nativeId("main")}`;
+      const room = dm(nativeId("main"));
       const [taken, queued, held] = ["taken", "queued", "held"].map((cmid) =>
         ledger.post(null, room, cmid, cmid, null).message_id);
       ledger.taken(taken!, nativeId("main"));
@@ -907,21 +941,21 @@ describe("a retired agent's mail", () => {
   });
 });
 
-describe("a sender gone (review M2)", () => {
+describe("a sender gone", () => {
   it("fails its mail no run took: a retired agent's, and a disabled outside agent's",
      async () => {
     const r = await rig();
     const seen = await r.inLedger((ledger: Ledger, stores) => {
       ledger.appear("alice");
       ledger.appear("bob");
-      const room = `dm:${[nativeId("alice"), nativeId("bob")].sort().join("+")}`;
+      const room = dm(nativeId("alice"), nativeId("bob"));
       const asked = ledger.post({ native: "alice" }, room, "q", "question", null);
       ledger.retire("alice");
       const afterRetire = ledger.nextMail();
       const muse = registerOn(stores, MUSE, { command_center_id: "alpha",
                                                display_name: "Muse", delivery_method: "pull",
                                                recipe_id: null });
-      ledger.post(MUSE, `dm:${muse.agent_id}+${nativeId("bob")}`, "m", "hello bob", null);
+      ledger.post(MUSE, dm(muse.agent_id, nativeId("bob")), "m", "hello bob", null);
       ledger.disable(muse.agent_id, "owner's choice");
       return { asked: asked.message_id, afterRetire, afterDisable: ledger.nextMail() };
     });
@@ -933,11 +967,11 @@ describe("a sender gone (review M2)", () => {
   });
 });
 
-describe("the owner-mail schedules slice R stood in with", () => {
+describe("the owner-mail schedules", () => {
   it("are gone: no run on the owner's mail, no schedule held to it", async () => {
     const r = await gated();
     for (const extra of [{ on_mail: true }, { cron: "0 * * * *", if_mail: true }]) {
-      expect((await failure(() => r.stub.agentRun(r.bind({ tiers: TIERS }), {
+      expect((await failure(() => r.stub.agentRun(r.bind({ control: OPEN_RECORD }), {
         agent: "main", input: "x", ...extra } as never))).message).toBe("invalid run request");
     }
     const properties = Object.keys(toolsNamed(["run_graph"])[0]!.input["properties"] as object);

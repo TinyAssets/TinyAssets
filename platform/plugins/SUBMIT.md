@@ -7,7 +7,8 @@ from the starter's skills and `platform/contract/identity.json`. Don't edit them
 ## Before either submission
 
 1. **The doors are live.** Mode `routes` has run (the go-ahead deploy, mode `dark`, moves
-   no route), and `https://tinyassets.io/mcp` answers a signed-in client.
+   no route), and `https://tinyassets.io/mcp` answers a signed-in client. `identity.json`'s
+   `host` is the zone again: while the live stage runs, the plugins name its host.
 2. **Dynamic registration is decided.** `DCR_ENABLED` is `"true"` if Grok, Muse or Gemini
    are to connect, and each one's redirect URIs are recorded in `apps.json`
    (`match.redirects`). Until they are, its registration is refused. Claude and ChatGPT use
@@ -78,5 +79,5 @@ from the starter's skills and `platform/contract/identity.json`. Don't edit them
 
 - Add its listing URL to that app's `connect.link` in `apps.json`, then rebuild. The public
   connect page and `agents_list` pick it up.
-- Raise the plugin's version with every starter version (`build.mjs` takes it from
-  `manifest.json`), and resubmit if the directory doesn't follow updates on its own.
+- The plugin's version is the starter's (`build.mjs` takes it from `manifest.json`).
+  Resubmit at each new version if the directory doesn't follow updates on its own.

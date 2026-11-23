@@ -228,26 +228,6 @@ The OpenSpec flow inspector SHALL support a caller-selected validated Git ref an
 - **THEN** inspection exits non-zero with a bounded diagnostic
 - **AND** it emits no fallback report from the working tree
 
-### Requirement: Gate-defining and authority-critical changes need an exact-head review receipt
-
-A pull request touching gate-defining or authority-critical paths SHALL carry an
-exact-head review receipt in the pull-request BODY naming an APPROVE verdict, the
-unchanged head SHA, and a durable artifact. Gate-defining paths are
-`.github/workflows/tests.yml`, `.github/known-failing-tests.txt`,
-`.github/heavy-test-files.txt`, `scripts/ci_required_tests.py`, and
-`scripts/drain_review_gate.py`; authority-critical paths are `tinyassets/auth/`,
-`tinyassets/credential_vault.py`, and
-`tinyassets/api/{permissions,interlocutor,visibility,engine_helpers}.py`. The check SHALL run
-from the trusted base checkout so a pull request cannot weaken the rule judging
-it. Matching SHALL cover renames (via the previous path) and SHALL be
-case-insensitive, and SHALL include the packaging runtime mirror of those paths.
-A deletion-only edit to the quarantine ledger SHALL be exempt, because it only
-tightens the ratchet; any addition SHALL keep the receipt requirement.
-
-#### Scenario: Renaming a protected file does not evade the receipt
-- **WHEN** a pull request renames `tinyassets/auth/provider.py` to an unprotected path
-- **THEN** the guard reports the authority hit and requires the receipt
-
 ### Requirement: A review verdict is a check run only the review App posts
 
 A verdict SHALL be a review on the commit read, by an account that can push, whose
@@ -282,6 +262,10 @@ prose delta. Readers SHALL take the App's highest-id run for their own pull requ
 - **WHEN** the change since the approved commit touches only Markdown under `docs/`, `openspec/` or `ideas/`, or top-level Markdown
 - **THEN** the approval carries to the new head
 - **AND** it does not carry when any changed path is under `docs/reference/`, or its name matches `(?i)^(AGENTS|CLAUDE|GEMINI|CODEX)([._-].*)?\.md$` at any depth
+
+#### Scenario: A verdict that does not carry fails, naming the review owed
+- **WHEN** the latest verdict was on an earlier commit and does not carry to the head, as after a merge of main that touched a file the pull request changes
+- **THEN** the `review` run on the head is a failure whose title names the verdict, its commit, and the delta review (after `APPROVE`) or fresh review (after `BLOCK`) the change since needs
 
 #### Scenario: A retarget voids the verdict
 - **WHEN** a pull request approved at its head is retargeted to another base, by hand or by GitHub after its parent merged
@@ -340,9 +324,8 @@ previous path.
 ### Requirement: Agent shell commands that lost time are refused
 
 The Claude Code Bash guard SHALL refuse a heredoc whose body holds a backslash
-(quoting the delimiter does not keep it on this host), a `pkill -f` whose pattern
-lacks the bracket trick, and a receipt naming a head that is not the pull
-request's current head. After a `git push` it SHALL report a pushed branch whose
+(quoting the delimiter does not keep it on this host) and a `pkill -f` whose
+pattern lacks the bracket trick. After a `git push` it SHALL report a pushed branch whose
 ref on the pushed remote is not the local branch. A guard that cannot run SHALL
 allow the call.
 
@@ -384,7 +367,7 @@ so an unattended session does not spawn visible windows.
 
 ### Requirement: Fixes reach production through a reversible hotfix first
 
-Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a corroborated Drain-Review APPROVE receipt for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
+Pushed fixes SHALL run affected tests at their exact head before hot-swapping eligible Python or daemon-served app assets. Floor-class fixes SHALL carry a passing `review` check (an APPROVE PR review) for that head. Migrations, storage shape, dependencies, images and host services SHALL use normal deployment. Selection SHALL NOT hide an incompatible change elsewhere in the branch diff.
 
 #### Scenario: A live check fails
 
@@ -410,7 +393,7 @@ Pushed fixes SHALL run affected tests at their exact head before hot-swapping el
 - **WHEN** a hotfix applies or reverts
 - **THEN** it discovers running TinyAssets-image containers, patches each containing the file, and restarts those services
 - **AND** files present in the box harness are patched and boxhostd restarts, closing awake boxes so subsequent admission loads the updated harness
-- **AND** review uses the existing drain-review receipt requirement for every PR, with no private path exemptions
+- **AND** review uses the `review` check every PR needs, with no private path exemptions
 
 ---
 
@@ -425,7 +408,7 @@ is worse than silence -- a reader cannot tell a stale requirement from a live on
 |---|---|
 | STATUS claims / STATUS row lifecycle | `STATUS.md` retired 2026-08-25; live state moved to typed homes (`openspec/changes/`, `docs/concerns/`, `docs/host-actions.md`, git branches) |
 | Agent Village (2 requirements) | `command_center/` deleted -- it visualised a concurrent-agent fleet that no longer runs, and read the retired board |
-| OpenSpec drain (18 requirements) | `openspec_drain_supervisor.py` and its watchdog/tray deleted; autonomous background workers are out of scope under the two-provider decision. **Three behaviours in that block survived their machinery and were re-specified above** rather than retired with it: the exact-head review receipt (still enforced by `pr-scope-guard.yml`, `auto-enroll-merge.yml`, `scripts/drain_review_gate.py`), lane-local worktree dispatch (`scripts/peer_agent.py`), and consoleless provider launch. A blanket retirement of the block would have deleted live contracts -- caught by cross-family review 2026-08-26. |
+| OpenSpec drain (18 requirements) | `openspec_drain_supervisor.py` and its watchdog/tray deleted; autonomous background workers are out of scope under the two-provider decision. **Three behaviours in that block survived their machinery and were re-specified above** rather than retired with it: the review of every pull request (now the `review` check, ADR-038), lane-local worktree dispatch (`scripts/peer_agent.py`), and consoleless provider launch. A blanket retirement of the block would have deleted live contracts -- caught by cross-family review 2026-08-26. |
 
 Recover any of it from git: the reset merged as `e4180697`, and this file's
 history holds the full text.

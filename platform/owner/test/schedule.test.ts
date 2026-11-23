@@ -1,7 +1,7 @@
 /**
- * The one schedule on the Agents SDK Lifecycle job queue (tasks 3.6): each lane's job is
- * derived from its rows, a run ends by setting its own job, a failed lane backs off, and
- * the object holds a Lifecycle without its runtime handlers.
+ * The one schedule on the Agents SDK Lifecycle job queue: each lane's job is derived from its rows,
+ * a run ends by setting its own job, a failed lane backs off, and the object holds a Lifecycle
+ * without its runtime handlers.
  *
  * The lane tests run a real Lifecycle (agents 0.31.0) over a fresh object's own storage,
  * with its alarm writes recorded instead of set, so workerd never fires them and each test
@@ -21,7 +21,7 @@ import {
 } from "../src/schedule";
 import { Doorbell } from "../src/wakes";
 import { sha256Hex } from "../../contract/src/digest";
-import { MUSE, rig } from "./ledger-support";
+import { MUSE, rig, dm } from "./ledger-support";
 import {
   alarmOf, clockAt, drainDue, failure, laneJobs, ownerObject, unseededObject,
 } from "./support";
@@ -364,18 +364,17 @@ describe("a lane's run", () => {
     expect([a.runs, a.mostAtOnce]).toEqual([1, 1]);
   }));
 
-  it("gives each pass a wall-clock budget its single-flight hung timeout covers (review N2)",
+  it("gives each pass a wall-clock budget its single-flight hung timeout covers",
      () => withProbe(["a"], async (p) => {
     const a = p.lanes["a"]!;
     a.due = p.now - 10;
     await p.schedule.sync();
     const [job] = p.read("SELECT singleflight, hung_timeout_seconds FROM cf_agents_jobs " +
                          "WHERE id = ?", laneJob("a"));
-    expect([Boolean(job!["singleflight"]), job!["hung_timeout_seconds"]]).toEqual([true, 60]);
+    expect([Boolean(job!["singleflight"]), job!["hung_timeout_seconds"]])
+      .toEqual([true, LANE_HUNG_S]);
     await p.alarm();
     expect(a.untils).toEqual([p.now + LANE_PASS_S]);
-    // A row's outside call fits in what the budget leaves of the hung timeout.
-    expect(LANE_HUNG_S).toBe(60);
     expect(await inTime(new Promise(() => undefined), 10)).toBe("late");
     const slow = new Promise((resolve) => setTimeout(() => resolve("done"), 20));
     expect(await inTime(slow, Infinity)).toBe("done");  // unbounded waits it out
@@ -482,7 +481,7 @@ describe("the object's schedule", () => {
   it("is a fixed set of lane jobs, armed at the earliest", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");
-    await r.post(null, `dm:${muse}`);
+    await r.post(null, dm(muse));
     await r.stub.fileUploadBegin(r.bind(null), { size: 5000, chunks: ["e".repeat(64)] });
     const t = Date.now() / 1000;
     await r.inLedger((ledger) => {
@@ -518,7 +517,7 @@ describe("the object's schedule", () => {
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha256);
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/d", expected_etag: null });
     // The door re-derived the files job: due now; or workerd already fired the alarm it
-    // armed, and the lane deleted the chunk (the slice D review's round 2 race).
+    // armed, and the lane deleted the chunk.
     const due = ((await laneJobs(r.stub))["files"]?.time ?? Infinity) <= Date.now();
     const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_chunks WHERE sha256 = ?", sha256))
       .length === 0;

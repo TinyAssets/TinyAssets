@@ -6,6 +6,8 @@ Proposed — the workflow is landed and green, but **making it required is a hos
 decision**. See "What the host must run" below. Until that command is run, this
 gate reports but blocks nothing.
 
+Superseded by ADR-032 (founder, 2026-11-21), except: a required check reports on every pull request and merge group, unfiltered (ADR-039 decision 2.21).
+
 ## Date
 
 2026-07-21

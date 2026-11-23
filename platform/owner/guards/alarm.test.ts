@@ -77,10 +77,10 @@ export const RESERVED: Readonly<Record<string, string>> = Object.freeze({
   webSocketError: "await this.#lifecycle.webSocketError(ws, error);",
 });
 /**
- * The pinned Agents SDK, as the lockfile resolves it: under the owner's workspace, since its
- * required peer `@modelcontextprotocol/client` is pinned exactly at 2.4.0 while the doors
- * pin 2.3.1, so npm nests agents with its own MCP packages (the owner imports none of
- * them). When the doors move to 2.4.0, agents hoists again and this path moves.
+ * The pinned Agents SDK, as the lockfile resolves it: under the owner's workspace, where npm
+ * placed it while its required peer `@modelcontextprotocol/client` (2.4.0) differed from the
+ * doors' pin; since the doors pin 2.4.0 too, it shares the root's MCP packages (the owner
+ * imports none of them).
  */
 export const AGENTS = Object.freeze({
   version: "0.32.0",

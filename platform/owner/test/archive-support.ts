@@ -74,7 +74,7 @@ export async function sealed(r: Rig, reader: typeof MUSE, room: string): Promise
 /** Whether the lane has work, as its schedule reads it (`Archive.next`), or a move in flight. */
 async function busy(r: Rig): Promise<boolean> {
   const due = await r.inLedger((ledger: Ledger) => ledger.archiveDue()
-    || ledger.purgedAgents().length > 0 || ledger.archiveCompactPending());
+    || ledger.purgedRooms().length > 0 || ledger.archiveCompactPending());
   return due || (await sqlIn(r.stub, "SELECT 1 FROM archive_moves")).length > 0;
 }
 
@@ -95,7 +95,7 @@ export function seqOf(r: Rig, id: string): Promise<number> {
   return r.inLedger((ledger: Ledger) => ledger.seqOf(id)!);
 }
 
-/** Any two segments whose key ranges overlap: none, ever (review H1). */
+/** Any two segments whose key ranges overlap: none, ever. */
 export async function overlaps(r: Rig): Promise<unknown[]> {
   return sqlIn(r.stub, "SELECT a.segment, b.segment FROM archive_segments a JOIN " +
                "archive_segments b ON a.segment < b.segment AND a.last_key >= b.first_key " +

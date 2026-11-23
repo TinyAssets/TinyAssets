@@ -11,7 +11,8 @@
  *
  * A test's project is read from its path: the folder each project's tests are in
  * (`classes.ts`'s `PROJECTS`, which every config's projects are made from). Only passed
- * tests count; a failed or skipped one measures nothing.
+ * tests count; a failed or skipped one measures nothing. A passed test with no duration
+ * stops the run: skipping it could lower its project's figure (Fact 8).
  *
  * Each test carries its runner's calibration (`class-check.ts`). The budgets' runner is the
  * median calibration of the tests read, so read a run's whole set of reports, and each test
@@ -56,14 +57,18 @@ export function measured(reports) {
         throw new Error(`${rel}: not in a test, guards or runner folder`);
       }
       for (const result of file.assertionResults ?? []) {
-        if (result.status !== "passed" || typeof result.duration !== "number") {
+        if (result.status !== "passed") {
           continue;
         }
-        const calibration_ms = result.meta?.calibration_ms;
-        if (typeof calibration_ms !== "number") {
-          throw new Error(`${rel} > ${result.fullName}: no runner calibration in its meta`);
+        const test = `${rel} > ${result.fullName}`;
+        if (!Number.isFinite(result.duration) || result.duration < 0) {
+          throw new Error(`${test}: expected a finite, nonnegative duration`);
         }
-        out.push({ project: `${workspace}/${project}`, test: `${rel} > ${result.fullName}`,
+        const calibration_ms = result.meta?.calibration_ms;
+        if (!Number.isFinite(calibration_ms) || calibration_ms <= 0) {
+          throw new Error(`${test}: expected a finite, positive runner calibration in its meta`);
+        }
+        out.push({ project: `${workspace}/${project}`, test,
                    ms: result.duration, large: (result.tags ?? []).includes("large"),
                    calibration_ms });
       }

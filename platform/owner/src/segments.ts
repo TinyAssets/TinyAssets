@@ -1,5 +1,5 @@
 /**
- * Archive segments (slice STORE item 2, phase 1; `history_research.md` §2.2): where an
+ * Archive segments: where an
  * append-only stream's old records go once they no longer change, so the owner's object
  * keeps one row a segment, never one an item.
  *
@@ -7,7 +7,7 @@
  * chunks to `FILES`, `Files.adopt` in the unit that names it), so it is under the owner's
  * data key, its bytes count in the one storage number (`chunk_bytes`), and the GC
  * grace, the generation's protection and the erasure's prefix delete cover it as any content.
- * Its bytes (review N3: a body is never escaped, so a record's size is its bytes):
+ * Its bytes (a body is never escaped, so a record's size is its bytes):
  * 1. a record's rows, each one line in the export's own grammar (`export.ts`):
  *    `{"t":"row","table":"<name>","row":{<column>:<value>,...}}`, records in key order; a
  *    row that carries a body (a message's) holds `"body":null` and its line adds
@@ -40,10 +40,10 @@ import type { ChunkRef } from "./files";
 import { joined } from "./bytes";
 
 /**
- * A segment is sealed once its records' own bytes reach this (never their trailer shares,
- * review N4): two chunks. Not one: a fence row costs the
- * owner-bound guard about 2.5 KB at its worst fill, so 0.5 TB of tier in 4 MiB segments
- * would pass STORE's quarter of the room under the half (`limits-audit.test.ts`).
+ * A segment is sealed once its records' own bytes reach this (never their trailer shares):
+ * two chunks. Not one: a fence row costs the owner-bound guard about 2.5 KB at its worst fill, so
+ * 0.5 TB of tier in 4 MiB segments would pass STORE's quarter of the room under the half
+ * (`limits-audit.test.ts`).
  */
 export const SEGMENT_MIN_BYTES = 8 * 1024 * 1024;
 /**
@@ -80,7 +80,7 @@ export const ARCHIVE_SEGMENTS_MAX = 59_606;
  */
 export const MOVE_BYTES = 32 * 1024 * 1024;
 /**
- * The most records one move holds (review N7), the bound its units are derived at
+ * The most records one move holds, the bound its units are derived at
  * (`holds.ts`'s `moveTableUnits`):
  * `pack`'s largest piece of records at `MIN_RECORD_BYTES` (twice the least of them, and the
  * record past it: 49,933) and the 25,000 stragglers a pick takes at most. A merge's `into`
@@ -92,13 +92,13 @@ export const MOVE_RECORDS = 74_933;
  * A record's share of its segment's trailer and suffix, counted with its lines in the one
  * number (a message's `line_bytes`): its key's and its chain's places (three numbers each,
  * at most 52 bytes), its chain root's name (40), and its share of the trailer's head and the
- * suffix (about 170 a segment), so a move frees at least the bytes it places (review M1).
+ * suffix (about 170 a segment), so a move frees at least the bytes it places.
  */
 export const RECORD_TRAILER_BYTES = 320;
 
 /**
  * Records in key order cut into the pieces one rewrite or merge places, each at least
- * `least` (review N2): one piece while they hold at most twice `least`; past it, a cut after
+ * `least`: one piece while they hold at most twice `least`; past it, a cut after
  * each run of records that reaches `least` while what is left still holds at least `least`,
  * so no piece is ever smaller (a record as large as a body never leaves a small one beside
  * it: no cut is made where it would). With no such cut, one piece: at most twice `least`
@@ -239,8 +239,8 @@ export function listed(records: readonly Planned[]): PlanRecords {
 /**
  * A segment planned from its records' lengths alone, before any of its bytes is read: each
  * record's offset, its chains grouped as the trailer lists them, the trailer's place and
- * size, and the chunks it is cut into, all in typed arrays (review N6: a plan is about 40
- * bytes a record beside its records, measured). Its bytes are the format above, exactly; each chunk
+ * size, and the chunks it is cut into, all in typed arrays (a plan is about 40 bytes a
+ * record beside its records, measured). Its bytes are the format above, exactly; each chunk
  * is made from its sources when it is wanted (`makeChunk`), the trailer's text only in the
  * chunks it reaches, so a segment is never held.
  */
@@ -438,7 +438,7 @@ function grown<T extends Float64Array | Uint32Array | Int32Array | Uint8Array>(
 }
 
 /**
- * A move's records, packed (review N6): each record's key, length, time, room (by index into
+ * A move's records, packed: each record's key, length, time, room (by index into
  * the few rooms it names), chain (its name's UTF-8 in one pool of bytes: never a string a
  * record, which may hold the row or line it came from), where its bytes are (kept: a stored
  * content and an offset in it; hot: inline, or a placed body's content) in typed arrays,
@@ -705,9 +705,9 @@ export function recordRows(bytes: Uint8Array): [string, Record<string, unknown>]
 
 /**
  * The digest the two units of a move compare: the batch's rows as the object holds them,
- * hashed one message's rows at a time as they are read (review N3: never the batch's JSON
- * whole, which escapes an inline body of control characters six times over; review N5:
- * never the batch held at once).
+ * hashed one message's rows at a time as they are read (never the batch's JSON whole, which
+ * escapes an inline body of control characters six times over, and never the batch held at
+ * once).
  */
 export class ImageDigest {
   readonly #hash = sha256Stream();
@@ -722,36 +722,31 @@ export class ImageDigest {
 }
 
 /**
- * A members bloom of 64 bytes (three bits a member): which agents' rooms a segment holds,
- * so a purge rewrites only the segments that may hold its agent's mail. A false positive
+ * A rooms bloom of 64 bytes (three bits a room): which rooms a segment's records are in, so a
+ * purge rewrites only the segments that may hold a deleted agent's rooms. A false positive
  * costs one trailer read; there are no false negatives.
  */
 export const BLOOM_BYTES = 64;
 
-function bloomBits(member: string): number[] {
-  const hash = sha256(member);
+function bloomBits(key: string): number[] {
+  const hash = sha256(key);
   return [0, 2, 4].map((at) => hash.readUInt16BE(at) % (BLOOM_BYTES * 8));
 }
 
-/** A bloom of `members`. */
-export function bloomOf(members: Iterable<string>): Uint8Array {
+/** A bloom of `keys`. */
+export function bloomOf(keys: Iterable<string>): Uint8Array {
   const bloom = new Uint8Array(BLOOM_BYTES);
-  for (const member of members) {
-    for (const bit of bloomBits(member)) {
+  for (const key of keys) {
+    for (const bit of bloomBits(key)) {
       bloom[bit >> 3]! |= 1 << (bit & 7);
     }
   }
   return bloom;
 }
 
-/** Whether `bloom` may hold `member`. */
-export function bloomHas(bloom: Uint8Array, member: string): boolean {
-  return bloomBits(member).every((bit) => (bloom[bit >> 3]! & (1 << (bit & 7))) !== 0);
-}
-
-/** A pair's room's members (`dm:<a>`, the owner and `a`; `dm:<a>+<b>`). */
-export function roomMembers(room: string): string[] {
-  return room.startsWith("dm:") ? room.slice(3).split("+") : [];
+/** Whether `bloom` may hold `key`. */
+export function bloomHas(bloom: Uint8Array, key: string): boolean {
+  return bloomBits(key).every((bit) => (bloom[bit >> 3]! & (1 << (bit & 7))) !== 0);
 }
 
 // -- Ids that carry their order key ----------------------------------------------------------

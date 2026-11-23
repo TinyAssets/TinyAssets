@@ -1,5 +1,5 @@
 /**
- * The wire recorder's second half (`npm run record`, `ci/record.ts`): inbound hooks reaching
+ * The wire recorder's second half (`ci/record.ts`): inbound hooks reaching
  * the owner, subscriptions reaching the owner, and refusals crossing a real service binding,
  * each answer one `REC` line, ids taken out (`clean`).
  */

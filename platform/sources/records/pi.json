@@ -83,7 +83,6 @@
         "--session",
         "{sid}"
       ],
-      "resume": "session_id",
       "stdin": "{prompt}",
       "model_argv": [
         "--provider",
@@ -117,6 +116,23 @@
               "message.stopReason": "error"
             },
             "path": "message.errorMessage"
+          },
+          {
+            "match": {
+              "type": "auto_retry_end",
+              "success": false
+            },
+            "path": "finalError"
+          },
+          {
+            "match": {
+              "type": "compaction_end",
+              "reason": "overflow"
+            },
+            "pattern": {
+              "errorMessage": "."
+            },
+            "path": "errorMessage"
           }
         ],
         "usage": [
@@ -136,24 +152,140 @@
             "path": ""
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "message_end",
+              "message.stopReason": "error"
+            },
+            "pattern": {
+              "message.errorMessage": "GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing|subscription_sharing_(?:workplace_individual_)?usage_limit_exceeded|credit balance|insufficient credits"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "auto_retry_end",
+              "success": false
+            },
+            "pattern": {
+              "finalError": "rate.?limit|too many requests|resource_exhausted|\\b429\\b"
+            },
+            "path": ""
+          }
+        ],
+        "retry": [
+          {
+            "match": {
+              "type": "auto_retry_start"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "compaction_start",
+              "reason": "overflow"
+            },
+            "path": ""
+          }
+        ]
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": []
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": [
+          "AGENTS.override.md"
+        ]
+      },
+      "skills": {
+        "paths": [],
+        "argv_each": [
+          "--skill",
+          "{skill}"
+        ]
+      },
+      "native": {
+        "refuses": [
+          ".pi/settings.json",
+          ".pi/mcp.json",
+          ".pi/extensions",
+          ".pi/prompts",
+          ".pi/SYSTEM.md",
+          ".pi/APPEND_SYSTEM.md"
+        ],
+        "argv": [
+          "--no-approve"
+        ],
+        "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/security.md",
+        "read": "2026-11-22"
+      },
+      "hooks": {
+        "events": {
+          "pre_tool": "tool_call",
+          "post_tool": "tool_result",
+          "prompt": "input",
+          "session_start": "session_start",
+          "stop": "agent_end",
+          "session_end": "session_shutdown",
+          "pre_compact": "session_before_compact"
+        },
+        "file": "{system}/hooks.mjs",
+        "template": "import { spawn } from \"node:child_process\";\nconst [command, ...args] = JSON.parse(\"{dispatcher_argv}\");\nconst EVENTS = new Set(JSON.parse(\"{hook_events}\"));\nconst contexts = new Array(0);\nfunction dispatch(event, call, ctx) {\n  return new Promise((done) => {\n    const child = spawn(command, [...args, event], { stdio: [\"pipe\", \"pipe\", \"pipe\"] });\n    let out = \"\";\n    let reason = \"\";\n    child.stdout.on(\"data\", (chunk) => { out += chunk; });\n    child.stderr.on(\"data\", (chunk) => { reason += chunk; });\n    child.on(\"error\", (error) => done({ block: String(error) }));\n    child.on(\"close\", (code) => {\n      if (code !== 0) {\n        done({ block: reason.trim() || \"the agent's hooks could not run (exit \" + code + \")\" });\n        return;\n      }\n      let context = null;\n      try {\n        context = JSON.parse(out).hookSpecificOutput.additionalContext;\n      } catch (error) {\n        context = null;\n      }\n      done(typeof context === \"string\" ? { context } : null);\n    });\n    child.stdin.end(JSON.stringify(Object.assign(\n      { hook_event_name: event, session_id: ctx.sessionManager.getSessionId() }, call)));\n  });\n}\nconst tool = (event) => ({ tool_name: event.toolName, tool_input: event.input });\nconst keep = (answer) => {\n  if (answer !== null && answer.context !== undefined) {\n    contexts.push(answer.context);\n  }\n};\nexport default function (pi) {\n  if (EVENTS.has(\"pre_tool\")) {\n    pi.on(\"tool_call\", async (event, ctx) => {\n      const answer = await dispatch(\"pre_tool\", tool(event), ctx);\n      return answer !== null && answer.block !== undefined\n        ? { block: true, reason: answer.block } : undefined;\n    });\n  }\n  if (EVENTS.has(\"prompt\")) {\n    pi.on(\"input\", async (event, ctx) => {\n      const answer = await dispatch(\"prompt\", { prompt: event.text }, ctx);\n      keep(answer);\n      return { action: answer !== null && answer.block !== undefined ? \"handled\" : \"continue\" };\n    });\n  }\n  if (EVENTS.has(\"session_start\")) {\n    pi.on(\"session_start\", async (event, ctx) => keep(await dispatch(\"session_start\",\n      { source: event.reason }, ctx)));\n  }\n  pi.on(\"before_agent_start\", () => contexts.length === 0 ? undefined : { message: {\n    customType: \"tinyassets-agent-hooks\", content: contexts.splice(0).join(\"\\n\\n\"), display: false } });\n  if (EVENTS.has(\"post_tool\")) {\n    pi.on(\"tool_result\", async (event, ctx) => { await dispatch(\"post_tool\", tool(event), ctx); });\n  }\n  if (EVENTS.has(\"stop\")) {\n    pi.on(\"agent_end\", async (event, ctx) => { await dispatch(\"stop\", null, ctx); });\n  }\n  if (EVENTS.has(\"session_end\")) {\n    pi.on(\"session_shutdown\", async (event, ctx) => { await dispatch(\"session_end\", null, ctx); });\n  }\n  if (EVENTS.has(\"pre_compact\")) {\n    pi.on(\"session_before_compact\", async (event, ctx) => {\n      await dispatch(\"pre_compact\", { trigger: event.reason }, ctx);\n    });\n  }\n}\n",
+        "argv": ["-e", "{system}/hooks.mjs"],
+        "runs": {"exec": true},
+        "fails": "closed",
+        "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/extensions.md",
+        "read": "2026-11-21"
+      }
     },
-    "skills_paths": [
-      ".pi/skills"
-    ],
     "mcp": {
       "file": "{home}/.pi/agent/mcp.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", \"exposure\": \"direct\"}}}",
+      "servers": "mcpServers",
+      "http": {
+        "url": "{url}",
+        "exposure": "direct"
+      },
+      "stdio": {
+        "command": "{command}",
+        "args": "{args}",
+        "env": "{env}",
+        "exposure": "direct"
+      },
       "argv": [],
-      "trust": {
-        "argv": [],
-        "note": "A user-level server in the agent directory's mcp.json loads without project trust; only a project's .pi/mcp.json needs it (pi docs/mcp.md)."
-      }
+      "trust": "A user-level server in the agent directory's mcp.json loads without project trust; only a project's .pi/mcp.json needs it (pi docs/mcp.md)."
+    },
+    "decide": {
+      "file": "{system}/decide.mjs",
+      "template": "import { spawn } from \"node:child_process\";\nconst MATCHER = new RegExp(\"{matcher}\");\nconst [command, ...args] = JSON.parse(\"{decide_argv}\");\nexport default function (pi) {\n  pi.on(\"tool_call\", (event) => MATCHER.test(event.toolName) ? new Promise((done) => {\n    const env = Object.fromEntries([\"{decide_env}\", \"NODE_EXTRA_CA_CERTS\"]\n      .filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]]));\n    const helper = spawn(command, args, { env, stdio: [\"pipe\", \"ignore\", \"pipe\"] });\n    let reason = \"\";\n    helper.stderr.on(\"data\", (chunk) => { reason += chunk; });\n    helper.on(\"error\", (error) => done({ block: true, reason: String(error) }));\n    helper.on(\"close\", (code) => done(code === 0 ? undefined\n      : { block: true, reason: reason.trim() || \"the owner's rules could not be checked\" }));\n    helper.stdin.end(JSON.stringify({ tool_name: event.toolName, tool_input: event.input }));\n  }) : undefined);\n}\n",
+      "argv": [
+        "--no-extensions",
+        "-e",
+        "builtin:mcp",
+        "-e",
+        "{system}/decide.mjs"
+      ],
+      "runs": {
+        "exec": true
+      },
+      "kinds": {
+        "shell": [
+          "bash",
+          "powershell"
+        ],
+        "file_write": [
+          "write",
+          "edit"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp__",
+        "join": "__"
+      },
+      "fails": "closed",
+      "cite": "https://unpkg.com/@earendil-works/pi-coding-agent@1.4.0/docs/extensions.md",
+      "read": "2026-11-21"
     },
     "tools": {
       "allow": {
@@ -164,9 +296,7 @@
         "join": ","
       }
     },
-    "unattended_argv": [
-      "--approve"
-    ],
+    "unattended_argv": [],
     "home_env": {
       "PI_CODING_AGENT_DIR": "{home}/.pi/agent"
     },
@@ -184,6 +314,9 @@
     ],
     "session_paths": [
       "{home}/.pi/agent/sessions/"
+    ],
+    "resume_paths": [
+      "{home}/.pi/agent/sessions/*/*_{sid}.jsonl"
     ],
     "hosts": {
       "registry": [

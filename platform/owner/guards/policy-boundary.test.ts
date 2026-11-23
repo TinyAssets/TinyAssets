@@ -11,11 +11,12 @@
  * admission are held to the same: only the object imports them, and the admission row is
  * its module's and the schema's alone; so are the action rules' held calls and receipts,
  * whose module the object and the policy's receipts door (a type) alone import. So are the model connections and their spend: only the
- * object builds them, `auto` reads their types, and their tables (the connections, their
+ * object builds them and alone imports their module (the shape the runs rank, `Usable`, is
+ * `auto`'s), and their tables (the connections, their
  * blobs and flows, the reservations and the spend counters) are their modules' alone, and
  * so are the sandbox's egress rows and the owner's erasure mark, and the runs' rows (slice R:
- * runs, their grants, conversations and schedules, the tier numbers kept, the socket
- * tickets), each its module's and the schema's. The lists only shrink.
+ * runs, their grants, conversations and schedules, the socket tickets), each its module's and
+ * the schema's. The lists only shrink.
  *
  * One module names every table to read it, never to write it: the owner export
  * (`export.ts`, slice P), which reads everything the owner holds for the owner alone. Its
@@ -53,8 +54,7 @@ const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   sessions: Object.freeze([OWNER_DO]),
   registrations: Object.freeze([OWNER_DO]),
   admission: Object.freeze([OWNER_DO]),
-  connections: Object.freeze([OWNER_DO, "owner/src/auto.ts"]),
-  usage: Object.freeze([OWNER_DO]),
+  connections: Object.freeze([OWNER_DO]),
 });
 const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   owner_sessions: Object.freeze(["owner/src/sessions.ts", SCHEMA]),
@@ -76,13 +76,10 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   owner_erasure: Object.freeze(["owner/src/erasure.ts", SCHEMA]),
   connection_secrets: Object.freeze(["owner/src/connections.ts", SCHEMA]),
   connection_flows: Object.freeze(["owner/src/connections.ts", SCHEMA]),
-  model_reservations: Object.freeze(["owner/src/usage.ts", SCHEMA]),
-  model_spend: Object.freeze(["owner/src/usage.ts", SCHEMA]),
+  model_spend: Object.freeze(["owner/src/egress.ts", SCHEMA]),
   egress_reservations: Object.freeze(["owner/src/egress.ts", SCHEMA]),
   run_grants: Object.freeze(["owner/src/runs.ts", SCHEMA]),
   run_schedules: Object.freeze(["owner/src/runs.ts", SCHEMA]),
-  platform_tiers: Object.freeze(["owner/src/admission.ts", SCHEMA]),
-  platform_signins: Object.freeze(["owner/src/signins.ts", SCHEMA]),
   socket_tickets: Object.freeze(["owner/src/tickets.ts", SCHEMA]),
   run_inputs: Object.freeze(["owner/src/runs.ts", SCHEMA]),
   sandbox_leases: Object.freeze(["owner/src/files.ts", SCHEMA]),
@@ -382,7 +379,7 @@ export function runtimeReach(sources: ReadonlyMap<string, string>, roots: readon
 
 /** What the sandbox's spend may not run: pi's engine, in our modules or its packages. */
 function engine({ modules, packages }: { modules: string[]; packages: string[] }): string[] {
-  return [...modules.filter((path) => /\/(usage|thread-host|thread-store|agent|turns)\.ts$/
+  return [...modules.filter((path) => /\/(thread-host|thread-store|agent|turns)\.ts$/
     .test(path)),
           ...packages.filter((name) => name.startsWith("@earendil-works/")
                                        && !name.startsWith("@earendil-works/pi-ai"))];

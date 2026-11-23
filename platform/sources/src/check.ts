@@ -5,19 +5,27 @@
  * (`catalog.ts`). Its gateway part is the gateway's own check (`contract/src/egress-scope.ts`),
  * and `sealedSource` is what the doors hand the gateway to seal.
  */
-import { object, whole } from "../../contract/src/checks";
+import { isHookKind } from "../../contract/src/acts";
+import {
+  HOOK_EVENTS, type HookEvent, RUN_DOOR_SERVER,
+} from "../../contract/src/agent-definition";
+import { object, valueAtPath, whole } from "../../contract/src/checks";
 import { RUN_HEADER } from "../../contract/src/egress";
 import {
   ID as PROVIDER, keyExchangeSource, type Source, source as gatewaySource,
 } from "../../contract/src/egress-scope";
 import { HEX64 } from "../../contract/src/ids";
-import type { EngineEvents, EventMatcher } from "../../contract/src/run-events";
-import { forbids, SOURCE_ID } from "../../contract/src/text";
-
-import { RUN_BASICS } from "./run-env";
 import {
-  type ApiKeyEnv, type CliSpec, type ConnectMethod, type Engine, type HostedUse, type Install,
-  type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential, type Region,
+  type EngineEvents, type EventMatcher, PATTERN_FLAGS,
+} from "../../contract/src/run-events";
+import { CREDENTIAL_NAME, forbids, SOURCE_ID } from "../../contract/src/text";
+
+import { CODE_LOADING_ENV, RUN_BASICS } from "./run-env";
+import {
+  type ApiKeyEnv, type CliSpec, type ConnectMethod, type Decide, type Definition,
+  type DefinitionHooks, type DefinitionNative, type DefinitionSkills,
+  type Engine, type HostedUse,
+  type Install, type Instructions, type LoginSpec, type Mcp, type OAuthSpec, type PerCredential,
   type SourceRecord, SourceRecordError, type ToolFilter, type Unattended,
 } from "./schema";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -161,36 +169,41 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ARG = /^.{0,4096}$/su;
 /** The placeholders the runner fills, in an argv, an env value or a file template. */
 const PLACEHOLDERS: readonly string[] = Object.freeze([
-  "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
-  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}", "{system}",
+  "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{name}",
+  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{run_secret}", "{system}",
+  "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}",
+  "{skill}", "{dispatcher}", "{dispatcher_argv}", "{hook_events}", "{event}", "{native}",
+  "{on_failure}",
 ]);
+/** The placeholders only the hook's template takes (`cli.decide.template`). */
+const HOOK_PLACEHOLDERS: readonly string[] = Object.freeze([
+  "{matcher}", "{decide}", "{decide_argv}", "{decide_url}", "{decide_header}", "{decide_env}"]);
+/**
+ * The placeholders only the dispatcher's file takes (`cli.definition.hooks`), `{event}`,
+ * `{native}` and `{on_failure}` only its `each`.
+ */
+const DISPATCH_PLACEHOLDERS: readonly string[] = Object.freeze([
+  "{dispatcher}", "{dispatcher_argv}", "{hook_events}", "{event}", "{native}", "{on_failure}"]);
+/** What each way a CLI runs its hook carries in its template, beside `{matcher}`. */
+const RUNS_CARRY = Object.freeze({
+  http: Object.freeze(["{decide_url}", "{decide_header}", "{decide_env}"]),
+  shell: Object.freeze(["{decide}"]),
+  exec: Object.freeze(["{decide_argv}", "{decide_env}"]),
+});
 /**
  * The one shape `{prompt}` may take in an argv: joined to its option (`--prompt={prompt}`),
  * so no prompt is ever read as an option or a file include (`-x`, `@file`). Where the CLI
  * reads stdin, the prompt goes there instead (`engine.stdin`).
  */
 const PROMPT_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{prompt\}$/;
+/** The one shape `{name}` takes, for the same reason: an agent's server may be named `-y`. */
+const NAME_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{name\}$/;
 /** A value that turns a setting off: nothing, bare quotes, or an empty list or map. */
 const EMPTY_VALUE = /^\s*(?:""|''|\[\s*\]|\{\s*\})?\s*$/;
 /** An empty list or map anywhere in a text (`tools.core: []`, `mcp_servers={}`). */
 const EMPTY_COLLECTION = /\[\s*\]|\{\s*\}/;
 /** A variable `forbid_env` names: a name, or every name with a prefix (`OPENAI_*`). */
 const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
-/**
- * A variable name shaped like a credential, an endpoint or a proxy: a record's own variables,
- * which every run carries, are never one, so nothing credential-shaped is set but a key run's
- * own placeholder (`sandboxEnv`); and the runner refuses a run whose agent's files set one
- * (`sandbox/runner/guards.ts`).
- */
-export const CREDENTIAL_NAME =
-  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT|PROXY)(?:_|$)/;
-/**
- * A variable that loads code into a process or changes what its runtime loads (Node's
- * options and module path, the dynamic linker's preloads and paths, Bun's, Python's, Perl's,
- * Ruby's and the JVM's, a shell's startup file): never a record's own, so nothing a record
- * sets runs code inside a CLI (review round 4, R4-1).
- */
-const CODE_LOADING = /^(?:NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|LD_[A-Z0-9_]+|DYLD_[A-Z0-9_]+|BUN_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|PERL5?LIB|PERL5OPT|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|BASH_ENV|ENV|GCONV_PATH|MALLOC_[A-Z0-9_]+)$/;
 /** A settings key shaped like a credential, a credential helper or an environment block. */
 const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
 /**
@@ -270,12 +283,12 @@ function settingsOf(path: string, text: string):
 }
 
 
-/** A region's id, as the runner passes it in `{region}`. */
-const REGION = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** A dotted path into a JSON value (an event's field, a settings file's key). */
 const DOTTED = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,7}$/;
 /** A path segment: no `.` or `..`, a `*` only whole (any one segment). */
 const SEGMENT = /^(?:\*|(?!\.{1,2}$)[A-Za-z0-9._-]{1,128})$/;
+/** A resume path's segment: a name's characters, `*` and `{sid}`, never `.` or `..`. */
+const RESUME_SEGMENT = /^(?!\.{1,2}$)(?:[A-Za-z0-9._*-]|\{sid\}){1,128}$/;
 const DATE = /^20\d\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/;
 const REASON = /^[^\p{Cc}]{1,512}$/u;
 const TEMPLATE_MAX = 64 * 1024;
@@ -302,8 +315,8 @@ function homePath(value: unknown, wildcards: boolean): string[] | null {
  * A file the runner writes for one run: under `{home}`, or under `{system}`, the run's own
  * directory outside the home that root owns at every level (`/etc/ta/runs/<run>`, readable
  * by the run's user alone), for a file a CLI takes only from a root-owned path (Gemini
- * CLI's system settings: it skips one any of whose ancestors another user owns, slice S's
- * probe). Never a secret or session path, which live in the home.
+ * CLI's system settings: it skips one any of whose ancestors another user owns). Never a
+ * secret or session path, which live in the home.
  */
 function runFilePath(value: unknown): string[] | null {
   if (typeof value === "string" && value.startsWith("{system}/")) {
@@ -312,7 +325,7 @@ function runFilePath(value: unknown): string[] | null {
   return homePath(value, false);
 }
 
-/** Whether one home path is the other or under it, a `*` segment matching any one. */
+/** Whether one path is the other or under it (by segments), a `*` segment matching any one. */
 function overlaps(a: readonly string[], b: readonly string[]): boolean {
   const shorter = Math.min(a.length, b.length);
   for (let i = 0; i < shorter; i += 1) {
@@ -324,14 +337,13 @@ function overlaps(a: readonly string[], b: readonly string[]): boolean {
 }
 
 function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
-  // `invoke`, a single inference, is not an engine: a CLI is never a backend (ADR-033 D2).
   if (object(value) && "invoke" in value) {
     check.fail("cli has no invoke: a CLI is an engine, never a backend (ADR-033 decision 2)");
   }
   const fields = check.keys(value, "cli", [
-    "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
-    "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
-    "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files",
+    "install", "credential", "unattended", "engine", "definition", "mcp", "decide", "tools",
+    "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
+    "resume_paths", "hosts"], ["login", "api_key_env", "per_credential", "env", "files",
                "run_secret_env", "compaction"]);
   const argvs: [string, string[]][] = [];
   const argv = (item: unknown, what: string, max = 64): string[] => {
@@ -395,7 +407,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     return item as Record<string, string>;
   };
 
-  // The install, pinned.
   const install = installSpec(check, fields["install"], argv);
 
   // The credentials it runs on, and each one's unattended verdict (ADR-033 decision 3).
@@ -417,7 +428,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   if ((fields["api_key_env"] !== undefined) !== keyed) {
     check.fail("cli.api_key_env is present exactly when the record runs on an API key");
   }
-  // The run secret as a header on the model calls, where the CLI takes extra headers.
   let runSecretEnv: { env: string; value: string } | undefined;
   if (fields["run_secret_env"] !== undefined) {
     const header = check.keys(fields["run_secret_env"], "cli.run_secret_env", ["env", "value"]);
@@ -428,7 +438,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     runSecretEnv = { env: header["env"] as string, value: header["value"] as string };
   }
-  // How the route probe makes it compact at its next turn.
   let compaction: { argv: readonly string[]; marker: string } | undefined;
   if (fields["compaction"] !== undefined) {
     const spec = check.keys(fields["compaction"], "cli.compaction", ["argv", "marker"]);
@@ -437,7 +446,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                                       "cli.compaction.marker") };
   }
 
-  // Its home, environment and files.
   const homeEnv = check.stringMap(fields["home_env"], "cli.home_env", ENV_NAME, 8);
   if (Object.keys(homeEnv).length === 0 || Object.values(homeEnv).some((path) =>
     path !== "{home}" && homePath(path, false) === null)) {
@@ -473,16 +481,12 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
   }
 
-  // The MCP door's way in.
   const mcp = mcpSpec(check, fields["mcp"], argv, template, sandboxPath, declared);
+  // The CLI's own pre-tool hook.
+  const decide = decideSpec(check, fields["decide"], argv, template, declared);
 
-  // The engine itself.
   const engine = engineSpec(check, fields["engine"], argv);
-  const instructions = instructionsSpec(check, fields["instructions"]);
-  const skills = check.strings(fields["skills_paths"], "cli.skills_paths", /^.{1,256}$/su, 16);
-  if (skills.length === 0 || !skills.every(relative)) {
-    check.fail("cli.skills_paths lists at least one path relative to the agent's directory");
-  }
+  const definition = definitionSpec(check, fields["definition"], argv, template, decide);
   const tools = check.keys(fields["tools"], "cli.tools", [], ["allow", "deny"]);
   for (const side of ["allow", "deny"] as const) {
     if (tools[side] !== undefined) {
@@ -494,7 +498,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
 
   // Every file a part names is one the record writes.
   const named: [string, string | undefined][] = [
-    ["cli.instructions.setting", instructions.setting],
+    ["cli.definition.instructions.setting", definition.instructions.setting],
     ["cli.no_update.file", "file" in noUpdate ? noUpdate.file : undefined],
     ...(["allow", "deny"] as const).map((side): [string, string | undefined] => [
       `cli.tools.${side}.file`,
@@ -527,7 +531,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       }
       apiKeyEnv[provider] = Object.freeze(vars as unknown as ApiKeyEnv);
     }
-    // A declared channel (rule 1): no base-URL variable, so a file template or the API-key
+    // A declared channel: no base-URL variable, so a file template or the API-key
     // run's own argv carries `{base_url}`.
     const keyArgv = argvs.find(([what]) => what === "cli.per_credential.api_key.argv")?.[1] ?? [];
     if (Object.values(apiKeyEnv).some((vars) => vars.base_url === null)
@@ -562,7 +566,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     // The record's own variables are the run's allow-list (`runEnv`): none is shaped like
     // a credential or an endpoint, and none is HOME or a basic, which the runner sets.
-    const loading = sets.find((name) => CODE_LOADING.test(name));
+    const loading = sets.find((name) => forbids(CODE_LOADING_ENV, name));
     if (loading !== undefined) {
       check.fail(`the record sets ${loading}, which loads code into the CLI's process`);
     }
@@ -582,7 +586,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   for (const [what, text] of settings) {
     const kinds = what.startsWith("cli.per_credential.")
       ? [what.split(".")[2] as CredentialKind] : credential;
-    const path = what === "cli.mcp.template" ? ("file" in mcp ? mcp.file! : "")
+    const path = what === "cli.mcp.template" ? mcp.file ?? ""
       : what.slice(what.indexOf(".files.") + ".files.".length);
     const read = settingsOf(path, text);
     if (read === null) {
@@ -624,11 +628,31 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   for (const [index, secret] of secretSegments.entries()) {
     if (sessionSegments.some((session) => overlaps(secret, session))) {
       check.fail(`cli.secret_paths ${secrets[index]} is outside every session path: a ` +
-                 "secret never syncs (ADR-031 decision 2)");
+                 "secret never syncs (ADR-039 decision 2.20)");
+    }
+  }
+  // What a resume reads is some of the sessions, so never a secret: under a session path, a
+  // segment's `*` a run of characters in it, `{sid}` the session id.
+  const resumes = check.strings(fields["resume_paths"], "cli.resume_paths", /^.{1,512}$/su, 16);
+  if (resumes.length === 0) {
+    check.fail("cli.resume_paths lists at least one path: every engine resumes");
+  }
+  for (const path of resumes) {
+    const segments = path.startsWith("{home}/")
+      ? (path.endsWith("/") ? path.slice(0, -1) : path).slice("{home}/".length).split("/") : [];
+    if (segments.length === 0 || !segments.every((segment) => RESUME_SEGMENT.test(segment))
+        || !sessionSegments.some((session) => session.length <= segments.length
+          && session.every((segment, i) => segment === segments[i]))) {
+      check.fail(`cli.resume_paths ${path} is under one of cli.session_paths, each segment ` +
+                 "names, * and {sid} alone, with no . or .. segment");
     }
   }
   const login = signsIn ? loginSpec(check, fields["login"], argv) : undefined;
   if (login !== undefined) {
+    if (engine.model_argv === undefined) {
+      check.fail("cli.engine.model_argv is present on a record that signs in: a run on the " +
+                 "sign-in passes cli.login.model");
+    }
     for (const state of login.state_checks ?? []) {
       const segments = homePath(state.path, false);
       if (segments === null || !secretSegments.some((secret) =>
@@ -636,33 +660,6 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
         check.fail(`cli.login.state_checks ${state.path} is a credential file among the ` +
                    "secret paths");
       }
-    }
-  }
-
-  // The sign-in's regions: the owner's choice fills `{region}` and adds its hosts.
-  let regions: Record<string, Region> | undefined;
-  if (fields["regions"] !== undefined) {
-    const map = fields["regions"];
-    if (!signsIn || !object(map) || Object.keys(map).length === 0
-        || Object.keys(map).length > 8 || !Object.keys(map).every((id) => REGION.test(id))) {
-      check.fail("cli.regions maps 1 to 8 region ids to their hosts, for a record that signs " +
-                 "in with the vendor's own flow");
-    }
-    regions = {};
-    for (const [id, entry] of Object.entries(map as Record<string, unknown>)) {
-      const what = `cli.regions.${id}`;
-      const region = check.keys(entry, what, ["display_name", "hosts"]);
-      const hosts = check.keys(region["hosts"], `${what}.hosts`, ["login", "provider"]);
-      for (const kind of ["login", "provider"] as const) {
-        hosts[kind] = Object.freeze(check.strings(hosts[kind], `${what}.hosts.${kind}`, HOST, 16));
-      }
-      regions[id] = Object.freeze({
-        display_name: check.text(region["display_name"], TEXT, `${what}.display_name`),
-        hosts: Object.freeze(hosts) as unknown as Region["hosts"] });
-    }
-    const loginArgv = argvs.find(([what]) => what === "cli.login.argv")![1];
-    if (!loginArgv.some((item) => item.includes("{region}"))) {
-      check.fail("cli.login.argv carries {region}, which the owner's choice of region fills");
     }
   }
 
@@ -684,21 +681,32 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
         check.fail(`${what} carries {prompt} other than as --option={prompt} in the engine's ` +
                    "argv: a prompt goes on stdin, or joined to its option, never bare");
       }
-      if (found === "{region}" && (regions === undefined || !what.startsWith("cli.login."))) {
-        check.fail(`${what} uses {region}, which only the sign-in carries, under cli.regions`);
-      }
       // The run's own secret only in its MCP file's header, never an argument.
       if (found === "{run_secret}" && what !== "cli.mcp.template") {
         check.fail(`${what} uses {run_secret}, which only cli.mcp.template's header carries`);
       }
-      if (found === "{mcp_config}" && !("file" in mcp)) {
+      if (found === "{name}" && what !== "cli.mcp.argv_each") {
+        check.fail(`${what} uses {name}, which only cli.mcp.argv_each carries`);
+      }
+      if (found === "{skill}" && what !== "cli.definition.skills.argv_each") {
+        check.fail(`${what} uses {skill}, which only cli.definition.skills.argv_each carries`);
+      }
+      if (HOOK_PLACEHOLDERS.includes(found) && what !== "cli.decide.template") {
+        check.fail(`${what} uses ${found}, which only cli.decide.template carries`);
+      }
+      if (DISPATCH_PLACEHOLDERS.includes(found) && (!["cli.definition.hooks.template",
+        "cli.definition.hooks.each"].includes(what) || (["{event}", "{native}", "{on_failure}"].includes(found)
+          && what !== "cli.definition.hooks.each"))) {
+        check.fail(`${what} uses ${found}, which only cli.definition.hooks's file carries`);
+      }
+      if (found === "{mcp_config}" && mcp.file === undefined) {
         check.fail(`${what} uses {mcp_config}, which names cli.mcp.file, and there is none`);
       }
     }
   }
-  // `{base_url}` only where only an API-key run reads it (rule 2): the API-key run's own
+  // `{base_url}` only where only an API-key run reads it: the API-key run's own
   // argv, env or files, or anywhere in a record that runs on nothing but a key; and in an
-  // argv joined to its key, never bare (rule 3).
+  // argv joined to its key, never bare.
   const keyOnly = credential.length === 1 && credential[0] === "api_key";
   for (const [what, text] of [...argvs.flatMap(([what, list]) =>
     list.map((item): [string, string] => [what, item])), ...templates]) {
@@ -714,7 +722,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                  "(--option={base_url}, key=\"{base_url}\"), never bare");
     }
   }
-  // No argument a signed-in run gets moves where its calls go (rule 4): every argv of a
+  // No argument a signed-in run gets moves where its calls go: every argv of a
   // record that signs in but the API-key run's own and the install's check.
   if (signsIn) {
     for (const [what, list] of argvs) {
@@ -747,14 +755,13 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     install,
     credential: Object.freeze(credential),
     ...(login === undefined ? {} : { login }),
-    ...(regions === undefined ? {} : { regions: Object.freeze(regions) }),
     ...(apiKeyEnv === undefined ? {} : { api_key_env: Object.freeze(apiKeyEnv) }),
     unattended: Object.freeze(unattended),
     ...(perCredential === undefined ? {} : { per_credential: Object.freeze(perCredential) }),
     engine,
-    instructions,
-    skills_paths: Object.freeze(skills),
+    definition,
     mcp,
+    decide,
     ...(runSecretEnv === undefined ? {} : { run_secret_env: Object.freeze(runSecretEnv) }),
     ...(compaction === undefined ? {} : { compaction: Object.freeze(compaction) }),
     tools: Object.freeze(tools),
@@ -765,6 +772,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     no_update: noUpdate,
     secret_paths: Object.freeze(secrets),
     session_paths: Object.freeze(sessions),
+    resume_paths: Object.freeze(resumes),
     hosts: Object.freeze(hosts as unknown as CliSpec["hosts"]),
   }) as CliSpec;
 }
@@ -856,18 +864,39 @@ function verdict(check: ReturnType<typeof checker>, value: unknown, what: string
                     "day it was read (ADR-033 decision 3), or false, with the reason");
 }
 
+/** Whether `pattern` is a regular expression of at most 512 units, under its reader's `flags`. */
+function compiles(pattern: unknown, flags: string): boolean {
+  if (typeof pattern !== "string" || pattern.length < 1 || pattern.length > 512) {
+    return false;
+  }
+  try {
+    new RegExp(pattern, flags);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function matchers(check: ReturnType<typeof checker>, value: unknown, what: string):
     readonly EventMatcher[] {
   if (!Array.isArray(value) || value.length > 8) {
     return check.fail(`${what} is a list of at most 8 matchers`);
   }
   return Object.freeze(value.map((entry, index) => {
-    const fields = check.keys(entry, `${what}[${index}]`, ["match", "path"], ["accumulate"]);
+    const fields = check.keys(entry, `${what}[${index}]`, ["match", "path"],
+                              ["accumulate", "pattern"]);
     const match = fields["match"];
     if (!object(match) || Object.keys(match).length === 0 || Object.keys(match).length > 8
         || !Object.entries(match).every(([key, item]) => DOTTED.test(key)
           && ["string", "number", "boolean"].includes(typeof item))) {
       check.fail(`${what}[${index}].match maps 1 to 8 dotted paths to scalars`);
+    }
+    const pattern = fields["pattern"];
+    if (pattern !== undefined && (!object(pattern) || Object.keys(pattern).length === 0
+        || Object.keys(pattern).length > 8
+        || !Object.entries(pattern).every(([key, item]) => DOTTED.test(key)
+          && compiles(item, PATTERN_FLAGS)))) {
+      check.fail(`${what}[${index}].pattern maps 1 to 8 dotted paths to regular expressions`);
     }
     if (fields["path"] !== "" && !DOTTED.test(String(fields["path"]))) {
       check.fail(`${what}[${index}].path is a dotted path, or empty for the event itself`);
@@ -875,31 +904,27 @@ function matchers(check: ReturnType<typeof checker>, value: unknown, what: strin
     if (fields["accumulate"] !== undefined && fields["accumulate"] !== true) {
       check.fail(`${what}[${index}].accumulate is true or absent`);
     }
-    return Object.freeze({ ...fields, match: Object.freeze({ ...match as object }) }) as
+    return Object.freeze({ ...fields, match: Object.freeze({ ...match as object }),
+                           ...(pattern === undefined ? {}
+                             : { pattern: Object.freeze({ ...pattern as object }) }) }) as
       unknown as EventMatcher;
   }));
 }
 
 function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv): Engine {
-  // `invoke`, a single inference, is not an engine: a CLI is never a backend (ADR-033 D2).
   if (object(value) && "invoke" in value) {
     check.fail("cli.engine has no invoke: a CLI is an engine, never a backend (ADR-033 " +
                "decision 2)");
   }
-  const fields = check.keys(value, "cli.engine", ["argv", "resume_argv", "resume", "events"],
+  const fields = check.keys(value, "cli.engine", ["argv", "resume_argv", "events"],
                             ["stdin", "model_argv"]);
   const run = argv(fields["argv"], "cli.engine.argv");
   const resume = argv(fields["resume_argv"], "cli.engine.resume_argv");
   if (run[0] !== "{bin}" || resume[0] !== "{bin}") {
     check.fail("cli.engine's argv and resume_argv each run {bin}");
   }
-  const mode = fields["resume"];
-  const resumesById = resume.some((item) => item.includes("{sid}"));
-  if (mode !== "session_id" && mode !== "continue_in_cwd") {
-    check.fail("cli.engine.resume is session_id or continue_in_cwd");
-  }
-  if (resumesById !== (mode === "session_id")) {
-    check.fail("cli.engine.resume_argv carries {sid} exactly when a run resumes by session id");
+  if (!resume.some((item) => item.includes("{sid}"))) {
+    check.fail("cli.engine.resume_argv carries {sid}: a run resumes by its session id");
   }
   if (fields["stdin"] !== undefined && fields["stdin"] !== "{prompt}") {
     check.fail("cli.engine.stdin is {prompt} or absent");
@@ -912,25 +937,23 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
   }
   const model = fields["model_argv"] === undefined ? undefined
     : argv(fields["model_argv"], "cli.engine.model_argv", 8);
-  const events = check.keys(fields["events"], "cli.engine.events", [
-    "format", "session_id", "final_text", "error", "usage", "tool_call", "deferred"]);
+  const kinds = ["session_id", "final_text", "error", "usage", "tool_call", "deferred",
+                 "vendor_limit", "retry"] as const;
+  const events = check.keys(fields["events"], "cli.engine.events", ["format", ...kinds]);
   if (events["format"] !== "jsonl" && events["format"] !== "json") {
     check.fail("cli.engine.events.format is jsonl or json");
   }
-  for (const kind of ["session_id", "final_text", "error", "usage", "tool_call",
-                      "deferred"] as const) {
+  for (const kind of kinds) {
     events[kind] = matchers(check, events[kind], `cli.engine.events.${kind}`);
   }
   if ((events["final_text"] as unknown[]).length === 0) {
     check.fail("cli.engine.events.final_text has at least one matcher");
   }
-  if (((events["session_id"] as unknown[]).length > 0) !== (mode === "session_id")) {
-    check.fail("cli.engine.events.session_id has matchers exactly when a run resumes by " +
-               "session id");
+  if ((events["session_id"] as unknown[]).length === 0) {
+    check.fail("cli.engine.events.session_id has at least one matcher: a run resumes by it");
   }
   return Object.freeze({
     argv: Object.freeze(run), resume_argv: Object.freeze(resume),
-    resume: mode as Engine["resume"],
     ...(prompted ? { stdin: "{prompt}" as const } : {}),
     ...(model === undefined ? {} : { model_argv: Object.freeze(model) }),
     events: Object.freeze(events) as unknown as EngineEvents,
@@ -938,56 +961,378 @@ function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Arg
 }
 
 function instructionsSpec(check: ReturnType<typeof checker>, value: unknown): Instructions {
-  const fields = check.keys(value, "cli.instructions", ["file", "shadowed_by"],
-                            ["max_bytes", "setting"]);
-  const names = check.strings(fields["shadowed_by"], "cli.instructions.shadowed_by",
-                              /^.{1,256}$/su, 8);
+  const what = "cli.definition.instructions";
+  const fields = check.keys(value, what, ["file", "shadowed_by"], ["max_bytes", "setting"]);
+  const names = check.strings(fields["shadowed_by"], `${what}.shadowed_by`, /^.{1,256}$/su, 8);
   if (typeof fields["file"] !== "string" || !relative(fields["file"])
       || !names.every(relative) || names.includes(fields["file"])) {
-    check.fail("cli.instructions names its file, and what shadows it, relative to the " +
-               "agent's directory");
+    check.fail(`${what} names its file, and what shadows it, relative to the agent's directory`);
   }
   const max = fields["max_bytes"];
   if (max !== undefined && !whole(max, 1)) {
-    check.fail("cli.instructions.max_bytes is a whole number from 1");
+    check.fail(`${what}.max_bytes is a whole number from 1`);
   }
   if (fields["setting"] !== undefined && runFilePath(fields["setting"]) === null) {
-    check.fail("cli.instructions.setting is a path under {home} or {system}");
+    check.fail(`${what}.setting is a path under {home} or {system}`);
   }
   return Object.freeze({ ...fields, shadowed_by: Object.freeze(names) }) as unknown as
     Instructions;
 }
 
+/** A key of an engine's own config: a server entry's, or a hook event's name. */
+const NATIVE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+/** What a server's entry carries of the server's own, by transport (`Mcp`). */
+const SERVER_CARRY = Object.freeze({
+  http: Object.freeze(["{url}"]),
+  stdio: Object.freeze(["{command}", "{args}", "{env}"]),
+});
+
+/**
+ * How the agent's definition reaches the engine (`Definition`): its instructions; its skills,
+ * linked into folders relative to the agent's directory or given one argv a skill; the engine's
+ * own layers it keeps out, none of them a path the definition renders; and its hooks'
+ * dispatcher, held to the `decide` hook's root-owned layer, so present exactly when that hook
+ * is (`definitionHooks`). Its own MCP servers go where the run's door does (`mcpSpec`).
+ */
+function definitionSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                        template: (item: unknown, what: string) => string,
+                        decide: Decide): Definition {
+  const fields = check.keys(value, "cli.definition", ["instructions", "skills", "native",
+                                                      "hooks"]);
+  const instructions = instructionsSpec(check, fields["instructions"]);
+  const skills = definitionSkills(check, fields["skills"], argv);
+  return Object.freeze({
+    instructions, skills,
+    native: definitionNative(check, fields["native"], argv,
+                             [instructions.file, ...instructions.shadowed_by, ...skills.paths]),
+    hooks: definitionHooks(check, fields["hooks"], argv, template, decide),
+  });
+}
+
+function definitionSkills(check: ReturnType<typeof checker>, value: unknown, argv: Argv):
+    DefinitionSkills {
+  const what = "cli.definition.skills";
+  const fields = check.keys(value, what, ["paths"], ["argv_each"]);
+  const paths = check.strings(fields["paths"], `${what}.paths`, /^.{1,256}$/su, 16);
+  const each = fields["argv_each"] === undefined ? undefined
+    : argv(fields["argv_each"], `${what}.argv_each`, 4);
+  if (!paths.every(relative) || (paths.length === 0 && each === undefined)) {
+    check.fail(`${what} links each skill into paths relative to the agent's directory, or ` +
+               "gives it argv_each, or both");
+  }
+  if (each !== undefined && each.join(" ").split("{skill}").length !== 2) {
+    check.fail(`${what}.argv_each carries {skill}, the skill's directory, once`);
+  }
+  return Object.freeze({ paths: Object.freeze(paths),
+                         ...(each === undefined ? {} : { argv_each: Object.freeze(each) }) });
+}
+
+function definitionNative(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                          rendered: readonly string[]): DefinitionNative {
+  const what = "cli.definition.native";
+  const fields = check.keys(value, what, ["refuses", "cite", "read"], ["argv"]);
+  const refuses = check.strings(fields["refuses"], `${what}.refuses`, /^.{1,256}$/su, 16);
+  if (refuses.length === 0 || !refuses.every(relative) || new Set(refuses).size !== refuses.length
+      || refuses.some((path) => rendered.some((own) =>
+        overlaps(path.split("/"), own.split("/"))))) {
+    check.fail(`${what}.refuses lists the engine's own layers' paths, distinct and relative ` +
+               "to its cwd, none of them one the definition renders (its instructions, what " +
+               "shadows them, its skills folders)");
+  }
+  const loads = fields["argv"] === undefined ? undefined
+    : argv(fields["argv"], `${what}.argv`, 8);
+  check.https(fields["cite"], `${what}.cite`);
+  check.text(fields["read"], DATE, `${what}.read`);
+  return Object.freeze({
+    refuses: Object.freeze(refuses), ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
+    cite: fields["cite"] as string, read: fields["read"] as string,
+  });
+}
+
+/**
+ * The agent's hooks' dispatcher (`DefinitionHooks`): the engine's own distinct name of every
+ * event; its file, the decide hook's (its only shared one) or another of the run's own under
+ * `{system}`, a `.json`, `.toml` or `.mjs` one; a settings file's `template` and `each` (each
+ * event's entry, `{event}` and `{native}` in it) read whole once filled, with no credential key,
+ * carrying `{dispatcher}`; an `.mjs` file's `template` carrying `{dispatcher_argv}` and
+ * `{hook_events}` and naming each event's own name; `argv` only for a file of the run's own, and
+ * loading it; how the engine runs it, whether it fails open, how the agent can alter it, and
+ * the page it was read from.
+ */
+function definitionHooks(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                         template: (item: unknown, what: string) => string, decide: Decide):
+    DefinitionHooks {
+  const what = "cli.definition.hooks";
+  if (object(value) && "unsupported" in value) {
+    const fields = check.keys(value, what, ["unsupported"]);
+    if (!("unsupported" in decide)) {
+      check.fail(`${what} is unsupported only where cli.decide is: its hooks go in that layer`);
+    }
+    return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
+                                                   `${what}.unsupported`) });
+  }
+  if ("unsupported" in decide) {
+    check.fail(`${what} is unsupported where cli.decide is: no root-owned layer holds them`);
+  }
+  const fields = check.keys(value, what, ["events", "file", "runs", "fails", "cite", "read"],
+                            ["template", "each", "argv", "alterable"]);
+  const events = check.keys(fields["events"], `${what}.events`, Object.keys(HOOK_EVENTS));
+  const names = Object.values(events) as string[];
+  if (!names.every((name) => typeof name === "string" && NATIVE_KEY.test(name))
+      || new Set(names).size !== names.length) {
+    check.fail(`${what}.events names each event by the engine's own distinct name`);
+  }
+  const file = fields["file"];
+  const own = typeof file === "string" && file.startsWith("{system}/")
+    && runFilePath(file) !== null;
+  if (typeof file !== "string" || (!own && ("unsupported" in decide || file !== decide.file))
+      || !/\.(?:json|toml|mjs)$/.test(file)) {
+    check.fail(`${what}.file is cli.decide.file, or a .json, .toml or .mjs file of the run's ` +
+               "own under {system}");
+  }
+  const text = fields["template"] === undefined ? undefined
+    : template(fields["template"], `${what}.template`);
+  const each = fields["each"] === undefined ? undefined
+    : template(fields["each"], `${what}.each`);
+  if (String(file).endsWith(".mjs")) {
+    if (each !== undefined || text === undefined || !text.includes("{dispatcher_argv}")
+        || !text.includes("{hook_events}")
+        || names.some((name) => !text.includes(JSON.stringify(name)))) {
+      check.fail(`${what}.template is the .mjs file whole, carrying {dispatcher_argv} and ` +
+                 "{hook_events} and naming each event's own name");
+    }
+  } else {
+    const settings = [...(text === undefined ? [] : [text]),
+                      ...names.map((name, at) => each === undefined ? ""
+                        : each.replaceAll("{native}", name)
+                          .replaceAll("{event}", Object.keys(events)[at]!))];
+    if (each === undefined || !each.includes("{dispatcher}") || settings.some((part) => {
+      const read = settingsOf(String(file), part);
+      return read === null || read.keys.some((key) => CREDENTIAL_KEY.test(key));
+    })) {
+      check.fail(`${what}.template and each are settings read whole, each event's entry ` +
+                 "carrying {dispatcher}, with no credential key");
+    }
+  }
+  const loads = fields["argv"] === undefined ? undefined
+    : argv(fields["argv"], `${what}.argv`, 8);
+  if (loads !== undefined && (!own || !loads.includes(file as string))) {
+    check.fail(`${what}.argv loads the run's own file, under {system}`);
+  }
+  const runs = (object(fields["runs"]) ? fields["runs"] : {}) as Record<string, unknown>;
+  const shell = runs["shell"];
+  const exec = Object.keys(runs).length === 1 && runs["exec"] === true;
+  if (!exec && !(Object.keys(runs).length === 1 && Array.isArray(shell) && shell.length >= 1
+      && shell.length <= 4 && shell.every((arg) => typeof arg === "string"
+        && /^[A-Za-z0-9/_.-]{1,64}$/.test(arg)))) {
+    check.fail(`${what}.runs is a shell and its arguments, or exec`);
+  }
+  if (exec !== String(file).endsWith(".mjs")) {
+    check.fail(`${what}.runs is exec exactly where its file is the record's own .mjs`);
+  }
+  if (fields["fails"] !== "open" && fields["fails"] !== "closed") {
+    check.fail(`${what}.fails is open or closed`);
+  }
+  if (fields["alterable"] !== undefined) {
+    check.text(fields["alterable"], REASON, `${what}.alterable`);
+  }
+  check.https(fields["cite"], `${what}.cite`);
+  check.text(fields["read"], DATE, `${what}.read`);
+  return Object.freeze({
+    events: Object.freeze({ ...events }) as Readonly<Record<HookEvent, string>>,
+    file: file as string,
+    ...(text === undefined ? {} : { template: text }),
+    ...(each === undefined ? {} : { each }),
+    ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
+    runs: Object.freeze(exec ? { exec: true as const }
+      : { shell: Object.freeze([...(shell as string[])]) }),
+    fails: fields["fails"] as "open" | "closed",
+    ...(fields["alterable"] === undefined ? {} : { alterable: fields["alterable"] as string }),
+    cite: fields["cite"] as string, read: fields["read"] as string,
+  });
+}
+
+/**
+ * Where a run's MCP servers go (`Mcp`), the run's door and the agent's own alike: under
+ * `servers` in the record's JSON file (its template, if any, holding nothing of the servers but
+ * the door's own keys, and nothing at `names`) or as `flag` pairs, exactly one of the two; each
+ * transport's entry carrying the server's own values once each; `argv_each` carrying `{name}`,
+ * joined to its option (`NAME_ARG`).
+ */
 function mcpSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
                  template: (item: unknown, what: string) => string,
                  sandboxPath: (item: unknown, what: string) => string[],
                  declared: string[]): Mcp {
-  if (object(value) && "unsupported" in value) {
-    const fields = check.keys(value, "cli.mcp", ["unsupported"]);
-    return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
-                                                   "cli.mcp.unsupported") });
+  const what = "cli.mcp";
+  const fields = check.keys(value, what, ["servers", "http", "stdio", "argv", "trust"],
+                            ["file", "template", "flag", "names", "argv_each"]);
+  const servers = check.text(fields["servers"], DOTTED, `${what}.servers`);
+  const entries = Object.fromEntries((["http", "stdio"] as const).map((transport) => {
+    const entry = check.stringMap(fields[transport], `${what}.${transport}`, NATIVE_KEY, 16);
+    const carried = Object.values(entry).filter((item) => item.includes("{"));
+    if (carried.length !== SERVER_CARRY[transport].length
+        || !SERVER_CARRY[transport].every((item) => carried.includes(item))
+        || Object.values(entry).some((item) => !REASON.test(item))) {
+      check.fail(`${what}.${transport} carries ${SERVER_CARRY[transport].join(", ")} once ` +
+                 "each, and otherwise fixed text");
+    }
+    return [transport, Object.freeze({ ...entry })];
+  })) as Record<"http" | "stdio", Readonly<Record<string, string>>>;
+  if ((fields["file"] === undefined) === (fields["flag"] === undefined)
+      || (fields["file"] === undefined
+          && (fields["template"] !== undefined || fields["names"] !== undefined))) {
+    check.fail(`${what} puts its servers in a file (with its template and names, if any) or ` +
+               "by a flag, one of the two");
   }
-  const fields = check.keys(value, "cli.mcp", ["argv", "trust"], ["file", "template"]);
-  const flags = argv(fields["argv"], "cli.mcp.argv", 16);
-  if ((fields["file"] === undefined) !== (fields["template"] === undefined)) {
-    check.fail("cli.mcp has a file exactly when it has the file's template");
+  if (fields["flag"] !== undefined) {
+    check.text(fields["flag"], /^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$/, `${what}.flag`);
   }
+  const names = fields["names"] === undefined ? undefined
+    : check.text(fields["names"], DOTTED, `${what}.names`);
   let text: string | undefined;
   if (fields["file"] !== undefined) {
-    sandboxPath(fields["file"], "cli.mcp.file");
-    text = template(fields["template"], "cli.mcp.template");
+    sandboxPath(fields["file"], `${what}.file`);
+    if (!(fields["file"] as string).endsWith(".json")) {
+      check.fail(`${what}.file is a .json file, which the servers are rendered into`);
+    }
     declared.push(fields["file"] as string);
   }
-  if (![...flags, text ?? ""].some((item) => item.includes("{mcp_url}"))) {
-    check.fail("cli.mcp carries {mcp_url}, in its file's template or its argv");
+  if (fields["template"] !== undefined) {
+    text = template(fields["template"], `${what}.template`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    const held = valueAtPath(parsed, servers.split("."));
+    if (!object(parsed) || (held !== undefined && (!object(held)
+        || Object.keys(held).some((name) => name !== RUN_DOOR_SERVER)))
+        || (names !== undefined && valueAtPath(parsed, names.split(".")) !== undefined)) {
+      check.fail(`${what}.template is a JSON object holding no server but the door's own ` +
+                 `keys (${RUN_DOOR_SERVER}), and nothing at names: the servers are rendered`);
+    }
   }
-  const trust = check.keys(fields["trust"], "cli.mcp.trust", ["argv", "note"]);
+  const each = fields["argv_each"] === undefined ? undefined
+    : argv(fields["argv_each"], `${what}.argv_each`, 8);
+  if (each !== undefined && (!each.some((arg) => arg.includes("{name}"))
+      || each.some((arg) => arg.includes("{name}") && !NAME_ARG.test(arg)))) {
+    check.fail(`${what}.argv_each carries {name}, the server's name, joined to its option ` +
+               "(--option={name})");
+  }
   return Object.freeze({
-    argv: Object.freeze(flags),
-    ...(text === undefined ? {} : { file: fields["file"] as string, template: text }),
-    trust: Object.freeze({ argv: Object.freeze(argv(trust["argv"], "cli.mcp.trust.argv", 16)),
-                           note: check.text(trust["note"], REASON, "cli.mcp.trust.note") }),
+    servers, ...entries,
+    ...(fields["file"] === undefined ? {} : { file: fields["file"] as string }),
+    ...(text === undefined ? {} : { template: text }),
+    ...(fields["flag"] === undefined ? {} : { flag: fields["flag"] as string }),
+    ...(names === undefined ? {} : { names }),
+    argv: Object.freeze(argv(fields["argv"], `${what}.argv`, 16)),
+    ...(each === undefined ? {} : { argv_each: Object.freeze(each) }),
+    trust: check.text(fields["trust"], REASON, `${what}.trust`),
   });
+}
+
+/** A tool's name as a CLI calls it, and an MCP name's prefix and join. */
+const TOOL_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+const NAME_PART = /^[A-Za-z0-9_]{1,16}$/;
+/** A shared hook file's path: under `/etc`, no `.` or `..` segment. */
+const SHARED_PATH = /^\/etc(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,128}){1,4}$/;
+
+/**
+ * The CLI's own pre-tool hook (`Decide`): its file under `{system}` (merged into the record's
+ * JSON file of that path, if it writes one) or a shared root path under `/etc`, a `.json`,
+ * `.toml` or `.mjs` file whose template carries `{matcher}` and what its way of running
+ * carries (`RUNS_CARRY`), and no credential key; how the CLI runs it (an `http` hook's refusal
+ * a JSON template whose one `{reason}` the door fills, a shell its program and arguments, or
+ * `exec`); its argv, only for a file of the run's own; its kinds' tool names; its MCP names;
+ * whether it fails open, and how the agent can alter it, if it can; and the page it was read
+ * from. Or why no hook holds.
+ */
+function decideSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                    template: (item: unknown, what: string) => string,
+                    declared: readonly string[]): Decide {
+  if (object(value) && "unsupported" in value) {
+    const fields = check.keys(value, "cli.decide", ["unsupported"]);
+    return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
+                                                   "cli.decide.unsupported") });
+  }
+  const fields = check.keys(value, "cli.decide", ["file", "template", "runs", "kinds", "mcp",
+                                                  "fails", "cite", "read"],
+                            ["argv", "alterable"]);
+  const runs = (object(fields["runs"]) ? fields["runs"] : {}) as Record<string, unknown>;
+  const way = Object.keys(runs).length === 1 ? Object.keys(runs)[0] : undefined;
+  const http = runs["http"];
+  const deny = way === "http" && object(http) && Object.keys(http).length === 1
+    ? http["deny"] : undefined;
+  let denyParses = false;
+  try {
+    denyParses = typeof deny === "string" && object(JSON.parse(deny))
+      && deny.split("{reason}").length === 2;
+  } catch {
+    denyParses = false;
+  }
+  const shell = runs["shell"];
+  if (!(way === "http" ? denyParses
+    : way === "shell" ? Array.isArray(shell) && shell.length >= 1 && shell.length <= 4
+      && shell.every((arg) => typeof arg === "string" && /^[A-Za-z0-9/_.-]{1,64}$/.test(arg))
+      : way === "exec" && runs["exec"] === true)) {
+    check.fail("cli.decide.runs is http (its deny a JSON object with one {reason}), a shell " +
+               "and its arguments, or exec");
+  }
+  const file = fields["file"];
+  const own = typeof file === "string" && file.startsWith("{system}/")
+    && runFilePath(file) !== null;
+  if (typeof file !== "string" || (!own && !SHARED_PATH.test(file))
+      || !/\.(?:json|toml|mjs)$/.test(file)
+      || (declared.includes(file) && !file.endsWith(".json"))) {
+    check.fail("cli.decide.file is a .json, .toml or .mjs path under {system}, or under /etc " +
+               "shared by every run, and only a .json file the record writes besides");
+  }
+  const text = template(fields["template"], "cli.decide.template");
+  const carries = ["{matcher}", ...RUNS_CARRY[way as keyof typeof RUNS_CARRY]];
+  if (!HOOK_PLACEHOLDERS.every((placeholder) => text.includes(placeholder)
+                                                === carries.includes(placeholder))) {
+    check.fail(`cli.decide.template carries ${carries.join(", ")}, and no other hook ` +
+               "placeholder");
+  }
+  if (!String(file).endsWith(".mjs")) {
+    const read = settingsOf(String(file), text);
+    if (read === null || read.keys.some((key) => CREDENTIAL_KEY.test(key))) {
+      check.fail("cli.decide.template is a settings file read whole, with no credential key");
+    }
+  }
+  const loads = fields["argv"] === undefined ? undefined
+    : argv(fields["argv"], "cli.decide.argv", 8);
+  if (loads !== undefined && own && !loads.includes(file as string)) {
+    check.fail("cli.decide.argv loads the run's own hook file, under {system}");
+  }
+  const kinds = fields["kinds"];
+  if (!object(kinds) || Object.keys(kinds).length === 0 || !Object.entries(kinds).every(
+    ([kind, names]) => isHookKind(kind) && Array.isArray(names) && names.length > 0
+      && names.length <= 8 && names.every((name) => typeof name === "string"
+        && TOOL_NAME.test(name)))) {
+    check.fail("cli.decide.kinds maps tool kinds (acts.json) to the CLI's names of their tools");
+  }
+  const mcp = check.keys(fields["mcp"], "cli.decide.mcp", ["prefix", "join"]);
+  check.text(mcp["prefix"], NAME_PART, "cli.decide.mcp.prefix");
+  check.text(mcp["join"], NAME_PART, "cli.decide.mcp.join");
+  if (fields["fails"] !== "open" && fields["fails"] !== "closed") {
+    check.fail("cli.decide.fails is open or closed");
+  }
+  if (fields["alterable"] !== undefined) {
+    check.text(fields["alterable"], REASON, "cli.decide.alterable");
+  }
+  check.https(fields["cite"], "cli.decide.cite");
+  check.text(fields["read"], DATE, "cli.decide.read");
+  return Object.freeze({
+    ...fields, ...(loads === undefined ? {} : { argv: Object.freeze(loads) }),
+    kinds: Object.freeze(Object.fromEntries(Object.entries(kinds as Record<string, string[]>)
+      .map(([kind, names]) => [kind, Object.freeze([...names])]))),
+    mcp: Object.freeze(mcp),
+    runs: Object.freeze(way === "http" ? { http: Object.freeze({ deny }) }
+      : way === "shell" ? { shell: Object.freeze([...(shell as string[])]) }
+      : { exec: true }),
+  }) as unknown as Decide;
 }
 
 function toolFilter(check: ReturnType<typeof checker>, value: unknown, what: string,
@@ -1033,16 +1378,17 @@ function noUpdateSpec(check: ReturnType<typeof checker>, value: unknown, argv: A
     ...(fields["file"] === undefined ? {} : { file: String(fields["file"]) }),
   });
 }
-/** The verdicts on the vendor's terms for a platform hosting its CLI's sign-in. */
 const HOSTED_USE: readonly HostedUse[] = Object.freeze(["allowed", "unclear", "forbidden"]);
 
 /** A URL parameter's name, as a record pins it. */
 const PARAM_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+/** A model id as a CLI's `--model` takes it: a vendor's id, or its alias with a `/` prefix. */
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 
 /** The vendor's own sign-in in the sandbox (`LoginSpec`), checked whole, frozen. */
 function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv): LoginSpec {
   const fields = check.keys(value, "cli.login", ["argv", "url_pattern", "url", "expires",
-                                                 "hosted_use"], [
+                                                 "hosted_use", "model"], [
     "status_argv", "status_equals", "accepts_code", "code_pattern", "state_checks",
     "complete_on_state", "logout_argv"]);
   argv(fields["argv"], "cli.login.argv", 16);
@@ -1081,18 +1427,12 @@ function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv
     check.fail("cli.login.hosted_use.verdict is allowed, unclear or forbidden");
   }
   check.text(hosted["citation"], CITATION, "cli.login.hosted_use.citation");
+  const model = check.keys(fields["model"], "cli.login.model", ["id", "citation"]);
+  check.text(model["id"], MODEL_ID, "cli.login.model.id");
+  check.text(model["citation"], CITATION, "cli.login.model.citation");
   for (const key of ["url_pattern", "code_pattern"] as const) {
     const pattern = fields[key];
-    if (pattern === undefined) {
-      continue;
-    }
-    let compiles = typeof pattern === "string" && pattern.length <= 512;
-    try {
-      new RegExp(String(pattern));
-    } catch {
-      compiles = false;
-    }
-    if (!compiles) {
+    if (pattern !== undefined && !compiles(pattern, "")) {
       check.fail(`cli.login.${key} is a regular expression`);
     }
   }

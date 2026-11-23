@@ -2,8 +2,8 @@
  * The template's standing checks, a bundle of their own beside the runner (the Worker's
  * build, `build/bundle.mjs`): nothing in the runner imports them, so the runner every sandbox
  * runs carries none of them, and this bundle carries what they judge by (the owner's run
- * environment, `runEnv` and `sandboxEnv`, the egress door's paths, `STEP_NS`). The pair the
- * deploy looks for names both bundles' digests (`template/pair.ts`).
+ * environment, `runEnv` and `sandboxEnv`, the egress door's paths). The pair the deploy
+ * looks for names both bundles' digests (`template/pair.ts`).
  *
  * The bundle is built with the digest of the runner built beside it (`TA_RUNNER_SHA`), and
  * runs through the template's loader as a runner does (`ta-runner install`, then
@@ -14,9 +14,8 @@
  * Its commands are its own, not the Worker's protocol with the runner (`protocol.ts`):
  * - `plan`: what to check, as JSON (`Plan`), run on the host that runs the checks: the
  *   sandboxes and their lifetimes and networks, and every step's command and bound;
- * - `login-probe <engine> [region]`: a record's sign-in up to its prompt, its shape judged;
+ * - `login-probe <engine>`: a record's sign-in up to its prompt, its shape judged;
  * - `route-probe <engine> <provider> <resolver>...`: a keyed engine's two turns on the door;
- * - `matcher-probe`: the sync-ignore automaton's step, judged against `STEP_NS`.
  * Each prints its result as one JSON line and exits 0 when it passed, 3 when it did not.
  */
 import { sha256Hex } from "../../contract/src/digest";
@@ -27,27 +26,27 @@ import { createServer as createHttpServer, type IncomingMessage } from "node:htt
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import type { EgressScope } from "../../contract/src/egress-scope";
+import type { ModelScope } from "../../contract/src/egress-scope";
 import { ALL_TRAFFIC, closedNetwork, DNS_SERVERS, EGRESS_ORIGIN, egressBaseUrl,
          sandboxEnv } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX } from "../../contract/src/limits";
-import { AGENTS_DIR } from "../../contract/src/paths";
+import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 import type { NetworkDocument } from "../../contract/src/sandbox";
-import { STEP_NS, stepNanos } from "../../contract/src/sync-ignore";
 import { bundledRecords, bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
-import { engineHosts, type Served, signsIn } from "../../sources/src/served";
+import { engineHosts, type Served, served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, signinShape } from "../../sources/src/signin";
 
 import { binPath, invocation, isKept, keptPaths } from "./engine";
 import { lineEvent } from "./frames";
 import { remove, safeDirs, safeWrite } from "./fsafe";
 import { loginArgv, onTerminal, plain, type Prompt, prompted } from "./login";
+import { skillsOf } from "./project";
 import { COMMAND_MS, EXIT, RUNNERS, type StartDoc, STATE_DIR } from "./protocol";
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
-import { CONVERSATIONS, engineEnv, giveTree, homeOf, loginFiles, record, RECORDS, shared,
-         sortedWalk, spawnBounded, STORE, systemOf, withRunUser } from "./session";
+import { engineEnv, giveTree, homeOf, loginFiles, record, shared, sortedWalk,
+         spawnBounded, STORE, systemOf, withRunUser } from "./session";
 import { asUser } from "./users";
 
 /**
@@ -64,13 +63,12 @@ const PROBE = Object.freeze({
   plan: "plan",
   login: "login-probe",
   route: "route-probe",
-  matcher: "matcher-probe",
 } as const);
 
 /** One command in a check sandbox: its argv, its bound, and the network it runs under. */
 export interface PlanStep {
-  /** Which check it is: its result goes to the record's `logins`, `routes` or `matcher`. */
-  readonly check: "login" | "route" | "matcher";
+  /** Which check it is: its result goes to the record's `logins` or `routes`. */
+  readonly check: "login" | "route";
   /** This bundle's command and its arguments (`ta-runner <probes> ...argv`). */
   readonly argv: readonly string[];
   readonly timeout_s: number;
@@ -109,23 +107,18 @@ const STRACE = "(command -v strace || (apt-get -qq update && apt-get -qq install
   ">/dev/null 2>&1; command -v strace >/dev/null";
 
 /**
- * The checks: each record's sign-in (every region of a record with regions) under the
- * production egress allowlist widened by that engine's own hosts, as the sandbox Worker
- * widens a sign-in's network; every keyed engine on every provider it keys, on a
- * sandbox whose network denies everything once prepared; and the matcher's step.
+ * The checks: each record's sign-in under the production egress allowlist widened by that
+ * engine's own hosts, as the sandbox Worker widens a sign-in's network; every keyed engine
+ * on every provider it keys, on a sandbox whose network denies everything once prepared.
  */
 export function plan(runner: string): Plan {
   const logins: PlanStep[] = [];
   const routes: PlanStep[] = [];
-  for (const rec of RECORDS.values()) {
+  for (const rec of served().values()) {
     const cli = rec.cli;
     if (signsIn(rec)) {
-      const regions = Object.keys(cli.regions ?? {}).sort();
-      for (const region of regions.length > 0 ? regions : [null]) {
-        logins.push({ check: "login", timeout_s: 180,
-                      argv: [PROBE.login, rec.id, ...(region === null ? [] : [region])],
-                      network: closedNetwork(engineHosts(rec.id, region)) });
-      }
+      logins.push({ check: "login", timeout_s: 180, argv: [PROBE.login, rec.id],
+                    network: closedNetwork(engineHosts(rec.id)) });
     }
     for (const provider of Object.keys(cli.api_key_env ?? {}).sort()) {
       routes.push({ check: "route", timeout_s: 300, network: null,
@@ -142,8 +135,6 @@ export function plan(runner: string): Plan {
         prepared: { allowOut: [], denyOut: [ALL_TRAFFIC], dnsServers: [...DNS_SERVERS],
                     rules: {} },
         steps: routes },
-      { name: "matcher", timeout_s: 300, network: null, setup: [], prepared: null,
-        steps: [{ check: "matcher", argv: [PROBE.matcher], timeout_s: 120, network: null }] },
     ],
   };
 }
@@ -155,22 +146,22 @@ export function plan(runner: string): Plan {
  * own shape (`signinShape`), the URL's host, whether a code was shown, and whether the URL
  * would send the owner's browser back to `localhost` (which strands it). No account needed.
  */
-async function loginProbe(engine: string, region: string | null): Promise<number> {
+async function loginProbe(engine: string): Promise<number> {
   const rec = record(engine);
   const login = rec.cli.login;
   if (login === undefined) {
     throw new Error(`engine ${engine} has no vendor sign-in`);
   }
   let shown: Prompt = { url: null, code: null };
-  await withRunUser(rec, `probe-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
-                    async (session) => {
+  await withRunUser(rec, `probe-${rec.id}-${process.pid}`,
+                    { signedIn: true, resumes: null, keeps: false }, async (session) => {
     const { as, home } = session;
     loginFiles(rec, session);
     // As long as a command may take: a CLI that shows no prompt by then shows none. The
     // answer waits for its close, so no exited child is left unreaped for the user's
     // processes' kill to wait on.
     const cli = spawnBounded(asUser(as, [shared()],
-                                    onTerminal(loginArgv(login, binPath(rec), region))),
+                                    onTerminal(loginArgv(login, binPath(rec)))),
                              { env: engineEnv(rec, home), cwd: home,
                                stdio: ["pipe", "pipe", "pipe"] }, COMMAND_MS);
     let text = "";
@@ -188,12 +179,12 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   });
   const redirect = shown.url === null ? null : new URL(shown.url).searchParams.get("redirect_uri");
   const local = redirect !== null && /^https?:\/\/(?:localhost|127\.|\[::1\])/.test(redirect);
-  const refused = shown.url === null ? null : signinShape(rec, region, shown.url, shown.code);
+  const refused = shown.url === null ? null : signinShape(rec, shown.url, shown.code);
   const why = shown.url === null ? "no sign-in URL shown"
     : local ? "the URL sends the browser back to localhost"
       : refused === null ? null : SIGNIN_REFUSALS[refused];
   process.stdout.write(JSON.stringify({
-    engine, region, ok: why === null, reason: why,
+    engine, ok: why === null, reason: why,
     host: shown.url === null ? null : new URL(shown.url).hostname, code_shown: shown.code !== null }));
   return why === null ? OK : NO;
 }
@@ -206,7 +197,7 @@ const ROUTE_PROBE_MS = COMMAND_MS;
 const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
 /** The sealed API a provider's key goes to, as the gateway's record for it says. */
-function sealedScope(provider: string, engine: string): EgressScope {
+function sealedScope(provider: string, engine: string): ModelScope {
   const found = (bundledRecords() as Record<string, unknown>[]).filter((raw) =>
     raw["provider"] === provider
     && typeof raw["base_url"] === "string" && Array.isArray(raw["connect"])
@@ -237,7 +228,8 @@ interface ProbeTurn {
  * loopback capture server at the door's real path answering each model request with a
  * minimal valid reply in its sealed API's wire format, under `strace` for its connects, with
  * a fake sign-in seeded in every one of its store's `secret_paths`. Two turns: a new
- * conversation, then its resume (its home made again from the store, as the next run's is),
+ * conversation, then its resume (its home made again from the store with the files the
+ * record's `resume_paths` name alone, as the next run's is),
  * that one compacting first where the record says how (`cli.compaction`). Each turn must exit
  * 0 with its final text, the first name its session where the record resumes by one, the
  * second resume it, a compaction be seen; and every request of both is judged
@@ -302,7 +294,8 @@ async function probeRoute(rec: Served, provider: string,
     config: { generation: 1, egress: { mode: "open", destinations: [] }, env,
               inherit: engine.inherit },
     urls: { mcp: `${origin}/r/${run}/${secret}/mcp`, mcp_bare: `${origin}/r/${run}/mcp`,
-            events: `${origin}/r/${run}/events`, signin: `${origin}/signin` } };
+            events: `${origin}/r/${run}/events`, signin: `${origin}/signin` },
+    mcp_servers: {}, hooks: {} };
   // A fake sign-in in each of the store's secret paths: if any of it reaches a request, a
   // key run's home carried the sign-in.
   const store = `${STORE}/${rec.id}`;
@@ -324,8 +317,6 @@ async function probeRoute(rec: Served, provider: string,
   }
   const name = `route-${rec.id}-${process.pid}`;
   const agentDir = `${AGENTS_DIR}/${first.agent}`;
-  const conversationDir = cli.engine.resume === "continue_in_cwd"
-    ? `${CONVERSATIONS}/${rec.id}/${first.conversation}` : undefined;
   const turns: ProbeTurn[] = [];
 
   /** One turn, as one run runs: its own user and home, then its home kept and dropped. */
@@ -335,25 +326,20 @@ async function probeRoute(rec: Served, provider: string,
     const system = systemOf(name);
     const trace = `${STATE}/route-${name}.trace`;
     const call = invocation(rec, start, process.env, {
-      continued: resumed, home, system,
-      ...(conversationDir === undefined ? {} : { conversationDir }) });
+      home, system, skills: [...skillsOf(WORKSPACE, start.agent).values()] });
     if (call.resumed !== resumed) {
       throw new Error(resumed ? "the second turn does not resume the first"
         : "the first turn resumes nothing");
     }
     try {
-      return await withRunUser(rec, name, { signedIn: false, keeps: true, files: call.files },
-                               async ({ as }) => {
+      return await withRunUser(rec, name, { signedIn: false, resumes: start.session_id,
+                                            keeps: true, files: call.files }, async ({ as }) => {
         const carried = [...sortedWalk(home)].filter((rel) =>
           isKept(keptPaths(rec).secrets, rel));
         if (carried.length > 0) {
           throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
         }
         giveTree(agentDir, as);
-        if (conversationDir !== undefined) {
-          safeDirs("/", conversationDir, 0o700);
-          giveTree(conversationDir, as);
-        }
         const argv = [call.argv[0]!, ...extra, ...call.argv.slice(1)];
         const probe = spawnBounded(["strace", "-f", "-qq", "-e", "trace=connect", "-o", trace,
                                     "--", ...asUser(as, [shared()], argv)], {
@@ -410,7 +396,7 @@ async function probeRoute(rec: Served, provider: string,
       throw new Error(`the first turn did not complete (exit ${one.exit}${one.answered ? ""
         : ", no final text"}): ${one.stderr.trim().slice(-300)}`);
     }
-    if (cli.engine.resume === "session_id" && one.session_id === null) {
+    if (one.session_id === null) {
       throw new Error("the first turn named no session to resume");
     }
     const before = requests.length;
@@ -437,9 +423,6 @@ async function probeRoute(rec: Served, provider: string,
     failed = String(error instanceof Error ? error.message : error);
   } finally {
     remove(agentDir);
-    if (conversationDir !== undefined) {
-      remove(conversationDir);
-    }
     for (const rel of existsSync(store) ? sortedWalk(store) : []) {
       if (!had.has(rel)) {
         remove(join(store, rel));  // the probe's own sessions and its fake sign-in
@@ -481,14 +464,6 @@ async function routeProbe(engine: string, provider: string,
   return result["ok"] === true ? OK : NO;
 }
 
-/** The sync-ignore automaton's step, timed here, within `STEP_NS` or failed. */
-function matcherProbe(): number {
-  const step = stepNanos();
-  const ok = step <= STEP_NS;
-  process.stdout.write(`${JSON.stringify({ step_ns: step, ceiling_ns: STEP_NS, ok })}\n`);
-  return ok ? OK : NO;
-}
-
 /**
  * Why this sandbox cannot be checked by this bundle, or null: the runner it was built beside
  * must be installed here, byte for byte, as the loader installed it.
@@ -508,7 +483,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${JSON.stringify(plan(TA_RUNNER_SHA))}\n`);
     return OK;
   }
-  if (command !== PROBE.login && command !== PROBE.route && command !== PROBE.matcher) {
+  if (command !== PROBE.login && command !== PROBE.route) {
     process.stderr.write(`probes: no command ${String(command)}\n`);
     return EXIT.usage;
   }
@@ -517,12 +492,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     throw new Error(refused);
   }
   if (command === PROBE.login) {
-    return loginProbe(args[0] ?? "", args[1] ?? null);
+    return loginProbe(args[0] ?? "");
   }
-  if (command === PROBE.route) {
-    return routeProbe(args[0] ?? "", args[1] ?? "", args.slice(2));
-  }
-  return matcherProbe();
+  return routeProbe(args[0] ?? "", args[1] ?? "", args.slice(2));
 }
 
 main(process.argv.slice(2)).then((code) => process.exit(code), (error: unknown) => {

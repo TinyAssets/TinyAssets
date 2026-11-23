@@ -1,8 +1,9 @@
 /**
- * Building a wake from its record (slice W, tasks 7): what a subscription follows, its
+ * Building a wake from its record: what a subscription follows, its
  * server-derived id, and each wake's headers and body (`doorbellRequest`). The records and
  * the callback checks are `wake-records.ts`.
  */
+import { canonical } from "./canonical.ts";
 import { sha256Hex } from "./digest.ts";
 import { Refusal } from "./refusal.ts";
 import { codePoints, isPrintable } from "./text.ts";
@@ -37,19 +38,6 @@ export interface WakeContent {
 /** A room collection's prefix (`owner-do.ts`). */
 const ROOM_PREFIX = "room:";
 
-/** JSON with every object's keys sorted, so equal values compare equal. */
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /**
  * What a subscription follows, from its arguments: `board` (a boolean, false when left
  * out) and `rooms` (room collections, each exactly; none when left out), checked, besides
@@ -59,7 +47,7 @@ export function canonicalJson(value: unknown): string {
 export function follows(args: unknown, allowed: readonly string[] = []): Follows {
   if (typeof args !== "object" || args === null || Array.isArray(args)
       || !Object.keys(args).every((key) => ["board", "rooms", ...allowed].includes(key))
-      || canonicalJson(args).length > ARGUMENTS_CHARS) {
+      || canonical(args).length > ARGUMENTS_CHARS) {
     throw new Refusal("invalid", "invalid subscription arguments");
   }
   const { board = false, rooms = [] } = args as { board?: unknown; rooms?: unknown };
@@ -80,7 +68,7 @@ export function follows(args: unknown, allowed: readonly string[] = []): Follows
  */
 export function subscriptionId(principal: string, url: string, name: string,
                                args: unknown): string {
-  return "sub_" + sha256Hex(canonicalJson([principal, url, name, args])).slice(0, 32);
+  return "sub_" + sha256Hex(canonical([principal, url, name, args])).slice(0, 32);
 }
 
 /** The wake's one line, for a kind whose body is text: the change and where to read it. */

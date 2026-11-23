@@ -19,10 +19,10 @@ import type { RunReceipt } from "../src/runs";
 import { LEASE_TTL_S } from "../../contract/src/limits";
 import type { Recorded, Script } from "../../ci/fake-sandbox";
 
-import { clockAt, gateFor, TIERS } from "./support";
+import { clockAt, gateFor, OPEN_RECORD, openRecord, TIERS } from "./support";
 import type { SandboxStart } from "../../contract/src/sandbox";
 
-export { TIERS };
+export { OPEN_RECORD, openRecord, TIERS };
 
 /**
  * The object's clock moved on `seconds` (a lease's life and one, by default: every sandbox
@@ -64,12 +64,23 @@ export async function defineAgent(stub: DurableObjectStub<OwnerDO>, owner: Bindi
       await stub.fileMkdir(binding, { path, expected_etag: null });
     }
   }
-  const path = `/workspace/agents/${agent}/agent.json`;
+  await ownerFile(stub, binding, `/workspace/agents/${agent}/agent.json`, JSON.stringify(file));
+}
+
+/** The owner's file at `path` written as `text`, or removed (null), by the owner. */
+export async function ownerFile(stub: DurableObjectStub<OwnerDO>, owner: Binding, path: string,
+                                text: string | null): Promise<void> {
+  const binding = await inSession(stub, owner);
   const { entry } = await stub.fileStat(binding, { path });
-  const written = await stub.fileWrite(binding, { path, expected_etag: entry?.etag ?? null,
-                                                  content: bytes(JSON.stringify(file)) });
+  const etag = entry?.etag ?? null;
+  if (text === null) {
+    await stub.fileRemove(binding, { path, expected_etag: etag, recursive: false });
+    return;
+  }
+  const written = await stub.fileWrite(binding, { path, expected_etag: etag,
+                                                  content: bytes(text) });
   if (!("entry" in written)) {
-    throw new Error("agent.json was not written");
+    throw new Error(`${path} was not written`);
   }
 }
 
@@ -97,7 +108,7 @@ export async function scripted(stub: DurableObjectStub<OwnerDO>, script: Partial
  * sandbox has taken it (its record holds it) and its answer is held at the gate until `act`
  * is done, as a sandbox answers late. What `call` answered.
  */
-export async function whileOut<R>(owner: string, method: "start" | "network",
+export async function whileOut<R>(owner: string, method: "start" | "signin" | "network",
                                   call: () => Promise<R>, act: () => Promise<void>):
     Promise<R> {
   const sandbox = gateFor(env.SANDBOX_GATE, owner);
@@ -192,8 +203,9 @@ export async function startOf(stub: DurableObjectStub<OwnerDO>, run: string):
 let sent = 0;
 
 /**
- * A run of `agent` (its `agent.json` written as `file` first, when given) by the owner, with
- * the tier numbers in the binding; its receipt and its recorded start.
+ * A run of `agent` (its `agent.json` written as `file` first, when given) by the owner, on
+ * the binding's control record (`OPEN`'s, the founder's tiers, when it hands none); its
+ * receipt and its recorded start.
  */
 export async function ownerRun(stub: DurableObjectStub<OwnerDO>, binding: Binding,
                                file?: Record<string, unknown>, agent = "main",
@@ -202,7 +214,7 @@ export async function ownerRun(stub: DurableObjectStub<OwnerDO>, binding: Bindin
   if (file !== undefined) {
     await defineAgent(stub, binding, agent, file);
   }
-  const run = await stub.agentSubmit({ ...binding, tiers: TIERS }, {
+  const run = await stub.agentSubmit({ ...binding, control: binding.control ?? OPEN_RECORD }, {
     message: "do the thing", client_send_id: `send-${++sent}`, agent_id: agent, ...extra });
   return { run, start: await startOf(stub, run.run_id) };
 }

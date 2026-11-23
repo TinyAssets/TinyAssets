@@ -1,15 +1,13 @@
 /**
- * The owner's admission (tasks 2, "Owner admission and erasure"; tasks 5, F1): one row in
- * the owner's own object, which is strongly consistent and on every path, so no door reads
- * it from anywhere else and the alarm reads it locally. The Python's `owner_admission`
- * record (`tinyassets/broker/admission.py`), ported:
+ * The owner's admission: one row in the owner's own object, which is strongly consistent and
+ * on every path, so no door reads it from anywhere else and the alarm reads it locally:
  *
  * - `pending`: the owner's object was made (migration 10 writes the row with the schema)
  *   and the platform has not admitted it: every door and lane refuses (`OWNER_UNADMITTED`).
  *   Any `getByName` makes an object, so being made never admits it: only the platform's
  *   explicit admit at sign-up does (`admissionSet` with `{admit: true}`, which the doors'
- *   sign-in callback sends when the owner directory holds no record of the owner, slice
- *   L). A stale `getByName` of a wiped owner whose tombstone a crash lost therefore makes
+ *   sign-in callback sends when the owner directory holds no record of the owner). A
+ *   stale `getByName` of a wiped owner whose tombstone a crash lost therefore makes
  *   an object that refuses everything, and the directory's erased record keeps the
  *   platform from ever admitting that name again: `erase.ts`'s window, closed;
  * - `admitted`: the platform admitted the owner, or every suspension was lifted;
@@ -19,7 +17,7 @@
  *   sign-in and what only lowers risk or storage; an abuse suspension refuses every door.
  *   Work is refused where it is enforced, not only where it starts: every authority check
  *   (`Authority`), every sandbox lease and egress call (`Launcher.openLease`,
- *   `egressOpen`), and every lane with the Python's `require_work` semantics in its own
+ *   `egressOpen`), and every lane that requires work, in its own
  *   unit: the `wakes` lane's claim (`ledger.ts`), whose lane then has no job for its open
  *   rows. A suspension also ends the sandbox's in-flight egress streams, the prompt stop;
  * - `erased`: the tombstone the owner's erasure leaves as its last step, written after
@@ -42,11 +40,13 @@
  *   paid: { runs, storage_bytes } }` (founder, 2026-11-02: free 5 runs and 25 GB, paid 10 and
  *   250 GB). No number is in code: a record without them refuses every run (`TIER_UNREAD`),
  *   never a default. The binder, which reads the record at every outside and owner call to
- *   gate it, hands its `tiers` to the doors in the binding (`Binding.tiers`), never a request
- *   field, so a door never waits on a read of its own; the object keeps the last numbers it
- *   was handed, with when (`platform_tiers`), at its bind, for every run and file byte, its
- *   own `runs` lane's too (a schedule's, a mail's). An edit reaches an owner's door-started
- *   runs at once, its lane's at its next door call.
+ *   gate it, hands the record read fresh to the doors in the binding (`Binding.control`),
+ *   never a request field, so a door never waits on a read of its own. The object keeps one
+ *   copy of the record (`control_kept`, `contract/src/control.ts` `SqlKeeper`), written at
+ *   each bind that hands one and at each of its own reads (`control-gate.ts`: a code-mode
+ *   script's tool calls, the `runs` lane's pass), and every run and file byte reads the numbers
+ *   from it, the lane's runs too (a schedule's, a mail's). An edit reaches an owner's
+ *   door-started runs at once, its lane's at the lane's next pass.
  * - **Where an owner's tier lives.** In the owner's own admission row (its `tier` column,
  *   `free` until set), which only the platform sets (`tierSet`, as the reserved
  *   `PLATFORM_CALLER`, the one caller `admissionSet` takes too). No client, request or
@@ -54,8 +54,7 @@
  * - **What is held.** The tier's simultaneous runs, at admission, against the object's own
  *   live runs (`runs.ts`), and its storage, as the files byte quota's `max_bytes`
  *   (`policy.ts`'s `fileLimits`), which counts the owner's file chunks and the bodies placed
- *   in R2 (ADR-035). Every door that hands the numbers keeps them, written only when they
- *   changed (`keep`), so the storage figure is the record's for every change.
+ *   in R2 (ADR-035), so the storage figure is the kept record's for every change.
  *
  * The contract's `RUNS_CEILING` is a technical ceiling, not a tier: the most live runs the
  * owner's database is costed for (the owner-bound guard counts each live run's rows at it),
@@ -68,7 +67,9 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { holdingStep, refuseRestoring } from "./restore";
 import { ADMISSION_TABLE } from "./schema";
-import { parseTiers, TIER_NAMES, type TierName, type Tiers } from "../../contract/src/control";
+import {
+  controlOf, SqlKeeper, TIER_NAMES, type TierName, type Tiers,
+} from "../../contract/src/control";
 import {
   type AdmissionRequest, type OwnerStateAnswer, SUSPENSIONS, type TierRequest,
 } from "../../contract/src/owner";
@@ -97,8 +98,7 @@ export const IMPORT_DOORS_ONLY = "an import binding reaches the import doors alo
 export const IMPORT_PENDING_ONLY = "only a pending owner is imported into";
 /** What a discarded instance answers every door: its database is gone (`importDiscard`). */
 export const DISCARDED =
-  "this object's owner was discarded for the import; it starts afresh once the runtime " +
-  "starts it again";
+  "this account was reset for its import and has not started again yet";
 
 /** The owner's admission as its row holds it. */
 export interface Admission {
@@ -149,7 +149,7 @@ function tierName(request: unknown): TierName {
   return (request as { tier: TierName }).tier;
 }
 
-/** The owner's admission and tier, in its own row, and the tier numbers it was last handed. */
+/** The owner's admission and tier, in its own row, and the kept record's tier numbers. */
 export class OwnerAdmission {
   readonly #storage: OwnerStorage;
 
@@ -187,11 +187,13 @@ export class OwnerAdmission {
     return row.tier;
   }
 
-  /** The kept tier numbers, or null when none are kept. A read. */
+  /**
+   * The tier numbers of the control record the object keeps (`control_kept`), or null when it
+   * keeps none or the record holds none. A read.
+   */
   tiers(): Tiers | null {
-    const kept = this.#storage.sql.exec<{ tiers: string }>("SELECT tiers FROM platform_tiers")
-      .toArray()[0];
-    return kept === undefined ? null : parseTiers(JSON.parse(kept.tiers));
+    const kept = new SqlKeeper(this.#storage.sql).kept();
+    return kept === null ? null : controlOf(kept.text)?.tiers ?? null;
   }
 
   /** The kept tier numbers, refused when there are none: no run is admitted without them. */
@@ -201,32 +203,6 @@ export class OwnerAdmission {
       throw new Refusal("tier_unread", TIER_UNREAD);
     }
     return tiers;
-  }
-
-  /**
-   * In a unit: the numbers the binder handed kept, with when, and written only when they
-   * differ from the kept ones (most calls hand the same): their one write. `null`, a record
-   * with none, drops the kept ones, so no run is admitted and no file byte added on numbers
-   * the record no longer holds. A binding that hands none (`undefined`) keeps what is kept.
-   */
-  keep(handed: unknown, now: number): void {
-    if (handed === undefined) {
-      return;
-    }
-    const sql = this.#storage.sql;
-    if (handed === null) {
-      if (this.tiers() !== null) {
-        sql.exec("DELETE FROM platform_tiers");
-      }
-      return;
-    }
-    const text = JSON.stringify(parseTiers(handed));
-    const kept = sql.exec<{ tiers: string }>("SELECT tiers FROM platform_tiers").toArray()[0];
-    if (kept?.tiers !== text) {
-      sql.exec("INSERT INTO platform_tiers (only, tiers, read_at) VALUES (1, ?, ?) " +
-                 "ON CONFLICT (only) DO UPDATE SET tiers = excluded.tiers, " +
-                 "read_at = excluded.read_at", text, now);
-    }
   }
 
   /**
@@ -313,10 +289,6 @@ export function writeTombstone(sql: Pick<SqlStorage, "exec">): void {
 }
 
 // -- THE DOORS: the `admission` rows' handlers (`owner/doors.json`) -------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`AdmissionDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `admission` doors reach: the admission, what a suspension ends (the sandbox's
@@ -332,7 +304,6 @@ export interface AdmissionDoorNeeds extends Pick<DoorUnits, "door" | "synced">,
   readonly files: Pick<Files, "storedNow">;
 }
 
-/** The `admission` doors' handlers, by door. */
 export const admissionDoors = Object.freeze({
   /**
    * The platform suspends the owner for a reason (`billing`, `abuse`), or lifts it

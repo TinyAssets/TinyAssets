@@ -14,7 +14,7 @@ whose next step is *"the founder logs into Cloudflare."*
 
 | Item | Lead-only deploy action |
 |---|---|
-| Platform go-ahead deploy | `platform/deploy/checklist.md`. The setup is done (its secrets, variables and pinned locks). Your part: (1) approve `gh workflow run platform-deploy.yml -f mode=plan`, then `-f mode=dark`, which moves no route; (2) approve `-f mode=probe` and sign in once at the link it prints, then report where the browser ended (`checklist.md` § Mode `probe`). |
+| Platform go-ahead deploy | `platform/deploy/checklist.md`. The setup is done (its secrets, variables and pinned locks). Your part: (1) approve `gh workflow run platform-deploy.yml -f mode=plan`, then `-f mode=dark`, which moves no route. The first real sign-in is the stage's (`tasks.md` §10 step 8). |
 | Measure the model-source re-seat | Owners whose http sources the C6 cutover repair removed still cannot use them after credential restore. After this fix deploys, dispatch **Restore credential records** in `dry-run` with source `tinyassets-snapshot-2026-10-22T04-41-03Z.tar.gz`, read `plan.assignments.reseat_owners`, `reseat_centers` and `reseat_members`, and report the three counts to the build lead. The write procedure for owner volumes follows from that scale. |
 | Signed desktop updates | Supply `DESKTOP_WIN_CSC_LINK` (base64 PFX) and `DESKTOP_WIN_CSC_KEY_PASSWORD` in the restricted `production` GitHub Environment. After merging, dispatch `desktop-chat-release.yml` on `main` with version `0.1.2` or higher, verify the signed installer in the `desktop-chat-latest` release, then raise `desktop.latest` in `tinyassets/onboarding/app_versions.json` to that published version. The existing unsigned 0.1.0 shell keeps working and shows an update banner; one manual reinstall from the release page puts it on the update channel. |
 | N1 shared Slack app | Register one TinyAssets Slack app with Events API request URL `https://tinyassets.io/hooks/inbound/slack`, OAuth redirect and required scopes. Store its signing secret as the `production` secret `INBOUND_SLACK_SIGNING_SECRET`; the platform deploy sets it on the doors. Publish the platform-owned HMAC profile for binding `slack` only after the app registration is verified. No app registration, token, or production change is performed in the N1 implementation PR. |
@@ -426,7 +426,7 @@ it per user only with the owner's written permission
 Founder decision 2026-10-11: the credential vault's root key is one AWS KMS key
 in the AWS account created in step 1 above. That gives one AWS account and one
 checklist. There is no offline copy. Design:
-`openspec/changes/credential-vault-reshape/design.md` D3. Nothing reads these
+[`credential-vault-reshape`'s `design.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/credential-vault-reshape/design.md) D3. Nothing reads these
 values until the cutover PR ships, so do this whenever the account exists.
 
 1. Open [KMS in Oregon](https://us-west-2.console.aws.amazon.com/kms/home?region=us-west-2).
@@ -579,8 +579,8 @@ the repo.
 A blocking review verdict is now a check (`.github/workflows/review.yml`), the answer to
 #3989 auto-merging at a BLOCKed head. Any workflow job's check run reports as the GitHub
 Actions app, so the `review` context must be pinned to an App of its own, which only an
-organization owner can make. Nothing requires `review` until the last row; until then the
-receipt still gates.
+organization owner can make. Since the last row, `review` is the one review gate: the
+receipt is gone (ADR-038).
 
 The installed App can recover a lost key under the same identity, with only a browser and
 `gh`. First check, in the organization's settings (Developer settings → GitHub Apps), that it
@@ -599,18 +599,28 @@ App itself gives it a new ID and requires a reviewed ruleset change.
 | Its key, environment and id | Give that code only to Claude on your own computer, which runs the platform setup's review App step with your own `gh`. It makes the environment `review` (deployment branches `main` only, no required reviewer), stores the App's private key there as the environment secret `REVIEW_APP_PRIVATE_KEY`, and sets the repository variable `REVIEW_APP_ID` to the App's id. `review.yml` reads exactly these three names, and decides nothing while `REVIEW_APP_ID` is unset. |
 | Verify the key is main-only | Settings → Environments → `review`: deployment branches are **Selected branches** with `main` alone (not "No restriction", which is what GitHub gives an environment it makes on its own). Settings → Secrets and variables → Actions: no repository-level `REVIEW_APP_PRIVATE_KEY`. Either one would let a branch's workflow mint the App's token and post `review`. |
 | Install it | From the link the setup prints, install the App on `TinyAssets/TinyAssets` alone. |
-| Pin the context | `untangle/p2-review-required` adds `review`, posted by the review App (`integration_id` 5634948), to `docs/ops/merge-queue-ruleset.json`. Once it merges, from an up-to-date checkout of `main`: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Read back: `gh api repos/TinyAssets/TinyAssets/rules/branches/main` shows `{"context":"review","integration_id":5634948}`. Until then `enqueue-merge` refuses on the drift, and auto-merge still queues PRs (`untangle-2026-11/p2-review-required.md`). |
+| Pin the context | `untangle/p2-review-required` adds `review`, posted by the review App (`integration_id` 5634948), to `docs/ops/merge-queue-ruleset.json`. Once it merges, from an up-to-date checkout of `main`: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Read back: `gh api repos/TinyAssets/TinyAssets/rules/branches/main` shows `{"context":"review","integration_id":5634948}`. Done, read back 2026-11-21. |
 
 ## The merge queue's ruleset follows `docs/ops/merge-queue-ruleset.json` (2026-11-16)
 
 The file is the one source of the required checks (`docs/decisions/untangle-2026-11/required-checks.md`).
-`enqueue-merge` reads the rules GitHub applies to `main` and enqueues nothing while they differ
-from the file's, so a ruleset change is made in the file, by a PR, and then applied.
+Auto-enroll reads the rules GitHub applies to `main` and arms nothing while they differ from
+the file's (`scripts/ruleset_drift.py`), so a ruleset change is made in the file, by a PR, and
+then applied.
 
 | Item | Smallest founder-only action |
 |---|---|
-| Any ruleset change | Once the PR changing the file merges: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Not the Settings page: an edit there that the file lacks stops `enqueue-merge` until a PR copies it. |
+| Any ruleset change | Once the PR changing the file merges: `gh api -X PUT repos/TinyAssets/TinyAssets/rulesets/24065294 --input docs/ops/merge-queue-ruleset.json`. Not the Settings page: an edit there that the file lacks stops auto-enroll until a PR copies it. Between the merge and the `PUT`, a PR opened or pushed is not armed: arm it again after the read-back (a push, or `gh pr merge --auto`). |
 | Classic protection's copy of the checks | Settings → Branches → `main` → clear **Require status checks to pass before merging** and save, keeping the rule (it blocks force pushes and deletion). The ruleset requires every check it does, and the classic copy can't be read without an admin token, so nothing could check it against the file. Read back: `gh api repos/TinyAssets/TinyAssets/branches/main/protection --jq .required_status_checks` gives `null`. |
+
+## Delete the `stale-vs-main` label (2026-11-21)
+
+Queue-freshness, its one writer, is deleted (`docs/decisions/untangle-2026-11/p6-queue-deletes.md`),
+and nothing reads it. It blocks nothing.
+
+| Item | Smallest founder-only action |
+|---|---|
+| The label | `gh label delete stale-vs-main --repo TinyAssets/TinyAssets --yes`, which also takes it off any PR still carrying it. Read back: `gh label list --repo TinyAssets/TinyAssets --search stale-vs-main` lists nothing. |
 
 ## Delete the platform's model-credential repository secrets (2026-09-24)
 
@@ -967,15 +977,15 @@ Provider-free, no maintainer quota, test identities with cleanup, canary-coordin
 ### Authorize the reciprocal public-read / manifest Worker delta edge
 
 One merged front-door body before public-read sync.
-*Owner artifact:* `openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/tasks.md`.
+*Owner artifact:* [`reconcile-external-connector-manifests`'s `tasks.md`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-08-26-reconcile-external-connector-manifests/tasks.md).
 *Depends on:* current owner handoff; public-read task 0.5.
 
 ### Review BYO-LLM connect flow slice 1
 
 Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** without this review.
 *Depends on:* exact-head dual-family review; POSIX/production Codex integration.
-*Owner artifacts:* `openspec/changes/archive/2026-10-06-byo-llm-connect-flow/`,
-`openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority/`.
+*Owner artifacts:* [the `byo-llm-connect-flow` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-10-06-byo-llm-connect-flow),
+[the `constrain-set-engine-provider-authority` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-08-26-constrain-set-engine-provider-authority).
 
 ---
 
@@ -986,7 +996,7 @@ Round-3 credential-snapshot filesystem fixes verified; **no merge, no deploy** w
 Instrument landed in #1776; **no agent-buildable task remains** (triaged 2026-08-02). The host
 records the claude.ai baseline (task 3.1) and the permitted-regression decision (task 3.2).
 *Depends on:* ChatGPT connector registration, before its baseline.
-*Owner artifact:* `openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy/`.
+*Owner artifact:* [the `connector-tool-selection-accuracy` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-08-26-connector-tool-selection-accuracy).
 
 ---
 
@@ -1054,7 +1064,7 @@ to be 201, and `x-access-level` to read `read-write`.
 ## Firebase project for phone notifications (2026-09-30)
 
 **Why:** a universe's "Waiting on you" requests now push to the owner's devices
-(`openspec/changes/notify-owner-of-requests`). Browser and desktop push need
+([the `notify-owner-of-requests` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/notify-owner-of-requests)). Browser and desktop push need
 nothing from you — web-push keys are self-issued. **Android push needs a Firebase
 project only the account owner can create**, and the Android app (1.0.4, the
 first build that carries push) reads two secrets that come out of it. Until they

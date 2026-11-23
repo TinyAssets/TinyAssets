@@ -1,6 +1,5 @@
-// What an outside client gets of the starter (slice BRAIN, shared_brain_research.md §6.2
-// item 5, autoconnect_research.md §5.1), so the repo holds one text of each (Direction 2: one
-// agent definition):
+// What an outside client gets of the starter, so the repo holds one text of each
+// (Direction 2: one agent definition):
 // - the TinyAssets plugins: one for ChatGPT and Codex (the portable Agent Plugins format,
 //   with OpenAI's extension) and one for Claude (`.claude-plugin/`), each the MCP server plus
 //   the starter's own skills, copied byte for byte from the starter's files under
@@ -16,16 +15,17 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MCP_RESOURCE, ORIGIN } from "../contract/src/identity.ts";
+import { MCP_RESOURCE, ZONE } from "../contract/src/identity.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Where the starter's shared skills land in an owner's files. */
 const SKILLS = "/workspace/.agents/skills/";
 const STARTER = JSON.parse(readFileSync(join(HERE, "..", "starter", "manifest.json"), "utf8"));
-// The site's legal page, from the doors' public identity.
 const IDENTITY = JSON.parse(readFileSync(join(HERE, "..", "contract", "identity.json"),
                                          "utf8"));
-const LEGAL = `${ORIGIN}${IDENTITY.legal}`;
+/** The public site, on the zone: the plugins' home page and legal pages, never the doors'. */
+const SITE = `https://${ZONE}`;
+const LEGAL = `${SITE}${IDENTITY.legal}`;
 /** The doors' copy of the onboarding steps, by its path under this directory. */
 const ONBOARDING = join("..", "doors", "onboarding.json");
 
@@ -41,7 +41,7 @@ const DESCRIPTION = "Your own workspace, shared by every AI assistant you connec
   "your assistants claim a task so two never do the same one.";
 /** Who publishes the plugins, as both manifests say it. */
 const PUBLISHER = Object.freeze({
-  author: { name: "TinyAssets", url: ORIGIN }, homepage: ORIGIN, license: "Proprietary",
+  author: { name: "TinyAssets", url: SITE }, homepage: SITE, license: "Proprietary",
   keywords: ["memory", "workspace", "goals", "notes"],
 });
 /** The plugin's version: the starter's, whose skills it carries. */
@@ -95,7 +95,7 @@ function plugins() {
         developerName: "TinyAssets",
         category: "Productivity",
         capabilities: ["Read", "Write"],
-        websiteURL: ORIGIN,
+        websiteURL: SITE,
         privacyPolicyURL: LEGAL,
         termsOfServiceURL: LEGAL,
         defaultPrompt: [...PROMPTS],

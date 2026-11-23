@@ -1,6 +1,6 @@
 /**
  * The authorization endpoint and the upstream callback (research §1.5, §8; checklist 4,
- * 5, 17). All on `tinyassets.io`:
+ * 5, 17). All on the doors' host:
  *
  * 1. `GET /authorize` must be a top-level navigation, or it is refused `403`. The
  *    provider validates the request (client, exact redirect URI, resource, S256 PKCE).
@@ -26,7 +26,7 @@
  *    app: `sessionOpen` at the sign-in's time, the session cookie set on the redirect,
  *    and the grant.
  *
- * No number of ours bounds a sign-in (slice L's review). A metadata document the provider
+ * No number of ours bounds a sign-in. A metadata document the provider
  * fetches for a `client_id` is bounded by the provider itself: public https URLs only,
  * 5 KiB, 10 s, one fetch out for one request in.
  *
@@ -50,10 +50,13 @@ import {
   CLOCK_MARGIN_S, FIRST_PARTY_CLIENTS, now, SCOPES,
 } from "./config";
 import type { DoorsEnv } from "./env";
-import { ZONE } from "../../contract/src/egress";
-import { APP_RESOURCE, MCP_RESOURCE, UPSTREAM_CALLBACK } from "../../contract/src/identity";
+import {
+  APP_RESOURCE, MCP_RESOURCE, UPSTREAM_CALLBACK, ZONE,
+} from "../../contract/src/identity";
+import { navigation } from "../../contract/src/navigation";
 import { SIGN_IN_MAX_AGE_S } from "../../contract/src/signin";
 import { outsideRead, ownerRead } from "./control";
+import { requireFresh } from "../../contract/src/control";
 import { putOwner, readOwner } from "./directory";
 import { Refusal } from "../../contract/src/refusal";
 import { authorizationServer } from "./oauth";
@@ -110,12 +113,6 @@ ${loopback}
   <p><button name="decision" value="approve">Allow</button>
      <button name="decision" value="deny">Deny</button></p>
 </form>`;
-}
-
-/** A browser's top-level navigation, as `Sec-Fetch-*` reports it. */
-export function navigation(request: Request): boolean {
-  return request.headers.get("Sec-Fetch-Mode") === "navigate"
-    && request.headers.get("Sec-Fetch-Dest") === "document";
 }
 
 /** Start the configured upstream sign-in for an approved request. */
@@ -234,7 +231,7 @@ export async function admit(env: DoorsEnv, owner: string): Promise<{ readonly st
 async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn):
     Promise<void> {
   if (signedIn.issuer !== env.OWNER_ISSUER) {
-    return;  // a foreign issuer's identity is that provider's slice's to delete
+    return;  // no deletion is wired for a foreign issuer (none is listed)
   }
   try {
     await upstream.forget(signedIn.subject);
@@ -246,8 +243,9 @@ async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn)
 /**
  * Which vendor a signing-in client is (`apps.ts`): a CIMD client by its document's host,
  * which the provider fetched, verified only when every redirect it registered is that app's;
- * any other by the name it registered, which only it vouches for. Recorded in the grant's props, and by the owner's object at the client's
- * first call, so every agent can tell which of the owner's apps are connected.
+ * any other by the name it registered, which only it vouches for. Recorded in the grant's
+ * props, and by the owner's object at the client's first call, so every agent can tell
+ * which of the owner's apps are connected.
  */
 async function signedInVendor(oauth: OAuthHelpers, clientId: string, redirectUri: string):
     Promise<Vendor | null> {
@@ -321,7 +319,7 @@ async function granting(env: DoorsEnv, oauth: OAuthHelpers, upstream: Upstream,
   }
   const scope = granted(original.scope);
   if (original.resource === MCP_RESOURCE && !firstParty(original)) {
-    await outsideRead(env, owner);
+    requireFresh(await outsideRead(env, owner), "authorization");
     if (record === null) {
       await admit(env, owner);
     }
@@ -341,8 +339,9 @@ async function granting(env: DoorsEnv, oauth: OAuthHelpers, upstream: Upstream,
     return redirect(redirectTo, headers);
   }
   if (original.resource === APP_RESOURCE && firstParty(original)) {
-    await ownerRead(env, owner);
+    const gate = await ownerRead(env, owner);
     if (record === null) {
+      requireFresh(gate, "admit");
       await admit(env, owner);
     }
     const { binding, stub } = await bindSignIn(env, signedIn);

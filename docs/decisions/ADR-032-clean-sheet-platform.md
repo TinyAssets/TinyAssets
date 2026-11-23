@@ -12,6 +12,13 @@ owner's object as the agent loop. Decisions 1, 3, 4 and 5, the "Amended
 ADR-034 lists; decision 2 gains one addition.
 Amended by ADR-035 (founder, 2026-11-03): a body past 4,096 bytes lives in
 R2 through the files plane, its reference in the object (decisions 1 and 5).
+Amended by ADR-039 (founder, 2026-11-21): decision 2's fail-closed `control`
+record is served from its last good copy when it cannot be read, and only the
+writes that need a fresh one are refused (ADR-039 decision 7); decision 5's
+kept versions are owner settings, off meaning keep forever, unless a ceiling is
+recorded with its derivation (ADR-039 decision 5). ADR-001 to ADR-031 are
+superseded by this ADR, and what its "What stands" keeps of them is held by
+ADR-039 decision 2.
 
 ## Date
 

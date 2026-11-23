@@ -1,8 +1,8 @@
 /**
  * The one table of the model APIs the gateway runs, keyed by pi-ai's API id (`APIS`): each
  * row says how its adapter fetches, whether a declared endpoint may speak it, and what a
- * metered sandbox call must look like (tasks 4 G4, review round 2): no provider is named
- * here and no code branches on one. `meter.ts` holds every rule against pi-ai's own call,
+ * metered sandbox call must look like: no provider is named here and no code branches on
+ * one. `meter.ts` holds every rule against pi-ai's own call,
  * learned with no network, so the data cannot drift from what pi-ai sends:
  *
  * - `outputs`: every body field the API reads as the output-token cap. The one pi-ai sets
@@ -37,9 +37,13 @@
  *   any of `paths`), and the values pi-ai prices: an answer served at any other settles
  *   `unknown`, keeping its whole charge; one that reports none settles at `absent` times
  *   pi-ai's price, where the account's own default may be dear.
- * - `betas`: the provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) a
- *   call may carry; every other is stripped, since a beta can widen a call past what it
- *   was reserved for (a longer context). None today.
+ * - `headers` and `betas`: the request headers a call may carry beyond HTTP's own
+ *   (`egress-scope.ts` `BASE_HEADERS`), each name with the values it may take, each one an
+ *   engine's or pi-ai's own: `headers` on every call, `betas` (a provider's beta) on a free
+ *   call only, since a beta can widen a call past what it was reserved for (a longer
+ *   context). Any other header is dropped (`egressHeaders`): a header can change what a call
+ *   does or bills, as a query parameter can (Google's `X-Goog-FieldMask`, OpenAI's
+ *   `OpenAI-Project`), and engines send dozens of their own that no provider needs.
  * - `free`: calls beyond a read (`GET`, `HEAD`) that a provider does not bill, each keyed
  *   by that provider (pi-ai's id) as well as the API, so a citation covers its own
  *   provider's endpoint and no other source that speaks the same API, each with the
@@ -48,6 +52,10 @@
  *   page does not say is free is never here, so it is refused `unmetered`. Gemini's
  *   `countTokens` is not here: its page (ai.google.dev) could not be read when this list
  *   was made, so no page says it is free.
+ * - `query`: the query parameters a call may carry, each name with the values it may take,
+ *   each one an engine's or pi-ai's own, cited where it is sent. Any other is refused
+ *   `endpoint_refused` (`egress-scope.ts` `egressTarget`): a parameter can change what a
+ *   call does past what its endpoint was sealed for. A credential parameter is stripped.
  *
  * Every key the rules read is read under its one spelling, so a body that spells one another
  * way is refused `egress_aliased_key` (`aliased`): ProtoJSON parsers take
@@ -107,10 +115,14 @@ export interface ApiRules {
                       * one, as pi-ai reads it; every event when absent.
                       */
                      readonly events?: readonly string[] } | null;
-  /** The beta headers a call may carry, each one its reservation accounts for. */
-  readonly betas: readonly string[];
+  /** The headers a call may carry, by lower-case name: the values each may take. */
+  readonly headers: Readonly<Record<string, RegExp>>;
+  /** The beta headers a free call may carry, by lower-case name: the values each may take. */
+  readonly betas: Readonly<Record<string, RegExp>>;
   /** Calls the provider does not bill, each on its cited page: forwarded unmetered. */
   readonly free: readonly FreeCall[];
+  /** The query parameters a call may carry, by name: the values each may take. */
+  readonly query: Readonly<Record<string, RegExp>>;
 }
 
 const COMPLETIONS: ApiRules = Object.freeze({
@@ -133,8 +145,10 @@ const COMPLETIONS: ApiRules = Object.freeze({
   // name for the same standard tier) are what pi-ai prices; any other is unknown.
   served: Object.freeze({ paths: Object.freeze([Object.freeze(["service_tier"])]),
                           priced: Object.freeze(["default", "on_demand"]) }),
-  betas: Object.freeze([]),
+  headers: Object.freeze({}),
+  betas: Object.freeze({}),
   free: Object.freeze([]),
+  query: Object.freeze({}),
 });
 
 const RESPONSES: ApiRules = Object.freeze({
@@ -164,8 +178,12 @@ const RESPONSES: ApiRules = Object.freeze({
                           absent: 2.5,
                           events: Object.freeze(["response.completed",
                                                  "response.incomplete"]) }),
-  betas: Object.freeze([]),
+  headers: Object.freeze({}),
+  betas: Object.freeze({}),
   free: Object.freeze([]),
+  // Codex lists its models as `GET /models?client_version=<major.minor.patch>`
+  // (learn.chatgpt.com/codex/model-catalogs, as searched 2026-11-22).
+  query: Object.freeze({ client_version: /^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$/ }),
 });
 
 const GOOGLE: ApiRules = Object.freeze({
@@ -188,8 +206,11 @@ const GOOGLE: ApiRules = Object.freeze({
                     allowed: Object.freeze([]) }),
   ]),
   served: null,
-  betas: Object.freeze([]),
+  headers: Object.freeze({}),
+  betas: Object.freeze({}),
   free: Object.freeze([]),
+  // `@google/genai`, pi-ai's and Gemini CLI's client, streams as `?alt=sse`.
+  query: Object.freeze({ alt: /^sse$/ }),
 });
 
 const ANTHROPIC: ApiRules = Object.freeze({
@@ -215,7 +236,10 @@ const ANTHROPIC: ApiRules = Object.freeze({
                                                 Object.freeze(["message", "usage",
                                                                "service_tier"])]),
                           priced: Object.freeze(["standard"]) }),
-  betas: Object.freeze([]),
+  // The one version the SDK sends (`@anthropic-ai/sdk` 0.129.0 `client.js` `buildHeaders`),
+  // the API these rules and the meter read; Claude Code's token count sends its betas.
+  headers: Object.freeze({ "anthropic-version": /^2023-06-01$/ }),
+  betas: Object.freeze({ "anthropic-beta": /^[A-Za-z0-9._-]+(?: *, *[A-Za-z0-9._-]+)*$/ }),
   // Claude Code counts tokens before it sends; Anthropic does not bill the count.
   free: Object.freeze([Object.freeze({
     provider: "anthropic", method: "POST", path: "/v1/messages/count_tokens",
@@ -223,6 +247,10 @@ const ANTHROPIC: ApiRules = Object.freeze({
     read: "2026-11-02",
     says: "Token counting is free to use but subject to requests per minute rate limits",
   })]),
+  // The SDK's beta client (pi-ai's, Claude Code's) sends `?beta=true`; Claude Code lists its
+  // models as `GET /v1/models?limit=1000` (code.claude.com/docs/en/llm-gateway-protocol,
+  // read 2026-11-22).
+  query: Object.freeze({ beta: /^true$/, limit: /^[0-9]{1,4}$/ }),
 });
 
 /**
@@ -256,8 +284,8 @@ interface ApiRow {
  * (`takesFetch`; `anthropic-messages.js:422`, `openai-responses.js:138`,
  * `openai-completions.js:186`, `mistral-conversations.js:180`). Every other API is refused as
  * `invalid_source`: Bedrock signs with a Node HTTP handler outside `fetch`, and
- * `openai-codex-responses` is the legacy ChatGPT backend (research §2.6: Sign in with ChatGPT
- * reaches only `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
+ * `openai-codex-responses` is the legacy ChatGPT backend (Sign in with ChatGPT reaches only
+ * `POST /v1/responses`, through `openai-responses`), with a WebSocket transport
  * and per-session caches kept in module state.
  */
 const APIS = Object.freeze({
@@ -304,17 +332,16 @@ export const READS: readonly string[] = Object.freeze(["GET", "HEAD"]);
 /**
  * Whether a call is one its provider does not bill (`free`), the one rule the owner's
  * object admits by and the gateway forwards by: a read (`READS`), which carries no model
- * use, or a call whose `provider`, `method` and bare `path` (from the origin, its query
- * dropped) are exactly a listed call's (a token count).
+ * use, or a call whose `provider`, `method` and `path` (its target's, `egressTarget`) are
+ * exactly a listed call's (a token count).
  */
 export function freeCall(rules: ApiRules | null, provider: string, method: string,
                          path: string): boolean {
   if (READS.includes(method)) {
     return true;
   }
-  const bare = path.split("?")[0]!;
   return rules !== null && rules.free.some((call) => call.provider === provider
-    && call.method === method && call.path === bare);
+    && call.method === method && call.path === path);
 }
 
 /** Whether the request asks for more than one choice. */

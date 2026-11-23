@@ -12,7 +12,7 @@ import type { DoorAnswer } from "../../contract/src/owner";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { Refusal } from "../../contract/src/refusal";
 import { upstreamConfig } from "../../contract/src/signin";
-import { OPEN, writeControl } from "../../ci/fixtures";
+import { OPEN, OPEN_RECORD, writeControl } from "../../ci/fixtures";
 import { until } from "../../ci/workerd";
 import { now } from "../src/config";
 import type { DoorsEnv } from "../src/env";
@@ -25,6 +25,7 @@ import { authorizationServer } from "../src/oauth";
 import { callDoor, type DoorName } from "../src/tools";
 import type { Sources } from "../../sources/src/schema";
 import { signInCode } from "./fake-providers";
+import { NAVIGATE } from "../../contract/src/navigation";
 
 
 /**
@@ -56,8 +57,7 @@ export async function failNextForget(subject: string): Promise<void> {
                             { method: "POST" });
 }
 export const doorsEnv = env as unknown as DoorsEnv;
-export { DARK, OPEN, TIERS } from "../../ci/fixtures";
-export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
+export { DARK, OPEN, OPEN_RECORD, TIERS } from "../../ci/fixtures";
 
 /**
  * One request through the doors' own entry, its waitUntil work finished; or through their
@@ -423,7 +423,7 @@ export async function admissionOf(owner: string) {
 
 /** The owner's own binding, as a door takes it from the owner's app. */
 export function ownBinding(owner: string): Binding {
-  return { owner, caller: owner, origin: null, tiers: OPEN.tiers };
+  return { owner, caller: owner, origin: null, control: OPEN_RECORD };
 }
 
 /**
@@ -434,7 +434,8 @@ export function ownBinding(owner: string): Binding {
  */
 export async function ownDoor<D extends DoorName>(owner: string, door: D,
                                                   request?: unknown): Promise<DoorAnswer<D>> {
-  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request);
+  return await callDoor(doorsEnv.OWNER.getByName(owner), ownBinding(owner), door, request,
+                        new AbortController().signal);
 }
 
 /** `owner`'s grants, as its `grantList` door answers them to its own binding. */
@@ -488,7 +489,8 @@ export async function registerAgent(tokens: Tokens, owner: string, delivery_meth
   const { session } = await stub.sessionOpen({ ...ownBinding(owner),
                                                authenticated_at: now() - 5 });
   const registered = await callDoor(stub, { ...ownBinding(owner), session }, "registerAgent",
-                                    { card_id: filed.card_id, digest: filed.digest });
+                                    { card_id: filed.card_id, digest: filed.digest },
+                                    new AbortController().signal);
   return registered.agent_id;
 }
 

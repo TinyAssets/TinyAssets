@@ -1,13 +1,14 @@
 /**
- * The owner's model connections (gateway research §1.4, §2.6, §7; tasks 4 G2): what each
- * one is, the blob the gateway sealed its credential into, the OAuth flows that connect
- * one, the refresh lease, and the `connections` lane's housekeeping.
+ * The owner's connections (gateway research §1.4, §2.6, §7), each a model source's or a
+ * service's key (a connector, `SERVICE_PROVIDER`: no models, never metered, its scope one URL
+ * of an outside service, bound to a run by `network.ts` `connectorsOf`): what each one is,
+ * the blob the gateway sealed its credential into, the OAuth flows that connect one, the
+ * refresh lease, and the `connections` lane's housekeeping.
  *
  * **No plaintext enters the object.** The binder hands a pasted key to `GATEWAY.seal`
  * and an OAuth code to `GATEWAY.exchange`; the object stores only what comes back, the
  * sealed blob, which only the gateway can open, and only for this owner, connection and
- * version (the seal's additional data). The Python's door-only exchange had the same
- * rule (`broker/model_connect.py`: "no credential leaves the broker").
+ * version (the seal's additional data).
  *
  * The steps of a connect, each a door in the owner's live session (`owner-do.ts`):
  * 1. `prepare`: a pending row, its id and version 1, which the binder seals for, and
@@ -23,7 +24,7 @@
  *    its whole pi-ai capability record, which the object has no catalog for: `ModelRecord`),
  *    where sandbox egress may forward its credential (`egress`: the sealed base URL and
  *    endpoints the check read from the blob, no secret; the egress door's admission reads
- *    it, G4) and, for OAuth, the access expiry in clear.
+ *    it) and, for OAuth, the access expiry in clear.
  *    A credential the provider issued whose setup check then failed is committed `failed`:
  *    the connection is in `error`, and a revocable one's blob is kept for the lane's
  *    provider revoke; an unrevocable one's is deleted, with an owner notice to delete it
@@ -36,12 +37,11 @@
  * have failed (then it is deleted anyway, with an owner notice: the provider may still
  * hold a live token). A credential its provider cannot be asked to revoke (`revocable`
  * false: a pasted key, or a key-exchange source's key) is deleted in the revoke's unit,
- * and one the provider issued gets an owner notice to delete it there. A refresh that lands after the revoke keeps its rotated tokens for the lane to
- * revoke too, whether or not the lane already revoked the old ones. A call that already
- * holds the blob completes; the bound is one call.
- * Account revocation (`sessionCloseAll`) and a session's sign-out cancel the session's
- * open flows in their own unit, as the Python's `revoke_owner` did, so a late callback
- * finds no flow.
+ * and one the provider issued gets an owner notice to delete it there. A refresh that lands after
+ * the revoke keeps its rotated tokens for the lane to revoke too, whether or not the lane already
+ * revoked the old ones. A call that already holds the blob completes; the bound is one call.
+ * Account revocation (`sessionCloseAll`) and a session's sign-out cancel the session's open flows
+ * in their own unit, so a late callback finds no flow.
  *
  * **The refresh lease.** An OAuth access token expiring within `refreshMarginMs` is
  * refreshed before a call. The first caller takes the lease on the row (its id and
@@ -65,7 +65,9 @@ import { sha256, sha256Hex } from "../../contract/src/digest";
 import { randomBytes } from "node:crypto";
 
 
-import { egressScope, type EgressScope } from "../../contract/src/egress-scope";
+import {
+  egressScope, type EgressScope, SERVICE_PROVIDER,
+} from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { fields } from "../../contract/src/doors";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
@@ -88,6 +90,7 @@ import type { Call, Door, DoorUnits } from "./door";
 import type { Egress } from "./egress";
 import type { Doorbell } from "./wakes";
 import { clock, clockMs, inTime } from "./clock";
+import type { Usable } from "./auto";
 
 interface ConnectionLimits {
   readonly maxConnections: number;
@@ -108,7 +111,7 @@ interface ConnectionLimits {
 }
 
 /**
- * Flows last 10 minutes and at most 10 are open (the Python's `MAX_PER_OWNER`); a refresh
+ * Flows last 10 minutes and at most 10 are open; a refresh
  * starts 3 minutes before the access token expires (research §2.6); a lease outlasts the
  * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: the largest
  * built-in catalog of pi-ai 1.4.0 has 386 (the connections test finds it by a scan, and
@@ -155,17 +158,6 @@ export interface Prepared {
   readonly expires_at: number;
   readonly flow?: { readonly state: string; readonly code_challenge: string;
                     readonly code_challenge_method: "S256"; readonly expires_at: number };
-}
-
-/** A connection a model call may use: its models, as `getModels` lists them. */
-export interface Usable {
-  readonly connection: string;
-  /** Its source record, which its spend is counted and capped under. */
-  readonly source: string;
-  readonly provider: string;
-  readonly display_name: string;
-  readonly created_at: number;
-  readonly models: readonly ModelRecord[];
 }
 
 /** The credential a call carries in its envelope. */
@@ -401,6 +393,10 @@ export class Connections {
                                                               now));
     }
     const egress = scopeJson(r["egress"]);
+    // A service's key is committed as one, and only it: its scope and its provider say so.
+    if ((row.provider === SERVICE_PROVIDER) !== ("kind" in JSON.parse(egress))) {
+      throw new Refusal("invalid", "a service's key has a service's scope, and only it");
+    }
     return this.#storage.transactionSync(() => {
       this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", id);
       this.#sql.exec("INSERT INTO connection_secrets (connection_id, version, kid, blob) " +
@@ -981,10 +977,6 @@ export class Connections {
 }
 
 // -- THE DOORS: the `connections` rows' handlers (`owner/doors.json`) -----------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`ConnectionsDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `connections` doors reach: the connections, the sandbox egress a revoke ends,
@@ -1000,7 +992,6 @@ export interface ConnectionsDoorNeeds extends Pick<DoorUnits, "door" | "synced">
 // no session and is refused, with a refusal receipt. The binder seals and exchanges with
 // the gateway between them; no plaintext secret reaches the object.
 
-/** The `connections` doors' handlers, by door. */
 export const connectionsDoors = Object.freeze({
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
   connectionPrepare(o: ConnectionsDoorNeeds,

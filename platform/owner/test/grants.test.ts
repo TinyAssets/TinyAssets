@@ -1,11 +1,7 @@
 /**
- * P0-3 outside-client grants (decision A1), admitted by the object that holds them.
- *
- * Ported from `tests/test_outside_grants.py` and the M3 tests of
- * `tests/test_outside_wakes.py` on `p0-3-outside-grants` (be88c9116), where they are not
- * about the Python router's identity stamp, the box's recheck of it, open streams or the
- * API-key mint (the binder's, tasks 2): here every outside call is admitted in the
- * object, against its grant, before any door acts.
+ * Outside-client grants, admitted by the object that holds them: every outside call is
+ * admitted in the object, against its grant, before any door acts. The API-key mint is the
+ * binder's.
  */
 import { describe, expect, it } from "vitest";
 
@@ -15,7 +11,7 @@ import { clock } from "../src/clock";
 import type { Origin } from "../../contract/src/binding";
 import { POLICY_LIMITS, policyDigest } from "../../contract/src/policy-document";
 import {
-  DOT, MCP, MUSE, rig, type Rig, signedIn, subscription,
+  DOT, MCP, MUSE, rig, type Rig, signedIn, subscription, dm
 } from "./ledger-support";
 import { atClock, failure, inStores } from "./support";
 
@@ -36,6 +32,22 @@ async function grant(r: Rig, origin: Origin, mode: string, scopes: object[] = []
   return r.stub.grantSet(r.session(null), {
     client: origin.client, source: row?.source ?? "mcp", mode, scopes: scopes as never,
     expected_revision: row?.revision ?? 0, name: "" });
+}
+
+/** One of the owner's own agents, `name`, made in its session as its app makes one. */
+async function ownAgent(r: Rig, name: string) {
+  const dir = `/workspace/agents/${name}`;
+  await r.stub.fileMkdir(r.session(null), { path: dir, expected_etag: null });
+  await r.stub.fileWrite(r.session(null), { path: `${dir}/agent.json`, expected_etag: "",
+    content: new TextEncoder().encode(JSON.stringify({ engine: "auto" })) });
+}
+
+/** The owner scopes a client's grant to `scopes`, as `agent` when it names one. */
+async function scopedAs(r: Rig, origin: Origin, scopes: object[], agent?: string) {
+  const row = (await clients(r)).find((c) => c.client === origin.client)!;
+  return r.stub.grantSet(r.session(null), {
+    client: origin.client, source: row.source, mode: "scoped", scopes: scopes as never,
+    expected_revision: row.revision, name: "", ...(agent === undefined ? {} : { agent }) });
 }
 
 /** The owner renames a client's grant: the same mode and scopes, against its revision. */
@@ -66,12 +78,12 @@ describe("an outside client's grant", () => {
   it("keeps a scoped client to exactly its triples at its own mailbox", async () => {
     const r = await rig();
     const agent = await r.register(CHATGPT);
-    await r.post(null, `dm:${agent}`);
+    await r.post(null, dm(agent));
     const denied = "outside client capability not granted";
     const calls = {
       read: () => r.read(CHATGPT),
       ack: () => r.ack(CHATGPT, 0),
-      post: () => r.post(CHATGPT, `dm:${agent}`, { cmid: "m1" }),
+      post: () => r.post(CHATGPT, dm(agent), { cmid: "m1" }),
     };
     const outcome = async () => Object.fromEntries(await Promise.all(Object.entries(calls)
       .map(async ([name, call]) => [name, await call().then(() => "ok",
@@ -174,7 +186,7 @@ describe("an outside client's grant", () => {
     const named = await r.stub.grantSet(r.session(null), { ...change, mode: "scoped",
                                                            scopes: [READ], name: "ChatGPT" });
     expect(named).toEqual({ client: CHATGPT.client, mode: "scoped", scopes: [READ],
-                            profile: "custom", generation: 2, revision: 2 });
+                            profile: "custom", agent: "main", generation: 2, revision: 2 });
     await grant(r, CHATGPT, "full");  // an empty name keeps the one given
     expect((await clients(r))[0]!.name).toBe("ChatGPT");
     expect((await kindsOf(r, "outside_grant")).map((row) => [
@@ -182,10 +194,10 @@ describe("an outside client's grant", () => {
       row["request_digest"]])).toEqual([
       [true, CHATGPT.client, "scoped", 2, policyDigest({
         client: CHATGPT.client, mode: "scoped", scopes: [READ], name: "ChatGPT", revision: 2,
-        profile: "custom" })],
+        profile: "custom", agent: "main" })],
       [true, CHATGPT.client, "full", 3, policyDigest({
         client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 3,
-        profile: "custom" })]]);
+        profile: "custom", agent: "main" })]]);
   });
 
   it("is revoked by the owner's account without a session, as a key's revoke is",
@@ -210,7 +222,7 @@ describe("an outside client's grant", () => {
       .toEqual([[null, "revoked", 2]]);
   });
 
-  it("never refuses a new client at the cap: the least recently seen free row goes (P4)",
+  it("never refuses a new client at the cap: the least recently seen free row goes",
      async () => {
     const r = await rig();
     const id = filler;
@@ -358,13 +370,13 @@ describe("an outside client's grant", () => {
   });
 });
 
-describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => {
+describe("a changed or revoked grant ends its agents' wakes", () => {
   it("suppresses the wake and erases the client's subscription in the change's own " +
      "transaction", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     const rows = await r.table("ledger_wakes");
     expect(rows.map((w) => w["state"])).toEqual(["suppressed"]);
@@ -381,14 +393,28 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
     const r = await rig();
     const dot = await r.register(DOT, "Dot", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(DOT);
-    await r.post(null, `dm:${dot}`, { cmid: "c1" });
+    await r.post(null, dm(dot), { cmid: "c1" });
     await grant(r, DOT, "scoped", [READ]);
     expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
     expect(await r.tick(clock() + 1)).toBe(0);
     expect(r.sender.sent).toEqual([]);
     await r.subscribe(DOT);
-    await r.post(null, `dm:${dot}`, { cmid: "c2" });
+    await r.post(null, dm(dot), { cmid: "c2" });
     expect(await r.tick(clock() + 2)).toBe(1);
+    expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
+  });
+
+  it("rings a board follower as the owner's agent its grant names, where its triples hold",
+     async () => {
+    const r = await rig();
+    const dot = await r.register(DOT, "Dot", "mcp_event", { batch_window_s: 0 });
+    await ownAgent(r, "work");
+    await scopedAs(r, DOT, [{ ...READ, agent: "work" }], "work");
+    await r.subscribe(DOT, "alpha", { board: true });
+    await r.stub.collectionWrite(r.bind(null), { collection: "board", row_id: "t1", body: "x",
+                                                 expected_etag: "", private: false });
+    expect((await r.table("ledger_wakes")).map((wake) => wake["agent_id"])).toEqual([dot]);
+    expect(await r.tick(clock() + 1)).toBe(1);
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
   });
 
@@ -397,7 +423,7 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     // no suppression with it
     await r.sql("UPDATE outside_clients SET mode = 'revoked', owner_set = 1");
     expect(await r.tick(clock() + 1)).toBe(0);
@@ -408,7 +434,7 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
   });
 });
 
-describe("every door admits an outside client against its grant (review L1, L4)", () => {
+describe("every door admits an outside client against its grant", () => {
   const BOARD = Object.freeze({ collection: "board", row_id: "t" });
 
   /** Each collection door, as `binding` calls it, and what it answered. */
@@ -469,7 +495,7 @@ describe("every door admits an outside client against its grant (review L1, L4)"
     await r.register(CHATGPT);
     const propose = (request_id: string) => r.stub.policyPropose(r.bind(CHATGPT), {
       change: { type: "policy_proposal" }, request_id });
-    await grant(r, CHATGPT, "scoped", [{ ...READ, universe: "u" }]);  // P6
+    await grant(r, CHATGPT, "scoped", [{ ...READ, universe: "u" }]);
     expect((await failure(() => propose("card-x"))).message)
       .toBe("outside client capability not granted");
     await grant(r, CHATGPT, "scoped", [{ ...READ, capability: "propose_policy" }]);
@@ -496,32 +522,43 @@ describe("every door admits an outside client against its grant (review L1, L4)"
     const owners = most - share - 1;
     await inStores(r.stub, ({ policy, gate }) => {
       const now = clock();
+      policy.propose({ n: 4 }, "d", CLAUDE.client, now);
       policy.propose({ n: 1 }, "a", CHATGPT.client, now);
       for (let n = 1; n < share; n++) {
         policy.propose({ n }, `c${n}`, CHATGPT.client, now);
       }
-      expect(() => policy.propose({ n: -1 }, "c", CHATGPT.client, now))
-        .toThrow("this client's pending policy proposals are at their limit");
-      policy.propose({ n: 1 }, "a", CHATGPT.client, now);  // the same card again: a no-op
-      policy.propose({ n: 4 }, "d", CLAUDE.client, now);
+      // Past its share, a client's new card lets its own oldest pending one go, never
+      // another's older one.
+      policy.propose({ n: -1 }, "c", CHATGPT.client, now);
+      expect([policy.held("a"), policy.held("d") !== null]).toEqual([null, true]);
       for (let n = 0; n < owners; n++) {  // the owner past a client's share
         policy.propose({ card: n }, `o${n}`, "owner", now);
       }
-      expect(() => policy.propose({ n: 6 }, "i", "owner", now))
-        .toThrow("too many pending policy proposals");
+      // The set full, the owner's next card lets its own oldest go, never a client's.
+      policy.propose({ n: 6 }, "i", "owner", now);
+      expect([policy.held("o0"), policy.held("d") !== null]).toEqual([null, true]);
       // An applied card frees its proposer's share.
-      const { digest } = policy.held("a", now)!;
+      const { digest } = policy.held("c2")!;
       gate.storage.sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?",
-                             now, "a");
+                             now, "c2");
       expect(digest).toMatch(/^sha256:/);
       policy.propose({ n: 7 }, "g", CHATGPT.client, now);
+      expect(policy.held("c3")).not.toBeNull();
+      // A client below its share at the full set lets the oldest outside card go: CLAUDE's.
+      policy.propose({ n: 8 }, "e", CLAUDE.client, now);
+      expect([policy.held("d"), policy.held("o1") !== null]).toEqual([null, true]);
     });
     expect((await r.table("proposal_shares")).map((row) => [row["proposer"], row["pending"]])
       .sort()).toEqual([[CHATGPT.client, share], [CLAUDE.client, 1], ["owner", owners]].sort());
+    // Each eviction is told, once an asker, naming the asker and never the change.
+    expect((await r.table("owner_notices")).filter((row) => row["type"] ===
+      "held_request_evicted").map((row) => row["detail"]).sort()).toEqual(
+      [CHATGPT.client, CLAUDE.client, "owner"].map((who) =>
+        `a proposal of ${who} was let go to make room for a newer one`).sort());
   });
 });
 
-describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's review M1)", () => {
+describe("only the owner's own act lifts a revoke", () => {
   const DAY = 86_400;
   const MONTH = 30 * DAY;
   /** Revoke `origin` at `at` around the doors, as an old revoke would stand. */
@@ -635,7 +672,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
       await set(filler(n), 0);
     }
     await revokedAt(r, CHATGPT, t - 31 * DAY);
-    // A revoked row never holds a live client's place (slice L).
+    // A revoked row never holds a live client's place.
     expect(await set(CLAUDE.client, 1)).toMatchObject({ client: CLAUDE.client, mode: "full" });
     expect((await clients(r)).find((c) => c.client === CHATGPT.client)!.mode).toBe("revoked");
     expect((await failure(() => r.stub.outsideAgents(
@@ -643,7 +680,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect(await fence(r)).toBe(0);
   });
 
-  it("forgets the oldest revoked row past the revoked bound, moving the fence (slice L)",
+  it("forgets the oldest revoked row past the revoked bound, moving the fence",
      async () => {
     const r = await rig();
     const t = clock();
@@ -665,7 +702,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect(await fence(r)).toBeGreaterThan(0);
   });
 
-  it("keeps the fence at the newest revoke forgotten, and never lowers it (review L1)",
+  it("keeps the fence at the newest revoke forgotten, and never lowers it",
      async () => {
     const r = await rig();
     const t = Math.floor(clock());
@@ -689,7 +726,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect((await clients(r)).map((c) => c.client)).toEqual([DOT.client]);
   });
 
-  it("forgets at most 100 distinct clients at once (review L3)", async () => {
+  it("forgets at most 100 distinct clients at once", async () => {
     const r = await rig();
     const many = Array.from({ length: 101 }, (_, i) => i.toString(16).padStart(64, "0"));
     const refusal = "forget names 1 to 100 distinct outside clients";
@@ -715,7 +752,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
   });
 });
 
-describe("a scoped grant's capabilities (slice 5's review N9)", () => {
+describe("a scoped grant's capabilities", () => {
   it("names only the capabilities a door checks", async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
@@ -731,7 +768,7 @@ describe("a scoped grant's capabilities (slice 5's review N9)", () => {
   });
 });
 
-describe("the grant row's own rule (slice 3's review N4)", () => {
+describe("the grant row's own rule", () => {
   it("refuses a row the owner never set that is anything but a fresh full grant", async () => {
     const r = await rig();
     for (const values of [
@@ -751,7 +788,7 @@ describe("the grant row's own rule (slice 3's review N4)", () => {
   });
 });
 
-describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)", () => {
+describe("a grant's revision apart from its authority", () => {
   it("moves the revision on every set and revoke, the generation only with the mode or " +
      "scopes", async () => {
     const r = await rig();
@@ -761,8 +798,8 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
                                          scopes: scopes as never, expected_revision: expected,
                                          name });
     expect(await set("full", [], "ChatGPT", 1)).toEqual({
-      client: CHATGPT.client, mode: "full", scopes: [], profile: "custom", generation: 1,
-      revision: 2 });
+      client: CHATGPT.client, mode: "full", scopes: [], profile: "custom", agent: "main",
+      generation: 1, revision: 2 });
     expect(await set("scoped", [READ, WRITE], "", 2))
       .toMatchObject({ generation: 2, revision: 3 });
     // The same triples, reordered and repeated, hold the same: a rename.
@@ -782,8 +819,29 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
     expect(receipts.map((row) => row["generation"])).toEqual([1, 2, 2, 3, 4, 5, 5]);
     expect(receipts[0]!["request_digest"]).toBe(policyDigest({
       client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 2,
-      profile: "custom" }));
+      profile: "custom", agent: "main" }));
     expect(new Set(receipts.map((row) => row["request_digest"])).size).toBe(7);
+  });
+
+  it("names the owner's agent the client is: main until the owner names a live one, which " +
+     "moves the generation and is where its triples hold", async () => {
+    const r = await rig();
+    await r.register(CHATGPT);  // its one enabled agent, registered in alpha
+    await ownAgent(r, "work");
+    const set = (agent?: string) => scopedAs(r, CHATGPT, [{ ...READ, agent: "work" }], agent);
+    const digest = () => r.stub.boardDigest(r.bind(CHATGPT), { limit: 10, after: 0 });
+    expect((await clients(r))[0]!.agent).toBe("main");
+    // A scoped grant holds its triples as the agent it names: as `main`, `work`'s are none.
+    expect(await set()).toMatchObject({ agent: "main", generation: 2 });
+    expect((await failure(digest)).code).toBe("not_granted");
+    expect(await set("work")).toMatchObject({ agent: "work", generation: 3 });
+    await expect(digest()).resolves.toBeDefined();
+    // Kept by a set that names none; refused when no live agent of the owner's.
+    expect(await set()).toMatchObject({ agent: "work", generation: 3 });
+    for (const [agent, code] of [["ghost", "no_agent"], ["../main", "invalid"]] as const) {
+      expect((await failure(() => set(agent))).code).toBe(code);
+    }
+    expect((await clients(r))[0]).toMatchObject({ agent: "work", generation: 3 });
   });
 
   it("moves the generation by one when a scope is added", async () => {
@@ -864,13 +922,13 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     await r.subscribe(MUSE);
-    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await r.post(null, dm(muse), { cmid: "c1" });
     await rename(r, MUSE, "Muse");
     expect((await r.table("ledger_wakes")).map((w) => w["state"])).toEqual(["pending"]);
     expect(await r.tick(clock() + 1)).toBe(1);
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([muse]);
     expect(await r.sql("SELECT * FROM wake_callbacks")).toHaveLength(1);
-    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    await r.post(null, dm(muse), { cmid: "c2" });
     await grant(r, MUSE, "scoped", [READ]);
     expect((await r.table("ledger_wakes")).map((w) => w["state"]).slice(1))
       .toEqual(["suppressed"]);
@@ -878,7 +936,7 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
   });
 });
 
-describe("a grant's tool profile (slice M)", () => {
+describe("a grant's tool profile", () => {
   it("names custom until the owner names another, and moves the generation",
      async () => {
     const r = await rig();
@@ -915,7 +973,7 @@ describe("a grant's tool profile (slice M)", () => {
   });
 });
 
-describe("a grant's tool profile (slice M)", () => {
+describe("a grant's tool profile", () => {
   it("names custom until the owner names another, and moves the generation",
      async () => {
     const r = await rig();

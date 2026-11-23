@@ -56,6 +56,8 @@ describe("a refusal", () => {
                                      503, 1, { held_bytes: 3 }]);
     expect(new Refusal("storage_busy").retryAfter).toBe(30);  // its code's
     expect(new Refusal("refused").retryAfter).toBeUndefined();
+    // A terminal refusal names no wait, even one it carries: no door says to try it again.
+    expect(new Refusal("storage_full", "full", { retryAfterS: 2 }).retryAfter).toBeUndefined();
     expect(new Refusal("unknown_model").message).toBe("unknown_model");  // the gateway's
   });
 
@@ -82,14 +84,14 @@ describe("a transient refusal", () => {
       .filter(([, entry]) => (entry as { transient?: true }).transient === true)
       .map(([code]) => code).sort();
     expect(transient).toEqual(["busy", "egress_rate", "events_busy", "events_raced",
-                               "inbound_app_unconfigured", "mailbox_full", "restoring",
-                               "storage_busy", "unavailable"]);
+                               "inbound_app_unconfigured", "mailbox_full", "object_overloaded",
+                               "restoring", "storage_busy", "unavailable"]);
     expect(Object.entries(REFUSALS)
       .filter(([, entry]) => (entry as { retryAfterS?: number }).retryAfterS !== undefined)
       .map(([code]) => code).sort())
       .toEqual(["busy", "egress_rate", "events_busy", "events_raced",
-                "inbound_app_unconfigured", "mailbox_full", "restoring", "storage_busy",
-                "unavailable"]);
+                "inbound_app_unconfigured", "mailbox_full", "object_overloaded", "restoring",
+                "storage_busy", "unavailable"]);
     expect([new Refusal("busy").transient, new Refusal("storage_busy").transient,
             new Refusal("unavailable", MAINTENANCE).transient,
             new Refusal("tier_runs").transient, new Refusal("refused").transient])
@@ -119,6 +121,8 @@ describe("the code list", () => {
     ["events_busy", 503, 1], ["events_raced", 503, 1],
     // The platform gates, closed: the doors' 503 and its minute.
     ["unavailable", 503, 60],
+    // An object the runtime reports overloaded, as the doors have answered it.
+    ["object_overloaded", 429, 1],
     // The doors' own, as the egress door has answered them.
     ["runner_token_missing", 401, undefined], ["run_secret_missing", 401, undefined],
     ["sync_token_missing", 401, undefined], ["sync_token_unknown", 401, undefined],
@@ -132,8 +136,10 @@ describe("the code list", () => {
     ["event_identity_required", 400, undefined], ["inbound_proof_invalid", 401, undefined],
     ["inbound_app_unconfigured", 503, 5], ["mailbox_full", 429, 5],
     ["event_conflict", 409, undefined], ["agent_unavailable", 409, undefined],
-    // The sandbox Worker's, its runner refused (the founder's alert).
+    // The sandbox Worker's, its runner refused (the founder's alert), or its own fault before
+    // a job's launch.
     ["sandbox_runner_mismatch", 502, undefined], ["sandbox_runner_protocol", 502, undefined],
+    ["sandbox_start_failed", 502, undefined],
     // The files plane's.
     ["keyring_unavailable", 500, undefined], ["data_key_refused", 400, undefined],
   ] as const)("answers %s with %i", (code, status, retry) => {
@@ -155,6 +161,16 @@ describe("the test of a refusal against a bug", () => {
     expect(there).toBeInstanceOf(Refusal);
     expect([there.code, there.message, there.status, there.retryAfterS, there.facts])
       .toEqual(["storage_full", "storage_full: full", 507, 2, { a: 1 }]);
+  });
+
+  it("knows the runtime's overload, an error whose .overloaded is true, for the moment only",
+     () => {
+    const overloaded = Object.assign(new Error("Durable Object is overloaded"),
+                                     { overloaded: true });
+    const refusal = refusalOf(overloaded)!;
+    expect([refusal.code, refusal.status, refusal.retryAfter, refusal.transient])
+      .toEqual(["object_overloaded", 429, 1, true]);
+    expect(refusalOf(Object.assign(new Error("x"), { overloaded: "true" }))).toBeNull();
   });
 
   it("calls anything else a bug, a refusal of an unknown code or a malformed field too", () => {

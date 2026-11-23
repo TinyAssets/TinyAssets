@@ -2,23 +2,22 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
-import { HELD_WAIT_MS, TIERS } from "../../ci/fixtures";
+import { HELD_WAIT_MS, OPEN, OPEN_RECORD, openRecord, TIERS } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { bundledSources } from "../../sources/src/catalog";
-import { signinsOn } from "../../sources/src/signin";
 import { type Collections, LIMITS } from "../src/collections";
 import type { Files } from "../src/files";
 import { type Write, WriteGate } from "../src/gate";
 import {
   CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
-  HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
+  HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES,
 } from "../src/manifest";
 import { type OwnerDO, ownerStores } from "../src/owner-do";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { contentIdOf } from "../../contract/src/content";
 import { sha256Hex } from "../../contract/src/digest";
 import { INLINE_BYTES, PLACE_BYTES } from "../../contract/src/limits";
-import { agentFilePath } from "../src/agent-file";
+import { AGENT_FILES, agentPath } from "../../contract/src/agent-definition";
 import { carried, NEWER } from "../src/starter-package";
 import { LANE_PASS_S, SCHEDULE } from "../src/schedule";
 import { clock } from "../src/clock";
@@ -30,13 +29,18 @@ import type { Arm, Crossed, Held } from "../../ci/gate-worker";
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
 /**
- * Every served sign-in switched on, as the doors hand them when the control record turns
- * each on: what a test's binding carries unless it names fewer (`Binding.signins`).
+ * `OPEN`'s text with the vendor sign-in of each source `on` names switched on and every other
+ * off (every one on when it names none), as a binding hands the record (`Binding.control`).
  */
-export const EVERY_SIGNIN: readonly string[] = Object.freeze(signinsOn(
-  bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
+export function signinRecord(on?: readonly string[]): string {
+  return JSON.stringify({ ...OPEN, signins: Object.fromEntries(bundledSources().ids().map(
+    (id) => [id, on === undefined || on.includes(id)])) });
+}
 
-export { TIERS };
+/** Every served sign-in switched on: the record a test's binding hands unless it names one. */
+export const EVERY_SIGNIN_RECORD = signinRecord();
+
+export { OPEN_RECORD, openRecord, TIERS };
 
 /** A lane pass's end as the schedule hands it (`Lane.run`'s `until`): `LANE_PASS_S` on. */
 export function passEnd(): number {
@@ -354,7 +358,7 @@ const SCOPED = "scoped (writer, scope) AS (SELECT writer, writer FROM writers " 
 const RECOUNT =
   // SQLite here takes few terms in one compound SELECT, so the unions are nested.
   "WITH RECURSIVE writers (writer) AS (SELECT writer FROM (SELECT writer FROM file_entries " +
-  "UNION SELECT writer FROM file_history UNION SELECT writer FROM file_temps) UNION " +
+  "UNION SELECT writer FROM file_history) UNION " +
   "SELECT writer FROM (SELECT writer FROM file_intents UNION SELECT holder FROM file_chunks)), " +
   `${SCOPED}, ` +
   "rows_c (writer, content_id) AS (SELECT writer, content_id FROM file_entries " +
@@ -376,9 +380,7 @@ const RECOUNT =
   `SELECT s.scope, 1, 0, 0, 0, ${ENTRY_BYTES("e")} FROM file_entries e JOIN scoped s ` +
   "ON s.writer = e.writer UNION ALL " +
   `SELECT s.scope, 0, 1, 0, 0, ${HISTORY_BYTES("h")} FROM file_history h JOIN scoped s ` +
-  "ON s.writer = h.writer UNION ALL " +
-  `SELECT s.scope, 0, 0, 0, 0, ${TEMP_BYTES("t")} FROM file_temps t JOIN scoped s ` +
-  "ON s.writer = t.writer), " +
+  "ON s.writer = h.writer), " +
   "rows_held (who, entries, history, chunk_bytes, inline_bytes, manifest_bytes) AS (" +
   "SELECT r.scope, 0, 0, 0, coalesce(length(c.inline), 0), " +
   `${SCOPE_REF_BYTES("r")} + ${CONTENT_RECORD_BYTES("c")} + ${CHUNK_LIST_ROW_BYTES()} * ` +
@@ -430,7 +432,6 @@ export async function fileCounters(stub: DurableObjectStub<OwnerDO>): Promise<[R
       `(SELECT coalesce(SUM(${HISTORY_BYTES("h")}), 0) FROM file_history h) + ` +
       `(SELECT coalesce(SUM(${CONTENT_BYTES("c")}), 0) FROM file_contents c) + ` +
       `(SELECT COUNT(*) FROM file_chunks) * ${CHUNK_ROW_BYTES()} + ` +
-      `(SELECT coalesce(SUM(${TEMP_BYTES("t")}), 0) FROM file_temps t) + ` +
       `(SELECT coalesce(SUM(${SCOPE_REF_BYTES("r")}), 0) FROM refs_c r) + ` +
       `(SELECT coalesce(SUM(${SCOPE_REF_BYTES("r")}), 0) FROM refs_k r) + ` +
       `(SELECT COUNT(*) FROM shares) * ${SHARE_BYTES} AS manifest_bytes, ` +
@@ -466,7 +467,7 @@ export interface Owner {
 
 /**
  * `name`'s object, admitted by the platform's door, as the doors' sign-in callback admits a
- * new owner at sign-up (`admission.ts`, slice L): a fresh object is `pending` and refuses
+ * new owner at sign-up (`admission.ts`): a fresh object is `pending` and refuses
  * every door until then. Its seed has not landed yet (`seeded`).
  */
 export async function admitted(name: string): Promise<Stub> {
@@ -482,7 +483,7 @@ export async function admitted(name: string): Promise<Stub> {
  * is reconciled (the `starterReceipts` door), so no test races the seed's alarm.
  */
 export async function seeded(stub: Stub, name: string): Promise<Stub> {
-  const binding: Binding = { owner: name, caller: name, origin: null, tiers: TIERS };
+  const binding: Binding = { owner: name, caller: name, origin: null, control: OPEN_RECORD };
   for (let tries = 0; tries < 200; tries++) {
     const { version, carried } = await stub.starterReceipts(binding);
     if (version === carried) {
@@ -527,7 +528,7 @@ export function starterSeed() {
     chunks: new Set(placed.map((each) => each.chunk!)),
     /** The owner's agents it defines (an `agent.json` each), each a ledger identity. */
     agents: files.map((each) => each.path.split("/")[3] ?? "")
-      .filter((agent, n) => agentFilePath(agent) === files[n]!.path),
+      .filter((agent, n) => agentPath(agent, AGENT_FILES.agent) === files[n]!.path),
     /**
      * Of `items`, those not the seed's: what the test itself wrote. Each is named (by
      * `nameOf`, itself by default) by its path, a newer version's path beside its file, its
@@ -562,7 +563,7 @@ export async function unseededObject(): Promise<Owner> {
   return {
     name,
     stub: await admitted(name),
-    as: (caller, owner = name) => ({ owner, caller, origin: null, tiers: TIERS }),
+    as: (caller, owner = name) => ({ owner, caller, origin: null, control: OPEN_RECORD }),
   };
 }
 

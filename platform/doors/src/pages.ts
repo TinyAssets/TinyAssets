@@ -1,8 +1,7 @@
 /**
- * The owner app's pages (tasks 2, the owner app): `/app` and its two return pages, served by
- * the doors Worker from its own files (`app/`, the `ASSETS` binding), on the same origin as
- * the owner surface `/app/api/*` they call. Decided in the app slice: the doors, not the
- * website's static export, serve `/app`, because
+ * The owner app's pages: `/app` and its two return pages, served by the doors Worker from
+ * its own files (`app/`, the `ASSETS` binding), on the same origin as the owner surface
+ * `/app/api/*` they call. The doors, not the website's static export, serve `/app`, because
  * - the session cookie is `__Host-`, Strict, and rides only same-origin JSON posts to
  *   `/app/api` (`session.ts`), and the sign-in and connect return pages are the doors' own
  *   public paths (`identity.json`'s `first_party.redirect` and `connected`);
@@ -17,7 +16,7 @@
  * script, style, font or image (`CSP`), and no inline script, so the return pages' own first
  * script is the first to run (it clears the code from the address bar before anything else).
  */
-import { ZONE } from "../../contract/src/egress";
+import { HOST } from "../../contract/src/identity";
 import { APP_PATH, CONNECTED_PATH, SIGNED_IN_PATH } from "./config";
 import type { DoorsEnv } from "./env";
 
@@ -45,7 +44,7 @@ const STATIC_PREFIX = `${APP_PATH}/static/`;
  * framed, no form posts, and the DOM's script sinks closed (Trusted Types with no policy).
  */
 export const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
-  `connect-src 'self' wss://${ZONE}; base-uri 'none'; form-action 'none'; ` +
+  `connect-src 'self' wss://${HOST}; base-uri 'none'; form-action 'none'; ` +
   "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
 
 const HEADERS: Readonly<Record<string, string>> = Object.freeze({

@@ -1,12 +1,11 @@
 /**
- * The starter slice's reviews, each attack test now the fixed behaviour: a deleted file stays
- * deleted when a later version ships its path again; a widening of an edited file is a
- * proposal; a proposal not yet adopted stays one and is kept current, and is withdrawn with
- * the widening; the starter's agent.json at a first seed over the owner's narrower one is a
- * proposal; a door's wait on a seed that cannot land runs one pass; a personal file's move;
- * a later version's new files reaching owners seeded before them; a pass refused at the
- * storage wall, or its files plane out of reach, or before the tier's numbers; and a new
- * owner's first `converse` finding `main`.
+ * The starter's updates at their edges: a deleted file stays deleted when a later version ships its
+ * path again; a widening of an edited file is a proposal; a proposal not yet adopted stays one and
+ * is kept current, and is withdrawn with the widening; the starter's agent.json at a first seed
+ * over the owner's narrower one is a proposal; a door's wait on a seed that cannot land runs one
+ * pass; a personal file's move; a later version's new files reaching owners seeded before them; a
+ * pass refused at the storage wall, or its files plane out of reach, or before the tier's numbers;
+ * and a new owner's first `converse` finding `main`.
  *
  * The seed is the object's own, of the package this code carries; every package of a test's
  * own is at a version past it (`SEED + n`, `starter-support.ts`).
@@ -15,7 +14,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AGENT_UNDEFINED } from "../src/agent-file";
+import { AGENT_UNDEFINED } from "../../contract/src/agent-definition";
 import type { OwnerDO } from "../src/owner-do";
 import { Starter, STARTER_RETRY_S } from "../src/starter";
 import {
@@ -38,7 +37,7 @@ afterEach(() => {
 /** The carried package's own text at `path`. */
 const carriedText = (path: string) => carried().files.find((each) => each.path === path)!.text;
 
-describe("starter updates (review L1, M2, L2)", () => {
+describe("starter updates", () => {
   it("keep a file the owner deleted deleted when a version drops its path and a later one " +
      "ships it again", async () => {
     const r = await settledOwner();
@@ -108,7 +107,7 @@ describe("starter updates (review L1, M2, L2)", () => {
   });
 });
 
-describe("starter updates, review round 2 (R2-M1, R2-L1)", () => {
+describe("starter proposals", () => {
   it("propose a widening at a path the owner already holds, never a merge", async () => {
     const r = await settledOwner();
     const json = file(`${AGENTS}/agent.json`, agentJson(["read_files"]));
@@ -180,7 +179,7 @@ describe("starter updates, review round 2 (R2-M1, R2-L1)", () => {
   });
 });
 
-describe("review round 3 (F3)", () => {
+describe("a retired path and a seed that cannot land", () => {
   it("withdraws a new file's proposal when a later version retires its path", async () => {
     const r = await settledOwner();
     const json = file(`${AGENTS}/agent.json`, agentJson(["read_files"]));
@@ -201,7 +200,7 @@ describe("review round 3 (F3)", () => {
     expect(await readText(r, `${SKILLS}/e/run.sh${NEWER}`)).toBeNull();
   });
 
-  it("F3-seed-wait: a door's wait on a seed that cannot land runs one pass, then returns " +
+  it("lets a door's wait on a seed that cannot land run one pass, then return " +
      "at once until the retry", async () => {
     // The owner's own seed, failed, and the files plane refusing its next try too.
     const r = await failedOwner(2);
@@ -256,8 +255,8 @@ describe("a personal file's move (the shared brain's profile, starter version 2)
     expect((await receipts(r))[OLD]).toMatchObject({ class: "personal" });  // kept, retired
   });
 
-  it("tells an owner whose edited instructions may still read the old file to keep it " +
-     "(review R4-L2)", async () => {
+  it("tells an owner whose edited instructions may still read the old file to keep it",
+     async () => {
     const r = await settledOwner();
     const withAgents = (pkg: StarterPackage, said: string) => starterPackage({
       ...pkg, files: [...pkg.files.slice(0, -1), file(`${AGENTS}/AGENTS.md`, said),
@@ -290,6 +289,18 @@ describe("a personal file's move (the shared brain's profile, starter version 2)
     expect(() => starterPackage({ version: SEED + 1, files: [
       file(NEW, "x", { class: "personal", moved_from: OLD }),
       file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/retired/);
+  });
+
+  it("refuses an agent definition file its own reader refuses, and reads no other JSON", () => {
+    expect(() => starterPackage({ version: SEED + 1, files: [
+      file(`${AGENTS}/mcp.json`, JSON.stringify({ mcpServers: { tinyassets: { command: "x" } } })),
+      file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/^mcp\.json: /);
+    expect(() => starterPackage({ version: SEED + 1, files: [
+      file(`${AGENTS}/hooks.json`, JSON.stringify({ hooks: { pre_tool: [{ run: "x.sh" }] } })),
+      file(`${AGENTS}/agent.json`, agentJson([]))] })).toThrow(/^hooks\.json: /);
+    expect(starterPackage({ version: SEED + 1, files: [
+      file(`${SKILLS}/x/mcp.json`, "not a definition file"),
+      file(`${AGENTS}/agent.json`, agentJson([]))] }).files).toHaveLength(2);
   });
 });
 
@@ -338,7 +349,7 @@ describe("a later version's new files (as the goals reached owners seeded before
   });
 });
 
-describe("a pass and the one storage wall (after slice STORE)", () => {
+describe("a pass and the one storage wall", () => {
   it("counts the starter's files in the owner's one storage number; a pass refused " +
      "storage_full writes nothing whole, tells the owner once, and lands once there is room",
      async () => {
@@ -409,7 +420,7 @@ describe("a pass that cannot reach its files plane", () => {
   });
 });
 
-describe("seeding before the tier's numbers are known (after slice L)", () => {
+describe("seeding before the tier's numbers are known", () => {
   it("waits for them, writing nothing and telling nothing, rather than failing", async () => {
     const r = await settledOwner();
     const now = Date.now() / 1000;
@@ -432,7 +443,7 @@ describe("seeding before the tier's numbers are known (after slice L)", () => {
   });
 });
 
-describe("seeding (review L3)", () => {
+describe("seeding", () => {
   it("lets a new owner's first converse find main, before the lane's alarm has run",
      async () => {
     const r = await unseededRig();

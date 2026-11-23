@@ -8,9 +8,10 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { type Entry, fileUrl } from "../src/files";
-import { SEARCH_ANSWER_BYTES, SEARCH_SCAN, searchPage, type Scanned } from "../src/file-search";
+import { SEARCH_ANSWER_BYTES, searchPage, type Scanned } from "../src/file-search";
 import { MCP, MUSE, rig, signedIn } from "./ledger-support";
 import { TIERS } from "./runs-support";
+import { APP_RESOURCE } from "../../contract/src/identity";
 import { nameOf } from "../../contract/src/paths";
 import { failure, inFiles, starterSeed, text } from "./support";
 
@@ -51,7 +52,7 @@ describe("the MCP door's file readers", () => {
     expect(next_cursor).toBeNull();
     expect(results[0]).toEqual({ id: "/workspace/knowledge/people/bo.md", title: "Bo",
                                  url: fileUrl("/workspace/knowledge/people/bo.md") });
-    expect(results[0]!.url).toBe("https://tinyassets.io/app#data/" +
+    expect(results[0]!.url).toBe(`${APP_RESOURCE}#data/` +
                                  encodeURIComponent("/workspace/knowledge/people"));
     const fetched = await r.stub.fileFetch(r.bind(null),
                                            { id: "/workspace/knowledge/people/bo.md" });
@@ -134,7 +135,6 @@ describe("the MCP door's file readers", () => {
   });
 
   it("search a page of the manifest at a time, from a cursor, in path order", async () => {
-    expect(SEARCH_SCAN).toBe(5000);
     const r = await rig();
     // The manifest's order is (directory, name): the seed's entries' last, and this test's
     // below a directory that comes after all of theirs.
@@ -165,7 +165,7 @@ describe("the MCP door's file readers", () => {
   });
 });
 
-describe("the MCP door's search (review M3, L4)", () => {
+describe("the MCP door's search", () => {
   it("answers every match, with nothing out of reach", async () => {
     const r = await rig();
     for (let i = 0; i < 25; i++) {

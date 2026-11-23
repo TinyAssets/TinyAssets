@@ -1,7 +1,7 @@
 /**
- * The starter package in the owner's object (starter_research.md §3.3–3.4; the founder's
- * answers of 2026-11-03): the files every owner's default agent, `main`, starts from, written
- * into the owner's files by the object itself, as the owner, and kept current by one rule.
+ * The starter package in the owner's object (the founder's answers of 2026-11-03): the files every
+ * owner's default agent, `main`, starts from, written into the owner's files by the object itself,
+ * as the owner, and kept current by one rule.
  *
  * The package is data (`platform/starter/`, read by `starter-package.ts`): a version and
  * its files, each `managed` (the platform's to update) or `personal` (`SOUL.md`, `USER.md`:
@@ -24,10 +24,10 @@
  * - an edited one is never overwritten: the new version is written beside it as
  *   `<file>.ta-new`, a name no engine loads, and the owner gets one notice for the pass;
  * - a deleted one is never restored (its receipt's `deleted`);
- * - a change that widens what the agent may do (more `agent.json` scopes, a new or changed
- *   script, or what the package marks `widens` for that version) arrives as a proposal even
- *   when unedited: written beside it as `.ta-new`, with a notice, applied only by the owner
- *   moving it over the file;
+ * - a change that widens what the agent may do (more `agent.json` scopes, an `mcp.json` server
+ *   or `hooks.json` hook added or changed, a new or changed script, or what the package marks
+ *   `widens` for that version) arrives as a proposal even when unedited: written beside it as
+ *   `.ta-new`, with a notice, applied only by the owner moving it over the file;
  * - the owner adopting an offered `.ta-new` (the file's content now the offered one) is
  *   taken as installed.
  * Undo is the files plane's own history: every write here is a version, and `file_restore`
@@ -38,7 +38,7 @@
  * says: never by inventing a file. Every write is a unit of the object's gate; a pass is
  * single-flight on its lane.
  */
-import { agentFile } from "./agent-file";
+import { definitionFileOf, definitionWidening } from "../../contract/src/agent-definition";
 import { FileFault, Refusal } from "../../contract/src/refusal";
 import { contentIdOf } from "../../contract/src/content";
 import { type Content, type Files, lostSwap } from "./files";
@@ -72,16 +72,10 @@ export function widening(file: StarterFile, from: number | null, before: Uint8Ar
   if (file.widens !== undefined && from !== null && file.widens.version > from) {
     return file.widens.why;
   }
-  if (file.path.endsWith("/agent.json")) {
+  const definition = definitionFileOf(file.path);
+  if (definition !== null) {
     const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
-    let had: readonly string[] = [];
-    try {
-      had = before === null ? [] : agentFile(decode(before)).scopes;
-    } catch {
-      had = [];  // an unreadable file held no scope
-    }
-    const added = agentFile(decode(after)).scopes.filter((scope) => !had.includes(scope));
-    return added.length === 0 ? null : `agent.json adds the scopes ${added.join(", ")}`;
+    return definitionWidening(definition, before === null ? null : decode(before), decode(after));
   }
   if (!file.path.endsWith(".md")) {
     return before === null ? `${file.path} is a new script` : `${file.path} changes a script`;
@@ -253,7 +247,7 @@ export class Starter {
       if (receipt === undefined) {
         const from = seeded ? this.version() : null;
         // The owner's own file there before the starter's (or one written as the pass ran):
-        // never overwritten, and a widening over it is still a proposal (review R2-M1).
+        // never overwritten, and a widening over it is still a proposal.
         const owned = async (current: Content | null) => {
           const why = widening(file, from, current === null ? null : await this.#bytes(current),
                                bytes);
@@ -311,8 +305,8 @@ export class Starter {
         }
       }
     }
-    // A retired path's proposal not adopted: the version that retires it withdraws it too
-    // (review F3-retired-proposal), and its receipt keeps the path from coming back.
+    // A retired path's proposal not adopted: the version that retires it withdraws it too,
+    // and its receipt keeps the path from coming back.
     for (const path of pkg.retired) {
       const receipt = await this.#deps.write(() => this.#sql.exec<ReceiptRow>(
         "SELECT path, version, class, state, installed, offered FROM starter_receipts " +
@@ -345,7 +339,7 @@ export class Starter {
       }
       if (moved.length > 0) {
         // The managed files still holding text from before this version (the owner's edits,
-        // and proposals not adopted): they may still name the old place (review R4-L2).
+        // and proposals not adopted): they may still name the old place.
         const held = this.#sql.exec<{ path: string }>(
           "SELECT path FROM starter_receipts WHERE class = 'managed' AND state IN " +
             "('edited', 'proposed') ORDER BY path").toArray()
@@ -434,7 +428,7 @@ export class Starter {
   /**
    * A proposal a later version withdrew (its file now installed as something else): its
    * `.ta-new` removed while it still holds the offered bytes, so nothing withdrawn can be
-   * adopted (review R2-L1). One the owner changed is theirs, and stays.
+   * adopted. One the owner changed is theirs, and stays.
    */
   async #withdraw(file: StarterFile, receipt: Receipt | undefined, installed: string,
                   withdrawn: string[]): Promise<void> {
@@ -484,17 +478,12 @@ export class Starter {
 }
 
 // -- THE DOORS: the `starter` rows' handlers (`owner/doors.json`) ---------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`StarterDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /** What the `starter` doors reach: the starter package's receipts. */
 export interface StarterDoorNeeds {
   readonly starter: Starter;
 }
 
-/** The `starter` doors' handlers, by door. */
 export const starterDoors = Object.freeze({
   /**
    * The starter package's receipts (`starter.ts`): each path it wrote, the version, and

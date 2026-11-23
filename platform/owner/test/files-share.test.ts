@@ -10,10 +10,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
-  CALLS_OPEN, CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
+  CHUNK_BYTES, INLINE_BYTES, MAX_PATH_BYTES, SPEND_KEPT,
 } from "../../contract/src/limits";
 import { sqlIn } from "../../ci/workerd";
-import { FILE_DEFAULTS } from "../../contract/src/file-defaults";
 import {
   FILE_INDEX_FULL, FILE_QUOTA, FILE_SHARE, type Files, MAX_OPEN_INTENTS,
 } from "../src/files";
@@ -38,7 +37,7 @@ const CLIENT = `client:${MUSE.client}`;
 
 /**
  * A whole write: the owner's with no etag; an outside client's at the etag it read, as every
- * agent writes (review H1), "" where there is none (or its path is refused to begin with).
+ * agent writes, "" where there is none (or its path is refused to begin with).
  */
 const write = async (r: Rig, origin: typeof MUSE | null, path: string, body = "x") => {
   let etag: string | null = null;
@@ -347,11 +346,8 @@ describe("an outside client's share", () => {
       await files.write(`${W}/d/b.bin`, new Uint8Array(INLINE_BYTES + 10),
                         { expected: null, writer: CLIENT });
       await files.write(`${W}/d/a.txt`, text("owner's"), { expected: null, writer: "owner" });
-      const temp = await unit(() => {
-        files.rename(`${W}/d`, `${W}/e`, { expected: null, replace: false, writer: CLIENT });
-        return files.tempDir("t-", CLIENT);
-      });
-      await files.write(`${temp}/x`, text("tmp"), { expected: null, writer: CLIENT });
+      await unit(() => files.rename(`${W}/d`, `${W}/e`, { expected: null, replace: false,
+                                                          writer: CLIENT }));
       await unit(() => {
         files.mkdir(`${W}/f`, { expected: null, writer: `client:${DOT.client}` });
         files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
@@ -359,7 +355,6 @@ describe("an outside client's share", () => {
         ] });
         files.remove(`${W}/e/b.bin`, { expected: null, writer: CLIENT });
         files.purge(`${W}/e/b.bin`);
-        files.dropTemps([temp], CLIENT);
       });
     });
     const kept = await counted(r);
@@ -372,9 +367,8 @@ describe("an outside client's share", () => {
 });
 
 describe("the manifest charge at worst fill", () => {
-  it("counts a page at three quarters of its room, and a third full at worst", () => {
+  it("counts a page at three quarters of its room", () => {
     expect(PAGE_ROOM).toBe(PAGE_USABLE * 3 / 4);
-    expect(WORST_FILL).toBe(PAGE_ROOM / (PAGE_USABLE / 3));
     expect(recordBytes(100, 1002)).toBe(Math.floor(PAGE_BYTES / Math.floor(3066 / 104)));
   });
 
@@ -591,24 +585,11 @@ describe("deduplication in each scope", () => {
   });
 });
 
-describe("the model calls and spend counters", () => {
-  const open = (n: number, state = "reserved") =>
-    "INSERT INTO model_reservations (id, run, connection_id, source, model, state, " +
-    "max_output_tokens, est_tokens, est_cost, policy_generation, day, month, created_at) " +
-    `VALUES ('open-${n}', 'input:t${n}', 'c', 's', 'm', '${state}', 1, 1, 1, 1, ` +
-    "'2026-10-31', '2026-10', 1)";
-
-  it("keep at most CALLS_OPEN calls open and SPEND_KEPT counters", async () => {
+describe("the spend counters", () => {
+  it("are at most SPEND_KEPT", async () => {
     const r = await rig();
     await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
-      state.storage.transactionSync(() => {
-        for (let i = 0; i < CALLS_OPEN; i++) {
-          sql.exec(open(i, i % 2 === 0 ? "reserved" : "dispatched"));
-        }
-      });
-      expect(() => sql.exec(open(CALLS_OPEN))).toThrow(/model_calls_full/);
-      sql.exec(open(CALLS_OPEN + 1, "refused"));
       sql.exec("DELETE FROM model_spend");
       state.storage.transactionSync(() => {
         for (let i = 0; i < SPEND_KEPT; i++) {
@@ -646,11 +627,10 @@ describe("a random sequence of changes", () => {
     await setFiles(r, { client_share: 60, owner_reserve: 10, keep_versions: 2,
                         keep_recent: 3 });
     await inFiles(r.stub, async (files: Files, unit) => {
-      const temps: string[] = [];
       for (let step = 0; step < 120; step++) {
         const writer = pick(writers);
         const op = pick(["write", "write", "write", "mkdir", "remove", "rename", "restore",
-                         "purge", "redact", "temp", "drop", "collect"]);
+                         "purge", "redact", "collect"]);
         try {
           if (op === "write") {
             await files.write(pick(paths), pick(bodies), { expected: null, writer });
@@ -673,11 +653,6 @@ describe("a random sequence of changes", () => {
             }
           } else if (op === "purge") {
             await unit(() => files.purge(pick(paths)));
-          } else if (op === "temp") {
-            temps.push(await unit(() => files.tempDir("t-", writer)));
-            await files.write(`${temps.at(-1)}/f`, pick(bodies), { expected: null, writer });
-          } else if (op === "drop" && temps.length > 0) {
-            await unit(() => files.dropTemps([temps.pop()!], writer));
           } else if (op === "collect") {
             await files.run(Date.now() / 1000 + 40 * 86_400, passEnd());
           }
@@ -696,10 +671,21 @@ describe("a random sequence of changes", () => {
 });
 
 describe("the files policy's shares", () => {
-  it("are owner policy, with defaults and a high bound; the index's ceiling is none",
-     async () => {
+  it("are off until the owner sets one: a client may take the owner's whole", async () => {
     const r = await rig();
-    expect(FILE_DEFAULTS).toMatchObject({ client_share: 25, owner_reserve: 25 });
+    for (let i = 0; i < MAX_OPEN_INTENTS; i++) {
+      await r.stub.fileUploadBegin(r.bind(MUSE), {
+        size: INLINE_BYTES + 1, chunks: [i.toString(16).padStart(64, "0")] });
+    }
+    await refused(r, () => r.stub.fileUploadBegin(r.bind(DOT), {
+      size: INLINE_BYTES + 1, chunks: ["f".repeat(64)] }),
+                  `${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
+    expect((await share(r, CLIENT))!["chunk_bytes"]).toBe(MAX_OPEN_INTENTS * (INLINE_BYTES + 1));
+    await counted(r);
+  });
+
+  it("are owner policy within their range; the index's ceiling is none", async () => {
+    const r = await rig();
     expect(Object.keys(FILE_SETTINGS)).not.toContain("max_manifest_bytes");
     for (const files of [{ max_manifest_bytes: 1 }, { client_share: 101 },
                          { owner_reserve: -1 }, { client_share: 2.5 }]) {

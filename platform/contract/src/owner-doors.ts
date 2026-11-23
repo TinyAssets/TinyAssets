@@ -41,9 +41,8 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   mailboxAck(binding: Binding, request: DoorRequest<"mailboxAck">):
     Promise<DoorAnswer<"mailboxAck">>;
   /**
-   * Post a message to a room of the owner's account: dm:<agent> with the owner, or
-   * dm:<agent>+<agent> between two agents. Mail to one of the owner's own agents starts its run,
-   * whose result is its reply.
+   * Post a message to a room of the owner's account: the room_id agents_list shows for the agent to
+   * reach. Mail to one of the owner's own agents starts its run, whose result is its reply.
    */
   roomPost(binding: Binding, request: DoorRequest<"roomPost">): Promise<DoorAnswer<"roomPost">>;
   /**
@@ -214,9 +213,10 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
    * Run one JavaScript script that calls your other tools here as `await tools.<name>(args)`, each
    * held to your grant, and answer its return value and output: many tool calls in one. Its effects
    * are the effects of the tools it calls. Only while the owner's policy turns code mode on; a
-   * script past its time or compute bound is stopped.
+   * script is stopped once you stop waiting for it, or past its compute or memory bound.
    */
-  codeRun(binding: Binding, request: DoorRequest<"codeRun">): Promise<DoorAnswer<"codeRun">>;
+  codeRun(binding: Binding, request: DoorRequest<"codeRun">, stop: ReadableStream<Uint8Array>):
+    Promise<DoorAnswer<"codeRun">>;
   sessionOpen(binding: Binding): Promise<DoorAnswer<"sessionOpen">>;
   sessionExtend(binding: Binding): Promise<DoorAnswer<"sessionExtend">>;
   sessionClose(binding: Binding): Promise<DoorAnswer<"sessionClose">>;
@@ -296,13 +296,13 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   connectionList(binding: Binding): Promise<DoorAnswer<"connectionList">>;
   flowFinish(binding: Binding, ...request: DoorLoose<"flowFinish">):
     Promise<DoorAnswer<"flowFinish">>;
-  usageReceipts(binding: Binding): Promise<DoorAnswer<"usageReceipts">>;
   noticeList(binding: Binding): Promise<DoorAnswer<"noticeList">>;
   starterReceipts(binding: Binding): Promise<DoorAnswer<"starterReceipts">>;
   admissionSet(binding: Binding, ...request: DoorLoose<"admissionSet">):
     Promise<DoorAnswer<"admissionSet">>;
   ownerState(binding: Binding): Promise<DoorAnswer<"ownerState">>;
   toolProfile(binding: Binding): Promise<DoorAnswer<"toolProfile">>;
+  definitionRead(binding: Binding): Promise<DoorAnswer<"definitionRead">>;
   mailChain(binding: Binding, request: DoorRequest<"mailChain">): Promise<DoorAnswer<"mailChain">>;
   wakeEvents(binding: Binding, ...request: DoorLoose<"wakeEvents">):
     Promise<DoorAnswer<"wakeEvents">>;
@@ -328,6 +328,7 @@ export interface OwnerDoors extends Rpc.DurableObjectBranded {
   fileChanges(binding: Binding, request: DoorRequest<"fileChanges">):
     Promise<DoorAnswer<"fileChanges">>;
   runEvents(binding: Binding, request: DoorRequest<"runEvents">): Promise<DoorAnswer<"runEvents">>;
+  runDecide(binding: Binding, request: DoorRequest<"runDecide">): Promise<DoorAnswer<"runDecide">>;
   signinStart(binding: Binding, request: DoorRequest<"signinStart">):
     Promise<DoorAnswer<"signinStart">>;
   signinEvents(binding: Binding, ...request: DoorLoose<"signinEvents">):

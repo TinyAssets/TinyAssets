@@ -1,8 +1,8 @@
 /**
- * The files plane's bounds (plan §6, untangle F1): the owner's storage and the file index's
- * one ceiling, each refused loudly with nothing left behind, never making room by dropping
- * anything, and never a dead end: what only frees is never refused, and housekeeping is
- * never wedged. Retention is the owner's, off by default, and prunes only as the owner set it.
+ * The files plane's bounds (plan §6): the owner's storage and the file index's one ceiling, each
+ * refused loudly with nothing left behind, never making room by dropping anything, and never a dead
+ * end: what only frees is never refused, and housekeeping is never wedged. Retention is the
+ * owner's, off by default, and prunes only as the owner set it.
  */
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -25,8 +25,8 @@ import { migrate } from "../../contract/src/migrate";
 import { rig, type Rig } from "./ledger-support";
 import { TIER_UNREAD } from "../src/files";
 import {
-  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, passEnd, setFiles,
-  starterSeed, text, TIERS, tiersAt,
+  crowd, drainDue, failure, fileCounters, inFiles, laneAt, namedCode, openRecord, passEnd,
+  setFiles, starterSeed, text, TIERS, tiersAt,
 } from "./support";
 
 const W = "/workspace";
@@ -448,34 +448,22 @@ describe("file history", () => {
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history " +
                                  "WHERE prune_after IS NULL"))
       .toEqual([{ n: SEED.entries + 600 }]);
-  });  // 600 versions written: past the default timeout under load (slice D)
+  });  // 600 versions written: past the default timeout under load
 
   it("never wedges housekeeping: a pass at every bound still expires, prunes and collects",
      async () => {
     const r = await rig();
     await inFiles(r.stub, async (files, unit) => {
-      for (let i = 0; i < 20; i++) {
-        const dir = await unit(() => files.tempDir("t-", "agent"));
-        for (let j = 0; j < 30; j++) {
-          await files.write(`${dir}/f${j}`, text(`${i}-${j}`), { expected: null,
-                                                                  writer: "agent" });
-        }
-      }
       await files.write(`${W}/a`, text("1"), { expected: null, writer: "o" });
       await unit(() => {
         files.remove(`${W}/a`, { expected: null, writer: "o" });
         files.begin(INLINE_BYTES + 1, ["a".repeat(64)], "owner");
       });
     });
-    // The temporary area keeps no history at all.
-    expect(await sqlIn(r.stub,
-                       "SELECT COUNT(*) AS n FROM file_history WHERE path GLOB '/.ta/*'"))
-      .toEqual([{ n: 0 }]);
-    await sqlIn(r.stub, "UPDATE file_temps SET expires_at = 1");
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE path = ?", `${W}/a`);
     const before = await r.stub.fileUsage(r.bind(null));
-    expect(before.entries).toBeGreaterThan(SEED.entries + 600);
+    expect(before.intents).toBe(1);
     expect(before.history).toBe(SEED.entries + 2);
     const back = await crowd(r.stub, INDEX_BYTES, 0);
     await setFiles(r, { max_bytes: 0 });
@@ -489,22 +477,46 @@ describe("file history", () => {
   });
 });
 
-describe("the retention marks' migration (untangle F1, owner migration 8)", () => {
-  /** An object of the migrations through H1's 7, `act` run on it, then migrated whole. */
-  const migrated = async (act: (sql: SqlStorage) => void, r: Rig | null = null) => {
-    return runInDurableObject((r ?? await rig()).stub, (_instance: OwnerDO, state) => {
-      const sql = state.storage.sql;
-      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
-          "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
-          "AND name NOT GLOB 'cf_*'").toArray()) {
-        sql.exec(`DROP TABLE "${name}"`);
-      }
-      migrate(state.storage, MIGRATIONS.slice(0, 7));
-      act(sql);
-      migrate(state.storage, MIGRATIONS);
-      return sql.exec("SELECT retained_keep, retained_recent, retained_days, retain_cursor " +
-                      "FROM file_space").toArray();
+/** `r`'s object made again of the migrations through `through`, `act` run on it, migrated whole. */
+function migratedFrom(r: Rig, through: number, act: (sql: SqlStorage) => void): Promise<void> {
+  return runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
+    const sql = state.storage.sql;
+    for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+        "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+        "AND name NOT GLOB 'cf_*'").toArray()) {
+      sql.exec(`DROP TABLE "${name}"`);
+    }
+    migrate(state.storage, MIGRATIONS.slice(0, through));
+    act(sql);
+    migrate(state.storage, MIGRATIONS);
+  });
+}
+
+describe("the temporary area's removal (owner migration 24)", () => {
+  it("deletes every temporary directory and every entry under one, taking back their charges",
+     async () => {
+    const r = await rig();
+    await migratedFrom(r, 23, (sql) => {
+      sql.exec("INSERT INTO file_temps (name, expires_at, writer) VALUES ('t-0', 1, 'agent')");
+      sql.exec("INSERT INTO file_entries (parent, name, kind, version, content_id, size, mode, " +
+                 "mtime_ms, writer) VALUES ('/.ta/tmp', 't-0', 'dir', 1, NULL, 0, 0, 0, " +
+                 "'agent'), ('/.ta/tmp/t-0', 'd', 'dir', 2, NULL, 0, 0, 0, 'agent')");
     });
+    expect(await sqlIn(r.stub, "SELECT parent, name FROM file_entries WHERE parent GLOB '/.ta*'"))
+      .toEqual([]);
+    expect(await sqlIn(r.stub, "SELECT name FROM sqlite_master WHERE name GLOB 'file_temps*'"))
+      .toEqual([]);
+    await counted(r);
+  });
+});
+
+describe("the retention marks' migration (owner migration 8)", () => {
+  /** An object of the migrations through migration 7, `act` run on it, then migrated whole. */
+  const migrated = async (act: (sql: SqlStorage) => void, r: Rig | null = null) => {
+    const at = r ?? await rig();
+    await migratedFrom(at, 7, act);
+    return sqlIn(at.stub, "SELECT retained_keep, retained_recent, retained_days, " +
+                          "retain_cursor FROM file_space");
   };
 
   it("leaves the marks off, and re-marks every kept row of an owner that keeps history",
@@ -558,13 +570,14 @@ describe("the files policy", () => {
     const r = await rig();
     const big = (n: number) => new Uint8Array(INLINE_BYTES + 1).fill(n);
     const put = (path: string, n: number, tiers: unknown = TIERS) =>
-      r.stub.fileWrite(r.bind(null, { tiers }), { path, expected_etag: null, content: big(n) });
+      r.stub.fileWrite(r.bind(null, { control: openRecord(tiers) }),
+                       { path, expected_etag: null, content: big(n) });
     // The tier's figure, as the binder hands it from the control record: the seed and one
     // file.
     const room = SEED.bytes + INLINE_BYTES + 1;
     const small = tiersAt(room, TIERS.paid.storage_bytes);
     await put(`${W}/a`, 1, small);
-    expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
+    expect((await r.stub.fileUsage(r.bind(null, { control: openRecord(small) }))).limits.max_bytes)
       .toBe(room);
     expect(refusalOf((await failure(() => put(`${W}/b`, 2, small))))?.facts)
       .toMatchObject({ limit_bytes: room, tier: "free",
@@ -583,7 +596,7 @@ describe("the files policy", () => {
     await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null,
                                            content: new Uint8Array(INLINE_BYTES + 1) });
     // A control record with no tiers: the kept numbers go, and no figure takes their place.
-    const none = r.bind(null, { tiers: null });
+    const none = r.bind(null, { control: openRecord() });
     expect((await r.stub.fileUsage(none)).limits.max_bytes).toBeNull();
     expect((await failure(() => r.stub.fileWrite(none, {
       path: `${W}/b`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1).fill(7) })))
@@ -605,7 +618,6 @@ describe("the files policy", () => {
                          retention_days: 3650 });
     expect(FILE_SETTINGS.keep_versions[1]).toBe(KEEP_CEILING);
     expect(FILE_SETTINGS.max_file_bytes[1]).toBe(MAX_INTENT_CHUNKS * CHUNK_BYTES);
-    expect(INDEX_BYTES).toBe(512 * 1024 ** 2);
   });
 
   it.each([

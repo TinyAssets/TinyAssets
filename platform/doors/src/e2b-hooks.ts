@@ -1,7 +1,7 @@
 /**
- * E2B's signed sandbox lifecycle webhook (slice P; docs.e2b.dev/sandbox/lifecycle-events-
- * webhooks, read 2026-11-03): the source of truth for each owner's sandbox time, which E2B
- * bills by the second while a sandbox runs. The sandbox Worker's own log stays the estimate
+ * E2B's signed sandbox lifecycle webhook (docs.e2b.dev/sandbox/lifecycle-events-webhooks,
+ * read 2026-11-03): the source of truth for each owner's sandbox time, which E2B bills by
+ * the second while a sandbox runs. The sandbox Worker's own log stays the estimate
  * on each run's receipt, and the fallback (`owner/src/sandbox-time.ts`).
  *
  * `POST /hooks/e2b/lifecycle`, the one hook this door serves (`/hooks/inbound/*` is
@@ -14,7 +14,8 @@
  * 2. **Parsed strictly.** The body is read through a byte count that stops at
  *    `HOOK_BODY_MAX`, whatever `Content-Length` says or omits (an unauthenticated path reads
  *    no more); only `sandbox.lifecycle.paused` and `.killed` carry `event_data.execution`
- *    (its start, vCPUs, memory and the milliseconds billed), and only those are delivered,
+ *    (its start, vCPUs, memory and the milliseconds billed), and only those
+ *    (`E2B_HOOK_EVENTS`, the list the deploy kit registers the hook for) are delivered,
  *    with the event's id, its signed `timestamp`, and the sandbox's and the execution's ids;
  *    every other event type answers `200`, so E2B does not retry it.
  * 3. **Routed by the sealed route** E2B echoes from the sandbox's metadata (`ta_route`,
@@ -29,6 +30,7 @@ import { timingSafeEqual } from "node:crypto";
 import { object, whole } from "../../contract/src/checks";
 import { sha256 } from "../../contract/src/digest";
 import { HOOK_BODY_MAX } from "../../contract/src/limits";
+import { E2B_HOOK_EVENTS } from "../../contract/src/identity";
 import { utf8Text } from "../../contract/src/text";
 
 import { ownerObject } from "./binder";
@@ -37,6 +39,7 @@ import type { BilledEvent } from "../../contract/src/owner";
 import { openRoute } from "../../contract/src/routing-mac";
 
 import { answer, boundedBytes } from "./kit";
+import { answered, asJson } from "./refused";
 
 /** Whether `signature` is E2B's over `body` under `secret`, compared in constant time. */
 export function signed(secret: string, body: string, signature: string | null): boolean {
@@ -49,7 +52,6 @@ export function signed(secret: string, body: string, signature: string | null): 
   return given.byteLength === wanted.byteLength && timingSafeEqual(given, wanted);
 }
 
-const TYPES = Object.freeze(["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"]);
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 function count(value: unknown, most: number): number | null {
@@ -72,7 +74,7 @@ export function lifecycleEvent(body: string):
       || typeof parsed["type"] !== "string") {
     return null;
   }
-  if (!TYPES.includes(parsed["type"])) {
+  if (!(E2B_HOOK_EVENTS as readonly string[]).includes(parsed["type"])) {
     return "ignored";
   }
   const at = typeof parsed["timestamp"] === "string" ? Date.parse(parsed["timestamp"]) : NaN;
@@ -102,7 +104,10 @@ export function lifecycleEvent(body: string):
            memory_mb: memory };
 }
 
-/** The webhook door: verified, parsed, routed to the owner's object as the platform. */
+/**
+ * The webhook door: verified, parsed, routed to the owner's object as the platform, whose
+ * refusal is answered as JSON (`asJson`), its status and any `Retry-After`.
+ */
 export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Response> {
   if (request.method !== "POST") {
     return answer(405, { error: "method not allowed" });
@@ -138,6 +143,6 @@ export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Res
     return answer(200, { unrouted: true });
   }
   const { route: _route, ...billed } = event;
-  return answer(200, await ownerObject(env, route.owner).sandboxBilled(
-    { ...billed, authority: route.authority }));
+  return answered(asJson, async () => answer(200, await ownerObject(env, route.owner)
+    .sandboxBilled({ ...billed, authority: route.authority })));
 }

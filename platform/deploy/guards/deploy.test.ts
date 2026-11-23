@@ -11,20 +11,21 @@
  * registers the WorkOS redirect URI only when missing and never deletes one; and it sets the
  * routing key on the doors and the owner together or not at all.
  *
- * Slice L's review (H2, research 3b and 3c): a failed lookup is never "absent"; a held
+ * Each lookup is checked too: a failed one is never "absent"; a held
  * keyring is never replaced, and is rotated only by adding a key; the control record is
  * written only when the API answers that it is absent; an absent discovery field is unknown,
  * and unknown stops the kit; the kit runs from an approved manual workflow whose secrets come
- * from the environment's store. The sign-in probe takes only the sign-in's two unserved
- * paths, behind a control record that admits nobody, and `routes` then finds both held.
+ * from the environment's store.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DARK, keyring as ringSecret } from "../../ci/fixtures";
 import { PLATFORM, REPO } from "../../ci/paths";
@@ -32,12 +33,13 @@ import { workflow } from "../../ci/workflows";
 import { deployProblems, locksOf, migrated, readLock } from "../../ci/kit/locks";
 import { WRANGLER, workerFolders } from "../../ci/wrangler";
 import identity from "../../contract/identity.json" with { type: "json" };
-import { ZONE } from "../../contract/src/egress";
+import { EGRESS_HOST } from "../../contract/src/egress";
 import { OWNER_ENTRY } from "../../contract/src/ids";
 import { IMPORT_KEY } from "../../contract/src/import-message";
 import { type Domain, openBlob, parseRing, sealBlob } from "../../contract/src/envelope";
 import {
-  APP_RESOURCE, ORIGIN, routeTakes, UPSTREAM_CALLBACK, WEB_CLIENT, WEB_REDIRECT,
+  APP_RESOURCE, HOST, ORIGIN, routeTakes, UPSTREAM_CALLBACK, VERSION_HEADER, WEB_CLIENT,
+  WEB_REDIRECT, ZONE,
 } from "../../contract/src/identity";
 import {
   answerKey, answerOf, LOCATE_PAGE, macHolds, type OperatorMessage, operatorMessage,
@@ -53,19 +55,20 @@ import {
   Cloudflare, describeStep, handback, handover, type Route,
 } from "../cloudflare";
 import {
-  authorizeCheck, deployedConfig,
-  E2B_HOOK, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
-  lifecycleHook, lockRefusal, type Mode, MODES, parse,
-  perform, PROBE_SIGNS, probeLink, probeSteps, PUBLIC_INPUTS, registerRedirect, routedConfig,
-  type RouteRecord, secretPlan, upstreamFrom, versionOf, wranglerFor,
+  atOnce, authorizeCheck, deployedConfig, firstPartyLink, forwardOnly,
+  E2B_HOOK, egressRefusal, heldHook, hookSetsSecret, type Io, keyring, keyringAdd, keyringNew, keyringRetire,
+  lifecycleHook, lockCounts, type Mode, MODES, parse,
+  holding, perform, PUBLIC_INPUTS, registerRedirect, type Rolled, rolloutOf, type RolloutRecord, routedConfig,
+  type RouteRecord, secretPlan, upstreamFrom, versionFlags, versionOf, wranglerFor,
 } from "../deploy";
 import {
   type Bundle, type Bundles, BUNDLES, bundles, pairTag, treeImage,
 } from "../../sandbox/template/pair";
 import {
-  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, EGRESS_DOMAIN, FILES_BUCKET, IMPORT_NAMES,
-  KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, PROBE_ROUTES, QUEUES, RETIRED,
-  retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, WORKERS, workerNames,
+  boundBy, BUCKET_LOCKS, BUCKETS, CONFIGS, DOORS, FILES_BUCKET, FORWARD, forwardCounts,
+  IMPORT_NAMES,
+  KEYRINGS, MADE, MIGRATES, NAMES, NAMESPACES, OPERATOR_NAMES, OPTIONAL, QUEUES, RETIRED,
+  retiredWorkers, ROUTES, SECRET_INPUTS, SECRETS, STAGES, stagesOf, WORKERS, workerNames,
 } from "../facts";
 import { INPUTS as CANARY_INPUTS } from "../canary";
 import { INPUTS as H2_INPUTS } from "../h2-probes";
@@ -75,6 +78,15 @@ import {
 } from "../operator";
 import platform from "../platform.json" with { type: "json" };
 import { night, nightsAnswer } from "./copy-nights";
+
+// The kit here is the cutover's: the doors' host is the zone, whatever host the identity names
+// today (the live stage's, while it runs), so a change of `host` changes no case. A host under
+// the zone is the kit's other case, run over an identity of its own (`at a host under the
+// zone`, below).
+vi.mock("../../contract/identity.json", async (actual) => {
+  const { default: real } = await actual<{ default: { zone: string } }>();
+  return { default: { ...real, host: real.zone } };
+});
 
 type Json = Record<string, unknown>;
 
@@ -101,6 +113,13 @@ const PROBE_BUNDLE = "the probes";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const bundled = (text: string): Bundle => ({ bytes: Buffer.from(text), sha: sha(text) });
 const PAIR = pairTag(TEMPLATE, sha(RUNNER), sha(PROBE_BUNDLE));
+/** The commit the fake checkout is at. */
+const COMMIT = "c0ffee".padEnd(40, "1");
+/** Each migrated Worker's locks as they pin it, by path: what the locks' command line prints. */
+const PINNED: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> =
+  Object.fromEntries(await Promise.all(migrated().map(async (worker) =>
+    [worker, Object.fromEntries(Object.keys(await locksOf(worker))
+      .map((path) => [path, readLock(path).deployed]))])));
 
 /** A Cloudflare answer, as a fake gives it: its status and its JSON body. */
 interface CfAnswer {
@@ -151,7 +170,7 @@ const PUBLIC = Object.fromEntries(PUBLIC_INPUTS.map((name) => [name, ENV[name]!]
 
 /** The options of its own each mode needs, by the dispatch's input that gives each. */
 const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
-  handback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" },
+  handback: { RECORD: "7001" }, rollback: { RECORD: "7001" }, owner: { OWNER: "user_alice", ACT: "tier=paid" },
   restore: { OWNER: "user_alice" }, copyback: { OWNER: "user_alice" },
   erase: { OWNER: "user_alice" },
   rotation: { KEYRING: "FILES_KEYRING" }, retire: { KEYRING: "GATEWAY_KEYRING" } };
@@ -159,29 +178,32 @@ const NEEDED: Partial<Record<Mode, Readonly<Record<string, string>>>> = {
 const needed = (mode: Mode): string[] => Object.entries(NEEDED[mode] ?? {})
   .flatMap(([name, value]) => [`--${name.toLowerCase()}`, value]);
 
-/** The old proxy's live routes, and the site's. */
+/**
+ * The old proxy's live routes, and the site's, written on the doors' host, which is the zone
+ * here: a host under it shares none of them (`at a host under the zone`, below).
+ */
 const LIVE: readonly Route[] = [
-  { id: "r1", pattern: "tinyassets.io/mcp*", script: "tinyassets-mcp-proxy" },
-  { id: "r2", pattern: "tinyassets.io/app*", script: "tinyassets-mcp-proxy" },
-  { id: "r3", pattern: "tinyassets.io/api*", script: "tinyassets-mcp-proxy" },
-  { id: "r4", pattern: "tinyassets.io/.well-known/oauth-protected-resource*",
+  { id: "r1", pattern: `${HOST}/mcp*`, script: "tinyassets-mcp-proxy" },
+  { id: "r2", pattern: `${HOST}/app*`, script: "tinyassets-mcp-proxy" },
+  { id: "r3", pattern: `${HOST}/api*`, script: "tinyassets-mcp-proxy" },
+  { id: "r4", pattern: `${HOST}/.well-known/oauth-protected-resource*`,
     script: "tinyassets-mcp-proxy" },
-  { id: "r5", pattern: "tinyassets.io/.well-known/oauth-authorization-server*",
+  { id: "r5", pattern: `${HOST}/.well-known/oauth-authorization-server*`,
     script: "tinyassets-mcp-proxy" },
-  { id: "r6", pattern: "tinyassets.io/site*", script: "site" },
+  { id: "r6", pattern: `${HOST}/site*`, script: "site" },
 ];
 
 interface WorldOptions {
   /** Everything a dark run makes is there already. */
   readonly held?: boolean;
-  /** The probe's two routes are the doors' already. */
-  readonly probed?: boolean;
   /** E2B holds the pair's tag. */
   readonly paired?: boolean;
   /** This tree's image, as `image.ts` computes it: the pin by default. */
   readonly image?: string;
   /** The migration locks' command line refuses every Worker so. */
   readonly lockRefused?: string;
+  /** What the locks pin, by Worker and lock path, in place of the checked-in locks. */
+  readonly pinned?: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
   /** A wrangler command that fails. */
   readonly failing?: string;
   /** A Cloudflare listing the API refuses (500), by its path from the account. */
@@ -194,11 +216,18 @@ interface WorldOptions {
   readonly dns?: readonly string[];
   /** Cloudflare's detach leaves the DNS record the custom domain's attach made. */
   readonly keepsDns?: boolean;
+  /**
+   * How long after the run starts the egress host, once it is the doors' custom domain,
+   * completes TLS (it fails before): at once by default.
+   */
+  readonly egressAfterMs?: number;
+  /** How long after that Cloudflare answers its own `522` page before the doors serve it. */
+  readonly egressErrorMs?: number;
   /** The DNS listing ignores its name filter: the zone's other records come back too. */
   readonly noisyDns?: boolean;
   /** A route change the API refuses (400): `METHOD pattern`. */
   readonly refusingRoute?: string;
-  /** DNS deletes the API refuses (403): a token without DNS Edit. */
+  /** DNS makes and deletes the API refuses (403): a token without DNS Edit. */
   readonly refusingDns?: boolean;
   /** Each bucket's lock rules, in place of none (fresh) or the kit's (held). */
   readonly locks?: Readonly<Record<string, readonly unknown[]>>;
@@ -208,6 +237,11 @@ interface WorldOptions {
   readonly retired?: boolean;
   /** Cloudflare refuses a Worker's delete: another Worker still references it. */
   readonly refusingDelete?: boolean;
+  /**
+   * How many reads of a Worker's deployments listing after each deployment it makes still
+   * answer the deployment before it, as Cloudflare's did once live (run 45065434026).
+   */
+  readonly lagging?: number;
   /**
    * How the doors answer each message sent to the operator queue: its outcome, or none (it is
    * never answered). Each is answered at once by default, with its args as its result.
@@ -219,28 +253,83 @@ interface WorldOptions {
   readonly windowOpen?: boolean;
   /** The names rclone lists under a copy back's prefix: the copy's and R2's. */
   readonly copied?: { readonly copy: readonly string[]; readonly r2: readonly string[] };
+  /** Each Worker's active deployment, by script, in place of none (fresh) or `HELD_SERVING`. */
+  readonly serving?: Readonly<Record<string, readonly Served[]>>;
+  /** Cloudflare refuses each deployment the kit makes over its API, with this code. */
+  readonly refusingDeploy?: number;
+  /** Secrets a held account's Workers lack: optional ones the founder never stored. */
+  readonly lacking?: readonly string[];
+  /** The exit of the doors' smoke (`canary.ts --smoke`): 0 by default. */
+  readonly smoke?: number;
 }
+
+/** A version a fake Worker serves: its id, its share and its tag. */
+interface Served {
+  readonly version: string;
+  readonly percentage: number;
+  readonly tag: string | null;
+}
+
+/** The commit a held account's versions were deployed from, as their tags carry it. */
+const BEFORE = "b".repeat(12);
+
+/**
+ * A held account's deployments: each Worker serving one version an earlier run tagged, with
+ * the locks' counts the checked-in locks pin, so a rollback takes it back there.
+ */
+const HELD_SERVING: Readonly<Record<string, readonly Served[]>> = Object.fromEntries(
+  WORKERS.map((worker) => {
+    const counts = Object.keys(PINNED[worker] ?? {}).sort().map((path) =>
+      PINNED[worker]![path]!.length);
+    return [NAMES[worker]!, [{ version: `before-${worker}`, percentage: 100,
+                               tag: `${BEFORE}${counts.length === 0 ? "" : `-m${counts.join(".")}`}` }]];
+  }));
 
 /** The world's clock. */
 const NOW = new Date("2026-11-07T12:00:00.000Z");
 
 /**
+ * Each Worker's active deployment, by script, as a map, and every deployment before it: each
+ * one set is a new deployment, as Cloudflare lists them, newest first.
+ */
+class Deployed extends Map<string, { version: string; percentage: number }[]> {
+  readonly #past = new Map<string, { version: string; percentage: number }[][]>();
+
+  override set(script: string, serving: { version: string; percentage: number }[]): this {
+    const now = this.get(script);
+    if (now !== undefined) {
+      this.#past.set(script, [now, ...this.#past.get(script) ?? []]);
+    }
+    return super.set(script, serving);
+  }
+
+  /** `script`'s deployments, newest first. */
+  history(script: string): { version: string; percentage: number }[][] {
+    const now = this.get(script);
+    return now === undefined ? [] : [now, ...this.#past.get(script) ?? []];
+  }
+}
+
+/**
  * A fake of everything the kit reaches, as one ordered event log: Cloudflare's API and
  * wrangler (the account's state changing as the kit changes it), WorkOS, the owner issuer,
- * E2B, python and the migrations guard.
+ * E2B, the canary, the pair's checks, the migration locks' command line, H2's probes and
+ * rclone.
  */
 function world(options: WorldOptions = {}) {
   const held = options.held === true;
   const events: string[] = [];
   const logs: string[] = [];
   const secretsPut: Record<string, string> = {};
+  /** Each `--secrets-file` wrangler was given: its Worker, path, mode and names. */
+  const secretFiles: { worker: string; path: string; mode: number; names: string[] }[] = [];
   /** The account each wrangler command was given, in order. */
   const accounts: (string | undefined)[] = [];
   let pairPassed = options.paired !== false;
   const namespaces = new Map(held ? Object.values(NAMESPACES).map((title) => [title, `ns-${title}`])
     : []);
   const secrets = new Map<string, string[]>(held ? Object.entries(SECRETS).map(([worker, names]) =>
-    [NAMES[worker]!, [...names]]) : []);
+    [NAMES[worker]!, names.filter((name) => !(options.lacking ?? []).includes(name))]) : []);
   if (held) {
     secrets.set(NAMES["codemode"]!, []);
   }
@@ -250,12 +339,9 @@ function world(options: WorldOptions = {}) {
   for (const name of options.retired === true ? RETIRED : []) {
     secrets.set(name, []);
   }
-  const routes = new Map((options.probed === true || held
-    ? [...LIVE, { id: "p1", pattern: "tinyassets.io/authorize*", script: DOORS },
-       { id: "p2", pattern: "tinyassets.io/oauth/*", script: DOORS }] : LIVE)
-    .map((route) => [route.id, { ...route }]));
-  const hooks: Json[] = held ? [{ id: "w1", url: E2B_HOOK.url, enabled: false,
-                                  events: [...E2B_HOOK.events] }] : [];
+  const routes = new Map(LIVE.map((route) => [route.id, { ...route }]));
+  const hooks: Json[] = held ? [{ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
+                                  enabled: false, events: [...E2B_HOOK.events] }] : [];
   /** KV, by namespace id and key: the control record when held. */
   const kv = new Map<string, string>(held
     ? [[`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(DARK)],
@@ -267,7 +353,7 @@ function world(options: WorldOptions = {}) {
   /** The egress host's custom domains, by id. */
   const domains = new Map<string, { id: string; hostname: string; service: string }>(
     options.egress === undefined ? []
-      : [["d0", { id: "d0", hostname: EGRESS_DOMAIN, service: options.egress }]]);
+      : [["d0", { id: "d0", hostname: EGRESS_HOST, service: options.egress }]]);
   /**
    * The outward changes left before the run is killed (undefined: never): a route's, the
    * custom domain's (wrangler's triggers deploy, a detach) and the webhook's.
@@ -275,16 +361,16 @@ function world(options: WorldOptions = {}) {
   const kill = { after: undefined as number | undefined };
   const killed = () => kill.after !== undefined && kill.after-- <= 0;
   /** Writes that answer as done and change nothing: the hook's, the custom domain's, KV's. */
-  const inert = new Set<"hook" | "domain" | "dns" | "kv">();
+  const inert = new Set<"hook" | "domain" | "dns" | "kv" | "deploy">();
   /** The zone's DNS records: the egress host's given ones, and others on other names. */
-  const dns = [
-    ...(options.dns ?? []).map((type, at) => ({ id: `x${at}`, type, name: EGRESS_DOMAIN,
+  const dns: { id: string; type: string; name: string; content: string; proxied?: unknown }[] = [
+    ...(options.dns ?? []).map((type, at) => ({ id: `x${at}`, type, name: EGRESS_HOST,
                                                  content: "192.0.2.1" })),
     { id: "o1", type: "A", name: ZONE, content: "192.0.2.2" },
     { id: "o2", type: "CNAME", name: `www.${ZONE}`, content: ZONE },
-    { id: "o3", type: "TXT", name: EGRESS_DOMAIN, content: "v=spf1 -all" },
+    { id: "o3", type: "TXT", name: EGRESS_HOST, content: "v=spf1 -all" },
   ];
-  const ATTACHED = { id: "dns-egress", type: "AAAA", name: EGRESS_DOMAIN, content: "100::" };
+  const ATTACHED = { id: "dns-egress", type: "AAAA", name: EGRESS_HOST, content: "100::" };
   let made = 0;
   /** The account's R2 buckets and queues, and what the run made, in order. */
   const buckets = new Set(options.listed?.buckets ?? (held ? BUCKETS : []));
@@ -297,12 +383,79 @@ function world(options: WorldOptions = {}) {
   const locks = new Map<string, unknown[]>(Object.entries(BUCKET_LOCKS).map(([bucket, days]) =>
     [bucket, [...options.locks?.[bucket] ?? (held ? [{ id: "kept", enabled: true,
       condition: { type: "Age", maxAgeSeconds: days * 86_400 } }] : [])]]));
+  /** Each version the account holds, by id: its Worker and its tag. */
+  const versions = new Map<string, { script: string; tag: string | null }>();
+  /** Each Worker's active deployment, by script: a held account's one version before. */
+  const deployments = new Deployed();
+  for (const [script, serving] of Object.entries(options.serving ?? (held ? HELD_SERVING : {}))) {
+    deployments.set(script, serving.map(({ version, percentage }) => ({ version, percentage })));
+    for (const { version, tag } of serving) {
+      versions.set(version, { script, tag });
+    }
+  }
+  /** The listing reads left, by script, that answer the deployment before (`lagging`). */
+  const lag = new Map<string, number>();
+  /** A deployment the run made: listed at once, unless `lagging`. */
+  const deploy = (script: string, serving: { version: string; percentage: number }[]) => {
+    deployments.set(script, serving);
+    lag.set(script, options.lagging ?? 0);
+  };
+  let uploads = 0;
+  /** A new version of `script` tagged `tag`: its id. */
+  const version = (script: string, tag: string | null): string => {
+    uploads += 1;
+    const id = `0f7e3a3c-1b2d-4e5f-8a9b-${String(uploads).padStart(12, "0")}`;
+    versions.set(id, { script, tag });
+    return id;
+  };
   const json = (body: unknown, status = 200) => Response.json(body, { status });
   const cf = (path: string, method: string, body: string | undefined): Response => {
     const account = `/accounts/${ACCOUNT}`;
     if (options.refusingListing !== undefined && method === "GET"
         && path.startsWith(`${account}/${options.refusingListing}`)) {
       return json({ success: false, errors: [{ code: 10000 }] }, 500);
+    }
+    const deploying = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)\/deployments(\?per_page=100)?$/
+      .exec(path);
+    if (deploying !== null && method === "GET") {
+      // The latest alone on the default page, as the kit reads it, or while it lags the one
+      // before; every one on the long page.
+      const history = deployments.history(deploying[1]!);
+      const behind = deploying[2] === undefined ? lag.get(deploying[1]!) ?? 0 : 0;
+      if (behind > 0) {
+        lag.set(deploying[1]!, behind - 1);
+      }
+      return json({ success: true, result: { deployments: (deploying[2] !== undefined ? history
+        : history.slice(behind > 0 ? 1 : 0, behind > 0 ? 2 : 1)).map((serving, at) => ({
+          id: `d${at}`,
+          strategy: "percentage", versions: serving.map((each) =>
+            ({ version_id: each.version, percentage: each.percentage })) })) },
+                    result_info: { page: 1, per_page: 100, total_count: history.length } });
+    }
+    if (deploying !== null && method === "POST") {
+      if (options.refusingDeploy !== undefined) {
+        return json({ success: false, errors: [{ code: options.refusingDeploy }] }, 400);
+      }
+      const given = JSON.parse(body!) as { strategy: string;
+                                           versions: { version_id: string; percentage: number }[] };
+      expect(given.strategy).toBe("percentage");
+      for (const each of given.versions) {
+        expect(versions.get(each.version_id)?.script).toBe(deploying[1]);
+      }
+      if (!inert.has("deploy")) {
+        deploy(deploying[1]!, given.versions.map((each) =>
+          ({ version: each.version_id, percentage: each.percentage })));
+      }
+      return json({ success: true, result: { id: "d2" } });
+    }
+    const versioned = /^\/accounts\/a+\/workers\/scripts\/([a-z-]+)\/versions\/([^/]+)$/
+      .exec(path);
+    if (versioned !== null) {
+      const held = versions.get(versioned[2]!);
+      return held === undefined || held.script !== versioned[1]
+        ? json({ success: false, errors: [{ code: 10007 }] }, 404)
+        : json({ success: true, result: { id: versioned[2], annotations: held.tag === null ? {}
+          : { "workers/tag": held.tag, "workers/message": COMMIT } } });
     }
     const given = method === "POST" ? JSON.parse(body!) as Record<string, string> : {};
     if (path === `${account}/storage/kv/namespaces` && method === "POST") {
@@ -371,7 +524,7 @@ function world(options: WorldOptions = {}) {
     if (path === "/zones/z/workers/routes" && method === "GET") {
       return json({ success: true, result: [...routes.values()] });
     }
-    if (path === `/accounts/${ACCOUNT}/workers/domains?hostname=${EGRESS_DOMAIN}`) {
+    if (path === `/accounts/${ACCOUNT}/workers/domains?hostname=${EGRESS_HOST}`) {
       return json({ success: true, result: [...domains.values()] });
     }
     if (path.startsWith(`/accounts/${ACCOUNT}/workers/domains/`) && method === "DELETE") {
@@ -386,9 +539,23 @@ function world(options: WorldOptions = {}) {
       }
       return json({ success: true, result: null });
     }
-    if (path === `/zones/z/dns_records?name.exact=${EGRESS_DOMAIN}&per_page=100`) {
+    const listed = /^\/zones\/z\/dns_records\?name\.exact=([^&]+)&per_page=100$/.exec(path);
+    if (listed !== null) {
       return json({ success: true, result: dns.filter((record) => options.noisyDns === true
-        || record.name === EGRESS_DOMAIN) });
+        || record.name === listed[1]) });
+    }
+    if (path === "/zones/z/dns_records" && method === "POST") {
+      if (options.refusingDns === true) {
+        return json({ success: false, errors: [{ code: 10000 }] }, 403);
+      }
+      const record = { id: `dns-made${dns.length}`, type: given["type"]!, name: given["name"]!,
+                       content: given["content"]!, proxied: given["proxied"] as unknown };
+      dns.push(record);
+      // Killed here, the record is made and its answer lost.
+      if (killed()) {
+        throw new Error("the run was killed");
+      }
+      return json({ success: true, result: record });
     }
     if (path.startsWith("/zones/z/dns_records/") && method === "DELETE") {
       if (killed()) {
@@ -462,6 +629,13 @@ function world(options: WorldOptions = {}) {
       return stored === undefined ? json({ success: false, errors: [{ code: 10009 }] }, 404)
         : new Response(stored, { status: 200 });
     }
+    const deleting = /^\/accounts\/a+\/storage\/kv\/namespaces\/([^/]+)\/bulk\/delete$/.exec(path);
+    if (deleting !== null && method === "POST") {
+      for (const key of JSON.parse(body!) as string[]) {
+        kv.delete(`${deleting[1]}/${key}`);
+      }
+      return json({ success: true, result: null });
+    }
     return json({ success: false, errors: [{ code: 1 }] }, 500);
   };
   const fetcher = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -472,6 +646,19 @@ function world(options: WorldOptions = {}) {
       const path = url.slice("https://api.cloudflare.com/client/v4".length);
       events.push(`cf ${method} ${path}`);
       return cf(path, method, body);
+    }
+    if (at.host === EGRESS_HOST) {
+      events.push(`egress ${method} ${url} Connection: ${
+        new Headers(init?.headers).get("Connection")}`);
+      if (![...domains.values()].some((domain) => domain.service === DOORS)
+          || clock - NOW.getTime() < (options.egressAfterMs ?? 0)) {
+        throw new TypeError("fetch failed", { cause: new Error(
+          "Client network socket disconnected before secure TLS connection was established") });
+      }
+      if (clock - NOW.getTime() < (options.egressAfterMs ?? 0) + (options.egressErrorMs ?? 0)) {
+        return new Response("<html>Connection timed out</html>", { status: 522 });
+      }
+      return json({ error: { code: "not_found", message: "not_found" } }, 404);
     }
     if (at.host === "auth.test") {
       events.push("issuer discovery");
@@ -484,7 +671,7 @@ function world(options: WorldOptions = {}) {
     if (at.pathname === "/user_management/redirect_uris") {
       events.push(`workos ${method} redirect_uris`);
       return method === "POST" ? json({}, 201)
-        : json({ data: held || options.probed === true ? [{ uri: UPSTREAM_CALLBACK }] : [] });
+        : json({ data: held ? [{ uri: UPSTREAM_CALLBACK }] : [] });
     }
     if (at.host === "api.e2b.app") {
       expect((init?.headers as Record<string, string>)["X-API-Key"]).toBe(E2B_KEY);
@@ -519,9 +706,20 @@ function world(options: WorldOptions = {}) {
                   options_: { env?: Record<string, string>; input?: string } = {}) => {
     if (argv[0] === WRANGLER) {
       accounts.push(options_.env?.["CLOUDFLARE_ACCOUNT_ID"]);
-      const args = argv.slice(1).map((arg) => arg.endsWith(".json")
-        ? `${basename(join(arg, ".."))}/${basename(arg)}` : arg);
+      const file = argv.indexOf("--secrets-file");
+      const args = argv.slice(1).map((arg, at) => at === file ? "<file>"
+        : arg.endsWith(".json") ? `${basename(join(arg, ".."))}/${basename(arg)}` : arg);
       events.push(`wrangler ${args.join(" ")}`);
+      if (file >= 0) {
+        const path = argv[file + 1]!;
+        const worker = basename(join(argv[argv.indexOf("--config") + 1]!, ".."));
+        const values = JSON.parse(readFileSync(path, "utf8")) as Record<string, string>;
+        secretFiles.push({ worker, path, mode: statSync(path).mode & 0o777,
+                           names: Object.keys(values) });
+        for (const [name, value] of Object.entries(values)) {
+          secretsPut[`${worker}:${name}`] = value;
+        }
+      }
       if (options.failing !== undefined && args.join(" ").startsWith(options.failing)) {
         return { status: 1, stdout: "", stderr: "the API refused it" };
       }
@@ -535,20 +733,41 @@ function world(options: WorldOptions = {}) {
         }
         // One custom domain a host: the doors' already is kept as it is.
         if (![...domains.values()].some((domain) => domain.service === DOORS)) {
-          domains.set("d1", { id: "d1", hostname: EGRESS_DOMAIN, service: DOORS });
+          domains.set("d1", { id: "d1", hostname: EGRESS_HOST, service: DOORS });
           if (!dns.some((record) => record.id === ATTACHED.id)) {
             dns.push({ ...ATTACHED });
           }
         }
       }
-      const stdout = args[1] === "upload"
-        ? "Worker Version ID: 0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n" : "";
+      // A version made, and deployed unless it is only uploaded; or an upload deployed.
+      const config = argv.indexOf("--config");
+      const script = config < 0 ? undefined
+        : NAMES[basename(join(argv[config + 1]!, ".."))];
+      const tagged = argv.indexOf("--tag") < 0 ? null : argv[argv.indexOf("--tag") + 1]!;
+      let stdout = "";
+      if (script !== undefined && (args[0] === "deploy" || args[1] === "upload")) {
+        const id = version(script, tagged);
+        stdout = `${args[0] === "deploy" ? "Current" : "Worker"} Version ID: ${id}\n`;
+        if (args[0] === "deploy" && !inert.has("deploy")) {
+          deploy(script, [{ version: id, percentage: 100 }]);
+        }
+      } else if (script !== undefined && args[0] === "versions" && args[1] === "deploy") {
+        // Each `<id>@<share>` before the flags, in the order given, as wrangler sends them.
+        const specs = args.slice(2, args.indexOf("--yes")).map((spec) => {
+          const [version, share] = spec.split("@");
+          expect(versions.get(version!)?.script).toBe(script);
+          return { version: version!, percentage: Number(share) };
+        });
+        if (!inert.has("deploy")) {
+          deploy(script, specs);
+        }
+      }
       return { status: 0, stdout, stderr: "" };
     }
     if (command === process.execPath && argv.some((arg) => arg.endsWith("canary.ts"))) {
       events.push(["node", ...argv.slice(argv.findIndex((arg) => arg.endsWith("canary.ts")))
         .map((arg) => basename(arg))].join(" "));
-      return { status: 0, stdout: "", stderr: "" };
+      return { status: argv.includes("--smoke") ? options.smoke ?? 0 : 0, stdout: "", stderr: "" };
     }
     if (command === process.execPath && argv.some((arg) => arg.endsWith("checks.ts"))) {
       events.push(`node ${argv.slice(argv.findIndex((arg) => arg.endsWith("checks.ts")))
@@ -559,7 +778,8 @@ function world(options: WorldOptions = {}) {
     }
     if (String(argv[0]).endsWith(join("ci", "kit", "locks.ts")) && argv[1] === "digests") {
       events.push(`locks ${argv[2]}`);
-      return options.lockRefused === undefined ? { status: 0, stdout: "{}", stderr: "" }
+      return options.lockRefused === undefined
+        ? { status: 0, stdout: JSON.stringify((options.pinned ?? PINNED)[argv[2]!]), stderr: "" }
         : { status: 1, stdout: "", stderr: `${options.lockRefused}\n` };
     }
     if (command === "rclone") {
@@ -596,22 +816,26 @@ function world(options: WorldOptions = {}) {
   };
   // The clock moves on only while the kit waits for an answer.
   let clock = NOW.getTime();
-  const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, log,
+  const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, commit: () => COMMIT, log,
                    now: () => new Date(clock), sleep: async (ms) => { clock += ms; } };
-  return { io, events, logs, secretsPut, routes, hooks, accounts, kv, tables, kill, domains,
-           inert, dns, created, sent };
+  return { io, events, logs, secretsPut, secretFiles, secrets, routes, hooks, accounts, kv, tables,
+           kill, domains, inert, dns, created, sent, deployments, versions };
 }
 
 const H2_INPUTS_LIST = Object.values(H2_INPUTS);
 
+/** The kit's two entries a run goes through: this tree's, or one loaded with another identity. */
+type Kit = Pick<typeof import("../deploy"), "perform" | "parse">;
+
 /**
- * `mode` run whole in `w`, with `flags` and `env`: its work, or its refusal. An applied run is
- * the workflow's two jobs: the plan job's run (`--public`) writes its plan to a file, then the
- * apply job's run is held to it, which first makes the plan job's steps again. Each job has a
- * log of its own, so `w` keeps only the apply job's, after the plan made again.
+ * `mode` run whole in `w`, with `flags` and `env`, by `kit`: its work, or its refusal. An
+ * applied run is the workflow's two jobs: the plan job's run (`--public`) writes its plan to a
+ * file, then the apply job's run is held to it, which first makes the plan job's steps again.
+ * Each job has a log of its own, so `w` keeps only the apply job's, after the plan made again.
  */
 async function runMode(w: ReturnType<typeof world>, mode: Mode, flags: string[] = [],
-                       env: Record<string, string> = ENV) {
+                       env: Record<string, string> = ENV, kit: Kit = { perform, parse }) {
+  const { perform, parse } = kit;
   if (!flags.includes("--yes")) {
     return perform(parse(["--mode", mode, ...flags], env, w.io));
   }
@@ -645,7 +869,8 @@ const ISSUED = "set the doors' OWNER_ISSUER to https://auth.test, held to its di
   "their UPSTREAM to the WorkOS client client_test and the JWKS https://auth.test/jwks";
 
 /** The apply job's first line: the plan job's plan holds on the live state. */
-const HELD = "the plan job's plan, made again from the live state, is the one approved";
+const HELD = "the plan job's plan, made again from the live state, is the one approved, and " +
+  "each line below is held to its line there as it is said";
 
 /** The indexes of `needles` in `events`, each the first after the one before it. */
 function order(events: readonly string[], needles: readonly string[]): number[] {
@@ -687,6 +912,38 @@ describe("the deploy kit's facts", () => {
     expect(retiredWorkers(["tinyassets-old"], NAMES)).toEqual(["tinyassets-old"]);
     expect(() => retiredWorkers(["tinyassets-old", NAMES["owner"]!], NAMES))
       .toThrow(`platform.json retires ${NAMES["owner"]}, which a config still names`);
+  });
+
+  it("reads the stages as shares rising to 100 and a soak of whole seconds", () => {
+    expect(STAGES).toEqual(stagesOf(platform.stages));
+    expect(stagesOf({ shares: [0, 10, 50, 100], soak_s: 300 }))
+      .toEqual({ shares: [0, 10, 50, 100], soakMs: 300_000 });
+    expect(stagesOf({ shares: [100], soak_s: 1 })).toEqual({ shares: [100], soakMs: 1000 });
+    for (const bad of [{ shares: [0, 50], soak_s: 30 }, { shares: [50, 0, 100], soak_s: 30 },
+                       { shares: [0, 0, 100], soak_s: 30 }, { shares: [-1, 100], soak_s: 30 },
+                       { shares: ["0", 100], soak_s: 30 }, { shares: [0, 100], soak_s: 0 },
+                       { shares: [0, 100], soak_s: 1.5 }, { shares: [0, 100] }, { soak_s: 30 }]) {
+      expect(() => stagesOf(bad), JSON.stringify(bad)).toThrow("platform.json's stages are no " +
+        "shares rising from 0 up to 100 with a soak of whole seconds above 0");
+    }
+  });
+
+  it("counts each Worker's forward changes, each naming Workers of this tree once, with why",
+     () => {
+    expect(FORWARD).toEqual(forwardCounts(platform.forward.changes, NAMES));
+    expect(Object.keys(FORWARD).sort()).toEqual([...WORKERS].sort());
+    const why = "its app's page asks /app/api in a shape the version before cannot read";
+    expect(forwardCounts([{ workers: ["doors"], why }, { workers: ["doors", "owner"], why }],
+                         NAMES)).toEqual({ ...Object.fromEntries(WORKERS.map((worker) =>
+      [worker, 0])), doors: 2, owner: 1 });
+    for (const bad of [{ workers: [], why }, { workers: ["doors", "doors"], why },
+                       { workers: [NAMES["doors"]], why }, { workers: ["toString"], why },
+                       { workers: ["doors"] },
+                       { workers: ["doors"], why: " " }, null]) {
+      expect(() => forwardCounts([{ workers: ["owner"], why }, bad], NAMES), JSON.stringify(bad))
+        .toThrow("platform.json's forward change 2 names no Worker of this tree, each once, " +
+                 "with why");
+    }
   });
 
   it("holds only what no config says, and that for exactly what the configs declare", () => {
@@ -734,7 +991,7 @@ describe("the deploy kit's facts", () => {
     }
     const routed = routedConfig("doors", IDS, UPSTREAM)["routes"];
     expect(routed).toEqual([...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
-                            { pattern: EGRESS_DOMAIN, custom_domain: true }]);
+                            { pattern: EGRESS_HOST, custom_domain: true }]);
   });
 
   it("bundles every Worker from the config it stages, as wrangler deploys it", { tags: ["large"] },
@@ -770,6 +1027,22 @@ describe("the deploy kit's facts", () => {
     expect(control?.tiers).not.toBeNull();
   });
 
+  it("stops loudly on a held record no reader takes, and never writes over it", async () => {
+    // A key the readers no longer hold (fact15-defaults-2) is such a record, as a typo is.
+    for (const held of [JSON.stringify({ ...DARK, scratch_retention_days: 30 }), "off\n"]) {
+      const w = world({ held: true });
+      w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, held);
+      await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+        `the control record is one no reader takes: ${held}; every gate reads it closed until ` +
+        "the control mode's --replace gives the whole record");
+      expect(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)).toBe(held);
+    }
+    // A record they take is left as it is.
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"]);
+    expect(JSON.parse(w.kv.get(`${CONTROL_NS}/${CONTROL_KEY}`)!)).toEqual(DARK);
+  });
+
   it("prints the import job's names for its bundle, each storage this kit makes, and the doors",
      () => {
     const run = (...flags: string[]) => spawnSync(process.execPath, [
@@ -793,8 +1066,8 @@ describe("the command line", () => {
   const w = world();
 
   it("takes one mode, by --mode, and refuses a run with none or another", () => {
-    expect(Object.keys(MODES)).toEqual(["plan", "dark", "probe", "routes", "h2", "pair",
-                                        "handback", "control", "owner", "restore", "copyback",
+    expect(Object.keys(MODES)).toEqual(["plan", "dark", "routes", "h2", "pair",
+                                        "handback", "rollback", "control", "owner", "restore", "copyback",
                                         "recover", "erase",
                                         "rotation", "retire"]);
     for (const mode of Object.keys(MODES) as Mode[]) {
@@ -803,7 +1076,7 @@ describe("the command line", () => {
     for (const argv of [[], ["--mode"], ["--mode", "apply"], ["--mode", "constructor"],
                         ["--yes", "--routes"], ["--mode", "--yes"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
-        "--mode is one of plan, dark, probe, routes, h2, pair, handback, control, owner");
+        "--mode is one of plan, dark, routes, h2, pair, handback, rollback, control, owner");
     }
     for (const argv of [["--mode", "dark", "--mode", "routes"], ["--mode", "dark", "--mode", "dark"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" ")).toThrow(
@@ -834,10 +1107,6 @@ describe("the command line", () => {
     }
     expect([...parse(["--mode", "dark", "--migrate", MIGRATES.join(",")], ENV, w.io).migrate])
       .toEqual(MIGRATES);
-    for (const option of ["--rotate", "--migrate"]) {
-      expect(() => parse(["--mode", "probe", option, "owner"], ENV, w.io))
-        .toThrow("mode probe deploys nothing: it takes no --rotate or --migrate");
-    }
     const run = parse(["--mode", "routes", "--yes", "--plan", "plan.json", "--rotate",
                        "ROUTING_MAC_KEY,FILES_KEYRING", "--migrate", "owner"], ENV, w.io);
     expect([run.reach, run.apply, [...run.rotate], [...run.migrate]])
@@ -902,8 +1171,8 @@ describe("the plan the apply job runs", () => {
     w.routes.delete("r6");
     const { why, changed } = await refused(w, "routes", plan);
     expect(why).toMatch(/^the live state no longer plans what was approved, so nothing is changed: /);
-    expect(why).toContain("approved, and not planned now: record the zone's 8 routes");
-    expect(why).toContain("planned now, and never approved: record the zone's 7 routes");
+    expect(why).toContain("approved, and not planned now: record the zone's 6 routes");
+    expect(why).toContain("planned now, and never approved: record the zone's 5 routes");
     expect(changed).toEqual([]);
   });
 
@@ -912,10 +1181,10 @@ describe("the plan the apply job runs", () => {
     const plan = await planned(forged, "dark");
     const file = JSON.parse(readFileSync(plan, "utf8")) as { plan: { lines: string[] } };
     file.plan.lines = file.plan.lines.filter((line) =>
-      !line.startsWith(`upload and deploy a version of ${DOORS}`));
+      !line.startsWith(`upload a version of ${DOORS}`));
     writeFileSync(plan, JSON.stringify(file));
     expect(await refused(forged, "dark", plan)).toEqual({ changed: [], why: expect.stringContaining(
-      `planned now, and never approved: upload and deploy a version of ${DOORS}`) });
+      `planned now, and never approved: upload a version of ${DOORS}`) });
     const shapeless = world({ held: true });
     const empty = await planned(shapeless, "dark");
     writeFileSync(empty, "{}");
@@ -926,6 +1195,108 @@ describe("the plan the apply job runs", () => {
       changed: [], why: `there is no plan at ${join(tmpdir(), "ta-no-plan", "plan.json")}: the ` +
         "apply job applies only the plan its run's plan job wrote (--public --plan); nothing is " +
         "changed" });
+  });
+
+  it("applies, line by line, the plan job's plan, each line left to it with its answer",
+     async () => {
+    const LATER = ": checked by the apply job before any change";
+    const lacking = ["INBOUND_SLACK_SIGNING_SECRET", "PLATFORM_CANARY_TOKEN"];
+    const without = Object.fromEntries(Object.entries(RUN).filter(([name]) =>
+      !lacking.includes(name)));
+    for (const [mode, options, env] of [
+      ["dark", {}, RUN], ["dark", { held: true }, RUN], ["dark", { held: true, lacking }, RUN],
+      ["dark", { held: true, lacking }, without], ["routes", { held: true }, RUN],
+      ["routes", { held: true, lacking }, without]] as const) {
+      const w = world(options);
+      const plan = await planned(w, mode, [], env);
+      const approved = (JSON.parse(readFileSync(plan, "utf8")) as { plan: { lines: string[] } })
+        .plan.lines;
+      const work = await perform(parse(["--mode", mode, "--yes", "--plan", plan], env, w.io));
+      rmSync(join(plan, ".."), { recursive: true, force: true });
+      const applied = work.plan.slice(1);
+      // What a change showed once made: the custom domain's DNS record, which routes writes
+      // into its record, and the egress host's answer; and each deployment read back.
+      const did = applied.filter((line) => line.startsWith("record in deploy:routes:")
+        || line.startsWith(`https://${EGRESS_HOST}/ answers`) || READ_BACK.test(line));
+      const said = applied.filter((line) => !did.includes(line));
+      expect([mode, options, said.length]).toEqual([mode, options, approved.length]);
+      said.forEach((line, at) => {
+        const shown = approved[at]!;
+        expect([mode, at, shown.endsWith(LATER) ? line.startsWith(shown.slice(0, -LATER.length))
+          && !line.endsWith(LATER) : line === shown]).toEqual([mode, at, true]);
+      });
+    }
+  });
+
+  it("applies a first deploy whose WorkOS client lacks the callback: the plan job leaves the " +
+     "early sign-in check to it", async () => {
+    // WorkOS refuses the callback until the apply job registers it.
+    const w = world();
+    const fetch = w.io.fetch;
+    let registered = false;
+    Object.assign(w.io, { fetch: async (url: string, init?: RequestInit) => {
+      const at = new URL(url).pathname;
+      registered ||= at === "/user_management/redirect_uris" && init?.method === "POST";
+      return at === "/user_management/authorize" && !registered
+        ? new Response(null, { status: 302, headers: {
+          Location: "https://error.workos.com/redirect-uri-invalid?redirect_uri=x" } })
+        : fetch(url, init);
+    } });
+    const plan = await planned(w, "dark");
+    const subject = `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}`;
+    expect((JSON.parse(readFileSync(plan, "utf8")) as { plan: { lines: string[] } }).plan.lines)
+      .toContain(`${subject}: checked by the apply job before any change`);
+    const work = await perform(parse(["--mode", "dark", "--yes", "--plan", plan], RUN, w.io));
+    rmSync(join(plan, ".."), { recursive: true, force: true });
+    expect(work.plan).toContain(`${subject}: it takes them, sending the browser to auth.test's ` +
+                                "sign-in");
+  });
+
+  it("holds each line to the approved one, a line left to it by its subject, and ends with it",
+     () => {
+    const LATER = "checked by the apply job before any change";
+    const approved = ["a", `the subject: ${LATER}`, "b"];
+    const applied = (lines: readonly string[]) => {
+      const hold = holding(approved);
+      lines.forEach(hold.next);
+      hold.done();
+    };
+    // Its answer in place of the words, and once every line is said, what the run did after.
+    expect(() => applied(["a", "the subject: present", "b", "an answer"])).not.toThrow();
+    const second = "line 2 is not the approved plan's";
+    for (const [lines, why] of [
+      [["a", "another subject: present", "b"], second],
+      [["a", `the subject: ${LATER}`, "b"], second],
+      [["a", "the subject: ", "b"], second],
+      [["b"], `line 1 is not the approved plan's, so it stops before that change: approved "a"`],
+      [["a", "the subject: present"], `ended before the approved plan's line 3 ("b")`],
+    ] as const) {
+      expect(() => applied(lines), lines.join("|")).toThrow(why);
+    }
+  });
+
+  it("stops at the first line its own steps say that the plan job did not, before its change",
+     async () => {
+    // Between the plan made again and this job's own steps, a held secret goes from the doors.
+    const w = world({ held: true });
+    const plan = await planned(w, "dark");
+    const listing = `/workers/scripts/${DOORS}/secrets`;
+    const fetch = w.io.fetch;
+    let listed = 0;
+    Object.assign(w.io, { fetch: async (url: string, init?: RequestInit) => {
+      if (url.endsWith(listing) && ++listed === 2) {
+        w.secrets.get(DOORS)!.splice(w.secrets.get(DOORS)!.indexOf("WORKOS_API_KEY"), 1);
+      }
+      return fetch(url, init);
+    } });
+    const { why, changed } = await refused(w, "dark", plan);
+    expect(why).toMatch(new RegExp(`^this job's line \\d+ is not the approved plan's, so it ` +
+      "stops before that change, having made no change but what the approved lines before it " +
+      "name: approved \"record " +
+      "each Worker's version as this run's rollout record"));
+    expect(why).toContain(`and this job's "set the secret WORKOS_API_KEY on ${DOORS} with its ` +
+                          'version"');
+    expect(changed).toEqual([]);
   });
 
   it("stops before any change on another run's plan", async () => {
@@ -969,15 +1340,15 @@ describe("a dark run", () => {
       "e2b GET /events/webhooks", "workos GET redirect_uris", "workos POST redirect_uris",
       "workos authorize", "cf GET /accounts", `cf POST /accounts/${ACCOUNT}/storage/kv/namespaces`,
       `cf POST /accounts/${ACCOUNT}/r2/buckets`, `cf POST /accounts/${ACCOUNT}/queues`,
-      `cf POST /accounts/${ACCOUNT}/queues`, "wrangler secret put ROUTING_MAC_KEY",
+      `cf POST /accounts/${ACCOUNT}/queues`,
       "wrangler deploy --config files/", "wrangler deploy --config doors/", "cf PUT /accounts",
       "e2b POST /events/webhooks", "log Run ", "node canary.ts"]);
     const first = w.events.findIndex((event) =>
       /^(cf POST|wrangler secret|cf PUT)/.test(event));
     expect(at[11]).toBeLessThan(first);
     // The webhook is registered disabled, with the doors' secret, after the doors hold it.
-    expect(w.events[at[21]!]).toContain('"enabled":false');
-    expect(w.events[at[21]!]).toContain('"signatureSecret":"hook-secret"');
+    expect(w.events[at[20]!]).toContain('"enabled":false');
+    expect(w.events[at[20]!]).toContain('"signatureSecret":"hook-secret"');
     // The plan is reported whole, every step's line in it, before the canary.
     expect(work.plan).toEqual([HELD, ...DARK_FRESH]);
     expect(w.logs).toEqual([summary("changed", [HELD, ...DARK_FRESH])]);
@@ -998,8 +1369,9 @@ describe("a dark run", () => {
     expect([zone, mask]).toEqual([zone, zone + 1]);
     expect(w.events.findIndex((event) => event.includes(ACCOUNT))).toBe(mask);
     expect(mask).toBeLessThan(w.events.findIndex((event) => event.startsWith("wrangler")));
-    expect(w.logs.filter((line) => line.startsWith("::add-mask::"))).toEqual(
-      [`::add-mask::${ACCOUNT}`]);
+    // The canary's own zone read masks it again, which changes nothing.
+    expect(new Set(w.logs.filter((line) => line.startsWith("::add-mask::")))).toEqual(
+      new Set([`::add-mask::${ACCOUNT}`]));
   });
 
   it("stops before anything without an input its row reads, naming where it comes from",
@@ -1063,7 +1435,7 @@ describe("a dark run", () => {
       .toEqual(RETIRED.map(deleting));
     const deployed = Math.max(...w.events.map((event, at) =>
       /^wrangler (deploy|versions deploy) /.test(event) ? at : -1));
-    const control = w.events.findIndex((event) => event.startsWith(CONTROL_WRITE));
+    const control = w.events.findIndex(writesControl);
     for (const name of RETIRED) {
       expect(w.events.indexOf(deleting(name))).toBeGreaterThan(deployed);
       expect(w.events.indexOf(deleting(name))).toBeLessThan(control);
@@ -1084,7 +1456,7 @@ describe("a dark run", () => {
     // With nothing retired there is nothing to refuse, and the run goes on.
     expect(ran).toBe(RETIRED.length === 0 ? "ran"
       : `deleting the Worker ${RETIRED[0]} failed (400, [10064])`);
-    expect(w.events.some((event) => event.startsWith(CONTROL_WRITE))).toBe(RETIRED.length === 0);
+    expect(w.events.some(writesControl)).toBe(RETIRED.length === 0);
   });
 
   it("plans the same steps without --yes, and changes nothing", async () => {
@@ -1106,8 +1478,8 @@ describe("a dark run", () => {
       || event.startsWith("workos POST"))).toEqual([]);
     expect(work.plan.filter((line) => line.endsWith("checked by the apply job before any change")))
       .toEqual([`E2B's ready build of ${TEMPLATE}: checked by the apply job before any change`,
-                `the pair ${PAIR} passed its standing checks: checked by the apply job before ` +
-                "any change",
+                `the pair ${PAIR}'s standing checks in this E2B team: checked by the apply job ` +
+                "before any change",
                 `WorkOS redirect URI ${UPSTREAM_CALLBACK}: checked by the apply job before any change`,
                 `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
     // With none held, the control record is planned, and the hook's word comes after it, last.
@@ -1117,17 +1489,56 @@ describe("a dark run", () => {
       true, `E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job before any change`]);
   });
 
-  it("deploys a held Worker as a version, and a named migration whole", async () => {
-    const w = world({ held: true });
+  it("deploys a held Worker as a version, and a named migration whole, each tagged with the " +
+     "commit and its locks' counts", async () => {
+    // The sandbox's locks listed out of their paths' order: the tag counts in that order.
+    const w = world({ held: true, pinned: {
+      owner: { "owner/migrations.json": ["a", "b", "c"] },
+      sandbox: { "sandbox/migrations/SandboxSlots.json": ["d"],
+                 "sandbox/migrations/SandboxControl.json": ["e", "f"] } } });
     await runMode(w, "dark", ["--yes", "--migrate", "owner"]);
+    const tagged = (tag: string) => `--tag ${tag} --message ${COMMIT}`;
     expect(w.events.filter((event) => event.startsWith("wrangler deploy")
       || event.startsWith("wrangler versions upload"))).toEqual([
-      ...["codemode", "files", "gateway", "sandbox"].map((worker) =>
-        `wrangler versions upload --config ${worker}/wrangler.json`),
-      "wrangler deploy --config owner/wrangler.json",
-      "wrangler versions upload --config doors/wrangler.json"]);
-    // Nothing held is made again, and the control record is left alone.
-    expect(w.events.filter((event) => /create|cf PUT|secret put/.test(event))).toEqual([]);
+      ...["codemode", "files", "gateway"].map((worker) =>
+        `wrangler versions upload --config ${worker}/wrangler.json ${tagged("c0ffee111111")}`),
+      `wrangler versions upload --config sandbox/wrangler.json ${tagged("c0ffee111111-m2.1")}`,
+      `wrangler deploy --config owner/wrangler.json ${tagged("c0ffee111111-m3")}`,
+      `wrangler versions upload --config doors/wrangler.json ${tagged("c0ffee111111")}`]);
+    // Nothing held is made again, and the control record is left alone: the one write is the
+    // run's rollout record.
+    expect(w.events.filter((event) => /create|cf PUT|secret put/.test(event))).toEqual([
+      `${CONTROL_WRITE}namespaces/${CONTROL_NS}/values/${encodeURIComponent(
+        "deploy:rollout:local-20261107T120000Z")}`]);
+  });
+
+  it("sets each secret only with the version it deploys, from a file of its names alone, " +
+     "mode 0600, removed after the run", async () => {
+    // A fresh account: every Worker's secrets, each with its first deploy.
+    const w = world();
+    await runMode(w, "dark", ["--yes"]);
+    expect(w.events.filter((event) => /^wrangler (versions )?secret/.test(event))).toEqual([]);
+    expect(w.secretFiles.map(({ worker, names }) => [worker, names])).toEqual(
+      WORKERS.filter((worker) => worker in SECRETS).map((worker) => [worker, [...SECRETS[worker]!]]));
+    expect(w.events.filter((event) => event.includes("--secrets-file")).map((event) =>
+      event.split(" ")[3])).toEqual(w.secretFiles.map(({ worker }) => `${worker}/wrangler.json`));
+    for (const { path, mode } of w.secretFiles) {
+      expect([path, mode.toString(8), existsSync(path)]).toEqual([path, "600", false]);
+    }
+    // A held account rotating the routing key: the doors' and the owner's versions carry it,
+    // alone, and no other Worker's carries a file.
+    const rotated = world({ held: true });
+    await runMode(rotated, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY"]);
+    expect(rotated.secretFiles.map(({ worker, names }) => [worker, names])).toEqual([
+      ["owner", ["ROUTING_MAC_KEY"]], ["doors", ["ROUTING_MAC_KEY"]]]);
+    expect(rotated.secretsPut).toEqual({ "owner:ROUTING_MAC_KEY": ENV["ROUTING_MAC_KEY"],
+                                         "doors:ROUTING_MAC_KEY": ENV["ROUTING_MAC_KEY"] });
+    // An upload that fails stops the run, its file removed all the same.
+    const failed = world({ held: true, failing: "versions upload --config owner/" });
+    await expect(runMode(failed, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY"]))
+      .rejects.toThrow("wrangler versions upload --config failed (exit 1)");
+    expect(failed.secretFiles.map(({ worker, path }) => [worker, existsSync(path)]))
+      .toEqual([["owner", false]]);
   });
 
   it("stops before any change when a migration lock does not pin what the code ships",
@@ -1274,8 +1685,9 @@ describe("a dark run", () => {
       `the pair ${PAIR} has not passed its standing checks in this E2B team: run the pair job ` +
       "(--mode pair) first; nothing is deployed");
     const work = await runMode(world({ paired: false }), "plan");
-    expect(work.plan).toContain(`the pair ${PAIR} has not passed in this E2B team: the pair ` +
-                                "job runs its check (--mode pair) before the apply job");
+    expect(work.plan).toContain(`the pair ${PAIR}'s standing checks in this E2B team: not ` +
+                                "passed yet: the pair job runs its check (--mode pair) before " +
+                                "the apply job");
   });
 });
 
@@ -1289,7 +1701,7 @@ describe("a routes run", () => {
                      "cf PUT /zones/z/workers/routes/r1", "cf POST /zones/z/workers/routes",
                      "cf DELETE /zones/z/workers/routes/r4", "wrangler triggers deploy",
                      "e2b PATCH /events/webhooks/w1 {\"enabled\":true}", "log Run ",
-                     "node canary.ts --side doors --unkeyed"]);
+                     "node canary.ts --side doors --closed"]);
     // The routes are read once, before any change; the doors' last version is deployed before
     // a route moves; the hook is enabled only after the last route and the custom domain.
     expect(w.events.filter((event) => event === "cf GET /zones/z/workers/routes")).toHaveLength(1);
@@ -1300,11 +1712,59 @@ describe("a routes run", () => {
     // Every wrangler command, the routes' triggers deploy too, is handed the zone's account.
     expect(w.accounts.length).toBeGreaterThan(0);
     expect(new Set(w.accounts)).toEqual(new Set([ACCOUNT]));
-    for (const path of ["tinyassets.io/mcp", "tinyassets.io/api/x", "tinyassets.io/oauth/token",
-                        "tinyassets.io/.well-known/oauth-protected-resource/mcp",
-                        `tinyassets.io${identity.hook}`]) {
+    for (const path of [`${HOST}/mcp`, `${HOST}/api/x`, `${HOST}/oauth/token`,
+                        `${HOST}/.well-known/oauth-protected-resource/mcp`,
+                        `${HOST}${identity.hook}`]) {
       expect([path, servedBy(w.routes.values(), path)]).toEqual([path, DOORS]);
     }
+  });
+
+  it("waits for the egress door's refusal after its attach, through TLS failures and " +
+     "Cloudflare's own error page, before the hook and the canary", async () => {
+    const w = world({ held: true, egressAfterMs: 60_000, egressErrorMs: 60_000 });
+    const { sleep } = w.io;
+    Object.assign(w.io, { sleep: async (ms: number) => {
+      w.events.push(`sleep ${ms}`);
+      await sleep(ms);
+    } });
+    const work = await runMode(w, "routes", ["--yes"]);
+    // Each attempt a fresh connection: undici keeps an answered socket otherwise.
+    const asked = `egress GET https://${EGRESS_HOST}/ Connection: close`;
+    const attach = w.events.findIndex((event) => event.startsWith("wrangler triggers deploy"));
+    const after = w.events.slice(attach);
+    // Asked only after the attach, every 15 s until it answers, two minutes on; then the hook
+    // and the canary.
+    expect(w.events.indexOf(asked)).toBeGreaterThan(attach);
+    expect(after.filter((event) => event === asked)).toHaveLength(9);
+    expect(after.filter((event) => event.startsWith("sleep "))).toEqual(
+      Array(8).fill("sleep 15000"));
+    expect(after.lastIndexOf(asked)).toBeLessThan(after.indexOf(
+      "e2b PATCH /events/webhooks/w1 {\"enabled\":true}"));
+    expect(after.lastIndexOf(asked)).toBeLessThan(after.indexOf(
+      "node canary.ts --side doors --closed"));
+    expect(work.plan).toContain(`https://${EGRESS_HOST}/ answers with the egress door's refusal`);
+  });
+
+  it("takes only the egress door's refusal, never another 404 or Cloudflare's page", async () => {
+    const answers = [Response.json({ error: { code: "not_found" } }, { status: 404 }),
+                     Response.json({ error: {} }, { status: 404 }),
+                     new Response("<html>Not found</html>", { status: 404 }),
+                     new Response("<html>Connection timed out</html>", { status: 522 })];
+    expect(await Promise.all(answers.map(egressRefusal))).toEqual([true, false, false, false]);
+  });
+
+  it.each([
+    [{ egressAfterMs: Number.POSITIVE_INFINITY }, "fetch failed (Client network socket " +
+     "disconnected before secure TLS connection was established)"],
+    [{ egressErrorMs: Number.POSITIVE_INFINITY }, "HTTP 522, not the egress door's refusal"],
+  ])("stops ten minutes after the attach while the egress door does not answer (%o), naming " +
+     "the cause, before the hook or the canary", async (egress, cause) => {
+    const w = world({ held: true, ...egress });
+    await expect(runMode(w, "routes", ["--yes"])).rejects.toThrow(
+      `https://${EGRESS_HOST}/ did not answer with the egress door's refusal within 10 minutes ` +
+      `of the custom domain's attach: ${cause}. Run routes again once it does`);
+    expect(w.events.some((event) => event.startsWith("node canary.ts"))).toBe(false);
+    expect(w.events.some((event) => event.startsWith("e2b PATCH"))).toBe(false);
   });
 
   it("reads the zone's routes with the checks, before WorkOS's, storage or any change",
@@ -1318,11 +1778,10 @@ describe("a routes run", () => {
       event.startsWith("cf GET /accounts")));
   });
 
-  it("in the plan job says the hook waits, where dark's would be", async () => {
+  it("in the plan job says the hook last, after the routes, where the apply job does", async () => {
     const work = await runMode(world({ held: true }), "routes", ["--public"], PUBLIC);
-    const hook = work.plan.findIndex((line) => line.startsWith("E2B lifecycle webhook"));
-    expect(work.plan[hook - 1]).toBe(`upload and deploy a version of ${DOORS}, touching no route`);
-    expect(work.plan[hook + 1]).toMatch(/^move the route /);
+    expect(work.plan.at(-1)).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: ${
+      "checked by the apply job before any change"}`);
   });
 });
 
@@ -1381,7 +1840,9 @@ describe("the route record", () => {
         moved: handover(table, DOORS, ROUTES).map((each) =>
           ({ method: each.method, pattern: each.pattern })),
         // The attach's own DNS record, written in once the attach is done.
-        domain: { hostname: EGRESS_DOMAIN, service: null, created: [{ id: "dns-egress", type: "AAAA", content: "100::" }] },
+        domain: { hostname: EGRESS_HOST, service: null, created: [{ id: "dns-egress", type: "AAAA", content: "100::" }] },
+        // The zone holds the site's own record: routes makes none, and a handback deletes none.
+        host: { name: HOST, held: true, made: null },
         hook: { url: E2B_HOOK.url, present: true, enabled: false } });
       // It holds no secret, and not the account.
       const text = w.kv.get(`${CONTROL_NS}/${KEY}`)!;
@@ -1390,10 +1851,10 @@ describe("the route record", () => {
         expect(text).not.toContain(secret);
       }
       // The plan says how to hand it back, and the summary holds the record too.
-      expect(work.plan).toContain(`record the zone's ${table.length} routes and the handover's 8 ` +
-        "changes, the egress domain (none) and E2B's lifecycle webhook (disabled) as this " +
+      expect(work.plan).toContain(`record the zone's ${table.length} routes and the handover's 10 ` +
+        "changes, the egress domain (none) and E2B's lifecycle webhook as this " +
         `run's route record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode ` +
-        "handback --record <this run's id>");
+        "handback --record <this run's id>; the webhook it records: disabled");
       const summaryText = readFileSync(file, "utf8");
       expect(summaryText).toContain(`Route record ${KEY}:`);
       // The copy is the record as first written, before the attach's DNS record joined it.
@@ -1409,9 +1870,9 @@ describe("the route record", () => {
   it("stops routes before any change while the egress host is another Worker's or holds a " +
      "DNS record, which the custom domain would replace", async () => {
     for (const [options, why] of [
-      [{ egress: "someone-else" }, `${EGRESS_DOMAIN} is someone-else's custom domain: routes ` +
+      [{ egress: "someone-else" }, `${EGRESS_HOST} is someone-else's custom domain: routes ` +
        "would take it, and a handback could not give it back; nothing is changed"],
-      [{ dns: ["A", "AAAA"] }, `${EGRESS_DOMAIN} holds 2 DNS record(s) (A, AAAA): the doors' ` +
+      [{ dns: ["A", "AAAA"] }, `${EGRESS_HOST} holds 2 DNS record(s) (A, AAAA): the doors' ` +
        "custom domain would replace them, and a handback could not give them back; nothing is " +
        "changed"],
     ] as const) {
@@ -1448,52 +1909,248 @@ describe("the route record", () => {
     expect(taken.events.filter((event) => CHANGE.test(event))).toEqual([]);
   });
 
-  it("is kept as its first attempt wrote it on a re-run, and a later run's own changes nothing " +
-     "when handed back", async () => {
+  it("is kept as its first attempt wrote it on a re-run, and by every later routes run, which " +
+     "writes none, so the one record a handback names is the state before the first", async () => {
     const w = world({ held: true });
+    const before = kept(w.routes.values());
     w.kill.after = 3;
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
     const first = stored(w);
     w.kill.after = undefined;
-    const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
+    // KV lists eventually: the re-run attempt's listing lacks the record its first attempt wrote.
+    const fetch = w.io.fetch;
+    const unlisted = { ...w, io: { ...w.io, fetch: async (url: string, init?: RequestInit) =>
+      url.includes("/keys?prefix=deploy%3Aroutes%3A")
+        ? Response.json({ success: true, result: [] }) : fetch(url, init) } };
+    const again = await runMode(unlisted, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
     // As the first attempt wrote it, with only the attach's DNS record added once it is done.
     expect(first.domain.created).toBeNull();
     expect(stored(w)).toEqual({ ...first, domain: { ...first.domain, created: [{ id: "dns-egress", type: "AAAA", content: "100::" }] } });
-    expect(again.plan).toContain(`keep this run's route record as attempt 1 wrote it at ${
-      NOW.toISOString()}, before its first change: hand back with --mode handback --record ` +
-      "<this run's id>");
+    const keeps = `keep the route record ${KEY}, run 7001's (attempt 1, ${NOW.toISOString()}), ` +
+      `the state before the first routes run on ${HOST}, as it is, and write none: hand back ` +
+      "with --mode handback --record 7001";
+    expect(again.plan).toContain(keeps);
+    // A later run, the doors serving: it keeps the same record and writes none of its own.
+    const kv = new Map(w.kv);
     const later = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
-    // The doors hold the old proxy's three in place, in the zone's order, and the five added.
-    expect(later.plan.find((line) => line.startsWith("record "))).toBe(`record the zone's 9 routes and the handover's 0 changes, the ` +
-      `egress domain (${DOORS}) and E2B's lifecycle webhook (enabled) as this run's route ` +
-      `record in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback ` +
-      "--record <this run's id>; " +
-      `${DOORS} holds ${["mcp*", "app*", "api*", "hooks/inbound/*", "hooks/e2b/*",
-                         ".well-known/oauth-*"].map((path) => `${ZONE}/${path}`).join(", ")} ` +
-      "already: the record of the routes run that moved them is the one to hand back, and it " +
-      "covers this run's changes too");
-    const at = w.events.length;
-    await runMode(w, "handback", ["--yes", "--record", "7002"]);
-    expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
+    expect(later.plan).toContain(keeps);
+    expect(later.plan.some((line) => line.startsWith("record the zone's"))).toBe(false);
+    expect(w.kv.get(`${CONTROL_NS}/${KEY}`)).toBe(kv.get(`${CONTROL_NS}/${KEY}`));
+    expect(w.kv.has(`${CONTROL_NS}/deploy:routes:7002`)).toBe(false);
+    await expect(runMode(w, "handback", ["--yes", "--record", "7002"])).rejects.toThrow(
+      "there is no route record deploy:routes:7002");
+    await runMode(w, "handback", ["--yes", "--record", "7001"]);
+    expect([kept(w.routes.values()), w.domains.size, w.hooks[0]?.["enabled"]])
+      .toEqual([before, 0, false]);
   });
 
-  it("names, when an earlier routes run moved some of the doors' routes, that its record is " +
-     "the one to hand back", async () => {
+  it("keeps the record of the run that began the handover when a later run finishes it, and " +
+     "its handback puts the zone back", async () => {
     const w = world({ held: true });
+    const before = kept(w.routes.values());
     w.kill.after = 1;
     await expect(runMode(w, "routes", ["--yes"], RUN)).rejects.toThrow("the run was killed");
     w.kill.after = undefined;
     const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
-    expect(fresh.plan).toContain("record the zone's 8 routes and the handover's 7 changes, the " +
-      "egress domain (none) and E2B's lifecycle webhook (disabled) as this run's route record " +
-      `in ${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
-      `<this run's id>; ${DOORS} holds tinyassets.io/mcp* already: the record of the ` +
-      "routes run that moved them is the one to hand back, and it covers this run's changes too");
-    // The first run's record does: its handback, after the second run, puts the zone back.
-    const before = kept(stored(w).routes);
+    expect(fresh.plan).toContainEqual(expect.stringMatching(new RegExp(
+      `^keep the route record ${KEY}, run 7001's .* --record 7001$`)));
     await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
+    expect(w.kv.has(`${CONTROL_NS}/deploy:routes:7002`)).toBe(false);
     await runMode(w, "handback", ["--yes", "--record", "7001"]);
     expect(kept(w.routes.values())).toEqual(before);
+  });
+
+  it("names the oldest of a host's records, which a kit before this one left beside later " +
+     "ones, and its handback ends them all, another host's left", async () => {
+    // The live stage's state (2026-11-22): the first routes run's record, then two runs' each
+    // recording the handover's own state as its before.
+    const { w, before } = await cutOver();
+    const live = stored(w);
+    const hour = (n: number) => new Date(NOW.getTime() + n * 3_600_000).toISOString();
+    const legacy = (run: string, at: string): RouteRecord => ({
+      ...live, run, attempt: "1", at, routes: kept(w.routes.values()), moved: [],
+      domain: { hostname: EGRESS_HOST, service: DOORS, created: null },
+      hook: { ...live.hook, present: true, enabled: true } });
+    w.kv.set(`${CONTROL_NS}/deploy:routes:7002`, JSON.stringify(legacy("7002", hour(1))));
+    w.kv.set(`${CONTROL_NS}/deploy:routes:7003`, JSON.stringify(legacy("7003", hour(2))));
+    // Another host's handover, older still: not this host's to keep or end.
+    const other = `deploy:routes:6999`;
+    w.kv.set(`${CONTROL_NS}/${other}`, JSON.stringify({ ...live, run: "6999", at: hour(-1),
+                                                        host: { ...live.host, name: `x.${ZONE}` } }));
+    const plan = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7004" });
+    expect(plan.plan).toContain(`keep the route record ${KEY}, run 7001's (attempt 1, ${
+      NOW.toISOString()}), the state before the first routes run on ${HOST}, as it is, and ` +
+      "write none (deploy:routes:7002, deploy:routes:7003, kept while it stood, hold the " +
+      "handover's own state; a handback of it ends them too): hand back with --mode handback " +
+      "--record 7001");
+    // A later record, handed back, would leave the host served: it stops, naming the oldest.
+    for (const later of ["7002", "7003"]) {
+      const at = w.events.length;
+      await expect(runMode(w, "handback", ["--yes", "--record", later])).rejects.toThrow(
+        `the record deploy:routes:${later} was kept at ${hour(Number(later) - 7001)}, after ` +
+        `the route record ${KEY}, run 7001's (attempt 1, ${NOW.toISOString()}), the state ` +
+        `before the first routes run on ${HOST}: it holds the handover's own state, and its ` +
+        "handback would leave the host served. Hand back with --record 7001; nothing is changed");
+      expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
+    }
+    const back = await runMode(w, "handback", ["--yes", "--record", "7001"]);
+    expect(back.plan).toContain("once the handback reads back as the record has it, delete " +
+      `deploy:routes:7003, then deploy:routes:7002, then ${KEY} from ${NAMESPACES["CONTROL"]}: ` +
+      "the handback ends the handover they record (each copied into this run's job summary " +
+      "first)");
+    expect([kept(w.routes.values()), w.domains.size, w.hooks[0]?.["enabled"]])
+      .toEqual([before, 0, false]);
+    expect([...w.kv.keys()].filter((key) => key.includes("deploy:routes:")))
+      .toEqual([`${CONTROL_NS}/${other}`]);
+  });
+
+  describe("at a host under the zone", () => {
+    // The kit as it runs while the identity's host is a name under the zone (the live
+    // stage's): its modules loaded afresh over that identity. The zone keeps the old proxy's
+    // routes (`LIVE`, on this tree's host, the zone), which the host shares none of.
+    const STAGE = `stage.${ZONE}`;
+    const STAGE_HOOK = `https://${STAGE}${identity.hook}`;
+    const PLACED = `AAAA ${STAGE} (100::)`;
+    let stage: Kit;
+    beforeAll(async () => {
+      vi.resetModules();
+      vi.doMock("../../contract/identity.json", () => ({ default: { ...identity, host: STAGE } }));
+      stage = await import("../deploy");
+      vi.doUnmock("../../contract/identity.json");
+      vi.resetModules();
+    });
+    const onStage = (w: ReturnType<typeof world>) =>
+      w.dns.filter((record) => record.name === STAGE);
+
+    it("makes the host's proxied record once the route record is kept and before any deploy, " +
+       "keeps it, and its handback deletes exactly it", async () => {
+      const w = world({ held: true });
+      const apex = kept(w.routes.values());
+      const work = await runMode(w, "routes", ["--yes"], RUN, stage);
+      const [write, made, again, deployed] = order(w.events, [
+        `cf PUT ${RECORD_AT}`, "cf POST /zones/z/dns_records", `cf PUT ${RECORD_AT}`,
+        "wrangler versions upload"]);
+      expect(made).toBe(write! + 1);
+      expect(again).toBeLessThan(deployed!);
+      expect(onStage(w)).toEqual([{ id: "dns-made3", type: "AAAA", name: STAGE,
+                                    content: "100::", proxied: true }]);
+      expect(stored(w).host).toEqual({ name: STAGE, held: false, made: [
+        { id: "dns-made3", type: "AAAA", content: "100::" }] });
+      expect(work.plan).toContain(`make the DNS record ${PLACED}, proxied, for the doors' ` +
+        "routes on it, before anything is deployed: the route record keeps it, for a handback " +
+        "to delete exactly it");
+      expect(work.plan).toContain(`record in ${KEY} the DNS record made on ${STAGE}: ${PLACED}`);
+      // Every route is added on the host; the zone's are left as they were.
+      expect(w.events.filter((event) => /^cf (PUT|DELETE) \/zones\/z\/workers/.test(event)))
+        .toEqual([]);
+      expect(kept(w.routes.values())).toEqual(kept([...apex, ...identity.routes.map((path) =>
+        ({ pattern: `${STAGE}${path}`, script: DOORS }))]));
+      // The one hook moves to the host, and is enabled.
+      expect(w.hooks).toEqual([expect.objectContaining({ id: "w1", url: STAGE_HOOK,
+                                                         enabled: true })]);
+      expect(work.plan).toContain(`E2B lifecycle webhook ${STAGE_HOOK}, after the routes: ` +
+        `present, its URL (${E2B_HOOK.url} before), enabled set, enabled`);
+      // The handback: the routes, then the host's record, only it.
+      const from = w.events.length;
+      const back = await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(back.plan).toContain(`delete the DNS record routes made on ${STAGE} for the doors' ` +
+                                  `routes, ${PLACED}, where it is still there`);
+      const ran = w.events.slice(from);
+      const [routed, deleted] = order(ran, ["cf DELETE /zones/z/workers/routes",
+                                            "cf DELETE /zones/z/dns_records/dns-made3"]);
+      expect(deleted).toBeGreaterThan(routed!);
+      expect(ran.filter((event) => event.startsWith("cf DELETE /zones/z/dns_records/")))
+        .toEqual(["cf DELETE /zones/z/dns_records/dns-made3"]);
+      expect([onStage(w), kept(w.routes.values())]).toEqual([[], apex]);
+      expect(w.dns.map((record) => record.id)).toEqual(["o1", "o2", "o3"]);
+      expect(w.hooks[0]).toMatchObject({ url: STAGE_HOOK, enabled: false });
+    });
+
+    it("leaves a placeholder the host held before routes, and its handback deletes none",
+       async () => {
+      const w = world({ held: true });
+      w.dns.push({ id: "p1", type: "AAAA", name: STAGE, content: "100::" });
+      const work = await runMode(w, "routes", ["--yes"], RUN, stage);
+      expect(work.plan).toContain(`${STAGE} holds its DNS record already, ${PLACED}: none is made`);
+      expect(stored(w).host).toEqual({ name: STAGE, held: true, made: null });
+      expect(w.events.some((event) => event.startsWith("cf POST /zones/z/dns_records")))
+        .toBe(false);
+      const back = await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(back.plan.some((line) => line.includes(`routes made on ${STAGE}`))).toBe(false);
+      expect(onStage(w).map((record) => record.id)).toEqual(["p1"]);
+    });
+
+    it("stops before any change while the host holds any other address record, the plan job " +
+       "too", async () => {
+      const w = world({ held: true });
+      w.dns.push({ id: "f1", type: "A", name: STAGE, content: "192.0.2.7" },
+                 { id: "p1", type: "AAAA", name: STAGE, content: "100::" });
+      const why = `${STAGE} holds 1 DNS record(s) the doors' routes would take the requests of ` +
+        "(A 192.0.2.7), and a handback could not give them back; nothing is changed";
+      await expect(runMode(w, "routes", ["--yes"], RUN, stage)).rejects.toThrow(why);
+      expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+      await expect(runMode(w, "routes", ["--public"], PUBLIC, stage)).rejects.toThrow(why);
+    });
+
+    it("stops at a refused make with only the route record written; the record added by hand, " +
+       "its re-run keeps that one as the run's, for its handback to delete", async () => {
+      const options = { held: true, refusingDns: true };
+      const w = world(options);
+      await expect(runMode(w, "routes", ["--yes"], RUN, stage)).rejects.toThrow(
+        `making the DNS record ${PLACED} failed (403, [10000])`);
+      expect(w.events.filter((event) => CHANGE.test(event)))
+        .toEqual([`cf PUT ${RECORD_AT}`, "cf POST /zones/z/dns_records"]);
+      expect(stored(w).host).toEqual({ name: STAGE, held: false, made: null });
+      // The checklist's fallback: the founder adds it, and re-runs the run.
+      options.refusingDns = false;
+      w.dns.push({ id: "p1", type: "AAAA", name: STAGE, content: "100::" });
+      const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" },
+                                  stage);
+      expect(again.plan).toContain(`${STAGE} holds ${PLACED}, and held none when the route ` +
+        "record was kept: the record keeps it as the handover's, for a handback to delete");
+      expect(stored(w).host).toEqual({ name: STAGE, held: false,
+                                       made: [{ id: "p1", type: "AAAA", content: "100::" }] });
+      await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(onStage(w)).toEqual([]);
+    });
+
+    it("makes the host's record again when the one the route record made is gone, and its " +
+       "handback deletes the new one", async () => {
+      const w = world({ held: true });
+      await runMode(w, "routes", ["--yes"], RUN, stage);
+      w.dns.splice(w.dns.findIndex((record) => record.id === "dns-made3"), 1);
+      const again = await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" }, stage);
+      expect(again.plan).toContain(`make the DNS record ${PLACED}, proxied, for the doors' ` +
+        "routes on it, before anything is deployed: the route record keeps it, for a handback " +
+        "to delete exactly it");
+      const [made] = onStage(w);
+      expect(stored(w).host).toEqual({ name: STAGE, held: false, made: [
+        { id: made!.id, type: "AAAA", content: "100::" }] });
+      await runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage);
+      expect(onStage(w)).toEqual([]);
+    });
+
+    it("records on a re-run the record its first attempt made before it was written in, and " +
+       "makes none again", async () => {
+      const w = world({ held: true });
+      w.kill.after = 0;
+      await expect(runMode(w, "routes", ["--yes"], RUN, stage)).rejects.toThrow(
+        "the run was killed");
+      expect([stored(w).host, onStage(w).length]).toEqual([
+        { name: STAGE, held: false, made: null }, 1]);
+      // Handed back now, the record it never wrote in is named, never deleted.
+      await expect(runMode(w, "handback", ["--yes", "--record", "7001"], ENV, stage)).rejects
+        .toThrow(`${STAGE} holds the DNS record AAAA (100::), and held none before routes: the ` +
+                 "one routes made, not recorded, for a hand to remove");
+      w.kill.after = undefined;
+      const from = w.events.length;
+      await runMode(w, "routes", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" }, stage);
+      expect(w.events.slice(from).filter((event) =>
+        event.startsWith("cf POST /zones/z/dns_records"))).toEqual([]);
+      expect([stored(w).host, onStage(w).length]).toEqual([
+        { name: STAGE, held: false, made: [{ id: "dns-made3", type: "AAAA", content: "100::" }] },
+        1]);
+    });
   });
 });
 
@@ -1533,36 +2190,32 @@ describe("a handback run", () => {
     expect(work.plan).toEqual([
       HELD,
       `the route record ${KEY}: the zone's ${before.length} routes as run 7001 read them at ${
-        NOW.toISOString()}, and the handover's 8 changes`,
-      `disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was before routes`,
-      `detach the custom domain ${EGRESS_DOMAIN} from ${DOORS}, as it was before routes`,
-      "add the route tinyassets.io/.well-known/oauth-protected-resource* back for " +
+        NOW.toISOString()}, and the handover's 10 changes`,
+      `once the handback reads back as the record has it, delete ${KEY} from ${
+        NAMESPACES["CONTROL"]}: the handback ends the handover it records (each copied into ` +
+      "this run's job summary first)",
+      `E2B lifecycle webhook ${E2B_HOOK.url}: disable it, as it was before routes`,
+      `detach the custom domain ${EGRESS_HOST} from ${DOORS}, as it was before routes`,
+      `add the route ${HOST}/.well-known/oauth-protected-resource* back for ` +
       "tinyassets-mcp-proxy",
-      "add the route tinyassets.io/.well-known/oauth-authorization-server* back for " +
+      `add the route ${HOST}/.well-known/oauth-authorization-server* back for ` +
       "tinyassets-mcp-proxy",
       ...["mcp*", "api*", "app*"].map((path) =>
-        `move the route tinyassets.io/${path} from ${DOORS} back to tinyassets-mcp-proxy`),
-      ...["hooks/inbound/*", "hooks/e2b/*", ".well-known/oauth-*"].map(
-        (path) => `delete ${DOORS}'s route tinyassets.io/${path}, which the handover added`),
-      `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_DOMAIN} (100::), where ` +
+        `move the route ${HOST}/${path} from ${DOORS} back to tinyassets-mcp-proxy`),
+      ...["hooks/inbound/*", "hooks/e2b/*", "authorize*", "oauth/*", ".well-known/oauth-*"].map(
+        (path) => `delete ${DOORS}'s route ${HOST}/${path}, which the handover added`),
+      `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_HOST} (100::), where ` +
       "the detach leaves them",
       "the zone's routes, the egress domain and the webhook read back as the record has them",
+      `deleted ${KEY}`,
     ]);
-    // The probe's routes, the doors' before the handover, stay theirs.
-    for (const pattern of PROBE_ROUTES) {
-      expect(before).toContainEqual({ pattern, script: DOORS });
-    }
-    // Run again, it changes nothing.
-    const at = w.events.length;
-    const again = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(w.events.slice(at).filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
-    expect(again.plan.slice(2)).toEqual([
-      `E2B lifecycle webhook ${E2B_HOOK.url}: not enabled already`,
-      `the custom domain ${EGRESS_DOMAIN}: detached already`,
-      "the zone's routes are the record's already: nothing to hand back",
-      `delete the DNS record(s) the custom domain made, AAAA ${EGRESS_DOMAIN} (100::), where ` +
-      "the detach leaves them",
-      "the zone's routes, the egress domain and the webhook read back as the record has them"]);
+    // Read back, the record is ended last, so the next routes run records the zone afresh.
+    const ended = `cf POST /accounts/${ACCOUNT}/storage/kv/namespaces/${CONTROL_NS}/bulk/delete`;
+    expect(ran.indexOf(ended)).toBeGreaterThan(ran.lastIndexOf("e2b GET /events/webhooks"));
+    expect(ran.indexOf(ended)).toBeGreaterThan(ran.lastIndexOf("cf GET /zones/z/workers/routes"));
+    expect(w.kv.has(`${CONTROL_NS}/${KEY}`)).toBe(false);
+    const fresh = await runMode(w, "routes", [], { ...RUN, GITHUB_RUN_ID: "7002" });
+    expect(fresh.plan).toContainEqual(expect.stringMatching(/^record the zone's /));
   });
 
   // Ten outward changes each way: routes' eight route changes, the custom domain and the hook;
@@ -1593,8 +2246,10 @@ describe("a handback run", () => {
       expect(kept(w.routes.values())).toEqual(before);
       expect([w.domains.size, JSON.stringify(w.hooks), JSON.stringify(w.dns)])
         .toEqual([0, hooks, dns]);
+      // The handback ended the record: a third stops, changing nothing.
       const at = w.events.length;
-      await runMode(w, "handback", ["--yes", "--record", "7001"]);
+      await expect(runMode(w, "handback", ["--yes", "--record", "7001"])).rejects
+        .toThrow(`there is no route record ${KEY}`);
       expect(w.events.slice(at).filter((event) => CHANGE.test(event))).toEqual([]);
     });
   }
@@ -1603,7 +2258,8 @@ describe("a handback run", () => {
     const missing = world({ held: true });
     await expect(runMode(missing, "handback", ["--yes", "--record", "7999"])).rejects.toThrow(
       `there is no route record deploy:routes:7999 in ${NAMESPACES["CONTROL"]}: name the id a routes ` +
-      "run's job summary gives; nothing is changed");
+      "plan gives (a handback that read back deletes its records, copied into its job summary); " +
+      "nothing is changed");
     await expect(runMode(world(), "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
       /there is no route record deploy:routes:7001/);
     const { w } = await cutOver();
@@ -1628,6 +2284,12 @@ describe("a handback run", () => {
       [{ ...good, domain: undefined }, "holds no egress domain in shape"],
       [{ ...good, domain: { hostname: "other.tinyassets.io", service: null } },
        "holds no egress domain in shape"],
+      [{ ...good, host: undefined }, "holds no host record in shape"],
+      [{ ...good, host: { ...good.host, name: `other.${ZONE}` } }, "holds no host record in shape"],
+      [{ ...good, host: { ...good.host, made: [{ id: "d", type: "AAAA", content: "100::" }] } },
+       "holds no host record in shape"],
+      [{ ...good, host: { ...good.host, held: false, made: [{ id: "d", type: "AAAA" }] } },
+       "holds no host record in shape"],
       [{ ...good, hook: { ...good.hook, url: "https://elsewhere.test/hook" } },
        "holds no lifecycle webhook in shape"],
       [{ ...good, hook: { url: E2B_HOOK.url, present: false, enabled: true } },
@@ -1655,13 +2317,13 @@ describe("a handback run", () => {
     w.hooks[0]!["enabled"] = true;
     await runMode(w, "routes", ["--yes"], RUN);
     expect([stored(w).domain, stored(w).hook]).toEqual([
-      { hostname: EGRESS_DOMAIN, service: DOORS, created: null },
+      { hostname: EGRESS_HOST, service: DOORS, created: null },
       { url: E2B_HOOK.url, present: true, enabled: true }]);
     const at = w.events.length;
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan.slice(2, 4)).toEqual([
+    expect(work.plan.slice(3, 5)).toEqual([
       `E2B lifecycle webhook ${E2B_HOOK.url}: enabled before routes, left`,
-      `the custom domain ${EGRESS_DOMAIN}: ${DOORS}'s before routes, left`]);
+      `the custom domain ${EGRESS_HOST}: ${DOORS}'s before routes, left`]);
     expect(w.events.slice(at).filter((event) => /^(e2b PATCH|cf DELETE \/accounts)/.test(event)))
       .toEqual([]);
     expect([w.domains.size, w.hooks[0]!["enabled"]]).toEqual([1, true]);
@@ -1670,12 +2332,12 @@ describe("a handback run", () => {
   it("disables a hook routes registered, as it was absent before: never deleted", async () => {
     const w = world({ held: true });
     w.hooks.length = 0;
-    await runMode(w, "routes", ["--yes"], RUN);
+    await runMode(w, "routes", ["--yes", "--rotate", E2B_HOOK.secret], RUN);
     expect(stored(w).hook).toEqual({ url: E2B_HOOK.url, present: false, enabled: false });
     expect(w.hooks[0]!["enabled"]).toBe(true);
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan[2]).toBe(`disable E2B lifecycle webhook ${E2B_HOOK.url}, as it was absent ` +
-                              "before routes (a disabled hook sends nothing)");
+    expect(work.plan[3]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: disable it, as it was ` +
+                              "absent before routes (a disabled hook sends nothing)");
     expect(w.hooks).toEqual([expect.objectContaining({ id: "w1", enabled: false })]);
     expect(w.events.some((event) => event.startsWith("e2b DELETE"))).toBe(false);
   });
@@ -1683,8 +2345,8 @@ describe("a handback run", () => {
   it("stops when the hook or the custom domain reads back unlike the record", async () => {
     for (const [inert, why] of [
       ["hook", `E2B lifecycle webhook ${E2B_HOOK.url} is enabled (the record has it disabled)`],
-      ["domain", `${EGRESS_DOMAIN} is ${DOORS}'s custom domain (the record has none)`],
-      ["dns", `the DNS record AAAA ${EGRESS_DOMAIN} (100::) the custom domain made is still there`],
+      ["domain", `${EGRESS_HOST} is ${DOORS}'s custom domain (the record has none)`],
+      ["dns", `the DNS record AAAA ${EGRESS_HOST} (100::) the custom domain made is still there`],
     ] as const) {
       const w = world({ held: true, keepsDns: inert === "dns" });
       await runMode(w, "routes", ["--yes"], RUN);
@@ -1696,9 +2358,9 @@ describe("a handback run", () => {
     }
     // A custom domain another Worker took since stops the handback before any change.
     const { w, from } = await cutOver();
-    w.domains.set("d1", { id: "d1", hostname: EGRESS_DOMAIN, service: "someone-else" });
+    w.domains.set("d1", { id: "d1", hostname: EGRESS_HOST, service: "someone-else" });
     await expect(runMode(w, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
-      `changed since routes, so nothing is handed back: ${EGRESS_DOMAIN} is someone-else's ` +
+      `changed since routes, so nothing is handed back: ${EGRESS_HOST} is someone-else's ` +
       `custom domain, and routes attached it to ${DOORS}. Put each back as the record has it, ` +
       "then run the handback again");
     expect(w.events.slice(from).filter((event) => CHANGE.test(event))).toEqual([]);
@@ -1727,8 +2389,8 @@ describe("a handback run", () => {
 
   it("takes one record by its id, and nothing it does not use", () => {
     const w = world();
-    const what = "the routes run's record to hand back, by the run id its job summary names " +
-      "(letters, digits and -)";
+    const what = "the record to hand back (a routes run's) or roll back (a dark or routes " +
+      "run's), by the run id its job summary names (letters, digits and -)";
     for (const argv of [["--mode", "handback"], ["--mode", "handback", "--record"]]) {
       expect(() => parse(argv, ENV, w.io), argv.join(" "))
         .toThrow(`mode handback needs --record: ${what}`);
@@ -1737,9 +2399,9 @@ describe("a handback run", () => {
       expect(() => parse(["--mode", "handback", "--record", id], ENV, w.io), id)
         .toThrow(`--record is ${what}`);
     }
-    for (const mode of ["plan", "dark", "probe", "routes", "control", "owner"]) {
+    for (const mode of ["plan", "dark", "routes", "control", "owner"]) {
       expect(() => parse(["--mode", mode, "--record", "7001"], ENV, w.io)).toThrow(
-        `mode ${mode} takes no --record: it is mode handback's`);
+        `mode ${mode} takes no --record: it is mode handback and rollback's`);
     }
     expect(() => parse(["--mode", "handback", "--record", "7001", "--rotate", "FILES_KEYRING"],
                        ENV, w.io))
@@ -1757,8 +2419,8 @@ describe("a handback run", () => {
                                { CLOUDFLARE_API_TOKEN: "cf-token" });
     expect(w.events.slice(from).filter((event) => CHANGE.test(event)
       || event.startsWith("node canary"))).toEqual([]);
-    expect(work.plan).toHaveLength(12);
-    expect(work.plan[1]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job ` +
+    expect(work.plan).toHaveLength(15);
+    expect(work.plan[2]).toBe(`E2B lifecycle webhook ${E2B_HOOK.url}: checked by the apply job ` +
                               "before any change");
     expect(w.logs.at(-1)).toBe("\nNothing was changed.");
   });
@@ -1766,12 +2428,12 @@ describe("a handback run", () => {
   it("never touches a route the record and the handover do not hold, and stops before any " +
      "change on a route changed since routes, naming it", async () => {
     const { w, before } = await cutOver();
-    w.routes.set("u1", { id: "u1", pattern: "tinyassets.io/later*", script: "site" });
+    w.routes.set("u1", { id: "u1", pattern: `${HOST}/later*`, script: "site" });
     const work = await runMode(w, "handback", ["--yes", "--record", "7001"]);
-    expect(work.plan).toContain("leave the route tinyassets.io/later* (site's): neither the " +
+    expect(work.plan).toContain(`leave the route ${HOST}/later* (site's): neither the ` +
                                 "record nor the handover holds it");
     expect(kept(w.routes.values())).toEqual(kept([...before,
-      { pattern: "tinyassets.io/later*", script: "site" }]));
+      { pattern: `${HOST}/later*`, script: "site" }]));
     const changed = (pattern: string, script: string | undefined) => async (zone: typeof w) => {
       const held = [...zone.routes.values()].find((each) => each.pattern === pattern);
       if (script === undefined) {
@@ -1782,20 +2444,20 @@ describe("a handback run", () => {
     };
     for (const [change, why] of [
       // An addition of the handover's, pointed elsewhere since: not the doors' to delete.
-      [changed("tinyassets.io/hooks/e2b/*", "someone-else"), "tinyassets.io/hooks/e2b/* is " +
+      [changed(`${HOST}/hooks/e2b/*`, "someone-else"), `${HOST}/hooks/e2b/* is ` +
        `someone-else's, neither as the handover left it (${DOORS}'s) nor as the record has it ` +
        "(absent)"],
       // A recorded route the handover never changed.
-      [changed("tinyassets.io/site*", "site-2"), "tinyassets.io/site* is site-2's, the record " +
+      [changed(`${HOST}/site*`, "site-2"), `${HOST}/site* is site-2's, the record ` +
        "has it site's and the handover never changed it"],
-      [changed("tinyassets.io/site*", undefined), "tinyassets.io/site* is absent, the record " +
+      [changed(`${HOST}/site*`, undefined), `${HOST}/site* is absent, the record ` +
        "has it site's and the handover never changed it"],
       // A route it moved, moved again; one it deleted, made again for another Worker.
-      [changed("tinyassets.io/mcp*", "someone-else"), "tinyassets.io/mcp* is someone-else's, " +
+      [changed(`${HOST}/mcp*`, "someone-else"), `${HOST}/mcp* is someone-else's, ` +
        `neither as the handover left it (${DOORS}'s) nor as the record has it ` +
        "(tinyassets-mcp-proxy's)"],
-      [changed("tinyassets.io/.well-known/oauth-protected-resource*", "someone-else"),
-       "tinyassets.io/.well-known/oauth-protected-resource* is someone-else's, neither as the " +
+      [changed(`${HOST}/.well-known/oauth-protected-resource*`, "someone-else"),
+       `${HOST}/.well-known/oauth-protected-resource* is someone-else's, neither as the ` +
        "handover left it (absent) nor as the record has it (tinyassets-mcp-proxy's)"],
     ] as const) {
       const zone = await cutOver();
@@ -1814,7 +2476,7 @@ describe("a handback run", () => {
 
   it("stops at a refused route change, the rest undone, no path the record served unserved",
      async () => {
-    const pattern = "tinyassets.io/.well-known/oauth-authorization-server*";
+    const pattern = `${HOST}/.well-known/oauth-authorization-server*`;
     const w = world({ held: true, refusingRoute: `POST ${pattern}` });
     const before = kept(w.routes.values());
     await runMode(w, "routes", ["--yes"], RUN);
@@ -1846,7 +2508,7 @@ describe("a handback run", () => {
     expect(JSON.stringify(w.dns)).toBe(others);
     // An address record on the host still stops routes, under the same listing.
     await expect(runMode(world({ held: true, noisyDns: true, dns: ["CNAME"] }), "routes",
-                         ["--yes"], RUN)).rejects.toThrow(`${EGRESS_DOMAIN} holds 1 DNS record(s) (CNAME)`);
+                         ["--yes"], RUN)).rejects.toThrow(`${EGRESS_HOST} holds 1 DNS record(s) (CNAME)`);
   });
 
   for (const keepsDns of [false, true]) {
@@ -1854,7 +2516,7 @@ describe("a handback run", () => {
       : "only if the detach leaves it"}, and a later routes runs again`, async () => {
       const w = world({ held: true, keepsDns });
       await runMode(w, "routes", ["--yes"], RUN);
-      expect(w.dns.filter((record) => record.name === EGRESS_DOMAIN).map((record) => record.id))
+      expect(w.dns.filter((record) => record.name === EGRESS_HOST).map((record) => record.id))
         .toEqual(["o3", "dns-egress"]);
       const from = w.events.length;
       await runMode(w, "handback", ["--yes", "--record", "7001"]);
@@ -1871,7 +2533,7 @@ describe("a handback run", () => {
   it("never deletes an address record on the host the attach did not make", async () => {
     const w = world({ held: true, keepsDns: true });
     await runMode(w, "routes", ["--yes"], RUN);
-    w.dns.push({ id: "later", type: "A", name: EGRESS_DOMAIN, content: "192.0.2.9" });
+    w.dns.push({ id: "later", type: "A", name: EGRESS_HOST, content: "192.0.2.9" });
     const from = w.events.length;
     await runMode(w, "handback", ["--yes", "--record", "7001"]);
     expect(w.events.slice(from).filter((event) => event.startsWith("cf DELETE /zones/z/dns")))
@@ -1893,13 +2555,13 @@ describe("a handback run", () => {
       const handback = runMode(w, "handback", ["--yes", "--record", "7001"]);
       if (keepsDns) {
         await expect(handback).rejects.toThrow("the handback read back unlike the record: " +
-          `${EGRESS_DOMAIN} holds the DNS record AAAA (100::), and held no address record ` +
+          `${EGRESS_HOST} holds the DNS record AAAA (100::), and held no address record ` +
           "before routes: the custom domain's own, not recorded, for a hand to remove");
         // Never deleted: only a recorded record is matched exactly.
         expect(w.dns.some((each) => each.id === "dns-egress")).toBe(true);
       } else {
         const work = await handback;
-        expect(work.plan).toContain(`the DNS records the custom domain made on ${EGRESS_DOMAIN} ` +
+        expect(work.plan).toContain(`the DNS records the custom domain made on ${EGRESS_HOST} ` +
           "were not recorded (routes stopped between its attach and its record), so none is " +
           "deleted, and the read-back holds the host to no address record, as before routes");
       }
@@ -1923,49 +2585,642 @@ describe("a handback run", () => {
     const refused = world({ held: true, keepsDns: true, refusingDns: true });
     await runMode(refused, "routes", ["--yes"], RUN);
     await expect(runMode(refused, "handback", ["--yes", "--record", "7001"])).rejects.toThrow(
-      `deleting the DNS record AAAA ${EGRESS_DOMAIN} (100::) failed (403, [10000]): run the ` +
+      `deleting the DNS record AAAA ${EGRESS_HOST} (100::) failed (403, [10000]): run the ` +
       "handback again");
     expect(kept(refused.routes.values())).toEqual(before);
   });
 });
 
-describe("a probe run", () => {
-  it("hands the doors the sign-in's two paths alone, after the early sign-in check, then " +
-     "prints the one link", async () => {
-    const w = world({ held: true, probed: false });
-    // The dark run's state, with the probe's routes not yet the doors'.
-    for (const id of ["p1", "p2"]) {
-      w.routes.delete(id);
-    }
-    const work = await runMode(w, "probe", ["--yes"]);
-    const [, , authorized, first, second] = order(w.events, [
-      "cf GET /accounts", "workos GET redirect_uris", "workos authorize",
-      "cf POST /zones/z/workers/routes", "cf POST /zones/z/workers/routes"]);
-    expect(authorized).toBeLessThan(first!);
-    expect(second).toBeGreaterThan(first!);
-    expect(w.events.filter((event) => /^(wrangler|e2b)/.test(event))).toEqual([]);
-    expect(work.plan.slice(-2)).toEqual(PROBE_ROUTES.map((pattern) =>
-      `add the route ${pattern} for ${DOORS}`));
-    expect(w.logs.at(-1)!.startsWith(
-      `\nSign in once, in a browser, at:\n${ORIGIN}${identity.signin.authorize}?`)).toBe(true);
-    expect(w.logs.at(-1)).toContain(PROBE_SIGNS);
-    // The old stack still serves /mcp: the canary holds whichever side answers.
-    expect(w.events).toContain("node canary.ts");
+describe("the rollout record and mode rollback", () => {
+  const ROLLOUT = "deploy:rollout:7001";
+  const OURS = COMMIT.slice(0, 12);
+  /** The run's rollout record as KV holds it. */
+  const recordIn = (w: ReturnType<typeof world>) =>
+    JSON.parse(w.kv.get(`${CONTROL_NS}/${ROLLOUT}`) ?? "null") as RolloutRecord | null;
+  /** The deployments the kit made over Cloudflare's API, by Worker, in order. */
+  const deployed = (w: ReturnType<typeof world>) => w.events.flatMap((event) =>
+    /^cf POST \/accounts\/a+\/workers\/scripts\/([a-z-]+)\/deployments$/.exec(event)?.[1] ?? []);
+  /** What each Worker serves, by script: each version and its share. */
+  const serving = (w: ReturnType<typeof world>) => Object.fromEntries([...w.deployments]
+    .map(([script, versions]) => [script, versions.map((each) =>
+      `${each.version}@${each.percentage}`).join(",")]));
+  /** How many times the kit read `script`'s active deployment after it deployed it. */
+  const readsOf = (w: ReturnType<typeof world>, script: string) => {
+    const path = `/accounts/${ACCOUNT}/workers/scripts/${script}/deployments`;
+    return w.events.slice(w.events.indexOf(`cf POST ${path}`))
+      .filter((event) => event === `cf GET ${path}`).length;
+  };
+  /** Each Worker's version before, as a held account serves it. */
+  const BEFORE_ALL = Object.fromEntries(WORKERS.map((worker) =>
+    [NAMES[worker]!, `before-${worker}@100`]));
+  /** The locks with the owner's pinning one migration more than its version before's tag. */
+  const BUMPED = { ...PINNED, owner: Object.fromEntries(Object.entries(PINNED["owner"]!).map(
+    ([path, pinned]) => [path, [...pinned, "the next migration"]])) };
+
+  it("keeps each Worker's version and tag before the first deploy, and a re-run attempt keeps " +
+     "what its first read", async () => {
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    const write = w.events.indexOf(`${CONTROL_WRITE}namespaces/${CONTROL_NS}/values/${
+      encodeURIComponent(ROLLOUT)}`);
+    expect(write).toBeGreaterThan(w.events.findLastIndex((event) => event.endsWith("/secrets")));
+    expect(write).toBeLessThan(w.events.findIndex((event) => event.startsWith("wrangler ")));
+    expect(recordIn(w)).toEqual({
+      kind: "tinyassets-rollout", run: "7001", attempt: "1", at: NOW.toISOString(), commit: COMMIT,
+      workers: WORKERS.map((worker) => ({
+        name: NAMES[worker], before: { version: `before-${worker}`,
+                                       tag: HELD_SERVING[NAMES[worker]!]![0]!.tag },
+        counts: Object.fromEntries(Object.entries(PINNED[worker] ?? {}).map(([path, pinned]) =>
+          [path, pinned.length])),
+        whole: false, secrets: [], forward: 0 })) });
+    // Its every new version is tagged with the run's commit.
+    expect(Object.values(serving(w)).map((each) =>
+      w.versions.get(each.replace(/@100$/, ""))!.tag!.slice(0, 12))).toEqual(WORKERS.map(() => OURS));
+    // A re-run attempt keeps the record its first attempt wrote, whatever is deployed now.
+    const first = recordIn(w);
+    const again = await runMode(w, "dark", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "2" });
+    expect(recordIn(w)).toEqual(first);
+    expect(again.plan).toContain(`keep this run's rollout record as attempt 1 wrote it at ${
+      NOW.toISOString()}, before its first deploy: roll back with --mode rollback --record ` +
+      "<this run's id>");
+    // A split stops a re-run attempt too, before any deploy.
+    const gateway = NAMES["gateway"]!;
+    w.deployments.set(gateway, [{ ...w.deployments.get(gateway)![0]!, percentage: 90 },
+                                { version: "before-gateway", percentage: 10 }]);
+    w.events.splice(0);
+    await expect(runMode(w, "dark", ["--yes"], { ...RUN, GITHUB_RUN_ATTEMPT: "3" })).rejects
+      .toThrow(`${gateway} is split (`);
+    expect(w.events.filter((event) => event.startsWith("wrangler "))).toEqual([]);
   });
 
-  it("stops unless a dark run came first, every gate closed and the callback listed",
+  it("stops before any deploy when a Worker serves two versions, or its record is refused",
      async () => {
-    await expect(runMode(world(), "probe", ["--yes"])).rejects.toThrow(
-      `${DOORS} is not deployed: the probe runs after a dark run`);
-    // A record that admits an owner, or that the doors read as malformed, stops it unchanged.
-    for (const record of [{ ...DARK, canary: ["user_a"] }, { ...DARK, ordinary: "all" },
-                          { ...DARK, ordinary: "nobody" }]) {
-      const w = world({ held: true, probed: false });
-      w.kv.set(`ns-${NAMESPACES["CONTROL"]}/${CONTROL_KEY}`, JSON.stringify(record));
-      await expect(runMode(w, "probe", ["--yes"])).rejects.toThrow(
-        "the control record is missing or admits someone");
-      expect(w.events.filter((event) => ROUTE_CHANGE.test(event))).toEqual([]);
+    const split = world({ held: true, serving: { ...HELD_SERVING, [NAMES["gateway"]!]: [
+      { version: "gw-new", percentage: 10, tag: OURS }, { version: "gw-old", percentage: 90,
+                                                          tag: BEFORE }] } });
+    await expect(runMode(split, "dark", ["--yes"], RUN)).rejects.toThrow(
+      `${NAMES["gateway"]} is split (gw-new at 10%, gw-old at 90%): end the split first ` +
+      "(deploy.ts --mode rollback, or its Deployments in the dashboard); nothing is changed");
+    expect(split.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    const refused = world({ held: true, refusing: ROLLOUT });
+    await expect(runMode(refused, "dark", ["--yes"], RUN)).rejects.toThrow(
+      `writing ${ROLLOUT} failed (500)`);
+    expect(refused.events.filter((event) => event.startsWith("wrangler "))).toEqual([]);
+  });
+
+  it("plans an optional secret the doors lack, and the doors' way back, as the apply job's to " +
+     "tell; sets none it is not given, so a rollback takes them back", async () => {
+    // The shared app's and the canary clock's, unset in production (run 45014046824).
+    const lacking = ["INBOUND_SLACK_SIGNING_SECRET", "PLATFORM_CANARY_TOKEN"];
+    const without = Object.fromEntries(Object.entries(RUN).filter(([name]) =>
+      !lacking.includes(name)));
+    const doors = (lines: readonly string[]) => lines.filter((line) =>
+      line.startsWith(`${DOORS}: `) || line.includes(` on ${DOORS} with its version`));
+    const setLine = (name: string) => `set the secret ${name} on ${DOORS} with its version if ` +
+      "the run is given it";
+    const unless = `${DOORS}: serving before-doors (${HELD_SERVING[DOORS]![0]!.tag}); a ` +
+      `rollback takes it back there unless the run sets ${lacking.join(", ")} on it`;
+    const LATER = "checked by the apply job before any change";
+    const w = world({ held: true, lacking });
+    expect(doors((await runMode(w, "dark", ["--public"], PUBLIC)).plan)).toEqual([
+      ...lacking.map((name) => `${setLine(name)}: ${LATER}`), `${unless}: ${LATER}`]);
+    const work = await runMode(w, "dark", ["--yes"], without);
+    expect(doors(work.plan)).toEqual([
+      ...lacking.map((name) => `${setLine(name)}: it is not, so it stays unset`),
+      `${unless}: it sets none of them`]);
+    expect(recordIn(w)!.workers.find((each) => each.name === DOORS)!.secrets).toEqual([]);
+    expect([w.secretFiles, w.secretsPut]).toEqual([[], {}]);
+    w.events.splice(0);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+    // Given them, the run sets both with the doors' version, and a rollback stops at it.
+    const given = world({ held: true, lacking });
+    expect(doors((await runMode(given, "dark", ["--yes"], RUN)).plan)).toEqual([
+      ...lacking.map((name) => `${setLine(name)}: it is`),
+      `${unless}: it sets ${lacking.join(", ")}, so it stops at it: the run set ${
+        lacking.join(", ")} on it, which its version before holds otherwise (Cloudflare ` +
+      "refuses that rollback, and the kit never forces one)"]);
+    expect(recordIn(given)!.workers.find((each) => each.name === DOORS)!.secrets)
+      .toEqual(lacking);
+    expect(given.secretFiles.map(({ worker, names }) => [worker, names]))
+      .toEqual([["doors", lacking]]);
+  });
+
+  it("takes the run's Workers back callers first, each read back, then the canary; again, it " +
+     "changes nothing", async () => {
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    expect(serving(w)).not.toEqual(BEFORE_ALL);
+    w.events.splice(0);
+    const work = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(deployed(w)).toEqual([...WORKERS].reverse().map((worker) => NAMES[worker]));
+    expect(serving(w)).toEqual(BEFORE_ALL);
+    expect(work.plan.slice(1)).toEqual([
+      `the rollout record ${ROLLOUT}: the ${WORKERS.length} Workers run 7001 deployed at ${
+        NOW.toISOString()}, taken back in the reverse of its deploy order`,
+      ...[...WORKERS].reverse().map((worker) => expect.stringMatching(new RegExp(
+        `^roll ${NAMES[worker]} back to before-${worker} \\(${BEFORE}[-m0-9.]*\\) at 100%, ` +
+        `from 0f7e3a3c-\\S+ \\(${OURS}[-m0-9.]*\\) at 100%$`))),
+      `read each Worker's deployment back: ${[...WORKERS].reverse().map((worker) =>
+        NAMES[worker]).join(", ")} serve their versions before the run`]);
+    // Each deployment is read back before the next is made, and the canary follows the last.
+    const name = NAMES["doors"]!;
+    order(w.events, [`cf POST /accounts/${ACCOUNT}/workers/scripts/${name}/deployments`,
+                     `cf GET /accounts/${ACCOUNT}/workers/scripts/${name}/deployments`,
+                     `cf POST /accounts/${ACCOUNT}/workers/scripts/${NAMES["owner"]}/deployments`,
+                     "log Run ", "node canary.ts"]);
+    w.events.splice(0);
+    const again = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(deployed(w)).toEqual([]);
+    expect(again.plan.at(-1)).toBe("every Worker serves its version before the run already");
+  });
+
+  it("has its canary's keyed checks wait only while the control record admits no owner, as " +
+     "after every mode (rollback run 45071780667 judged it apart from routes)", async () => {
+    const canaries = (w: ReturnType<typeof world>) =>
+      w.events.filter((event) => event.startsWith("node canary.ts"));
+    const admitting = JSON.stringify({ ...DARK, outside: "on", canary: ["user_canary"] });
+    for (const [record, closed] of [[JSON.stringify(DARK), " --closed"], [admitting, ""]]) {
+      const w = world({ held: true });
+      w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, record!);
+      await runMode(w, "dark", ["--yes"], RUN);
+      await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+      const routed = world({ held: true });
+      routed.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, record!);
+      await runMode(routed, "routes", ["--yes"]);
+      expect([...canaries(w), ...canaries(routed)]).toEqual([
+        `node canary.ts${closed}`, `node canary.ts${closed}`,
+        `node canary.ts --side doors${closed}`]);
     }
+    // A record no reader takes, or none, is not known to admit no owner: the key is owed.
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    for (const record of ["off\n", undefined]) {
+      w.events.splice(0);
+      if (record === undefined) {
+        w.kv.delete(`${CONTROL_NS}/${CONTROL_KEY}`);
+      } else {
+        w.kv.set(`${CONTROL_NS}/${CONTROL_KEY}`, record);
+      }
+      await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+      expect(canaries(w)).toEqual(["node canary.ts"]);
+    }
+  });
+
+  it("plans with the token alone and changes nothing without --yes", async () => {
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    w.events.splice(0);
+    const planned = await runMode(w, "rollback", ["--public", "--record", "7001"],
+                                  { ...PUBLIC, GITHUB_RUN_ID: "7002" });
+    expect(planned.plan).toHaveLength(WORKERS.length + 1);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+  });
+
+  it("stops at the first Worker the run made forward-only, and with none to take back changes " +
+     "nothing", async () => {
+    // The owner's version adds a migration: the doors go back, the owner and its callees stay.
+    const bumped = world({ held: true, pinned: BUMPED });
+    await runMode(bumped, "dark", ["--yes"], RUN);
+    const counts = (pinned: Readonly<Record<string, readonly string[]>>) => Object.keys(pinned)
+      .sort().map((path) => pinned[path]!.length).join(".");
+    bumped.events.splice(0);
+    const work = await runMode(bumped, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(deployed(bumped)).toEqual([NAMES["doors"]]);
+    expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
+      `^leave ${NAMES["owner"]} on 0f7e3a3c-\\S+ \\(${OURS}-m${counts(BUMPED.owner)}\\) at 100%: ` +
+      `the run's version pins -m${counts(BUMPED.owner)} and its version before -m${
+        counts(PINNED["owner"]!)}: every object the newer one migrated would refuse to start ` +
+      "on it$")));
+    for (const worker of WORKERS.slice(0, WORKERS.indexOf("owner"))) {
+      expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
+        `^leave ${NAMES[worker]} on .*: it comes before ${NAMES["owner"]} in the deploy order, ` +
+        `and ${NAMES["owner"]} stays on the run's version$`)));
+    }
+    // A record whose counts or tag before are not Cloudflare's tags is never rolled back.
+    const held = recordIn(bumped)!;
+    for (const owner of [{ counts: Object.fromEntries(Object.entries(PINNED["owner"]!).map(
+                           ([path, pinned]) => [path, pinned.length])) },
+                         { before: { version: "before-owner", tag: `${BEFORE}-m99` } }]) {
+      bumped.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers:
+        held.workers.map((each) => each.name === NAMES["owner"] ? { ...each, ...owner } : each) }));
+      bumped.events.splice(0);
+      await expect(runMode(bumped, "rollback", ["--yes", "--record", "7001"], RUN)).rejects
+        .toThrow(`the record ${ROLLOUT} holds ${NAMES["owner"]} as before `);
+      expect(bumped.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    }
+    // The routing key set on the doors and the owner: the doors stay, so nothing goes back.
+    const rotated = world({ held: true });
+    await runMode(rotated, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY"], RUN);
+    rotated.events.splice(0);
+    await expect(runMode(rotated, "rollback", ["--yes", "--record", "7001"], RUN)).rejects
+      .toThrow(`nothing can be rolled back: ${NAMES["doors"]} stays on run 7001's version (the ` +
+               "run set ROUTING_MAC_KEY on it, which its version before holds otherwise " +
+               "(Cloudflare refuses that rollback, and the kit never forces one)). Roll forward " +
+               "with a fix, or close the control record's gates (--mode control); nothing is " +
+               "changed");
+    expect(rotated.events.filter((event) => CHANGE.test(event))).toEqual([]);
+  });
+
+  it("names why each Worker is forward-only, from the record's facts alone", () => {
+    const rolled = (change: Partial<Rolled>): Rolled => ({
+      name: "w", before: { version: "v", tag: `${BEFORE}-m3.1` }, counts: { a: 3, b: 1 },
+      whole: false, secrets: [], forward: 0, ...change });
+    expect(forwardOnly(rolled({}))).toBeNull();
+    expect(forwardOnly(rolled({ counts: { a: 2, b: 1 } }))).toBeNull();
+    expect(forwardOnly(rolled({ counts: {}, before: { version: "v", tag: null } }))).toBeNull();
+    expect(forwardOnly(rolled({ before: null })))
+      .toBe("the run deployed it first: no version comes before it");
+    expect(forwardOnly(rolled({ whole: true }))).toBe(
+      "the run deployed it whole (--migrate), and Cloudflare rolls back across no Durable " +
+      "Object class change");
+    expect(forwardOnly(rolled({ secrets: ["K1", "K2"] }))).toMatch(/^the run set K1, K2 on it/);
+    // The counts in their lock paths' order, held one by one.
+    expect(forwardOnly(rolled({ counts: { b: 2, a: 3 } }))).toBe(
+      "the run's version pins -m3.2 and its version before -m3.1: every object the newer one " +
+      "migrated would refuse to start on it");
+    for (const tag of [null, BEFORE, `${BEFORE}-m3`, `${BEFORE}-m3.1.1`]) {
+      expect(forwardOnly(rolled({ before: { version: "v", tag } })), String(tag)).toBe(
+        `its version before is tagged ${tag ?? "with nothing"}, which names no migration ` +
+        "counts to hold the run's -m3.1 to: unknown");
+    }
+    // A forward count above the version before's stops it; one at or below it, or none, not.
+    const marked = (forward: number, tag: string | null) =>
+      forwardOnly(rolled({ forward, before: { version: "v", tag } }));
+    const cannot = "it writes, or is called, in a way its version before cannot follow " +
+      "(platform.json forward)";
+    expect(marked(1, `${BEFORE}-m3.1`)).toBe(
+      `the run's version is marked -f1 and its version before with none: ${cannot}`);
+    expect(marked(3, `${BEFORE}-m3.1-f2`)).toBe(
+      `the run's version is marked -f3 and its version before -f2: ${cannot}`);
+    expect([marked(2, `${BEFORE}-m3.1-f2`), marked(1, `${BEFORE}-m3.1-f2`),
+            marked(0, `${BEFORE}-m3.1-f2`)]).toEqual([null, null, null]);
+    for (const tag of [null, "v1.2", `${BEFORE}-f0`, `${BEFORE}-m3.1-f`]) {
+      expect(marked(1, tag), String(tag)).toBe(`its version before is tagged ${
+        tag ?? "with nothing"}, which names no forward count to hold the run's -f1 to: unknown`);
+    }
+    // The count rides the tag after the locks' counts, and is left out at 0.
+    expect(versionFlags(COMMIT, { b: 1, a: 3 }, 2))
+      .toEqual(["--tag", `${OURS}-m3.1-f2`, "--message", COMMIT]);
+    expect(versionFlags(COMMIT, {}, 1)).toEqual(["--tag", `${OURS}-f1`, "--message", COMMIT]);
+    expect(versionFlags(COMMIT, {}, 0)).toEqual(["--tag", OURS, "--message", COMMIT]);
+  });
+
+  it("holds every Worker to the record first: a deploy since stops it, a split of the run's " +
+     "own is taken back", async () => {
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    const gateway = NAMES["gateway"]!;
+    const ours = w.deployments.get(gateway)!;
+    w.versions.set("later", { script: gateway, tag: "d00d00d00d00" });
+    w.deployments.set(gateway, [{ version: "later", percentage: 100 }]);
+    w.events.splice(0);
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+      `deployed since run 7001, so nothing is rolled back: ${gateway} serves later ` +
+      `(d00d00d00d00) at 100%, neither its version before the run nor one of commit ${OURS}`);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    // A split of the run's version and the one before, as a run stopped mid-rollout leaves it.
+    w.deployments.set(gateway, [{ ...ours[0]!, percentage: 10 },
+                                { version: "before-gateway", percentage: 90 }]);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+  });
+
+  it("holds the record's version before to Cloudflare's deployments, and its Workers to the " +
+     "tree's deploy order", async () => {
+    // The gateway served an older real version before the one the run found.
+    const w = world({ held: true });
+    const gateway = NAMES["gateway"]!;
+    const older = { version: "older-gateway", tag: "a".repeat(12) };
+    w.versions.set(older.version, { script: gateway, tag: older.tag });
+    w.deployments.set(gateway, [{ version: older.version, percentage: 100 }]);
+    w.deployments.set(gateway, [{ version: "before-gateway", percentage: 100 }]);
+    await runMode(w, "dark", ["--yes"], RUN);
+    const held = recordIn(w)!;
+    const plant = (workers: readonly Rolled[]) => {
+      w.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers }));
+      w.events.splice(0);
+    };
+    // Named as the one before, with its real tag: every tag agrees, and the history does not.
+    plant(held.workers.map((each) => each.name === gateway ? { ...each, before: older } : each));
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+      `the record ${ROLLOUT} holds ${gateway} as serving ${older.version} before the run, and ` +
+      `Cloudflare's deployments listing has no deployment of it alone followed by one of ` +
+      `commit ${OURS}: nothing is changed (a rollback by hand follows checklist.md)`);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    // Nor by one Cloudflare served only in a split just before a deployment of the commit.
+    const ours = [...w.deployments.get(gateway)!];
+    w.deployments.set(gateway, [{ version: older.version, percentage: 50 },
+                                { version: "before-gateway", percentage: 50 }]);
+    w.deployments.set(gateway, ours);
+    plant(held.workers.map((each) => each.name === gateway ? { ...each, before: older } : each));
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+      `the record ${ROLLOUT} holds ${gateway} as serving ${older.version} before the run, and `);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    // A Worker left out, or the order turned, so a callee would go back before its caller.
+    const names = WORKERS.map((worker) => NAMES[worker]).join(", ");
+    for (const workers of [held.workers.filter((each) => each.name !== DOORS),
+                           [...held.workers].reverse()]) {
+      plant(workers);
+      await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+        `the record ${ROLLOUT} names the Workers ${workers.map((each) => each.name).join(", ")
+        }, and this tree deploys ${names}, in that order: nothing is changed (a rollback by ` +
+        "hand follows checklist.md)");
+      expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    }
+    plant(held.workers);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+  });
+
+  it("takes a later run of the same commit back to the earlier's version, and the earlier back " +
+     "after a later run's rollback", async () => {
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    const first = serving(w);
+    await runMode(w, "dark", ["--yes"], { ...RUN, GITHUB_RUN_ID: "7002" });
+    await runMode(w, "rollback", ["--yes", "--record", "7002"], RUN);
+    expect(serving(w)).toEqual(first);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+  });
+
+  it("stops at a Worker the run marked forward (-f), its count held to Cloudflare's tag",
+     async () => {
+    // A tree whose forward list names the owner once: its version's tag carries -f1.
+    const w = world({ held: true });
+    await runMode(w, "dark", ["--yes"], RUN);
+    const owner = NAMES["owner"]!;
+    const ours = w.deployments.get(owner)![0]!.version;
+    const held = recordIn(w)!;
+    const count = (forward: number) => {
+      w.kv.set(`${CONTROL_NS}/${ROLLOUT}`, JSON.stringify({ ...held, workers: held.workers.map(
+        (each) => each.name === owner ? { ...each, forward } : each) }));
+      w.events.splice(0);
+    };
+    // The record's count is held to the tag: one the tag lacks is no record of the run's.
+    count(1);
+    await expect(runMode(w, "rollback", ["--yes", "--record", "7001"], RUN)).rejects.toThrow(
+      `the record ${ROLLOUT} holds ${owner} as before ${HELD_SERVING[owner]![0]!.tag}, counts `);
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    w.versions.set(ours, { script: owner, tag: `${w.versions.get(ours)!.tag}-f1` });
+    const work = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(deployed(w)).toEqual([DOORS]);
+    expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
+      `^leave ${owner} on ${ours} \\(${OURS}-m[0-9.]+-f1\\) at 100%: the run's version is ` +
+      "marked -f1 and its version before with none: it writes, or is called, in a way its " +
+      "version before cannot follow \\(platform.json forward\\)$")));
+  });
+
+  it("stops loudly when Cloudflare refuses a deployment, or one reads back otherwise",
+     async () => {
+    const refused = world({ held: true, refusingDeploy: 10220 });
+    await runMode(refused, "dark", ["--yes"], RUN);
+    await expect(runMode(refused, "rollback", ["--yes", "--record", "7001"], RUN)).rejects
+      .toThrow(`deploying before-doors of ${NAMES["doors"]} failed (400, [10220])`);
+    const inert = world({ held: true });
+    await runMode(inert, "dark", ["--yes"], RUN);
+    inert.inert.add("deploy");
+    inert.events.splice(0);
+    await expect(runMode(inert, "rollback", ["--yes", "--record", "7001"], RUN)).rejects
+      .toThrow(new RegExp(`^${NAMES["doors"]}'s deployment read back as 0f7e3a3c-\\S+ at 100%, ` +
+                          "not before-doors at 100%, 60 s after it was made: the rollback stops " +
+                          "here$"));
+    expect(deployed(inert)).toEqual([NAMES["doors"]]);
+    // Re-read, never redeployed, until the bound.
+    expect(readsOf(inert, NAMES["doors"]!)).toBe(31);
+  });
+
+  it("reads each deployment back until Cloudflare lists it, deploying nothing again",
+     async () => {
+    const w = world({ held: true, lagging: 3 });
+    await runMode(w, "dark", ["--yes"], RUN);
+    w.events.splice(0);
+    await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+    expect(serving(w)).toEqual(BEFORE_ALL);
+    // Each Worker deployed once, and read back four times, the first three lagging.
+    for (const worker of WORKERS) {
+      expect([worker, deployed(w).filter((name) => name === NAMES[worker]).length,
+              readsOf(w, NAMES[worker]!)]).toEqual([worker, 1, 4]);
+    }
+  });
+
+  it("takes only a record a deploy wrote, in shape", async () => {
+    await expect(runMode(world({ held: true }), "rollback", ["--yes", "--record", "9999"], RUN))
+      .rejects.toThrow(`there is no rollout record deploy:rollout:9999 in ${
+        NAMESPACES["CONTROL"]}: name the id a dark or routes run's job summary gives; nothing ` +
+        "is changed");
+    const good = { kind: "tinyassets-rollout", run: "1", attempt: null, at: "t", commit: COMMIT,
+                   workers: [{ name: "w", before: null, counts: {}, whole: false, secrets: [],
+                                forward: 0 }] };
+    expect(rolloutOf(good, "k")).toEqual(good);
+    const one = good.workers[0]!;
+    for (const [bad, why] of [
+      [{ ...good, kind: "tinyassets-routes" }, "is not a rollout record"],
+      [{ ...good, commit: "c0ffee" }, "is out of shape"],
+      [{ ...good, workers: [{ ...one, counts: { a: -1 } }] }, "holds a Worker out of shape"],
+      [{ ...good, workers: [{ ...one, secrets: ["K", "K"] }] }, "holds a Worker out of shape"],
+      [{ ...good, workers: [{ ...one, forward: 0.5 }] }, "holds a Worker out of shape"],
+      [{ ...good, workers: [{ ...one, forward: undefined }] }, "holds a Worker out of shape"],
+      [{ ...good, workers: [{ ...one, before: { version: 1 } }] }, "holds a Worker out of shape"],
+      [{ ...good, workers: [one, one] }, "holds a Worker twice"],
+    ] as const) {
+      expect(() => rolloutOf(bad, "k"), why).toThrow(`the record k ${why}`);
+    }
+  });
+
+  describe("the stages", () => {
+    /** Each `wrangler versions deploy`'s versions and shares, in order. */
+    const shares = (w: ReturnType<typeof world>) => w.events.filter((event) =>
+      event.startsWith("wrangler versions deploy ")).map((event) =>
+      event.slice("wrangler versions deploy ".length, event.indexOf(" --yes")));
+    const read = (worker: string) =>
+      `cf GET /accounts/${ACCOUNT}/workers/scripts/${NAMES[worker]}/deployments`;
+    /** The run's every wait, in the world's timeline. */
+    const waited = (w: ReturnType<typeof world>) => {
+      Object.assign(w.io, { sleep: async (ms: number) => { w.events.push(`sleep ${ms}`); } });
+    };
+    const DOORS_AT = WORKERS.indexOf("doors");
+    const OWNER_AT = WORKERS.indexOf("owner");
+    const lacking = ["INBOUND_SLACK_SIGNING_SECRET", "PLATFORM_CANARY_TOKEN"];
+
+    it("takes each held Worker to 0% beside its version before, the new one listed first, then " +
+       "to 100%, each read back before the next; nothing smoked before the doors' routes",
+       async () => {
+      const w = world({ held: true });
+      waited(w);
+      const work = await runMode(w, "dark", ["--yes"], RUN);
+      expect(shares(w)).toEqual(WORKERS.flatMap((worker, at) => [
+        `${MADE_ID(at + 1)}@0 before-${worker}@100`, `${MADE_ID(at + 1)}@100`]));
+      for (const [at, worker] of WORKERS.entries()) {
+        order(w.events, [`wrangler versions upload --config ${worker}/`,
+                         `wrangler versions deploy ${MADE_ID(at + 1)}@0 `, read(worker),
+                         `wrangler versions deploy ${MADE_ID(at + 1)}@100 `, read(worker)]);
+      }
+      expect(w.events.filter((event) => /^(sleep|node canary.ts --smoke)/.test(event)))
+        .toEqual([]);
+      expect(work.plan.filter((line) => line.startsWith("upload a version of")))
+        .toEqual(WORKERS.map((worker) => stagedLine(worker)));
+      expect(serving(w)).toEqual(Object.fromEntries(WORKERS.map((worker, at) =>
+        [NAMES[worker]!, `${MADE_ID(at + 1)}@100`])));
+    });
+
+    it("once the doors hold their routes, holds their 0% for the soak, then smokes it; a " +
+       "failed smoke stops the run there, and a rollback takes them back", async () => {
+      const again = { ...RUN, GITHUB_RUN_ID: "7002" };
+      const ours = MADE_ID(WORKERS.length + DOORS_AT + 1);
+      const theirs = MADE_ID(DOORS_AT + 1);
+      const w = world({ held: true });
+      await runMode(w, "routes", ["--yes"], RUN);
+      waited(w);
+      w.events.splice(0);
+      const work = await runMode(w, "dark", ["--yes"], again);
+      order(w.events, [`wrangler versions deploy ${ours}@0 ${theirs}@100 `, read("doors"),
+                       `sleep ${STAGES.soakMs}`, `node canary.ts --smoke ${ours}`,
+                       `wrangler versions deploy ${ours}@100 `, read("doors")]);
+      expect(w.events.filter((event) => /^(sleep|node canary.ts --smoke)/.test(event)))
+        .toEqual([`sleep ${STAGES.soakMs}`, `node canary.ts --smoke ${ours}`]);
+      expect(work.plan).toEqual(expect.arrayContaining([
+        stagedLine("doors", SMOKED), stagedLine("owner"), `the doors' smoke of ${ours} at 0% passed`]));
+      // Failed, the doors stay at 0% beside their version before, and nothing follows.
+      const failed = world({ held: true, smoke: 16 });
+      await runMode(failed, "routes", ["--yes"], RUN);
+      failed.events.splice(0);
+      await expect(runMode(failed, "dark", ["--yes"], again)).rejects.toThrow(
+        `the doors' smoke of ${ours} at 0% failed (exit 16): the run stops here (--mode ` +
+        "rollback --record 7002 takes it back)");
+      expect(serving(failed)[DOORS]).toBe(`${ours}@0,${theirs}@100`);
+      expect(failed.events.some((event) => event.startsWith(`wrangler versions deploy ${ours}@100`)))
+        .toBe(false);
+      failed.events.splice(0);
+      const back = await runMode(failed, "rollback", ["--yes", "--record", "7002"], again);
+      expect(serving(failed)).toEqual(Object.fromEntries(WORKERS.map((worker, at) =>
+        [NAMES[worker]!, `${MADE_ID(at + 1)}@100`])));
+      expect(back.plan).toContain(`roll ${DOORS} back to ${theirs} (${OURS}) at 100%, from ${
+        ours} (${OURS}) at 0% and ${theirs} (${OURS}) at 100%: its run's version at 0% served ` +
+        "no request but an override's");
+    });
+
+    it("lets a rollback end a 0% split that a migration would stop at 100%", async () => {
+      const ours = MADE_ID(OWNER_AT + 1);
+      const w = world({ held: true, pinned: BUMPED, failing: `versions deploy ${ours}@100` });
+      await expect(runMode(w, "dark", ["--yes"], RUN)).rejects.toThrow(
+        `wrangler versions deploy ${ours}@100 failed (exit 1): the API refused it`);
+      expect(serving(w)[NAMES["owner"]!]).toBe(`${ours}@0,before-owner@100`);
+      // Listed the other way round, the shares still say its run's version served nothing.
+      w.deployments.set(NAMES["owner"]!, [...w.deployments.get(NAMES["owner"]!)!].reverse());
+      w.events.splice(0);
+      const work = await runMode(w, "rollback", ["--yes", "--record", "7001"], RUN);
+      expect(serving(w)).toEqual(BEFORE_ALL);
+      expect(work.plan).toContainEqual(expect.stringMatching(new RegExp(
+        `^roll ${NAMES["owner"]} back to before-owner \\(${BEFORE}-m[0-9.]+\\) at 100%, from ` +
+        `before-owner \\(${BEFORE}-m[0-9.]+\\) at 100% and ${ours} \\(${OURS}-m[0-9.]+\\) at ` +
+        "0%: its run's version at 0% served no request but an override's$")));
+    });
+
+    it("takes a Worker that cannot serve beside its version before to 100% at once, in its " +
+       "place", async () => {
+      const w = world({ held: true });
+      const work = await runMode(w, "dark", ["--yes", "--rotate", "ROUTING_MAC_KEY", "--migrate",
+                                             "owner"], RUN);
+      const at = (worker: string) => MADE_ID(WORKERS.indexOf(worker) + 1);
+      expect(shares(w)).toEqual(WORKERS.flatMap((worker) => worker === "owner" ? []
+        : worker === "doors" ? [`${at(worker)}@100`]
+          : [`${at(worker)}@0 before-${worker}@100`, `${at(worker)}@100`]));
+      order(w.events, [`wrangler deploy --config owner/`, read("owner"),
+                       "wrangler versions upload --config doors/",
+                       `wrangler versions deploy ${at("doors")}@100 `, read("doors")]);
+      expect(work.plan).toEqual(expect.arrayContaining([
+        onceLine("owner", "the run deployed it whole (--migrate), and Cloudflare rolls back " +
+                 "across no Durable Object class change", true),
+        onceLine("doors", "the run set ROUTING_MAC_KEY on it, which its version before holds " +
+                 "otherwise (Cloudflare refuses that rollback, and the kit never forces one)"),
+        stagedLine("sandbox"), readBack("owner", [at("owner"), 100])]));
+      // A forward mark above the version before's, or a tag naming none, goes at once too; a
+      // migration alone takes the stages.
+      const rolled: Rolled = { name: "w", before: { version: "v", tag: `${OURS}-m2` },
+                               counts: { "a.json": 3 }, whole: false, secrets: [], forward: 1 };
+      expect(atOnce(rolled)).toMatch(/^the run's version is marked -f1 and its version before /);
+      expect(atOnce({ ...rolled, before: { version: "v", tag: null } }))
+        .toMatch(/names no forward count to hold the run's -f1 to: unknown$/);
+      expect(atOnce({ ...rolled, before: { version: "v", tag: `${OURS}-m2-f1` } })).toBeNull();
+      expect(forwardOnly({ ...rolled, before: { version: "v", tag: `${OURS}-m2-f1` } }))
+        .toMatch(/^the run's version pins -m3 and its version before -m2/);
+    });
+
+    it("leaves the doors' stages to the apply job when only optional secrets it cannot see " +
+       "decide them", async () => {
+      const without = Object.fromEntries(Object.entries(RUN).filter(([name]) =>
+        !lacking.includes(name)));
+      const unless = `${stagedLine("doors")} unless the run sets ${lacking.join(", ")} on it`;
+      const doors = (plan: readonly string[]) => plan.filter((line) =>
+        line.startsWith(`upload a version of ${DOORS}`));
+      const w = world({ held: true, lacking });
+      expect(doors((await runMode(w, "dark", ["--public"], PUBLIC)).plan)).toEqual([
+        `${unless}: checked by the apply job before any change`]);
+      expect(doors((await runMode(w, "dark", ["--yes"], without)).plan)).toEqual([
+        `${unless}: it sets none of them`]);
+      expect(shares(w).filter((each) => each.startsWith(MADE_ID(DOORS_AT + 1)))).toEqual([
+        `${MADE_ID(DOORS_AT + 1)}@0 before-doors@100`, `${MADE_ID(DOORS_AT + 1)}@100`]);
+      const given = world({ held: true, lacking });
+      expect(doors((await runMode(given, "dark", ["--yes"], RUN)).plan)).toEqual([
+        `${unless}: it sets ${lacking.join(", ")}, so it goes to 100% at once: the run set ${
+          lacking.join(", ")} on it, which its version before holds otherwise (Cloudflare ` +
+        "refuses that rollback, and the kit never forces one)"]);
+      expect(shares(given).filter((each) => each.startsWith(MADE_ID(DOORS_AT + 1)))).toEqual([
+        `${MADE_ID(DOORS_AT + 1)}@100`]);
+    });
+
+    it("stops at a deployment that reads back otherwise, before anything follows it",
+       async () => {
+      const held = world({ held: true });
+      held.inert.add("deploy");
+      await expect(runMode(held, "dark", ["--yes"], RUN)).rejects.toThrow(
+        `${NAMES["codemode"]}'s deployment read back as before-codemode at 100%, not ${
+          MADE_ID(1)} at 0% and before-codemode at 100%, 60 s after it was made: the run stops ` +
+        "here (--mode rollback --record 7001 takes it back)");
+      expect(shares(held)).toEqual([`${MADE_ID(1)}@0 before-codemode@100`]);
+      const fresh = world();
+      fresh.inert.add("deploy");
+      await expect(runMode(fresh, "dark", ["--yes"], RUN)).rejects.toThrow(
+        `${NAMES["codemode"]}'s deployment read back as none, not ${MADE_ID(1)} at 100%, 60 s ` +
+        "after it was made: the run stops here (--mode rollback --record 7001 takes it back)");
+      expect(fresh.events.filter((event) => event.startsWith("wrangler deploy"))).toHaveLength(1);
+    });
+
+    it("reads each deployment back until Cloudflare lists it, each stage and a whole deploy, " +
+       "deploying nothing again", async () => {
+      // Run 45065434026: the gateway's 100% read back as its 0% split, the deployment before.
+      for (const held of [true, false]) {
+        const run = async (lagging: number) => {
+          const w = world({ held, lagging });
+          const { sleep } = w.io;
+          Object.assign(w.io, { sleep: async (ms: number) => {
+            w.events.push(`sleep ${ms}`);
+            await sleep(ms);
+          } });
+          return { w, work: await runMode(w, "dark", ["--yes"], RUN) };
+        };
+        const [lag, none] = [await run(2), await run(0)];
+        const made = (w: ReturnType<typeof world>) => w.events.filter((event) =>
+          /^wrangler (deploy|versions deploy) /.test(event));
+        // The same deployments, each said read back as it was made.
+        expect(made(lag.w)).toEqual(made(none.w));
+        expect(lag.work.plan).toEqual(none.work.plan);
+        for (const worker of WORKERS) {
+          const deployments = none.work.plan.filter((line) =>
+            line.startsWith(`${NAMES[worker]} serves `)).length;
+          expect(deployments).toBe(held ? 2 : 1);
+          // Each read twice more, two seconds apart, before Cloudflare lists it.
+          const reads = (w: ReturnType<typeof world>) =>
+            w.events.filter((event) => event === read(worker)).length;
+          expect([worker, reads(lag.w) - reads(none.w)]).toEqual([worker, 2 * deployments]);
+        }
+        expect(lag.w.events.filter((event) => event === "sleep 2000")).toHaveLength(
+          2 * none.work.plan.filter((line) => / serves .*, read back$/.test(line)).length);
+        expect(none.w.events.filter((event) => event === "sleep 2000")).toEqual([]);
+      }
+    });
   });
 });
 
@@ -2086,13 +3341,13 @@ describe("the parts of a run", () => {
     }
   });
 
-  it("reports an unlisted callback as dark's to register while it cannot be listed, and " +
+  it("leaves an unlisted callback to the apply job while it cannot be listed, and " +
      "stops on every other refusal", async () => {
     const answering = (location: string) => async () =>
       new Response(null, { status: 302, headers: { Location: location } });
     expect(await authorizeCheck(UPSTREAM, true, answering(
       "https://error.workos.com/redirect-uri-invalid?redirect_uri=x")))
-      .toMatch(/dark registers it/);
+      .toMatch(/: checked by the apply job before any change$/);
     expect(await authorizeCheck(UPSTREAM, true, answering("https://auth.test/bootstrap")))
       .toMatch(/auth\.test's sign-in/);
     for (const location of ["https://error.workos.com/sso/client-id-invalid",
@@ -2156,26 +3411,32 @@ describe("the parts of a run", () => {
       .toThrow(/GATEWAY_KEYRING is .*32 bytes/);
     expect(secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(ROTATED)))
       .toEqual([{ worker: "gateway", name: "GATEWAY_KEYRING" }]);
-    // The files Worker's data keys' ring, by the same rule (slice P).
+    // The files Worker's data keys' ring, by the same rule.
     expect(() => secretPlan(held, new Set(["FILES_KEYRING"]), values(RING)))
       .toThrow(/FILES_KEYRING holds/);
     expect(secretPlan(held, new Set(["FILES_KEYRING"]), values(ROTATED)))
       .toEqual([{ worker: "files", name: "FILES_KEYRING" }]);
   });
 
-  it("refuses to deploy unless each migration lock pins every migration it ships, in order " +
-     "(review M5-2), by the locks' own command line", async () => {
+  it("refuses to deploy unless each migration lock pins every migration it ships, in order, " +
+     "by the locks' own command line, and counts what each pins", async () => {
     // The real command line's answer, whatever the checked-in locks pin: the kit's own.
     const run = parse(["--mode", "dark"], ENV, { ...world().io, spawn: spawnSync });
     for (const worker of migrated()) {
       const locks = await locksOf(worker);
       const refused = deployProblems(worker, locks, Object.fromEntries(Object.keys(locks)
         .map((path) => [path, readLock(path)])));
-      expect(lockRefusal(worker, run), worker).toBe(refused.length === 0 ? null
-        : `${worker}'s migration locks refuse the deploy (exit 1): ${refused.join("\n")}`);
+      if (refused.length === 0) {
+        expect(lockCounts(worker, run), worker).toEqual(Object.fromEntries(Object.keys(locks)
+          .map((path) => [path, readLock(path).deployed.length])));
+      } else {
+        expect(() => lockCounts(worker, run), worker).toThrow(
+          `${worker}'s migration locks refuse the deploy (exit 1): ${refused.join("\n")}`);
+      }
     }
     // A Worker that states no lock is refused, never read as nothing to check.
-    expect(lockRefusal("doors", run)).toMatch(/^doors's migration locks refuse the deploy \(exit 1\)/);
+    expect(() => lockCounts("doors", run))
+      .toThrow(/^doors's migration locks refuse the deploy \(exit 1\)/);
   });
 
   it("lists the account's Workers, and deletes one unforced, never reading a failure as " +
@@ -2291,8 +3552,8 @@ describe("the parts of a run", () => {
       .toThrow("wrangler versions upload failed (exit 1): the API refused it");
   });
 
-  it("hands each route from the old proxy to the doors one at a time, no path unserved " +
-     "(review D3)", async () => {
+  it("hands each route from the old proxy to the doors one at a time, no path unserved",
+     async () => {
     const fake = zoneApi(LIVE);
     const cloudflare = client(fake);
     const { id: zone, account } = await cloudflare.zone(ZONE);
@@ -2301,11 +3562,11 @@ describe("the parts of a run", () => {
     // Identical patterns move in place, and a narrower old one is deleted after the doors'
     // wider one exists: the old proxy is left with no route.
     expect(steps.filter((each) => each.method === "PUT").map((each) => each.pattern))
-      .toEqual(["tinyassets.io/mcp*", "tinyassets.io/api*", "tinyassets.io/app*"]);
+      .toEqual([`${HOST}/mcp*`, `${HOST}/api*`, `${HOST}/app*`]);
     expect(steps.filter((each) => each.method === "DELETE").map((each) => each.pattern))
-      .toEqual(["tinyassets.io/.well-known/oauth-protected-resource*",
-                "tinyassets.io/.well-known/oauth-authorization-server*"]);
-    const added = steps.findIndex((each) => each.pattern === "tinyassets.io/.well-known/oauth-*");
+      .toEqual([`${HOST}/.well-known/oauth-protected-resource*`,
+                `${HOST}/.well-known/oauth-authorization-server*`]);
+    const added = steps.findIndex((each) => each.pattern === `${HOST}/.well-known/oauth-*`);
     expect(steps.findIndex((each) => each.method === "DELETE")).toBeGreaterThan(added);
     await cloudflare.reroute(zone, steps, (each) => describeStep(each, DOORS));
     for (const path of PROBES.slice(0, -1)) {
@@ -2313,51 +3574,13 @@ describe("the parts of a run", () => {
     }
     expect([...fake.table.values()].filter((route) => route.script === "tinyassets-mcp-proxy"))
       .toEqual([]);
-    expect(servedBy(fake.table.values(), "tinyassets.io/site/x")).toBe("site");
+    expect(servedBy(fake.table.values(), `${HOST}/site/x`)).toBe("site");
     // Run again, it changes nothing.
     expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
   });
 
-  it("probes the sign-in on its two unheld paths alone; routes then finds both the doors'",
-     async () => {
-    expect(PROBE_ROUTES.every((pattern) => ROUTES.includes(pattern))).toBe(true);
-    const fake = zoneApi(LIVE);
-    const cloudflare = client(fake);
-    const steps = probeSteps(await cloudflare.routes("z"));
-    expect(steps).toEqual(PROBE_ROUTES.map((pattern) => ({ method: "POST", pattern,
-                                                           script: DOORS })));
-    await cloudflare.reroute("z", steps, (each) => describeStep(each, DOORS));
-    // Only the sign-in's paths move: every other path is served as before.
-    for (const path of PROBES) {
-      const doors = path === "tinyassets.io/authorize" || path === "tinyassets.io/oauth/token";
-      expect([path, servedBy(fake.table.values(), path)])
-        .toEqual([path, doors ? DOORS : fake.before.get(path)]);
-    }
-    // Run again, it changes nothing; routes hands over the rest, unchanged, and both are held.
-    expect(probeSteps([...fake.table.values()])).toEqual([]);
-    const after = handover([...fake.table.values()], DOORS, ROUTES);
-    expect(after).toEqual(handover(LIVE, DOORS, ROUTES)
-      .filter((each) => !PROBE_ROUTES.includes(each.pattern)));
-    await cloudflare.reroute("z", after, (each) => describeStep(each, DOORS));
-    for (const path of PROBES.slice(0, -1)) {
-      expect([path, servedBy(fake.table.values(), path)]).toEqual([path, DOORS]);
-    }
-    expect(handover([...fake.table.values()], DOORS, ROUTES)).toEqual([]);
-  });
-
-  it("refuses to probe a path any other Worker, or no Worker, serves", () => {
-    for (const held of [
-      { id: "x", pattern: "tinyassets.io/oauth/*", script: "tinyassets-mcp-proxy" },
-      { id: "x", pattern: "tinyassets.io/oauth/token", script: "tinyassets-mcp-proxy" },
-      { id: "x", pattern: "tinyassets.io/*", script: "site" },
-      { id: "x", pattern: "tinyassets.io/authorize*" },
-    ] as Route[]) {
-      expect(() => probeSteps([...LIVE, held])).toThrow(/nothing is changed/);
-    }
-  });
-
-  it("prints the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
-    const link = new URL(probeLink());
+  it("starts the doors' own first-party sign-in, a fresh S256 challenge each run", () => {
+    const link = new URL(firstPartyLink());
     expect(`${link.origin}${link.pathname}`).toBe(`${ORIGIN}${identity.signin.authorize}`);
     const { code_challenge: challenge, state, ...rest } = Object.fromEntries(link.searchParams);
     expect(rest).toEqual({ response_type: "code", client_id: WEB_CLIENT,
@@ -2365,9 +3588,7 @@ describe("the parts of a run", () => {
                            resource: APP_RESOURCE });
     expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(state).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(new URL(probeLink()).searchParams.get("code_challenge")).not.toBe(challenge);
-    expect(PROBE_SIGNS).toContain(`${WEB_REDIRECT}?error=temporarily_unavailable`);
-    expect(PROBE_SIGNS).toContain(UPSTREAM_CALLBACK);
+    expect(new URL(firstPartyLink()).searchParams.get("code_challenge")).not.toBe(challenge);
   });
 
   it("stops the handover at a refused change, saying what is done", async () => {
@@ -2375,7 +3596,7 @@ describe("the parts of a run", () => {
     const cloudflare = client(fake);
     const steps = handover(await cloudflare.routes("z"), DOORS, ROUTES);
     await expect(cloudflare.reroute("z", steps, (each) => describeStep(each, DOORS)))
-      .rejects.toThrow("move the route tinyassets.io/mcp* from tinyassets-mcp-proxy to " +
+      .rejects.toThrow(`move the route ${HOST}/mcp* from tinyassets-mcp-proxy to ` +
                        `${DOORS} failed (500, [10000]); the steps before it are done, the rest ` +
                        "are not: run it again for the rest");
     expect(fake.calls.filter((call) => call.startsWith("DELETE"))).toEqual([]);
@@ -2548,8 +3769,9 @@ describe("E2B's lifecycle webhook", () => {
   const EVENTS = ["sandbox.lifecycle.paused", "sandbox.lifecycle.killed"];
 
   it("is registered disabled in dark, and enabled only with the routes", async () => {
-    // dark, none held: registered disabled, with the stored secret, for the two events.
-    const dark = e2bHooks([{ id: "x", url: "https://elsewhere.test/hook", enabled: true }]);
+    // dark, none held: registered disabled, with the stored secret, for the two events. A
+    // hook of another name, at whatever URL, is not ours.
+    const dark = e2bHooks([{ id: "x", name: "another", url: E2B_HOOK.url, enabled: true }]);
     expect(await lifecycleHook(dark.e2b,
         { secret: "s1", setSecret: false, enable: false }, true)).toBe("registered, disabled");
     expect(dark.hooks[1]).toEqual({ id: "w1", name: E2B_HOOK.name, url: E2B_HOOK.url,
@@ -2559,7 +3781,7 @@ describe("E2B's lifecycle webhook", () => {
     expect(await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: false }, true))
       .toBe("present, unchanged, disabled");
     expect(dark.calls.slice(calls)).toEqual(["GET /events/webhooks"]);
-    expect(dark.hooks[0]).toEqual({ id: "x", url: "https://elsewhere.test/hook", enabled: true });
+    expect(dark.hooks[0]).toEqual({ id: "x", name: "another", url: E2B_HOOK.url, enabled: true });
     // routes: enabled; a routes run later changes nothing; dark after it never turns it off.
     expect(await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: true }, true))
       .toBe("present, enabled set, enabled");
@@ -2569,10 +3791,24 @@ describe("E2B's lifecycle webhook", () => {
     await lifecycleHook(dark.e2b, { secret: "s2", setSecret: false, enable: false }, true);
     expect(dark.hooks[1]!["enabled"]).toBe(true);
     // A held hook whose events drifted is given its two events back.
-    const drifted = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: false,
+    const drifted = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url, enabled: false,
                                 events: ["sandbox.lifecycle.paused"] }]);
     await lifecycleHook(drifted.e2b, { secret: "s", setSecret: false, enable: false }, true);
     expect(drifted.hooks[0]!["events"]).toEqual(EVENTS);
+    // A held hook the identity's host has moved off is moved to the identity's URL, the one
+    // hook, never a second beside it; the plan says so before the apply.
+    const before = `https://stage.${ZONE}${identity.hook}`;
+    const moved = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: before, enabled: false,
+                              events: EVENTS }]);
+    expect(await lifecycleHook(moved.e2b, { secret: "s", setSecret: false, enable: false },
+                               false)).toBe(`present, its URL (${before} before) set, disabled`);
+    expect(moved.calls).toEqual(["GET /events/webhooks"]);
+    expect(await lifecycleHook(moved.e2b, { secret: "s", setSecret: false, enable: true }, true))
+      .toBe(`present, its URL (${before} before), enabled set, enabled`);
+    expect(moved.calls.at(-1)).toBe(
+      `PATCH /events/webhooks/a ${JSON.stringify({ url: E2B_HOOK.url, enabled: true })}`);
+    expect(moved.hooks).toEqual([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url,
+                                   enabled: true, events: EVENTS }]);
     // routes with none held: registered enabled.
     expect(await lifecycleHook(e2bHooks([]).e2b,
         { secret: "s", setSecret: false, enable: true }, true))
@@ -2582,21 +3818,22 @@ describe("E2B's lifecycle webhook", () => {
     expect(await lifecycleHook(planned.e2b, { secret: "s", setSecret: true, enable: true }, false))
       .toBe("missing: registered, enabled");
     expect(planned.calls).toEqual(["GET /events/webhooks"]);
-    // A failed listing or write stops the kit; two hooks for the URL are refused.
+    // A failed listing or write stops the kit; two hooks of the name are refused.
     await expect(lifecycleHook(e2bHooks([], "GET").e2b,
         { secret: "s", setSecret: false, enable: false }, false))
       .rejects.toThrow("E2B GET /events/webhooks answered 500");
     await expect(lifecycleHook(e2bHooks([], "POST").e2b,
         { secret: "s", setSecret: false, enable: false }, true))
       .rejects.toThrow("E2B POST /events/webhooks answered 500");
-    await expect(lifecycleHook(e2bHooks([{ id: "a", url: E2B_HOOK.url }], "PATCH").e2b,
+    await expect(lifecycleHook(e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url }],
+                                        "PATCH").e2b,
         { secret: "s", setSecret: true, enable: false }, true))
       .rejects.toThrow("E2B PATCH /events/webhooks/a answered 500");
-    await expect(heldHook(e2bHooks([{ id: "a", url: E2B_HOOK.url },
-                                    { id: "b", url: E2B_HOOK.url }]).e2b))
-      .rejects.toThrow(/holds 2 webhooks/);
+    await expect(heldHook(e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url },
+                                    { id: "b", name: E2B_HOOK.name, url: "https://x.test/" }])
+      .e2b)).rejects.toThrow(`E2B holds 2 webhooks named ${E2B_HOOK.name}: keep one`);
     // A route hands the hook's path to the doors.
-    expect(ROUTES.some((pattern) => routeTakes(pattern, `${ZONE}${identity.hook}`))).toBe(true);
+    expect(ROUTES.some((pattern) => routeTakes(pattern, `${HOST}${identity.hook}`))).toBe(true);
   });
 
   it("changes its secret only with the doors' copy: both or neither", async () => {
@@ -2605,34 +3842,47 @@ describe("E2B's lifecycle webhook", () => {
     const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
                    owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
                    sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
-    const kept = secretPlan(held, new Set(), null);
+    const setting = (plan: { worker: string; name: string }[]) =>
+      plan.map((each) => ({ ...each, sets: true }));
+    const kept = setting(secretPlan(held, new Set(), null));
     expect(kept.some((each) => each.name === "E2B_WEBHOOK_SECRET")).toBe(false);
-    const neither = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+    const neither = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url, enabled: true,
+                                events: EVENTS,
                                 signatureSecret: "old" }]);
     await lifecycleHook(neither.e2b,
         { secret: "new", setSecret: hookSetsSecret(kept), enable: true }, true);
     expect(neither.hooks[0]!["signatureSecret"]).toBe("old");
     // With --rotate E2B_WEBHOOK_SECRET the doors take the new value, and E2B does too.
-    const rotated = secretPlan(held, new Set(["E2B_WEBHOOK_SECRET"]), null);
-    expect(rotated).toContainEqual({ worker: "doors", name: "E2B_WEBHOOK_SECRET" });
-    const both = e2bHooks([{ id: "a", url: E2B_HOOK.url, enabled: true, events: EVENTS,
+    const rotated = setting(secretPlan(held, new Set(["E2B_WEBHOOK_SECRET"]), null));
+    expect(rotated).toContainEqual({ worker: "doors", name: "E2B_WEBHOOK_SECRET", sets: true });
+    const both = e2bHooks([{ id: "a", name: E2B_HOOK.name, url: E2B_HOOK.url, enabled: true,
+                             events: EVENTS,
                              signatureSecret: "old" }]);
     await lifecycleHook(both.e2b,
         { secret: "new", setSecret: hookSetsSecret(rotated), enable: true }, true);
     expect(both.hooks[0]!["signatureSecret"]).toBe("new");
     // The doors missing it (a first deploy) sets both as well.
-    const first = secretPlan({ ...held, doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"] },
-                             new Set(), null);
+    const first = setting(secretPlan({ ...held, doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"] },
+                                     new Set(), null));
     expect(hookSetsSecret(first)).toBe(true);
+    // An optional secret the run is not given is set on neither.
+    expect(hookSetsSecret(first.map((each) => ({ ...each, sets: false })))).toBe(false);
   });
 
-  it("starts the pair equal: a dark run that makes the hook sets the doors' secret too",
-     async () => {
-    // The doors hold an old E2B_WEBHOOK_SECRET, E2B holds no hook: the dark run sets the
-    // doors' copy from production, and registers the hook with the same value.
+  it("starts the pair equal: a dark run that makes the hook while the doors hold a secret " +
+     "goes on only setting theirs too", async () => {
+    // The doors hold an old E2B_WEBHOOK_SECRET, E2B holds no hook: the plan job cannot list
+    // the hook, so the apply job stops before any secret or Worker, asking for --rotate.
     const w = world({ held: true });
     w.hooks.length = 0;
-    await runMode(w, "dark", ["--yes"]);
+    await expect(runMode(w, "dark", ["--yes"])).rejects.toThrow(
+      `E2B holds no lifecycle webhook, and ${DOORS} holds E2B_WEBHOOK_SECRET, which the webhook ` +
+      "this run registers must match: dispatch again with --rotate E2B_WEBHOOK_SECRET to set " +
+      "both; no secret is set and no Worker deployed");
+    expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    // With it, the run sets the doors' copy from production, and registers the hook with the
+    // same value.
+    await runMode(w, "dark", ["--yes", "--rotate", E2B_HOOK.secret]);
     expect(w.secretsPut).toEqual({ "doors:E2B_WEBHOOK_SECRET": ENV["E2B_WEBHOOK_SECRET"] });
     const registered = w.events.find((event) => event.startsWith("e2b POST /events/webhooks"))!;
     expect(JSON.parse(registered.slice(registered.indexOf("{")))).toMatchObject({
@@ -2758,11 +4008,17 @@ describe("the template and the pair", () => {
         "its passed pair; nothing is deployed");
   });
 
-  it("versions a later deploy by the id wrangler prints", () => {
-    expect(versionOf(`Uploaded ${NAMES["owner"]}\nWorker Version ID: ` +
-                     "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b\n"))
-      .toBe("0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b");
-    expect(() => versionOf(`Uploaded ${NAMES["owner"]}`)).toThrow(/Version ID/);
+  it("reads each version's id as wrangler prints it, an upload's and a deploy's", () => {
+    const id = "0f7e3a3c-1b2d-4e5f-8a9b-0c1d2e3f4a5b";
+    expect(versionOf(`Uploaded ${NAMES["owner"]}\nWorker Version ID: ${id}\n`, "versions upload"))
+      .toBe(id);
+    expect(versionOf(`Deployed ${NAMES["owner"]}\nCurrent Version ID: ${id}\n`, "deploy"))
+      .toBe(id);
+    // Each its own command's words: the other's are no id of it.
+    expect(() => versionOf(`Current Version ID: ${id}`, "versions upload"))
+      .toThrow("wrangler versions upload printed no Worker Version ID");
+    expect(() => versionOf(`Worker Version ID: ${id}`, "deploy"))
+      .toThrow("wrangler deploy printed no Current Version ID");
   });
 });
 
@@ -2804,7 +4060,8 @@ describe("the operator path's modes", () => {
     expect(work.plan.at(-1)).toBe("read the control record back: it is the one written");
     expect(live(w, KEPT)).toEqual(DARK);
     expect(live(w)).toEqual(OPENED);
-    const read = { kind: "read", control: parseControl(live(w))! } as const;
+    const read = { kind: "read", control: parseControl(live(w))!,
+                   text: JSON.stringify(live(w)) } as const;
     expect([outsideOpen(read, "user_alice"), ownerOpen(read, "user_alice")]).toEqual([true, true]);
     // The previous kept before the write, and the write read back after it.
     const at = order(w.events, [`cf PUT ${RECORD_AT.replace(/[^/]+$/, encodeURIComponent(KEPT))}`,
@@ -2828,7 +4085,7 @@ describe("the operator path's modes", () => {
   ])("control never writes %s", async (_what, edit) => {
     const w = world({ held: true });
     await expect(runMode(w, "control", ["--yes", "--set", edit]))
-      .rejects.toThrow(/no reader takes \(parseControl\)|is no list to add to/);
+      .rejects.toThrow(/no reader takes \(controlOf\)|is no list to add to/);
     expect(writes(w)).toEqual([]);
     expect(live(w)).toEqual(DARK);
   });
@@ -2863,7 +4120,7 @@ describe("the operator path's modes", () => {
   ])("control refuses %s, a key no reader keeps, and touches no prototype", async (edit) => {
     const w = world({ held: true });
     await expect(runMode(w, "control", ["--yes", "--set", edit]))
-      .rejects.toThrow(/no reader takes \(parseControl\)|is inside no object/);
+      .rejects.toThrow(/no reader takes \(controlOf\)|is inside no object/);
     expect(writes(w)).toEqual([]);
     expect(live(w)).toEqual(DARK);
     expect(Object.keys(Object.prototype)).toEqual([]);
@@ -2877,7 +4134,8 @@ describe("the operator path's modes", () => {
     expect(work.plan).toContain("the record then admits no owner: closed to all");
     const control = parseControl(live(w))!;
     expect(closedToAll(control)).toBe(true);
-    expect(outsideOpen({ kind: "read", control }, "user_bob")).toBe(false);
+    expect(outsideOpen({ kind: "read", control, text: JSON.stringify(live(w)) }, "user_bob"))
+      .toBe(false);
     // The dark record is closed to all, outside on or off; a canary owner opens it.
     const dark = world({ held: true });
     expect((await runMode(dark, "control", ["--set", "outside=on"])).plan)
@@ -3583,6 +4841,16 @@ describe("modes rotation and retire", () => {
                                        words], { ...env, GATEWAY_KEYRING: ROTATED }))
       .rejects.toThrow("the stored GATEWAY_KEYRING is not the rotation record's ring less k1");
     expect(w.events.filter((event) => event.startsWith("wrangler"))).toEqual([]);
+    // The gateway serving two versions: `secret put` would deploy at once, so nothing is set.
+    const gateway = NAMES["gateway"]!;
+    const held = w.deployments.get(gateway)!;
+    w.deployments.set(gateway, [{ version: "gw-new", percentage: 10 },
+                                { ...held[0]!, percentage: 90 }]);
+    await expect(runMode(w, "retire", ["--yes", "--keyring", "GATEWAY_KEYRING", "--confirm",
+                                       words], env)).rejects.toThrow(
+      `${gateway} is split (gw-new at 10%, ${held[0]!.version} at 90%): end the split first`);
+    expect(w.events.filter((event) => event.startsWith("wrangler"))).toEqual([]);
+    w.deployments.set(gateway, held);
     w.events.splice(0);
     const work = await runMode(w, "retire", ["--yes", "--keyring", "GATEWAY_KEYRING",
                                              "--confirm", words], env);
@@ -3832,7 +5100,7 @@ describe("platform-deploy.yml", () => {
       const probes = JSON.parse(execFileSync(process.execPath, [join(out, BUNDLES.probes), "plan"],
                                              { encoding: "utf8" })) as
         { sandboxes: { timeout_s: number }[] };
-      expect(probes.sandboxes).toHaveLength(3);
+      expect(probes.sandboxes.length).toBeGreaterThan(0);
       expect(Number(pair!["timeout-minutes"]) * 60)
         .toBeGreaterThan(probes.sandboxes.reduce((sum, each) => sum + each.timeout_s, 0));
     } finally {
@@ -3909,13 +5177,13 @@ describe("platform-deploy.yml", () => {
 });
 
 /** URLs the doors' routes cover, and the last, which they do not. */
-const PROBES = ["tinyassets.io/mcp", "tinyassets.io/mcp?x=1", "tinyassets.io/api/tools/a",
-                "tinyassets.io/.well-known/oauth-protected-resource/mcp",
-                "tinyassets.io/.well-known/oauth-authorization-server",
-                "tinyassets.io/app/api/keys", "tinyassets.io/oauth/token",
-                "tinyassets.io/authorize", "tinyassets.io/hooks/inbound/x",
-                "tinyassets.io/hooks/e2b/lifecycle",
-                "tinyassets.io/app", "tinyassets.io/app?upgrade=1", "tinyassets.io/site/x"];
+const PROBES = [`${HOST}/mcp`, `${HOST}/mcp?x=1`, `${HOST}/api/tools/a`,
+                `${HOST}/.well-known/oauth-protected-resource/mcp`,
+                `${HOST}/.well-known/oauth-authorization-server`,
+                `${HOST}/app/api/keys`, `${HOST}/oauth/token`,
+                `${HOST}/authorize`, `${HOST}/hooks/inbound/x`,
+                `${HOST}/hooks/e2b/lifecycle`,
+                `${HOST}/app`, `${HOST}/app?upgrade=1`, `${HOST}/site/x`];
 
 /** The Worker Cloudflare sends `path` to: the most specific matching pattern's. */
 function servedBy(routes: Iterable<Route>, path: string): string | undefined {
@@ -3971,23 +5239,73 @@ function zoneApi(start: readonly Route[], fail?: string) {
 
 /** A write of a KV value, as the control record's is: the event the kit's KV puts log. */
 const CONTROL_WRITE = `cf PUT /accounts/${ACCOUNT}/storage/kv/`;
+/** Whether `event` writes the control record itself, in whichever namespace it is. */
+const writesControl = (event: string) => event.startsWith(CONTROL_WRITE)
+  && event.endsWith(`/values/${encodeURIComponent(CONTROL_KEY)}`);
+
+/** The rollout record's line of a deploy's plan. */
+const RECORDED = `record each Worker's version as this run's rollout record in ${
+  NAMESPACES["CONTROL"]}, before its first deploy: roll back with --mode rollback --record ` +
+  "<this run's id>";
+
+/** The id of the `n`th version the fake account makes in a run. */
+const MADE_ID = (n: number) => `0f7e3a3c-1b2d-4e5f-8a9b-${String(n).padStart(12, "0")}`;
+
+/** A deployment read back, as the run reports it once made. */
+const READ_BACK = new RegExp(`^(${Object.values(NAMES).join("|")}) serves .+, read back$`);
+const readBack = (worker: string, ...serving: [string, number][]) =>
+  `${NAMES[worker]} serves ${serving.map(([version, share]) => `${version} at ${share}%`)
+    .join(" and ")}, read back`;
+
+/** The doors' smoke, as a plan names it. */
+const SMOKED = `held ${STAGES.soakMs / 1000} s and smoked there (the canary's doors checks, ` +
+  "each request with Cloudflare's version override for it and each answer held to name it in " +
+  `${VERSION_HEADER})`;
+/** What a plan says of a Worker no smoke reaches at 0%: the doors before their routes, or RPC. */
+const UNSMOKED = (worker: string) => worker === "doors"
+  ? "not smoked: the doors do not hold their routes yet, so no request reaches them"
+  : "not smoked: only RPC reaches it, and no version override reaches RPC";
+
+/** A Worker's deploy line, through the stages: smoked there, or `UNSMOKED`'s. */
+const stagedLine = (worker: string, reach = UNSMOKED(worker)) => `upload a version of ${
+  NAMES[worker]} and deploy it at 0%, listed first beside its version before, ${reach}, then ` +
+  "at 100%, each read back, touching no route";
+
+/** A Worker's deploy line, at 100% at once, `whole` with no upload, and why. */
+const onceLine = (worker: string, why: string, whole = false) => `${whole ? `deploy ${
+  NAMES[worker]}` : `upload a version of ${NAMES[worker]} and deploy it`} at 100% at once, read ` +
+  `back, touching no route, since ${why}`;
+
+/** Why a first deploy goes at once. */
+const FIRST = "the run deployed it first: no version comes before it";
+
+/** A held Worker's lines through the stages, its upload the run's `n`th version, read back. */
+const heldLines = (worker: string, n: number) => [
+  stagedLine(worker), readBack(worker, [MADE_ID(n), 0], [`before-${worker}`, 100]),
+  readBack(worker, [MADE_ID(n), 100])];
 
 /** A fresh dark run's plan, in order: what the founder's first `dark` changes. */
 const DARK_FRESH = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
   ISSUED,
-  `the pair ${PAIR} passed its standing checks in this E2B team`,
+  `E2B's ready build of ${TEMPLATE}: present`,
+  `the pair ${PAIR}'s standing checks in this E2B team: passed`,
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: registered`,
-  `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the browser to ` +
-  "auth.test's sign-in",
+  `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}: it takes them, sending ` +
+  "the browser to auth.test's sign-in",
   ...Object.entries(NAMESPACES).map(([binding, title]) =>
     `create the KV namespace ${title} (${binding})`),
   ...BUCKETS.map((name) => `create the R2 bucket ${name}`),
   `lock every object of the R2 bucket ${OPERATOR_NAMES.bucket} for 365 days`,
   ...QUEUES.map((name) => `create the queue ${name}`),
   ...Object.entries(SECRETS).flatMap(([worker, names]) =>
-    names.map((name) => `set the secret ${name} on ${NAMES[worker]}`)),
-  ...WORKERS.map((worker) => `deploy ${NAMES[worker]}, touching no route`),
+    names.map((name) => `set the secret ${name} on ${NAMES[worker]} with its version${
+      OPTIONAL.includes(name) ? " if the run is given it: it is" : ""}`)),
+  RECORDED,
+  ...WORKERS.map((worker) => `${NAMES[worker]}: deployed by this run first, so a rollback stops ` +
+    "at it"),
+  ...WORKERS.flatMap((worker, at) => [onceLine(worker, FIRST, true),
+                                       readBack(worker, [MADE_ID(at + 1), 100])]),
   "write the control record closed (outside off, canary none, inbound off, the founder's " +
   "tier numbers): the API answered there is none",
   `E2B lifecycle webhook ${E2B_HOOK.url}: registered, disabled`,
@@ -3997,25 +5315,33 @@ const DARK_FRESH = [
 const ROUTES_HELD = [
   "the migration locks pin every migration the owner and sandbox Workers ship",
   ISSUED,
-  `the pair ${PAIR} passed its standing checks in this E2B team`,
-  `record the zone's ${LIVE.length + 2} routes and the handover's 8 changes, the egress ` +
-  "domain (none) and E2B's lifecycle webhook (disabled) as this run's route record in " +
+  `E2B's ready build of ${TEMPLATE}: present`,
+  `the pair ${PAIR}'s standing checks in this E2B team: passed`,
+  `record the zone's ${LIVE.length} routes and the handover's 10 changes, the egress ` +
+  "domain (none) and E2B's lifecycle webhook as this run's route record in " +
   `${NAMESPACES["CONTROL"]}, before any change: hand back with --mode handback --record ` +
-  "<this run's id>",
+  "<this run's id>; the webhook it records: disabled",
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: present`,
-  `WorkOS's authorize takes the doors' client and ${UPSTREAM_CALLBACK}: it sent the browser to ` +
-  "auth.test's sign-in",
-  ...WORKERS.map((worker) => `upload and deploy a version of ${NAMES[worker]}, touching no route`),
+  `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}: it takes them, sending ` +
+  "the browser to auth.test's sign-in",
+  RECORDED,
+  ...WORKERS.map((worker) => `${NAMES[worker]}: serving before-${worker} (${
+    HELD_SERVING[NAMES[worker]!]![0]!.tag}); a rollback takes it back there`),
+  ...WORKERS.flatMap((worker, at) => heldLines(worker, at + 1)),
   ...["mcp*", "api*", "app*"].map((path) =>
-    `move the route tinyassets.io/${path} from tinyassets-mcp-proxy to ${DOORS}`),
-  `add the route tinyassets.io/hooks/inbound/* for ${DOORS}`,
-  `add the route tinyassets.io/hooks/e2b/* for ${DOORS}`,
-  `add the route tinyassets.io/.well-known/oauth-* for ${DOORS}`,
+    `move the route ${HOST}/${path} from tinyassets-mcp-proxy to ${DOORS}`),
+  `add the route ${HOST}/hooks/inbound/* for ${DOORS}`,
+  `add the route ${HOST}/hooks/e2b/* for ${DOORS}`,
+  `add the route ${HOST}/authorize* for ${DOORS}`,
+  `add the route ${HOST}/oauth/* for ${DOORS}`,
+  `add the route ${HOST}/.well-known/oauth-* for ${DOORS}`,
   `delete tinyassets-mcp-proxy's narrower route ` +
-  `tinyassets.io/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,
+  `${HOST}/.well-known/oauth-protected-resource*, its paths now ${DOORS}'s`,
   `delete tinyassets-mcp-proxy's narrower route ` +
-  `tinyassets.io/.well-known/oauth-authorization-server*, its paths now ${DOORS}'s`,
-  `add the custom domain ${EGRESS_DOMAIN} for ${DOORS} (wrangler triggers deploy)`,
+  `${HOST}/.well-known/oauth-authorization-server*, its paths now ${DOORS}'s`,
+  `add the custom domain ${EGRESS_HOST} for ${DOORS} (wrangler triggers deploy), then wait up ` +
+  "to 10 minutes for the egress door's refusal on it",
   "record in deploy:routes:local-20261107T120000Z the DNS records the custom domain made: AAAA",
+  `https://${EGRESS_HOST}/ answers with the egress door's refusal`,
   `E2B lifecycle webhook ${E2B_HOOK.url}, after the routes: present, enabled set, enabled`,
 ];

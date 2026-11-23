@@ -1,12 +1,12 @@
 name: PR scope guard
 
 # Required tests can pass on a branch carrying unrelated changes from an
-# unmerged ancestor. Review the actual diff against main. The step summary
-# counts the release-critical files so the reviewer can spot a carried lineage.
-#
-# The receipt must cite a published approval from a trusted author for the
-# change under review. GitHub auto-merge reads the resulting required check.
-# A review verdict in a comment alone cannot stop a merge.
+# unmerged ancestor. The actual diff against main is reviewed before it merges,
+# and the review is the required `review` check (review.yml, ADR-038). The step
+# summary counts the release-critical files so the reviewer can spot a carried
+# lineage. This guard also holds a removed or loosened test to a stated reason
+# (test hygiene) and asks a change to more than prose for the body's Untangle
+# check.
 #
 # MUST run unconditionally (no `paths:` filter). A required status check that is
 # path-filtered never reports on PRs outside those paths, and the PR then hangs
@@ -19,7 +19,7 @@ on:
   # judges it — the guard would grade its own homework. We never check out or
   # execute PR-head code here, so using _target is safe.
   pull_request_target:
-    # `edited` matters: the receipt is cited in the body.
+    # `edited` matters: the Untangle check and `Test-Removal:` lines are in the body.
     types: [opened, reopened, synchronize, ready_for_review, edited]
   # The merge queue. `Diff scope declared` is a required check, and a queue waits
   # for every required check on the merge-group commit, so this must report
@@ -28,11 +28,10 @@ on:
   #   1. GitHub admits a PR to the queue only after it "has passed all required
   #      branch protection checks" (docs: Managing a merge queue). This gate,
   #      at the PR's current head, is one of them.
-  #   2. Everything the gate reads -- the file list, the body and the
-  #      receipt comment -- belongs to the PR, and none of it changes when
-  #      the queue stacks the PR on a newer main. What does change is the code,
-  #      and `required-tests` and `invariants` re-test that on the
-  #      merge-group commit.
+  #   2. Everything the gate reads -- the file list and the body -- belongs to
+  #      the PR, and none of it changes when the queue stacks the PR on a newer
+  #      main. What does change is the code, and `required-tests` and
+  #      `invariants` re-test that on the merge-group commit.
   #   3. A merge_group run takes this workflow file from the merge-group
   #      commit, which includes the PR's own edits, not from the trusted base.
   #      Re-running the gate here would let a PR grade itself, so it would
@@ -43,8 +42,7 @@ on:
 
 permissions:
   contents: read
-  # read: the file list, the comments and the reviews. PR code is never
-  # checked out or run.
+  # read: the file list. PR code is never checked out or run.
   pull-requests: read
 
 concurrency:
@@ -79,34 +77,20 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
           # Full history of commits and trees, no file contents: enough for the
-          # merge base and `git diff --raw` that the PR's diff key reads, while
-          # still never checking out or executing PR code.
+          # merge base and `git diff --raw`, while still never checking out or
+          # executing PR code.
           fetch-depth: 0
           filter: blob:none
 
-      - name: Compute the PR's diff key
+      - name: The PR's head, as git objects only
         if: github.event_name == 'pull_request_target'
-        id: diffkey
         env:
-          PR: ${{ github.event.pull_request.number }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
-          BASE_OID: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
-          # Lets a `Drain-Review-Diff:` receipt (drain_review_gate.diff_key)
-          # survive merge-main and rebase. On ANY failure the key is empty, and
-          # an empty key only means head receipts are the sole way to match:
-          # it can never allow what a head receipt would not.
-          set -uo pipefail
-          KEY=""
-          if git fetch --no-tags --filter=blob:none origin \
-                "+refs/pull/${PR}/head:refs/remotes/pr/head" \
-              && git cat-file -e "${HEAD_OID}^{commit}"; then
-            KEY="$(python scripts/drain_review_gate.py --print-diff-key \
-              "${BASE_OID}" "${HEAD_OID}")" || KEY=""
-          fi
-          echo "diff key: ${KEY:-<none>}"
-          echo "key=${KEY}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git cat-file -e "${HEAD_OID}^{commit}" 2> /dev/null \
+            || git fetch --no-tags --filter=blob:none origin "${HEAD_OID}"
 
       # PR-relative test hygiene: removing, skipping or loosening an existing
       # test needs a stated reason (`Test-Removal:`); a new skip needs an owner
@@ -124,33 +108,68 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f scripts/test_hygiene_gate.py ]; then
-            echo "::notice::base predates scripts/test_hygiene_gate.py; nothing to check"
-            exit 0
-          fi
-          git cat-file -e "${HEAD_OID}^{commit}" \
-            || git fetch --no-tags --filter=blob:none origin "${HEAD_OID}"
           printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-hygiene.md"
           python scripts/test_hygiene_gate.py \
             --base "${BASE_OID}" --head "${HEAD_OID}" \
             --body "$RUNNER_TEMP/pr-body-hygiene.md"
 
+      # The old suite's shape: each `tests/` file the PR changes names current OpenSpec
+      # ids (`verifies`), and no test names an id the PR retires. Read from blobs, like
+      # the step above; it leaves with `tests/` and scripts/test_shape.py at the cutover.
+      - name: Test shape (the old suite's verifies ids)
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          BASE_OID: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/test_shape.py --base "${BASE_OID}" --gate "${HEAD_OID}"
+
+      # A change to more than prose names, in its body's Untangle check, the PR,
+      # branch or live wait of each item it leaves owed (the untangle skill, "The PR
+      # body"), and any change keeps each open owed item (`- [ ]`) of the decision
+      # files until it is ticked. The body is author-controlled text: it is read
+      # through the environment and never interpolated into the script.
+      - name: Untangle check (the body)
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          BASE_OID: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-untangle.md"
+          if ! python scripts/review_checks.py --untangle-check \
+              --base "${BASE_OID}" --head "${HEAD_OID}" \
+              --body-file "$RUNNER_TEMP/pr-body-untangle.md" \
+              2> "$RUNNER_TEMP/untangle-why.txt"; then
+            {
+              echo "### PR scope guard"
+              echo ""
+              echo "**Blocked — the Untangle check is missing, an owed item names no fix, or the change drops one.**"
+              echo ""
+              echo "A PR that changes more than prose needs an **Untangle check** heading in its"
+              echo "body, and each item there that is left, owed or later names its PR (#123),"
+              echo "branch (untangle/, fix/, process/, land/) or live: wait. An open owed item"
+              echo "(- [ ]) in docs/decisions/ names its fix too, and stays until its PR ticks it."
+              echo ""
+              sed 's/^/> /' "$RUNNER_TEMP/untangle-why.txt"
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/untangle-why.txt"
+            exit 1
+          fi
+
       # Under pull_request_target, only the trusted base SHA above is checked out.
       # The PR head is never executed with this workflow's token. The file list
       # below comes from the API.
-      - name: Compare the PR diff against release-critical paths
+      - name: Count the release-critical paths, for the reviewer
         if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          HEAD_OID: ${{ github.event.pull_request.head.sha }}
-          BASE_OID: ${{ github.event.pull_request.base.sha }}
-          DIFF_KEY: ${{ steps.diffkey.outputs.key }}
-          # The body is author-controlled text. It is read through the
-          # environment and never interpolated into this script, so a body
-          # containing shell metacharacters is data, not code.
-          PR_BODY: ${{ github.event.pull_request.body }}
         shell: bash
         run: |
           set -euo pipefail
@@ -167,14 +186,12 @@ jobs:
           # Workflow files were already covered; without these two entries the
           # same neutering could be done one directory over, undeclared.
           # platform/deploy/ is the kit that deploys the platform's production.
-          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/check_shapes\.py$|scripts/drain_review_gate\.py$|tests/test_shape_registry\.py$|deploy/|platform/deploy/|Dockerfile$|\.dockerignore$)'
+          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/check_shapes\.py$|scripts/review_checks\.py$|tests/test_shape_registry\.py$|deploy/|platform/deploy/|Dockerfile$|\.dockerignore$)'
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.
-          # Project BOTH the new path and, for renames, the previous one. Reading
-          # only `.filename` let a PR move tinyassets/auth/provider.py to an
-          # unprotected path and escape the authority receipt entirely -- the
-          # gate saw only the destination (cross-family review 2026-08-26).
+          # Project BOTH the new path and, for renames, the previous one, so a
+          # file moved out of a release-critical path is still counted.
           if ! CHANGED="$(gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
               --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)"; then
             echo "::error::could not read the PR file list — failing closed"
@@ -184,11 +201,9 @@ jobs:
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
 
           # The endpoint caps at 3000 files and says nothing when it truncates.
-          # An earlier version of this comment claimed the read above already
-          # failed closed on truncation; it did not, and a cross-family review
-          # caught the false assurance. At the cap we cannot know whether the
-          # unseen files are release-critical, so refuse rather than guess —
-          # a diff that large needs splitting regardless.
+          # At the cap we cannot know whether the unseen files are
+          # release-critical, so refuse rather than guess — a diff that large
+          # needs splitting regardless.
           API_FILE_CAP=3000
           if [ "$TOTAL" -ge "$API_FILE_CAP" ]; then
             echo "::error::PR file list hit the ${API_FILE_CAP}-file API cap — the diff cannot be fully inspected"
@@ -203,35 +218,23 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          # `|| true` here USED to swallow an execution error as well as "no
-          # match": grep exits 1 for no match and 2+ for a real failure, and a
-          # failure read as an empty hit list means "no release-critical paths
-          # touched" — fail-open on the exact question this gate answers. Found
-          # by cross-family review 2026-09-26 (finding 3) by injecting exit 2.
-          classify() {
-            local rc=0
-            if [ -n "$2" ]; then
-              printf '%s\n' "$CHANGED" | grep "$2" -E "$1" || rc=$?
-            else
-              printf '%s\n' "$CHANGED" | grep -E "$1" || rc=$?
-            fi
-            if [ "$rc" -gt 1 ]; then
-              echo "::error::grep exited ${rc} classifying paths — failing closed" >&2
-              return 1
-            fi
-          }
-          HITS="$(classify "$SENSITIVE_RE" "")" || exit 1
+          # grep exits 1 for no match and 2+ for a real failure; a failure read
+          # as an empty hit list would mean "no release-critical paths touched".
+          rc=0
+          HITS="$(printf '%s\n' "$CHANGED" | grep -E "$SENSITIVE_RE")" || rc=$?
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::grep exited ${rc} classifying paths — failing closed"
+            exit 1
+          fi
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
-          # The count is for the reviewer, so it is written before the receipt is
-          # read: the run that waits for the review shows it.
           # Breadth is the reviewer's to judge, not a cap's. #1491 carried 16
           # release-critical files while claiming to be a two-file auth fix,
-          # because its branch dragged an unmerged lineage; the receipt below is
-          # what stops that now, since every PR's diff is reviewed against main.
-          # A hard cap of 8 would also refuse the cutover's deletion, which is
-          # meant to be that broad, and this file runs from the base, so no PR
-          # could lift it for itself (docs/reference/executable-gates.md).
+          # because its branch dragged an unmerged lineage; the review stops that
+          # now, since every PR's diff is reviewed against main. A hard cap of 8
+          # would also refuse the cutover's deletion, which is meant to be that
+          # broad, and this file runs from the base, so no PR could lift it for
+          # itself (docs/reference/executable-gates.md).
           REVIEW_NOTE_SENSITIVE=8
           LARGE_TOTAL=150
           {
@@ -259,165 +262,4 @@ jobs:
               echo "Note: ${TOTAL} files changed (advisory threshold ${LARGE_TOTAL})."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-          # EVERY PR needs a review receipt (2026-10-02). This used to be a
-          # narrow set -- gate-defining files plus an authority-path regex, with AST and
-          # deletion-only-ledger exemptions -- on the reasoning that a blanket
-          # rule was process bloat. Then auto-enroll armed #4247, a superseded
-          # head with a known data-loss bug, no receipt and no path in that
-          # set, and the merge queue admitted it (a merge-group run passes this
-          # check unconditionally). Every PR is stamped by the lead anyway, so
-          # the blanket rule adds no step; it stops unreviewed heads merging.
-          # This is the only place that can stop one: the queue does not re-run
-          # it, because a merge-group run would grade itself.
-
-          # The receipt's artifact must be a comment ON THIS PR that a trusted
-          # author published, AND that comment must itself attest
-          # `Drain-Review-Verdict: APPROVE` of this change: this head, or an
-          # earlier commit whose tree-diff against the base is the same.
-          # Without the URL check the artifact was any string matching a URL
-          # shape; without the BODY check, cross-family review 2026-09-26
-          # (finding 6) got a receipt past the gate by citing an OWNER comment
-          # that said `VERDICT: BLOCK` for that exact head. The body check is
-          # also what closes the stale-comment gap, with no clock involved.
-          #
-          # Read from the API, so it is GitHub's `author_association` deciding
-          # trust rather than anything the PR controls. Three sources, because a
-          # verdict legitimately lands in any of them: a top-level comment, a
-          # submitted review, an inline review comment.
-          #
-          # A failed read REMOVES the inventory rather than failing the step:
-          # the decision then finds no inventory and denies, saying why.
-          COMMENTS_FILE="$RUNNER_TEMP/pr-comments.ndjson"
-          rm -f "$COMMENTS_FILE"
-          for ENDPOINT in "issues/${PR}/comments" "pulls/${PR}/comments" "pulls/${PR}/reviews"; do
-            if ! gh api --paginate "repos/${REPO}/${ENDPOINT}" \
-                --jq '.[] | {url: .html_url, association: .author_association, body: (.body // "")}' \
-                >> "$COMMENTS_FILE" 2>/dev/null; then
-              echo "::warning::could not read ${ENDPOINT} — a receipt requirement fails closed"
-              rm -f "$COMMENTS_FILE"
-              break
-            fi
-          done
-
-          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-gate.md"
-          # Fetch the commit a head receipt names, when it is not this head, so
-          # an unchanged rebase can be compared. A fetch failure leaves the
-          # object missing; the gate then cannot prove the diffs match and
-          # requires a receipt for this head. It cannot become a pass.
-          while IFS= read -r sha; do
-            [ -n "$sha" ] || continue
-            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
-              git fetch --no-tags --filter=blob:none origin "$sha" || true
-            fi
-          done < <(python scripts/drain_review_gate.py --list-carry-heads \
-              --head "${HEAD_OID}" \
-              --body-file "$RUNNER_TEMP/pr-body-gate.md" \
-              --review-comments-file "$COMMENTS_FILE" || true)
-          # The receipt parse and its corroboration are one decision in one
-          # unit-tested place. stderr names the head and diff key a receipt
-          # must carry, so it can be shown on the PR either way.
-          if ! python scripts/drain_review_gate.py --blocking-review \
-              --head "${HEAD_OID}" \
-              --base "${BASE_OID}" \
-              --diff-key "${DIFF_KEY}" \
-              --body-file "$RUNNER_TEMP/pr-body-gate.md" \
-              --review-repo "${REPO}" \
-              --review-pr "${PR}" \
-              --review-comments-file "$COMMENTS_FILE" \
-              2> "$RUNNER_TEMP/receipt-why.txt"; then
-            {
-              echo ""
-              echo "**Blocked — no Drain-Review receipt for head \`${HEAD_OID}\`${DIFF_KEY:+ (diff key \`${DIFF_KEY}\`)}, or the body's Untangle check is missing or names no fix for an owed item.**"
-              echo ""
-              echo "Every PR needs a current review receipt before it can merge. One that changes"
-              echo "more than prose also needs an **Untangle check** heading in its body, and each"
-              echo "item there that is left, owed or later names its PR (#123), branch or live: wait."
-              echo "The lines quoted below say which."
-              echo ""
-              sed 's/^/> /' "$RUNNER_TEMP/receipt-why.txt"
-              echo ""
-              echo "**Two steps, both required. Each receipt goes at the TOP.**"
-              echo ""
-              echo "1. The reviewer POSTS the verdict as a comment on this PR."
-              echo "   These must be its FIRST two non-blank lines:"
-              echo ""
-              echo '   ```'
-              echo "   Drain-Review-Verdict: APPROVE"
-              echo "   Drain-Review-Head: ${HEAD_OID}"
-              echo '   ```'
-              echo ""
-              echo "   Reasoning and evidence go BELOW them."
-              echo ""
-              echo "2. The PR BODY then cites that comment. These must be its"
-              echo "   FIRST three non-blank lines:"
-              echo ""
-              echo '   ```'
-              echo "   Drain-Review-Verdict: APPROVE"
-              echo "   Drain-Review-Head: ${HEAD_OID}"
-              echo "   Drain-Review-Artifact: https://github.com/${REPO}/pull/${PR}#issuecomment-<id>"
-              echo '   ```'
-              echo ""
-              echo "The artifact must link a comment, review or review comment on"
-              echo "THIS PR whose author is a repository owner, member or"
-              echo "collaborator AND which OPENS with the APPROVE lines above."
-              echo "Only \`APPROVE\` counts — a BLOCK verdict can never satisfy"
-              echo "this, in the body or in the comment."
-              echo ""
-              echo "**Only the top is read**, so nothing below either receipt can"
-              echo "void it and nothing above it can hide it. A receipt in a"
-              echo "fenced block, an HTML comment, a \`<details>\` or a quote is"
-              echo "simply not at the top. If yours is being refused, MOVE IT UP:"
-              echo "only blank lines may precede it."
-              echo "A head receipt names the reviewed commit. It stays valid for a"
-              echo "later head when that head's diff against the base is the same"
-              echo "change (the tree-diff hash), so a conflict-free rebase does not"
-              echo "need a new receipt. Any real edit to the code does. A"
-              echo "\`Drain-Review-Diff:\` receipt states that hash explicitly."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "scope guard: BLOCKED — no Drain-Review receipt or Untangle check for head ${HEAD_OID}${DIFF_KEY:+ / diff key ${DIFF_KEY}}"
-            cat "$RUNNER_TEMP/receipt-why.txt" || true
-            exit 1
-          fi
-          cat "$RUNNER_TEMP/receipt-why.txt" || true
-
-          echo "scope guard: ${TOTAL} files, ${HIT_COUNT} release-critical, receipted"
-          exit 0
-
-# Honesty note
-# ------------
-# The review receipt is not a security boundary. The receipt lives in the PR
-# BODY, which the PR author can edit, so an author who is also a trusted
-# reviewer can stamp their own PR. That is not closed here, and deliberately:
-# this repository has exactly one account with write access, so a rule of
-# "stamper must differ from author" would be unsatisfiable — a wall, not a gate
-# (hard rule 4: an executable gate needs an autonomous default). What the
-# receipt DOES make impossible is the accident that happened: a BLOCK verdict
-# cannot satisfy it, a receipt for a different change cannot satisfy it, and
-# a verdict that was never published as a visible comment on
-# this PR by a trusted author cannot satisfy it. The day a second writer exists,
-# requiring a different author is a two-line change in
-# scripts/drain_review_gate.py.
-#
-# The first version of this gate checked only that the cited comment EXISTED and
-# came from a trusted author. Cross-family review 2026-09-26 got a receipt past
-# it by citing an OWNER comment whose text was `VERDICT: BLOCK` for that exact
-# head. Closed: the cited comment must itself attest APPROVE of this change —
-# the current head, or an earlier commit whose tree-diff against the base is
-# the same. A comment that approved different bytes cannot be re-cited, and
-# that needs no clock. Binding the comment's `created_at` against the head
-# commit's date was considered and rejected — commit dates come from the
-# committer's clock, and a client clock running ahead would make the gate
-# unsatisfiable until real time caught up.
-#
-# Each receipt is read ONLY at the TOP of its text, and that is the whole
-# anti-hiding rule. Three review rounds attacked a markdown scanner that tried to
-# work out what GitHub renders, and each round found defects in BOTH directions:
-# approvals hidden in an HTML comment, a fence, a nested <details>, a lazily
-# continued blockquote, a list-nested quote; and honest receipts wrongly refused
-# after a heading, after a fence marker inside an HTML block, after a literal
-# <!-- in a code example. Every fix created the next round's findings, which
-# AGENTS.md calls a loop, and answers with: recurring findings in one area mean
-# the shape is wrong, so redesign. Nothing can precede the first line of a
-# document, so a position with nothing in front of it needs no renderer. The
-# scanner is gone.
+          echo "scope guard: ${TOTAL} files, ${HIT_COUNT} release-critical"

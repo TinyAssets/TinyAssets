@@ -1,35 +1,44 @@
 /**
- * Runs in the owner's object (slice R; ADR-034 decision 4), in workerd, with a recording
+ * Runs in the owner's object (ADR-034 decision 4), in workerd, with a recording
  * fake sandbox Worker behind `SANDBOX` (`ci/fake-sandbox.ts`): admission in one unit (each of its
  * refusals with its code), the run row, its grant and the sandbox's lease, the start with the
  * run's whole environment, the settle from the runner's end, the cancel through the sandbox,
  * no sandbox at all, simultaneous runs each on their own connection, a run's calls held to
  * its grant, and the `runs` lane. The doors' side is `doors/test/runs.test.ts`.
  */
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { verifyToken } from "../../contract/src/routing-mac";
 import { egressTokenOf } from "../../contract/src/egress";
 import { bundledSources } from "../../sources/src/catalog";
 import { runEnv } from "../../sources/src/run-env";
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
-import { AGENT_DISABLED, AGENT_UNDEFINED } from "../src/agent-file";
+import { AGENT_DISABLED, AGENT_UNDEFINED } from "../../contract/src/agent-definition";
 import { AUTHORITY_CHANGED } from "../src/authority";
 import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
-import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
+import { INLINE_BYTES, QUEUE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
+import { clock } from "../src/clock";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, SESSION_REFUSED, SIGNIN_LAPSED,
          TIER_RUNS, UNATTENDED_REFUSED } from "../src/runs";
 import { PLATFORM_TIER_ONLY } from "../src/admission";
 import { TIER_UNREAD } from "../src/files";
-import { gated, type Gated, OPENAI } from "./gateway-support";
+import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, hashed, later, ownerRun, recorder, runBinding,
-  runnerBinding, runnerSandbox, scripted, startOf, TIERS } from "./runs-support";
-import { secretOf } from "../../ci/workerd";
-import { drainDue, failure, gateFor, spaceOf } from "./support";
+import {
+  ALL_SCOPES, defineAgent, hashed, inSession, later, OPEN_RECORD, openRecord, ownerFile, ownerRun,
+  recorder, runBinding, runnerBinding, runnerSandbox, scripted, startOf, TIERS, whileOut,
+} from "./runs-support";
+import { RANKING } from "../../contract/src/paths";
+import type { ActionRule } from "../../contract/src/policy-document";
+import type { Tiers } from "../../contract/src/control";
+import { ADMITTED_FILE_BYTES, ownerSlots } from "../src/holds";
+import { secretOf, until } from "../../ci/workerd";
+import { drainDue, failure, gateFor, laneAt, spaceOf } from "./support";
+import { LANE_CALL_MS, LANE_RETRY_S } from "../src/schedule";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
 
 afterEach(() => {
@@ -39,6 +48,9 @@ afterEach(() => {
 /** The owner's run of Claude Code on its own sign-in: no key, no connection. */
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
+
+/** The model Claude Code's record says a run on its plan is given (`cli.login.model`). */
+const PLAN_MODEL = "claude-opus-5-5";
 
 /** The runner's report of Claude Code's sign-in, under the sandbox's live lease. */
 function claudeSignin(r: Gated, start: SandboxStart, signedIn: boolean) {
@@ -131,8 +143,8 @@ describe("a run", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const ask = { message: "hi", client_send_id: "same-1" };
-    const first = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), ask);
-    const again = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), ask);
+    const first = await r.stub.agentSubmit(r.bind(), ask);
+    const again = await r.stub.agentSubmit(r.bind(), ask);
     expect(again.run_id).toBe(first.run_id);
     expect((await recorder(r.stub)).starts).toHaveLength(1);
   });
@@ -141,7 +153,7 @@ describe("a run", () => {
     const r = await gated();
     const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     // While its run is live, an input to the conversation waits its turn, never refused.
-    const waiting = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+    const waiting = await r.stub.agentSubmit(r.bind(), {
       message: "and then", client_send_id: "then-1", conversation_id: run.conversation_id });
     expect(waiting).toMatchObject({ state: "waiting", conversation_id: run.conversation_id,
                                     started_at: null, settled_at: null });
@@ -186,6 +198,156 @@ describe("admission", () => {
     expect(await r.sql("SELECT id FROM runs")).toEqual([]);
   });
 
+  it("starts the agent's own MCP servers its egress lets out, and tells the owner of each " +
+     "left out, by the policy the run was admitted under", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await ownerFile(r.stub, r.bind(), "/workspace/agents/main/mcp.json", JSON.stringify({
+      mcpServers: { docs: { url: "https://docs.example.com/mcp" },
+                    other: { url: "https://other.example.com/mcp" },
+                    local: { command: "uvx", args: ["some-mcp"], env: { MODE: "ro" } } } }));
+    // Open mode, the default: every one.
+    expect(Object.keys((await ownerRun(r.stub, r.bind())).start.mcp_servers))
+      .toEqual(["docs", "other", "local"]);
+    // An allowlist naming one of the two hosts: the other is left out, and the owner told.
+    const { generation, policy } = await r.stub.policyRead(r.bind());
+    await r.stub.policyWrite(r.session(), { expected_generation: generation, policy: {
+      ...policy, egress: { mode: "allowlist",
+                           destinations: [{ host: "docs.example.com", port: 443 }] } } });
+    const { start } = await ownerRun(r.stub, r.bind());
+    expect(start.mcp_servers).toEqual({
+      docs: { url: "https://docs.example.com/mcp" },
+      local: { command: "uvx", args: ["some-mcp"], env: { MODE: "ro" } } });
+    const told = (await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "mcp_server_dropped");
+    expect(told.map((notice) => notice.detail)).toEqual([
+      "main: its MCP server other (other.example.com) is left out of its runs: its host is " +
+      "not on your egress allowlist"]);
+  });
+
+  it("starts a run with its agent's own hooks as its hooks.json has them, none without one, " +
+     "and refuses one that does not read", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const path = "/workspace/agents/main/hooks.json";
+    await ownerFile(r.stub, r.bind(), path, null);
+    expect(Object.values((await ownerRun(r.stub, r.bind())).start.hooks).flat()).toEqual([]);
+    const guard = { match: { kinds: ["shell"] }, run: ["./hooks/guard.sh"], timeout_s: 30 };
+    await ownerFile(r.stub, r.bind(), path, JSON.stringify({ hooks: { pre_tool: [guard] } }));
+    const { start } = await ownerRun(r.stub, r.bind());
+    expect(start.hooks).toEqual({ pre_tool: [guard], post_tool: [], prompt: [],
+                                  session_start: [], stop: [], session_end: [], pre_compact: [] });
+    await ownerFile(r.stub, r.bind(), path, JSON.stringify({ hooks: { pre_tool: [
+      { run: ["./guard.sh"], allow: true }] } }));
+    expect((await failure(() => ownerRun(r.stub, r.bind()))).message)
+      .toMatch(/^hooks\.json: pre_tool\[0\] is its run, and optionally match and timeout_s/);
+  });
+
+  describe("the commands its own definition starts, under the owner's shell rules", () => {
+    const guard = { match: { kinds: ["shell"] }, run: ["./hooks/guard.sh"] };
+    const note = { run: ["./hooks/note.sh"] };
+    const local = { command: "uvx", args: ["some-mcp"], env: {} };
+    const docs = { url: "https://docs.example.com/mcp" };
+
+    /** The owner whose `main` has two hooks and two servers, one by its command. */
+    async function defined() {
+      const r = await gated();
+      await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+      await ownerFile(r.stub, r.bind(), "/workspace/agents/main/hooks.json", JSON.stringify({
+        hooks: { pre_tool: [guard], session_start: [note] } }));
+      await ownerFile(r.stub, r.bind(), "/workspace/agents/main/mcp.json",
+                      JSON.stringify({ mcpServers: { docs, local } }));
+      const ruled = async (actions: readonly ActionRule[]) => {
+        const { generation, policy } = await r.stub.policyRead(r.bind());
+        await r.stub.policyWrite(r.session(), { expected_generation: generation,
+                                                policy: { ...policy, actions } });
+      };
+      const told = async (type: string) => (await r.stub.noticeList(r.bind())).notices
+        .filter((notice) => notice.type === type).map((notice) => notice.detail);
+      return { r, ruled, told };
+    }
+
+    it("leaves out each one a never rule holds for its agent, the owner told once of each, " +
+       "and starts every one a rule holds for no other", async () => {
+      const { r, ruled, told } = await defined();
+      await ruled([{ act: "workspace.shell", do: "never", agent: "other" },
+                   { act: "workspace.files", do: "never" }]);
+      const free = (await ownerRun(r.stub, r.bind())).start;
+      expect([free.mcp_servers, free.hooks.pre_tool, free.hooks.session_start])
+        .toEqual([{ docs, local }, [guard], [note]]);
+      await ruled([{ act: "workspace.shell", do: "never", agent: "main" }]);
+      for (let n = 0; n < 2; n++) {
+        const { start } = await ownerRun(r.stub, r.bind());
+        expect(start.mcp_servers).toEqual({ docs });
+        expect(Object.values(start.hooks).flat()).toEqual([]);
+      }
+      const why = "is left out of this run: the owner's rule never lets an agent do this " +
+        "(workspace.shell)";
+      expect((await told("definition_command_dropped")).sort()).toEqual([
+        `main: its MCP server local (uvx) ${why}`, `main: its pre_tool hook ./hooks/guard.sh ${
+          why}`, `main: its session_start hook ./hooks/note.sh ${why}`]);
+      expect((await r.stub.policyReceipts(r.bind())).actions.map((receipt) =>
+        [receipt.act, receipt.outcome, receipt.agent]))
+        .toEqual(Array(6).fill(["workspace.shell", "denied", "main"]));
+    });
+
+    it("holds each one an ask rule names for the owner's yes, which resumes its conversation " +
+       "on a run that starts it, once", async () => {
+      const { r, ruled, told } = await defined();
+      await ruled([{ act: "workspace.shell", do: "ask" }]);
+      const { run, start } = await ownerRun(r.stub, r.bind());
+      expect([start.mcp_servers, start.hooks.pre_tool, start.hooks.session_start])
+        .toEqual([{ docs }, [], []]);
+      const waits = /^main: (.*) is left out of this run: it waits for your answer to card (\S+)$/;
+      const dropped = (await told("definition_command_dropped")).map((detail) =>
+        waits.exec(detail)!.slice(1));
+      expect(dropped.map(([what]) => what).sort()).toEqual(["its MCP server local (uvx)",
+        "its pre_tool hook ./hooks/guard.sh", "its session_start hook ./hooks/note.sh"]);
+      const card = dropped.find(([what]) => what!.includes("pre_tool"))![1]!;
+      expect((await told("action_request")).sort()).toEqual(dropped.map(([what, id]) =>
+        `main asks to workspace.shell at ${what!.includes("MCP") ? "mcp.json" : "hooks.json"}: ` +
+        `card ${id}`).sort());
+      const shown = await r.stub.actionRequest(r.bind(), { card_id: card });
+      expect(shown.card).toMatchObject({
+        act: "workspace.shell", door: "hooks.json", agent: "main",
+        conversation: run.conversation_id,
+        request: JSON.stringify({ hook: "pre_tool[0]", match: { kinds: ["shell"] },
+                                  run: ["./hooks/guard.sh"] }) });
+      // The yes while the run is live: its resume waits behind it, and so does an input sent
+      // after, whose admission, written waiting, uses no yes.
+      const approved = await r.stub.actionApprove(r.session(), { card_id: card,
+                                                                 digest: shown.digest });
+      const after = await r.stub.agentSubmit(r.bind(), {
+        message: "and then", client_send_id: "then-1", conversation_id: run.conversation_id });
+      expect(after.state).toBe("waiting");
+      await r.stub.runEvents(runnerBinding(r, start), { frames: frames(INIT("sess-1")),
+                                                     end: { exit_code: 0 } });
+      await drainDue(r.stub);
+      const resumed = await startOf(r.stub, approved.run!);
+      expect([resumed.conversation, resumed.hooks.pre_tool, resumed.hooks.session_start,
+              resumed.mcp_servers]).toEqual([run.conversation_id, [guard], [], { docs }]);
+      // Once: the conversation's next run asks again.
+      await r.stub.runEvents(runnerBinding(r, resumed), { frames: [], end: { exit_code: 0 } });
+      await drainDue(r.stub);
+      expect((await startOf(r.stub, after.run_id)).hooks.pre_tool).toEqual([]);
+    });
+  });
+
+  it("refuses a run whose mcp.json names the run's own door, or is no file", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const path = "/workspace/agents/main/mcp.json";
+    await ownerFile(r.stub, r.bind(), path, JSON.stringify({
+      mcpServers: { tinyassets: { url: "https://docs.example.com/mcp" } } }));
+    expect((await failure(() => ownerRun(r.stub, r.bind()))).message)
+      .toMatch(/^mcp\.json: server "tinyassets": .* not tinyassets, the run's own door$/);
+    await ownerFile(r.stub, r.bind(), path, null);
+    await r.stub.fileMkdir(await inSession(r.stub, r.bind()), { path, expected_etag: null });
+    expect((await failure(() => ownerRun(r.stub, r.bind()))).message)
+      .toBe(`${path} is not a file`);
+    expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+  });
+
   it("holds the tier's simultaneous runs, free 5 and paid 10, from the control record's " +
      "numbers; the owner's tier is the platform's alone", async () => {
     const r = await gated();
@@ -212,19 +374,20 @@ describe("admission", () => {
       .toBe(`${TIER_RUNS} (paid: 10)`);
     // The founder's edit of the record reaches the next run door at once.
     const edited = { ...TIERS, paid: { runs: 11, storage_bytes: 1 } };
-    await r.stub.agentSubmit(r.bind({ tiers: edited }), { message: "x", client_send_id: "e-1" });
+    await r.stub.agentSubmit(r.bind({ control: openRecord(edited) }),
+                             { message: "x", client_send_id: "e-1" });
     expect((await r.sql("SELECT COUNT(*) AS n FROM runs WHERE state = 'running'"))[0])
       .toEqual({ n: 11 });
     // A record past the ceiling, or malformed, is refused, never guessed.
     expect((await failure(() => r.stub.agentSubmit(
-      r.bind({ tiers: { ...TIERS, free: { runs: 1001, storage_bytes: 1 } } }),
+      r.bind({ control: openRecord({ ...TIERS, free: { runs: 1001, storage_bytes: 1 } }) }),
       { message: "x", client_send_id: "e-2" }))).code).toBe("invalid");
   });
 
   it("refuses a run when the control record held no tier numbers", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    expect((await failure(() => r.stub.agentSubmit(r.bind({ tiers: null }), {
+    expect((await failure(() => r.stub.agentSubmit(r.bind({ control: openRecord() }), {
       message: "x", client_send_id: "t-1" }))).message).toBe(TIER_UNREAD);
   });
 
@@ -236,7 +399,7 @@ describe("admission", () => {
                                                    scopes: [] });
     // Attended, it runs; on a schedule, it is refused, the refusal kept on the schedule.
     await ownerRun(r.stub, r.bind(), undefined, "coder");
-    const schedule = await r.stub.agentRun(r.bind({ tiers: TIERS }), {
+    const schedule = await r.stub.agentRun(r.bind(), {
       agent: "coder", input: "nightly", at: Date.now() / 1000 + 3600 });
     await fireSchedules(r);
     expect(await r.sql("SELECT trigger FROM run_schedules")).toEqual([]);
@@ -256,7 +419,7 @@ describe("admission", () => {
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
                                          scopes: [], expected_revision: revision,
                                          name: "Muse" });
-    await r.stub.agentRun({ ...client, tiers: TIERS }, { agent: "main", input: "later",
+    await r.stub.agentRun({ ...client, control: OPEN_RECORD }, { agent: "main", input: "later",
                                                          cron: "0 * * * *" });
     // The client's grant moves without the doors' own hook, as a stale stamp finds it.
     await r.sql("UPDATE outside_clients SET generation = generation + 1 WHERE client = ?",
@@ -286,7 +449,7 @@ describe("a run's sandbox report", () => {
   });
 
   it("words the notice itself: an event's text, and a path not as the sync escapes one, " +
-     "never reach it (R8-1)", async () => {
+     "never reach it", async () => {
     const r = await gated();
     const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     const forged = { type: "ta.sync_unnamed", count: 7,
@@ -339,6 +502,52 @@ describe("a run's settle", () => {
       .toMatchObject({ state: "unknown", code: "lost" });
   });
 
+  it("fails on a call the engine gave up on, never one it retried itself and recovered",
+     async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-pi");
+    await defineAgent(r.stub, r.bind(), "main", { engine: "pi", credential: "api_key",
+                                                  connection, scopes: [] });
+    // pi 1.4.0's `--mode json` stream: each attempt's message ends, then pi says it retries.
+    const attempt = (said: string) => [
+      { type: "message_end", message: { role: "assistant", content: [], stopReason: "error",
+                                        errorMessage: said } },
+      { type: "agent_end", messages: [], willRetry: true },
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000,
+        errorMessage: said }];
+    const recovered = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, recovered.start), {
+      frames: frames({ type: "session", id: "sess-pi" }, ...attempt("529 overloaded")) });
+    const rest = [
+      { type: "message_end", message: { role: "assistant", stopReason: "stop",
+                                        content: [{ type: "text", text: "done" }] } },
+      { type: "auto_retry_end", success: true, attempt: 1 },
+      { type: "agent_end", messages: [], willRetry: false }];
+    expect(await r.stub.runEvents(runnerBinding(r, recovered.start), {
+      frames: rest.map((event, i) => ({ seq: 5 + i, at: 1_800_000_005 + i, event })),
+      end: { exit_code: 0 } })).toEqual({ accepted: 3, settled: "succeeded" });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: recovered.run.run_id }))
+      .toMatchObject({ state: "succeeded", result: "done", code: null, error: null });
+    const spent = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, spent.start), {
+      frames: frames(...attempt("529 overloaded"),
+                     { type: "message_end", message: { role: "assistant", content: [],
+                       stopReason: "error", errorMessage: "529 still overloaded" } },
+                     { type: "agent_end", messages: [], willRetry: false },
+                     { type: "auto_retry_end", success: false, attempt: 3,
+                       finalError: "529 still overloaded" }),
+      end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: spent.run.run_id }))
+      .toMatchObject({ state: "failed", code: "engine_error", error: "529 still overloaded" });
+    // The object's own refusal of a session id is no error of the engine's to withdraw.
+    const refused = await ownerRun(r.stub, r.bind());
+    await r.stub.runEvents(runnerBinding(r, refused.start), {
+      frames: frames({ type: "session", id: "has space" }, ...attempt("529 overloaded")),
+      end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: refused.run.run_id }))
+      .toMatchObject({ state: "failed", error: SESSION_REFUSED });
+  });
+
   it("keeps the run, its result and its session id and no frame as a row; a session id " +
      "outside its shape is refused and never kept", async () => {
     const r = await gated();
@@ -359,26 +568,105 @@ describe("a run's settle", () => {
                        bad.run.conversation_id)).toEqual([{ session_id: null }]);
   });
 
-  it("is unknown when the sandbox's start never answered, failed when it refused", async () => {
+  it("is unknown when the sandbox's start never answered, failed when it answered out of " +
+     "shape or refused, each logged as itself", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    // The object runs in this isolate: its log lines are seen here.
+    const logged = vi.spyOn(console, "error");
+    onTestFinished(() => logged.mockRestore());
+    const lines = () => logged.mock.calls.map((call) => String(call[0]));
+    const submit = (id: string) => r.stub.agentSubmit(r.bind(),
+                                                      { message: "x", client_send_id: id });
     await scripted(r.stub, { answer: "throw" });
-    const lost = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
-                                          { message: "x", client_send_id: "s-1" });
+    const lost = await submit("s-1");
     expect(lost).toMatchObject({ state: "unknown", code: "start_lost" });
-    // In case it did start, it is cancelled too.
-    expect((await recorder(r.stub)).cancels.map((cancel) => cancel.run)).toEqual([lost.run_id]);
-    // A code that is none of the contract's start codes is no answer either.
+    // Its cause is logged with it.
+    expect(logged.mock.calls.find((call) => String(call[0]).includes("did not answer"))?.[1])
+      .toMatchObject({ message: "the sandbox did not answer" });
+    // A code that is none of the contract's, answered or thrown as a refusal, is an answer
+    // out of shape: the sandbox Worker's bug, failed with its cause, never read as a lost start.
     await scripted(r.stub, { answer: { started: false, code: "e2b_down" } as never });
-    expect(await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
-                                    { message: "x", client_send_id: "s-3" }))
-      .toMatchObject({ state: "unknown", code: "start_lost" });
+    const malformed = await submit("s-3");
+    expect(malformed).toMatchObject({ state: "failed", code: "start_malformed" });
+    await gateFor(env.SANDBOX_GATE, r.name).arm("start", { refuse: {
+      code: "e2b_quota", message: "another version's refusal" } });
+    const refusedOutOfShape = await submit("s-5");
+    expect(refusedOutOfShape).toMatchObject({ state: "failed", code: "start_malformed" });
+    const stopped = "a sandbox Worker bug: it failed, and is stopped in case it launched";
+    expect(lines().filter((line) => line.includes("out of the contract's shape"))).toEqual([
+      "the sandbox answered a run's start out of the contract's shape (started false, code " +
+        `e2b_down, keys started code), ${stopped}`,
+      "the sandbox answered a run's start out of the contract's shape (a refusal of code " +
+        `e2b_quota), ${stopped}`]);
+    // In case any did start, each is cancelled too.
+    expect((await recorder(r.stub)).cancels.map((cancel) => cancel.run))
+      .toEqual([lost.run_id, malformed.run_id, refusedOutOfShape.run_id]);
     await scripted(r.stub, { answer: { started: false, code: "sandbox_unconfigured" } });
-    const refused = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
-                                             { message: "x", client_send_id: "s-2" });
-    expect(refused).toMatchObject({ state: "failed", code: "sandbox_unconfigured" });
-    // Neither holds the lease: the last live run's settle gave it back.
+    expect(await submit("s-2")).toMatchObject({ state: "failed", code: "sandbox_unconfigured" });
+    // A refusal the sandbox Worker throws comes before it launches anything: failed with its
+    // code, and nothing to cancel.
+    await gateFor(env.SANDBOX_GATE, r.name).arm("start", { refuse: {
+      code: "sandbox_runner_mismatch", message: "the sandbox's runner is not its digest" } });
+    expect(await submit("s-4"))
+      .toMatchObject({ state: "failed", code: "sandbox_runner_mismatch" });
+    expect(lines()).toContain(
+      "the sandbox refused a run's start (sandbox_runner_mismatch): nothing started");
+    expect((await recorder(r.stub)).cancels).toHaveLength(3);
+    // None holds the lease: the last live run's settle gave it back.
     expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
+    // A start with no answer, or one out of shape, is never sent again: it may have launched.
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === lost.run_id))
+      .toHaveLength(1);
+    expect((await gateFor(env.SANDBOX_GATE, r.name).calls())
+      .filter((call) => call.method === "start"
+              && (call.args as [string, SandboxStart])[1].run === refusedOutOfShape.run_id))
+      .toHaveLength(1);
+  });
+
+  it("sends a start refused for the moment again, the same start, while the run holds its " +
+     "grant; one whose wait ends past the bound is failed by the refusal's own code, and one " +
+     "whose run was cancelled, as cancelled", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    const submit = (id: string) => r.stub.agentSubmit(r.bind(),
+                                                      { message: "x", client_send_id: id });
+    const overloaded = (retryAfterS: number) => ({ refuse: {
+      code: "object_overloaded", message: "this account is busy", retryAfterS } });
+    const sent = async (run: string) => (await gate.calls())
+      .filter((call) => call.method === "start"
+              && (call.args as [string, SandboxStart])[1].run === run)
+      .map((call) => (call.args as [string, SandboxStart])[1]);
+    await gate.arm("start", overloaded(0), 2);
+    const again = await submit("t-1");
+    expect(again).toMatchObject({ state: "running", code: null });
+    // Sent three times, each the same start (its tokens and secret with it), and launched once.
+    const starts = await sent(again.run_id);
+    expect(starts).toHaveLength(3);
+    expect(starts[1]).toEqual(starts[0]);
+    expect(starts[2]).toEqual(starts[0]);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === again.run_id))
+      .toHaveLength(1);
+    // A wait past `LANE_CALL_MS`: the refusal stands at once, and nothing is cancelled.
+    await gate.arm("start", overloaded(60));
+    const past = await submit("t-2");
+    expect(past).toMatchObject({ state: "failed", code: "object_overloaded" });
+    expect(await sent(past.run_id)).toHaveLength(1);
+    expect((await recorder(r.stub)).cancels).toEqual([]);
+    // Cancelled while its start waits: never sent again.
+    await gate.arm("start", overloaded(1));
+    const waiting = submit("t-3");
+    let run = "";
+    await until(async () => {
+      run = (await gate.calls()).filter((call) => call.method === "start")
+        .map((call) => (call.args as [string, SandboxStart])[1].run).at(-1) ?? "";
+      return run !== past.run_id && run !== again.run_id && run !== "";
+    }, "the refused start");
+    await r.stub.agentCancel(r.bind(), { run_id: run });
+    expect(await waiting).toMatchObject({ state: "failed", code: "cancelled" });
+    expect(await sent(run)).toHaveLength(1);
+    expect((await recorder(r.stub)).starts.filter((start) => start.run === run)).toEqual([]);
   });
 });
 
@@ -396,6 +684,47 @@ describe("a run's cancel", () => {
     // A settled run cancels nothing more.
     await r.stub.agentCancel(r.bind(), { run_id: run.run_id });
     expect((await recorder(r.stub)).cancels).toHaveLength(1);
+  });
+
+  it("asked while its start is out, stops the run its start then starts, and settles one its " +
+     "start answers with no sandbox or a refusal as cancelled, with no wait", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const submit = (id: string) => r.stub.agentSubmit(r.bind({ control: OPEN_RECORD }),
+                                                      { message: "x", client_send_id: id });
+    const cancels = async (run: string) => (await recorder(r.stub)).cancels
+      .filter((cancel) => cancel.run === run).length;
+    let run = "";
+    const started = await whileOut(r.name, "start", () => submit("o-1"), async () => {
+      run = (await recorder(r.stub)).starts.at(-1)!.run;
+      await r.stub.agentCancel(r.bind(), { run_id: run });
+      // Its cancel reached the sandbox before the start's answer came, so maybe before its
+      // launch, which then stops nothing.
+      expect(await cancels(run)).toBe(1);
+    });
+    // Started for a run that no longer stands: stopped again, now that it launched, and
+    // settled from its runner's end.
+    expect(started).toMatchObject({ run_id: run, state: "running" });
+    expect(await cancels(run)).toBe(2);
+    await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, run)),
+                           { frames: [], end: { exit_code: null } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: run }))
+      .toMatchObject({ state: "failed", code: "cancelled" });
+    // No room for its sandbox, or a refusal: a cancelled run waits for none, and settles as
+    // the cancel the owner asked, whatever its start answered after.
+    for (const [code, id] of [[SANDBOX_WAITING, "o-2"], ["sandbox_unconfigured", "o-3"]] as const) {
+      await scripted(r.stub, { answer: { started: false, code } });
+      let refused = "";
+      const answer = await whileOut(r.name, "start", () => submit(id), async () => {
+        refused = (await recorder(r.stub)).starts.at(-1)!.run;
+        await r.stub.agentCancel(r.bind(), { run_id: refused });
+      });
+      expect(answer).toMatchObject({ run_id: refused, state: "failed", code: "cancelled" });
+      expect(await r.sql("SELECT run FROM run_inputs")).toEqual([]);
+      expect(await r.sql("SELECT id FROM runs WHERE sandbox_wait = 1")).toEqual([]);
+      // Nothing launched: only the cancel's own reached the sandbox.
+      expect(await cancels(refused)).toBe(1);
+    }
   });
 });
 
@@ -423,7 +752,7 @@ describe("simultaneous runs", () => {
       r.stub.egressOpen(egress(as), {
         run, connection, method: "GET", path: "/v1/models", bytes_hint: null });
     // A run id alone authorizes nothing: one run's process naming the other's id, with its
-    // own secret, spends on neither (slice R's review H-1).
+    // own secret, spends on neither.
     expect(await call(onB.run.run_id, b, onA.start))
       .toMatchObject({ ok: false, code: "egress_run_closed" });
     expect(await call(onA.run.run_id, b)).toMatchObject({ ok: false,
@@ -455,10 +784,10 @@ describe("a client's run doors", () => {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
       recipe_id: null });
     await r.stub.registerAgent(r.session(), { card_id, digest });
-    expect(await failure(() => r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+    expect(await failure(() => r.stub.agentSubmit({ ...client, control: OPEN_RECORD }, {
       message: "hi", client_send_id: "n-1" })))
       .toMatchObject({ code: "not_granted", message: "outside client capability not granted" });
-    expect((await failure(() => r.stub.agentRun({ ...client, tiers: TIERS }, {
+    expect((await failure(() => r.stub.agentRun({ ...client, control: OPEN_RECORD }, {
       agent: "main", input: "x" }))).message).toBe("outside client capability not granted");
     expect((await recorder(r.stub)).starts).toEqual([]);
   });
@@ -467,7 +796,7 @@ describe("a client's run doors", () => {
 describe("a conversation's inputs", () => {
   /** An input to `conversation`, by the owner. */
   const submit = (r: Gated, conversation: string, message: string, id: string) =>
-    r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message, client_send_id: id,
+    r.stub.agentSubmit(r.bind(), { message, client_send_id: id,
                                                   conversation_id: conversation });
   /** The prompts the sandbox was started on, in order. */
   const prompts = async (r: Gated) => (await recorder(r.stub)).starts.map((s) => s.prompt);
@@ -593,20 +922,100 @@ describe("auto and the owner's sign-ins", () => {
     expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "helper"))).message)
       .toMatch(/^no_source/);
     // The owner's own Claude Code run opens the sandbox; its runner reports the sign-in:
-    // presence only, its time, never a credential.
-    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    // presence only, its time, never a credential. A run naming the engine on its sign-in
+    // is given its plan's model too.
+    const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    expect(run.model).toBe(PLAN_MODEL);
+    expect(start.model).toBe(PLAN_MODEL);
     expect(await claudeSignin(r, start, true)).toEqual({ recorded: 1, lapsed: [] });
     const [row] = await r.sql("SELECT * FROM engine_signins");
     expect(row).toMatchObject({ engine: "claude-code", signed_in: 1, models: "[]" });
     expect(Object.keys(row!).sort())
       .toEqual(["changed_at", "checked_at", "engine", "models", "signed_in"]);
+    // The plan runs the model its record says it does, and the receipt says which.
     const auto = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(auto.run).toMatchObject({ state: "running", engine: "claude-code",
-                                     credential: "vendor_login_in_sandbox" });
+                                     credential: "vendor_login_in_sandbox", model: PLAN_MODEL });
     expect(auto.start).toMatchObject({ engine: "claude-code",
-                                       credential: "vendor_login_in_sandbox" });
+                                       credential: "vendor_login_in_sandbox", model: PLAN_MODEL });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?", auto.run.run_id))
       .toEqual([{ connection: null }]);
+    // An agent that names the engine and a model runs that model on the sign-in.
+    expect((await ownerRun(r.stub, r.bind(), { ...SIGNED_IN, model: "claude-sonnet-5-5" },
+                           "named")).start)
+      .toMatchObject({ credential: "vendor_login_in_sandbox", model: "claude-sonnet-5-5" });
+  });
+
+  it("ranks a subscription against another provider's key by tier, on the owner's ranking " +
+     "file where it has one", async () => {
+    const r = await gated();
+    const [base] = await catalog(OPENAI);
+    await r.connect("sk-good", OPENAI, "Weaker", [{ ...base!, id: "gpt-5.1-codex" }]);
+    await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    // A run of `helper`, settled at once, so the tier's simultaneous runs never refuse one.
+    const helper = async () => {
+      const { run, start } = await ownerRun(r.stub, r.bind(), undefined, "helper");
+      await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+      return run;
+    };
+    const keyed = await ownerRun(r.stub, r.bind(), undefined, "helper");
+    expect(keyed.run).toMatchObject({ credential: "api_key", model: "gpt-5.1-codex" });
+    // Signed in: Claude's plan (`claude-opus-5*`, the top tier) ranks above the key.
+    await claudeSignin(r, keyed.start, true);
+    const plan = { engine: "claude-code", credential: "vendor_login_in_sandbox",
+                   model: PLAN_MODEL };
+    expect(await helper()).toMatchObject(plan);
+    // That provider's key on a model ranked above the plan's in the top tier: still the plan,
+    // which the owner pays for already.
+    const stronger = await r.connect("sk-good", OPENAI, "Stronger",
+                                     [{ ...base!, id: "gpt-6.1-sol" }]);
+    expect(await helper()).toMatchObject(plan);
+    // The owner's own ranking, whole in place of the platform's: OpenAI's a tier above, in a
+    // file past the inline bytes, so read from its chunks.
+    const own = (tiers: unknown, about = "") => ownerFile(r.stub, r.bind(), RANKING,
+                                                          JSON.stringify({ version: 2, about,
+                                                                           tiers }));
+    await own([[{ provider: "*", model: "gpt-6*" }], [{ provider: "*", model: "claude-*" }]],
+              "x".repeat(INLINE_BYTES));
+    const strongest = await ownerRun(r.stub, r.bind(), undefined, "helper");
+    expect(strongest.run).toMatchObject({ credential: "api_key", model: "gpt-6.1-sol" });
+    expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?",
+                       strongest.run.run_id)).toEqual([{ connection: stronger }]);
+    // One that ranks none of them: the plan first among the unknown, and the owner told
+    // once, not once a run.
+    await own([[{ provider: "*", model: "none-*" }]]);
+    expect(await helper()).toMatchObject(plan);
+    expect(await helper()).toMatchObject(plan);
+    expect((await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "model_unranked").map((notice) => notice.detail))
+      .toEqual([`${PLAN_MODEL} (claude-code's sign-in): no entry of the model ranking ranks ` +
+                `it, so auto ranked it below every ranked model; rank it in ${RANKING}`]);
+    // A file that is no ranking refuses the run, never a silent fall back to the platform's.
+    for (const [text, message] of [
+      ["{\"version\": 1}", `${RANKING}: a model ranking holds only version 2`],
+      ["not json", `${RANKING} is not JSON text`],
+      [JSON.stringify({ version: 2, about: "x".repeat(ADMITTED_FILE_BYTES),
+                        tiers: [[{ provider: "*", model: "*" }]] }),
+       `${RANKING} is past the ${ADMITTED_FILE_BYTES} bytes`]] as const) {
+      await ownerFile(r.stub, r.bind(), RANKING, text);
+      expect(await failure(() => helper()))
+        .toMatchObject({ code: "invalid", message: expect.stringContaining(message) });
+    }
+    // Removed: the platform's ranking again.
+    await ownerFile(r.stub, r.bind(), RANKING, null);
+    expect(await helper()).toMatchObject(plan);
+    // An `auto` agent that names a model runs on a source that offers it, whatever ranks
+    // above, and one no source offers is refused, never passed to another vendor's CLI.
+    await defineAgent(r.stub, r.bind(), "unoffered",
+                      { ...AUTO_AGENT, model: "claude-sonnet-5-5" });
+    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "unoffered"))).message)
+      .toMatch(/^no_source/);
+    for (const [model, run] of [
+      [PLAN_MODEL, { engine: "claude-code", model: PLAN_MODEL }],
+      ["gpt-5.1-codex", { credential: "api_key", model: "gpt-5.1-codex" }]] as const) {
+      expect((await ownerRun(r.stub, r.bind(), { ...AUTO_AGENT, model }, "pinned")).run)
+        .toMatchObject(run);
+    }
   });
 
   it("prefers the subscription to a key of its provider; a lapse is refused and noticed, " +
@@ -619,11 +1028,12 @@ describe("auto and the owner's sign-ins", () => {
     expect(keyed.run).toMatchObject({ credential: "api_key" });
     expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?", keyed.run.run_id))
       .toEqual([{ connection }]);
-    // Signed in as well: the plan covers the key's provider, and is used.
+    // Signed in as well: the plan covers the key's provider, and is used, on its own model.
     await claudeSignin(r, keyed.start, true);
     const planned = await ownerRun(r.stub, r.bind(), undefined, "helper");
     expect(planned.run).toMatchObject({ engine: "claude-code",
-                                        credential: "vendor_login_in_sandbox" });
+                                        credential: "vendor_login_in_sandbox",
+                                        model: PLAN_MODEL });
     // The sign-in lapses: a "sign in again" notice, and auto stops picking it, the key
     // never taken in its place.
     expect(await claudeSignin(r, keyed.start, false))
@@ -659,9 +1069,8 @@ describe("auto and the owner's sign-ins", () => {
     for (const bad of [[], [{ engine: "nope", signed_in: true }], [...one, ...one],
                        [{ engine: "pi", signed_in: true }],
                        [{ engine: "claude-code", signed_in: "yes" }],
-                       [{ engine: "claude-code", signed_in: true, models: ["a b"] }],
-                       [{ engine: "claude-code", signed_in: true,
-                          models: ["m".repeat(256), ...Array(8).fill("m".repeat(256))] }]]) {
+                       // A plan's model is its record's, never the runner's word.
+                       [{ engine: "claude-code", signed_in: true, models: [PLAN_MODEL] }]]) {
       expect((await report(runnerSandbox(r, start), bad)).code).toBe("invalid");
     }
     expect(await r.sql("SELECT engine FROM engine_signins")).toEqual([]);
@@ -674,7 +1083,7 @@ describe("auto and the owner's sign-ins", () => {
 describe("the admission unit", () => {
   /** An input to `conversation`, by the owner. */
   const submit = (r: Gated, conversation: string, message: string, id: string) =>
-    r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message, client_send_id: id,
+    r.stub.agentSubmit(r.bind(), { message, client_send_id: id,
                                                   conversation_id: conversation });
 
   it("refuses an owner not admitted itself, whatever reached it (the lane's race)",
@@ -708,28 +1117,67 @@ describe("the admission unit", () => {
   });
 
   it("finds a waiting run's turn: first in a conversation with no live run, while the " +
-     "tier has room by the numbers last handed", async () => {
+     "tier has room by the kept record's numbers", async () => {
     const r = await gated();
     const { run } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
     const behind = await submit(r, run.conversation_id, "behind", "t-1");  // its run is live
     // A run of its own conversation that waits for the sandbox: the line's ring starts it.
     await scripted(r.stub, { answer: [{ started: true }, { started: false, code: SANDBOX_WAITING },
                                       { started: true }] });
-    const own = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+    const own = await r.stub.agentSubmit(r.bind(),
                                          { message: "own", client_send_id: "t-2" });
     expect([behind.state, own.state]).toEqual(["waiting", "waiting"]);
     const asked = (await recorder(r.stub)).starts.length;  // the first's, and own's wait
-    // The tier's simultaneous runs, by the numbers a door last handed: 1, none, then 2.
-    const started = async (tiers: Binding["tiers"]) => {
-      await r.stub.fileStat(r.bind({ tiers }), { path: "/workspace" });
+    // The tier's simultaneous runs, by the record a door last handed: 1, none, then 2.
+    const started = async (tiers: Tiers | undefined) => {
+      await r.stub.fileStat(r.bind({ control: openRecord(tiers) }), { path: "/workspace" });
       await r.stub.sandboxRung();
       await drainDue(r.stub);
       return (await recorder(r.stub)).starts.slice(asked).map((each) => each.run);
     };
     expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 1 } })).toEqual([]);
-    expect(await started(null)).toEqual([]);
+    expect(await started(undefined)).toEqual([]);
     expect(await started({ ...TIERS, free: { ...TIERS.free, runs: 2 } }))
       .toEqual([own.run_id]);
+  });
+
+  it("reads a waiting run's agent file on the lane without waiting on the pool: refused busy " +
+     "at once, the lane holds, and the run starts once the pool frees", async () => {
+    const r = await gated();
+    const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    // An agent.json past an inline file: its read holds the isolate's pool.
+    const path = "/workspace/agents/main/agent.json";
+    const session = r.session();
+    const { entry } = await r.stub.fileStat(session, { path });
+    await r.stub.fileWrite(session, { path, expected_etag: entry!.etag, content: new TextEncoder()
+      .encode(JSON.stringify(SIGNED_IN).padEnd(INLINE_BYTES + 1, " ")) });
+    const waiting = await submit(r, run.conversation_id, "after", "p-1");
+    // Every unit of the pool held elsewhere, its reserve too, and no call waiting for one.
+    const pool = ownerSlots();
+    const large = await pool.acquire(pool.capacity - pool.reserve, "", undefined, true);
+    const reserve = await pool.acquire(pool.reserve);
+    try {
+      await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+      // The pool's units stay held through the pass, so a read that waited would be refused
+      // only by the pool's own timer, `SLOT_WAIT_MS` on: finishing inside it is the
+      // never-waiting, by the code's constant.
+      const before = Date.now();
+      const began = clock();
+      await drainDue(r.stub);
+      expect(Date.now() - before).toBeLessThan(SLOT_WAIT_MS);
+      expect(await r.sql("SELECT state FROM runs WHERE id = ?", waiting.run_id))
+        .toEqual([{ state: "waiting" }]);
+      const held = (await laneAt(r.stub, "runs"))!;
+      expect(held).toBeGreaterThanOrEqual(began + slotBusy().retryAfter!);
+      expect(held).toBeLessThan(began + LANE_RETRY_S);
+    } finally {
+      large.release();
+      reserve.release();
+    }
+    await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
+    await drainDue(r.stub);
+    expect((await recorder(r.stub)).starts.map((each) => each.run))
+      .toEqual([run.run_id, waiting.run_id]);
   });
 });
 
@@ -769,7 +1217,7 @@ describe("a run's own calls", () => {
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
                                          scopes: [], expected_revision: revision,
                                          name: "Muse" });
-    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+    const run = await r.stub.agentSubmit({ ...client, control: OPEN_RECORD },
                                          { message: "hi", client_send_id: "g-1" });
     const asRun = runBinding(r, (await recorder(r.stub)).starts.at(-1)!);
     expect(await r.stub.fileStat(asRun, { path: "/workspace" }))
@@ -805,7 +1253,7 @@ describe("a run's own calls", () => {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
       recipe_id: null });
     await r.stub.registerAgent(r.session(), { card_id, digest });
-    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+    const run = await r.stub.agentSubmit({ ...client, control: OPEN_RECORD },
                                          { message: "hi", client_send_id: "c-1" });
     expect(run).toMatchObject({ state: "running", initiator: "client" });
     expect(await r.sql("SELECT scopes FROM run_grants")).toEqual([
@@ -843,7 +1291,7 @@ describe("the runs lane", () => {
       .toEqual([]);
     expect((await recorder(r.stub)).starts).toEqual([]);
     // A cron is its own work: due, it starts one run, unattended.
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
+    await r.stub.agentRun(r.bind(), { agent: "main", input: "report",
                                                       cron: "30 * * * *" });
     await fireSchedules(r);
     const starts = (await recorder(r.stub)).starts;
@@ -852,8 +1300,8 @@ describe("the runs lane", () => {
       .toMatchObject({ initiator: "schedule" });
   });
 
-  it("leaves a schedule due when its launch is refused for the moment, and fires it once " +
-     "(review D-1)", async () => {
+  it("leaves a schedule due when its launch is refused for the moment, and fires it once",
+     async () => {
     const r = await gated();
     // An agent's file past an inline one, so the launch reads it from the files plane.
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
@@ -864,14 +1312,28 @@ describe("the runs lane", () => {
         path: "/workspace/agents/main/agent.json" })).entry!.etag });
     for (const trigger of [{ at: Date.now() / 1000 + 3600 }, { cron: "30 * * * *" }]) {
       const before = (await recorder(r.stub)).starts.length;
-      await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "report",
+      await r.stub.agentRun(r.bind(), { agent: "main", input: "report",
                                                         ...trigger });
-      // The read refused `busy`, as a full slot pool refuses it: the pass fails, unclaimed.
+      // The read refused `busy` for the moment, as a full slot pool refuses it: the pass
+      // holds the lane until its Retry-After, never failed, the schedule unclaimed and due.
       const busy = slotBusy();
-      await gateFor(env.FILES_GATE, await spaceOf(r.stub))
-        .arm("getChunks", { refuse: { code: busy.code, message: busy.message } });
-      await fireSchedules(r).catch(() => undefined);
-      // The lane's next pass, as its backoff brings it.
+      await gateFor(env.FILES_GATE, await spaceOf(r.stub)).arm("getChunks", { refuse: {
+        code: busy.code, message: busy.message, retryAfterS: 60 } });
+      const logged = vi.spyOn(console, "error");
+      onTestFinished(() => logged.mockRestore());
+      const began = Date.now() / 1000;
+      await fireSchedules(r);
+      const ended = Date.now() / 1000;
+      expect(logged.mock.calls.map((call) => String(call[0])))
+        .not.toContain("the owner's runs pass failed; it runs again later");
+      logged.mockRestore();
+      const held = (await laneAt(r.stub, "runs"))!;
+      expect(held).toBeGreaterThanOrEqual(began + 60);
+      expect(held).toBeLessThanOrEqual(Math.ceil((ended + 60) * 1000) / 1000);
+      expect((await recorder(r.stub)).starts.length - before).toBe(0);
+      expect(await r.sql("SELECT last_error FROM run_schedules WHERE next_at <= ?", ended))
+        .toEqual([{ last_error: null }]);
+      // The lane's next pass, as its hold brings it.
       await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
       await drainDue(r.stub);
       expect((await recorder(r.stub)).starts.length - before).toBe(1);
@@ -885,6 +1347,59 @@ describe("the runs lane", () => {
           "SELECT id FROM run_schedules"))[0]!["id"] as string });
       }
     }
+  });
+
+  it("keeps a refusal that crossed from the files plane on its schedule's row, the pass " +
+     "never failed for it", async () => {
+    const r = await gated();
+    // An agent's file past an inline one, so the launch reads it from the files plane.
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.fileWrite(r.session(), {
+      path: "/workspace/agents/main/agent.json", content: new TextEncoder().encode(
+        `${JSON.stringify(SIGNED_IN)}${" ".repeat(INLINE_BYTES)}`),
+      expected_etag: (await r.stub.fileStat(r.bind(), {
+        path: "/workspace/agents/main/agent.json" })).entry!.etag });
+    await r.stub.agentRun(r.bind({ control: OPEN_RECORD }), { agent: "main", input: "report",
+                                                      cron: "30 * * * *" });
+    await gateFor(env.FILES_GATE, await spaceOf(r.stub)).arm("getChunks", { refuse: {
+      code: "invalid", message: "invalid: the files plane refuses this read" } });
+    await fireSchedules(r);
+    expect(await r.sql("SELECT last_error FROM run_schedules"))
+      .toEqual([{ last_error: "invalid: the files plane refuses this read" }]);
+    expect((await recorder(r.stub)).starts).toEqual([]);
+  });
+
+  it("waits on a due schedule's start only to the bound on a row's outside call: the pass " +
+     "goes on, the run queued, and its answer is recorded when it comes", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.agentRun(r.bind({ control: OPEN_RECORD }), { agent: "main", input: "report",
+                                                      at: Date.now() / 1000 + 3600 });
+    const sandbox = gateFor(env.SANDBOX_GATE, r.name);
+    await sandbox.arm("start", { hold: "before" });
+    await r.sql("UPDATE run_schedules SET next_at = ?", Date.now() / 1000 - 1);
+    // Time passes on the fake clock while the start is held, advanced inside the object
+    // (workerd resolves a timer it set only in its own context): no guessed wait ends it.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    // A door re-derives the lane's job, due now, and its pass sends the start.
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/d-bound", expected_etag: null });
+    const pass = runDurableObjectAlarm(r.stub);
+    await until(async () => (await env.SANDBOX_GATE.held())
+      .some((call) => call.name === r.name && call.method === "start"), "the start held");
+    await runInDurableObject(r.stub, () => vi.advanceTimersByTimeAsync(LANE_CALL_MS));
+    vi.useRealTimers();
+    // The pass ended with the start still out: its job set from the rows, the run's own
+    // look ahead, and the run queued, which no pass starts again.
+    await until(async () => (await laneAt(r.stub, "runs") ?? 0) > Date.now() / 1000,
+                "the pass's end");
+    const [row] = await r.sql("SELECT id, state FROM runs");
+    expect(row).toMatchObject({ state: "queued" });
+    expect(await r.sql("SELECT id FROM run_schedules")).toEqual([]);
+    await sandbox.release("start");
+    await until(async () => (await r.sql("SELECT state FROM runs"))[0]!["state"] === "running",
+                "the late start recorded");
+    expect((await recorder(r.stub)).starts.map((start) => start.run)).toEqual([row!["id"]]);
+    await pass;
   });
 
   it("cancels a schedule of the caller's", async () => {

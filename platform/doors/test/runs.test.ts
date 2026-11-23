@@ -1,5 +1,5 @@
 /**
- * Runs at the doors (slice R), in workerd, through the real owner Worker with a recording
+ * Runs at the doors, in workerd, through the real owner Worker with a recording
  * fake behind its `SANDBOX` (`vitest.config.ts`): the run tools on `/mcp` and `/api`, the owner's
  * `/app/api/agent/*` routes, the tier numbers the control record holds, a run's own MCP door
  * and event door on the egress host, the sandbox's sign-in report door, and the owner
@@ -12,10 +12,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { Refusal } from "../../contract/src/refusal";
 import {
-  EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+  DECIDE_HEADER, decideDoor, EGRESS_ORIGIN, egressTokenOf, GENERATION_HEADER, RUN_HEADER,
+  RUNNER_HEADER, SANDBOX_HEADER,
 } from "../../contract/src/egress";
 import { SOCKET_VERSION, TICKET_REFUSED } from "../../contract/src/socket-shape";
-import { RUN_INSTRUCTIONS } from "../src/instructions";
+import { INSTRUCTIONS } from "../src/instructions";
 import { profileNames } from "../../contract/src/doors";
 import { EVENT_FRAMES_MAX } from "../../contract/src/run-events";
 import { secretOf, until } from "../../ci/workerd";
@@ -191,6 +192,24 @@ describe("the owner's /app/api/agent/* routes", () => {
 });
 
 describe("a run's own doors on the egress host", () => {
+  it("serve its own agent's definition, not main's", async () => {
+    const { who, app } = await owned();
+    for (const [name, text] of [["agent.json", JSON.stringify(SIGNED_IN)],
+                                ["AGENTS.md", "# The writer's own instructions"]]) {
+      const written = await appPost("files/write", app.access_token, app.session, {
+        path: `/workspace/agents/writer/${name}`, expected_etag: "", text });
+      expect(written.status).toBe(200);
+    }
+    await appPost("agent/submit", app.access_token, null,
+                  { message: "go", client_send_id: "w-1", agent_id: "writer" });
+    const client = await engine((await starts(who))[0]!);
+    expect((await client.listResources()).resources.map((resource) => resource.uri))
+      .toContain("tinyassets://agent/writer/AGENTS.md");
+    expect((await client.readResource({ uri: "tinyassets://agent/writer/AGENTS.md" })).contents)
+      .toMatchObject([{ text: "# The writer's own instructions" }]);
+    await client.close();
+  });
+
   it("serve its MCP tools but converse, held to its grant's scopes", async () => {
     const { who, app } = await owned();
     await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "e-1" });
@@ -201,13 +220,14 @@ describe("a run's own doors on the egress host", () => {
     // and cancels (the founder, 2026-11-03).
     expect(tools.filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.name))
       .toEqual(["run_graph", "run_status", "run_cancel"]);
-    // Nor a mailbox tool (slice ID): the inbox digest's mail part is a mailbox read.
+    // Nor a mailbox tool: the inbox digest's mail part is a mailbox read.
     expect(tools.some((tool) => ["mailbox_read", "mailbox_ack", "inbox_digest"]
       .includes(tool.name))).toBe(false);
-    // Exactly the run profile, code mode on by default.
-    expect(tools.map((tool) => tool.name)).toEqual(profileNames("run"));
+    // Exactly the run profile, but code: code mode is off by default.
+    expect(tools.map((tool) => tool.name))
+      .toEqual(profileNames("run").filter((name) => name !== "code"));
     // The engine is told where working files go: its scratch, never the owner's storage.
-    expect(client.getInstructions()).toBe(RUN_INSTRUCTIONS);
+    expect(client.getInstructions()).toBe(INSTRUCTIONS.run);
     expect(structured(await client.callTool({ name: "file_stat",
                                               arguments: { path: "/workspace" } })))
       .toMatchObject({ entry: { kind: "dir" } });
@@ -269,6 +289,33 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}",
       headers: { "Content-Type": "application/json", ...sandbox, [RUN_HEADER]: "0".repeat(64) } }));
     expect(wrong.status).not.toBe(200);
+  });
+
+  it("serve the decide door to a run's hook alone, by the run's own credential", async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "d-1" });
+    const [start] = await starts(who);
+    const decide = (at: string, body: unknown, headers: Record<string, string> = {}) =>
+      call(new Request(at, { method: "POST", body: JSON.stringify(body), headers: {
+        "Content-Type": "application/json", [SANDBOX_HEADER]: tokenOf(start!),
+        [GENERATION_HEADER]: "1", ...headers } }));
+    const { url: at, credential } = decideDoor(start!.urls.mcp);
+    const own = { [DECIDE_HEADER]: credential };
+    expect(await (await decide(at, { check: true }, own)).json())
+      .toEqual({ tools: [], generation: 1 });
+    // Claude Code posts the call itself (an http hook), answered in its own words: {} lets be.
+    expect(await (await decide(at, { tool_name: "Bash", tool_input: { command: "ls" } }, own))
+      .json()).toEqual({});
+    expect((await decide(at, { check: true }, { ...own, Origin: url("") })).status).toBe(404);
+    for (const forged of [{}, { [DECIDE_HEADER]: start!.run },
+                          { [DECIDE_HEADER]: `${start!.run}:${"0".repeat(64)}` }]) {
+      expect((await decide(at, { check: true }, forged)).status).not.toBe(200);
+    }
+    expect((await decide(`${EGRESS_ORIGIN}/r/${start!.run}/decide`, { check: true }, own))
+      .status).toBe(404);
+    const refused = await decide(at, { tool_name: "a b" }, own);
+    expect([refused.status, (await refused.json<{ error: { message: string } }>()).error.message])
+      .toEqual([400, "invalid decide request"]);
   });
 
   it("answer a post refused for the moment 503, with the object's whole message, for the " +
@@ -443,7 +490,7 @@ describe("a run's live events", () => {
   });
 
   it("relay a frame whose session id is outside its shape, and answer the run's refusal of the " +
-     "id as the object holds it (app review)", async () => {
+     "id as the object holds it", async () => {
     const { who, app } = await owned();
     const run = await (await appPost("agent/submit", app.access_token, null, {
       message: "go", client_send_id: "bad-sid" })).json<{ run_id: string;

@@ -1,9 +1,9 @@
 /**
- * Restore (`restore.ts`; `operator_research.md` §3.5): a production-shaped owner's generation
- * read back into the owner's own object once that object is lost, every table and every counter
- * as it stood at E and every chunk read back; each refusal with nothing written; a restore cut
- * anywhere, or two at once, ending the same, never a row twice; nothing put to R2 and no row in
- * an answer; the load order held to the schema's triggers.
+ * Restore (`restore.ts`): a production-shaped owner's generation read back into the owner's
+ * own object once that object is lost, every table and every counter as it stood at E and
+ * every chunk read back; each refusal with nothing written; a restore cut anywhere, or two
+ * at once, ending the same, never a row twice; nothing put to R2 and no row in an answer;
+ * the load order held to the schema's triggers.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -26,7 +26,7 @@ import { CHUNK_ROW_BYTES, CHUNK_ROW_CHARGE } from "../src/manifest";
 import { addNames, emptyFilter, FILTER_BYTES } from "../src/names-filter";
 import type { OwnerDO } from "../src/owner-do";
 import { loadOrder, RESTORING, SEEDED } from "../src/restore";
-import { MIGRATIONS } from "../src/schema";
+import { FORWARD, MIGRATIONS } from "../src/schema";
 
 const LOAD = loadOrder();
 import { erasedWhole, finished } from "./erasure-support";
@@ -34,9 +34,9 @@ import {
   BURST, digest, type Generated, generate, type Line, objectsOf, type Owner, owner, PAGE, replay,
   standing, writtenAt,
 } from "./generation-support";
-import { MUSE, registerOn, signedIn } from "./ledger-support";
+import { MUSE, registerOn, signedIn, dm } from "./ledger-support";
 import {
-  drainDue, failure, gateFor, laneAt, laneJobs, ownerObject, storesOn, TIERS,
+  drainDue, failure, gateFor, laneAt, laneJobs, OPEN_RECORD, ownerObject, storesOn,
 } from "./support";
 
 type Stub = DurableObjectStub<OwnerDO>;
@@ -73,8 +73,8 @@ const SINGLE_COUNTERS: Readonly<Record<string, readonly string[]>> = Object.free
 /**
  * A production-shaped owner: its seed, a policy written in its session, inline and chunked
  * files with history and garbage, collection rows with a placed body and an erasure, an
- * outside agent with mail read and acked, notices, a model reservation settled and pruned (so
- * the spend outlives it), an API key, an inbound binding and a model connection.
+ * outside agent with mail read and acked, notices, a sandbox call charged, settled and pruned
+ * (so the spend outlives it), an API key, an inbound binding and a model connection.
  */
 async function shaped(o: Owner): Promise<void> {
   const { generation, policy } = await o.stub.policyRead(o.bind());
@@ -104,7 +104,7 @@ async function shaped(o: Owner): Promise<void> {
                                           delivery_method: "pull", recipe_id: null }).agent_id;
       let last = 0;
       for (let n = 0; n < 6; n++) {
-        last = s.ledger.seqOf(s.ledger.post(null, `dm:${agent}`, `m${n}`, `${PLAIN} ${n}`,
+        last = s.ledger.seqOf(s.ledger.post(null, dm(agent), `m${n}`, `${PLAIN} ${n}`,
                                             null).message_id)!;
       }
       s.ledger.read(MUSE, 3);
@@ -113,12 +113,19 @@ async function shaped(o: Owner): Promise<void> {
   });
   const sql = (text: string, ...args: SqlStorageValue[]) => sqlIn(o.stub, text, ...args);
   await sql("INSERT INTO owner_notices (at, type, detail) VALUES (1, 'x', ?)", `${PLAIN} n`);
-  await sql("INSERT INTO model_reservations (id, run, connection_id, source, model, state, " +
-            "max_output_tokens, est_tokens, est_cost, tokens, cost, policy_generation, day, " +
-            "month, created_at, settled_at) VALUES ('r1', 'run', 'c', 'src', 'm', 'succeeded', " +
-            "10, 10, 7, 9, 5, 1, '20261101', '202611', 1, 2), ('r2', 'run', 'c', 'src', 'm', " +
-            "'succeeded', 10, 10, 7, 9, 3, 1, '20261101', '202611', 1, 2)");
-  await sql("DELETE FROM model_reservations WHERE id = 'r1'");  // pruned: its spend outlives it
+  for (const [id, cost] of [["1".repeat(32), 5], ["2".repeat(32), 3]] as const) {
+    await sql("INSERT INTO egress_reservations (id, lease_id, epoch, run, token, connection_id, " +
+              "method, path, generation, opened_at, state) VALUES (?, ?, 1, ?, ?, ?, 'POST', " +
+              "'/v1/messages', 1, 1, 'open')", id, "l".repeat(32), "r".repeat(36), "t".repeat(64),
+              "c".repeat(25));
+    await sql("UPDATE egress_reservations SET charge = 'held', source = 'src', " +
+              "max_output_tokens = 10, est_tokens = 10, est_cost = 7, day = '20261101', " +
+              "month = '202611' WHERE id = ?", id);
+    await sql("UPDATE egress_reservations SET state = 'settled', outcome = 'complete', " +
+              "charge = 'succeeded', tokens = 9, cost = ?, settled_at = 2 WHERE id = ?", cost, id);
+  }
+  // Pruned: its spend outlives it.
+  await sql("DELETE FROM egress_reservations WHERE id = ?", "1".repeat(32));
   await sql("INSERT INTO owner_keys (key_id, client, name, created_at) VALUES (?, ?, 'k', 1)",
             "0123456789abcdef", MUSE.client);
   await sql("INSERT INTO inbound_bindings (binding_id, kind, agent, enabled, revision, route, " +
@@ -248,7 +255,7 @@ describe("a restore", () => {
       .toBe(RESTORING);
     expect((await failure(() => stub.importNotice(
       { owner: o.name, caller: PLATFORM_CALLER, origin: null, import: { bundle: "b".repeat(64) },
-        tiers: TIERS } as Binding, { detail: "x" }))).message).toBe(RESTORING);
+        control: OPEN_RECORD } as Binding, { detail: "x" }))).message).toBe(RESTORING);
     // No lane runs while a restore is under way.
     expect(await laneJobs(stub)).toEqual({});
     const answers = await stepped(stub, o.name);
@@ -414,7 +421,7 @@ describe("a restore", () => {
     } });
     await drainDue(o.stub);
     // Nothing changed since the newest began, so no later generation takes the fallback's
-    // place; and a give-up's notice was given since (review F1), which must not silence this.
+    // place; and a give-up's notice was given since, which must not silence this.
     await sqlIn(o.stub, "UPDATE owner_backups SET changed_at = NULL WHERE gen = ?", second.gen);
     await sqlIn(o.stub, "UPDATE owner_backup_state SET told = 1");
     const [kept] = await sqlIn(o.stub, "SELECT changed_at FROM owner_backups WHERE gen = ?",
@@ -695,19 +702,25 @@ describe("a lost object's restore that fails at its log step", () => {
   });
 });
 
+/**
+ * The oldest schema a restore brings forward: the last migration that refuses an older
+ * generation's (`FORWARD`), as `unforwardable` derives it.
+ */
+const FLOOR = FORWARD.findLastIndex((refused) => refused !== null) + 1;
+
 /** The words a restore fails with when a migration lands under it, begun a schema before. */
 const LANDED = "a migration landed while it was under way: begun at schema " +
   `${MIGRATIONS.length - 1}, this object's is ${MIGRATIONS.length}; wipe it and restore again, ` +
   "from the same generation";
 
 describe("a generation of an older schema", () => {
-  it("of schema 9, the floor, written by an object at 9, restores a production-shaped owner, " +
-     "every table and counter as at E, keeping its schema; and, live, is pinned, wiped and " +
-     "restored again", async () => {
+  it(`of schema ${FLOOR}, the floor, written by an object at it, restores a production-shaped ` +
+     "owner, every table and counter as at E, keeping its schema; and, live, is pinned, wiped " +
+     "and restored again", async () => {
     const o = await owner();
     await shaped(o);
     const counters = await countersOf(o.stub);
-    const { gen, ns, atE } = await writtenAt(o.stub, o.name, 9, FENCED);
+    const { gen, ns, atE } = await writtenAt(o.stub, o.name, FLOOR, FENCED);
     const stub = await lose(o);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen });
     expect((await stepped(stub, o.name)).at(-1)).toMatchObject({ step: "done", gen });
@@ -715,7 +728,7 @@ describe("a generation of an older schema", () => {
     expect(await countersOf(stub)).toEqual(counters);
     // The generation it adopts is of its own schema, and a live owner restores it.
     expect(await sqlIn(stub, "SELECT schema FROM owner_backups WHERE gen = ?", gen))
-      .toEqual([{ schema: 9 }]);
+      .toEqual([{ schema: FLOOR }]);
     await stub.admissionSet(platform(o.name), { admit: true });
     expect((await stub.restoreSource(platform(o.name))).generations)
       .toMatchObject([{ gen, restorable: true }]);
@@ -726,7 +739,7 @@ describe("a generation of an older schema", () => {
     expect(await rowsOf(wiped, FENCED)).toBe(atE);
   });
 
-  for (let schema = 10; schema < MIGRATIONS.length; schema++) {
+  for (let schema = FLOOR + 1; schema < MIGRATIONS.length; schema++) {
     it(`of schema ${schema}, written by an object at ${schema}, restores the owner as at E`,
        async () => {
       const o = await owner();
@@ -741,11 +754,11 @@ describe("a generation of an older schema", () => {
     });
   }
 
-  it("of schema 9, gone from the bucket and put back byte for byte at its keys, as the " +
+  it(`of schema ${FLOOR}, gone from the bucket and put back byte for byte at its keys, as the ` +
      "off-account copy's restore puts it, restores a lost owner", async () => {
     const o = await owner();
     await shapedFiles(o);
-    const { gen, ns, atE } = await writtenAt(o.stub, o.name, 9);
+    const { gen, ns, atE } = await writtenAt(o.stub, o.name, FLOOR);
     // The namespace's objects as the copy holds them: every chunk and generation, their bytes.
     const copy: { key: string; bytes: ArrayBuffer; meta: Record<string, string> }[] = [];
     let cursor: string | undefined;
@@ -771,12 +784,13 @@ describe("a generation of an older schema", () => {
     expect(await rowsOf(stub)).toBe(atE);
   });
 
-  it("before schema 9 is none a restore can load: refused a pin, and told so", async () => {
+  it(`before schema ${FLOOR} is none a restore can load: refused a pin, and told so`,
+     async () => {
     const o = await owner();
     await shapedFiles(o);
     const { gen } = await generate(o.stub);
-    // Recorded as a generation from before migration 9, as one kept that long would be.
-    await sqlIn(o.stub, "UPDATE owner_backups SET schema = 8 WHERE gen = ?", gen);
+    // Recorded as a generation from before the floor, as one kept that long would be.
+    await sqlIn(o.stub, "UPDATE owner_backups SET schema = ? WHERE gen = ?", FLOOR - 1, gen);
     expect((await o.stub.restoreSource(platform(o.name))).generations)
       .toMatchObject([{ gen, restorable: false }]);
     expect((await failure(() => pinOf(o.stub, o.name, gen))).message)
@@ -790,7 +804,7 @@ describe("a restore a migration lands under", () => {
      "begun again from the same generation", async () => {
     const o = await owner();
     await shapedFiles(o);
-    const { gen, ns, atE } = await writtenAt(o.stub, o.name, MIGRATIONS.length - 1);
+    const { gen, ns, atE } = await writtenAt(o.stub, o.name, MIGRATIONS.length);
     let stub = await lose(o);
     const counts = () => runInDurableObject(stub, (_instance: OwnerDO, state) =>
       [...Object.keys(exported()), "restore_rows"].map((table) => state.storage.sql.exec<{
@@ -836,23 +850,22 @@ describe("a restore refuses, writing nothing", () => {
                              "AS ns")).toEqual([{ r: 0, s: 0, ns: null }]);
   };
 
-  it("a generation of a schema before 9, or newer than its own, named", async () => {
+  it(`a generation of a schema before ${FLOOR}, or newer than its own, named`, async () => {
     const o = await owner();
     await shapedFiles(o);
     const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
-    const schemas = [1, 2, 3, 4, 5, 6, 7, 8, MIGRATIONS.length + 1];
+    const schemas = [...Array.from({ length: FLOOR - 1 }, (_, at) => at + 1),
+                     MIGRATIONS.length + 1];
     const gens: string[] = [];
     for (const schema of schemas) {
       gens.push(await headerOnly(o, schema));
     }
     const stub = await lose(o);
-    const before = "migration 9 cannot bring it forward, as it came before a restore could " +
-      "bring a generation forward: migration 7 re-keys collection history by insertion order " +
-      "and migration 9 reads other tables' rows, neither of which a generation holds";
+    const before = `migration ${FLOOR} cannot bring it forward, as it came ${FORWARD[FLOOR - 1]}`;
     for (const [at, schema] of schemas.entries()) {
       const refused = await failure(() => stub.restoreBegin(platform(o.name), {
         namespace: space!["ns"] as string, gen: gens[at]! }));
-      expect([refused.code, refused.message]).toEqual(["refused", schema <= 8
+      expect([refused.code, refused.message]).toEqual(["refused", schema < FLOOR
         ? `the generation is of schema ${schema}: ${before}`
         : `the generation is of schema ${schema}, this object's is ${MIGRATIONS.length}: ` +
           "code older than its data never loads it"]);
@@ -1036,11 +1049,11 @@ describe("a namespace of the owner its object does not adopt (restoreHold)", () 
 
 describe("a restore cut short", () => {
   it("goes on from its record after a crash at any read, never loading a row twice, each line " +
-     "brought forward from schema 9", async () => {
+     `brought forward from schema ${FLOOR}`, async () => {
     const o = await owner();
     await shaped(o);
     const counters = await countersOf(o.stub);
-    const { gen, ns, atE: rows } = await writtenAt(o.stub, o.name, 9, FENCED);
+    const { gen, ns, atE: rows } = await writtenAt(o.stub, o.name, FLOOR, FENCED);
     let stub = await lose(o);
     const files = gateFor(env.FILES_GATE, ns);
     await stub.restoreBegin(platform(o.name), { namespace: ns, gen });
@@ -1370,7 +1383,7 @@ describe("a restore into a live owner", () => {
       const hold = await pinnedTo(o.stub, o.name, gen);
       // As a migration since that refused its schema would leave it.
       const lost = which === "pinned" ? gen : hold.fresh!;
-      await sqlIn(o.stub, "UPDATE owner_backups SET schema = 8 WHERE gen = ?", lost);
+      await sqlIn(o.stub, "UPDATE owner_backups SET schema = ? WHERE gen = ?", FLOOR - 1, lost);
       const refused = await failure(() => o.stub.restoreWipe(platform(o.name),
                                                              { confirm: hold.confirm! }));
       expect([which, refused.code, refused.message]).toEqual([which, "refused",

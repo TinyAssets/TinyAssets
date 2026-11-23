@@ -4,8 +4,8 @@
  * migrations, and so the deploy order), `platform.json` (what no config can say, each entry
  * with its reason, and so each Worker's record, `WORKER_FACTS`), the shared apps' file it
  * names (their signing secrets) and `contract/identity.json` (the doors' public identity).
- * The deploy kit, its workflow's guard, the environment guard and the founder's setup read
- * them here or from those files; none holds a list of its own.
+ * The deploy kit, its workflow's guard, the import job and the founder's setup read them
+ * here or from those files; none holds a list of its own.
  *
  * Node runs this file as it is (type stripping), as the kit does. Run with `--import`, it prints
  * the import job's names (`IMPORT_NAMES`) as JSON, for the job's bundle.
@@ -18,8 +18,10 @@ import { PLATFORM } from "../ci/paths.ts";
 import { type Config, readWrangler, workerFolders } from "../ci/wrangler.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import { CLOCK_SECRETS } from "../contract/src/canary.ts";
-import { ZONE } from "../contract/src/egress.ts";
-import { ORIGIN, routeTakes, UPSTREAM_CALLBACK } from "../contract/src/identity.ts";
+import { EGRESS_HOST } from "../contract/src/egress.ts";
+import {
+  HOST, ORIGIN, routeTakes, UPSTREAM_CALLBACK, ZONE,
+} from "../contract/src/identity.ts";
 import type { ImportNames } from "../contract/src/import-names.ts";
 import { OPERATOR_OPS, type OperatorOp } from "../contract/src/operator-message.ts";
 import platform from "./platform.json" with { type: "json" };
@@ -121,6 +123,62 @@ export function retiredWorkers(retired: readonly string[],
  */
 export const RETIRED = retiredWorkers(platform.retired.workers, NAMES);
 
+/**
+ * Each Worker's count of `changes` naming it, by folder (`platform.json` `forward`): what its
+ * version's tag carries as `-f<n>`, which a rollback below it cannot follow. Each change names
+ * Workers `names` holds, each once, and why; anything else throws.
+ */
+export function forwardCounts(changes: readonly unknown[],
+                              names: Readonly<Record<string, string>>):
+    Readonly<Record<string, number>> {
+  const counts = Object.fromEntries(Object.keys(names).map((worker) => [worker, 0]));
+  for (const [at, change] of changes.entries()) {
+    const { workers, why } = (change ?? {}) as { workers?: unknown; why?: unknown };
+    if (!Array.isArray(workers) || workers.length === 0 || new Set(workers).size !== workers.length
+        || !workers.every((worker) => typeof worker === "string" && Object.hasOwn(counts, worker))
+        || typeof why !== "string" || why.trim() === "") {
+      throw new Error(`platform.json's forward change ${at + 1} names no Worker of this tree, ` +
+                      "each once, with why");
+    }
+    for (const worker of workers as string[]) {
+      counts[worker]! += 1;
+    }
+  }
+  return Object.freeze(counts);
+}
+
+/** Each Worker's forward count, by folder (`forwardCounts`). */
+export const FORWARD = forwardCounts(platform.forward.changes, NAMES);
+
+/** The stages a deploy takes each Worker through (`platform.json` `stages`). */
+export interface Stages {
+  /** The shares of traffic its new version serves in turn, rising, the last 100. */
+  readonly shares: readonly number[];
+  /** How long the doors' share below 100 is held before its smoke. */
+  readonly soakMs: number;
+}
+
+/**
+ * `stages`, as `platform.json` writes them, read: shares rising from 0 or more, the last 100,
+ * and a soak of whole seconds above 0. Anything else throws.
+ */
+export function stagesOf(stages: { readonly shares?: unknown; readonly soak_s?: unknown }):
+    Stages {
+  const { shares, soak_s: soak } = stages;
+  if (!Array.isArray(shares) || shares.at(-1) !== 100
+      || !shares.every((share, at) => typeof share === "number" && share >= 0
+        && (at === 0 || share > shares[at - 1]))
+      || !Number.isInteger(soak) || Number(soak) <= 0) {
+    throw new Error("platform.json's stages are no shares rising from 0 up to 100 with a soak " +
+                    "of whole seconds above 0");
+  }
+  return Object.freeze({ shares: Object.freeze([...shares as number[]]),
+                         soakMs: Number(soak) * 1000 });
+}
+
+/** The deploy's stages (`stagesOf`). */
+export const STAGES = stagesOf(platform.stages);
+
 /** The R2 buckets the kit makes: the ones the Workers bind, then the unbound (`platform.json`). */
 export const BUCKETS: readonly string[] = Object.freeze([...new Set([
   ...named((config) =>
@@ -161,7 +219,7 @@ export interface WorkerFacts {
   readonly optional: readonly string[];
   /** Whether it is deployed with the owner issuer and WorkOS's record (`identity`). */
   readonly upstream: boolean;
-  /** The routes mode `routes` hands it: identity.json's, and the egress custom domain. */
+  /** The routes mode `routes` hands it: identity.json's, and egress.json's custom domain. */
   readonly routes: readonly Readonly<Record<string, string | boolean>>[];
   /** Whether its config declares Durable Object migrations, so `--migrate` may name it. */
   readonly migrates: boolean;
@@ -194,11 +252,9 @@ export const IDENTITY = (() => {
 /** The doors Worker, which serves the identity: the routes are handed to it. */
 export const DOORS = NAMES[IDENTITY]!;
 
-/** The doors' public routes (mode `routes`, the cutover's), on the zone. */
+/** The doors' public routes (mode `routes`, the cutover's), on the doors' host. */
 export const ROUTES: readonly string[] = Object.freeze(
-  identity.routes.map((path) => `${ZONE}${path}`));
-/** The sandbox's egress host, a custom domain of the doors Worker (mode `routes`). */
-export const EGRESS_DOMAIN = identity.egress;
+  identity.routes.map((path) => `${HOST}${path}`));
 
 /** Each Worker's record, by folder: what `platform.json` gives it, and what its config says. */
 export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze(
@@ -211,7 +267,7 @@ export const WORKER_FACTS: Readonly<Record<string, WorkerFacts>> = Object.freeze
         ...given.clock === true ? CLOCK_SECRETS : []]),
       upstream: serves,
       routes: Object.freeze(serves ? [...ROUTES.map((pattern) => ({ pattern, zone_name: ZONE })),
-                                      { pattern: EGRESS_DOMAIN, custom_domain: true }] : []),
+                                      { pattern: EGRESS_HOST, custom_domain: true }] : []),
       migrates: ((config["migrations"] ?? []) as unknown[]).length > 0,
     })];
   })));
@@ -265,14 +321,6 @@ export const ROTATED: Readonly<Record<string, Rotated>> = Object.freeze(Object.f
 /** Where a sign-in starts. */
 export const AUTHORIZE = `${ORIGIN}${identity.signin.authorize}`;
 
-/**
- * The sign-in probe's routes (mode `probe`): the routes that take the sign-in's own two paths,
- * which no Worker serves before the cutover, so handing them to the doors early serves no
- * user.
- */
-export const PROBE_ROUTES: readonly string[] = Object.freeze(ROUTES.filter((pattern) =>
-  [AUTHORIZE, UPSTREAM_CALLBACK].some((url) =>
-    routeTakes(pattern, url.slice("https://".length)))));
 /** The URL E2B's lifecycle webhook is sent to: the doors' hook. */
 export const E2B_HOOK_URL = `${ORIGIN}${identity.hook}`;
 

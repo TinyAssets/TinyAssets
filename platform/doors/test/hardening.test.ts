@@ -1,7 +1,8 @@
 /**
- * The slice 7 review's findings (L1-L7), each held by a test: an outside client never
- * sent access on our origin, sign-out ending the token, devices signed in together,
- * bounded bodies, and every property the review's mutants found untested.
+ * The sign-in's and the owner surface's edges: an outside client never sent access on our
+ * origin, sign-out ending the token, devices signed in together, bounded bodies, the
+ * sign-in's bounds and flow, the provider's pins, the routes and gates, and the provider
+ * revoke's and the key store's edges.
  */
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +13,7 @@ import { mcpClient } from "../src/binder";
 import { ACCESS_TOKEN_TTL_S, now, REFRESH_TOKEN_TTL_S } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import {
-  APP_RESOURCE, MCP_RESOURCE, WEB_CLIENT, WEB_REDIRECT,
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
 } from "../../contract/src/identity";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
@@ -21,8 +22,9 @@ import { profileNames } from "../../contract/src/doors";
 import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,
-  NAVIGATE, OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveDocument,
+  OPEN, pkce, reached, unseen, refresh, registerClient, rpcBody, serveDocument,
   serveFirstPartyDocument, setControl, signInApp, tokenCall, upstreamReturns, url, admitOwner } from "./support";
+import { NAVIGATE } from "../../contract/src/navigation";
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -53,7 +55,7 @@ async function approved(): Promise<{ jar: Jar; location: string }> {
   return { jar, location: decided.headers.get("Location")! };
 }
 
-describe("L1: an outside client is never sent access on our own origin", () => {
+describe("an outside client is never sent access on our own origin", () => {
   it("refuses a CIMD client naming a redirect on tinyassets.io, before consent", async () => {
     const evil = "https://evil.example/client.json";
     await serveDocument(evil, { client_id: evil, client_name: "TinyAssets",
@@ -133,7 +135,7 @@ describe("L1: an outside client is never sent access on our own origin", () => {
   });
 });
 
-describe("L2: sign-out ends the presented token", () => {
+describe("sign-out ends the presented token", () => {
   it.each([
     ["keys/delete", { key_id: "0123456789abcdef" }],
     ["keys/revoke", { key_id: "0123456789abcdef" }],
@@ -180,7 +182,7 @@ describe("sign-out at the edges", () => {
   it("answers a token that expires after validation 401, not 500", async () => {
     const app = await signInApp({ owner: owner() });
     const response = await call(new Request(url("/app/api/session/close"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${app.access_token}`,
                                  Cookie: `__Host-ta-owner=${app.session}` }, body: "{}" }),
       expiringAfterValidation());
@@ -286,7 +288,7 @@ describe("loopback clients' grants", () => {
   });
 });
 
-describe("L3: two devices stay signed in together", () => {
+describe("two devices stay signed in together", () => {
   it("keeps the first device's grant when a second signs in", async () => {
     const alice = owner();
     const first = await signInApp({ owner: alice });
@@ -307,7 +309,23 @@ describe("L3: two devices stay signed in together", () => {
   });
 });
 
-describe("L5: bounded bodies", () => {
+describe("every answer names the version that served it", () => {
+  it("on a static file, a refusal and a path nothing serves", async () => {
+    const version = { id: crypto.randomUUID(), tag: "c0ffee111111", timestamp: "" };
+    const environment: DoorsEnv = { ...doorsEnv, CF_VERSION_METADATA: version };
+    for (const [request, status] of [
+      [new Request(url("/app/static/app.js")), 200],
+      [new Request(url("/mcp"), { method: "POST" }), 401],
+      [new Request(url("/nothing-here")), 404],
+    ] as const) {
+      const answer = await call(request, environment);
+      expect([request.url, answer.status, answer.headers.get(VERSION_HEADER)])
+        .toEqual([request.url, status, version.id]);
+    }
+  });
+});
+
+describe("bounded bodies", () => {
   it("takes the consent POST only as a form", async () => {
     const response = await call(new Request(url("/authorize"), {
       method: "POST", headers: { "Content-Type": "text/plain" }, body: "x" }));
@@ -351,7 +369,7 @@ describe("L5: bounded bodies", () => {
   });
 });
 
-describe("L6 and the sign-in's bounds", () => {
+describe("the sign-in's bounds", () => {
   it.each([
     // Well past it: a busy test process (other owners' seeds) can take a second or more
     // between this time and the check, which must not bring it inside the margin.
@@ -380,7 +398,7 @@ describe("L6 and the sign-in's bounds", () => {
   });
 });
 
-describe("L7: the sign-in flow", () => {
+describe("the sign-in flow", () => {
   it.each([
     ["only Sec-Fetch-Mode", { "Sec-Fetch-Mode": "navigate" }],
     ["only Sec-Fetch-Dest", { "Sec-Fetch-Dest": "document" }],
@@ -441,13 +459,13 @@ describe("L7: the sign-in flow", () => {
   it("serves the first-party document with exactly its one redirect", async () => {
     const response = await call(new Request(WEB_CLIENT));
     expect(await response.json()).toEqual({
-      client_id: WEB_CLIENT, client_name: "TinyAssets", client_uri: "https://tinyassets.io",
+      client_id: WEB_CLIENT, client_name: "TinyAssets", client_uri: ORIGIN,
       redirect_uris: [WEB_REDIRECT], token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] });
   });
 });
 
-describe("L7: the provider's pins", () => {
+describe("the provider's pins", () => {
   it("advertises one scope and no token exchange, and refuses an exchange", async () => {
     const metadata = await (await call(new Request(
       url("/.well-known/oauth-authorization-server")))).json<Record<string, string[]>>();
@@ -497,8 +515,8 @@ describe("L7: the provider's pins", () => {
   });
 });
 
-describe("L7: the doors' routes and gates", () => {
-  it.each(["null", "https://tinyassets.io", "https://evil.example"])(
+describe("the doors' routes and gates", () => {
+  it.each(["null", ORIGIN, "https://evil.example"])(
     "refuses Origin %s on /mcp 403, with a valid token", async (origin) => {
       const alice = owner();
       const tokens = await connect(await registerClient(), { owner: alice });
@@ -511,7 +529,7 @@ describe("L7: the doors' routes and gates", () => {
   /** A sign-out POST to `target`, with the owner's live app token and cookie. */
   function signOutAt(target: string, app: { access_token: string; session: string }) {
     return call(new Request(target, {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${app.access_token}`,
                                  Cookie: `__Host-ta-owner=${app.session}` }, body: "{}" }));
   }
@@ -534,7 +552,7 @@ describe("L7: the doors' routes and gates", () => {
   it("takes only POST on the owner surface", async () => {
     const app = await signInApp({ owner: owner() });
     const response = await call(new Request(url("/app/api/keys"), {
-      method: "PUT", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "PUT", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                 Authorization: `Bearer ${app.access_token}` }, body: "{}" }));
     expect(response.status).toBe(405);
   });
@@ -543,7 +561,7 @@ describe("L7: the doors' routes and gates", () => {
     const tokens = await connect(await registerClient(), { owner: owner() });
     const broken = { getByName: () => ({
       toolProfile: () => Promise.resolve({ profile: "directory",
-                                           tools: profileNames("directory") }),
+                                           tools: profileNames("directory"), withheld: [] }),
       outsideAgents: () => Promise.reject(new Error("db at 10.0.0.7 is down")) }) };
     const environment = { ...doorsEnv, OWNER: broken } as unknown as DoorsEnv;
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -554,7 +572,7 @@ describe("L7: the doors' routes and gates", () => {
   });
 });
 
-describe("L7: the provider revoke reads every page", () => {
+describe("the provider revoke reads every page", () => {
   it("revokes the client's grants on every page of the owner's grants", async () => {
     const alice = owner();
     const client = await registerClient();
@@ -593,7 +611,7 @@ describe("L7: the provider revoke reads every page", () => {
   });
 });
 
-describe("L7: the key store's edges", () => {
+describe("the key store's edges", () => {
   it("keeps the key's end anchor", () => {
     const key = `ta_key_${"0".repeat(16)}_${"a".repeat(43)}`;
     expect(parseKey(key)).not.toBeNull();

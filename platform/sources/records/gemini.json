@@ -63,6 +63,10 @@
       "hosted_use": {
         "verdict": "unclear",
         "citation": "gemini-cli docs/resources/tos-privacy.md: third-party software using Gemini CLI OAuth to reach its services is a violation; a platform hosting the unmodified CLI for the user's own sign-in is not addressed (subscription-engines.md section 11)"
+      },
+      "model": {
+        "id": "gemini-3.1-pro-preview",
+        "citation": "the pinned @google/gemini-cli 0.66.0 bundle's resolveModel (read 2026-11-21): the default auto resolves to gemini-3.1-pro-preview where Gemini 3.1 is launched and the account has preview access, else gemini-3-pro-preview or gemini-2.5-pro; an explicit gemini-3.1-pro-preview without preview access resolves to gemini-2.5-pro, silently (strongest-plan.md)"
       }
     },
     "api_key_env": {
@@ -125,7 +129,6 @@
         "--resume",
         "{sid}"
       ],
-      "resume": "session_id",
       "stdin": "{prompt}",
       "model_argv": [
         "--model",
@@ -154,7 +157,8 @@
         "error": [
           {
             "match": {
-              "type": "error"
+              "type": "error",
+              "severity": "error"
             },
             "path": "message"
           },
@@ -182,28 +186,112 @@
             "path": ""
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "result",
+              "status": "error",
+              "error.type": "TerminalQuotaError"
+            },
+            "path": ""
+          },
+          {
+            "match": {
+              "type": "result",
+              "status": "error",
+              "error.type": "RetryableQuotaError"
+            },
+            "path": ""
+          }
+        ],
+        "retry": []
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": [],
-      "setting": "{system}/gemini-settings.json"
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": [],
+        "setting": "{system}/gemini-settings.json"
+      },
+      "skills": {
+        "paths": [
+          ".agents/skills"
+        ]
+      },
+      "native": {
+        "refuses": [
+          ".gemini/settings.json",
+          ".gemini/skills",
+          ".gemini/commands",
+          ".gemini/agents"
+        ],
+        "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/packages/core/src/config/storage.ts",
+        "read": "2026-11-22"
+      },
+      "hooks": {
+        "events": {
+          "pre_tool": "BeforeTool",
+          "post_tool": "AfterTool",
+          "prompt": "BeforeAgent",
+          "session_start": "SessionStart",
+          "stop": "AfterAgent",
+          "session_end": "SessionEnd",
+          "pre_compact": "PreCompress"
+        },
+        "file": "{system}/gemini-settings.json",
+        "template": "{\"hooksConfig\": {\"enabled\": true}}",
+        "each": "{\"hooks\": {\"{native}\": [{\"hooks\": [{\"name\": \"tinyassets-hooks-{event}\", \"type\": \"command\", \"command\": \"{dispatcher} {event}\", \"timeout\": 600000}]}]}}",
+        "runs": {"shell": ["bash", "-c"]},
+        "fails": "open",
+        "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/docs/hooks/reference.md",
+        "read": "2026-11-21"
+      }
     },
-    "skills_paths": [
-      ".agents/skills"
-    ],
     "mcp": {
       "file": "{system}/gemini-settings.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"httpUrl\": \"{mcp_url}\"}}, \"mcp\": {\"allowed\": [\"tinyassets\"]}, \"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",
+      "template": "{\"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true, \"sessionRetention\": {\"enabled\": false}}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",
+      "servers": "mcpServers",
+      "names": "mcp.allowed",
+      "http": {
+        "httpUrl": "{url}"
+      },
+      "stdio": {
+        "command": "{command}",
+        "args": "{args}",
+        "env": "{env}"
+      },
       "argv": [],
-      "trust": {
-        "argv": [
-          "--allowed-mcp-server-names",
-          "tinyassets"
+      "argv_each": [
+        "--allowed-mcp-server-names={name}"
+      ],
+      "trust": "Every server is in the system settings, outside the agent's folder, and only they load: mcp.allowed and --allowed-mcp-server-names name each, and the argv's list replaces every settings layer's (packages/cli/src/config/config.ts)."
+    },
+    "decide": {
+      "file": "{system}/gemini-settings.json",
+      "template": "{\"advanced\": {\"ignoreLocalEnv\": true}, \"hooks\": {\"BeforeTool\": [{\"matcher\": \"{matcher}\", \"hooks\": [{\"name\": \"tinyassets-decide\", \"type\": \"command\", \"command\": \"{decide}\", \"timeout\": 60000}]}]}, \"hooksConfig\": {\"enabled\": true}}",
+      "runs": {
+        "shell": [
+          "bash",
+          "-c"
+        ]
+      },
+      "kinds": {
+        "shell": [
+          "run_shell_command"
         ],
-        "note": "The server is in the system settings, outside the agent's folder, and only it is allowed to load."
-      }
+        "file_write": [
+          "write_file",
+          "replace"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp_",
+        "join": "_"
+      },
+      "fails": "open",
+      "cite": "https://github.com/google-gemini/gemini-cli/blob/v0.66.0/packages/core/src/hooks/hookRunner.ts",
+      "read": "2026-11-21"
     },
     "tools": {
       "allow": {
@@ -236,6 +324,9 @@
       "{home}/.gemini/gemini-credentials.json"
     ],
     "session_paths": [
+      "{home}/.gemini/tmp/*/chats/"
+    ],
+    "resume_paths": [
       "{home}/.gemini/tmp/*/chats/"
     ],
     "hosts": {

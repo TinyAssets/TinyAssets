@@ -56,9 +56,10 @@ export default defineConfig({
               gate(SLOTS_GATE, methodsOf(join(SANDBOX, "src", "slots.ts"), "SlotLine"),
                    { worker: SANDBOX, className: "SandboxSlots" }),
               // The ring queue's consumer in tests: each ring recorded at once. The fake's
-              // loader and runner answer by the runner protocol's record (`PROTOCOL`).
+              // loader and runner answer by the runner protocol's record (`PROTOCOL`), its
+              // runner speaking this runner's protocol unless a test scripts another.
               fake(FAKE_E2B, {
-                bindings: { PROTOCOL: PROTOCOLS[String(PROTOCOL)]! },
+                bindings: { PROTOCOL: PROTOCOLS[String(PROTOCOL)]!, RUNNER_PROTOCOL: PROTOCOL },
                 queueConsumers: { [RING]: { maxBatchSize: 1, maxBatchTimeout: 0 } } }),
             ],
           })))),

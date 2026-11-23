@@ -13,8 +13,7 @@
  * pages (about 14 KiB a new file), and a short one what its rows take; a test measures the
  * object's own database against the charge. The rows charged, by triggers only: each file
  * entry, history row, content (its inline bytes and its chunk list, whose length the
- * content's size gives), chunk, temporary directory, share row and scope reference
- * (`MANIFEST_TABLES`).
+ * content's size gives), chunk, share row and scope reference (`MANIFEST_TABLES`).
  *
  * The owner-wide total counts each stored row once: the real storage. Each scope (an
  * outside client, all clients together, the owner's own writers) is charged its own
@@ -140,11 +139,6 @@ export const CHUNK_ROW_CHARGE = (): number => CHUNK_RECORDS.reduce((sum, parts) 
 /** The most chunk rows the file index holds: its ceiling over one chunk row's charge. */
 export const CHUNK_ROWS_MAX = (): number => Math.floor(INDEX_BYTES / CHUNK_ROW_CHARGE());
 
-/** A temporary directory: its record and its entry in the expiry index. */
-export const TEMP_BYTES = (row: string): string =>
-  `(${record(`${bytes(`${row}.name`)} + ${bytes(`${row}.writer`)}`, INDEX_KEPT)} + ${
-    record(`${bytes(`${row}.name`)} + 8`, INDEX_KEPT)})`;
-
 /** A scope's reference count on one content or chunk: its scope, the id and the count. */
 export const SCOPE_REF_BYTES = (row: string): string =>
   record(`${bytes(`${row}.scope`)} + ${HASH} + 9`, INDEX_KEPT);
@@ -183,7 +177,6 @@ export const MANIFEST_TABLES: Readonly<Record<string, readonly [string, string]>
     file_contents: Object.freeze(["file_contents_added", "file_contents_removed"] as const),
     file_content_chunks: Object.freeze(["file_contents_added", "file_contents_removed"] as const),
     file_chunks: Object.freeze(["file_chunks_added", "file_chunks_removed"] as const),
-    file_temps: Object.freeze(["file_temps_added", "file_temps_removed"] as const),
     file_shares: Object.freeze(["file_shares_charged", "file_shares_credited"] as const),
     file_scope_contents: Object.freeze(["file_scope_contents_added",
                                         "file_scope_contents_removed"] as const),
@@ -197,5 +190,4 @@ export const MANIFEST_TABLES: Readonly<Record<string, readonly [string, string]>
  */
 export const MANIFEST_INDEXES: readonly string[] = Object.freeze([
   "file_chunks_due", "file_history_due", "file_history_paths", "file_history_released",
-  "file_temps_due",
 ]);

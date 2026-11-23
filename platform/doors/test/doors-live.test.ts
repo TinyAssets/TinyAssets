@@ -1,9 +1,9 @@
 /**
- * Slice L's doors, in workerd through the real owner Worker: the platform's explicit admit
+ * The doors, in workerd through the real owner Worker: the platform's explicit admit
  * at sign-up and the erasure's outside record (an erased owner's name resolving nothing
  * again), whether the owner's own door or the operator's `owner.erase` began it; the key
  * store; `/hooks/inbound`'s two shapes (a bad HMAC, a replay, the gate, the breaker); no
- * caller counted or capped by the doors (slice L's review, N1); and the file door's bytes,
+ * caller counted or capped by the doors; and the file door's bytes,
  * streamed to `FILES` by the binder.
  */
 import { createHash, createHmac } from "node:crypto";
@@ -32,11 +32,12 @@ import { until } from "../../ci/workerd";
 import {
  admissionOf, appCallback, appPost, call, connect, crossed, defineMain, deliver, doorsEnv,
  failNextForget, forgotten, held,
- NAVIGATE, OPEN,
+ OPEN, OPEN_RECORD,
  grantsOf, ownDoor, refresh, refuseOnce, registerClient, serveFirstPartyDocument, setControl,
  signInApp,
  url,
 } from "./support";
+import { NAVIGATE } from "../../contract/src/navigation";
 
 const SCOPES = [{ universe: "cc", agent: "main", capability: "read_graph" }];
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
@@ -49,7 +50,7 @@ function owner(): string {
 }
 
 function ownerBinding(who: string): Binding {
-  return { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
+  return { owner: who, caller: who, origin: null, control: OPEN_RECORD };
 }
 
 /** An owner signed in to its app, with its `main` agent defined. */
@@ -668,11 +669,14 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     await signInApp({ owner: who });
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
     await slackInstall(who, team);
-    const retried = slackEvent(team, "EvR");  // a retry carries the same envelope
+    // A retry carries the same envelope and the same signed timestamp: one clock read, or the
+    // two sends straddle a second and their signature headers differ.
+    const retried = slackEvent(team, "EvR");
+    const at = now();
     await accepts(who, ADMITTED);
-    expect((await call(slackRequest(retried))).status).toBe(202);
+    expect((await call(slackRequest(retried, at))).status).toBe(202);
     await accepts(who, { ...ADMITTED, deduped: true });
-    const replay = await call(slackRequest(retried));
+    const replay = await call(slackRequest(retried, at));
     expect(await replay.json()).toMatchObject({ state: "admitted", deduped: true });
     const [first, again] = await crossed(who, "inboundAccept");
     expect(again!.request).toEqual(first!.request);
@@ -686,7 +690,7 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
 
   // That the object answers mailbox_full at the hot ceiling, never counting it to the breaker,
   // is the owner's test (`owner/test/admit.test.ts`); here, the doors' answer to it.
-  it("is told to send an event again when the object's mailbox is full (review E-2)",
+  it("is told to send an event again when the object's mailbox is full",
      async () => {
     const who = owner();
     await signInApp({ owner: who });
@@ -738,13 +742,13 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
   });
 });
 
-describe("no caller is counted or capped by the doors (slice L's review)", () => {
+describe("no caller is counted or capped by the doors", () => {
   /** More failures from one address than the removed failure bound (115) allowed. */
   const MANY = 117;
   /** A credential of the right shape that no grant holds. */
   const stale = () => `${owner()}:${"a".repeat(16)}:${"b".repeat(32)}`;
 
-  it("serves a valid key from an address that sent many bad MCP bearers (review N1, attack 1)",
+  it("serves a valid key from an address that sent many bad MCP bearers",
      async () => {
     const app = await signInApp({ owner: owner() });
     const minted = await json<{ key: string }>(
@@ -763,8 +767,7 @@ describe("no caller is counted or capped by the doors (slice L's review)", () =>
     expect(valid.status).toBe(200);
   });
 
-  it("serves a live refresh from an address that sent many failed refreshes (review N1, " +
-     "attack 2)", async () => {
+  it("serves a live refresh from an address that sent many failed refreshes", async () => {
     const client = await registerClient();
     const backend = `198.51.100.251-${crypto.randomUUID()}`;
     const live = await connect(client, { owner: owner() });
@@ -817,15 +820,18 @@ describe("no caller is counted or capped by the doors (slice L's review)", () =>
       .toBeLessThanOrEqual(sent);
   });
 
-  it("answers an overloaded owner object 429 with Retry-After, never retried", async () => {
+  it("answers an overloaded owner object as the refusal object_overloaded, 429 and a second, " +
+     "once", async () => {
     const app = await signInApp({ owner: owner() });
     const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    const keyList = vi.fn(() => Promise.reject(busy));
     const stub = vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
-      keyList: () => Promise.reject(busy) }) as never);
-    const answer = await appPost("keys/list", app.access_token, null, {});
-    stub.mockRestore();
-    expect(answer.status).toBe(429);
-    expect(answer.headers.get("Retry-After")).toBe("1");
+      keyList }) as never);
+    const answer = await appPost("keys/list", app.access_token, null, {})
+      .finally(() => stub.mockRestore());
+    expect([answer.status, answer.headers.get("Retry-After"), await answer.json()])
+      .toEqual([429, "1", { error: "this account is busy" }]);
+    expect(keyList).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -851,7 +857,7 @@ describe("the file door's bytes", () => {
                                       "Content-Type": "application/octet-stream", ...headers } }));
   }
 
-  it("reach the files Worker's upload entrypoint alone: no read and no key call (review M5-1)",
+  it("reach the files Worker's upload entrypoint alone: no read and no key call",
      async () => {
     const files = (env as unknown as {
       FILES: Record<string, (...args: unknown[]) => Promise<unknown>> }).FILES;

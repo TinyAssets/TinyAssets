@@ -1,5 +1,5 @@
 /**
- * Generations under test (slice P; `backup.ts`, `changelog.ts`): an owner with a session,
+ * Generations under test (`backup.ts`, `changelog.ts`): an owner with a session,
  * the stream replayed last line per key, the owner's rows as they stand, a digest of either
  * to compare, and a harness that runs a generation in the owner's own storage with a writer
  * at every outside call (and, if asked, after every unit), failing one outside call if asked,
@@ -24,7 +24,7 @@ import { objectPrefix } from "../../contract/src/files";
 import { randomHex } from "../../contract/src/ids";
 import { migrate } from "../../contract/src/migrate";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { admittedOwner, drainDue, storesOn, through, TIERS } from "./support";
+import { admittedOwner, drainDue, OPEN_RECORD, storesOn, through } from "./support";
 
 export type Line = Record<string, unknown> & { t: string };
 
@@ -67,7 +67,7 @@ export async function owner() {
   const stub: DurableObjectStub<OwnerDO> = await admittedOwner(name);
   const at = signedIn();
   const bind = (origin: typeof MUSE | null = null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner: name, caller: name, origin, tiers: TIERS,
+    ({ owner: name, caller: name, origin, control: OPEN_RECORD,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }), ...extra });
   const { session } = await stub.sessionOpen(bind(null, { authenticated_at: at }));
   return { name, stub, bind, session: () => bind(null, { session }) };

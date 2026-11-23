@@ -13,8 +13,8 @@ on:
     # not change the head SHA, so the check already reported for that SHA stays
     # in force. Starting a new run here cancelled the in-progress one
     # (cancel-in-progress is on for pull_request) and spent another ~15 minutes
-    # on the same code: 140 of 331 PR runs in the 2026-10-12 sample. Receipt
-    # and label gating is pr-scope-guard.yml, a separate small job.
+    # on the same code: 140 of 331 PR runs in the 2026-10-12 sample. The
+    # body's checks are pr-scope-guard.yml, a separate small job.
     #
     # Not `ready_for_review` either, for the same reason: marking a draft ready
     # leaves the SHA alone, and the new run cancelled the draft's run of that
@@ -28,38 +28,29 @@ on:
     types: [checks_requested]
   push:
     branches: [main]
-  # The post-merge tripwire's only reliable AUTOMATIC trigger on this repo.
-  # This run IS the compensator for `strict` branch protection being off, so a
-  # red `main` here is re-run once and then raises the `main-red` alarm
-  # (main-red.yml). Nothing is reverted automatically.
-  # (`workflow_dispatch` below is also non-PR, but it needs a human to press it,
-  # so it cannot carry a tripwire. Stated precisely because the first draft of
-  # this comment claimed push was the only non-PR trigger, which is false.)
+  # The post-merge check of every merge: the merge queue merges as
+  # `github-merge-queue[bot]`, and its push starts runs, as the repo's
+  # GITHUB_TOKEN's does not (merges by the app raised none, measured 2026-08-03,
+  # before the queue). Entries the queue merges together move `main` once, so the
+  # last of them gets the run: 96 push runs, every one the queue's, for the 110
+  # commits `main` took on 2026-11-21 and 2026-11-22 (four groups finished at
+  # 04:23-04:26 on 2026-11-21 and one run started, for the last). Red on `main` is
+  # re-run once, then raises the `main-red` alarm (main-red.yml): the check that
+  # `strict` status checks being off needs. Nothing is reverted automatically.
   #
-  # `push: branches: [main]` looks like it covers every merge. It does not:
-  # auto-enroll-merge.yml enrols each PR with the repo's GITHUB_TOKEN, so
-  # GitHub performs the merge as `app/github-actions`, and events raised by
-  # GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14, "Merged is
-  # not deployed"). Measured 2026-08-03: of the last 6 merges, the 5 done by the
-  # app produced ZERO push runs; only #2191, merged by a human PAT, produced one.
-  # So `push` fires on the rare human merge and never on the normal path — the
-  # tripwire read as coverage while providing none, the same failure shape as the
-  # concurrency bug fixed above.
-  #
-  # `schedule` is used because it is the one trigger empirically proven to fire
-  # here (26 of the last 200 runs). Runners are free on a public repo, so the
-  # cadence is chosen for detection latency, not cost.
+  # `schedule` checks `main` hourly whether or not anything merged, and is the
+  # only automatic run of `heavy-tests`. Runners are free on a public repo, so
+  # the cadence is chosen for detection latency, not cost.
   #
   # It is BEST-EFFORT. The cron declares NOMINAL SLOTS, not a delivered rate:
   # GitHub drops scheduled runs under load. Measured on this repo 2026-08-03,
   # release-reconcile declares `*/15 * * * *` (96 runs/day) and actually fired
   # 16 in 24h — a 6x shortfall, with one 3h47m gap. So read the cron below as a
   # declaration of one nominal slot per hour, not a promise about how many
-  # runs arrive or how far apart they land. That is acceptable
-  # for a
-  # tripwire whose alternative is never running at all; it would NOT be
-  # acceptable for a merge gate, which is why `required-tests` is REQUIRED only
-  # via `pull_request`, where the trigger is deterministic.
+  # runs arrive or how far apart they land. That is acceptable for a check
+  # beside the push run; it would NOT be acceptable for a merge gate, which is
+  # why `required-tests` gates through `pull_request` and `merge_group`, whose
+  # triggers are deterministic.
   #
   # Accepted side effect: `required-tests` and its shards have no job-level
   # `if:` that can skip them — the aggregate's `always()` cannot evaluate
@@ -207,16 +198,19 @@ jobs:
           fi
           npx --yes @fission-ai/openspec@1.15.0 validate clean-sheet-platform
 
-  # The process's own tests: the gates' scripts that outlast the old stack (the review
-  # receipt, the Bash guard, the queue-attempt ledger, the rule files'
-  # byte pins, the session sync gate, the platform's setup, main-red's decision). Plain
-  # pytest on the runner, on every event: no image, no old-stack package, and no conftest
-  # (`tests/conftest.py` loads the old stack). Required through `required-tests`' needs.
-  # Held by platform/ci/guards/legs.test.ts, where the pin outlasts the Python suite.
+  # The process's own tests, beside the gates' scripts that outlast the old stack
+  # (`scripts/tests/`). Plain pytest on the runner, on every event: no image, no old-stack
+  # package, and no conftest. Required through `required-tests`' needs. Held by
+  # platform/ci/guards/legs.test.ts, where the pin outlasts the Python suite.
+  #
+  # timeout-minutes is a watchdog, as the platform legs' are: about 6 x the slowest
+  # measured run, for a runner up to five times slower than usual. The leg took 1m14s of
+  # job in run 44872746964, the slowest of 100 Tests runs from 2026-11-18
+  # (docs/decisions/untangle-2026-11/p6-tests-beside.md).
   process:
     name: process
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -228,12 +222,6 @@ jobs:
       - run: >-
           python -m pytest --noconftest -q -p no:cacheprovider
           scripts/tests
-          tests/test_review_check.py
-          tests/test_bash_guard.py
-          tests/test_queue_attempts.py
-          tests/test_rulebook_ratchet.py
-          tests/test_session_sync_gate.py
-          tests/test_platform_setup.py
 
   # The TypeScript platform workspace (ADR-032): its Vitest tests, in the real workerd
   # runtime or in Node. Required through `required-tests`' needs; nothing here deploys.
@@ -435,6 +423,151 @@ jobs:
       - name: Install Chromium at the pinned Playwright's version
         run: npx --no-install playwright install --with-deps chromium
       - run: npm run test:app -w doors
+
+  # The recorders, base against head (platform/ci/record.ts), on a pull request (base: HEAD^1
+  # of its merge commit) and a merge group (its base), when the diff touches a platform file
+  # other than prose: a recorder that differs fails its shard unless the PR body's `Recorders-Differ:`
+  # line names it, and each shard's log shows its lines that differ, for the reviewer. The
+  # body is read when the leg runs, so a re-run reads it as edited. Every other event has no
+  # change to compare. Each shard records its part of base and head at once. Required through
+  # `required-tests`' needs; held by platform/ci/guards/legs.test.ts.
+  #
+  # timeout-minutes is a watchdog: about 6 x the slowest shard's measured time, as
+  # `platform-tests`' (docs/decisions/untangle-2026-11/ci-recorders.md).
+  platform-recorders:
+    name: platform-recorders
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1/4, 2/4, 3/4, 4/4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - name: Compare the recorders' shard, base against head, with the body's declaration
+        env:
+          EVENT: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            BASE="$(git rev-parse HEAD^1)"; PR="$EVENT_PR"
+          elif [ "$EVENT" = merge_group ]; then
+            BASE="$GROUP_BASE"
+            PR="$(python3 -c 'import sys; from scripts.review_checks import queued_pr; print(queued_pr(sys.argv[1]) or "")' "$GROUP_REF")"
+          else
+            echo "A $EVENT run compares no change."
+            exit 0
+          fi
+          if ! [[ "$PR" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "::error::no pull request for this run ($EVENT)"
+            exit 1
+          fi
+          python3 scripts/review_checks.py --gh-read "repos/$REPO/pulls/$PR" --jq '.body // ""' > "$RUNNER_TEMP/body.md"
+          npm --prefix platform run record:check -- "$BASE" "$SHARD" "$RUNNER_TEMP/body.md"
+
+  # The cutover's dry run (untangle B24, d3 §A10; tasks.md §10 step 5): the manifest
+  # (platform/cutover.json) applied to this run's own checkout by platform/ci/dry-run.ts, its
+  # carry-outs and deletes made, what an edit still loads kept and the tests it edits set aside,
+  # then every platform-tests leg (`cutover-dry-run-legs` derives them from this file, less the
+  # workspaces it deletes), the typecheck and the process leg run on that tree. Green when
+  # nothing that stays, and is no edit, needs what goes. The tree is never pushed, no job holds
+  # a secret, and nothing live is reached. Required through `required-tests`' needs, as the
+  # platform legs are, on every event: strict status checks are off, so the merge group is
+  # the one run of a PR merged onto the main it lands on
+  # (docs/decisions/untangle-2026-11/dry-run-queue.md). Deleted at the cutover with dry-run.ts.
+  #
+  # timeout-minutes is a watchdog, as the platform legs' are: the slowest legs took 23 s, the
+  # slowest leg 344 s (owner 2/2, run 44888783406) and the checks 107 s, in ten runs of
+  # the old `Cutover dry run` workflow on 2026-11-21 (44888783406 to 44904009707).
+  cutover-dry-run-legs:
+    name: cutover-dry-run-legs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.legs.outputs.matrix }}
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - id: legs
+        run: echo "matrix=$(node --experimental-strip-types --no-warnings ci/dry-run.ts legs)" >> "$GITHUB_OUTPUT"
+
+  cutover-dry-run:
+    name: cutover-dry-run
+    needs: cutover-dry-run-legs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.cutover-dry-run-legs.outputs.matrix) }}
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - run: node --experimental-strip-types --no-warnings ci/dry-run.ts apply
+      - run: npm ci
+      - run: ${{ matrix.command }}
+
+  cutover-dry-run-checks:
+    name: cutover-dry-run-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci
+        working-directory: platform
+      - run: node --experimental-strip-types --no-warnings platform/ci/dry-run.ts apply
+      - run: npm ci
+        working-directory: platform
+      - run: npm run typecheck
+        working-directory: platform
+      - run: pip install -r scripts/process-requirements.txt
+      - run: python -m pytest --noconftest -q -p no:cacheprovider scripts/tests
 
   # The required surface runs as SHARDS in parallel, then ONE aggregate job
   # (`required-tests`, below) decides the gate over the union. Measured before
@@ -641,7 +774,7 @@ jobs:
           sudo apparmor_parser -r "$PROFILE"
 
       # The whole-surface path, unchanged from before the selection existed:
-      # same command, same `shard` profile, same 1000-test floor. A push,
+      # same command, same `shard` profile (no floor of its own). A push,
       # schedule or dispatch run always lands here.
       - name: Run this shard of the required test surface
         if: steps.plan.outputs.count == 'ALL'
@@ -821,9 +954,11 @@ jobs:
     # open), so the ruleset takes it at the merge (docs/host-actions.md).
     name: required-tests
     # The gate's lasting shape is the platform's jobs and the process leg. The first four
-    # are the old stack's Python jobs, which leave at the cutover.
-    needs: [select, required-tests-shard, affected-tests, structural-guards, platform-tests,
-            platform-checks, platform-app, platform-sizes, process, openspec]
+    # are the old stack's Python jobs and the next two the dry run's, which leave at the
+    # cutover.
+    needs: [select, required-tests-shard, affected-tests, structural-guards, cutover-dry-run,
+            cutover-dry-run-checks, platform-tests, platform-checks, platform-app,
+            platform-sizes, platform-recorders, process, openspec]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -863,18 +998,31 @@ jobs:
           fi
 
       # The TypeScript platform (ADR-032), its checks, its large tests, the owner app in a
-      # browser and the process leg gate every event: each must have run and succeeded; skipped or
-      # cancelled fails. This step is the gate's lasting shape.
-      - name: Require the platform's tests, the owner app's browser test and the process leg
+      # browser, the recorders and the process leg gate every event: each must have run and
+      # succeeded; skipped or cancelled fails. This step is the gate's lasting shape.
+      - name: Require the platform's tests, the owner app's browser test, the recorders and the process leg
         env:
           PLATFORM_RESULT: ${{ needs.platform-tests.result }}
           CHECKS_RESULT: ${{ needs.platform-checks.result }}
           APP_RESULT: ${{ needs.platform-app.result }}
           SIZES_RESULT: ${{ needs.platform-sizes.result }}
+          RECORDERS_RESULT: ${{ needs.platform-recorders.result }}
           PROCESS_RESULT: ${{ needs.process.result }}
         run: |
-          if [ "$PLATFORM_RESULT" != success ] || [ "$CHECKS_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ] || [ "$PROCESS_RESULT" != success ]; then
-            echo "::error::Required legs did not pass (platform-tests=$PLATFORM_RESULT, platform-checks=$CHECKS_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT, process=$PROCESS_RESULT). Fix the named job and rerun Tests."
+          if [ "$PLATFORM_RESULT" != success ] || [ "$CHECKS_RESULT" != success ] || [ "$APP_RESULT" != success ] || [ "$SIZES_RESULT" != success ] || [ "$RECORDERS_RESULT" != success ] || [ "$PROCESS_RESULT" != success ]; then
+            echo "::error::Required legs did not pass (platform-tests=$PLATFORM_RESULT, platform-checks=$CHECKS_RESULT, platform-sizes=$SIZES_RESULT, platform-app=$APP_RESULT, platform-recorders=$RECORDERS_RESULT, process=$PROCESS_RESULT). Fix the named job and rerun Tests."
+            exit 1
+          fi
+
+      # The cutover's dry run on every event: its legs and its checks must have run and
+      # succeeded. A failed `cutover-dry-run-legs` skips `cutover-dry-run`, which fails here.
+      - name: Require the cutover dry run
+        env:
+          DRY_RUN_RESULT: ${{ needs.cutover-dry-run.result }}
+          DRY_RUN_CHECKS_RESULT: ${{ needs.cutover-dry-run-checks.result }}
+        run: |
+          if [ "$DRY_RUN_RESULT" != success ] || [ "$DRY_RUN_CHECKS_RESULT" != success ]; then
+            echo "::error::The cutover dry run did not pass (cutover-dry-run=$DRY_RUN_RESULT, cutover-dry-run-checks=$DRY_RUN_CHECKS_RESULT): something that stays needs what the manifest (platform/cutover.json) deletes. Fix it or declare it there, then rerun Tests."
             exit 1
           fi
 
@@ -919,11 +1067,12 @@ jobs:
           # No `|| true`, no `continue-on-error` — the exit code IS the gate.
           python scripts/ci_required_tests.py --aggregate shards/ \
             --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
-            --junit junit.xml --min-ran 2200
+            --junit junit.xml --min-ran 2200 \
+            --exclude-from .github/heavy-test-files.txt
 
       # The selective verdict. Everything above still applies -- shard set,
       # truncation, overlap, the quarantine comparison -- plus two checks that
-      # exist because the 6,200 floor cannot: every shard must report the
+      # exist because the union floor cannot: every shard must report the
       # digest `select` published, and every selected file must appear in the
       # union with at least one case (any outcome, skip included). A file that
       # reported nothing is a collapse and is named. `!= 'ALL'` rather than

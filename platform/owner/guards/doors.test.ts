@@ -3,7 +3,8 @@
  * door of the contract's table (`contract/doors.json`) stepped once and nothing else, each
  * step of known parts and held to its door's row, so the runner reads the two alone. A door
  * with no steps, the steps of no door, a door stepped twice, an unknown caller, guard, scope,
- * handler or gate, or a caller its door's class or binding does not allow is refused when the
+ * handler or gate, a caller its door's class or binding does not allow, or a door taking its
+ * caller's stop that does not make its own units is refused when the
  * object's class loads (`ownerRows`), when `npm run generate` writes the typed handler map,
  * and here.
  *
@@ -51,6 +52,7 @@ describe("the door table's steps", () => {
     ["an unknown guard", changed("fileStat", { guard: "maybe" })],
     ["an unknown scope", changed("fileStat", { scope: "anywhere" })],
     ["a seed awaited at a door run in one unit", changed("fileStat", { seeded: true })],
+    ["a caller's stop taken at a door run in one unit", changed("codeRun", { gate: "door" })],
     ["no handler module", without("fileStat", "handler")],
     ["a handler that is no module's name", changed("fileStat", { handler: "../files" })],
     ["a key of no step", changed("fileStat", { owner: "alice" })],
@@ -112,11 +114,14 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
 /** Outside-callable doors the doors call themselves, never a tool, and why. */
 const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
   toolProfile: "the MCP and API doors' read of which tools the caller is served",
+  definitionRead: "the MCP door's resources, agent prompt and Skills extension, never a tool",
   fileUploadTarget: "the file door's bytes: the binder's read of an upload's plan (slice L)",
   fileUploadStored: "the file door's bytes: the binder's report of the chunks it stored",
   wakeEvents: "the MCP door's events/list (MCP Events, slice W), never a tool",
   wakeSubscribe: "the MCP door's events/subscribe, after its signed callback challenge",
   wakeUnsubscribe: "the MCP door's events/unsubscribe",
+  runDecide: "a run's CLI's hook's question, on the egress host by the run's own credential " +
+    "(R5 P-hooks): its handler refuses every account but a run's",
 });
 
 /** The callers an outside client's call reaches a door as. */

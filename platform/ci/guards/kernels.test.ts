@@ -1,7 +1,7 @@
 /**
- * The kernel guard (untangle B7, `ci/kit/kernels.ts`): no source a kernel holds does its work
- * outside its home, but for exactly what each workspace owes (`<workspace>/guards/rules.ts`'s
- * `OWED`, `ci/kit/owed.ts`).
+ * The kernel guard (`ci/kit/kernels.ts`): no source a kernel holds does its work outside its
+ * home, but for exactly what each workspace owes (`<workspace>/guards/rules.ts`'s `OWED`,
+ * `ci/kit/owed.ts`).
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";

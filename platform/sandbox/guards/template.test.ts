@@ -42,7 +42,7 @@ const SDK_RELEASE = "2.62.0";
  * Its copies' hashes take each staged file's mode: git's, 0644 (`image.ts` stages so). A new
  * recipe is a new image: a paid build, then the pin PR.
  */
-const RECIPE = "118169ff55d21b618352fd644c222039785aa93c5b5c3dc3e28c25c7ada0c46e";
+const RECIPE = "34819aeb6ee19eb38c62c27ad60f195fadb34f4cbcf8ca2ea55d6ba94161a4ac";
 
 /**
  * E2B's SDK as far as the image's steps reach it (`Template`, `Template.to_json`), written
@@ -146,8 +146,9 @@ let tree: string | null = null;
 function copied(): string {
   if (tree === null) {
     tree = temp("ta-tree-");
-    for (const part of ["contract/src", "contract/identity.json", "sources", "sandbox/runner",
-                        "sandbox/template", "sandbox/build"]) {
+    for (const part of ["contract/src", "contract/identity.json", "contract/acts.json",
+                        "contract/egress.json", "sources", "sandbox/runner", "sandbox/template",
+                        "sandbox/build"]) {
       cpSync(join(PLATFORM, part), join(tree, part), { recursive: true });
     }
   }
@@ -223,11 +224,13 @@ function outsideSession(path: string, source: string): string[] {
   return found;
 }
 
-/** The Worker's own build (`BUILD`), both bundles of the platform tree at `root` (this one). */
-async function bundler(): Promise<{
-  build: (root?: string) => Promise<{ runner: Built; probes: Built }> }> {
-  return await import(pathToFileURL(BUILD).href) as {
-    build: (root?: string) => Promise<{ runner: Built; probes: Built }> };
+/**
+ * The Worker's own build (`BUILD`), both bundles of the platform tree at `root` (this one), and
+ * the hook program the runner carries.
+ */
+type Build = (root?: string) => Promise<{ hooks: Built; runner: Built; probes: Built }>;
+async function bundler(): Promise<{ build: Build }> {
+  return await import(pathToFileURL(BUILD).href) as { build: Build };
 }
 
 /** A pair's record in `passed.json`, as far as the pin's guard reads it. */
@@ -237,19 +240,17 @@ interface Passed {
   readonly probes?: string;
   readonly logins: readonly { readonly ok: boolean }[];
   readonly routes: readonly { readonly ok: boolean }[];
-  readonly matcher?: { readonly ok: boolean };
 }
 
 /**
  * Whether a record says every check passed. Each check's `ok` is its probe's own verdict
- * (`runner/probes.ts`: a route's two turns, its resume; the matcher's step within `STEP_NS`),
+ * (`runner/probes.ts`: a sign-in's shape; a route's two turns, its resume),
  * and `checks.ts` records only a pair whose every step passed, so this reads the verdicts and
  * judges none again.
  */
 function passing(entry: Passed): boolean {
   return entry.logins.length > 0 && entry.logins.every((each) => each.ok)
-    && entry.routes.length > 0 && entry.routes.every((each) => each.ok)
-    && entry.matcher?.ok === true;
+    && entry.routes.length > 0 && entry.routes.every((each) => each.ok);
 }
 
 /**
@@ -279,8 +280,8 @@ describe("the image", () => {
   it("is the recipe the next build will produce, as E2B's SDK serializes it", () => {
     const steps = JSON.parse(recipe()) as { steps: { type: string }[]; fromImage: string };
     expect(steps.fromImage).toBe("e2bdev/base");
-    expect(steps.steps).toHaveLength(21);
-    expect(steps.steps.filter((step) => step.type === "COPY")).toHaveLength(11);
+    expect(steps.steps).toHaveLength(18);
+    expect(steps.steps.filter((step) => step.type === "COPY")).toHaveLength(9);
     expect(sha(recipe())).toBe(RECIPE);
     expect(readFileSync(join(TEMPLATE, "requirements.txt"), "utf8"))
       .toContain(`\ne2b==${SDK_RELEASE} `);
@@ -363,8 +364,12 @@ describe("the pair", () => {
     expect(built.probes.sha).toBe(probes.sha);
     expect(built.runner.inputs).not.toContain("sandbox/runner/probes.ts");
     expect(built.runner.inputs).not.toContain("sandbox/runner/route.ts");
+    // Neither carries the doors' identity, so the doors' host (the live stage's, d3 §H) never
+    // moves the pair: the stage runs production's bytes.
+    expect(built.runner.inputs).not.toContain("contract/identity.json");
+    expect(built.probes.inputs).not.toContain("contract/identity.json");
     const text = built.runner.bytes.toString("utf8");
-    for (const name of ["sandboxEnv", "egressBaseUrl", "runEnv", "stepNanos", "bundledRecords",
+    for (const name of ["sandboxEnv", "egressBaseUrl", "runEnv", "bundledRecords",
                         "routeVerdict"]) {
       // The name as a declaration of any form (`function`, `const`, an arrow) would bind it,
       // and esbuild renames a clash by a numeric suffix.
@@ -377,10 +382,23 @@ describe("the pair", () => {
     expect(built.probes.bytes.toString("utf8")).toContain(JSON.stringify(runner.sha));
   });
 
+  it("starts each hooked event and decided call on a hook program that checks no record and " +
+     "loads only the built-in modules those commands use", async () => {
+    // Measured (`runner-start-cost.md`): the records' checks cost about 20 ms a start, and
+    // each built-in module only the runner uses a few more.
+    const { hooks } = await (await bundler()).build();
+    const text = hooks.bytes.toString("utf8");
+    for (const name of ["sourceRecord", "checkedTogether", "runCommand"]) {
+      expect(text, name).not.toMatch(new RegExp(`\\b${name}\\d*\\b`));
+    }
+    expect([...new Set([...text.matchAll(/\brequire\("([^"]+)"\)/g)].map((found) => found[1]))]
+      .sort()).toEqual(["node:child_process", "node:fs", "node:path"]);
+  });
+
   it("starts each process and takes each run user in the run session alone", async () => {
     const built = await (await bundler()).build();
-    const reached = [...new Set([...built.runner.inputs, ...built.probes.inputs])]
-      .filter((path) => path.endsWith(".ts"));
+    const reached = [...new Set([...built.hooks.inputs, ...built.runner.inputs,
+                                 ...built.probes.inputs])].filter((path) => path.endsWith(".ts"));
     expect(reached).toContain(SESSION);
     expect(reached.flatMap((path) => outsideSession(path, readFileSync(join(PLATFORM, path),
                                                                        "utf8")))).toEqual([]);
@@ -430,7 +448,7 @@ describe("the pair", () => {
     const passed = JSON.parse(readFileSync(join(TEMPLATE, "passed.json"), "utf8")) as Passed[];
     expect(pinProblems(passed, pinned(), tag())).toEqual([]);
     // What it finds, each on records planted beside the pin's.
-    const ok = { logins: [{ ok: true }], routes: [{ ok: true }], matcher: { ok: true } };
+    const ok = { logins: [{ ok: true }], routes: [{ ok: true }] };
     const pin = { ...ok, tag: "spinned" };
     const sha64 = "a".repeat(64);
     const found = (records: Passed[], tree = "stree") =>
@@ -440,7 +458,6 @@ describe("the pair", () => {
     expect(found([])).toBe(1);
     expect(found([pin, { ...pin, routes: [{ ok: false }] }])).toBe(1);
     expect(found([{ ...pin, logins: [] }])).toBe(1);
-    expect(found([{ ...pin, matcher: { ok: false } }])).toBe(1);
     expect(found([pin, { ...ok, tag: "stree" }])).toBe(1);
     expect(found([pin, { ...ok, tag: "stree", logins: [{ ok: false }] }])).toBe(0);
     expect(found([{ ...pin, runner: sha64, probes: sha64 }])).toBe(0);

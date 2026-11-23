@@ -18,6 +18,7 @@ The wave-2 log, [`untangle-2026-11-wave-2.md`](untangle-2026-11-wave-2.md) (`d2`
 7. **B14 builds only the platform's side of the canary** (`deploy/canary.ts`), which grows into the platform's own canary (R6). The old side stays in Python until the hold ends and is listed on the manifest (`p3:P67`).
 8. **B17 loses its special case.** `sources/chatgpt.json` and the `unwired` field are deleted first: an absent record, never a stub (`p3:P46`, `P65`).
 9. **B20 doesn't make a workspace file an instruction** (`p3:P55`, `P56`). The MCP instructions' onboarding sentence is generated from the onboarding skill's step list at build time, as the plugins are. The wording stays as it is today until BRAIN's live step 8 measures it. The import notice promises only what can be done (`p3:P31`).
+   Corrected 2026-11-21: reversed by the founder (`untangle-2026-11/founder-answers.md` call 1). The door serves the owner's `AGENTS.md` and skills to the user's own main agent as MCP prompts and resources, not as tool text that steers (`untangle/main-agent-definition`).
 10. **B24 becomes the whole cutover's manifest, in three phases** (R3, P4, F3): before `routes`, the cutover change, and the end of the 14-day hold. Each entry is a path to delete, an edit, a move, a carry-out with its new home, or a live object (Worker, route, bucket, queue, secret, DNS record, token). It covers every path in the repo, not only `platform/`: the old stack, the 31 workflows, the gate scripts, the docs, the rules, the specs, the site, the shells and the top-level folders. A CI job applies the phases to a temporary tree and runs the platform suites, the guards and actionlint. It is green when nothing that stays depends on what goes. Every change wave 2 makes to permanent code for the importer's sake is marked on it (`p3:P62`). The operator channel is carved out before the import consumer is listed for deletion (item C2).
 11. **`d2` gets a problem index** (`p3:P64`): every list2 item is named by a fix, a u3 PR or a decision. The swallowed errors (`d2:N56`), the retries (`d2:N57`) and `s2:N51` get decisions.
 12. **The one paid template build moves to after the re-check loop** (`p3:P63`). It carries a refresh of the engines' locks (`p3:P19`) and puts the E2B SDK's hashed lock (`requirements.txt`) in the tag (`p3:P68`, S0). The base image `e2bdev/base` is a tag E2B can move, so its content is in no tag: a cutover known limit.
@@ -31,8 +32,8 @@ The wave-2 log, [`untangle-2026-11-wave-2.md`](untangle-2026-11-wave-2.md) (`d2`
 5. **Every process item goes now, first, each in its own PR** (the untangle skill's "Process first", the founder, 2026-11-15; corrected from 2026-11-12's "follow the lanes"): P2 in §F4's order, P6, P7's rest, P8's rest and P9 (process code in one place, one builder page, the planning system), and `slow-tests`' removal (`tasks.md` §10, "Process first"). P7's builder page, which replaces `brief_common.md` and the working briefs, is the untangle skill's "How this project uses it" with `docs/reference/executable-gates.md` ([`untangle-2026-11/p7.md`](untangle-2026-11/p7.md)).
 6. **P2, one review gate,** needs the founder's ruleset pin (§E). Until then the receipt stays, and reviews stay independent: no builder approves its own PR.
 7. **The cutover's deletion can't pass today's gates** (`x3:X1`, `X2`, `T9`): the 8-file cap, a forbidden path and the 3,000-file limit (`slow-tests`, a required check then, has gone: corrected 2026-11-16, `untangle/slow-tests`). P3 removes the cap and the forbidden path before the window. The deletion is two or three PRs in one window (code, tests, workflows and scripts; then `openspec/`; then docs), each proved by the manifest's dry run. The ruleset step is the founder's (§E).
-8. **Open: `drift_code_audit.md`'s §6.2, §6.3 and §6.5 checks** (a new Python guard of a `platform/` path refused; no owed text in an accepted ADR; a calibrated control for every measurement). None is built or dropped; P6 decides each.
-9. **Open: `rerun-cancelled-checks.yml`, `queue-freshness.yml` and `queue-handoff.yml` are kept or deleted on measured runs** (list3 Q3). None is measured yet; P6 measures them.
+8. **`drift_code_audit.md`'s §6.2, §6.3 and §6.5 checks** (a new Python guard of a `platform/` path refused; no owed text in an accepted ADR; a calibrated control for every measurement). P6a decided each ([`untangle-2026-11/p6-process-code.md`](untangle-2026-11/p6-process-code.md) item 7): §6.2 and §6.3 dropped, §6.5 met by construction.
+9. **`rerun-cancelled-checks.yml`, `queue-freshness.yml` and `queue-handoff.yml` are kept or deleted on measured runs** (list3 Q3). All three are measured ([`untangle-2026-11/p6-process-code.md`](untangle-2026-11/p6-process-code.md) item 8). The first two are deleted ([`untangle-2026-11/p6-queue-deletes.md`](untangle-2026-11/p6-queue-deletes.md)); `queue-handoff.yml` is `untangle/p6-queue-helpers`'.
 
 ## C. What the cutover needs that wave 2 doesn't hold (decided, some after research)
 
@@ -357,7 +358,8 @@ Every known-wrong data shape is fixed before the cutover imports real data: a fi
 4. **Route deletion.** Deleting `deploy-worker.yml`, in place of the old R1 route guard, is part of §J1's routes decision.
 
 **The founder's** (`founder_batch.md` item 7; none is needed before the cutover):
-- the Codex, Gemini and Kimi sign-in switches (vendor terms);
+- the Codex and Gemini sign-in switches (vendor terms; Kimi's record is dropped,
+  `untangle-2026-11/drop-kimi.md`);
 - capture always on: new recurring spend, about $62 a month for a heavy owner;
 - non-model credentials through a TLS proxy: needs a host, against Direction 8;
 - the directory listing's own MCP door: Direction 2, and the directory submission.

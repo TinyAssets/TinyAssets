@@ -1,8 +1,7 @@
 /**
- * The one revision primitive (S34), in the owner's own object (ADR-032).
+ * The one revision primitive, in the owner's own object (ADR-032).
  *
- * Ported from `tinyassets/broker/conversations.py` (branch `s5b-board`), whose rules
- * it keeps. Rows are keyed by `(collection, row_id)`. Each write is a compare-and-swap
+ * Rows are keyed by `(collection, row_id)`. Each write is a compare-and-swap
  * on the row's etag, and each commit is stamped with the collection's next `seq`, so
  * a reader pulls after a cursor, or gets one row by its key. The board is
  * `collection = "board"`; a Tier A app room is `collection = "room:<app>:<room>"`.
@@ -15,7 +14,7 @@
  *
  * Each write, and each delete or clear of a row, also takes the owner-wide clock's next
  * change (`collection_clock`), so one cursor covers many collections (`changed`): a main
- * agent's digests (slice M) read the board and every room in one call, deletions included.
+ * agent's digests read the board and every room in one call, deletions included.
  * A row keeps the privacy it was made with, so a row turns private only by being deleted and
  * made again, which its delete reports.
  *
@@ -26,9 +25,11 @@
  * way, which no later erase touches; a row made again under that key starts a new chain past
  * the newest revision any erase gave (`revision_floor`), so none repeats. The history and
  * the erasures are bounded together by what they take, not by rows times revisions: their
- * entries as SQLite lays them out (`maxHistoryCharge`), the oldest change pruned first. It is
- * a retention, never refused. Nothing of it is let go to admit a write: at the owner's
- * storage a write is refused (`storage_full`).
+ * entries as SQLite lays them out (`maxHistoryCharge`), the oldest change pruned first,
+ * never refused: a technical ceiling, not a retention the owner sets, since the history lives
+ * in the object's SQLite, whose 10 GB the owner-bound guard holds (`limits-audit.md`).
+ * Nothing of it is let go to admit a write: at the owner's storage a write is refused
+ * (`storage_full`).
  *
  * Where a body lives is the placement rule (ADR-035, `bodies.ts`): a body past
  * `PLACE_BYTES` is placed in R2 before its write (the door's `Bodies.begin`), and the row
@@ -52,11 +53,10 @@ import {
   windowedAll,
 } from "./pages";
 import { codePoints, name, utf8Bytes } from "../../contract/src/text";
-import type { Scope } from "./authority";
 import type { Account, Call, Door, DoorUnits } from "./door";
 import { clock } from "./clock";
 import { jsonBytes } from "../../contract/src/encoded";
-import { filerOf, MAIN_AGENT, OWNER } from "./authority";
+import { filerOf, OWNER } from "./authority";
 import type { Heads } from "./pages";
 
 interface Limits {
@@ -537,7 +537,7 @@ export class Collections {
 
   /**
    * Whether a row anyone may see in one of `collections` was written or deleted past the
-   * owner-wide change `after` (slice W: which rooms a wake's subscription follows changed).
+   * owner-wide change `after` (which rooms a wake's subscription follows changed).
    * Each part read by its change order from the cursor on, so it reads only what changed.
    */
   touched(collections: readonly string[], after: number): boolean {
@@ -807,10 +807,6 @@ export interface Conflicted {
 }
 
 // -- THE DOORS: the `collections` rows' handlers (`owner/doors.json`) -----------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`CollectionsDoorNeeds`) once the row's steps held: the bind, the account,
-// the scope and the fields.
 
 /**
  * What the `collections` doors reach: the collections, the bodies their rows place and read,
@@ -824,16 +820,16 @@ export interface CollectionsDoorNeeds extends Pick<DoorUnits, "sync"> {
         { agent_id: string; client: string; command_center_id: string }[];
     changed(change: "board" | "rooms", after: number, agentIds: readonly string[]): void;
   };
-  readonly grants: { reads(client: string, scope: Scope): boolean };
+  readonly grants: { reads(client: string, universe: string, capability: string): boolean };
 }
 
 /**
- * Ring the agents that follow `collection` for a change past `after` (slice W): only for
- * the owner's own act (an outside client's write, or a run's, rings no agent, so no two
- * agents wake each other without end, as slice ID's mail rings only the agent it
- * addresses), only for the board or a room, only for a change anyone may see, and only
- * agents with a live subscription following it whose grant reads their command center.
- * Each wake says what changed and the cursor before it, so its digest is just the change.
+ * Ring the agents that follow `collection` for a change past `after`: only for the owner's
+ * own act (an outside client's write, or a run's, rings no agent, so no two agents wake each
+ * other without end, as mail rings only the agent it addresses), only for the board or a room, only
+ * for a change anyone may see, and only agents with a live subscription following it whose grant
+ * reads their command center. Each wake says what changed and the cursor before it, so its digest
+ * is just the change.
  */
 function ring(o: CollectionsDoorNeeds, account: Account, collection: string, after: number):
     void {
@@ -844,14 +840,12 @@ function ring(o: CollectionsDoorNeeds, account: Account, collection: string, aft
     return;
   }
   const agents = o.ledger.followers(collection, change === "board", clock())
-    .filter((agent) => o.grants.reads(agent.client, {
-      universe: agent.command_center_id, agent: MAIN_AGENT, capability: "read_graph" }));
+    .filter((agent) => o.grants.reads(agent.client, agent.command_center_id, "read_graph"));
   if (agents.length) {
     o.ledger.changed(change, after, agents.map((agent) => agent.agent_id));
   }
 }
 
-/** The `collections` doors' handlers, by door. */
 export const collectionsDoors = Object.freeze({
   /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
   async boardDigest(o: CollectionsDoorNeeds, door: Door<BoardDigestRequest>): Promise<Heads> {
@@ -872,7 +866,7 @@ export const collectionsDoors = Object.freeze({
     return o.bodies.reading(() => {
       const { account: { caller }, r } = door.check();
       const offset = bodyOffset(r["body_offset"]);
-      // A read on names the revision it reads (review L3), so two are never spliced.
+      // A read on names the revision it reads, so two are never spliced.
       if (offset > 0 && r["etag"] === undefined) {
         throw new Refusal("invalid", "body_offset reads on a row's body: name its etag");
       }
@@ -931,8 +925,8 @@ export const collectionsDoors = Object.freeze({
     });
   },
   /**
-   * A row written by compare-and-swap; the owner's own board or room write rings (`ring`, `collections.ts`).
-   * Answered without its body (review H3): its etag, revision, seq and `body_bytes`, so a
+   * A row written by compare-and-swap; the owner's own board or room write rings (`ring`).
+   * Answered without its body: its etag, revision, seq and `body_bytes`, so a
    * body past one answer is never echoed back.
    */
   async collectionWrite(o: CollectionsDoorNeeds, door: Door<WriteRequest>):

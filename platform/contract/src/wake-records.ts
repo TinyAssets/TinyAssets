@@ -1,12 +1,12 @@
 /**
- * Wake kinds as data (slice W, tasks 7; Direction 2: engine differences are data).
+ * Wake kinds as data (Direction 2: engine differences are data).
  *
  * Each vendor's way to wake its main agent is one record of `wake-kinds.json`: ChatGPT's
  * MCP Events, Claude's scheduled-task `/fire`, Grok Bot's webhook routines, and Muse,
  * which has no documented push. One sender serves every record: the object builds each
  * wake's headers and body from its record (`doorbellRequest`), and the gateway, which alone
- * holds the sealed secret, adds the record's auth and makes the send (`gateway/src/
- * doorbell.ts`). No code here, in the object or in the gateway names a vendor.
+ * holds the sealed secret, adds the record's auth and makes the send
+ * (`gateway/src/doorbell.ts`). No code here, in the object or in the gateway names a vendor.
  *
  * - A record with a push names the agent registry's `delivery_method` (`ledger.ts`), one
  *   record each. A record without one never rings and names none: its agent registers as
@@ -29,17 +29,16 @@
  * - `token_dead`: the statuses that say the owner's pasted token no longer works, which
  *   leave the owner a notice (the callback stays: the owner pastes the new one).
  *
- * A wake carries identifiers, cursors and what kind of change it is, never content
- * (S31): the main agent reads the change itself, through its own grant.
+ * A wake carries identifiers, cursors and what kind of change it is, never content: the
+ * main agent reads the change itself, through its own grant.
  *
  * This module is the records and the callback checks alone, importing nothing but the
- * errors, the zone and the records' file, so the gateway applies the same
- * checks where it sends
- * (`gateway/src/doorbell.ts`; its isolation guard walks the closure). What builds a wake,
- * and a subscription's id, is `wake-kinds.ts`.
+ * errors, the zone and the records' file, so the gateway applies the same checks where it
+ * sends (`gateway/src/doorbell.ts`; its isolation guard walks the closure). What builds a
+ * wake, and a subscription's id, is `wake-kinds.ts`.
  */
 import { keyed, whole } from "./checks.ts";
-import { ZONE } from "./egress.ts";
+import { ZONE } from "./identity.ts";
 import { Refusal } from "./refusal.ts";
 import raw from "../wake-kinds.json" with { type: "json" };
 

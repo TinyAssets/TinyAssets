@@ -19,13 +19,17 @@
  * `acts.json`, and `when`, the condition under which a call is the act, every call when it
  * names none), so a rule on that act holds at that door.
  *
- * The outside-callable doors' rows carry their MCP tool (`tool`, research §4.3), which the
+ * A door whose work runs while its caller waits (`code`'s script) says so (`stop`): the doors
+ * hand it, after its request, its caller's stop, a stream they close once that caller stops
+ * waiting (`doors/src/tools.ts` `callDoor`), and the door ends its work then.
+ *
+ * The outside-callable doors' rows carry their MCP tool (`tool`), which the
  * doors serve on `/mcp` and as `POST /api/tools/<name>` (`doors/src/tools.ts`): its capability
  * and its arguments are its door's own. Each tool's four hints are explicit (OpenAI's
  * directory requires three, and `idempotentHint`); none is open world, each confined to the
  * owner's own account; `room_post` is destructive, since a send cannot be taken back; no tool
  * selects an operation. The run tools start an engine run in the owner's sandbox, so their
- * effects cannot be taken back; `code` (code mode, slice M) is a generic executor, never in
+ * effects cannot be taken back; `code` (code mode) is a generic executor, never in
  * the directory profile. Descriptions say what a tool does and when to use it, never "always",
  * and name no other vendor's tool: both directories' rules.
  *
@@ -103,9 +107,11 @@ export interface DoorRow {
   readonly act?: { readonly name: string; readonly when?: Condition };
   readonly args: DoorArgs;
   readonly tool?: ToolInfo;
+  /** Its work runs while its caller waits: it takes the caller's stop after its request. */
+  readonly stop?: true;
 }
 
-const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool"]);
+const ROW_KEYS = Object.freeze(["door", "class", "capability", "act", "args", "tool", "stop"]);
 const TOOL_KEYS = Object.freeze(["name", "title", "description", "destructiveHint",
   "idempotentHint", "openWorldHint", "readOnlyHint"]);
 
@@ -188,6 +194,10 @@ export function doorProblems(rows: unknown): string[] {
         || ("when" in act && !isCondition(act["when"])))) {
       say("an act is one of acts.json's, and when, one of its conditions");
     }
+    if ("stop" in row && (row["stop"] !== true || UNBOUND_DOORS.includes(row["door"] as string)
+                          || row["args"] === "none")) {
+      say("a stop is true, on a door that takes a binding and a request");
+    }
     if (!("args" in row)) {
       say("no argument schema");
     } else {
@@ -246,7 +256,10 @@ export function argsSchema(args: DoorArgs): JsonSchema {
            required: Object.keys(fields.required), additionalProperties: false };
 }
 
-/** A tool as the doors serve it and code mode calls it: its door's tool, capability and arguments. */
+/**
+ * A tool as the doors serve it and code mode calls it: its door's tool, capability and
+ * arguments.
+ */
 export interface Tool extends ToolInfo {
   readonly door: string;
   readonly capability: RunCapability | null;
@@ -273,6 +286,11 @@ export function toolsNamed(names: readonly string[]): readonly Tool[] {
 /** Whether a door takes a request after its binding. */
 export function takesRequest(row: DoorRow): boolean {
   return row.args !== "none";
+}
+
+/** Whether a door takes its caller's stop after its request (`stop`). */
+export function takesStop(row: DoorRow): boolean {
+  return row.stop === true;
 }
 
 /** A profile's name: what a caller is served (`profiles.json`). */

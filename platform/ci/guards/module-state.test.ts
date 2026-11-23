@@ -25,7 +25,7 @@ describe("module-state guard", () => {
 
   it("takes each Worker's exemptions for its own files alone, each a symbol with its reason",
      () => {
-    expect([...EXEMPTIONS.keys()]).toEqual(["gateway", "owner"]);
+    expect([...EXEMPTIONS.keys()]).toEqual(["doors", "gateway", "owner"]);
     for (const [workspace, exemptions] of EXEMPTIONS) {
       for (const each of exemptions) {
         expect(each.file.startsWith(`${workspace}/src/`), each.file).toBe(true);
@@ -84,7 +84,7 @@ describe("module-state guard", () => {
 
   it.each([
     "globalThis.owner = 'alice';",
-    // The reviewer's first miss: a write through the global object from inside a body.
+    // A write through the global object from inside a body.
     "export function remember(owner: string) { globalThis.lastOwner = owner; }",
     "class C { m(v: string) { self.cache.rows[v] = v; } }",
     "const f = () => { global['seen'] += 1; };",
@@ -125,7 +125,7 @@ describe("module-state guard", () => {
   });
 
   it.each([
-    // The reviewer's second miss: a source the bundler takes that is not `.ts`.
+    // A source the bundler takes that is not `.ts`.
     ["probe.js", "export let current = null;"],
     ["probe.mjs", "export function f() { globalThis.owner = 1; }"],
     ["probe.mts", "let count = 0;"],

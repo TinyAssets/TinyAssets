@@ -13,58 +13,66 @@ Untangle the code a change touches, or a whole area, and finish the job.
   building, 3 and 4 while building, 5 on its diff before pushing. It fixes
   problems in scope and adds none: no shim, alias, copy of a value, one-caller
   parameter, test-only hook, optional binding or special case. A stale test,
-  guard or rule never blocks a fix: change or delete it in the same PR, with a
-  `Test-Removal:` line for a test.
+  guard or rule never blocks a fix: change or delete it in the same PR.
 - **Process first.** A fix to how we build (CI, gates, guards, skills, briefs,
-  tooling, the review flow) takes priority over product work, whose lanes keep
-  running: once found, it takes the next free slot, in its own PR or the
-  process PR at hand, with Fact 17's retro-check done now. A reviewer blocks
-  any change that defers one or puts it behind product work.
-  Next, before the cutover, come untangling, security and what code or a stored
-  record builds on. The cutover rule never defers a process fix: any other fix
-  waits until after the cutover only when nothing builds on it, it works after
-  the window closes, and its failure is rare, loud when it happens and
-  recoverable with what exists: the one exception to `AGENTS.md` Fact 17,
+  tooling, review), a cost every PR pays (`scripts/pr_times.py` times them) or
+  rework that repeats goes ahead of product work, whose lanes keep running:
+  the next free slot, its own PR or the process PR at hand, with Fact 17's
+  retro-check now. A reviewer blocks deferring one. Next before the cutover:
+  untangling, security and what code or a stored record builds on. The cutover
+  rule never defers a process fix; any other fix waits past the cutover only
+  when nothing builds on it, it works after the window closes, and its failure
+  is rare, loud and recoverable with what exists: Fact 17's one exception,
   listed with its branch in `tasks.md`'s "After the cutover".
 - **The PR body** is the one document. Its **Untangle check** says what was
   found, fixed and left (and why), and that the diff adds none of the four kinds.
-  Anything found and left, by builder or reviewer, names the PR, branch or
-  `live:` wait that fixes it, or is fixed in place. The PR's decisions go in a
-  file of their own, `docs/decisions/<log>/<pr>.md`, headed
-  `# <PR> as built (<date>)`; a shared log is edited only to correct an earlier
-  line. The PR ticks its own `tasks.md` line.
-- **Every reviewer** runs step 5's search on the PR and checks that section; a
-  missing one is a finding. A problem the PR adds or leaves in scope unexplained
+  Decisions go in `docs/decisions/<log>/<pr>.md`, headed
+  `# <PR> as built (<date>)`; a shared log is only corrected. Anything found
+  and left, by builder or reviewer, is fixed in place or owed there: a `- [ ]`
+  line naming the PR, branch or `live:` wait that fixes it, ticked when done
+  (`review_checks.py --owed` lists them). The PR ticks its own `tasks.md`
+  line, adding none. Before each push, `review_checks.py --untangle-check`
+  on the body allows it; a body edit goes on the open PR, which CI reads.
+- **Every reviewer**, whatever engine built the PR, runs step 5's search on it
+  and checks that section; a missing one, `Test-Removal:` line or decision
+  file is a finding. A problem the PR adds or leaves in scope unexplained
   blocks, and so does any of these: an import edge the layer table refuses or a
   new `owed` entry, a literal live name or founder number outside configs and
   data, a code read from message text, a product parameter or binding only a
-  test uses, a copy of a contract value, a per-module allow-list. It asks only
-  for what makes the code more correct or simpler, and calls a departure from
-  the decided design better (the log is updated) or a shortcut. It commits its
-  own fixes of up to 50 lines and approves that head, posting its verdict as a
-  PR review on the commit it read as well as the receipt; a bigger fix is a
-  `BLOCK` with its diff. A re-confirm after main is merged in reads only its
-  conflicts.
-- After each batch of merges, a fresh step-5 search runs across everything
-  merged and open, for drift between PRs; unopened branches wait until it clears.
-- CI is the one full run, and a coordinator's prompt asks for no check this
-  section doesn't: run only what the diff can break, once a PR (the done-check:
-  `docs/reference/executable-gates.md`), one mutation per declared change; the
-  recorders (step 5) whenever it touches `platform/*/src`, meant to change an
-  answer or not; read only what applies. A reviewer reruns two or three of the
-  builder's mutations and one of each new guard's, and runs the rest for its
-  own fixes only. One review a PR, a second only after a security block. One
-  PR in flight per lane, never stacked. Merge `origin/main` in; never rebase.
-- On a shared host, heavy runs (`test:root`, `test:sizes`, `test:memory`, the
-  deploy harness, the recorders) take the host's run lock; a timeout under load
-  is rerun under it, never a finding. When done, delete what you wrote outside
-  the repo and your `node_modules`.
-- A change that brings a measured time or size (a watchdog, a budget, a quota)
-  within about 20% of its ceiling lands with its fix; a reviewer who finds one
-  blocks. Measure at CI's scale, about 2.7x slower than a local host: a test
-  past a third of its budget locally is near its ceiling there. A test that
-  writes a full page of objects, or grows with each migration, is a size test:
-  tag it `large`.
+  test uses, a copy of a contract value, a per-module allow-list, an enforcer
+  (hook, gate, sandbox check) reading or started under env or files the
+  agent or its settings can write (`NODE_OPTIONS`), or start-checked in an
+  env it does not enforce in, and a change `platform/deploy/platform.json`
+  `forward` lacks.
+  It asks only for what makes the code more correct or simpler, and calls a
+  departure from the decided design better (the log is updated) or a
+  shortcut. It commits its own fixes of up to 50 lines and approves that
+  head; a bigger fix is a `BLOCK` with its diff. A merge of main touching the
+  PR's code fails `review` until its merger asks a re-confirm, which reads
+  only its conflicts.
+- After each batch of merges, a step-5 search across everything merged and
+  open looks for drift between PRs; unopened branches wait for it.
+- CI is the one full run; a coordinator's prompt adds or drops no check this
+  section names. Push a draft once it compiles, having run once only what the
+  diff can break (the done-check: `docs/reference/executable-gates.md`), one
+  mutation per declared change. Read only what applies. A reviewer reruns two
+  or three builder mutations and one of each new guard's, and runs the rest
+  for its own fixes only. One review a PR, a second only after a security
+  block.
+  Merge `origin/main` in; never rebase.
+- **Parallel by default:** every PR sharing no file with open work starts now,
+  from `main`, never stacked; one blocked on some files starts now without
+  them, naming its part 2.
+- An agent runs git only in worktrees it made; a reviewer checks the PR out
+  in its own detached one. On a shared host, heavy runs (`test:root`,
+  `test:sizes`, `test:memory`, the deploy harness) take the host's run lock;
+  a timeout under load is rerun under it, never a finding. When done, delete
+  only what you wrote outside the repo, and your `node_modules`.
+- A change bringing a measured time or size (a watchdog, budget, quota)
+  within about 20% of its ceiling lands with its fix, or a reviewer blocks.
+  CI is about 2.7x slower than a local host: a test past a third of its budget
+  locally is near its ceiling. A test writing a full page of objects, or
+  growing with each migration, is a size test: tag it `large`.
 
 ## 1. Scope
 
@@ -150,7 +158,7 @@ You're done when:
 - A typical change lands in one place.
 - Every import is reasonable, and nothing imports anything more volatile than itself.
 - Subagents have no issues left that are worth fixing.
-- Intended behavior is the same as when you started, apart from bugs the refactor fixed. Test this at the end: in `platform/`, `npm run record -- <dir>` on base and head, then `npm run record:diff -- <base> <head>`.
+- Intended behavior is the same as when you started, apart from bugs the refactor fixed. CI's recorders test this (`ci/record.ts`).
 
 **Tips**
 

@@ -1,5 +1,5 @@
 /**
- * The change log (slice P, `changelog.ts`): while a generation runs, every exported row's
+ * The change log (`changelog.ts`): while a generation runs, every exported row's
  * change writes its image, exactly as the export reads the row, in the writing unit's own
  * transaction; nothing with capture off; past `LOG_BYTES` (or an image past `IMAGE_MAX`) the
  * write lands and the generation fails with one notice.
@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
 import { MANIFEST_LOG_OVERFLOW } from "../src/backup";
-import { ChangeLog, LOG_WIDE } from "../src/changelog";
+import { ChangeLog } from "../src/changelog";
 import { exported } from "../src/export";
 import { CHUNK_BYTES, IMAGE_MAX, INLINE_BYTES, LOG_BYTES } from "../../contract/src/limits";
 import { WriteGate } from "../src/gate";
@@ -24,9 +24,8 @@ const W = "/workspace";
 const text = (body: string) => new TextEncoder().encode(body);
 
 /**
- * The segment build `ChangeLog.segment` replaced (review rvburst V1), verbatim but for its
- * rows: every kept line held as a string, then joined and encoded. The reference for its
- * bytes.
+ * The segment build `ChangeLog.segment` replaced, verbatim but for its rows: every kept line held
+ * as a string, then joined and encoded. The reference for its bytes.
  */
 function replacedSegment(rows: readonly { seq: number; line: string }[]): Uint8Array {
   const tables = exported();
@@ -99,14 +98,14 @@ describe("a log segment's build", () => {
     const o = await owner();
     const made = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
-      // A reservation's numbers as SQLite may write them: `1.0e+20` is 21 digits in JSON.
+      // A sandbox call's numbers as SQLite may write them: `1.0e+20` is 21 digits in JSON.
       const wide = "1.0e+20";
       for (let n = 1; n <= 200; n++) {
         sql.exec("INSERT INTO change_log (line) VALUES (?)",
-                 `{"t":"row","table":"model_reservations","row":{"seq":${n},"id":"r",` +
+                 `{"t":"row","table":"egress_reservations","row":{"id":"r${n}",` +
                  `"max_output_tokens":${wide},"est_tokens":${wide},"est_cost":${wide},` +
-                 `"tokens":${wide},"cost":${wide},"policy_generation":${wide},` +
-                 `"created_at":${wide},"settled_at":${wide}}}`);
+                 `"tokens":${wide},"cost":${wide},"generation":${wide},` +
+                 `"opened_at":${wide},"settled_at":${wide}}}`);
       }
       const rows = sql.exec<{ seq: number; line: string }>(
         "SELECT seq, line FROM change_log ORDER BY seq").toArray();
@@ -117,13 +116,13 @@ describe("a log segment's build", () => {
                same: Buffer.compare(Buffer.from(built), Buffer.from(replacedSegment(rows))) };
     });
     expect(made.bytes).toBeGreaterThan(made.stored + 200 * 32);  // wider than stored and seq
-    // Its own bytes: a view of a larger buffer would cross RPC whole (rvburst X1).
+    // Its own bytes: a view of a larger buffer would cross RPC whole.
     expect(made.buffer).toBe(made.bytes);
     expect(made.same).toBe(0);
   });
 
   it("ships a log full of large REAL values a part at most each, every line shipped: never a " +
-     "span whose segment as written is past a part (rvburst W2)", { tags: ["large"] },
+     "span whose segment as written is past a part", { tags: ["large"] },
      async () => {
     const o = await owner();
     const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
@@ -135,7 +134,7 @@ describe("a log segment's build", () => {
       const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
       for (let n = 1; n <= 4000; n++) {
         sql.exec("INSERT INTO change_log (line) VALUES (?)",
-                 `{"t":"row","table":"model_reservations","row":{"seq":${n},${numbers}}}`);
+                 `{"t":"row","table":"egress_reservations","row":{"id":"r${n}",${numbers}}}`);
       }
       const { last } = log.state();
       const sizes: number[] = [];
@@ -153,7 +152,7 @@ describe("a log segment's build", () => {
   });
 
   it("sizes again a span pinned under the old sizing that is past a part as written, once, " +
-     "and ships every line (rvburst X3)", { tags: ["large"] }, async () => {
+     "and ships every line", { tags: ["large"] }, async () => {
     const o = await owner();
     const shipped = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
@@ -162,7 +161,7 @@ describe("a log segment's build", () => {
       const numbers = Array.from({ length: 100 }, (_, n) => `"f${n}":1.0e+20`).join(",");
       for (let n = 1; n <= 4000; n++) {
         sql.exec("INSERT INTO change_log (line) VALUES (?)",
-                 `{"t":"row","table":"model_reservations","row":{"seq":${n},${numbers}}}`);
+                 `{"t":"row","table":"egress_reservations","row":{"id":"r${n}",${numbers}}}`);
       }
       // Pinned as the old sizing pinned it: the stored bytes and 32 a line to a part.
       const { shipped: from, last } = log.state();
@@ -293,8 +292,8 @@ describe("the change log", () => {
     }
   });
 
-  it("logs a connection's widest row whole: its token refresh fails no generation (review " +
-     "L5-1)", async () => {
+  it("logs a connection's widest row whole: its token refresh fails no generation",
+     async () => {
     const o = await owner();
     // Past a burst, so its refreshes land before the base is read.
     await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
@@ -343,11 +342,11 @@ describe("the change log", () => {
       await gate.write(() => sql.exec("INSERT INTO wide_probe (k, v) VALUES ('w', ?)",
                                       "a".repeat(IMAGE_MAX)));
       expect(sql.exec("SELECT COUNT(*) AS n FROM wide_probe").one()).toEqual({ n: 1 });
-      expect(sql.exec("SELECT line FROM change_log").toArray()).toEqual([{ line: LOG_WIDE }]);
+      expect(sql.exec("SELECT line FROM change_log").toArray())
+        .toEqual([{ line: '{"t":"wide"}' }]);
       expect(sql.exec("SELECT capturing, overflow FROM log_capture").one())
         .toEqual({ capturing: 0, overflow: 1 });
     });
-    expect(LOG_WIDE).toBe('{"t":"wide"}');
   });
 
   it("keeps small files' bytes in their image under the BLOB's size bound", () => {

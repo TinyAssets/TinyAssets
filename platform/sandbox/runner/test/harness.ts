@@ -413,10 +413,18 @@ export interface FakeCli {
                                  /** Made only when one of its arguments holds this. */
                                  readonly if?: string }[];
   /**
-   * A file (`~/...`, under one of the record's session paths) its prompts are kept in, as a
-   * CLI keeps its conversation: `{history}` in a request is what it held before this run.
+   * A file (`~/...`, one a resume of its session reads, the record's `resume_paths`) its
+   * prompts are kept in, as a CLI keeps its conversation: `{history}` in a request is what it
+   * held before this run.
    */
   readonly history?: string;
+  /**
+   * Hook commands it runs as a CLI runs a hook, after its requests: each argv as itself, with
+   * `input` written to its stdin and closed, or, without one, its stdin left open; its exit
+   * code, stdout and stderr in its record (`hooks`), one still running after 10 s stopped
+   * (exit null).
+   */
+  readonly hooks?: readonly { readonly argv: readonly string[]; readonly input?: string }[];
   /**
    * A sign-in (its record's `login.argv`): `lines` printed at once (stdout, or stderr with
    * `stderr`); with `code`, one line read from stdin, then `writes` made and exit 0; without
@@ -478,7 +486,21 @@ const request = async () => {
     fs.mkdirSync(path.dirname(where(plan.history)), { recursive: true });
     fs.appendFileSync(where(plan.history), stdin + "\n");
   }
+  for (const hook of plan.hooks || []) {
+    hooks.push(await new Promise((answer) => {
+      const child = spawn(hook.argv[0], hook.argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (d) => { out += d; });
+      child.stderr.on("data", (d) => { err += d; });
+      child.stdin.on("error", () => {});
+      if (hook.input !== undefined) { child.stdin.end(hook.input); }
+      const stop = setTimeout(() => child.kill("SIGKILL"), 10000);
+      child.on("close", (code) => { clearTimeout(stop); answer({ code, out, err }); });
+    }));
+  }
 };
+const hooks = [];
 const done = () => {
   const dumps = {};
   for (const file of plan.dumps || []) {
@@ -501,7 +523,7 @@ const done = () => {
   fs.writeFileSync(seen + ".part",
     JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), stdin,
                      uid: process.getuid(), gid: process.getgid(), groups: process.getgroups(),
-                     dumps, owners }));
+                     dumps, owners, hooks }));
   fs.renameSync(seen + ".part", seen);
   if (process.argv.includes("status")) {
     const status = plan.status || { out: "", exit: 1 };
@@ -599,6 +621,8 @@ export class Doors {
   ended = false;
   /** Upload intents begun, and the chunks they received, by intent id. */
   readonly uploads = new Map<string, { size: number; chunks: string[]; got: string[] }>();
+  /** What happens as a read of `path` is answered (another run's write meanwhile). */
+  onRead: (path: string) => void = () => undefined;
   /** A commit op the object refuses, by its path: its reason, or null to commit it. */
   refuse: (path: string) => string | null = () => null;
   /**
@@ -613,6 +637,13 @@ export class Doors {
   holdCommit = false;
   /** The held commit's answer, sent at that heartbeat. */
   #heldCommit: (() => void) | null = null;
+  /**
+   * The decide door's answer, by the helper's or the runner's body: the tools a hook matches
+   * for a check (none, so no hook is written), and a call let be.
+   */
+  decide: (body: Record<string, unknown>) => { status: number; value: unknown } = (body) =>
+    ({ status: 200, value: body["check"] === true ? { tools: [], generation: 1 }
+      : { allow: true } });
   /** Uploads the sync agent aborted, by intent id. */
   readonly aborted: string[] = [];
   #server: Server | null = null;
@@ -649,6 +680,10 @@ export class Doors {
           }
           return;
         }
+        if (door === "decide") {
+          const answer = this.decide(body);
+          return json(answer.status, answer.value);
+        }
         if (path === "/signin") {
           return json(200, { reported: true });
         }
@@ -662,6 +697,7 @@ export class Doors {
                              reset: false });
         }
         if (path === "/sync/read") {
+          this.onRead(body["path"] as string);
           const file = this.files.get(body["path"] as string);
           if (file === undefined) {
             return json(404, { error: { code: "not_found" } });
@@ -810,7 +846,8 @@ export class Sandbox extends Box {
   seen(engine: string): { argv: string[]; env: Record<string, string>; cwd: string;
                           stdin: string; uid: number; gid: number; groups: number[];
                           dumps: Record<string, string | null>;
-                          owners: Record<string, { path: string; uid: number }[]> }[] {
+                          owners: Record<string, { path: string; uid: number }[]>;
+                          hooks: { code: number | null; out: string; err: string }[] }[] {
     const bin = SERVED.get(engine)!.cli.install.bin;
     const dir = this.path("/fake-seen");
     return readdirSync(dir).filter((name) => name.startsWith(`${bin}.`) && name.endsWith(".json"))
@@ -860,10 +897,10 @@ export class Sandbox extends Box {
   }
 
   /** A sign-in's document and the lease's secrets, as the sandbox Worker leaves them. */
-  login(doc: { id: string; engine: string; region?: string | null; mode?: "in" | "out";
-               authority?: string }, doors: Doors): void {
+  login(doc: { id: string; engine: string; mode?: "in" | "out"; authority?: string },
+        doors: Doors): void {
     const signin: SigninDoc = {
-      id: doc.id, engine: doc.engine, region: doc.region ?? null, mode: doc.mode ?? "in",
+      id: doc.id, engine: doc.engine, mode: doc.mode ?? "in",
       authority: doc.authority ?? "owner",
       urls: { events: `${doors.origin}/signin/${doc.id}/events`,
               signin: `${doors.origin}/signin` } };
@@ -945,6 +982,8 @@ export function startDoc(doors: Doors, engine: string, over: Partial<StartDoc> =
     urls: { mcp: `${doors.origin}/r/${run}/${"e".repeat(64)}/mcp`,
             mcp_bare: `${doors.origin}/r/${run}/mcp`, events: `${doors.origin}/r/${run}/events`,
             signin: `${doors.origin}/signin` },
+    mcp_servers: {},
+    hooks: {},
     ...over,
   };
 }

@@ -9,7 +9,6 @@
 import { bundledSources } from "./catalog";
 import type { CliSpec, Install, LoginSpec, SourceRecord } from "./schema";
 
-/** A served CLI record. */
 export type Served = SourceRecord & { readonly cli: CliSpec };
 
 /** A served record that signs in by the vendor's own login in the sandbox. */
@@ -49,26 +48,29 @@ export function signsIn(record: Served | undefined): record is SignsIn {
   return record?.cli.login !== undefined;
 }
 
+/**
+ * The provider a sign-in's plan covers: its record's one API-key provider (Claude Code's
+ * `anthropic`), else the engine itself. Data only: no provider is named here.
+ */
+export function planProvider(record: SignsIn): string {
+  const providers = Object.keys(record.cli.api_key_env ?? {});
+  return providers.length === 1 ? providers[0]! : record.id;
+}
+
 export function npmInstalled(record: Served): record is NpmInstalled {
   return record.cli.install.manager === "npm";
 }
 
 /**
- * An engine's vendor hosts, its sign-in's and its model calls', and the chosen region's
- * (`cli.regions`) when it has regions, each once: what a job's sandbox network is let out to
- * for a job on its sign-in (the owner's start and sign-in hand them to the sandbox Worker),
- * and what the template's sign-in check runs under. An engine with no CLI, or a region it
- * lacks, throws.
+ * An engine's vendor hosts, its sign-in's and its model calls', each once: what a job's
+ * sandbox network is let out to for a job on its sign-in (the owner's start and sign-in hand
+ * them to the sandbox Worker), and what the template's sign-in check runs under. An engine
+ * with no CLI throws.
  */
-export function engineHosts(engine: string, region: string | null): string[] {
+export function engineHosts(engine: string): string[] {
   const cli = servedRecord(engine)?.cli;
   if (cli === undefined) {
     throw new Error(`engine ${engine} has no CLI record`);
   }
-  const chosen = region === null ? undefined : cli.regions?.[region];
-  if (region !== null && chosen === undefined) {
-    throw new Error(`engine ${engine} has no region ${region}`);
-  }
-  return [...new Set([...cli.hosts.login, ...cli.hosts.provider,
-                      ...(chosen?.hosts.login ?? []), ...(chosen?.hosts.provider ?? [])])];
+  return [...new Set([...cli.hosts.login, ...cli.hosts.provider])];
 }

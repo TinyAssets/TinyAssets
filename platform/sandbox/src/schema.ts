@@ -41,6 +41,32 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "CREATE TABLE IF NOT EXISTS owed (sandbox_id TEXT PRIMARY KEY)",
   ]),
+  // 4 (`untangle-2026-11/control-last-good.md`): the control record's last good copy
+  // (`contract/src/control.ts` `SqlKeeper`), which serves a start's numbers and scratch
+  // retention when KV can't be read; the retention kept apart for that goes.
+  Object.freeze([
+    "CREATE TABLE control_kept (only INTEGER PRIMARY KEY CHECK (only = 1), text TEXT NOT NULL, " +
+      "read_at INTEGER NOT NULL)",
+    "DROP TABLE known_retention",
+  ]),
+  // 5 (`untangle-2026-11/foreign-runner-reap.md`): when the look kills a sandbox a job lives
+  // in on a runner this Worker does not speak, which no renewal can carry on: the end of the
+  // window it was found in.
+  Object.freeze([
+    "ALTER TABLE sandboxes ADD COLUMN kill_at REAL",
+  ]),
+  // 6 (`untangle-2026-11/look-resume-loop.md`): whether its runner answered since the sandbox
+  // last came running, so the look resumes a paused one for its lease only on that word.
+  Object.freeze([
+    "ALTER TABLE sandboxes ADD COLUMN heard INTEGER NOT NULL DEFAULT 0",
+  ]),
+  // 7 (`untangle-2026-11/start-faults.md`): whether its runner's `prepare` ended since the
+  // sandbox last came running or took another runner, so a start that finds it running and
+  // unprepared (a fault on the way) prepares it before it launches anything. Unknown for the
+  // sandboxes already kept, so each is prepared again once.
+  Object.freeze([
+    "ALTER TABLE sandboxes ADD COLUMN prepared INTEGER NOT NULL DEFAULT 0",
+  ]),
 ]);
 
 /** `SandboxSlots`'s, the one line for the platform. */

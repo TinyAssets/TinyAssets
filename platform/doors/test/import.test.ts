@@ -27,7 +27,7 @@ import { CHUNK_BYTES } from "../../contract/src/limits";
 import { DEFAULT_POLICY_DIGEST } from "../../contract/src/policy-document";
 import { QUEUES } from "../../contract/src/queue-names";
 import type { ImportBundle } from "./import-setup";
-import { admitOwner, doorsEnv, OPEN, ownDoor, setControl, TIERS } from "./support";
+import { admitOwner, doorsEnv, OPEN, OPEN_RECORD, ownDoor, setControl } from "./support";
 
 const KEY = randomBytes(32).toString("base64url");
 const BUNDLE: ImportBundle = inject("importBundle");
@@ -217,6 +217,21 @@ describe("the import consumer", () => {
     await drain(world(), whole);
     const [a, b] = [await held(message), await held(whole)];
     expect(a).toEqual(b);
+    await admitOwner(owner);
+    await readBack(owner);
+  });
+
+  it("keeps the owner's tier numbers through a control record outage mid-import", async () => {
+    // The first slice reads the record well formed; every later one meets KV down, and hands
+    // the object no numbers, so the files quota goes on with the ones it kept.
+    const owner = fresh();
+    const fine = world();
+    const first = batch(await staged(owner));
+    await importQueue(first.batch, fine.env, { ms: 0, bytes: 0 });
+    expect(first.acked).toEqual([0]);
+    const down = world({ CONTROL: { get: () => Promise.reject(new Error("KV down")) } });
+    expect(await drain(down, fine.sent.splice(0)[0], { ms: 0, bytes: 0 }))
+      .toMatchObject({ outcome: "acked" });
     await admitOwner(owner);
     await readBack(owner);
   });
@@ -512,7 +527,7 @@ describe("the import's check, through the consumer, held to the bundle by the jo
 /** The import's binding for `owner`, as the consumer makes it. */
 function bindImportFor(owner: string, bundle: string) {
   return { binding: { owner, caller: PLATFORM_CALLER, origin: null, import: { bundle },
-                      tiers: TIERS } as Binding,
+                      control: OPEN_RECORD } as Binding,
            stub: stubOf(owner) };
 }
 

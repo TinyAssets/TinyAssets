@@ -23,8 +23,9 @@ import {
   DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, POLICY_LIMITS,
   policyDigest, validate,
 } from "../../contract/src/policy-document";
+import { modelSettings } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, inStores, ownerObject } from "./support";
+import { atClock, failure, inStores, ownerObject } from "./support";
 
 type Doc = {
   egress: { mode: string; destinations: unknown[] };
@@ -66,12 +67,16 @@ async function kinds(r: Rig, kind: string) {
 }
 
 describe("the default policy", () => {
-  it("starts at generation 1 with no action rules, its digest the document's own",
-     async () => {
+  it("starts at generation 1 with no action rules and code mode off, its digest the " +
+     "document's own", async () => {
     const r = await rig();
     const policy = await current(r);
     expect(policy).toEqual({ owner: r.owner, generation: 1, digest: DEFAULT_POLICY_DIGEST,
-                             policy: defaults() });
+                             policy: defaults(), notes: [],
+                             // The agents' own hooks' note is the engines', whatever the rules.
+                             hooks: { holds_at: ["claude-code", "gemini", "pi"],
+                                      not_enforced: ["main_agent", "codex", "gemini.fails_open"] },
+                             codemode: { on: false } });
     expect(policyDigest(defaults())).toBe(DEFAULT_POLICY_DIGEST);
     expect(canonical(defaults())).toBe(DEFAULT_POLICY_JSON);
     expect(validate(defaults())).toEqual(defaults());
@@ -327,7 +332,8 @@ describe("an agent's proposal", () => {
     expect(stale.message).toBe("proposal is not the pending card shown");
   });
 
-  it("refuses a malformed proposal, and a pending set at its limit", async () => {
+  it("refuses a malformed proposal, and at a full pending set lets the oldest go",
+     async () => {
     const r = await rig();
     for (const request of [{ change: [] }, { change: { big: "x".repeat(16_001) } },
                            { change: {}, request_id: "" },
@@ -340,28 +346,31 @@ describe("an agent's proposal", () => {
     // A proposal with no card is receipted and held nowhere.
     await r.stub.policyPropose(r.bind(null), { change: change(1) });
     expect(await r.table("policy_proposals")).toEqual([]);
-    const { pendingProposals: most, proposalTtlS: ttl } = POLICY_LIMITS;
+    const { pendingProposals: most } = POLICY_LIMITS;
     const ids = (from: number) => Array.from({ length: most }, (_, n) => `p${from + n}`);
     await inStores(r.stub, ({ policy }) => {
       const now = clock();
-      for (const id of ids(0)) {
+      for (const id of ids(0).slice(1)) {
         policy.propose(change(1), id, "owner", now);
       }
-      // A pending one is never evicted: a full set refuses.
-      expect(() => policy.propose(change(1), "over", "owner", now))
-        .toThrow("too many pending policy proposals");
-      expect(policy.held("p0", now + ttl - 1)).not.toBeNull();
-      expect(policy.held("p0", now + ttl + 1)).toBeNull();  // expired
-      // The expired ones are pruned at the next filing, which makes room.
-      const later = now + ttl + 1;
-      for (const id of ids(most)) {
-        policy.propose(change(1), id, "owner", later);
-      }
-      expect(() => policy.propose(change(1), "over", "owner", later))
+      // A pending proposal has no life of its own: a filing years on prunes none.
+      const later = now + 10 * 365 * 86_400;
+      policy.propose(change(1), "late", "owner", later);
+      expect(policy.held("p1")).not.toBeNull();
+      // A full set refuses the owner nothing: a new card lets the oldest pending one go.
+      policy.propose(change(1), "over", "owner", later);
+      expect(policy.held("p1")).toBeNull();
+      expect(policy.held("p2")).not.toBeNull();
+      // An outside client's card never pushes out the owner's: with none of its class's to
+      // let go, it is refused.
+      expect(() => policy.propose(change(1), "outside", MUSE.client, later))
         .toThrow("too many pending policy proposals");
     });
     expect((await r.table("policy_proposals")).map((row) => row["request_id"]).sort())
-      .toEqual(ids(most).sort());
+      .toEqual([...ids(2).slice(0, most - 2), "late", "over"].sort());
+    // Read years on, the oldest is still the owner's to apply.
+    expect((await atClock(clock() + 10 * 365 * 86_400, () =>
+      r.stub.policyProposal(r.bind(null), { request_id: "p2" }))).digest).toMatch(/^sha256:/);
   });
 
   it("keeps only the newest applied proposals", async () => {
@@ -539,5 +548,37 @@ describe("the policy document's new shape, migration 6 (d3 §N)", () => {
       "UPDATE owner_policy SET document = ?", other));
     expect(mismatched.refused).toMatch(/the owner policy is not the old default document/);
     expect(mismatched.row).toMatchObject({ document: other });
+  });
+});
+
+describe("the models table of owner policy", () => {
+  const base = JSON.parse(DEFAULT_POLICY_JSON) as object;
+
+  it("is optional, every cap off until the owner sets it (ADR-034 decision 7)", () => {
+    expect(modelSettings(validate(base))).toEqual({
+      turn_requests: null, turn_tokens: null, turn_cost: null, daily_cost: null,
+      monthly_cost: null, sources: {} });
+    // A cap the owner turns off again, and the highest each takes.
+    expect(modelSettings(validate({ ...base, models: { turn_tokens: null } })).turn_tokens)
+      .toBeNull();
+    expect(modelSettings(validate({ ...base, models: { turn_requests: 1_000_000 } }))
+      .turn_requests).toBe(1_000_000);
+    const document = validate({ ...base, models: {
+      turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
+      sources: { anthropic: { daily_cost: 1, monthly_cost: null } } } });
+    expect(modelSettings(document)).toEqual({
+      turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
+      sources: { anthropic: { daily_cost: 1, monthly_cost: null } } });
+  });
+
+  it.each([
+    { turn_requests: 0 }, { turn_requests: 1_000_001 }, { turn_requests: 1.5 },
+    { turn_tokens: "1" }, { turn_cost: -1 }, { daily_cost: "1" }, { retries: 0 },
+    { unknown: 1 }, { sources: { Anthropic: { daily_cost: 1 } } },
+    { sources: { "-x": { daily_cost: 1 } } }, { sources: { [`a${"b".repeat(64)}`]: {} } },
+    { sources: { anthropic: { weekly_cost: 1 } } },
+    { sources: { anthropic: { daily_cost: -1 } } }, { sources: [] }, [],
+  ])("refuses %j", (models) => {
+    expect(() => validate({ ...base, models })).toThrow("invalid models policy");
   });
 });

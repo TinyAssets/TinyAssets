@@ -7,7 +7,6 @@ import codex from "../records/codex.json";
 import gemini from "../records/gemini.json";
 import googleAiStudio from "../records/google_ai_studio.json";
 import groq from "../records/groq.json";
-import kimi from "../records/kimi.json";
 import mistral from "../records/mistral.json";
 import openai from "../records/openai.json";
 import openrouterUserModelsV1 from "../records/openrouter_user_models_v1.json";
@@ -26,7 +25,6 @@ export const RECORDS: readonly unknown[] = Object.freeze([
   gemini,
   googleAiStudio,
   groq,
-  kimi,
   mistral,
   openai,
   openrouterUserModelsV1,

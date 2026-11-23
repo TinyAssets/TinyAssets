@@ -1,5 +1,5 @@
 /**
- * The vendor's own sign-in inside a sandbox (slice SIGNIN; `signins.ts`), in workerd with the
+ * The vendor's own sign-in inside a sandbox (`signins.ts`), in workerd with the
  * recording fake behind `SANDBOX`: the owner's door opens the sandbox's lease with no run and
  * asks the sandbox Worker to start the record's login; the runner's `ta.signin` frames keep
  * the vendor's prompt, renew the lease and reach the owner's app socket; a pasted code goes
@@ -9,17 +9,20 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { OPEN_GATES, writeControl } from "../../ci/fixtures";
+import { OPEN, writeControl } from "../../ci/fixtures";
+import { staleRefusal } from "../../contract/src/control";
 import { until } from "../../ci/workerd";
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
 import { WriteGate } from "../src/gate";
-import { NO_CODE_WANTED, SIGNIN_LIVE, SIGNIN_OFF, Signins } from "../src/signins";
+import {
+  NO_CODE_WANTED, NO_SIGNIN, SIGNIN_LIVE, SIGNIN_OFF, SIGNIN_UNREAD, Signins,
+} from "../src/signins";
 import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
-  defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
+  defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, scripted, startOf, whileOut,
 } from "./runs-support";
-import { drainDue, failure } from "./support";
+import { drainDue, failure, gateFor, OPEN_RECORD, signinRecord } from "./support";
 import type { SandboxSignin, SandboxStart } from "../../contract/src/sandbox";
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
@@ -65,7 +68,7 @@ describe("a sign-in", () => {
                                  state: "starting", url: null });
     const asked = await lastSignin(r);
     expect(asked).toMatchObject({ id: (view as { id: string }).id, engine: "claude-code",
-                                  mode: "in", region: null, authority: "owner",
+                                  mode: "in", authority: "owner",
                                   urls: { events: `https://egress.tinyassets.io/signin/${
                                     (view as { id: string }).id}/events` } });
     // It opened the lease: the sandbox is configured by this start (its tokens, its network).
@@ -77,13 +80,12 @@ describe("a sign-in", () => {
       .toBe(SIGNIN_LIVE);
   });
 
-  it("is refused for an engine with no vendor sign-in, a region it does not take, or one " +
-     "it needs and lacks", async () => {
+  it("is refused for an engine with no vendor sign-in, a field it does not take, or a " +
+     "mode it has not", async () => {
     const r = await gated();
     // A sign-out sits behind no switch, so only the record refuses an engine that cannot sign in.
     for (const request of [{ engine: "pi" }, { engine: "pi", mode: "out" }, { engine: "nope" },
                            { engine: "claude-code", region: "global" },
-                           { engine: "kimi" }, { engine: "kimi", region: "moon" },
                            { engine: "claude-code", mode: "sideways" }]) {
       expect((await failure(() => r.stub.signinStart(r.bind(), request as never))).code,
              JSON.stringify(request)).toBe("invalid");
@@ -150,13 +152,11 @@ describe("a sign-in", () => {
 
   it("shows the host the vendor's URL sends the owner to", async () => {
     const r = await gated();
-    const { id } = await r.stub.signinStart(r.bind(), { engine: "kimi", region: "global" }) as
-      { id: string };
+    const { id } = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
     await r.stub.signinEvents(runnerOfSignin(r, await lastSignin(r)), { id, frames: [
-      frame(1, { state: "open", url: "https://www.kimi.ai/code/authorize_device?user_code=K1-ABC",
-                 code: "K1-ABC", accepts_code: false })] });
+      frame(1, { state: "open", url: CODEX_PAGE, code: "ABCD-EFGH2", accepts_code: false })] });
     expect((await r.stub.signinList(r.bind())).signins[0]).toMatchObject({
-      host: "www.kimi.ai", code: "K1-ABC" });
+      host: "auth.openai.com", code: "ABCD-EFGH2" });
   });
 
   it("holds the lease a run joins, and leaves it to the run at its end", async () => {
@@ -165,7 +165,7 @@ describe("a sign-in", () => {
     const signin = await lastSignin(r);
     await defineAgent(r.stub, r.bind(), "main", { engine: "auto", scopes: [] });
     await r.connect("sk-ant-x");
-    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message: "go",
+    const run = await r.stub.agentSubmit(r.bind(), { message: "go",
                                                                      client_send_id: "j-1" });
     const start = await startOf(r.stub, run.run_id);
     // The run joined the sign-in's lease: no tokens of its own.
@@ -188,7 +188,7 @@ describe("a sign-in", () => {
     const runner = runnerOfSignin(r, signin);
     await defineAgent(r.stub, r.bind(), "main", { engine: "auto", scopes: [] });
     await r.connect("sk-ant-x");
-    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message: "go",
+    const run = await r.stub.agentSubmit(r.bind(), { message: "go",
                                                                      client_send_id: "k-1" });
     const start = await startOf(r.stub, run.run_id);
     expect(start.lease.lease_id).toBe(signin.lease.lease_id);
@@ -205,17 +205,122 @@ describe("a sign-in", () => {
     expect((await recorder(r.stub)).releases).toEqual([{ lease_id: signin.lease.lease_id }]);
   });
 
-  it("is stopped by the owner, and ends with no sandbox to start in", async () => {
+  it("is stopped by the owner before its sandbox is released, and ends with no sandbox to " +
+     "start in", async () => {
     const r = await gated();
     const { id } = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
-    expect(await r.stub.signinCancel(r.bind(), { id })).toEqual({ cancelled: true });
+    const signin = await lastSignin(r);
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signinCancel", { hold: "before" });
+    const cancelled = r.stub.signinCancel(r.bind(), { id });
+    await gate.held("signinCancel");
+    // While its stop is out, its lease's release waits for the stop's answer: a release that
+    // went first would find the sign-in still live and pause nothing.
+    expect((await gate.calls()).map((call) => call.method)).not.toContain("release");
+    await gate.release("signinCancel");
+    expect(await cancelled).toEqual({ cancelled: true });
+    await until(async () => (await recorder(r.stub)).releases.length > 0, "the release");
+    expect((await gate.calls()).map((call) => call.method)
+      .filter((method) => method === "signinCancel" || method === "release"))
+      .toEqual(["signinCancel", "release"]);
     expect((await recorder(r.stub)).signinCancels).toEqual([{ authority: "owner", id }]);
+    // Ended at once, on the trusted side: its lease given back, and its runner's next post
+    // refused, whatever the sandbox did.
+    expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+    expect((await failure(() => r.stub.signinEvents(runnerOfSignin(r, signin),
+                                                    { id, frames: [] }))).message)
+      .toBeTruthy();
     const s = await gated();
     await scripted(s.stub, { signinAnswer: { started: false, code: "sandbox_waiting" } });
     expect(await s.stub.signinStart(s.bind(), { engine: "codex" }))
       .toEqual({ started: false, code: "sandbox_waiting" });
     expect((await s.stub.signinList(s.bind())).signins).toEqual([]);
     expect(await s.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+  });
+
+  it("stopped while its start is out, is stopped again once it started, its sandbox released " +
+     "after that stop, and refused", async () => {
+    const r = await gated();
+    const releases = async () => (await recorder(r.stub)).releases.length;
+    const started = whileOut(r.name, "signin", () => failure(() =>
+      r.stub.signinStart(r.bind(), { engine: "codex" })), async () => {
+      const [row] = (await r.stub.signinList(r.bind())).signins;
+      expect(row).toMatchObject({ state: "starting" });
+      await r.stub.signinCancel(r.bind(), { id: row!.id });
+      expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+      await until(async () => await releases() === 1, "the stop's release");
+    });
+    expect((await started).message).toBe(NO_SIGNIN);
+    // The owner's stop, while it may not have launched yet; then its fence, once it had. Each
+    // is followed by the lease's release: the first reached the sandbox before the late start
+    // resumed it, so only the second finds it with nothing left to run.
+    const id = (await lastSignin(r)).id;
+    expect((await recorder(r.stub)).signinCancels)
+      .toEqual([{ authority: "owner", id }, { authority: "owner", id }]);
+    await until(async () => await releases() === 2, "the late stop's release");
+    expect((await gateFor(env.SANDBOX_GATE, r.name).calls()).map((call) => call.method))
+      .toEqual(["signin", "signinCancel", "release", "signinCancel", "release"]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+  });
+
+  it("stopped while its start waits to be sent again, is never sent again", async () => {
+    const r = await gated();
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signin", { refuse: { code: "object_overloaded",
+                                         message: "this account is busy", retryAfterS: 1 } });
+    const begun = r.stub.signinStart(r.bind(), { engine: "codex" });
+    await until(async () => (await gate.calls()).some((call) => call.method === "signin"),
+                "the refused start");
+    const [row] = (await r.stub.signinList(r.bind())).signins;
+    await r.stub.signinCancel(r.bind(), { id: row!.id });
+    expect(await begun).toEqual({ started: false, code: "object_overloaded" });
+    expect((await gate.calls()).filter((call) => call.method === "signin")).toHaveLength(1);
+    expect((await recorder(r.stub)).signins).toEqual([]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+  });
+
+  it("ends a start that did not answer, answered or refused out of shape, or was refused, " +
+     "each by its own code", async () => {
+    const r = await gated();
+    const start = () => r.stub.signinStart(r.bind(), { engine: "codex" });
+    await scripted(r.stub, { signinAnswer: "throw" });
+    expect(await start()).toEqual({ started: false, code: "start_lost" });
+    await scripted(r.stub, { signinAnswer: { started: "yes" } as never });
+    expect(await start()).toEqual({ started: false, code: "start_malformed" });
+    await scripted(r.stub, { signinAnswer: { started: true } });
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signin", { refuse: { code: "e2b_quota",
+                                         message: "another version's refusal" } });
+    expect(await start()).toEqual({ started: false, code: "start_malformed" });
+    await gate.arm("signin", { refuse: {
+      code: "sandbox_runner_protocol", message: "the sandbox's runner speaks another protocol" } });
+    expect(await start()).toEqual({ started: false, code: "sandbox_runner_protocol" });
+    // Each ended, its lease given back.
+    expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
+    expect(await r.sql("SELECT authority FROM sandbox_leases")).toEqual([]);
+    // The three with no answer it can read stopped in the sandbox, in case their CLI launched;
+    // the refused one launched nothing.
+    const sent = (await gate.calls()).filter((call) => call.method === "signin")
+      .map((call) => (call.args as [string, SandboxSignin])[1].id);
+    expect(sent).toHaveLength(4);
+    expect((await recorder(r.stub)).signinCancels)
+      .toEqual(sent.slice(0, 3).map((id) => ({ authority: "owner", id })));
+  });
+
+  it("sends a start refused for the moment again, the same start, and begins", async () => {
+    const r = await gated();
+    const gate = gateFor(env.SANDBOX_GATE, r.name);
+    await gate.arm("signin", { refuse: { code: "object_overloaded",
+                                         message: "this account is busy", retryAfterS: 0 } });
+    const begun = await r.stub.signinStart(r.bind(), { engine: "codex" }) as { id: string };
+    const sent = (await gate.calls()).filter((call) => call.method === "signin")
+      .map((call) => (call.args as [string, SandboxSignin])[1]);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(sent[0]!.id).toBe(begun.id);
+    expect((await recorder(r.stub)).signins.map(({ id }) => id)).toEqual([begun.id]);
+    expect((await r.stub.signinList(r.bind())).signins.map(({ id }) => id)).toEqual([begun.id]);
   });
 
   it("signs a client's sandbox in only inside itself", async () => {
@@ -243,8 +348,8 @@ describe("a sign-in", () => {
 
   it("signs out by the same door, its runner deleting the engine's secrets", async () => {
     const r = await gated();
-    await r.stub.signinStart(r.bind(), { engine: "kimi", mode: "out" });
-    expect(await lastSignin(r)).toMatchObject({ engine: "kimi", mode: "out", region: null });
+    await r.stub.signinStart(r.bind(), { engine: "gemini", mode: "out" });
+    expect(await lastSignin(r)).toMatchObject({ engine: "gemini", mode: "out" });
   });
 
   it("is watched on the app socket by its id, the owner's own", async () => {
@@ -270,19 +375,17 @@ describe("a sign-in", () => {
 });
 
 /** A sign-in of `engine` begun, its runner's binding, and its first frames posted. */
-async function begun(r: Gated, engine: string, frames: Record<string, unknown>[],
-                     region?: string) {
-  const { id } = await r.stub.signinStart(r.bind(), { engine, ...(region === undefined ? {}
-    : { region }) }) as { id: string };
+async function begun(r: Gated, engine: string, frames: Record<string, unknown>[]) {
+  const { id } = await r.stub.signinStart(r.bind(), { engine }) as { id: string };
   const runner = runnerOfSignin(r, await lastSignin(r));
   const answer = await r.stub.signinEvents(runner, {
     id, frames: frames.map((event, i) => frame(i + 1, event)) });
   return { id, runner, answer };
 }
 
-// -- the review's attacks (rvsi), each refused --------------------------------------------
+// -- the review's attacks, each refused --------------------------------------------
 
-describe("what leaves the VM through the trusted side (review M1)", () => {
+describe("what leaves the VM through the trusted side", () => {
   it("is a sign-in's fixed states only: a state the VM made up is refused, never stored",
      async () => {
     const r = await gated();
@@ -327,7 +430,7 @@ describe("what leaves the VM through the trusted side (review M1)", () => {
   });
 });
 
-describe("the vendor's page, pinned (review M2)", () => {
+describe("the vendor's page, pinned", () => {
   it("is refused when it is another OAuth client's page, a redirect chain, or a stuffed " +
      "query, on the vendor's own host", async () => {
     const r = await gated();
@@ -349,13 +452,10 @@ describe("the vendor's page, pinned (review M2)", () => {
         "&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive", null],
       ["gemini", "https://accounts.google.com/Logout?continue=https://appengine.google.com/" +
         "_ah/logout?continue=https://evil.example/", null],
-      ["kimi", "https://www.kimi.ai/code/authorize_device?user_code=K1&continue=" +
-        "https%3A%2F%2Fevil.example", "K1-ABC", "global"],
-      ["kimi", "https://www.kimi.com/code/authorize_device?user_code=K1", "K1-ABC", "global"],
     ];
-    for (const [engine, url, code, region] of cases) {
+    for (const [engine, url, code] of cases) {
       const { id, answer } = await begun(r, engine, [
-        { state: "open", url, code, accepts_code: false }], region);
+        { state: "open", url, code, accepts_code: false }]);
       expect(answer, url).toEqual({ accepted: 1, ended: true });
       expect((await r.stub.signinList(r.bind())).signins).toEqual([]);
       expect((await recorder(r.stub)).signinCancels.at(-1)).toEqual({ authority: "owner", id });
@@ -374,11 +474,9 @@ describe("the vendor's page, pinned (review M2)", () => {
 
   it("is taken as the pinned CLI shows it, on each record", async () => {
     const r = await gated();
-    for (const [engine, url, code, region] of [
+    for (const [engine, url, code] of [
       ["claude-code", CLAUDE_PAGE, null],
       ["codex", CODEX_PAGE, "ABCD-EFGH2"],
-      ["kimi", "https://www.kimi.com/code/authorize_device?user_code=1JAG-4POS", "1JAG-4POS",
-       "mainland-cn"],
       ["gemini", "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2F" +
         "codeassist.google.com%2Fauthcode&access_type=offline&scope=https%3A%2F%2Fwww." +
         "googleapis.com%2Fauth%2Fcloud-platform%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2F" +
@@ -386,8 +484,7 @@ describe("the vendor's page, pinned (review M2)", () => {
         "code_challenge_method=S256&code_challenge=abc_DEF-123&state=" + "a1".repeat(32) +
         "&response_type=code&client_id=681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps." +
         "googleusercontent.com", null]] as const) {
-      const { id, runner, answer } = await begun(r, engine, [
-        { state: "open", url, code }], region);
+      const { id, runner, answer } = await begun(r, engine, [{ state: "open", url, code }]);
       expect(answer, engine).toEqual({ accepted: 1, ended: false });
       expect((await r.stub.signinList(r.bind())).signins[0]).toMatchObject({ id, url, code });
       await r.stub.signinEvents(runner, { id, frames: [frame(9, { state: "cancelled" })] });
@@ -395,7 +492,7 @@ describe("the vendor's page, pinned (review M2)", () => {
   });
 });
 
-describe("a sign-in's deadline (review M4)", () => {
+describe("a sign-in's deadline", () => {
   it("ends it on the runner's own expiry, which the app is told", async () => {
     const r = await gated();
     const { answer } = await begun(r, "claude-code", [{ state: "expired" }]);
@@ -427,37 +524,71 @@ describe("a sign-in's deadline (review M4)", () => {
   });
 });
 
-describe("the per-source switch, in the owner's object (review H1)", () => {
+describe("the per-source switch, in the owner's object", () => {
   it("refuses a sign-in to a source switched off, whatever door asks", async () => {
     const r = await gated();
-    expect((await failure(() => r.stub.signinStart(r.bind({ signins: ["claude-code"] }),
-                                                   { engine: "gemini" }))).message)
+    expect((await failure(() => r.stub.signinStart(
+      r.bind({ control: signinRecord(["claude-code"]) }), { engine: "gemini" }))).message)
       .toBe(SIGNIN_OFF);
     expect((await recorder(r.stub)).signins).toEqual([]);
-    // A door that hands none reads the list last handed: still off.
-    expect((await failure(() => r.stub.signinStart(r.bind({ signins: undefined }),
-                                                   { engine: "gemini" }))).message)
-      .toBe(SIGNIN_OFF);
   });
 
-  it("always lets a source switched off be signed out", async () => {
+  it("starts no sign-in on a record not read fresh, the doors' kept copy, for a while",
+     async () => {
     const r = await gated();
-    expect(await r.stub.signinStart(r.bind({ signins: [] }), { engine: "codex", mode: "out" }))
-      .toMatchObject({ engine: "codex", mode: "out", state: "starting" });
+    // A door that hands no record was served from a kept copy: on or off, the sign-in waits.
+    const { control: _handed, ...stale } = r.bind();
+    for (const engine of ["claude-code", "gemini"]) {
+      const failed = await failure(() => r.stub.signinStart(stale, { engine }));
+      expect([failed.code, failed.message])
+        .toEqual(["unavailable", staleRefusal("signin").message]);
+    }
+    expect((await recorder(r.stub)).signins).toEqual([]);
+  });
+
+  it("switches every sign-in off while the object keeps no record, and says so", async () => {
+    const r = await gated();
+    // The doors found none (a missing or malformed record): the object drops its copy, and
+    // Claude Code, which its record's verdict allows, is no more on than any other.
+    const none = r.bind({ control: null });
+    for (const engine of ["claude-code", "codex"]) {
+      const failed = await failure(() => r.stub.signinStart(none, { engine }));
+      expect([failed.code, failed.message]).toEqual(["signin_off", SIGNIN_UNREAD]);
+    }
+    expect(await r.sql("SELECT text FROM control_kept")).toEqual([]);
+    expect((await recorder(r.stub)).signins).toEqual([]);
+    // A record read again switches its sources back on.
+    expect(await r.stub.signinStart(r.bind({ control: OPEN_RECORD }), { engine: "claude-code" }))
+      .toMatchObject({ engine: "claude-code", mode: "in", state: "starting" });
+  });
+
+  it("always lets a source switched off be signed out, the record fresh, kept or none",
+     async () => {
+    for (const handed of ["fresh", "none", "kept"] as const) {
+      const r = await gated();
+      const { control: _handed, ...kept } = r.bind();
+      const binding = handed === "kept" ? kept
+        : r.bind({ control: handed === "fresh" ? signinRecord([]) : null });
+      expect(await r.stub.signinStart(binding, { engine: "codex", mode: "out" }))
+        .toMatchObject({ engine: "codex", mode: "out", state: "starting" });
+    }
   });
 
   it("takes no pasted code once the source is switched off", async () => {
     const r = await gated();
     const { id } = await begun(r, "claude-code", [{ state: "open", url: CLAUDE_PAGE }]);
-    expect((await failure(() => r.stub.signinCode(r.bind({ signins: [] }),
+    expect((await failure(() => r.stub.signinCode(r.bind({ control: signinRecord([]) }),
                                                   { id, code: "abc#def" }))).message)
       .toBe(SIGNIN_OFF);
+    expect((await failure(() => r.stub.signinCode(r.bind({ control: null }),
+                                                  { id, code: "abc#def" }))).message)
+      .toBe(SIGNIN_UNREAD);
     expect((await recorder(r.stub)).codes).toEqual([]);
   });
 
   it("never runs on a switched-off source's vendor login, named or by auto", async () => {
     const r = await gated();
-    const off = r.bind({ signins: ["claude-code"] });
+    const off = r.bind({ control: signinRecord(["claude-code"]) });
     await defineAgent(r.stub, off, "coder", { engine: "codex",
                                               credential: "vendor_login_in_sandbox",
                                               scopes: [] });
@@ -476,25 +607,24 @@ describe("the per-source switch, in the owner's object (review H1)", () => {
     await defineAgent(r.stub, off, "main", { engine: "auto", scopes: [] });
     expect((await failure(() => ownerRun(r.stub, off, undefined, "main"))).message)
       .toBe(NO_SOURCE);
-    // Switched on (the binder hands it), the same agent runs on the vendor's login.
-    const on = r.bind({ signins: ["claude-code", "codex"] });
+    // Switched on (the record the binder hands), the same agent runs on the vendor's login.
+    const on = r.bind({ control: signinRecord(["claude-code", "codex"]) });
     expect((await ownerRun(r.stub, on, undefined, "coder")).start)
       .toMatchObject({ engine: "codex", credential: "vendor_login_in_sandbox" });
   });
 });
 
-describe("the runs lane's own read of the switches (review round 2, N1)", () => {
-  const OPEN = OPEN_GATES;
-
+describe("the runs lane's own read of the switches", () => {
   /** `agent`'s schedule due now, the lane run once, with no door call handing a list. */
   async function laneRuns(r: Gated, agent: string):
       Promise<{ engine: string; credential: string }[]> {
-    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent, input: "nightly",
-                                                     at: Date.now() / 1000 + 3600 });
+    await r.stub.agentRun(r.bind(), { agent, input: "nightly",
+                                                              at: Date.now() / 1000 + 3600 });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
-    // A door call that hands no list (`signins` undefined) syncs the schedule to the row.
-    await r.stub.fileMkdir(r.bind({ signins: undefined }),
+    // A door call that hands no record (one not read fresh) syncs the schedule to the row.
+    const { control: _handed, ...unread } = r.bind();
+    await r.stub.fileMkdir(unread,
                            { path: `/workspace/d-${crypto.randomUUID()}`, expected_etag: null });
     await drainDue(r.stub);
     return (await recorder(r.stub)).starts;
@@ -506,39 +636,32 @@ describe("the runs lane's own read of the switches (review round 2, N1)", () => 
     await defineAgent(r.stub, r.bind(), "main", { engine: "claude-code",
                                                   credential: "vendor_login_in_sandbox",
                                                   scopes: [] });
-    try {
-      // The founder switches Claude Code off in the control record the object reads.
-      await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": false } });
-      expect(await laneRuns(r, "main")).toEqual([]);
-      expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
-        .toContainEqual(expect.stringContaining("signin_off"));
-      // Switched on again, the lane's next schedule runs on it.
-      await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": true } });
-      expect((await laneRuns(r, "main")).map((start) => [start.engine, start.credential]))
-        .toEqual([["claude-code", "vendor_login_in_sandbox"]]);
-    } finally {
-      await writeControl(env.CONTROL, null);
-    }
+    // The founder switches Claude Code off in the control record the object reads.
+    await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": false } });
+    expect(await laneRuns(r, "main")).toEqual([]);
+    expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
+      .toContainEqual(expect.stringContaining("signin_off"));
+    // Switched on again, the lane's next schedule runs on it.
+    await writeControl(env.CONTROL, { ...OPEN, signins: { "claude-code": true } });
+    expect((await laneRuns(r, "main")).map((start) => [start.engine, start.credential]))
+      .toEqual([["claude-code", "vendor_login_in_sandbox"]]);
   });
 
-  it("fails closed: a control record the lane cannot read switches every sign-in off",
-     async () => {
+  it("fails closed: a control record the lane reads malformed starts nothing, its copy and " +
+     "the tier numbers in it dropped", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", { engine: "claude-code",
                                                   credential: "vendor_login_in_sandbox",
                                                   scopes: [] });
-    try {
-      await writeControl(env.CONTROL, "{not json");
-      expect(await laneRuns(r, "main")).toEqual([]);
-      expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
-        .toContainEqual(expect.stringContaining("signin_off"));
-    } finally {
-      await writeControl(env.CONTROL, null);
-    }
+    await writeControl(env.CONTROL, "{not json");
+    expect(await laneRuns(r, "main")).toEqual([]);
+    expect(await r.sql("SELECT text FROM control_kept")).toEqual([]);
+    expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
+      .toContainEqual(expect.stringContaining("tier_unread"));
   });
 });
 
-describe("a pasted code (review L1)", () => {
+describe("a pasted code", () => {
   it("goes only to a sign-in asking for one, within its deadline, a terminal line at most",
      async () => {
     const r = await gated();
@@ -576,7 +699,7 @@ describe("the past runs", () => {
     await r.connect("sk-ant-x");
     const ids: string[] = [];
     for (let i = 0; i < 3; i += 1) {
-      const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+      const run = await r.stub.agentSubmit(r.bind(), {
         message: `go ${i}`, client_send_id: `l-${i}` });
       ids.push(run.run_id);
       const start = await startOf(r.stub, run.run_id);
@@ -598,7 +721,7 @@ describe("the past runs", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", { engine: "auto", scopes: [] });
     await r.connect("sk-ant-x");
-    const owners = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+    const owners = await r.stub.agentSubmit(r.bind(), {
       message: "mine", client_send_id: "o-1" });
     await client(r);
     const outside = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });

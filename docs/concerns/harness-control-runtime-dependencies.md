@@ -5,7 +5,7 @@ filed: '2026-10-05'
 summary: K1 implements roster resolution, automatic extension hooks and UI projections; stdio package admission and the separate editable starter loader retain their named owners.
 ---
 
-Consolidation: [`one-extension-unit`](../../openspec/changes/one-extension-unit/proposal.md)
+Consolidation: [`one-extension-unit`](https://github.com/TinyAssets/TinyAssets/blob/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/one-extension-unit/proposal.md)
 now owns extension activation, hooks/cards and installed-directory resolution.
 Do not continue parallel authoring paths in the source changes. U1 owns package
 process admission; the starter lane retains its editable starter hook loader.

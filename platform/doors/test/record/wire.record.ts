@@ -1,9 +1,9 @@
 /**
- * The wire recorder (`npm run record`, `ci/record.ts`): refusals driven through every door
+ * The wire recorder (`ci/record.ts`): refusals driven through every door
  * surface (each tool on the API, the app and MCP; busy, suspended and erasing owners; the
- * app's other routes; the sandbox's egress, run events and sync doors; inbound hooks; MCP's
- * events extension), each answer one `REC` line, ids taken out (`clean`), so base and head
- * print the same lines for the same behaviour.
+ * app's other routes; the sandbox's egress, run events and sync doors; MCP's events
+ * extension), each answer one `REC` line, ids taken out (`clean`), so base and head print the
+ * same lines for the same behaviour. Inbound hooks are `wire-reach.record.ts`'s.
  */
 import { env } from "cloudflare:test";
 import { beforeEach, describe, it } from "vitest";
@@ -342,33 +342,6 @@ describe("wire: egress, run events and sync doors", () => {
     await rec("signin door junk", post("/signin", { zz: 1 }, inside));
     await rec("signin events unknown", post(`/signin/si_${"0".repeat(32)}/events`,
                                                   { frames: [] }, inside));
-  });
-});
-
-describe("wire: inbound hooks", () => {
-  it("capability URLs", async () => {
-    const { app } = await owned("hooks");
-    const made = await (await appPost("hooks/create", app.access_token, app.session,
-                                      { agent: "main" })).json<{ url: string; binding_id: string }>();
-    const proofed = await (await appPost("hooks/create", app.access_token, app.session, {
-      agent: "main", secret: "whsec_0123456789abcdef", profile: {
-        method: "hmac-sha256", signature_header: "x-hub-signature-256", encoding: "hex",
-        prefix: "sha256=" } })).json<{ url: string }>();
-    const event = (at: string, id: string | null, headers: Record<string, string> = {},
-                   body = "{\"x\":1}") => new Request(at, { method: "POST", body, headers: {
-      ...(id === null ? {} : { "Idempotency-Key": id }),
-      "X-Event-Timestamp": String(Math.floor(Date.now() / 1000)), ...headers } });
-    await rec("inbound ok", call(event(made.url, "e1")));
-    await rec("inbound no id", call(event(made.url, null)));
-    await rec("inbound unknown token", call(event(url(`/hooks/inbound/${"A".repeat(43)}`), "e")));
-    await rec("inbound bad proof", call(event(proofed.url, "p1",
-                                                    { "X-Hub-Signature-256": "sha256=00" })));
-    await rec("inbound no proof", call(event(proofed.url, "p2")));
-    await rec("inbound huge", call(event(made.url, "e3", {}, "x".repeat(2_000_000))));
-    await rec("inbound old stamp", call(event(made.url, "e4", { "X-Event-Timestamp": "1" })));
-    await rec("hooks revoke", appPost("hooks/revoke", app.access_token, app.session,
-                                            { binding_id: made.binding_id }));
-    await rec("inbound revoked", call(event(made.url, "e5")));
   });
 });
 

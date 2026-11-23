@@ -51,5 +51,5 @@ Delete this file when one of those lands.
 
 ## Related
 
-- `openspec/changes/archive/2026-10-06-bind-immutable-run-files/` - the accepted file design this sits under.
+- [the `bind-immutable-run-files` change](https://github.com/TinyAssets/TinyAssets/tree/88e74e1cd32b1ad19bb8af9bf88ab3bd68e4e979/openspec/changes/archive/2026-10-06-bind-immutable-run-files) - the accepted file design this sits under.
 - `tests/test_app_account_transition.py` - covers the sign-out path that IS fenced.

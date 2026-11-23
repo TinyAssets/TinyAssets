@@ -12,10 +12,14 @@
 import {
   type AuthRequest, authorizationErrorRedirect,
 } from "@cloudflare/workers-oauth-provider";
-import { type CallToolResult, ProtocolError } from "@modelcontextprotocol/server";
+import {
+  type CallToolResult, ProtocolError, ProtocolErrorCode,
+} from "@modelcontextprotocol/server";
 
 import { keyed, whole } from "../../contract/src/checks";
-import { type FaultCode, type Refusal, refusalOf } from "../../contract/src/refusal";
+import {
+  callAgain, type FaultCode, type Refusal, refusalOf, told,
+} from "../../contract/src/refusal";
 
 import { answer, failure, redirect } from "./kit";
 
@@ -35,7 +39,7 @@ export async function answered<A>(surface: Surface<A>, work: () => Promise<A>): 
   }
 }
 
-/** The `Retry-After` header a refusal is answered with, if it names a wait or its code does. */
+/** The `Retry-After` header a refusal is answered with, if it is for the moment (`retryAfter`). */
 export function retryAfter(refusal: Refusal): Record<string, string> {
   const seconds = refusal.retryAfter;
   return seconds === undefined ? {} : { "Retry-After": String(seconds) };
@@ -67,10 +71,6 @@ export function asEgressFault(code: FaultCode): Response {
   return answer(404, { error: { code, message: code } });
 }
 
-/** An MCP tool's: the tool's error result, its text the refusal's message. */
-export const asTool: Surface<CallToolResult> = (refusal) =>
-  ({ isError: true, content: [{ type: "text", text: refusal.message }] });
-
 /** The inbound hooks', to a capability URL's sender: `{error: <shown code>}`. */
 export const asInbound: Surface<Response> = (refusal) =>
   answer(refusal.status, { error: shownCode(refusal) }, retryAfter(refusal));
@@ -86,18 +86,54 @@ export const asShared: Surface<Response> = (refusal) => {
     : answer(200, body);
 };
 
-/** MCP Events' error codes: the design sketch's (`-32023` to `-32026`), and JSON-RPC's. */
+/** MCP Events' own error codes: the design sketch's (`-32023` to `-32026`). */
 export const EVENT_ERRORS = Object.freeze({
   notFound: -32023, forbidden: -32024, exhausted: -32025, unsupported: -32026,
-  invalidParams: -32602,
 });
 
 /**
- * MCP Events': the design sketch's error, thrown, which the SDK answers. A full agent's is
- * `ResourceExhausted` with the owner's limit, `{limit, max}`, from its refusal's facts; a
- * `subscription_limit` refusal without them is a bug, thrown, never an answer with no limit.
+ * An MCP tool's: the tool's error result, its text the refusal's message, then whether to make
+ * the call again, and when (`callAgain`), read as every other MCP request's error reads it
+ * (`told`). A tool call's failure is a result the model reads, never a JSON-RPC error (MCP
+ * 2026-07-28 `server/tools.mdx` "Error Handling", at `862397cec702`), and the pinned SDK
+ * (`@modelcontextprotocol/server` 2.4.0) answers anything a tool throws as one.
+ */
+export const asTool: Surface<CallToolResult> = (refusal) =>
+  ({ isError: true,
+     content: [{ type: "text", text: `${refusal.message}\n${callAgain(refusal)}` }] });
+
+/**
+ * Every MCP request's but a tool call's (the definition's resources, prompt and skills,
+ * `definition.ts`; MCP Events' but a terminal refusal, `asEvent`): its JSON-RPC error, thrown,
+ * which the SDK answers: invalid params for an invalid request, else an internal error, the
+ * refusal's reason in its `data`, and its wait when it is for the moment.
+ * MCP names no code for a refusal for the moment, and its codes `-32000` to `-32019` mean
+ * nothing across implementations (its 2026-07-28 "Error Codes", at `862397cec702`, read
+ * 2026-11-22), so `-32603` with `retryAfterMs` is how a client is told to try again.
+ */
+export const asRequest: Surface<never> = (refusal) => {
+  const said = told(refusal);
+  throw new ProtocolError(
+    said.kind === "invalid" ? ProtocolErrorCode.InvalidParams : ProtocolErrorCode.InternalError,
+    refusal.message,
+    { reason: refusal.message,
+      ...(said.kind === "temporary" ? { retryAfterMs: said.waitS * 1000 } : {}) },
+  );
+};
+
+/**
+ * MCP Events': an invalid request or a refusal for the moment is any MCP request's
+ * (`asRequest`), as the design sketch answers them (`InvalidParams`, and its "Transient
+ * per-occurrence error", `-32603` with `data.reason`). Any other refusal is the sketch's own
+ * error: a full agent's `ResourceExhausted` with the owner's limit, `{limit, max}`, from its
+ * refusal's facts (a `subscription_limit` refusal without them is a bug, thrown, never an
+ * answer with no limit), and the rest `Forbidden`, which a client stops on (its open question
+ * 6). The sketch at `c77b84395eff`, read 2026-11-21, still its `HEAD` on 2026-11-22.
  */
 export const asEvent: Surface<never> = (refusal) => {
+  if (told(refusal).kind !== "final") {
+    return asRequest(refusal);
+  }
   if (refusal.code === "subscription_limit") {
     const facts = refusal.facts;
     if (!keyed(facts, ["limit", "max"]) || typeof facts["limit"] !== "string"
@@ -105,9 +141,6 @@ export const asEvent: Surface<never> = (refusal) => {
       throw new Error("a subscription_limit refusal carries no {limit, max}");
     }
     throw new ProtocolError(EVENT_ERRORS.exhausted, "ResourceExhausted", facts);
-  }
-  if (refusal.invalid) {
-    throw new ProtocolError(EVENT_ERRORS.invalidParams, refusal.message);
   }
   throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden", { reason: refusal.message });
 };

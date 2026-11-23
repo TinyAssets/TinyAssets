@@ -188,7 +188,7 @@ const ONLY_NEW = Object.freeze({ onlyIf: Object.freeze({ etagDoesNotMatch: "*" }
  */
 async function accept(env: DoorsEnv, message: OperatorMessage): Promise<string | null> {
   const key = acceptanceKey(message.ask);
-  const mine = await acceptanceOf(message);
+  const mine = acceptanceOf(message);
   let held = await env.OPERATOR_LOG.get(key);
   if (held === null) {
     if (Math.abs(now() - message.at) > OPERATOR_WINDOW_S) {

@@ -1,5 +1,5 @@
 /**
- * The owner export (ADR-018; slice P): everything the owner holds, as one generation
+ * The owner export (ADR-039 decision 2.12): everything the owner holds, as one generation
  * (`backup.ts`, `changelog.ts`), the same artifact the nightly manifest's root names: a fuzzy
  * base copy of every row and every chunk's hash, then the change log captured while the base
  * was read, consistent at its end E; and the chunks' bytes fetched by hash (`exportChunks`).
@@ -32,7 +32,7 @@
  * it does not name did not change from S to E, so its base line is its value at E (Postgres's
  * base backup and WAL replay, at row level).
  *
- * **Archive segments (version 3; slice STORE item 2, `segments.ts`).** An `archive_segments`
+ * **Archive segments (version 3, `segments.ts`).** An `archive_segments`
  * row names a content whose bytes are export lines of this same grammar: each archived record's
  * `row` lines (a message, its body's row, its recipients), then one `{"t":"segment",...}`
  * trailer line, then 16 ASCII digits (the trailer's offset). A body is raw, never escaped: its
@@ -45,7 +45,7 @@
  * names the segment, and a moved row never returns to its table (its key, a message's seq and
  * id, is never given again), so a key a segment at E holds is the owner's at E as the segment
  * holds it. A segment that a rewrite replaced before E has no row at E and is not read. The
- * reader drops the lines of a room naming an agent in `archive_purges` at E (deleted, its
+ * reader drops the lines of a room in `archive_purges` at E (a deleted agent's room, its
  * segments not yet rewritten). Segments ship as they are, so a generation never reads the
  * archive back. The id key (`ledger_ids`) rides along, so whoever holds an export can read
  * the seq (and so the volume) a message id carries; it gates no access.
@@ -62,8 +62,8 @@
  * owner's own churn: garbage past the owner's storage figure is collected early, oldest
  * first (`files.ts` `run`), and a chunk gone that way is refused by name (`CHUNK_GONE`).
  *
- * **What it never holds** (ADR-018: credentials are never exported), each table kept out
- * with its reason in {@link NOT_EXPORTED}: sealed credentials and connect flows, session
+ * **What it never holds** (ADR-039 decision 2.12: credentials are never exported), each
+ * table kept out with its reason in {@link NOT_EXPORTED}: sealed credentials and connect flows, session
  * and ticket hashes, run and lease secrets, the bucket namespace and the wrapped data key,
  * and counters the schema's own triggers derive. A test holds every table of the schema to
  * exactly one of the two lists and every column of an exported table to its columns or its
@@ -127,7 +127,7 @@ export function exported(): Readonly<Record<string, ExportTable>> {
                          "owner_sessions keeps it: a credential's hash, never exported" }),
     outside_clients: t("client source mode scopes generation revoked_at name first_seen " +
                        "last_seen owner_set agents held profile revision vendor " +
-                       "vendor_verified", "client"),
+                       "vendor_verified agent", "client"),
     agent_cards: t("card_id client family source_ref generation authenticated_at request " +
                    "digest filed_at", "card_id"),
     connections: t("id source kind display_name provider models status version expires_at " +
@@ -140,7 +140,6 @@ export function exported(): Readonly<Record<string, ExportTable>> {
                     "parent name"),
     file_history: t("version path op kind content_id size mode writer at prune_after released",
                     "version"),
-    file_temps: t("name expires_at writer", "name"),
     file_contents: t("content_id size inline refs", "content_id"),
     file_content_chunks: t("content_id idx sha256", "content_id idx"),
     file_chunks: t("sha256 size state stored refs holds gc_after holder", "sha256"),
@@ -165,6 +164,9 @@ export function exported(): Readonly<Record<string, ExportTable>> {
                       "unacked_to_owner", "agent_id",
                       { wake_tat: "the doorbell's rate pacing, an internal mark" }),
     native_agents: t("agent_id agent created_at retired_at unacked_to_owner", "agent_id"),
+    // A room and its members (a pair's two), by its opaque id.
+    rooms: t("room_id kind members_key created_at", "room_id"),
+    room_members: t("room_id member_id", "room_id member_id"),
     ledger_messages: t("seq message_id command_center_id room_id sender_kind sender_id " +
                        "client_message_id body_sha256 parent_id chain_root chain_depth " +
                        "created_at body_bytes unacked authority attended line_bytes reply_s",
@@ -174,19 +176,16 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     ledger_recipients: t("message_id agent_id seq state changed_at unacked read_at " +
                          "failed_reason", "message_id agent_id"),
     ledger_readers: t("reader through_seq acked_at unacked", "reader"),
-    // The archive: each segment's fence (its content holds the archived rows), the agents
-    // deleted while segments may hold their mail, and the key a message id carries its seq
-    // under.
+    // The archive: each segment's fence (its content holds the archived rows), the rooms of
+    // deleted agents while segments may hold their mail, and the key a message id carries its
+    // seq under.
     archive_segments: t("segment stream first_key last_key first_at last_at records bytes " +
-                        "content_id filer trailer_offset trailer_bytes members made_at",
+                        "content_id filer trailer_offset trailer_bytes rooms made_at",
                         "segment"),
-    archive_purges: t("agent_id at next_segment", "agent_id"),
+    archive_purges: t("room_id at next_segment", "room_id"),
     ledger_ids: t("only id_key", "only"),
     // Spend.
     model_spend: t("period source cost", "period source"),
-    model_reservations: t("seq id run connection_id source model state rule max_output_tokens " +
-                          "est_tokens est_cost tokens cost policy_generation day month " +
-                          "created_at settled_at", "seq"),
     egress_reservations: t("id lease_id epoch run source charge rule max_output_tokens " +
                            "est_tokens est_cost tokens cost day month served connection_id " +
                            "version method path generation bytes_hint opened_at beat_at state " +
@@ -214,7 +213,7 @@ export function exported(): Readonly<Record<string, ExportTable>> {
 
 /** The tables kept out, each with why. */
 export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
-  connection_secrets: "sealed credentials (ADR-018: credentials are never exported)",
+  connection_secrets: "sealed credentials (ADR-039 decision 2.12: credentials are never exported)",
   connection_flows: "an OAuth connect in flight: its PKCE verifier and state",
   owner_sessions: "the owner's session hashes",
   socket_tickets: "single-use socket ticket hashes",
@@ -231,11 +230,11 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   archive_moves: "an archive move in flight, between its two units",
   policy_usage: "counters the schema's triggers derive",
   proposal_shares: "counters the schema's triggers derive",
-  ledger_wakes: "doorbell deliveries, in flight and settled ones kept a week: delivery " +
+  ledger_wakes: "doorbell deliveries, in flight and the newest settled ones: delivery " +
     "telemetry, not the owner's data",
-  wake_callbacks: "sealed doorbell tokens (ADR-018: credentials are never exported)",
+  wake_callbacks: "sealed doorbell tokens (ADR-039 decision 2.12: credentials are never exported)",
   grant_fences: "the grants' revoke fence, an internal mark",
-  platform_tiers: "the platform's tier numbers as last read, not the owner's",
+  control_kept: "the platform's control record as last read, not the owner's",
   owner_erasure: "an erasure in progress",
   schema_digests: "the applied migrations' digests, the start's own check",
   owner_backups: "the generations: the nightly manifest's and the exports' own bookkeeping",
@@ -250,12 +249,11 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   change_log: "row images not yet shipped to R2, which a generation carries",
   log_staged: "the keys a generation's log stages and their lines' bytes, a count of it",
   sandbox_signins: "a vendor sign-in in progress: its lease and the vendor's one-time prompt",
-  platform_signins: "the platform's served sign-in records as last read, not the owner's",
   owner_restore: "a restore under way, or the record of the one that made this object",
   restore_rows: "a restore's staged rows, the generation's own, deleted once loaded",
   restore_filter: "a restore's filter of its chunk rows' names, deleted once swept",
-  action_requests: "an agent's call held for the owner's answer, a month at most: in flight, " +
-    "as an upload is; a restored owner's agents ask again",
+  action_requests: "an agent's call held for the owner's answer: in flight, as an upload " +
+    "is; a restored owner's agents ask again",
   action_receipts: "the action rules' decisions on agents' calls: kept apart until a " +
     "migration may change an exported table (`schema.ts` `FORWARD`)",
 });
@@ -345,8 +343,8 @@ function value(cell: unknown): unknown {
 /**
  * Lines of the stream as a generation's part holds them, encoded once: one buffer of their
  * UTF-8, each line followed by its newline, and where each line ends in it. One buffer a
- * page, never an array a line (review rvbackup 1: an array a line costs about 190 bytes of
- * its own, more than a small line's bytes).
+ * page, never an array a line (an array a line costs about 190 bytes of its own, more than a
+ * small line's bytes).
  */
 export interface Lines {
   readonly bytes: Uint8Array;
@@ -362,7 +360,7 @@ export function encodeLines(lines: readonly string[]): Lines {
     ends[n] = at;
   }
   // Counted first, then encoded straight into one buffer of exactly those bytes: never the
-  // lines joined into one text (and its flattened copy) and encoded again (rvburst W1).
+  // lines joined into one text (and its flattened copy) and encoded again.
   const bytes = new Uint8Array(at);
   const encoder = new TextEncoder();
   let written = 0;
@@ -421,7 +419,7 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
     const { columns, key } = all[table]!;
     const keyed = key.join(", ");
     const where = after === null ? "" : `WHERE (${keyed}) > (${key.map(() => "?").join(", ")}) `;
-    // Its rows a row at a time from the cursor, never a batch held whole (rvburst W1).
+    // Its rows a row at a time from the cursor, never a batch held whole.
     let read = 0;
     for (const row of sql.exec<Record<string, SqlStorageValue>>(
            `SELECT ${[...new Set([...columns, ...key])].join(", ")} FROM ${table} ${where}` +
@@ -475,10 +473,6 @@ export function endLine(at: number, seq: number): string {
 }
 
 // -- THE DOORS: the `export` rows' handlers (`owner/doors.json`) ----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`ExportDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `export` doors reach: the exports open, the generations they read, the files
@@ -491,7 +485,6 @@ export interface ExportDoorNeeds extends Pick<DoorUnits, "door" | "quiet" | "syn
   readonly files: Pick<Files, "space" | "storedChunks" | "fetch">;
 }
 
-/** The `export` doors' handlers, by door. */
 export const exportDoors = Object.freeze({
   /**
    * One object of the owner's export from `cursor` (null: the start, which opens the export

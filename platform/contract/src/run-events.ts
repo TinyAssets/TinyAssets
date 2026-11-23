@@ -1,29 +1,36 @@
 /**
  * A run's events (ADR-034 decision 10; `engines-replan.md` §2.2): the engine's own JSON
- * stream, read by its source record's matchers (`engine.events`, slice E), as data.
+ * stream, read by its source record's matchers (`engine.events`), as data.
  *
- * The in-VM runner (slice S) posts each event it reads as `{seq, at, event}`, `event` the
+ * The in-VM runner posts each event it reads as `{seq, at, event}`, `event` the
  * CLI's raw JSON. The VM is untrusted, so the object classifies each event itself, by the
  * run's record, and frames it for the owner's app sockets as `{v, run, seq, at, kind,
  * event}`. `kind` is the first of the record's matchers the event meets, in this order:
  * `error`, `result` (its `final_text`), `init` (its `session_id`), `tool_call`, `usage`;
- * else `event`. The record's matchers name no text deltas or tool results (slice E's
- * shape), so those arrive as `event` until a record matches them.
+ * else `event`. The record's matchers name no text deltas or tool results, so those arrive
+ * as `event` until a record matches them.
  *
  * What an event changes durably is read here too, once, by the same matchers: the
  * conversation's session id (`init`), the run's result text (`final_text`, the last match,
  * or every match joined where the matcher says `accumulate`), its first error, and whether
  * the engine stopped at a tool call it deferred (`deferred`: Claude Code's `defer`, the turn
- * ended `tool_deferred`), which a resume of its session answers (R5 P-resume).
+ * ended `tool_deferred`), which a resume of its session answers, and whether the vendor
+ * refused it for its own rate limit, quota or billing (`vendor_limit`, ADR-034 decision 7),
+ * with the reset the vendor stated, if any. An engine that reports a failed call and then
+ * retries it itself says so (`retry`), which withdraws that error: only a call it gave up on
+ * fails the run.
  */
 import { Refusal } from "./refusal.ts";
 
 /**
  * One event matcher, as a source record's `engine.events` holds it: an event whose fields at
- * `match` equal those values, read at `path`.
+ * `match` equal those values, and whose fields at `pattern` are text those regular
+ * expressions find (case-insensitive: an engine that reports a limit only in prose), read at
+ * `path`.
  */
 export interface EventMatcher {
   readonly match: Readonly<Record<string, string | number | boolean>>;
+  readonly pattern?: Readonly<Record<string, string>>;
   /** A dotted path into the event; empty for the event itself. */
   readonly path: string;
   /** Every match's value is joined in order (a streamed text), not only the last. */
@@ -43,18 +50,30 @@ export interface EngineEvents {
    * session for a resume (none for an engine that cannot defer).
    */
   readonly deferred: readonly EventMatcher[];
+  /**
+   * The vendor's refusal for its own rate limit, quota or billing (ADR-034 decision 7), its
+   * `path` at the reset it states, in seconds since the epoch; a matcher whose path reads no
+   * number states none.
+   */
+  readonly vendor_limit: readonly EventMatcher[];
+  /**
+   * The engine's own retry of the call whose error it reported last (pi's `auto_retry_start`),
+   * which withdraws that error: the call has not failed yet (none for an engine that reports
+   * only the error it gave up on).
+   */
+  readonly retry: readonly EventMatcher[];
 }
 
 export const FRAME_VERSION = 1;
 
 /**
  * The runner's events post, bounded so the relay's memory guard counts every post the
- * object may hold at once (slice R's review M-4 and round 2; `memory-bound.test.ts`): each
+ * object may hold at once (`memory-bound.test.ts`): each
  * run's runner posts on its own, one post at a time, so as many posts as the tier's top
  * runs may be in flight. Each post's body at most `EVENTS_BODY_MAX` bytes, at most
  * `EVENT_FRAMES_MAX` frames, each frame's JSON at most `FRAME_UNITS_MAX` UTF-16 code units.
  * Technical ceilings of the isolate's memory; a CLI event longer than a frame may be is the
- * runner's to cut, marked, before it posts it (slice S), the engine's own transcript keeping
+ * runner's to cut, marked, before it posts it, the engine's own transcript keeping
  * the whole, and a busy CLI's events go in more posts, not bigger ones.
  */
 export const EVENTS_BODY_MAX = 65_536;
@@ -62,21 +81,19 @@ export const EVENT_FRAMES_MAX = 64;
 export const FRAME_UNITS_MAX = 32_768;
 
 /**
- * The runners' events posts the object holds at once, whatever the tier (review round 3):
+ * The runners' events posts the object holds at once, whatever the tier:
  * one more is answered `events_busy` (503, `Retry-After`) and its runner posts it again. A
  * technical ceiling of the isolate's memory, sized so the memory guard fits its budget; no
  * run is refused, a post only waits.
  */
 export const EVENTS_IN_FLIGHT = 8;
-export const EVENTS_BUSY = "events_busy: the object holds as many runner posts as it may; " +
-  "post again shortly";
+export const EVENTS_BUSY = "events_busy: the object holds as many runner posts as it may";
 /**
  * Another batch of the run committed between an events post's two units, so the reply its
  * first unit placed in R2 is not the one its settle would post: refused, written nothing,
  * and posted again (503, as `EVENTS_BUSY`), so no reply is lost.
  */
-export const EVENTS_RACED = "events_raced: another batch of this run landed first; post " +
-  "again shortly";
+export const EVENTS_RACED = "events_raced: another batch of this run landed first";
 
 /** The count of events posts the object holds, refusing one past `EVENTS_IN_FLIGHT`. */
 export class PostGate {
@@ -136,9 +153,16 @@ export function valueAt(event: unknown, path: string): unknown {
   return at;
 }
 
-/** Whether `event` has each of the matcher's fields at its value. */
+/** The flags a matcher's `pattern` is read with, as the record check compiles it. */
+export const PATTERN_FLAGS = "iu";
+
+/** Whether `event` has each of the matcher's fields at its value, and its text at each pattern. */
 export function meets(event: unknown, matcher: EventMatcher): boolean {
-  return Object.entries(matcher.match).every(([path, value]) => valueAt(event, path) === value);
+  return Object.entries(matcher.match).every(([path, value]) => valueAt(event, path) === value)
+    && Object.entries(matcher.pattern ?? {}).every(([path, pattern]) => {
+      const text = valueAt(event, path);
+      return typeof text === "string" && new RegExp(pattern, PATTERN_FLAGS).test(text);
+    });
 }
 
 /** The first of `matchers` the event meets, or undefined. */
@@ -175,11 +199,22 @@ export interface Read {
   readonly error: string | null;
   /** Whether it is the engine's stop at a deferred tool call. */
   readonly deferred: boolean;
+  /** The vendor's limit it reports, and the reset the vendor stated (seconds), or null. */
+  readonly vendor_limit: { readonly reset: number | null } | null;
+  /** Whether it is the engine's own retry of the call it last reported failed. */
+  readonly retry: boolean;
+}
+
+/** The reset a vendor's limit event states at `path`: a finite count of seconds, else null. */
+function resetAt(event: unknown, path: string): number | null {
+  const reset = valueAt(event, path);
+  return typeof reset === "number" && Number.isFinite(reset) ? reset : null;
 }
 
 /** `event`, read by `events`. */
 export function readEvent(events: EngineEvents, event: unknown): Read {
   const error = first(events.error, event);
+  const limit = first(events.vendor_limit, event);
   const result = first(events.final_text, event);
   const init = first(events.session_id, event);
   const kind: FrameKind = error !== undefined ? "error" : result !== undefined ? "result"
@@ -195,5 +230,7 @@ export function readEvent(events: EngineEvents, event: unknown): Read {
     error: error === undefined ? null
       : textOf(valueAt(event, error.path)) ?? "the engine reported an error",
     deferred: first(events.deferred, event) !== undefined,
+    vendor_limit: limit === undefined ? null : { reset: resetAt(event, limit.path) },
+    retry: first(events.retry, event) !== undefined,
   };
 }

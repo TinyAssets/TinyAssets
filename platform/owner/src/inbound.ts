@@ -1,8 +1,6 @@
 /**
- * Inbound events (tasks 2, `/hooks/inbound`; slice L), ported from the Python's
- * `webhook_inbound.py`, `storage/inbound_events.py` and `inbound_routing.py`: the owner's
- * inbound bindings, each an event source that mails one of the owner's own agents, and the
- * one door that accepts an event (`OwnerDO.inboundAccept`).
+ * Inbound events (`/hooks/inbound`): the owner's inbound bindings, each an event source that mails
+ * one of the owner's own agents, and the one door that accepts an event (`OwnerDO.inboundAccept`).
  *
  * A binding is one of:
  * - `capability`: a capability URL, `/hooks/inbound/<token>`, which the doors mint and show
@@ -11,7 +9,7 @@
  *   sender's HMAC signature, or a token header), whose secret the owner holds here.
  * - `shared`: an installation of a platform shared app (Slack), whose requests the binder
  *   proves by the platform's signing secret; the directory routes the installation (`i:`)
- *   here. Its install flow, which proves the owner holds the workspace, is owed (tasks 2),
+ *   here. Its install flow, which proves the owner holds the workspace, is owed (`tasks.md`),
  *   and until it lands `create` refuses every shared binding (`INSTALL_PROOF`).
  *
  * **Config and revision.** A binding names its agent and whether it is enabled; every
@@ -19,14 +17,14 @@
  * an entry the owner has since changed or withdrawn is refused here (`binding_withdrawn`),
  * whatever KV's lag.
  *
- * **Dedupe.** An event is the owner's mail to the binding's agent (`dm:<agent>`), keyed by
+ * **Dedupe.** An event is the owner's mail to the binding's agent, in their room, keyed by
  * the binding, its revision and the event's own id, so a sender's retry is the same mail
  * (the ledger's own client-message dedupe) and is answered `deduped` with its receipt; the
  * same id with other bytes is refused. The mail starts the agent's run as any mail does
- * (slice ID). Its body is the event's raw bytes, verbatim (Fact 9), base64 in a JSON
+ * Its body is the event's raw bytes, verbatim (Fact 9), base64 in a JSON
  * envelope; the ledger's own body bound refuses a larger one (`too_large`).
  *
- * **The breaker** (the Python's `DeliveryBreakers`): a shared app's events refused because
+ * **The breaker**: a shared app's events refused because
  * the agent's mailbox is full count as failures; `BREAKER_FAILURES` within
  * `BREAKER_WINDOW_S` trip that binding at that revision, after which its events are an
  * authenticated no-op, so one owner's full mailbox never spends the shared app's failure
@@ -322,10 +320,6 @@ export interface InboundEvent {
 }
 
 // -- THE DOORS: the `inbound` rows' handlers (`owner/doors.json`) ---------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`InboundDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `inbound` doors reach: the bindings, the owner's mail to an agent (the ledger's,
@@ -336,6 +330,7 @@ export interface InboundDoorNeeds extends Pick<DoorUnits, "sync"> {
   readonly inbound: Inbound;
   readonly bodies: Pick<Bodies, "placing">;
   readonly ledger: {
+    roomOf(a: string, b: string): string;
     prepare(origin: null, roomId: string, clientMessageId: string, body: string,
             parentId: null): { readonly message_id: string } | null;
     post(origin: null, roomId: string, clientMessageId: string, body: string, parentId: null,
@@ -350,7 +345,7 @@ export interface InboundDoorNeeds extends Pick<DoorUnits, "sync"> {
  * enabled, as the call bound it): an owner-held proof on the raw bytes, and its mail's
  * room, key and envelope; or the no-op a tripped breaker answers.
  */
-function inboundEvent({ route, r }: Call, now: number):
+function inboundEvent(o: InboundDoorNeeds, { route, r }: Call, now: number):
     { done: InboundAnswer }
     | { row: Row; room: string; cmid: string; envelope: string } {
   const row = route!;
@@ -383,7 +378,8 @@ function inboundEvent({ route, r }: Call, now: number):
   const envelope = JSON.stringify({ inbound: {
     binding: row.binding_id, event_id: eventId, event_at: eventAt,
     raw_base64: Buffer.from(body).toString("base64") } });
-  return { row, room: `dm:${nativeId(row.agent)}`, cmid: `inb_${key}`, envelope };
+  return { row, room: o.ledger.roomOf(OWNER, nativeId(row.agent)), cmid: `inb_${key}`,
+           envelope };
 }
 
 /**
@@ -423,7 +419,6 @@ function inboundRefused(o: InboundDoorNeeds, row: Row, error: unknown,
   throw error;
 }
 
-/** The `inbound` doors' handlers, by door. */
 export const inboundDoors = Object.freeze({
   /** The owner's inbound bindings, never a secret. */
   inboundList(o: InboundDoorNeeds, _call: Call<undefined>): { bindings: InboundBinding[] } {
@@ -459,7 +454,7 @@ export const inboundDoors = Object.freeze({
       return await o.bodies.placing((): {
           body: unknown; writer: string } | { done: InboundAnswer } => {
         const now = clock();
-        const event = inboundEvent(door.check(), now);
+        const event = inboundEvent(o, door.check(), now);
         if ("done" in event) {
           return event;
         }
@@ -474,7 +469,7 @@ export const inboundDoors = Object.freeze({
         return { body: event.envelope, writer: OWNER };
       }, (placed) => {
         const now = clock();
-        const event = inboundEvent(door.check(), now);
+        const event = inboundEvent(o, door.check(), now);
         if ("done" in event) {
           return event.done;
         }

@@ -171,8 +171,6 @@ export interface DoorRows {
     { readonly module: "connections"; readonly caller: "session"; readonly gate: "door" };
   readonly flowFinish:
     { readonly module: "connections"; readonly caller: "session"; readonly gate: "synced" };
-  readonly usageReceipts:
-    { readonly module: "usage"; readonly caller: "owner"; readonly gate: "door" };
   readonly noticeList:
     { readonly module: "notices"; readonly caller: "owner"; readonly gate: "door" };
   readonly starterReceipts:
@@ -183,6 +181,8 @@ export interface DoorRows {
     { readonly module: "admission"; readonly caller: "reserved"; readonly gate: "units" };
   readonly toolProfile:
     { readonly module: "codemode"; readonly caller: "account"; readonly gate: "door" };
+  readonly definitionRead:
+    { readonly module: "definition"; readonly caller: "account"; readonly gate: "units" };
   readonly mailChain:
     { readonly module: "ledger"; readonly caller: "owner"; readonly gate: "units" };
   readonly wakeEvents:
@@ -211,6 +211,8 @@ export interface DoorRows {
     { readonly module: "files"; readonly caller: "changes"; readonly gate: "door" };
   readonly runEvents:
     { readonly module: "runs"; readonly caller: "run"; readonly gate: "units" };
+  readonly runDecide:
+    { readonly module: "actions"; readonly caller: "account"; readonly gate: "door" };
   readonly signinStart:
     { readonly module: "signins"; readonly caller: "owner"; readonly gate: "units" };
   readonly signinEvents:
@@ -287,6 +289,12 @@ export interface DoorRows {
     { readonly module: "import"; readonly caller: "discard"; readonly gate: "units" };
 }
 
+/**
+ * The doors that take their caller's stop after their request (their rows' `stop`), each
+ * handler handed it as its door's `left`.
+ */
+export type StopDoors = "codeRun";
+
 /** The handler of `door` in a map of modules' handlers `H`, by its row's module. */
 type HandlerIn<H, D extends keyof DoorRows> = DoorRows[D]["module"] extends infer M
   ? M extends keyof H ? D extends keyof H[M] ? H[M][D] : never : never : never;
@@ -332,9 +340,8 @@ export interface DoorMethods<H> {
   mailboxAck(binding: Binding, request: RequestIn<H, "mailboxAck">):
     Promise<AnswerIn<H, "mailboxAck">>;
   /**
-   * Post a message to a room of the owner's account: dm:<agent> with the owner, or
-   * dm:<agent>+<agent> between two agents. Mail to one of the owner's own agents starts its run,
-   * whose result is its reply.
+   * Post a message to a room of the owner's account: the room_id agents_list shows for the agent to
+   * reach. Mail to one of the owner's own agents starts its run, whose result is its reply.
    */
   roomPost(binding: Binding, request: RequestIn<H, "roomPost">): Promise<AnswerIn<H, "roomPost">>;
   /**
@@ -508,9 +515,10 @@ export interface DoorMethods<H> {
    * Run one JavaScript script that calls your other tools here as `await tools.<name>(args)`, each
    * held to your grant, and answer its return value and output: many tool calls in one. Its effects
    * are the effects of the tools it calls. Only while the owner's policy turns code mode on; a
-   * script past its time or compute bound is stopped.
+   * script is stopped once you stop waiting for it, or past its compute or memory bound.
    */
-  codeRun(binding: Binding, request: RequestIn<H, "codeRun">): Promise<AnswerIn<H, "codeRun">>;
+  codeRun(binding: Binding, request: RequestIn<H, "codeRun">, stop: ReadableStream<Uint8Array>):
+    Promise<AnswerIn<H, "codeRun">>;
   sessionOpen(binding: Binding): Promise<AnswerIn<H, "sessionOpen">>;
   sessionExtend(binding: Binding): Promise<AnswerIn<H, "sessionExtend">>;
   sessionClose(binding: Binding): Promise<AnswerIn<H, "sessionClose">>;
@@ -591,13 +599,13 @@ export interface DoorMethods<H> {
   connectionList(binding: Binding): Promise<AnswerIn<H, "connectionList">>;
   flowFinish(binding: Binding, request: RequestIn<H, "flowFinish">):
     Promise<AnswerIn<H, "flowFinish">>;
-  usageReceipts(binding: Binding): Promise<AnswerIn<H, "usageReceipts">>;
   noticeList(binding: Binding): Promise<AnswerIn<H, "noticeList">>;
   starterReceipts(binding: Binding): Promise<AnswerIn<H, "starterReceipts">>;
   admissionSet(binding: Binding, request: RequestIn<H, "admissionSet">):
     Promise<AnswerIn<H, "admissionSet">>;
   ownerState(binding: Binding): Promise<AnswerIn<H, "ownerState">>;
   toolProfile(binding: Binding): Promise<AnswerIn<H, "toolProfile">>;
+  definitionRead(binding: Binding): Promise<AnswerIn<H, "definitionRead">>;
   mailChain(binding: Binding, request: RequestIn<H, "mailChain">):
     Promise<AnswerIn<H, "mailChain">>;
   wakeEvents(binding: Binding, request: RequestIn<H, "wakeEvents">):
@@ -625,6 +633,8 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "fileChanges">>;
   runEvents(binding: Binding, request: RequestIn<H, "runEvents">):
     Promise<AnswerIn<H, "runEvents">>;
+  runDecide(binding: Binding, request: RequestIn<H, "runDecide">):
+    Promise<AnswerIn<H, "runDecide">>;
   signinStart(binding: Binding, request: RequestIn<H, "signinStart">):
     Promise<AnswerIn<H, "signinStart">>;
   signinEvents(binding: Binding, request: RequestIn<H, "signinEvents">):

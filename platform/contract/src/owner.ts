@@ -23,6 +23,7 @@
  * `EgressReserved`, `EgressRefusal`) and the billed event the E2B hook routes
  * (`BilledEvent`).
  */
+import type { ServedDefinition } from "./agent-definition.ts";
 import type { Binding, InboundAnswer } from "./binding.ts";
 import type { TierName } from "./control.ts";
 import type { ProfileName } from "./doors.ts";
@@ -454,8 +455,10 @@ export interface DoorTypes {
       { readonly keys: readonly string[]; readonly routes: readonly string[] } | null;
   };
   readonly toolProfile: {
-    readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[] };
+    readonly answer: { readonly profile: ProfileName; readonly tools: readonly string[];
+                       readonly withheld: readonly string[] };
   };
+  readonly definitionRead: { readonly answer: ServedDefinition };
   readonly wakeEvents: {
     readonly loose: [commandCenter?: string];
     readonly answer: { readonly events: readonly Events[] };
@@ -600,6 +603,11 @@ export interface DoorTypes {
   readonly egressBeat: { readonly loose: [request: BeatRequest] };
   readonly egressSettle: { readonly loose: [request: SettleSent] };
   readonly runEvents: { readonly handed: true };
+  readonly runDecide: {
+    readonly handed: true;
+    readonly answer: { readonly tools: readonly string[]; readonly generation: number }
+      | { readonly allow: true } | { readonly hook: object };
+  };
   readonly signinEvents: { readonly loose: [request: SigninEventsRequest] };
   readonly signinReport: { readonly handed: true };
   readonly fileChanges: { readonly handed: true };
@@ -637,7 +645,12 @@ export interface DoorTypes {
         readonly vcpu_seconds: number; readonly gb_seconds: number }[] };
   };
   readonly policyRead: {
-    readonly answer: { readonly generation: number; readonly policy: PolicyDocument };
+    readonly answer: { readonly generation: number; readonly policy: PolicyDocument;
+                       readonly notes: readonly { readonly holds_at: readonly string[];
+                                                  readonly not_enforced: readonly string[] }[];
+                       readonly hooks: { readonly holds_at: readonly string[];
+                                         readonly not_enforced: readonly string[] };
+                       readonly codemode: { readonly on: boolean } };
   };
   readonly policyProposal: { readonly answer: { readonly digest: string } };
   readonly grantList: {
@@ -646,7 +659,8 @@ export interface DoorTypes {
         readonly client: string; readonly source: string; readonly mode: string;
         readonly scopes: unknown; readonly revision: number;
         readonly revoked_at: number | null; readonly vendor: string | null;
-        readonly vendor_verified: number }[] };
+        readonly vendor_verified: number; readonly agent: string;
+        readonly agent_live: boolean }[] };
   };
   readonly registerProposal: {
     readonly answer: { readonly client: string; readonly family: string;

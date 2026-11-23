@@ -1,5 +1,5 @@
 /**
- * A file edited chunk by chunk (`file_edit`, memshape_research.md §4, ADR-037): one exact
+ * A file edited chunk by chunk (`file_edit`, ADR-037): one exact
  * occurrence of `old` replaced by `new` without the file ever being held whole, so its
  * memory does not depend on the file's size.
  *
@@ -68,7 +68,7 @@ function indexOfBytes(hay: Uint8Array, needle: Uint8Array, from: number): number
 /**
  * A source chunk's bytes let go as its step ends: the edit owns what `read` answers, so its
  * buffer is detached (`transfer(0)`), and no reference the collector cannot yet rule out
- * (review M-a: one dead chunk now and then read live one collection longer) keeps them.
+ * (measured: one dead chunk now and then read live one collection longer) keeps them.
  */
 export function letGo(bytes: Uint8Array): void {
   const buffer = bytes.buffer as ArrayBuffer & { transfer?: (length: number) => ArrayBuffer };

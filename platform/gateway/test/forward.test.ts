@@ -4,7 +4,9 @@
  * answer cut, and the secret redacted from what comes back. And the connection's setup check
  * (`verify`).
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+
+import { until } from "../../ci/workerd";
 
 import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -13,12 +15,16 @@ import { builtinCatalog, modelInfos, recordOf } from "../src/catalog";
 import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
-import type { Source } from "../../contract/src/egress-scope";
-import { forwardRead, IDLE_CUT_MS, redact, verify } from "../src/forward";
+import { serviceSource, type Source } from "../../contract/src/egress-scope";
+import { forwardMetered, forwardRead, verify } from "../src/forward";
+import { redaction } from "../src/redact";
 import { seal, type Binding } from "../src/keyring";
+import { steer } from "./fake-upstream";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
 
 const SECRET = "sk-alice-forward-0123456789";
+/** A secret every encoding writes another way: `/`, `+`, `=`, and what only a form encodes. */
+const ODD = "sk-a/b+c=d~e!f(0123456789)";
 
 /** Anthropic, with its token count sealed: the one free call that carries a body. */
 const COUNTING: Source = Object.freeze({ ...ANTHROPIC, endpoints: [...ANTHROPIC.endpoints, {
@@ -38,17 +44,23 @@ async function call(blob: string, request: Request, env = ring("k1"),
 }
 
 describe("forward", () => {
-  it("strips every inbound credential, injects the sealed one, and passes the rest", async () => {
+  it("strips every inbound credential, injects the sealed one, and sends only the headers " +
+     "its rules name", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request(
-      "https://egress.tinyassets.io/v1/models?key=placeholder&api_key=p&stream=true", {
+      "https://egress.tinyassets.io/v1/models?key=placeholder&api_key=p&KEY=p&client_version=0.162.1", {
         headers: {
           authorization: "Bearer ta_ph_c1_placeholder", "x-api-key": "ta_ph_c1_placeholder",
           "x-goog-api-key": "ta_ph", "api-key": "ta_ph", cookie: "session=s",
           "proxy-authorization": "Basic x", "x-ta-envelope": "forged", "x-ta-sandbox": "jwt",
           "cf-connecting-ip": "10.0.0.1", "x-forwarded-for": "10.0.0.1",
-          "openai-beta": "responses=v1", "x-fake-mode": "echo",
+          // Headers that change what a call does or bills, and an engine's own telemetry.
+          "x-goog-fieldmask": "candidates", "x-goog-user-project": "other",
+          "openai-project": "proj_other", "openai-beta": "responses=v1",
+          "x-stainless-lang": "js",
+          accept: "application/json", "content-type": "application/json",
+          ...steer({ mode: "echo" }),
         },
       }), env);
     expect(response.status).toBe(200);
@@ -58,14 +70,17 @@ describe("forward", () => {
     expect(echo.method).toBe("GET");
     expect(echo.host).toBe("api.openai.com");
     expect(echo.path).toBe("/v1/models");
-    expect(echo.query).toBe("?stream=true");
+    expect(echo.query).toBe("?client_version=0.162.1");
     expect(echo.digests["authorization"]).toBe(await sha256(`Bearer ${SECRET}`));
-    for (const stripped of ["x-api-key", "x-goog-api-key", "api-key", "cookie",
-                            "proxy-authorization", "x-ta-envelope", "x-ta-sandbox",
-                            "cf-connecting-ip", "x-forwarded-for"]) {
-      expect(echo.headers[stripped]).toBeUndefined();
+    for (const dropped of ["x-api-key", "x-goog-api-key", "api-key", "cookie",
+                           "proxy-authorization", "x-ta-envelope", "x-ta-sandbox",
+                           "cf-connecting-ip", "x-forwarded-for", "x-goog-fieldmask",
+                           "x-goog-user-project", "openai-project", "openai-beta",
+                           "x-stainless-lang"]) {
+      expect(echo.headers[dropped], dropped).toBeUndefined();
     }
-    expect(echo.headers["openai-beta"]).toBe("responses=v1");
+    expect(echo.headers).toMatchObject({ accept: "application/json",
+                                         "content-type": "application/json" });
     expect(response.headers.get("x-upstream")).toBe("fake");
     expect(response.headers.get("cf-ray")).toBeNull();
   });
@@ -75,7 +90,7 @@ describe("forward", () => {
     const blob = await sealed(env, ALICE, SECRET, {
       ...OPENAI, upstream: { ...OPENAI.upstream, auth: { header: "x-custom-key", scheme: "" } } });
     const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-custom-key": "ta_ph_c1_placeholder", "x-fake-mode": "echo" } }), env);
+      headers: { "x-custom-key": "ta_ph_c1_placeholder", ...steer({ mode: "echo" }) } }), env);
     const echo = await response.json() as { headers: Record<string, string> };
     // Only the sealed secret is sent, which the answer redacts: no placeholder beside it.
     expect(echo.headers["x-custom-key"]).toBe("[redacted]");
@@ -87,13 +102,76 @@ describe("forward", () => {
     const blob = await sealed(env, ALICE, SECRET, COUNTING);
     const response = await call(blob, new Request(COUNT, {
       method: "POST", headers: { authorization: "Bearer ph", "x-api-key": "ph",
-                                 "x-fake-mode": "echo" }, body: '{"messages":[]}' }), env);
+                                 ...steer({ mode: "echo" }) }, body: '{"messages":[]}' }), env);
     const echo = await response.json() as { digests: Record<string, string>; host: string;
                                             body: string };
     expect(echo.host).toBe("api.anthropic.com");
     expect(echo.body).toBe('{"messages":[]}');
     expect(echo.digests["x-api-key"]).toBe(await sha256(SECRET));
     expect(echo.digests["authorization"]).toBeUndefined();
+  });
+
+  it("sends an API's own headers with a value its rule takes, and a beta on a free call",
+     async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, COUNTING);
+    const sent = async (headers: Record<string, string>) => {
+      const response = await call(blob, new Request(COUNT, {
+        method: "POST", headers: { ...headers, ...steer({ mode: "echo" }) }, body: "{}" }), env);
+      return ((await response.json()) as { headers: Record<string, string> }).headers;
+    };
+    const kept = await sent({ "anthropic-version": "2023-06-01",
+                              "anthropic-beta": "token-counting-2024-11-01, context-1m",
+                              "content-type": "application/json; charset=utf-8" });
+    expect(kept).toMatchObject({ "anthropic-version": "2023-06-01",
+                                 "anthropic-beta": "token-counting-2024-11-01, context-1m",
+                                 "content-type": "application/json; charset=utf-8" });
+    // A version the meter was not written against, and a body the provider would read
+    // otherwise than the gateway did, are not sent.
+    const dropped = await sent({ "anthropic-version": "2099-01-01",
+                                 "content-type": "application/json; charset=utf-16" });
+    expect(dropped["anthropic-version"]).toBeUndefined();
+    expect(dropped["content-type"]).toBeUndefined();
+  });
+
+  it("sends a free call's coded body with its coding, as it came", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, COUNTING);
+    const coded = new Uint8Array(await new Response(new Blob(['{"messages":[]}']).stream()
+      .pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+    const response = await call(blob, new Request(COUNT, {
+      method: "POST", body: coded,
+      headers: { "content-encoding": "gzip", ...steer({ mode: "echo" }) } }), env);
+    const echo = await response.json() as { headers: Record<string, string>; body: string };
+    expect(echo.headers["content-encoding"]).toBe("gzip");
+    expect(echo.body).toBe(new TextDecoder().decode(coded));
+  });
+
+  it("names the request headers it dropped, never a value, when the provider refuses the " +
+     "call as sent, and logs nothing when it serves it or fails itself", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    const logged = vi.spyOn(console, "warn");
+    onTestFinished(() => logged.mockRestore());
+    const answered = async (status: number) => (await call(blob, new Request(
+      "https://egress/v1/models", { headers: {
+        authorization: "Bearer ta_ph_placeholder", "openai-project": "proj_secret_value",
+        "x-stainless-lang": "js-lang-value", [`x-${"n".repeat(64)}`]: "long-name-value",
+        "cf-ray": "edge-value",
+        ...steer({ mode: "say", status: String(status) }) } }), env)).status;
+    expect(await answered(200)).toBe(200);
+    expect(await answered(503)).toBe(503);
+    // A rate limit is the provider's own state, not a refusal of the call as sent.
+    expect(await answered(429)).toBe(429);
+    expect(logged).not.toHaveBeenCalled();
+    expect(await answered(400)).toBe(400);
+    expect(logged).toHaveBeenCalledTimes(1);
+    // The placeholder's header was replaced by the sealed one, and Cloudflare's is not the
+    // sandbox's, so neither is a drop; a name past the bound is counted, not shown.
+    expect(logged.mock.calls[0]).toEqual([
+      "a sealed openai-responses call its provider refused (400) had 3 request headers " +
+      "dropped: openai-project x-stainless-lang ..."]);
+    expect(JSON.stringify(logged.mock.calls)).not.toMatch(/proj_secret|placeholder|value/);
   });
 
   it.each([
@@ -103,11 +181,18 @@ describe("forward", () => {
     ["an encoded dot", "POST", "https://egress/v1/%2e%2e/admin"],
     ["a prefix of a sealed path", "POST", "https://egress/v1/responses-admin"],
     ["a path naming another host", "POST", "https://egress//evil.test/v1/responses"],
+    ["a query parameter its API's rules do not allow", "GET", "https://egress/v1/models?stream=true"],
+    ["an allowed parameter's name spelled another way", "GET",
+     "https://egress/v1/models?Client_Version=0.162.1"],
+    ["a value its parameter's rule does not take", "GET",
+     "https://egress/v1/models?client_version=latest"],
+    ["an allowed parameter beside one not allowed", "GET",
+     "https://egress/v1/models?client_version=0.162.1&include=all"],
   ])("refuses %s, before anything is sent", async (_what, method, url) => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request(url, {
-      method, headers: { "x-fake-mode": "echo" }, ...(method === "GET" ? {} : { body: "{}" }) }), env);
+      method, headers: steer({ mode: "echo" }), ...(method === "GET" ? {} : { body: "{}" }) }), env);
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: { code: "endpoint_refused",
                                                      message: "endpoint_refused" } });
@@ -119,7 +204,7 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
     const response = await call(blob, new Request("https://api.openai.com/v1/responses", {
-      method: "POST", headers: { "x-fake-mode": "echo" }, body: "{}" }), env);
+      method: "POST", headers: steer({ mode: "echo" }), body: "{}" }), env);
     expect(response.status).toBe(403);
   });
 
@@ -131,7 +216,7 @@ describe("forward", () => {
                   { origin: "https://api.anthropic.com", paths: ["/*"], methods: ["GET"] }],
     });
     const response = await call(blob, new Request("https://egress//api.anthropic.com/v1/x", {
-      headers: { "x-fake-mode": "echo" } }), env);
+      headers: steer({ mode: "echo" }) }), env);
     expect(response.status).toBe(403);
   });
 
@@ -141,14 +226,14 @@ describe("forward", () => {
     for (const bound of [{ ...ALICE, owner: "bob" }, { ...ALICE, connection: "c9" },
                          { ...ALICE, version: 3 }]) {
       const response = await call(blob, new Request("https://egress/v1/models",
-        { headers: { "x-fake-mode": "echo" } }), env, bound);
+        { headers: steer({ mode: "echo" }) }), env, bound);
       expect(response.status).toBe(403);
       expect(await response.text()).toBe(JSON.stringify(
         { error: { code: "credential_refused", message: "credential_refused" } }));
     }
   });
 
-  it("cuts an answer its provider goes silent on for the idle cut, and ends its request",
+  it("leaves an answer its provider goes silent on to its caller, whose leaving ends it",
      async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
@@ -156,7 +241,7 @@ describe("forward", () => {
     let ended: string | undefined;
     try {
       const response = await call(blob, new Request("https://egress/v1/models", {
-        headers: { "x-fake-mode": "stall", "x-fake-id": "idle" } }), env);
+        headers: steer({ mode: "stall", id: "idle" }) }), env);
       expect(response.status).toBe(200);
       const reader = response.body!.getReader();
       // The bytes it sent come through; then it says nothing more.
@@ -165,22 +250,16 @@ describe("forward", () => {
       void next.then((how) => {
         ended = how;
       });
-      await vi.advanceTimersByTimeAsync(IDLE_CUT_MS - 1_000);
+      // An hour of silence, past every engine's own cut: the gateway cuts nothing.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
       expect(ended).toBeUndefined();
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(await next).toBe("deadline");
+      // The engine gives up: its leaving reaches the provider.
+      await reader.cancel();
     } finally {
       vi.useRealTimers();
     }
-    for (let tries = 0; ; tries++) {
-      const state = await (await fetch("https://status.test/cancelled?id=idle")).json() as
-        { cancelled: boolean };
-      if (state.cancelled || tries === 100) {
-        expect(state.cancelled).toBe(true);
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await until(async () => (await (await fetch("https://status.test/cancelled?id=idle"))
+      .json() as { cancelled: boolean | null }).cancelled === true, "the provider's request cut");
   });
 
   it("ends a call its provider never answers at the forward deadline, and not before",
@@ -191,7 +270,7 @@ describe("forward", () => {
     try {
       let answered = false;
       const pending = call(blob, new Request("https://egress/v1/models", {
-        headers: { "x-fake-mode": "hang" } }), env);
+        headers: steer({ mode: "hang" }) }), env);
       void pending.then(() => {
         answered = true;
       });
@@ -212,7 +291,7 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "redirect" } }), env);
+      headers: steer({ mode: "redirect" }) }), env);
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://evil.test/steal");
   });
@@ -221,7 +300,7 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "quote" } }), env);
+      headers: steer({ mode: "quote" }) }), env);
     expect(response.status).toBe(401);
     const text = await response.text();
     expect(text).not.toContain(SECRET);
@@ -233,7 +312,7 @@ describe("forward", () => {
     const old = ring("k1");
     const blob = await sealed(old, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "echo" } }), rotate(old, "k2", ["k2"]));
+      headers: steer({ mode: "echo" }) }), rotate(old, "k2", ["k2"]));
     expect(response.status).toBe(200);
     expect(JSON.parse(response.headers.get("x-ta-resealed")!)).toMatchObject({ version: 2, kid: "k2" });
   });
@@ -242,7 +321,7 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "hdr" } }), env);
+      headers: steer({ mode: "hdr" }) }), env);
     expect(response.headers.get("x-echo-key")).toBe("[redacted]");
   });
 
@@ -251,9 +330,26 @@ describe("forward", () => {
     const slashed = "sk-a/b/c-0123456789";
     const blob = await sealed(env, ALICE, slashed, OPENAI);
     const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "jsonesc" } }), env);
+      headers: steer({ mode: "jsonesc" }) }), env);
     expect(await response.text()).toBe('{"k":"[redacted]"}');
   });
+
+  it.each(["base64", "base64url", "uri", "uri-lower", "form", "plain"])(
+    "redacts the secret written back as %s, wherever it starts, from a JSON body and a Location",
+    async (encoding) => {
+      const env = ring("k1");
+      const blob = await sealed(env, ALICE, ODD, OPENAI);
+      // Each start in a base64 text: the secret after 0, 1 and 2 bytes, and after `Bearer `.
+      for (const before of ["", "x", "xy", "Bearer "]) {
+        const response = await call(blob, new Request("https://egress/v1/models", {
+          headers: steer({ mode: "encoded", encoding, before }) }), env);
+        for (const said of [await response.text(), response.headers.get("location")!]) {
+          expect(said.split("[redacted]"), `${encoding} after "${before}": ${said}`)
+            .toHaveLength(2);
+          expect(said).not.toContain(ODD);
+        }
+      }
+    });
 
   it("redacts the refresh token and a client secret, not only the access token", async () => {
     const env = ring("k1");
@@ -266,7 +362,7 @@ describe("forward", () => {
     const blob = (await seal(env, ALICE, plaintext)).blob;
     for (const said of ["rt-xyz-1", "cs-xyz-1", "at-xyz-1"]) {
       const response = await call(blob, new Request("https://egress/v1/models", {
-        headers: { "x-fake-mode": "say", "x-fake-say": `got ${said}` } }), env);
+        headers: steer({ mode: "say", say: `got ${said}` }) }), env);
       expect(await response.text()).toBe("got [redacted]");
     }
   });
@@ -276,7 +372,7 @@ describe("forward", () => {
     const blob = await sealed(env, ALICE, SECRET, COUNTING);
     const response = await call(blob, new Request(COUNT, {
       method: "POST", body: "{}",
-      headers: { "x-fake-mode": "echo", "x-http-method-override": "DELETE",
+      headers: { ...steer({ mode: "echo" }), "x-http-method-override": "DELETE",
                  "x-http-method": "DELETE", "x-method-override": "DELETE" } }), env);
     const echo = await response.json() as { headers: Record<string, string> };
     for (const name of ["x-http-method-override", "x-http-method", "x-method-override"]) {
@@ -288,11 +384,11 @@ describe("forward", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     const echoed = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "echo", "accept-encoding": "gzip, br" } }), env);
+      headers: { ...steer({ mode: "echo" }), "accept-encoding": "gzip, br" } }), env);
     expect(((await echoed.json()) as { headers: Record<string, string> })
       .headers["accept-encoding"]).toBe("identity");
     const response = await call(blob, new Request("https://egress/v1/models", {
-      headers: { "x-fake-mode": "decoded" } }), env);
+      headers: steer({ mode: "decoded" }) }), env);
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(await response.text()).toBe("plain text, decoded on the way");
   });
@@ -318,7 +414,7 @@ describe("redact", () => {
         controller.close();
       },
     });
-    return new Response(redact(body, secrets)).text();
+    return new Response(redaction(secrets).stream(body)).text();
   }
 
   it("redacts a secret split across every chunk boundary", async () => {
@@ -342,6 +438,24 @@ describe("redact", () => {
     expect(await through(["head ", "short"], ["a-much-longer-secret-value", "short"]))
       .toBe("head [redacted]");
     expect(await through(["short"], ["a-much-longer-secret-value", "short"])).toBe("[redacted]");
+  });
+
+  it("redacts each encoded spelling split across every chunk boundary", async () => {
+    const bytes = (text: string) => String.fromCharCode(...new TextEncoder().encode(text));
+    for (const written of [btoa(bytes(`xy${ODD}|tail`)), encodeURIComponent(`x${ODD}`),
+                           new URLSearchParams({ v: ODD }).toString(),
+                           JSON.stringify(btoa(bytes(`x${ODD}`))).split("/").join("\\/")]) {
+      const text = `a ${written} b`;
+      const whole = await through([text], [ODD]);
+      expect(whole.split("[redacted]"), written).toHaveLength(2);
+      for (let size = 1; size <= 9; size++) {
+        const chunks: string[] = [];
+        for (let at = 0; at < text.length; at += size) {
+          chunks.push(text.slice(at, at + size));
+        }
+        expect(await through(chunks, [ODD]), `${written} in chunks of ${size}`).toBe(whole);
+      }
+    }
   });
 
   it("passes a body with no secret through unchanged", async () => {
@@ -423,5 +537,92 @@ describe("verify", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     await expect(verify(env, ALICE, blob, builtinCatalog())).rejects.toThrow("unsupported_source");
+  });
+});
+
+describe("a service's key", () => {
+  const URL_SEALED = "https://mcp.example.com/mcp/";
+  /** A key sealed for the MCP server at `URL_SEALED`, sent as `x-api-key` with no scheme. */
+  const service = (env: ReturnType<typeof ring>) => {
+    const { upstream, endpoints } = serviceSource(URL_SEALED, { header: "x-api-key",
+                                                                 scheme: "" });
+    return seal(env, ALICE, { kind: "api_key", secret: SECRET, upstream, endpoints,
+                              sealed_at: Date.now() }).then((made) => made.blob);
+  };
+
+  it("is put in by its own header on its own URL alone, on each of the transport's methods, " +
+     "and redacted from the answer", async () => {
+    const env = ring("k1");
+    const blob = await service(env);
+    for (const method of ["POST", "GET", "DELETE"]) {
+      const response = await call(blob, new Request("https://egress/mcp/", {
+        method, headers: { authorization: "Bearer ph", ...steer({ mode: "echo" }) },
+        ...(method === "POST" ? { body: "{}" } : {}) }), env);
+      expect(response.status).toBe(200);
+      const echo = await response.json() as { host: string; path: string; method: string;
+                                              digests: Record<string, string> };
+      expect(echo).toMatchObject({ host: "mcp.example.com", path: "/mcp/", method });
+      expect(echo.digests["x-api-key"]).toBe(await sha256(SECRET));
+      expect(echo.digests["authorization"]).toBeUndefined();
+    }
+    const quoted = await call(blob, new Request("https://egress/mcp/", {
+      headers: steer({ mode: "hdr" }) }), env);
+    expect(quoted.headers.get("x-echo-key")).not.toContain(SECRET);
+  });
+
+  it("is sent with the transport's own headers and no other", async () => {
+    const env = ring("k1");
+    const transport = {
+      accept: "application/json, text/event-stream", "content-type": "application/json",
+      "mcp-protocol-version": "2026-07-28", "mcp-session-id": "s-1", "last-event-id": "e-1",
+      "mcp-method": "tools/call", "mcp-name": "search", "mcp-param-region": "eu",
+    };
+    const response = await call(await service(env), new Request("https://egress/mcp/", {
+      method: "POST", body: "{}",
+      headers: { ...transport, "x-auth-token": "the sandbox's own",
+                 "anthropic-version": "2023-06-01", "mcp-protocol-version-x": "1",
+                 ...steer({ mode: "echo" }) } }), env);
+    const { headers } = await response.json() as { headers: Record<string, string> };
+    expect(headers).toMatchObject(transport);
+    for (const dropped of ["x-auth-token", "anthropic-version", "mcp-protocol-version-x"]) {
+      expect(headers[dropped], dropped).toBeUndefined();
+    }
+  });
+
+  it.each([
+    ["another path at its host", "POST", "https://egress/admin"],
+    ["a path below its own", "POST", "https://egress/mcp/x"],
+    ["its path but for its slash", "POST", "https://egress/mcp"],
+    ["a method the transport never sends", "PUT", "https://egress/mcp/"],
+    ["a path naming another host", "POST", "https://egress//evil.test/mcp/"],
+    ["its URL with a query", "POST", "https://egress/mcp/?session=1"],
+  ])("is never sent to %s", async (_what, method, url) => {
+    const env = ring("k1");
+    const response = await call(await service(env), new Request(url, {
+      method, headers: steer({ mode: "echo" }), body: "{}" }), env);
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { error: { code: string } }).error.code)
+      .toBe("endpoint_refused");
+  });
+
+  it("is never metered: a metered forward of it is refused before anything is sent",
+     async () => {
+    const env = ring("k1");
+    const reserve = vi.fn();
+    const { response } = await forwardMetered(env, ALICE, await service(env), new Request(
+      "https://egress/mcp/", { method: "POST", headers: steer({ mode: "echo" }),
+                               body: "{}" }), reserve, new ReadableStream(), builtinCatalog());
+    expect(((await response.json()) as { error: { code: string } }).error.code)
+      .toBe("unmetered");
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it("opens to its scope at the setup check, with no models and nothing sent", async () => {
+    const env = ring("k1");
+    const verified = await verify(env, ALICE, await service(env), builtinCatalog());
+    expect(verified).toEqual({ models: [], egress: {
+      kind: "service", base_url: URL_SEALED,
+      endpoints: [{ origin: "https://mcp.example.com", paths: ["/mcp/"],
+                    methods: ["POST", "GET", "DELETE"] }] } });
   });
 });

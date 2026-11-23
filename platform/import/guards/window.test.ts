@@ -3,8 +3,10 @@
  * against a fake world: R2's S3 API (the staging and files buckets), the Queues HTTP API (the
  * import queue, whose fake doors answer each message as `doors/src/import/` does, and the
  * dead-letter queue's pull consumer), the KV API (the directory) and the doors' secret
- * listing. `verify` holds each check to its bundle and keeps the result; `admit` admits nothing
- * until every owner verified clean and the dead-letter queue is empty, then each in turn;
+ * listing. `verify` holds each check to its bundle and keeps the result; `admit` runs only on
+ * a deletion check of its own, taken once, and admits nothing until every owner it admits
+ * verified clean and the dead-letter queue is empty, then discards each owner the check
+ * withholds, then admits each other in turn;
  * `wipe` discards each owner still staged, deletes and proves every listing empty; `dlq`
  * reports by ordinal and deletes only with its flag; `close` passes only once every staged
  * owner is admitted or discarded, and `unkey` deletes the doors' key after it; and each,
@@ -33,6 +35,7 @@ import { objectPrefix } from "../../contract/src/files";
 import { QUEUES } from "../../contract/src/queue-names";
 import { IMPORT_NAMES } from "../../deploy/facts";
 import { buildBundles } from "../bundle";
+import { writeCheck } from "../deletions";
 import { unkeyMain, windowMain } from "../cli";
 import { bundlesIn, type Fetcher, type Inputs, type Staged } from "../stage";
 import {
@@ -75,6 +78,19 @@ function bundled(): { out: string; record: string; facts: string; bundles: Stage
 const read = <T>(staged: Staged, kind: "manifest" | "rows", key: string): T[] =>
   staged.parts.filter((name) => name.startsWith(`${kind}/`)).sort()
     .flatMap((name) => JSON.parse(readFileSync(join(staged.dir, name), "utf8"))[key] as T[]);
+
+/**
+ * The admit's deletion check of `out`'s bundles, as window.sh's admit has `deletions` write it
+ * right before the admit, withholding `withheld` (bundle keys).
+ */
+function checked(out: string, withheld: readonly string[] = []): string {
+  const dir = mkdtempSync(join(tmpdir(), "ta-window-check-"));
+  temps.push(dir);
+  const file = join(dir, "deletions.private.json");
+  writeCheck(file, { run: RUN, withheld, bundles: Object.fromEntries(
+    bundlesIn(out).map((staged) => [staged.key, staged.bundle])) });
+  return file;
+}
 
 /** What a faithful import leaves in an owner's object, as its check reads it back. */
 function heldOf(staged: Staged) {
@@ -131,6 +147,8 @@ function world(bundles: readonly Staged[]) {
   const faults: { kill?: { op: string; after: number }; refuse?: string } = {};
   const namespaces = new Map(bundles.map((staged, n) => [staged.owner, `${String(n).repeat(32)}`]));
   const secrets = new Set([IMPORT_KEY]);
+  /** The doors' active deployment: one version, unless a case splits it. */
+  const serving = [{ version_id: "doors-v1", percentage: 100 }];
   for (const staged of bundles) {
     staging.set(...indexAt(staged));
     staging.set(doneName(`${RUN}/${staged.key}`), JSON.stringify({ op: "import",
@@ -235,6 +253,9 @@ function world(bundles: readonly Staged[]) {
         .filter((key) => key.startsWith(prefix)).map((name) => ({ name })),
                              result_info: { cursor: "" } });
     }
+    if (path === `/workers/scripts/${NAMES.doors}/deployments`) {
+      return ok({ deployments: [{ id: "d1", strategy: "percentage", versions: serving }] });
+    }
     const secret = `/workers/scripts/${NAMES.doors}/secrets`;
     if (path === secret) {
       return ok([...secrets].map((name) => ({ name, type: "secret_text" })));
@@ -253,7 +274,7 @@ function world(bundles: readonly Staged[]) {
   };
   const window: Window = { names: NAMES, inputs: INPUTS, fetcher, clock: CLOCK };
   return { window, buckets, staging, kv, sent, dead, consumers, held, admitted, faults,
-           namespaces, secrets };
+           namespaces, secrets, serving };
 }
 
 const quiet = () => undefined;
@@ -359,10 +380,10 @@ describe("the window's admit", () => {
   it("admits nothing before a check passes, nor with one owner's check failing", async () => {
     const { out, record, bundles } = bundled();
     const w = world(bundles);
-    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/did not verify clean/);
+    await expect(admit(out, RUN, w.window, record, checked(out), quiet)).rejects.toThrow(/did not verify clean/);
     w.held.get(bundles[0]!.owner)!.rows.count += 1;
     await verify(out, RUN, w.window, record, quiet);
-    await expect(admit(out, RUN, w.window, record, quiet))
+    await expect(admit(out, RUN, w.window, record, checked(out), quiet))
       .rejects.toThrow(/1 of \d+ owners did not verify clean: no owner is admitted/);
     expect(w.sent.filter((message) => message.op === "admit")).toEqual([]);
     expect(w.admitted.size).toBe(0);
@@ -373,7 +394,7 @@ describe("the window's admit", () => {
     const w = world(bundles);
     await verify(out, RUN, w.window, record, quiet);
     w.dead.push({ id: "d1", body: "{}", leased: false });
-    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/dead-letter queue/);
+    await expect(admit(out, RUN, w.window, record, checked(out), quiet)).rejects.toThrow(/dead-letter queue/);
     expect(w.admitted.size).toBe(0);
     expect(w.dead.length).toBe(1);
   });
@@ -385,7 +406,7 @@ describe("the window's admit", () => {
     w.dead.push({ id: "d1", body: "{}", leased: false });
     expect((await deadLetters(w.window, out, RUN, false, quiet)).messages).toBe(1);
     // The read's lease hides the message from the next pull, not from the backlog.
-    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/dead-letter queue/);
+    await expect(admit(out, RUN, w.window, record, checked(out), quiet)).rejects.toThrow(/dead-letter queue/);
     expect(w.admitted.size).toBe(0);
   });
 
@@ -395,10 +416,10 @@ describe("the window's admit", () => {
     const w = world(bundles);
     await verify(out, RUN, w.window, record, quiet);
     w.faults.kill = { op: "admit", after: 1 };
-    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/killed/);
+    await expect(admit(out, RUN, w.window, record, checked(out), quiet)).rejects.toThrow(/killed/);
     expect(w.admitted.size).toBe(1);
     const lines: string[] = [];
-    await admit(out, RUN, w.window, record, (line) => lines.push(line));
+    await admit(out, RUN, w.window, record, checked(out), (line) => lines.push(line));
     expect(w.admitted.size).toBe(bundles.length);
     expect(lines.length).toBe(bundles.length);
   });
@@ -408,7 +429,94 @@ describe("the window's admit", () => {
     const w = world(bundles);
     await verify(out, RUN, w.window, record, quiet);
     w.faults.refuse = "admit";
-    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/refused by the doors/);
+    await expect(admit(out, RUN, w.window, record, checked(out), quiet))
+      .rejects.toThrow(/refused by the doors/);
+  });
+
+  it("discards each owner its deletion check withholds, before admitting any, and admits " +
+     "none of them", async () => {
+    const { out, record, facts, bundles } = bundled();
+    const w = world(bundles);
+    const held = bundles[1]!;
+    // A withheld owner need not have verified: it is discarded, never admitted.
+    w.held.get(held.owner)!.rows.count += 1;
+    await verify(out, RUN, w.window, record, quiet);
+    // Killed at the discard: nothing is admitted, and the next admit (its own check) goes on.
+    w.faults.kill = { op: "discard", after: 0 };
+    await expect(admit(out, RUN, w.window, record, checked(out, [held.key]), quiet))
+      .rejects.toThrow(/killed/);
+    expect(w.admitted.size).toBe(0);
+    const lines: string[] = [];
+    const summary = await admit(out, RUN, w.window, record, checked(out, [held.key]),
+                                (line) => lines.push(line));
+    expect(summary.clean).toBe(bundles.length - 1);
+    expect(w.admitted.has(held.owner)).toBe(false);
+    expect(w.sent.filter((message) => message.owner === held.owner).map((message) => message.op))
+      .not.toContain("admit");
+    const ops = w.sent.filter((message) => message.op !== "check").map((message) => message.op);
+    expect(ops.lastIndexOf("discard")).toBeLessThan(ops.indexOf("admit"));
+    expect(lines[0]).toBe(`bundle 2 of ${bundles.length}: discarded`);
+    // Unstaged, its namespace kept: close reads it as discarded.
+    expect([...w.staging.keys()].filter((key) => key.startsWith(`${RUN}/${held.key}/`)))
+      .toEqual([]);
+    expect(readRecord(record, RUN).discarded[held.key]?.bundle).toBe(held.bundle);
+    expect(await close(w.window, quiet)).toEqual({ owners: bundles.length - 1, left: [] });
+    // Run again, it discards nothing more and admits the others again, idempotently.
+    const discards = w.sent.filter((message) => message.op === "discard").length;
+    expect(await windowMain(["admit", out, "--run", RUN, "--facts", facts, "--record", record,
+                             "--deletions", checked(out, [held.key])],
+                            envOf(), quiet, w.window.fetcher, CLOCK)).toBe(0);
+    expect(w.sent.filter((message) => message.op === "discard").length).toBe(discards);
+    expect(w.admitted.has(held.owner)).toBe(false);
+  });
+
+  it("stops before any admit at a withheld owner's discard the doors refuse", async () => {
+    const { out, record, bundles } = bundled();
+    const w = world(bundles);
+    await verify(out, RUN, w.window, record, quiet);
+    w.faults.refuse = "discard";
+    await expect(admit(out, RUN, w.window, record, checked(out, [bundles[0]!.key]), quiet))
+      .rejects.toThrow(/bundle 1 of \d+'s discard was refused by the doors: nothing more is done/);
+    expect(w.sent.filter((message) => message.op === "admit")).toEqual([]);
+  });
+
+  it("runs only on a check of its own, this run's and of these bundles, and takes it once",
+     async () => {
+    const { out, record, facts, bundles } = bundled();
+    const w = world(bundles);
+    await verify(out, RUN, w.window, record, quiet);
+    const scratch = mkdtempSync(join(tmpdir(), "ta-window-check-"));
+    temps.push(scratch);
+    await expect(admit(out, RUN, w.window, record, join(scratch, "none.json"), quiet))
+      .rejects.toThrow(/admit has no deletion check of its own/);
+    await expect(windowMain(["admit", out, "--run", RUN, "--facts", facts, "--record", record],
+                            envOf(), quiet, w.window.fetcher, CLOCK))
+      .rejects.toThrow(/--deletions is required/);
+    // A check a refused admit read is gone: the next admit needs a read of its own.
+    w.dead.push({ id: "d1", body: "{}", leased: false });
+    const once = checked(out);
+    await expect(admit(out, RUN, w.window, record, once, quiet)).rejects.toThrow(/dead-letter/);
+    w.dead.splice(0);
+    await expect(admit(out, RUN, w.window, record, once, quiet))
+      .rejects.toThrow(/admit has no deletion check of its own/);
+    // Another run's, or one of other bundles, is refused, and taken all the same.
+    const keys = Object.fromEntries(bundles.map((staged) => [staged.key, staged.bundle]));
+    const checks: Record<string, unknown>[] = [
+      { run: "r2", bundles: keys, withheld: [] },
+      { run: RUN, bundles: { ...keys, [bundles[0]!.key]: "f".repeat(64) }, withheld: [] },
+      { run: RUN, bundles: { ...keys, ["0".repeat(16)]: "f".repeat(64) }, withheld: [] },
+      { run: RUN, bundles: keys, withheld: ["0".repeat(16)] },
+    ];
+    for (const [n, check] of checks.entries()) {
+      const file = join(scratch, `check-${n}.json`);
+      writeFileSync(file, JSON.stringify(check));
+      await expect(admit(out, RUN, w.window, record, file, quiet))
+        .rejects.toThrow(/the deletion check is not of this run's bundles: no owner is admitted/);
+      await expect(admit(out, RUN, w.window, record, file, quiet))
+        .rejects.toThrow(/admit has no deletion check of its own/);
+    }
+    expect(w.sent.filter((message) => message.op !== "check")).toEqual([]);
+    expect(w.admitted.size).toBe(0);
   });
 });
 
@@ -418,7 +526,7 @@ describe("the window's wipe", () => {
     const { out, record, bundles } = bundled();
     const w = world(bundles);
     await verify(out, RUN, w.window, record, quiet);
-    await admit(out, RUN, w.window, record, quiet);
+    await admit(out, RUN, w.window, record, checked(out), quiet);
     w.kv.set("o:user_real", JSON.stringify({ s: "admitted", t: 1 }));
     w.kv.set(`o:${rehearsalName("r2", "user_x")}`, JSON.stringify({ s: "admitted", t: 1 }));
     // A run whose id extends this one's shares its listing prefix, `o:rehearsal-r1-`.
@@ -442,11 +550,12 @@ describe("the window's wipe", () => {
     w.faults.kill = { op: "discard", after: 1 };
     await expect(wipe(out, RUN, w.window, record, quiet)).rejects.toThrow(/killed/);
     expect(Object.keys(readRecord(record, RUN).discarded).length).toBe(1);
-    // The killed run's staging stood, so its one discard is asked again.
+    // The discarded owner's staging went with its discard; the killed one's stood, so only
+    // that one is asked again.
     expect(await wipe(out, RUN, w.window, record, quiet))
       .toEqual({ records: 0, staged: 0, namespaces: bundles.length, objects: 0 });
     const discards = () => w.sent.filter((message) => message.op === "discard").length;
-    expect(discards()).toBe(bundles.length + 2);
+    expect(discards()).toBe(bundles.length + 1);
     // A put that landed late under a discarded namespace: a wipe run again, with no owner left
     // staged to discard, proves each namespace the record kept, and finds it.
     const first = w.namespaces.get(bundles[0]!.owner)!;
@@ -455,7 +564,7 @@ describe("the window's wipe", () => {
       .toMatchObject({ records: 0, staged: 0, namespaces: bundles.length, objects: 1 });
     expect(await windowMain(["wipe", out, "--run", RUN, "--facts", facts, "--record", record],
                             envOf(), quiet, w.window.fetcher, CLOCK)).toBe(3);
-    expect(discards()).toBe(bundles.length + 2);
+    expect(discards()).toBe(bundles.length + 1);
   });
 });
 
@@ -479,7 +588,7 @@ describe("the window's close", () => {
     await verify(out, RUN, w.window, record, quiet);
     // One admit, then the run stopped: every other owner is left with its data staged.
     w.faults.kill = { op: "admit", after: 1 };
-    await expect(admit(out, RUN, w.window, record, quiet)).rejects.toThrow(/killed/);
+    await expect(admit(out, RUN, w.window, record, checked(out), quiet)).rejects.toThrow(/killed/);
     // And another run's owner, staged and never admitted, is the window's too.
     w.staging.set(stagedName(`r0/${"0".repeat(16)}`, BUNDLE_INDEX),
                   JSON.stringify({ owner: rehearsalName("r0", "user_z") }));
@@ -507,7 +616,7 @@ describe("the window's close", () => {
     const admitted = bundled();
     const a = world(admitted.bundles);
     await verify(admitted.out, RUN, a.window, admitted.record, quiet);
-    await admit(admitted.out, RUN, a.window, admitted.record, quiet);
+    await admit(admitted.out, RUN, a.window, admitted.record, checked(admitted.out), quiet);
     const lines: string[] = [];
     expect(await close(a.window, (line) => lines.push(line)))
       .toEqual({ owners: admitted.bundles.length, left: [] });
@@ -578,6 +687,18 @@ describe("the window's key, deleted after its close", () => {
       await expect(unkeyMain(["unkey", "--facts", facts], given, quiet, w.window.fetcher))
         .rejects.toThrow(/unkey takes CLOUDFLARE_ACCOUNT_ID, then IMPORT_DOORS_API_TOKEN/);
     }
+    expect([...w.secrets]).toEqual([IMPORT_KEY]);
+  });
+
+  it("deletes nothing while the doors serve two versions: the delete deploys at once",
+     async () => {
+    const { facts, bundles } = bundled();
+    const w = world(bundles);
+    w.serving.splice(0, 1, { version_id: "doors-v2", percentage: 10 },
+                     { version_id: "doors-v1", percentage: 90 });
+    await expect(unkeyMain(["unkey", "--facts", facts], stdin, quiet, w.window.fetcher))
+      .rejects.toThrow(`${NAMES.doors} is split (doors-v2 at 10%, doors-v1 at 90%): end the ` +
+                       "split first");
     expect([...w.secrets]).toEqual([IMPORT_KEY]);
   });
 });

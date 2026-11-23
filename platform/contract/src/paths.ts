@@ -1,12 +1,11 @@
 /**
- * Owner file paths (plan §6): absolute POSIX paths under the owner's two roots, stored
+ * Owner file paths: absolute POSIX paths under the owner's one root, stored
  * verbatim. The owner's object stores them, the sandbox's runner holds paths of the owner's
  * agent trees, and the cutover's importer checks every name it would write against the same
  * rule (`platform/import/`).
  *
- * `/workspace` holds the owner's files; `/.ta/tmp` is the reserved temporary area
- * (`createTempDir`, spill files), whose entries expire. Both roots always exist and are
- * never written, removed or renamed themselves. A stored path is absolute, has no empty,
+ * `/workspace` holds the owner's files. The root always exists and is never written,
+ * removed or renamed itself. A stored path is absolute, has no empty,
  * `.` or `..` component and no NUL, is well-formed Unicode, and is at most 4,096 UTF-8
  * bytes with components of at most 255. It is never normalized (no NFC, no case
  * folding): two names that differ in any code point are two files, as on Linux. That is
@@ -24,8 +23,6 @@ import { MAX_PATH_BYTES } from "./limits.ts";
 import { utf8Bytes } from "./text.ts";
 
 export const WORKSPACE = "/workspace";
-export const TEMP = "/.ta/tmp";
-export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
 export const MAX_NAME_BYTES = 255;
 const LONE_SURROGATE = /\p{Cs}/u;
 
@@ -46,17 +43,22 @@ export const GOALS_DIR = "/workspace/goals";
 /** The owner's profile: its directives are every agent's standing preferences. */
 export const PROFILE = "/workspace/USER.md";
 /**
+ * The owner's own model ranking: present, it replaces the platform's whole
+ * (`sources/src/ranking.ts`) for the owner's every `auto` choice.
+ */
+export const RANKING = "/workspace/model-ranking.json";
+/**
  * Where the cutover's importer puts an owner's tree from the old stack (`platform/import/`,
  * the owner's import doors, `owner/src/import.ts`): the only tree those doors write.
  */
 export const IMPORTED = "/workspace/imported";
 /**
  * Every tree only the owner's own authority changes: the agent definitions, the abilities'
- * trees, the goals and the profile. A grant the owner narrowed changes nothing in them
- * (`owner/src/paths.ts`'s `ownersOnly`).
+ * trees, the goals, the profile and the model ranking. A grant the owner narrowed changes
+ * nothing in them (`owner/src/paths.ts`'s `ownersOnly`).
  */
 export const OWNER_TREES: readonly string[] = Object.freeze([
-  AGENTS_DIR, ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR, GOALS_DIR, PROFILE]);
+  AGENTS_DIR, ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR, GOALS_DIR, PROFILE, RANKING]);
 /**
  * What an outside client's sandbox holds read-only and never sends back: the agent
  * definitions and the abilities' trees, its always-read set (owner-object spec, a client's
@@ -66,9 +68,9 @@ export const OWNER_TREES: readonly string[] = Object.freeze([
 export const CLIENT_READ_ONLY: readonly string[] = Object.freeze([
   AGENTS_DIR, ABILITIES_DIR, SKILLS_DIR, PROMPTS_DIR]);
 
-/** Whether `path` is one of the two roots. */
+/** Whether `path` is the root. */
 export function isRoot(path: string): boolean {
-  return ROOTS.includes(path);
+  return path === WORKSPACE;
 }
 
 /** Whether `path` is `root` or below it. */
@@ -77,7 +79,7 @@ export function within(path: string, root: string): boolean {
 }
 
 /**
- * A stored path: absolute, canonical, verbatim, under a root (or a root itself), or
+ * A stored path: absolute, canonical, verbatim, under the root (or the root itself), or
  * refused as invalid.
  */
 export function storedPath(value: unknown): string {
@@ -91,15 +93,15 @@ export function storedPath(value: unknown): string {
     throw new Refusal("invalid",
                       "a path has no empty, . or .. component, and names of at most 255 bytes");
   }
-  if (!ROOTS.some((root) => within(value, root))) {
-    throw new Refusal("invalid", "a path is under /workspace or /.ta/tmp");
+  if (!within(value, WORKSPACE)) {
+    throw new Refusal("invalid", "a path is under /workspace");
   }
   return value;
 }
 
 /**
  * `path` against `cwd`, as POSIX resolves it lexically: `.` and empty components drop,
- * `..` goes up (never above `/`), `~` is the workspace. Not checked against the roots;
+ * `..` goes up (never above `/`), `~` is the workspace. Not checked against the root;
  * `storedPath` does that.
  */
 export function resolve(cwd: string, path: string): string {
@@ -119,7 +121,7 @@ export function resolve(cwd: string, path: string): string {
   return `/${parts.join("/")}`;
 }
 
-/** The parent of a stored path below a root. */
+/** The parent of a stored path below the root. */
 export function parentOf(path: string): string {
   return path.slice(0, path.lastIndexOf("/")) || "/";
 }
@@ -129,11 +131,10 @@ export function nameOf(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
-/** The ancestors of `path` from just below its root down to its parent. */
+/** The ancestors of a stored path from just below the root down to its parent. */
 export function ancestors(path: string): string[] {
-  const root = ROOTS.find((r) => within(path, r)) ?? "/";
   const found: string[] = [];
-  for (let at = parentOf(path); at !== root && at.length > root.length; at = parentOf(at)) {
+  for (let at = parentOf(path); at.length > WORKSPACE.length; at = parentOf(at)) {
     found.unshift(at);
   }
   return found;

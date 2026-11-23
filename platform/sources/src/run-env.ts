@@ -10,12 +10,27 @@ import type { CredentialKind } from "../../contract/src/sandbox";
 /**
  * The process basics a run keeps from the sandbox template's own environment, beside
  * `HOME`, which the runner sets to the run's engine home (`{home}`): nothing else of the
- * sandbox's environment reaches a run. `NODE_EXTRA_CA_CERTS` is E2B's egress CA (slice S's
- * probe: E2B's proxy re-signs the HTTPS it sets the egress token on, and Node trusts only
- * its own bundle), so a Node engine's calls to the egress door verify.
+ * sandbox's environment reaches a run. `NODE_EXTRA_CA_CERTS` is E2B's egress CA (E2B's
+ * proxy re-signs the HTTPS it sets the egress token on, and Node trusts only its own
+ * bundle), so a Node engine's calls to the egress door verify.
  */
 export const RUN_BASICS: readonly string[] = Object.freeze([
   "PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER", "SHELL", "NODE_EXTRA_CA_CERTS",
+]);
+
+/**
+ * The variables that load code into a process or change what its runtime loads (Node's
+ * options and module path, the dynamic linker's preloads, paths and tunables, Bun's,
+ * Python's, Perl's, Ruby's and the JVM's, a shell's startup file), as `forbids` reads them:
+ * never a record's own, so nothing a record sets runs code inside a CLI (review round 4,
+ * R4-1); and never one a file a hooked run's CLI loads sets, so nothing the agent writes runs
+ * code inside its hook (R5 P-hooks).
+ */
+export const CODE_LOADING_ENV: readonly string[] = Object.freeze([
+  "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "LD_*", "DYLD_*", "GLIBC_TUNABLES",
+  "BUN_*", "PYTHON*", "PERL5LIB", "PERLLIB", "PERL5OPT", "RUBYOPT", "RUBYLIB",
+  "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "BASH_ENV", "ENV", "GCONV_PATH",
+  "MALLOC_*",
 ]);
 
 /**

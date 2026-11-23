@@ -294,7 +294,8 @@ A run is one engine invocation: one CLI process from start to exit. Its id is th
    - The runner reads the CLI's JSON stream: Claude `stream-json`, Codex `--json` JSONL, Gemini `stream-json`, pi `--mode json`.
    - It frames each event and sends it to the owner's object (§2.2).
    - It records the session id at the first event that carries one (Claude `system/init.session_id`, Codex `thread.started.thread_id`, Gemini `init`).
-   - Vendor error categories in the stream (Claude `system/api_retry` with `authentication_failed`, `rate_limit`, `billing_error` or `account_on_hold` [E]) become run notices.
+   - The vendor's own limit in the stream (each record's `engine.events.vendor_limit`: Claude's `rate_limit_event` rejected, with its `resetsAt`, or an assistant `error` of `rate_limit`, `billing_error` or `account_on_hold` [E]; its `system/api_retry` is the CLI's own retry, no error) settles the run `vendor_limit` and holds its schedules (`untangle-2026-11/vendor-limit-stop.md`).
+   - A run fails on a call its CLI gave up on (`engine.events.error`), never on one it goes on from: a call the CLI retries itself withdraws the error it reported (`engine.events.retry`: pi's `auto_retry_start` and its overflow compaction), and Codex's stream reconnects and Gemini's warnings are no error (`untangle-2026-11/pi-retried-error.md`).
 7. **Sync out.** On exit, the runner commits changed files as one fenced `fileSyncCommit`:
    - It includes `session_paths` (transcripts, auto memory).
    - It **never** includes `secret_paths`. The runner never offers them, and the trusted side refuses any op matching any record's `secret_paths` as a backstop, which keeps ADR-031 D2.

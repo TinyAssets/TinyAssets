@@ -110,7 +110,8 @@ function reset(): void {
   fake.held = [];
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
                   full: false, pauseMode: "full", noCount: false, down: 0,
-                  refuseResume: false, broken: null, tampered: null, protocol: 1,
+                  refuseResume: false, broken: null, tampered: null,
+                  protocol: (env as unknown as { RUNNER_PROTOCOL: number }).RUNNER_PROTOCOL,
                   room: null, lost: null, hold: null };
 }
 reset();

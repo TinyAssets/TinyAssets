@@ -1,9 +1,8 @@
 /**
- * A deleted agent's archived mail (slice STORE item 2, phase 1): dropped at once, then
- * rewritten out of its segments by the lane, a bounded rewrite a pass, keeping the rest
- * byte-exact and disjoint; deletions held busy past `maxAgentRows` purges waiting; and mail
- * still moved during a long purge. Each owner runs production's ceilings
- * (`archive-support.ts`).
+ * A deleted agent's archived mail: dropped at once, then rewritten out of its segments by the lane,
+ * a bounded rewrite a pass, keeping the rest byte-exact and disjoint; a deleted agent's rooms
+ * counted among the rooms until then; and mail still moved during a long purge. Each owner
+ * runs production's ceilings (`archive-support.ts`).
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -11,17 +10,16 @@ import { describe, expect, it } from "vitest";
 
 import { sqlIn } from "../../ci/workerd";
 import { BODY_BYTES_MAX } from "../../contract/src/limits";
-import { STORAGE_BUSY_RETRY_S } from "../../contract/src/refusal";
 import { LEDGER_LIMITS, type Ledger } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { MOVE_RECORDS } from "../src/segments";
 import {
   chained, EVE, MIB, overlaps, sealed, seeded, sentAndAcked, seqOf, settle,
 } from "./archive-support";
-import { DOT, MUSE, origin, registerOn, type Rig } from "./ledger-support";
+import { DOT, MUSE, origin, registerOn, type Rig, dm } from "./ledger-support";
 import { drainDue, failure, spaceOf } from "./support";
 
-const { maxAgentRows } = LEDGER_LIMITS;
+const { maxRooms } = LEDGER_LIMITS;
 
 /** An archive move as it landed: its stream, the segments it replaced, the records it wrote. */
 interface Move {
@@ -86,20 +84,20 @@ describe("the archive lane", () => {
     // Two bodies at the cap: each sealed alone. Dot's deleted, its segment's rewrite takes
     // in the muse's whole, alone in its piece: the same bytes as it stands.
     const big = (c: string) => c.repeat(BODY_BYTES_MAX);
-    const kept = await r.post(null, `dm:${muse}`, { cmid: "b0", body: big("a") });
-    await r.post(null, `dm:${dot}`, { cmid: "b1", body: big("b") });
+    const kept = await r.post(null, dm(muse), { cmid: "b0", body: big("a") });
+    await r.post(null, dm(dot), { cmid: "b1", body: big("b") });
     await r.ack(MUSE, (await r.read(MUSE)).messages.at(-1)!.seq);
     await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
     // Small acked mail past half the hot ceiling, then one post that rings the lane.
     await r.inLedger((ledger: Ledger) => {
       let last = 0;
       for (let n = 0; n < 3; n++) {
-        last = ledger.seqOf(ledger.post(null, `dm:${muse}`, `s${n}`, "x", null).message_id)!;
+        last = ledger.seqOf(ledger.post(null, dm(muse), `s${n}`, "x", null).message_id)!;
       }
       ledger.read(MUSE, 1);
       ledger.ack(MUSE, last);
     });
-    await r.post(null, `dm:${muse}`, { cmid: "ring", body: "ring" });
+    await r.post(null, dm(muse), { cmid: "ring", body: "ring" });
     await settle(r);
     const before = await sqlIn(r.stub, "SELECT segment, content_id FROM archive_segments " +
                                "WHERE records = 1 ORDER BY segment");
@@ -127,10 +125,10 @@ describe("an agent's deletion", () => {
     const kept: string[] = [];
     const gone: string[] = [];
     for (let i = 0; i < 3; i++) {
-      gone.push(...await sentAndAcked(r, MUSE, `dm:${muse}`, 1, `muse${i}`));
-      kept.push(...await sentAndAcked(r, DOT, `dm:${dot}`, 1, `dot${i}`));
+      gone.push(...await sentAndAcked(r, MUSE, dm(muse), 1, `muse${i}`));
+      kept.push(...await sentAndAcked(r, DOT, dm(dot), 1, `dot${i}`));
     }
-    await sealed(r, DOT, `dm:${dot}`);
+    await sealed(r, DOT, dm(dot));
     await settle(r);
     const archivedGone = [];
     for (const id of gone) {
@@ -163,61 +161,70 @@ describe("an agent's deletion", () => {
     }
   });
 
-  it("waits on at most maxAgentRows purges: past them a deletion is refused busy in plain " +
-     "words, deleting nothing, and lands once the lane has caught up",
-     { tags: ["large"] }, async () => {
+  it("counts a deleted agent's rooms among the rooms until the lane has removed their mail: " +
+     "past maxRooms a new pair's first post is refused in plain words, making nothing, and " +
+     "lands once the lane has caught up", { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
-    const [first] = await sentAndAcked(r, MUSE, `dm:${muse}`, 4);
-    await sealed(r, MUSE, `dm:${muse}`);
+    await sentAndAcked(r, MUSE, dm(muse), 4);
+    await sealed(r, MUSE, dm(muse));
     await settle(r);
-    expect((await sqlIn(r.stub, "SELECT * FROM archive_segments")).length).toBeGreaterThan(0);
-    // A segment stands, so each deletion leaves a purge waiting: an agent registered and
-    // deleted maxAgentRows times, its rows never more than one.
-    const refused = await r.inLedger((ledger: Ledger, stores) => {
-      for (let n = 0; n < maxAgentRows; n++) {
-        ledger.remove(registerOn(stores, origin(1), { command_center_id: "alpha",
-          display_name: "Passing", delivery_method: "pull", recipe_id: null }).agent_id);
-      }
-      try {
-        ledger.remove(muse);
-        return null;
-      } catch (error) {
-        return (error as Error).message;
+    // The rooms' ceiling taken by deleted agents' rooms waiting for the lane.
+    const [{ n: rooms }] = await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM rooms") as
+      [{ n: number }];
+    await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
+      for (let n = rooms; n < maxRooms; n++) {
+        state.storage.sql.exec("INSERT INTO archive_purges (room_id, at) VALUES (?, 1)",
+                               `rm_gone${n}`);
       }
     });
-    expect(refused).toBe("storage_busy: earlier deleted agents' mail is still being removed " +
-                         `from the archive; try again in ${STORAGE_BUSY_RETRY_S} seconds.`);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM archive_purges"))
-      .toEqual([{ n: maxAgentRows }]);
-    expect((await chained(r, first!))).toBe("m 0");  // the muse and its mail kept
-    // The lane, rung, catches up; then the deletion lands.
-    await sentAndAcked(r, MUSE, `dm:${muse}`, 1, "ring");
+    const dot = await r.register(DOT);
+    const post = () => r.post(null, dm(dot), { cmid: "d0", body: "hello" });
+    expect((await failure(post)).message)
+      .toBe(`ledger_full: the owner's ${maxRooms} rooms are all in use, a deleted agent's ` +
+            "until its archived mail is removed: delete outside agents to free theirs");
+    expect(await sqlIn(r.stub, "SELECT * FROM rooms WHERE room_id = ?", dm(dot))).toEqual([]);
+    // The lane, rung, catches up; then the post lands, its room made.
+    await sentAndAcked(r, MUSE, dm(muse), 1, "ring");
     await settle(r);
     expect(await sqlIn(r.stub, "SELECT * FROM archive_purges")).toEqual([]);
+    await post();
+    expect(await sqlIn(r.stub, "SELECT member_id FROM room_members WHERE room_id = ? " +
+                       "ORDER BY member_id", dm(dot))).toEqual([{ member_id: dot },
+                                                                 { member_id: "owner" }]);
+  });
+
+  it("moves a deleted agent's rooms to the purges, so its deletion is never refused for the " +
+     "lane's pace", { tags: ["large"] }, async () => {
+    const r = await seeded();
+    const muse = await r.register(MUSE);
+    await sentAndAcked(r, MUSE, dm(muse), 4);
+    await sealed(r, MUSE, dm(muse));
+    await settle(r);
     await r.stub.deleteAgent(r.session(null), { agent_id: muse });
-    expect((await failure(() => r.stub.mailChain(r.bind(null), { message_id: first!,
-                                                                 limit: 10 }))).message)
-      .toBe("no such message held");
+    expect(await sqlIn(r.stub, "SELECT room_id FROM archive_purges")).toEqual([
+      { room_id: dm(muse) }]);
+    expect(await sqlIn(r.stub, "SELECT * FROM room_members WHERE member_id = ?", muse))
+      .toEqual([]);
   });
 });
 
-describe("segments never overlap in key range (review H1)", () => {
-  it("stay disjoint, and every message readable by its chain, through two deletions " +
-     "(the reviewer's case)", { tags: ["large"] }, async () => {
+describe("segments never overlap in key range", () => {
+  it("stay disjoint, and every message readable by its chain, through two deletions",
+     { tags: ["large"] }, async () => {
     const r = await seeded();
     const x = await r.register(MUSE, "Muse");
     const y = await r.register(DOT, "Dot");
     const a = await r.register(EVE, "Eve");
-    // The reviewer's run: its first message to Muse, its 23rd to Dot, the rest to Eve; each
-    // body 4 MiB, so two seal a segment, and its last four stay hot.
+    // Its first message to Muse, its 23rd to Dot, the rest to Eve; each body 4 MiB, so two seal a
+    // segment, and its last four stay hot.
     const who = (n: number) => n === 1 ? [MUSE, x] as const
       : n === 23 ? [DOT, y] as const : [EVE, a] as const;
     const body = (n: number) => `m${n} `.padEnd(4 * MIB, "x");
     const ids: string[] = [];
     for (let n = 1; n <= 28; n++) {
       const [from, agent] = who(n);
-      const posted = await r.post(null, `dm:${agent}`, { body: body(n), cmid: `c${n}` });
+      const posted = await r.post(null, dm(agent), { body: body(n), cmid: `c${n}` });
       ids.push(posted.message_id);
       const page = await r.read(from);
       await r.ack(from, page.messages.at(-1)!.seq);
@@ -250,7 +257,7 @@ describe("segments never overlap in key range (review H1)", () => {
   });
 });
 
-describe("a purge's rewrite, bounded a pass (review N7)", () => {
+describe("a purge's rewrite, bounded a pass", () => {
   /** The lane's job made due now, then run: one pass. */
   const pass = async (r: Rig) => {
     await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = " +
@@ -271,7 +278,7 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
     for (let i = 0; i < n; i++) {
       const toDot = i % every === every - 1;
       const body = `${i} `.padEnd(size, toDot ? "d" : "m");
-      const posted = await r.post(null, `dm:${toDot ? dot : muse}`, { cmid: `p${i}`, body });
+      const posted = await r.post(null, dm(toDot ? dot : muse), { cmid: `p${i}`, body });
       if (toDot) {
         kept.set(posted.message_id, body);
       }
@@ -348,18 +355,18 @@ describe("a purge's rewrite, bounded a pass (review N7)", () => {
   });
 });
 
-describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve)", () => {
+describe("mail moves during a long purge", () => {
   it("keeps pace: a pass moves mail whenever it is due, a rewrite or not", { tags: ["large"] }, async () => {
     const r = await seeded();
     const muse = await r.register(MUSE);
     const dot = await r.register(DOT, "Dot");
     const eve = await r.register(EVE, "Eve");
     // Eve's message first, left unread: acked with the deletion, it is a straggler.
-    const late = await r.post(null, `dm:${eve}`, { cmid: "late", body: "late" });
+    const late = await r.post(null, dm(eve), { cmid: "late", body: "late" });
     // A production-sized archive (8 MiB segments), Muse's mail 19 in 20 of it.
     for (let i = 0; i < 240; i++) {
       const toDot = i % 20 === 19;
-      await r.post(null, `dm:${toDot ? dot : muse}`, { cmid: `p${i}`,
+      await r.post(null, dm(toDot ? dot : muse), { cmid: `p${i}`,
                                                       body: `${i} `.padEnd(860 * 1024, "m") });
       await r.ack(toDot ? DOT : MUSE, (await r.read(toDot ? DOT : MUSE)).messages.at(-1)!.seq);
       if (i % 10 === 9) {
@@ -383,13 +390,13 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
       ledger.read(EVE, 1);
       ledger.ack(EVE, straggler);
       for (let i = 0; i < 30; i++) {
-        const seq = ledger.seqOf(ledger.post(null, `dm:${dot}`, `pre${i}`, `pre ${i}`, null)
+        const seq = ledger.seqOf(ledger.post(null, dm(dot), `pre${i}`, `pre ${i}`, null)
           .message_id)!;
         ledger.read(DOT, 1);
         ledger.ack(DOT, seq);
       }
     });
-    await r.post(null, `dm:${dot}`, { cmid: "ring", body: "ring" });
+    await r.post(null, dm(dot), { cmid: "ring", body: "ring" });
     await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
     // The purge runs pass by pass while Dot is sent mail and acks it.
     let done = false;
@@ -410,7 +417,7 @@ describe("mail moves during a long purge (review N8, the reviewer's rvsh7_starve
     const answers: string[] = [];
     for (let n = 0; !done && n < 400; n++) {
       try {
-        await r.post(null, `dm:${dot}`, { cmid: `new${n}`, body: `new ${n}` });
+        await r.post(null, dm(dot), { cmid: `new${n}`, body: `new ${n}` });
         await r.ack(DOT, (await r.read(DOT)).messages.at(-1)!.seq);
         answers.push("ok");
       } catch (error) {

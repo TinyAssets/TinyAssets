@@ -1,9 +1,9 @@
 /**
- * A main agent's digests (slice M): `inboxDigest` gives its unacknowledged mail and the
- * owner's rooms' rows written past its cursor, `boardDigest` the board's, each row as its
- * head, in one call; only since the cursor, which never goes back; each delete and clear
- * reported too, to whoever could see the row; and only what its grant holds: `read_graph`, a
- * private row only to its writer, no revoked client.
+ * A main agent's digests: `inboxDigest` gives its unacknowledged mail and the owner's rooms' rows
+ * written past its cursor, `boardDigest` the board's, each row as its head, in one call; only since
+ * the cursor, which never goes back; each delete and clear reported too, to whoever could see the
+ * row; and only what its grant holds: `read_graph`, a private row only to its writer, no revoked
+ * client.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ import { changedSql } from "../src/collections";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RowHead } from "../src/pages";
-import { MUSE, rig, type Rig } from "./ledger-support";
+import { MUSE, rig, type Rig, dm } from "./ledger-support";
 import { failure, fillHistory, inFilled, inObject, ownerObject } from "./support";
 
 type Live = Extract<RowHead, { deleted: false }>;
@@ -36,7 +36,7 @@ describe("the inbox digest", () => {
      async () => {
     const r = await rig();
     const agent = await r.register(MUSE);
-    await r.post(null, `dm:${agent}`, { body: "are you there?" });
+    await r.post(null, dm(agent), { body: "are you there?" });
     await write(r, "room:app:lobby", "m1", "x".repeat(1000));
     await write(r, "board", "t1", "a task");
     await write(r, "room:app:den", "m1", "hello den");
@@ -97,8 +97,8 @@ describe("the inbox digest", () => {
   });
 });
 
-describe("a digest past a pruned deletion (review rvlim N1)", () => {
-  it("R1: tells a reader behind a pruned tombstone to read again, never hides the delete",
+describe("a digest past a pruned deletion", () => {
+  it("tells a reader behind a pruned tombstone to read again, never hides the delete",
      { tags: ["large"] }, async () => {
     const { stub, name } = await ownerObject();
     await inFilled(stub, (store, state) => {
@@ -136,7 +136,7 @@ describe("a digest's placed bodies (ADR-035)", () => {
     const agent = await r.register(MUSE);
     const mail = "m".repeat(3000) + "?";
     const row = "é".repeat(2000);
-    await r.post(null, `dm:${agent}`, { body: mail });
+    await r.post(null, dm(agent), { body: mail });
     await write(r, "room:app:lobby", "big", row);
     await write(r, "board", "task", row);
     expect(await r.sql("SELECT COUNT(*) AS n FROM collection_rows WHERE content_id IS NOT NULL"))

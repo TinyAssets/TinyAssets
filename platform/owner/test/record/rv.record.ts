@@ -1,5 +1,5 @@
 /**
- * The reviewer's RPC recorder (`npm run record`, `ci/record.ts`): every door of the table
+ * The reviewer's RPC recorder (`ci/record.ts`): every door of the table
  * (`contract/doors.json`), on the gated owner class (a recording sandbox and the real
  * gateway), against a spread of callers made real in the object (full, scoped in each way,
  * revoked, re-signed, directory profile, API keys, live runs of the owner and of clients, the
@@ -16,8 +16,8 @@ import table from "../../../contract/doors.json" with { type: "json" };
 import { gated, type Gated } from "../gateway-support";
 import { MCP, origin, signedIn } from "../ledger-support";
 import {
-  ALL_SCOPES, defineAgent, ownerRun, runBinding, runnerBinding, runnerSandbox, sandboxOf,
-  startOf, syncOf, TIERS,
+  ALL_SCOPES, defineAgent, OPEN_RECORD, ownerRun, runBinding, runnerBinding, runnerSandbox,
+  sandboxOf, startOf, syncOf,
 } from "../runs-support";
 import { asked } from "./support";
 
@@ -73,7 +73,7 @@ const NAMED: Record<string, unknown> = {
   event_id: "e1", event_at: 1, headers: {}, intent_id: "0".repeat(32), chunks: [], size: 1,
   card_id: "x", digest: "x", reason: "x", kind: "x", subscription_id: "x", board: false,
   rooms: [], blob: "x", kid: "k", arguments: {}, expires_at: null, first: 0, count: 1,
-  frames: [], engine: "claude-code", authority: "owner", region: null, code: "x",
+  frames: [], engine: "claude-code", authority: "owner", code: "x",
   signins: [], lease_id: "x", epoch: 1, ops: [], writer: null, before_revision: 1,
 };
 
@@ -237,11 +237,13 @@ async function callers(r: Gated, setup: string[]): Promise<Caller[]> {
   const narrow = await ownerRun(r.stub, r.bind(), undefined, "narrow");
   const fullRun = await r.stub.agentSubmit({ ...r.bind({ origin: FULL, source: MCP,
                                                          authenticated_at: signedIn() }),
-                                             tiers: TIERS }, { message: "hi", client_send_id: "f-1" });
+                                             control: OPEN_RECORD },
+                                           { message: "hi", client_send_id: "f-1" });
   const fullStart = await startOf(r.stub, fullRun.run_id);
   const scopedRun = await r.stub.agentSubmit({ ...r.bind({ origin: SALL, source: MCP,
                                                            authenticated_at: signedIn() }),
-                                               tiers: TIERS }, { message: "hi", client_send_id: "s-1" });
+                                               control: OPEN_RECORD },
+                                             { message: "hi", client_send_id: "s-1" });
   const scopedStart = await startOf(r.stub, scopedRun.run_id);
   const b = (o: Origin, extra: Record<string, unknown> = {}) =>
     r.bind({ origin: o, source: MCP, ...extra });
@@ -250,11 +252,13 @@ async function callers(r: Gated, setup: string[]): Promise<Caller[]> {
     ["undefined", undefined],
     ["emptybinding", {}],
     ["anon", { owner, caller: "someone", origin: null }],
-    ["wrongowner", { owner: "owner-other", caller: "owner-other", origin: null, tiers: TIERS }],
-    ["wrongcaller", { owner, caller: "owner-other", origin: null, tiers: TIERS, session: r.cookie }],
+    ["wrongowner", { owner: "owner-other", caller: "owner-other", origin: null,
+                     control: OPEN_RECORD }],
+    ["wrongcaller", { owner, caller: "owner-other", origin: null, control: OPEN_RECORD,
+                      session: r.cookie }],
     ["badorigin", { owner, caller: owner, origin: { client: "x" }, source: MCP }],
     ["noorigin", { owner, caller: owner }],
-    ["visitor", { owner, caller: "owner-visitor", origin: null, tiers: TIERS }],
+    ["visitor", { owner, caller: "owner-visitor", origin: null, control: OPEN_RECORD }],
     ["platform", { owner, caller: "platform", origin: null }],
     ["platform+session", { owner, caller: "platform", origin: null, session: r.cookie }],
     ["platform+source", { owner, caller: "platform", origin: null, source: MCP }],

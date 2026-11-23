@@ -1,5 +1,5 @@
 /**
- * The model source records (`platform/sources/`) are data that fits (tasks 4 G3).
+ * The model source records (`platform/sources/`) are data that fits.
  *
  * - Every file is in the catalog (`sources/src/records.ts`), and every record passes the schema
  *   (`sourceRecord`), whose gateway part is the gateway's own check: so a record naming an
@@ -22,11 +22,12 @@ import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../../ci/paths";
 import { bundledRecords, catalogOf } from "../src/catalog";
-import { CREDENTIAL_NAME, sealedSource, sourceRecord } from "../src/check";
+import { sealedSource, sourceRecord } from "../src/check";
 import { RUN_BASICS, runEnv } from "../src/run-env";
 import { type Install, type SourceRecord, SourceRecordError } from "../src/schema";
 import { supportedApis } from "../../contract/src/api-rules";
-import { forbids } from "../../contract/src/text";
+import { readEvent } from "../../contract/src/run-events";
+import { CREDENTIAL_NAME, forbids } from "../../contract/src/text";
 import { RECORDS_DIR, recordFiles } from "../write-records";
 
 const SOURCES = join(PLATFORM, "sources");
@@ -181,9 +182,9 @@ describe("the engine records", () => {
   const keys = [...records.values()].map(sourceRecord)
     .filter((record) => record.connect.includes("api_key"));
 
-  it("are the four vendor CLIs and pi's, none with an invoke", () => {
+  it("are the three vendor CLIs and pi's, none with an invoke", () => {
     expect(engines.map((record) => record.id).sort())
-      .toEqual(["claude-code", "codex", "gemini", "kimi", "pi"]);
+      .toEqual(["claude-code", "codex", "gemini", "pi"]);
     for (const record of engines) {
       expect(record.cli, record.id).not.toHaveProperty("invoke");
       expect(record.cli, record.id).not.toHaveProperty("state_paths");
@@ -223,7 +224,6 @@ describe("the engine records", () => {
       "claude-code": { vendor_login_in_sandbox: true, api_key: true },
       codex: { vendor_login_in_sandbox: false, api_key: true },
       gemini: { vendor_login_in_sandbox: false, api_key: true },
-      kimi: { vendor_login_in_sandbox: false },
       pi: { api_key: true },
     });
     expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toEqual({
@@ -265,7 +265,7 @@ describe("the engine records", () => {
                `${record.id} → ${engine}`).toBeDefined();
       }
     }
-    for (const engine of ["kimi", "nope", "groq"]) {
+    for (const engine of ["codex", "nope", "groq"]) {
       expect(() => catalogOf([...bundledRecords().filter((record) =>
         (record as Json)["id"] !== "anthropic"), { ...anthropic, engines: [engine] }])
         .get("anthropic")).toThrow(/^source record "anthropic": engine /);
@@ -288,7 +288,7 @@ describe("the engine records", () => {
                 "-c", "model_providers.tinyassets.wire_api=\"responses\""]);
     expect(runEnv(catalog, "gemini", "api_key").api_key_env["google"]).toEqual({
       base_url: "GOOGLE_GEMINI_BASE_URL", api_key: "GEMINI_API_KEY", base: "connection" });
-    for (const engine of ["claude-code", "codex", "gemini", "kimi"]) {
+    for (const engine of ["claude-code", "codex", "gemini"]) {
       const signedIn = runEnv(catalog, engine, "vendor_login_in_sandbox");
       expect(signedIn.api_key_env, engine).toEqual({});
       expect(signedIn.forbid_env.length, engine).toBeGreaterThan(0);
@@ -297,7 +297,7 @@ describe("the engine records", () => {
       .toEqual(expect.arrayContaining(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
                                        "ANTHROPIC_AUTH_TOKEN"]));
     // Only a served CLI record, on a credential it runs on.
-    for (const [engine, credential] of [["kimi", "api_key"], ["pi", "vendor_login_in_sandbox"],
+    for (const [engine, credential] of [["pi", "vendor_login_in_sandbox"],
                                         ["anthropic", "api_key"], ["nope", "api_key"]] as const) {
       expect(() => runEnv(catalog, engine, credential), engine).toThrow(SourceRecordError);
     }
@@ -353,17 +353,14 @@ describe("the engine records", () => {
       "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "CODE_ASSIST_ENDPOINT",
       "GOOGLE_GENAI_USE_GCA", "GOOGLE_CLOUD_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
       "GOOGLE_VERTEX_BASE_URL", "GEMINI_CLI_AUTH_OVERRIDE", "GEMINI_DEFAULT_AUTH_TYPE"]));
-    expect(forbidden("kimi")).toEqual(expect.arrayContaining([
-      "KIMI_API_KEY", "KIMI_BASE_URL", "MOONSHOT_API_KEY", "KIMI_CODE_BASE_URL",
-      "KIMI_MODEL_*", "KIMI_OAUTH_HOST", "KIMI_CODE_OAUTH_HOST", "OPENAI_*", "ANTHROPIC_*"]));
     // A pattern names every variable with its prefix, and nothing else.
-    expect(forbids(forbidden("kimi"), "KIMI_MODEL_API_KEY")).toBe(true);
-    expect(forbids(forbidden("kimi"), "OPENAI_BASE_URL")).toBe(true);
-    expect(forbids(forbidden("kimi"), "KIMI_CODE_HOME")).toBe(false);
+    expect(forbids(["MODEL_*"], "MODEL_API_KEY")).toBe(true);
+    expect(forbids(["OPENAI_*"], "OPENAI_BASE_URL")).toBe(true);
+    expect(forbids(["MODEL_*"], "MODEL")).toBe(false);
     expect(forbids(["OPENAI_*"], "XOPENAI_KEY")).toBe(false);
   });
 
-  it("list every credential file each CLI writes among its secret paths (M1)", () => {
+  it("list every credential file each CLI writes among its secret paths", () => {
     const secrets = (id: string) => sourceRecord(records.get(id)).cli!.secret_paths;
     expect(secrets("claude-code")).toEqual(expect.arrayContaining([
       "{home}/.claude/.credentials.json", "{home}/.claude/.claude.json"]));
@@ -376,30 +373,31 @@ describe("the engine records", () => {
       "{home}/.pi/agent/auth.json", "{home}/.pi/agent/mcp-auth.json"]));
   });
 
-  it("give pi its MCP door and its agent's own skills in JSON mode (H2)", () => {
+  it("give pi its MCP door and its agent's own skills in JSON mode", () => {
     const spec = sourceRecord(pi).cli!;
     // Its tools declared to the model directly, so a `--tools` filter of plain names keeps
     // them (pi's default exposure reaches them through codemode only).
     expect(spec.mcp).toEqual(expect.objectContaining({ file: "{home}/.pi/agent/mcp.json",
-      template: "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", " +
-                "\"exposure\": \"direct\"}}}" }));
-    // JSON mode cannot show the trust prompt: the run approves the agent's own folder.
-    expect(spec.unattended_argv).toContain("--approve");
+      http: { url: "{url}", exposure: "direct" } }));
+    expect(spec.mcp).not.toHaveProperty("template");
+    // JSON mode cannot show the trust prompt, and the agent's folder is never trusted: its
+    // .pi/mcp.json and extensions never load, and its skills are given by argv.
+    expect(spec.definition.native.argv).toEqual(["--no-approve"]);
+    expect(spec.definition.skills).toEqual({ paths: [], argv_each: ["--skill", "{skill}"] });
     expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
   });
 
-  it("hold {base_url} to an API-key run's own declared channel (codex base URL rules 1-4)",
-     () => {
+  it("hold {base_url} to an API-key run's own declared channel", () => {
     const codex = records.get("codex") as Json;
     const keyArgv = (s: Json) => at(s, "per_credential.api_key")["argv"] as string[];
-    // Rule 1: no base-URL variable, the channel in the API-key argv: taken.
+    // No base-URL variable, the channel in the API-key argv: taken.
     expect(() => sourceRecord(codex)).not.toThrow();
     // ...and with no channel anywhere: refused.
     expect(refused(cli((s) => {
       at(s, "per_credential.api_key")["argv"] = keyArgv(s).filter((arg) =>
         !arg.includes("{base_url}"));
     }, codex))).toMatch(/carries \{base_url\}/);
-    // Rule 2: in a sign-in's argv, or a shared argv of a record with two credentials.
+    // Refused in a sign-in's argv, or a shared argv of a record with two credentials.
     expect(refused(cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["argv"] = [
         "-c", "model_providers.x.base_url=\"{base_url}\""];
@@ -408,13 +406,13 @@ describe("the engine records", () => {
       at(s, "engine")["argv"] = [...(at(s, "engine")["argv"] as string[]), "-c",
                                  "model_providers.x.base_url=\"{base_url}\""];
     }, codex))).toMatch(/only an API-key run reads/);
-    // Rule 3: a bare {base_url}, or one not joined to its key.
+    // Refused bare, or not joined to its key.
     for (const bare of ["{base_url}", "x {base_url}", "--base-url {base_url}", "{base_url}/v1"]) {
       expect(refused(cli((s) => {
         at(s, "per_credential.api_key")["argv"] = [...keyArgv(s), bare];
       }, codex)), bare).toMatch(/\{base_url\}/);
     }
-    // Rule 4: an endpoint or provider setting in an argv a signed-in run gets.
+    // An endpoint or provider setting in an argv a signed-in run gets: refused.
     for (const [path, arg] of [["engine", "openai_base_url=\"https://e.example/v1\""],
                                ["per_credential.vendor_login_in_sandbox", "model_provider=\"x\""],
                                ["engine", "chatgpt_base_url=\"https://e.example\""]] as const) {
@@ -425,31 +423,16 @@ describe("the engine records", () => {
   });
 
   it("pin each sign-in's page on its own login hosts, and cite its code's lifetime", () => {
-    for (const id of ["claude-code", "codex", "gemini", "kimi"]) {
+    for (const id of ["claude-code", "codex", "gemini"]) {
       const spec = sourceRecord(records.get(id)).cli!;
       const login = spec.login!;
-      const hosts = new Set([...spec.hosts.login, ...Object.values(spec.regions ?? {})
-        .flatMap((region) => region.hosts.login)]);
-      expect(login.url.hosts.every((host) => hosts.has(host)), id).toBe(true);
+      expect(login.url.hosts.every((host) => spec.hosts.login.includes(host)), id).toBe(true);
       expect(login.expires.s, id).toBeGreaterThan(0);
       expect(login.expires.citation.length, id).toBeGreaterThan(0);
     }
   });
 
-  it("let a Kimi member sign in from either region, its hosts by the choice (M2)", () => {
-    const spec = sourceRecord(records.get("kimi")).cli!;
-    expect(spec.login!.argv).toEqual(["{bin}", "login", "--region", "{region}"]);
-    expect(Object.keys(spec.regions!).sort()).toEqual(["global", "mainland-cn"]);
-    expect(spec.regions!["global"]!.hosts.login).toContain("auth.kimi.ai");
-    expect(spec.regions!["mainland-cn"]!.hosts.login).toContain("auth.kimi.com");
-    const pattern = new RegExp(spec.login!.url_pattern);
-    for (const url of ["https://www.kimi.ai/device?x=1", "https://auth.kimi.com/device"]) {
-      expect(pattern.exec(url)?.[1], url).toBe(url);
-    }
-    expect(spec.no_update).toEqual({ env: { KIMI_CODE_NO_AUTO_UPDATE: "1" } });
-  });
-
-  it("never pass a prompt as a bare argument (M3)", () => {
+  it("never pass a prompt as a bare argument", () => {
     for (const record of engines) {
       const { engine } = record.cli!;
       const carried = [...engine.argv, ...engine.resume_argv].filter((item) =>
@@ -462,7 +445,124 @@ describe("the engine records", () => {
       }
     }
     expect(engines.filter((record) => record.cli!.engine.stdin === undefined)
-      .map((record) => record.id)).toEqual(["kimi"]);
+      .map((record) => record.id)).toEqual([]);
+  });
+
+  // Each as its pinned CLI reports it (its source, read 2026-11-21): the vendor's limit, with
+  // the reset it states, and an event of the same kind that is no limit.
+  const LIMITS: Record<string, { limit: [unknown, number | null][]; not: unknown[] }> = {
+    "claude-code": {
+      limit: [[{ type: "rate_limit_event", session_id: "s", rate_limit_info: {
+        status: "rejected", resetsAt: 1_790_000_000, rateLimitType: "five_hour",
+        isUsingOverage: false } },
+               1_790_000_000],
+              [{ type: "assistant", message: { content: [] }, error: "billing_error" }, null],
+              [{ type: "assistant", message: { content: [] }, error: "rate_limit" }, null]],
+      // Rejected, though the plan's paid extra usage serves the call.
+      not: [{ type: "rate_limit_event", rate_limit_info: { status: "rejected",
+                                                           isUsingOverage: true } },
+            { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning",
+                                                           resetsAt: 1_790_000_000 } },
+            { type: "system", subtype: "api_retry", attempt: 1, error_status: 429,
+              error: "rate_limit" },
+            { type: "assistant", message: { content: [] }, error: "server_error" }],
+    },
+    codex: {
+      limit: [[{ type: "turn.failed", error: { message: "You’ve hit your usage limit. " +
+        "Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus)," } }, null],
+              [{ type: "turn.failed", error: {
+                message: "Quota exceeded. Check your plan and billing details." } }, null],
+              [{ type: "turn.failed", error: {
+                message: "Your workspace is out of credits. Add credits to continue." } }, null],
+              [{ type: "turn.failed", error: {
+                message: "exceeded retry limit, last status: 429 Too Many Requests" } }, null]],
+      not: [{ type: "turn.failed", error: { message: "stream disconnected before completion" } },
+            { type: "turn.failed", error: {
+              message: "exceeded retry limit, last status: 500 Internal Server Error" } }],
+    },
+    gemini: {
+      limit: [[{ type: "result", status: "error", error: { type: "TerminalQuotaError",
+                                                         message: "quota" } }, null],
+              [{ type: "result", status: "error", error: { type: "RetryableQuotaError",
+                                                         message: "quota" } }, null]],
+      not: [{ type: "result", status: "error", error: { type: "FatalToolExecutionError",
+                                                       message: "quota" } }],
+    },
+    pi: {
+      limit: [[{ type: "auto_retry_end", success: false, attempt: 3,
+                  finalError: "OpenAI error (429): Rate limit reached for gpt-5" }, null],
+              [{ type: "message_end", message: { role: "assistant", stopReason: "error",
+        errorMessage: "insufficient_quota: You exceeded your current quota" } }, null]],
+      // A 429 pi retries itself (`isRetryableAssistantError`), as Claude's `api_retry`.
+      not: [{ type: "message_end", message: { role: "assistant", stopReason: "error",
+        errorMessage: "OpenAI error (429): Rate limit reached for gpt-5" } },
+            { type: "auto_retry_end", success: true, attempt: 1 },
+            { type: "message_end", message: { role: "assistant", stopReason: "error",
+        errorMessage: "Connection closed by proxy server before the response completed" } },
+            { type: "message_end", message: { role: "assistant", stopReason: "stop",
+        errorMessage: "rate limit" } }],
+    },
+  };
+
+  it.each(Object.keys(LIMITS))("read %s's own report of the vendor's limit, and no other",
+                               (id) => {
+    const events = engines.find((record) => record.id === id)!.cli!.engine.events;
+    for (const [event, reset] of LIMITS[id]!.limit) {
+      expect(readEvent(events, event).vendor_limit, JSON.stringify(event)).toEqual({ reset });
+    }
+    for (const event of LIMITS[id]!.not) {
+      expect(readEvent(events, event).vendor_limit, JSON.stringify(event)).toBeNull();
+    }
+    expect(Object.keys(LIMITS).sort()).toEqual(engines.map((record) => record.id).sort());
+  });
+
+  // Each as its pinned CLI reports it (its source, read 2026-11-21): what it goes on from (a
+  // call it retries, a warning) is no error; a call it gave up on is.
+  const GOES_ON: Record<string, { error: unknown[]; not: unknown[] }> = {
+    "claude-code": {
+      error: [{ type: "result", is_error: true, result: "API Error: 529 Overloaded" }],
+      not: [{ type: "system", subtype: "api_retry", attempt: 1, error_status: 429,
+              error: "rate_limit" }],
+    },
+    // Its `error` event is also each stream reconnect (app-server `will_retry: true`).
+    codex: {
+      error: [{ type: "turn.failed", error: { message: "stream disconnected" } }],
+      not: [{ type: "error", message: "Reconnecting... 2/5 (stream disconnected)" }],
+    },
+    gemini: {
+      error: [{ type: "error", severity: "error", message: "Maximum session turns exceeded" },
+              { type: "result", status: "error", error: { type: "Error", message: "x" } }],
+      not: [{ type: "error", severity: "warning", message: "Loop detected, stopping execution" }],
+    },
+    pi: {
+      error: [{ type: "auto_retry_end", success: false, attempt: 3, finalError: "529" },
+              { type: "compaction_end", reason: "overflow", aborted: false, willRetry: false,
+                errorMessage: "Context overflow recovery failed: no model" }],
+      not: [{ type: "auto_retry_end", success: true, attempt: 1 },
+            { type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+              errorMessage: "Auto-compaction failed: no model" }],
+    },
+  };
+
+  it.each(Object.keys(GOES_ON))("read as %s's error only a call it gave up on", (id) => {
+    const events = engines.find((record) => record.id === id)!.cli!.engine.events;
+    for (const event of GOES_ON[id]!.error) {
+      expect(readEvent(events, event).error, JSON.stringify(event)).not.toBeNull();
+    }
+    for (const event of GOES_ON[id]!.not) {
+      expect(readEvent(events, event).error, JSON.stringify(event)).toBeNull();
+    }
+    expect(Object.keys(GOES_ON).sort()).toEqual(engines.map((record) => record.id).sort());
+  });
+
+  it("read pi's own retries, and only those, as withdrawing the error it reported", () => {
+    const events = engines.find((record) => record.id === "pi")!.cli!.engine.events;
+    const retries = [{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000,
+                       errorMessage: "529 overloaded" },
+                     { type: "compaction_start", reason: "overflow" }];
+    expect(retries.map((event) => readEvent(events, event).retry)).toEqual([true, true]);
+    expect(readEvent(events, { type: "compaction_start", reason: "threshold" }).retry)
+      .toBe(false);
   });
 });
 
@@ -519,8 +619,7 @@ describe("an engine record that does not fit", () => {
       delete s["per_credential"]; })],
     ["a credential twice", cli((s) => { s["credential"] = ["api_key", "api_key"]; }, pi)],
     ["API-key variables with no API key", cli((s) => {
-      s["api_key_env"] = { moonshot: { base_url: "KIMI_BASE_URL", api_key: "KIMI_API_KEY",
-                                       base: "sealed" } }; }, records.get("kimi") as Json)],
+      s["credential"] = ["vendor_login_in_sandbox"]; delete at(s, "unattended")["api_key"]; })],
     ["a sign-in with no vendor login", cli((s) => {
       s["credential"] = ["api_key"]; delete at(s, "unattended")["vendor_login_in_sandbox"];
       delete s["per_credential"]; })],
@@ -548,12 +647,8 @@ describe("an engine record that does not fit", () => {
       (at(s, "engine")["argv"] as string[]).push("{sid}"); })],
     ["a resume by id with no {sid}", cli((s) => {
       at(s, "engine")["resume_argv"] = ["{bin}", "-p", "--continue"]; })],
-    ["a resume in the cwd that names a session", cli((s) => {
-      at(s, "engine")["resume"] = "continue_in_cwd"; })],
-    ["a resume in the cwd still matching a session id", cli((s) => {
-      at(s, "engine")["resume"] = "continue_in_cwd";
-      at(s, "engine")["resume_argv"] = ["{bin}", "-p", "--continue"]; })],
-    ["an unknown resume", cli((s) => { at(s, "engine")["resume"] = "magic"; })],
+    ["a resume with no session id to resume by", cli((s) => {
+      at(s, "engine.events")["session_id"] = []; })],
     ["an engine that runs something else", cli((s) => {
       (at(s, "engine")["argv"] as string[])[0] = "/bin/sh"; })],
     ["a prompt both on stdin and in the argv", cli((s) => {
@@ -565,16 +660,26 @@ describe("an engine record that does not fit", () => {
     ["an event path that is not dotted", cli((s) => {
       at(s, "engine.events")["usage"] = [{ match: { type: "result" }, path: "a..b" }]; })],
     ["an event format that is not one", cli((s) => { at(s, "engine.events")["format"] = "xml"; })],
+    ["no vendor_limit list", cli((s) => { delete at(s, "engine.events")["vendor_limit"]; })],
+    ["an event pattern that does not compile", cli((s) => {
+      at(s, "engine.events")["vendor_limit"] = [{ match: { type: "result" },
+                                                  pattern: { result: "(" }, path: "" }]; })],
+    ["an empty event pattern", cli((s) => {
+      at(s, "engine.events")["vendor_limit"] = [{ match: { type: "result" },
+                                                  pattern: { result: "" }, path: "" }]; })],
+    ["an event pattern map with none", cli((s) => {
+      at(s, "engine.events")["vendor_limit"] = [{ match: { type: "result" }, pattern: {},
+                                                  path: "" }]; })],
     ["an MCP config with no door URL", cli((s) => {
       at(s, "mcp")["template"] = "{\"mcpServers\": {\"t\": {\"url\": \"https://example.com/mcp\"}}}";
     })],
     ["an MCP config flag with no file", cli((s) => {
       delete at(s, "mcp")["file"]; delete at(s, "mcp")["template"];
-      (at(s, "mcp")["argv"] as string[]).push("--url", "{mcp_url}"); })],
+      at(s, "mcp")["flag"] = "-c"; })],
     ["an MCP file inside /workspace", cli((s) => {
       at(s, "mcp")["file"] = "/workspace/agents/a/.mcp.json"; })],
     ["the engine home itself as a file", cli((s) => { at(s, "mcp")["file"] = "{home}"; })],
-    ["an MCP trust with no note", cli((s) => { delete at(s, "mcp.trust")["note"]; })],
+    ["an MCP trust with no note", cli((s) => { delete at(s, "mcp")["trust"]; })],
     ["a tool filter with no {tools}", cli((s) => {
       at(s, "tools.allow")["argv"] = ["--tools"]; })],
     ["a tool filter on a file the record does not write", cli((s) => {
@@ -584,15 +689,11 @@ describe("an engine record that does not fit", () => {
     ["a no-update with nothing in it", cli((s) => { s["no_update"] = {}; })],
     ["a no-update file the record does not write", cli((s) => {
       s["no_update"] = { file: "{home}/settings.json" }; })],
-    ["skills outside the agent's directory", cli((s) => { s["skills_paths"] = ["/etc/skills"]; })],
-    ["skills that climb out", cli((s) => { s["skills_paths"] = ["../skills"]; })],
-    ["instructions shadowed by themselves", cli((s) => {
-      at(s, "instructions")["shadowed_by"] = ["AGENTS.md"]; })],
     ["a login state check outside the secret paths", cli((s) => {
       at(s, "login")["state_checks"] = [{ path: "{home}/state.json", present: ["token"] }]; })],
     ["a login pattern that is not a regular expression", cli((s) => {
       at(s, "login")["url_pattern"] = "(unclosed"; })],
-    // Review M2 and M4: every sign-in's page pinned, and its code's lifetime cited.
+    // Every sign-in's page pinned, and its code's lifetime cited.
     ["a login with no pinned page", cli((s) => { delete at(s, "login")["url"]; })],
     ["a pinned page whose path holds a query", cli((s) => {
       at(s, "login.url")["path"] = "/cai/oauth/authorize?x=1"; })],
@@ -615,7 +716,7 @@ describe("an engine record that does not fit", () => {
     ["a binary with no digest", cli((s) => { s["install"] = { manager: "binary",
       url: "https://example.com/grok", version: "1.0.0", bin: "grok",
       verify_argv: ["{bin}", "--version"] }; })],
-    // H1: every secret and session path is under {home}, compared in one namespace.
+    // Every secret and session path is under {home}, compared in one namespace.
     ["an absolute session path holding every top-level directory", cli((s) => {
       s["session_paths"] = ["/*/"]; })],
     ["an absolute session path holding the home", cli((s) => { s["session_paths"] = ["/root/"]; })],
@@ -635,7 +736,7 @@ describe("an engine record that does not fit", () => {
       s["files"] = { "{home}/run/*": "model = \"m\"" }; })],
     ["a home variable outside {home}", cli((s) => {
       at(s, "home_env")["CLAUDE_CONFIG_DIR"] = "/proc/self/cwd"; })],
-    // M3: the prompt is never a bare argument.
+    // The prompt is never a bare argument.
     ["a bare positional prompt", cli((s) => {
       delete at(s, "engine")["stdin"];
       (at(s, "engine")["argv"] as string[]).push("{prompt}");
@@ -655,7 +756,7 @@ describe("an engine record that does not fit", () => {
     ["a prompt in an env value", cli((s) => { at(s, "env")["PROMPT"] = "{prompt}"; })],
     ["a prompt in the unattended argv", cli((s) => {
       (s["unattended_argv"] as string[]).push("--prompt={prompt}"); })],
-    // M4: never configured to nothing.
+    // Never configured to nothing.
     ["an empty argument", cli((s) => { (s["unattended_argv"] as string[]).push("--tools", ""); })],
     ["an argument of bare quotes", cli((s) => {
       (s["unattended_argv"] as string[]).push("--tools", "\"\""); })],
@@ -670,7 +771,7 @@ describe("an engine record that does not fit", () => {
       at(s, "mcp")["template"] = "{\"mcpServers\": {\"t\": {\"url\": \"{mcp_url}\"}}, " +
         "\"tools\": {\"core\": []}}"; })],
     ["an empty map in an env value", cli((s) => { at(s, "env")["SETTINGS"] = "{ }"; })],
-    // M5: a signed-in run carries none of its key's variables.
+    // A signed-in run carries none of its key's variables.
     ["a sign-in with no forbidden variables", cli((s) => {
       delete at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"]; })],
     ["a sign-in whose forbidden variables miss its key variable", cli((s) => {
@@ -683,39 +784,24 @@ describe("an engine record that does not fit", () => {
       at(s, "env")["ANTHROPIC_BASE_URL"] = "https://example.com"; })],
     ["a sign-in part that sets a variable it forbids", cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["env"] = { ANTHROPIC_API_KEY: "x" }; })],
-    ["a Kimi sign-in with no forbidden variables", cli((s) => { delete s["per_credential"]; },
-                                                      records.get("kimi") as Json)],
-    // M2: regions as data.
-    ["regions on a record that does not sign in", cli((s) => {
-      s["regions"] = { global: { display_name: "G", hosts: { login: [], provider: [] } } }; }, pi)],
-    ["a region with an id outside the grammar", cli((s) => {
-      s["regions"] = { "Global!": { display_name: "G", hosts: { login: [], provider: [] } } };
-    }, records.get("kimi") as Json)],
-    ["a region host that is not a name", cli((s) => {
-      at(s, "regions.global.hosts")["login"] = ["https://auth.kimi.ai"]; },
-    records.get("kimi") as Json)],
-    ["a region with an unknown key", cli((s) => { at(s, "regions.global")["stray"] = 1; },
-                                         records.get("kimi") as Json)],
-    ["no regions", cli((s) => { s["regions"] = {}; }, records.get("kimi") as Json)],
-    ["regions the sign-in does not use", cli((s) => {
-      at(s, "login")["argv"] = ["{bin}", "login"]; }, records.get("kimi") as Json)],
-    ["a region placeholder with no regions", cli((s) => { delete s["regions"]; },
-                                                 records.get("kimi") as Json)],
-    ["a region placeholder outside the sign-in", cli((s) => {
-      (s["unattended_argv"] as string[]).push("--region={region}"); },
-    records.get("kimi") as Json)],
-    // Round 2: the run's environment is an allow-list, and no settings file carries a
-    // credential, an environment block or a forbidden variable.
+    // The run's environment is an allow-list, and no settings file carries a credential,
+    // an environment block or a forbidden variable.
     ["a record variable shaped like a key", cli((s) => { at(s, "env")["MY_API_KEY"] = "x"; })],
     ["a record variable shaped like a token", cli((s) => { at(s, "env")["SOME_TOKEN"] = "x"; })],
     ["a record variable shaped like an endpoint", cli((s) => {
       at(s, "env")["UPSTREAM_BASE_URL"] = "https://example.com"; })],
+    // One name for each of the credential pattern's words the plants above do not hold.
+    ...["MY_APIKEY", "SIGNING_KEY", "CLIENT_SECRET", "DB_PASSWORD", "DB_PASSWD",
+        "MY_CREDENTIALS", "MY_AUTH", "MY_ENDPOINT"].map((name): [string, Json] => [
+      `a record variable named ${name}`, cli((s) => { at(s, "env")[name] = "x"; })]),
     ["a record that sets HOME", cli((s) => { at(s, "env")["HOME"] = "{home}"; })],
     ["a record that sets PATH", cli((s) => { at(s, "env")["PATH"] = "/usr/bin"; })],
     ["a credential part that sets a token", cli((s) => {
       at(s, "per_credential.api_key")["env"] = { EXTRA_TOKEN: "x" }; }, records.get("codex") as Json)],
     ["a forbidden pattern's variable in the record", cli((s) => {
-      s["env"] = { OPENAI_ORG: "x" }; }, records.get("kimi") as Json)],
+      (at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] as string[])
+        .push("OPENAI_*");
+      at(s, "env")["OPENAI_ORG"] = "x"; })],
     ["a forbid pattern that is not one", cli((s) => {
       (at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] as string[])
         .push("OPENAI*_X"); })],
@@ -725,6 +811,14 @@ describe("an engine record that does not fit", () => {
     ["a settings file with a credential helper", cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
         "{home}/.claude/settings.json": "{\"apiKeyHelper\": \"echo k\"}" }; })],
+    // One key for each of the settings-key pattern's words the plants here do not hold.
+    ...["otelHeadersHelper", "environment", "apiKey", "clientSecret", "password",
+        "credentialStore"].map((key): [string, Json] => [`a settings file with a ${key} key`,
+      cli((s) => {
+        at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+          "{home}/.claude/settings.json": JSON.stringify({ [key]: "x" }) }; })]),
+    ["an endpoint argument in a signed-in run's argv", cli((s) => {
+      (at(s, "engine")["argv"] as string[]).push("--api-endpoint=https://e.example/v1"); })],
     ["a settings file holding a token", cli((s) => {
       at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
         "{home}/.claude/settings.json": "{\"oauth\": {\"token\": \"t\"}}" }; })],
@@ -743,10 +837,9 @@ describe("an engine record that does not fit", () => {
       at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
         "{home}/.claude/notes.json": "{\"note\": \"ANTHROPIC_BASE_URL\"}" }; })],
     ["a settings file naming a forbidden pattern's variable", cli((s) => {
-      at(s, "mcp")["template"] = String(at(s, "mcp")["template"])
-        .replace("\"transport\"", "\"note\": \"KIMI_MODEL_NAME\", \"transport\""); },
-    records.get("kimi") as Json)],
-    // The survivors of this round's own mutation run.
+      const signedIn = at(s, "per_credential.vendor_login_in_sandbox");
+      (signedIn["forbid_env"] as string[]).push("MODEL_*");
+      signedIn["files"] = { "{home}/.claude/notes.json": "{\"note\": \"MODEL_NAME\"}" }; })],
     ["a wildcard session path that covers a secret below the first segment", cli((s) => {
       s["session_paths"] = ["{home}/.claude/*/"]; })],
     ["a prompt with something after it", cli((s) => {
@@ -758,7 +851,6 @@ describe("an engine record that does not fit", () => {
                                               "{\"permissions\": {\"allow\": []}}"); })],
     ["an MCP template with no file, its door URL in the argv", cli((s) => {
       delete at(s, "mcp")["file"]; at(s, "mcp")["argv"] = ["--mcp-url={mcp_url}"]; }, pi)],
-    // The three mutants the reviewer's run left alive.
     ["an MCP template with no file", cli((s) => { delete at(s, "mcp")["file"]; }, pi)],
     ["an npm lock digest that is not one", cli((s) => { at(s, "install")["lock_sha256"] = "xyz"; })],
     ["a login state check on a secret path's parent", cli((s) => {
@@ -767,7 +859,7 @@ describe("an engine record that does not fit", () => {
     // Citations.
     ["a read note on a refusal that cites nothing", cli((s) => {
       at(s, "unattended.vendor_login_in_sandbox")["read_note"] = "from memory"; },
-    records.get("kimi") as Json)],
+    records.get("codex") as Json)],
     ["a read note that is not text", cli((s) => { at(s, "unattended.api_key")["read_note"] = 1; })],
     ["a gateway source with no engines", Object.fromEntries(Object.entries(anthropic)
       .filter(([key]) => key !== "engines"))],
@@ -786,13 +878,30 @@ describe("an engine record that does not fit", () => {
   });
 
   it.each([
+    ["no plan model", cli((s) => { delete at(s, "login")["model"]; }),
+     /cli\.login has exactly .*; missing \["model"\]/],
+    ["a plan model with no id", cli((s) => { delete at(s, "login.model")["id"]; }),
+     /cli\.login\.model has exactly id, citation; missing \["id"\]/],
+    ["a plan model id that is no model id", cli((s) => { at(s, "login.model")["id"] = "a b"; }),
+     /cli\.login\.model\.id is invalid/],
+    ["a plan model with no citation",
+     cli((s) => { delete at(s, "login.model")["citation"]; }),
+     /cli\.login\.model has exactly id, citation; missing \["citation"\]/],
+    ["no model_argv to pass the plan's model",
+     cli((s) => { delete at(s, "engine")["model_argv"]; }),
+     /cli\.engine\.model_argv is present on a record that signs in/],
+  ])("refuses a sign-in with %s: a plan always ranks by a real model", (_what, record, said) => {
+    expect(refused(record)).toMatch(said);
+  });
+
+  it.each([
     ["an invoke backend", cli((s) => { s["invoke"] = { argv: ["{bin}", "-p"] }; })],
     ["an invoke inside the engine", cli((s) => { at(s, "engine")["invoke"] = {}; })],
   ])("fails loudly, never a backend: %s", (_what, record) => {
     expect(refused(record)).toMatch(/^source record "claude-code": cli(?:\.engine)? has no invoke: a CLI is an engine, never a backend/);
   });
 
-  it("takes the other pinned installs and an MCP-less engine", () => {
+  it("takes the other pinned installs", () => {
     for (const install of [
       { manager: "pip", package: "mistral-vibe", version: "1.2.3", bin: "vibe",
         verify_argv: ["{bin}", "--version"], lock_sha256: "b".repeat(64) },
@@ -801,10 +910,174 @@ describe("an engine record that does not fit", () => {
     ]) {
       expect(sourceRecord(cli((s) => { s["install"] = install; })).cli!.install).toEqual(install);
     }
-    const unsupported = { unsupported: "No MCP client: TinyAssets is reached another way." };
-    expect(sourceRecord(cli((s) => { s["mcp"] = unsupported; }, pi)).cli!.mcp)
-      .toEqual(unsupported);
-    expect(claudeCli["mcp"]).toHaveProperty("file");
+  });
+});
+
+describe("an engine's own pre-tool hook", () => {
+  const codex = records.get("codex") as Json;
+  it.each([
+    ["no hook block at all", cli((s) => { delete s["decide"]; })],
+    ["a file under the home, the agent's to edit", cli((s) => {
+      at(s, "decide")["file"] = "{home}/.claude/settings.json"; })],
+    ["a shared file outside /etc", cli((s) => {
+      at(s, "decide")["file"] = "/opt/claude/managed-settings.json"; })],
+    ["a shared file that climbs out of /etc", cli((s) => {
+      at(s, "decide")["file"] = "/etc/../opt/managed-settings.json"; })],
+    ["a template with no matcher", cli((s) => {
+      at(s, "decide")["template"] = "{\"hooks\": {\"command\": \"{decide}\"}}"; })],
+    ["a template with a credential key", cli((s) => {
+      at(s, "decide")["template"] = "{\"apiKeyHelper\": \"{decide}\", \"m\": \"{matcher}\"}"; })],
+    ["a kind acts.json does not define", cli((s) => { at(s, "decide.kinds")["browser"] = ["B"]; })],
+    ["a kind with no tool", cli((s) => { at(s, "decide.kinds")["shell"] = []; })],
+    ["a refused file, which the definition's native layers hold now", cli((s) => {
+      at(s, "decide")["refuses"] = [".gemini/settings.json"]; })],
+    ["a hook that neither fails open nor closed", cli((s) => {
+      at(s, "decide")["fails"] = "maybe"; })],
+    ["no page it was read from", cli((s) => { delete at(s, "decide")["cite"]; })],
+    ["the hook's placeholder in another file", cli((s) => {
+      at(s, "env")["TA_X"] = "{matcher}"; })],
+    ["an argv that loads another file", cli((s) => {
+      at(s, "decide")["argv"] = ["-e", "{system}/other.mjs"]; }, pi)],
+    ["no way it runs", cli((s) => { delete at(s, "decide")["runs"]; })],
+    ["two ways it runs", cli((s) => { at(s, "decide.runs")["exec"] = true; })],
+    ["an http refusal that is not JSON", cli((s) => {
+      at(s, "decide.runs.http")["deny"] = "no: {reason}"; })],
+    ["an http refusal with no reason", cli((s) => {
+      at(s, "decide.runs.http")["deny"] = "{\"decision\": \"deny\"}"; })],
+    ["an http hook whose template names a command", cli((s) => {
+      at(s, "decide")["template"] = String(at(s, "decide")["template"])
+        .replace("{decide_url}\"]", "{decide}\"]"); })],
+    ["a shell hook whose template names the door's address", cli((s) => {
+      at(s, "decide")["template"] = String(at(s, "decide")["template"])
+        .replace("{decide}", "{decide_url}"); }, codex)],
+    ["a shell given as one line", cli((s) => { at(s, "decide.runs")["shell"] = "sh -c"; }, codex)],
+    ["an alterable hook with no words", cli((s) => { at(s, "decide")["alterable"] = ""; }, codex)],
+  ])("refuses %s", (_what, record) => {
+    expect(refused(record))
+      .toMatch(/cli\.decide|missing \["decide"\]|which only cli\.decide\.template carries/);
+  });
+
+  it("takes one that holds none, with why", () => {
+    const why = { unsupported: "No hook loads from a root-owned path." };
+    expect(sourceRecord(cli((s) => {
+      s["decide"] = why; at(s, "definition")["hooks"] = why; }, codex)).cli!.decide).toEqual(why);
+  });
+});
+
+describe("how the agent's definition reaches an engine", () => {
+  it("keeps every engine's whole, as its file holds it", () => {
+    for (const id of ["claude-code", "codex", "gemini", "pi"]) {
+      const file = records.get(id) as Json;
+      expect(sourceRecord(file).cli!.definition).toEqual(at(file, "cli.definition"));
+    }
+  });
+
+  it.each([
+    ["skills outside the agent's directory", cli((s) => {
+      at(s, "definition.skills")["paths"] = ["/etc/skills"]; })],
+    ["skills that climb out", cli((s) => { at(s, "definition.skills")["paths"] = ["../skills"]; })],
+    ["no skills folder", cli((s) => { at(s, "definition.skills")["paths"] = []; })],
+    ["skills by an argv without the skill", cli((s) => {
+      at(s, "definition.skills")["argv_each"] = ["--skill"]; }, pi)],
+    ["skills by an argv carrying the skill twice", cli((s) => {
+      at(s, "definition.skills")["argv_each"] = ["--skill={skill}", "{skill}"]; }, pi)],
+    ["the skill's placeholder outside its argv", cli((s) => {
+      s["unattended_argv"] = ["--skill", "{skill}"]; }, pi)],
+    ["instructions shadowed by themselves", cli((s) => {
+      at(s, "definition.instructions")["shadowed_by"] = ["AGENTS.md"]; })],
+    // The engine's own layers, kept out of every run: never one the definition renders.
+    ["no native layers", cli((s) => { at(s, "definition.native")["refuses"] = []; })],
+    ["a native layer outside the cwd", cli((s) => {
+      at(s, "definition.native")["refuses"] = ["../.claude/settings.json"]; })],
+    ["a native layer that is the skills folder", cli((s) => {
+      at(s, "definition.native")["refuses"] = [".claude"]; })],
+    ["a native layer that is what shadows the instructions", cli((s) => {
+      at(s, "definition.native")["refuses"] = ["CLAUDE.md"]; })],
+    ["a native layer twice", cli((s) => {
+      at(s, "definition.native")["refuses"] = [".mcp.json", ".mcp.json"]; })],
+    ["native layers with no page", cli((s) => { delete at(s, "definition.native")["cite"]; })],
+    ["a native argv set to nothing", cli((s) => {
+      at(s, "definition.native")["argv"] = ["--approve="]; }, pi)],
+    // The agent's own hooks: every event by the engine's name, in the decide hook's layer.
+    ["hooks missing an event", cli((s) => { delete at(s, "definition.hooks.events")["stop"]; })],
+    ["hooks with an event the format has not", cli((s) => {
+      at(s, "definition.hooks.events")["notification"] = "Notification"; })],
+    ["two events by one name", cli((s) => {
+      at(s, "definition.hooks.events")["stop"] = "SessionEnd"; })],
+    ["hooks with no page", cli((s) => { delete at(s, "definition.hooks")["cite"]; })],
+    ["hooks on an engine whose decide hook is unsupported", cli((s) => {
+      s["decide"] = { unsupported: "none" }; })],
+    ["no hooks on an engine whose decide hook has a layer", cli((s) => {
+      at(s, "definition")["hooks"] = { unsupported: "none" }; })],
+    // Their dispatcher (D5): in the decide hook's layer, each event's entry carrying it.
+    ["a shared hooks file that is not the decide hook's", cli((s) => {
+      at(s, "definition.hooks")["file"] = "/etc/claude-code/other-settings.json"; })],
+    ["a hooks file no settings reader takes", cli((s) => {
+      at(s, "definition.hooks")["file"] = "{system}/hooks.yaml"; })],
+    ["entries that run no dispatcher", cli((s) => {
+      at(s, "definition.hooks")["each"] = (at(s, "definition.hooks")["each"] as string)
+        .replace("{dispatcher} {event}", "true"); })],
+    ["an entry that is no settings file", cli((s) => {
+      at(s, "definition.hooks")["each"] = "{dispatcher} {event}"; })],
+    ["an event's placeholder outside its entry", cli((s) => {
+      at(s, "definition.hooks")["template"] = "{\"hooksConfig\": {\"note\": \"{native}\"}}"; })],
+    ["the dispatcher outside its file", cli((s) => {
+      s["unattended_argv"] = ["--hooks={dispatcher}"]; })],
+    ["an extension that leaves an event out", cli((s) => {
+      at(s, "definition.hooks")["template"] = (at(s, "definition.hooks")["template"] as string)
+        .replaceAll("\"agent_end\"", "\"agent_stop\""); }, pi)],
+    ["an extension run through a shell", cli((s) => {
+      at(s, "definition.hooks")["runs"] = { shell: ["sh", "-c"] }; }, pi)],
+    ["a settings file run as an extension", cli((s) => {
+      at(s, "definition.hooks")["runs"] = { exec: true }; })],
+    ["argv for a file every run shares", cli((s) => {
+      at(s, "definition.hooks")["argv"] = ["--settings", "{system}/hooks.json"]; })],
+    ["a dispatcher with no failure mode", cli((s) => {
+      delete at(s, "definition.hooks")["fails"]; })],
+  ])("refuses %s", (_what, record) => {
+    expect(refused(record)).toMatch(/cli\.definition/);
+  });
+
+  it.each([
+    // Every MCP server, the run's door and the agent's own, by one entry per transport, each
+    // carrying the server's own values, in one file or by one flag.
+    ["servers both in a file and by a flag", cli((s) => { at(s, "mcp")["flag"] = "-c"; })],
+    ["servers neither in a file nor by a flag", cli((s) => {
+      delete at(s, "mcp")["file"]; delete at(s, "mcp")["template"];
+      at(s, "mcp")["argv"] = []; })],
+    ["servers by a flag with a names list", cli((s) => {
+      at(s, "mcp")["names"] = "mcp.allowed"; }, records.get("codex") as Json)],
+    ["servers by a flag with a template", cli((s) => {
+      at(s, "mcp")["template"] = "{}"; }, records.get("codex") as Json)],
+    ["servers by a flag that is no option", cli((s) => {
+      at(s, "mcp")["flag"] = "c"; }, records.get("codex") as Json)],
+    ["servers in a file that is not JSON", cli((s) => {
+      at(s, "mcp")["file"] = "{home}/run/mcp.toml"; })],
+    ["a template holding a server of its own", cli((s) => {
+      at(s, "mcp")["template"] = JSON.stringify({ mcpServers: {
+        tinyassets: { headers: { "x-ta-run": "{run_secret}" } }, docs: { url: "https://x" } } });
+    })],
+    ["a template holding the names list", cli((s) => {
+      at(s, "mcp")["template"] = JSON.stringify({ mcp: { allowed: ["tinyassets"] } }); },
+                                              records.get("gemini") as Json)],
+    ["an argv a server adds that names no server", cli((s) => {
+      at(s, "mcp")["argv_each"] = ["--allowed-mcp-server-names", "tinyassets"]; },
+                                                   records.get("gemini") as Json)],
+    ["a server's name bare in the argv a server adds", cli((s) => {
+      at(s, "mcp")["argv_each"] = ["--allowed-mcp-server-names", "{name}"]; },
+                                                       records.get("gemini") as Json)],
+    ["a server's name outside the argv a server adds", cli((s) => {
+      s["unattended_argv"] = ["--allow", "{name}"]; })],
+    ["an http entry without the server's URL", cli((s) => {
+      at(s, "mcp.http")["url"] = "https://example.com/mcp"; })],
+    ["an http entry carrying the URL twice", cli((s) => {
+      at(s, "mcp.http")["also"] = "{url}"; })],
+    ["a stdio entry without the server's env", cli((s) => {
+      delete at(s, "mcp.stdio")["env"]; })],
+    ["a stdio entry carrying an unknown value", cli((s) => {
+      at(s, "mcp.stdio")["cwd"] = "{cwd}"; })],
+  ])("refuses %s", (_what, record) => {
+    expect(refused(record)).toMatch(/cli\.mcp/);
   });
 });
 

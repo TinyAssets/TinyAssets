@@ -70,6 +70,10 @@
       "hosted_use": {
         "verdict": "unclear",
         "citation": "subscription-engines.md section 2 and 11: no text permits or forbids a platform hosting the unmodified Codex CLI for a user's own ChatGPT sign-in; OpenAI names API keys for automation and ChatGPT sign-in only on trusted private infrastructure"
+      },
+      "model": {
+        "id": "gpt-6.1-sol",
+        "citation": "the models.json bundled in the pinned @openai/codex 0.166.0 binary (read 2026-11-21): gpt-6.1-sol is its priority-1 model, the picker's first; the live catalog is the account's and can differ (strongest-plan.md)"
       }
     },
     "api_key_env": {
@@ -140,7 +144,6 @@
         "{sid}",
         "-"
       ],
-      "resume": "session_id",
       "stdin": "{prompt}",
       "model_argv": [
         "--model",
@@ -171,12 +174,6 @@
               "type": "turn.failed"
             },
             "path": "error.message"
-          },
-          {
-            "match": {
-              "type": "error"
-            },
-            "path": "message"
           }
         ],
         "usage": [
@@ -210,28 +207,107 @@
             "path": "item"
           }
         ],
-        "deferred": []
+        "deferred": [],
+        "vendor_limit": [
+          {
+            "match": {
+              "type": "turn.failed"
+            },
+            "pattern": {
+              "error.message": "^(?:You\u2019ve hit your usage limit|Quota exceeded\\. Check your plan and billing details\\.|To use Codex with your ChatGPT plan, upgrade to Plus|Your workspace is out of credits|You hit your spend cap|exceeded retry limit, last status: 429)"
+            },
+            "path": ""
+          }
+        ],
+        "retry": []
       }
     },
-    "instructions": {
-      "file": "AGENTS.md",
-      "shadowed_by": [
-        "AGENTS.override.md"
-      ],
-      "max_bytes": 32768
+    "definition": {
+      "instructions": {
+        "file": "AGENTS.md",
+        "shadowed_by": [
+          "AGENTS.override.md"
+        ],
+        "max_bytes": 32768
+      },
+      "skills": {
+        "paths": [
+          ".agents/skills"
+        ]
+      },
+      "native": {
+        "refuses": [
+          ".codex/config.toml",
+          ".codex/hooks.json",
+          ".codex/skills",
+          ".codex/agents"
+        ],
+        "argv": [
+          "-c",
+          "features.skill_mcp_dependency_install=false"
+        ],
+        "cite": "https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/loader/mod.rs",
+        "read": "2026-11-22"
+      },
+      "hooks": {
+        "events": {
+          "pre_tool": "PreToolUse",
+          "post_tool": "PostToolUse",
+          "prompt": "UserPromptSubmit",
+          "session_start": "SessionStart",
+          "stop": "Stop",
+          "session_end": "SessionEnd",
+          "pre_compact": "PreCompact"
+        },
+        "file": "/etc/codex/requirements.toml",
+        "template": "[features]\nhooks = true\n",
+        "each": "\n[[hooks.{native}]]\n\n[[hooks.{native}.hooks]]\ntype = \"command\"\ncommand = \"{dispatcher} {event}\"\ntimeout = 600\n",
+        "runs": {"shell": ["sh", "-lc"]},
+        "fails": "open",
+        "alterable": "Codex runs every command hook through the run user's login shell ($SHELL -lc, codex-rs/hooks/src/engine/command_runner.rs), which reads ~/.profile in the run's home, a file the agent writes, so what the dispatcher runs can be changed (read 2026-11-22)",
+        "cite": "https://github.com/openai/codex/tree/rust-v0.166.0/codex-rs/hooks/src/events",
+        "read": "2026-11-21"
+      }
     },
-    "skills_paths": [
-      ".agents/skills"
-    ],
     "mcp": {
-      "argv": [
-        "-c",
-        "mcp_servers.tinyassets.url=\"{mcp_url}\""
-      ],
-      "trust": {
-        "argv": [],
-        "note": "A server given by -c is the run's own config, read without a project-trust prompt in exec mode."
-      }
+      "servers": "mcp_servers",
+      "flag": "-c",
+      "http": {
+        "url": "{url}"
+      },
+      "stdio": {
+        "command": "{command}",
+        "args": "{args}",
+        "env": "{env}"
+      },
+      "argv": [],
+      "trust": "A server given by -c is the run's own config, read without a project-trust prompt in exec mode."
+    },
+    "decide": {
+      "file": "/etc/codex/requirements.toml",
+      "template": "[[hooks.PreToolUse]]\nmatcher = \"{matcher}\"\n\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"{decide}\"\ntimeout = 60\n",
+      "runs": {
+        "shell": [
+          "sh",
+          "-lc"
+        ]
+      },
+      "kinds": {
+        "shell": [
+          "Bash"
+        ],
+        "file_write": [
+          "apply_patch"
+        ]
+      },
+      "mcp": {
+        "prefix": "mcp__",
+        "join": "__"
+      },
+      "fails": "open",
+      "alterable": "Codex runs a hook command through the run user's login shell ($SHELL -lc, codex-rs/hooks/src/engine/command_runner.rs), which reads ~/.profile in the run's home, a file the agent writes, and it loads $CODEX_HOME/.env, the agent's too (codex-rs/arg0/src/lib.rs, read 2026-11-21)",
+      "cite": "https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/hooks/src/engine/command_runner.rs",
+      "read": "2026-11-21"
     },
     "tools": {
       "deny": {
@@ -263,6 +339,9 @@
     ],
     "session_paths": [
       "{home}/.codex/sessions/"
+    ],
+    "resume_paths": [
+      "{home}/.codex/sessions/*/*/*/rollout-*-{sid}*"
     ],
     "compaction": {
       "argv": [

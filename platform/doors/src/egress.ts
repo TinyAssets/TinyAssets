@@ -1,13 +1,14 @@
 /**
- * The egress door (gateway research §5.4 step 4; tasks 4 G4):
+ * The egress door (gateway research §5.4 step 4):
  * `egress.tinyassets.io/r/<run>/<secret>/c/<connection>/*`, where a run's model clients send
  * their providers' own APIs with placeholder keys (the contract's `sandboxEnv`). The run in
- * the path is what the object holds the call to (that run's own connection, slice R), and
+ * the path is what the object holds the call to (that run's own connection), and
  * the run's own secret beside it is what lets a call act as that run: only the run's CLI
- * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), and
- * the runner's own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a
- * run's event door (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by
- * the same egress token.
+ * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), the
+ * runs' decide door (`/decide`, a run's CLI's hook's, by its credential), and the runner's
+ * own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a run's event door
+ * (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by the same egress
+ * token.
  *
  * 1. **The identity.** E2B's transform sets the sandbox's egress token (`x-ta-sandbox`)
  *    and the egress generation its network was made under (`x-ta-network-generation`)
@@ -22,9 +23,9 @@
  * 3. **Forward**: the request, its path after `/c/<connection>` and its body as the stream
  *    it came as, to the gateway's egress entrypoint (`EGRESS.forward`), metered: the gateway
  *    parses a model call's body once and calls back `reserve` (egress shape research, A′),
- *    which the door answers with the object's `egressReserve`, the model reservation by the
- *    loop's own rules for the model and tier that parse read; the call is then held to the
- *    reservation's output cap and the body length it was admitted by, its every inbound
+ *    which the door answers with the object's `egressReserve`, the call's charge for the
+ *    model and tier that parse read; the call is then held to the charge's output cap and
+ *    the body length it was admitted by, its every inbound
  *    credential (the placeholder with them) stripped and the sealed one injected. A refused
  *    reserve is answered with the object's own code and receipt. The provider's answer
  *    streams back as it comes, but for the gateway's own headers (`x-ta-resealed`, which goes
@@ -41,15 +42,16 @@
  *
  * The door bills CPU only while the bytes flow; the owner's object does no work meanwhile,
  * but stays resident while it holds the stream's end signal. A sandbox token reaches no
- * other door: the other doors serve `tinyassets.io` alone, and the object refuses the
+ * other door: the other doors serve the public host alone, and the object refuses the
  * sandbox binding at every door but the egress doors.
  */
 import {
   type MeterOutcome, outcomeOf, type Reservation,
 } from "../../contract/src/gateway";
 import {
-  EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER, generationIn, type Outcome,
-  RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER, SYNC_HEADER, type SyncDoor,
+  DECIDE_HEADER, decideCredential, EGRESS_BEAT_S, EGRESS_ORIGIN, egressDoor, GENERATION_HEADER,
+  generationIn, type Outcome, RESEALED_HEADER, RUN_HEADER, RUNNER_HEADER, SANDBOX_HEADER,
+  SYNC_HEADER, type SyncDoor,
 } from "../../contract/src/egress";
 import { HEX64 } from "../../contract/src/ids";
 import type { JsonBody, SettleSent } from "../../contract/src/owner";
@@ -65,7 +67,6 @@ import { LEASE_LIVED, verifyToken } from "../../contract/src/routing-mac";
 import { serveMcp } from "./mcp";
 import { answered, asEgress, asEgressFault } from "./refused";
 
-
 /** The run's own secret: its path's, else its header's, else none (refused by the object). */
 function secretOf(request: Request, inPath: string | undefined): string | undefined {
   if (inPath !== undefined) {
@@ -77,14 +78,18 @@ function secretOf(request: Request, inPath: string | undefined): string | undefi
 
 const LENGTH = /^[0-9]{1,15}$/;
 const EGRESS_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
-/** How long a completed answer's metered outcome is waited for before it is `unknown`. */
+/**
+ * How long a completed answer's metered outcome is waited for before it is `unknown`. The
+ * gateway writes it as the answer ends (`EgressGateway.forward`), so it comes at once; the
+ * wait bounds only a gateway that never writes it, and `unknown` keeps the reservation whole.
+ */
 const OUTCOME_WAIT_MS = 10_000;
 
 /**
  * The door's own refusal, by one of its codes (`EGRESS_CODES`), thrown and answered in the
  * gateway's own error shape (`refused.ts`, `asEgress`), its status and any `Retry-After` its
- * code's. The runner waits a `Retry-After` out, up to its heartbeat (`HEARTBEAT_MS`, 20 s,
- * which its posts keep the lease by): so `storage_busy`'s 30 s is posted again after 20 s.
+ * code's. The runner waits a `Retry-After` out up to its heartbeat (`HEARTBEAT_MS`, which its
+ * posts keep the lease by), so a longer wait is posted again after one heartbeat.
  */
 function refused(code: EgressCode): Refusal {
   return new Refusal(code);
@@ -112,7 +117,7 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: SettleSent):
     await bound.stub.egressSettle(bound.binding, request);
   } catch (first) {
     if (refusalOf(first) !== null) {
-      throw first;  // the object answered: nothing to retry
+      throw first;  // the object answered, or the runtime refused it overloaded: no retry
     }
     const again = rebound(env, bound);
     await again.stub.egressSettle(again.binding, request);
@@ -228,8 +233,31 @@ async function serveRunMcp(request: Request, env: DoorsEnv, run: string, secret:
 }
 
 /**
+ * The runs' decide door (R5 P-hooks; `runDecide`): a run's CLI's pre-tool hook's question of a
+ * tool call it saw, or the runner's of the tools that hook matches, the run named by its
+ * credential (`DECIDE_HEADER`, `<run>:<secret>`), which binds it as the run's own secret
+ * does. Only the sandbox calls it, so an `Origin` is refused. A hook the CLI sends itself
+ * (an `http` hook) is answered in the CLI's own words (`hook`, its body as the object made
+ * it); a refusal is answered with its message, which the helper hands the CLI.
+ */
+function serveDecide(request: Request, env: DoorsEnv): Promise<Response> {
+  const named = decideCredential(request.headers.get(DECIDE_HEADER));
+  if (named === null) {
+    throw refused("run_secret_missing");
+  }
+  return sandboxDoor(request, EGRESS_BODY_MAX, async () => {
+    const sandbox = await sandboxToken(request, env);
+    return bindRun(env, sandbox.owner, sandbox.hash, sandbox.generation, named.run,
+                   { secret: named.secret });
+  }, async ({ binding, stub }, body) => {
+    const answer = await stub.runDecide(binding, body);
+    return "hook" in answer ? answer.hook : answer;
+  });
+}
+
+/**
  * A run's event door (ADR-034 decision 10), the runner's `POST` of its frames and its end
- * (`runEvents`), and a sign-in's (slice SIGNIN), the runner's `ta.signin` frames of the
+ * (`runEvents`), and a sign-in's, the runner's `ta.signin` frames of the
  * vendor's own sign-in it drives (`signinEvents`): each by the runner's secret, each frame
  * and the post bounded (`EVENTS_BODY_MAX`, `EVENT_FRAMES_MAX`, `FRAME_UNITS_MAX`). For a
  * sign-in the object keeps the latest prompt, renews the lease and relays each frame to the
@@ -252,8 +280,8 @@ function serveEvents(request: Request, env: DoorsEnv,
 
 /**
  * The runner's report of the engines' sign-ins (`signinReport`): each engine that signs in
- * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
- * it offers. Presence only; the runner alone calls it, so an `Origin` is refused.
+ * with the vendor's own login, whether its record's `status_argv` succeeded. Presence only;
+ * the runner alone calls it, so an `Origin` is refused.
  */
 function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
   return sandboxDoor(request, EGRESS_BODY_MAX, () => runnerBound(request, env,
@@ -261,19 +289,6 @@ function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
                                         presented)),
   ({ binding, stub }, body) => stub.signinReport(binding, body));
 }
-
-/**
- * The in-VM sync agent's doors (slice S's runner), on the egress host by its sync token
- * (`x-ta-sync`, the lease's `sync` kind) together with the egress token E2B's transform sets
- * on every HTTPS call out of that sandbox (review M-5): the sync token alone, taken out of
- * the VM, reaches nothing. The doors: the change feed (`changes`), a listing for a feed
- * reset (`list`), a file's entry and bytes (`read`, `chunks`), the upload of a file past an
- * inline write (`upload_begin`, `upload_chunks`, `upload_abort`: the files plane's own
- * upload) and the fenced commit (`commit`). The object holds each to its live lease and,
- * for an outside client's sandbox, to the readable set the feed is filtered by
- * (`#syncer`), so a content door never shows a path the feed would not. Bytes cross as base64; a body is bounded
- * (`SYNC_BODY_MAX`), so the runner sends more calls, not bigger ones.
- */
 
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
@@ -319,6 +334,18 @@ async function syncBound(request: Request, env: DoorsEnv): Promise<Bound> {
   return bindSync(env, parsed.owner, parsed.hash, inside.hash);
 }
 
+/**
+ * The in-VM sync agent's doors, on the egress host by its sync token (`x-ta-sync`, the
+ * lease's `sync` kind) together with the egress token E2B's transform sets on every HTTPS
+ * call out of that sandbox: the sync token alone, taken out of the VM, reaches nothing. The
+ * doors: the change feed (`changes`), a listing for a feed reset (`list`), a file's entry and
+ * bytes (`read`, `chunks`), the upload of a file past an inline write (`upload_begin`,
+ * `upload_chunks`, `upload_abort`: the files plane's own upload) and the fenced commit
+ * (`commit`). The object holds each to its live lease and, for an outside client's sandbox,
+ * to the readable set the feed is filtered by (`#syncer`), so a content door never shows a
+ * path the feed would not. Bytes cross as base64; a body is bounded (`SYNC_BODY_MAX`), so
+ * the runner sends more calls, not bigger ones.
+ */
 function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promise<Response> {
   return sandboxDoor(request, SYNC_BODY_MAX, () => syncBound(request, env),
                      async ({ binding, stub }, body) => {
@@ -375,6 +402,8 @@ async function egress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
       }
       return serveRunMcp(request, env, door.run, secret);
     }
+    case "decide":
+      return serveDecide(request, env);
     case "events":
       return serveEvents(request, env, { run: door.run });
     case "signin":

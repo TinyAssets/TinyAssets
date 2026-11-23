@@ -19,15 +19,17 @@
  */
 import type { RunCapability } from "../../contract/src/capabilities";
 import type { Binding, BindingOf, Origin } from "../../contract/src/binding";
+import { Refusal } from "../../contract/src/refusal";
 import { isMinted } from "./proof-mint";
 import type { Grant, Stamped } from "./authority";
 import type { ControlGate } from "./control-gate";
-import type { DoorRows } from "./door-map";
+import type { DoorRows, StopDoors } from "./door-map";
 import type { Binds, CallerKind, TakenBy } from "./door-steps";
 import type { OwnerEnv } from "./env";
 import type { SandboxLease } from "./files";
 import type { OwnerStorage, WriteGate } from "./gate";
 import type { InboundRow } from "./inbound";
+import type { OwnerSandbox } from "./sandbox";
 
 /** What a call is bound to: its owner and caller, its outside client and that client's grant. */
 export interface Account {
@@ -81,7 +83,7 @@ interface Proof<K extends string> {
   readonly minted: typeof minted;
 }
 /**
- * The owner's live session, as `Sessions.live` found its row (S30, N10): a session row's
+ * The owner's live session, as `Sessions.live` found its row: a session row's
  * proof, which every widening in the owner's session takes. `hash` is its id (the receipts').
  */
 export interface LiveSession extends Proof<"session"> {
@@ -137,13 +139,14 @@ export interface Checked<R = unknown, K extends CallerKind = Binds> extends Boun
   readonly request: R;
   readonly r: Record<string, unknown>;
   readonly universe: string | null;
+  /** The agent it acts as: at a run door, the one its request names; else `actingAgent`'s. */
   readonly agent: string;
   /** The row's capability held at `place`, the place its handler names. */
   held(place: unknown): void;
   /**
    * `capability` held where the call's account acts, as the runner's scope step holds it: as
-   * `agent` (the `main` agent by default), in `center` (by default, where a scoped client's
-   * one enabled agent is registered).
+   * `agent` (by default, the agent it acts as, `actingAgent`), in `center` (by default, where a
+   * scoped client's one enabled agent is registered).
    */
   scope(capability: RunCapability, center?: unknown, agent?: string): void;
   /**
@@ -168,6 +171,15 @@ export interface Door<R = unknown, K extends CallerKind = Binds> {
   authorized(): void;
 }
 
+/**
+ * What a door whose row takes its caller's stop (`StopDoors`) is handed beside its door: the
+ * caller's leaving, from the stop the doors close once their caller stops waiting.
+ */
+export interface Leaving {
+  /** Aborted once the caller stops waiting for this call (its stop closed or broken). */
+  readonly left: AbortSignal;
+}
+
 /** What the stores are built over: the object's write gate, its storage view and its units. */
 export type Units = Pick<WriteGate, "storage" | "write" | "quiet">;
 
@@ -185,12 +197,27 @@ export interface DoorUnits {
   sync(): Promise<void>;
 }
 
+/**
+ * The owner the object `id` names (its `ctx.id.name`, set by the runtime and kept for its
+ * alarms), refused when it has none: the object serves no other.
+ */
+export function namedOwner(id: DurableObjectId): string {
+  const named = id.name;
+  if (named === undefined) {
+    throw new Refusal("refused", "this object is not named by an owner");
+  }
+  return named;
+}
+
 /** What only the object reads or decides, as a handler calls it. */
 export interface ObjectReads {
-  readonly env: OwnerEnv;
+  /** The bindings, but the sandbox Worker's, which the object reaches only as `sandbox`. */
+  readonly env: Omit<OwnerEnv, "SANDBOX">;
   readonly storage: OwnerStorage;
-  /** The owner this object is named by; refused when it has none. */
+  /** The owner this object is named by (`namedOwner`). */
   owner(): string;
+  /** The sandbox Worker, bound to this object's owner (`boundSandbox`). */
+  readonly sandbox: OwnerSandbox;
   /** The platform's gates as this object reads them (`control-gate.ts`). */
   control(): ControlGate;
   /** Whether the owner is erased or being erased: its doors with no binding do nothing. */
@@ -225,12 +252,14 @@ type DoorsIn<M extends Module> =
   { [D in DoorName]: DoorRows[D]["module"] extends M ? D : never }[DoorName];
 /**
  * A door's handler, handed `N` (its first parameter: what it may reach) and, by its row's
- * gate, the door that checks its call in each unit it makes, or the call checked in one unit
- * of that gate, with its row's caller's proof. Its request is its own (`never` here, so any
+ * gate, the door that checks its call in each unit it makes (with its caller's leaving where
+ * its row takes its stop), or the call checked in one unit of that gate, with its row's
+ * caller's proof. Its request is its own (`never` here, so any
  * request type fits), held to the row's fields by the runner.
  */
 export type HandlerOf<D extends DoorName, N> = GateOf<D> extends "units"
-  ? (o: N, door: Door<never, CallerOf<D>>) => Promise<unknown>
+  ? (o: N, door: Door<never, CallerOf<D>> & (D extends StopDoors ? Leaving : unknown)) =>
+    Promise<unknown>
   : (o: N, call: Call<never, CallerOf<D>>) => unknown;
 /** The handlers of module `M`'s doors, each handed `N`: one per row that names `M`. */
 export type DoorsOf<M extends Module, N> = { readonly [D in DoorsIn<M>]: HandlerOf<D, N> };

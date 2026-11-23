@@ -1,5 +1,5 @@
 /**
- * The egress door (tasks 4 G4), in workerd, through the real owner Worker and the real
+ * The egress door, in workerd, through the real owner Worker and the real
  * gateway Worker (its `EgressGateway` entrypoint, as the config binds it), against the fake
  * providers' Groq.
  *
@@ -10,7 +10,7 @@
  * clamped to its reservation; every refusal is a fixed code that forwards nothing; and every
  * admitted call is settled once, however it ends, at the cost pi-ai read, or kept whole.
  */
-import { createExecutionContext, env } from "cloudflare:test";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
@@ -270,7 +270,7 @@ describe("the egress door", () => {
     const box = await sandbox();
     const body = bodyOf(box);
     const response = await send(egressRequest(
-      box, `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph&stream=true`));
+      box, `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph`));
     expect(response.status).toBe(200);
     expect(response.headers.get("x-upstream")).toBe("fake");
     expect(response.headers.get("x-ta-resealed")).toBeNull();
@@ -278,7 +278,7 @@ describe("the egress door", () => {
     expect(text).toBe(EGRESS_CHUNKS.join(""));
     const [sent, ...more] = await forwarded();
     expect(more).toEqual([]);
-    expect(sent!.url).toBe(`https://api.groq.com${COMPLETIONS}?stream=true`);
+    expect(sent!.url).toBe(`https://api.groq.com${COMPLETIONS}`);
     expect(sent!.headers["authorization"]).toBe(`Bearer ${box.key}`);
     for (const stripped of ["x-api-key", "cookie", SANDBOX_HEADER, GENERATION_HEADER]) {
       expect(sent!.headers[stripped]).toBeUndefined();
@@ -297,7 +297,8 @@ describe("the egress door", () => {
     expect(await reservations(box.owner)).toEqual([{
       state: "settled", code: null, ended: null, outcome: "complete", status: 200,
       bytes: new TextEncoder().encode(text).byteLength,
-      path: `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph&stream=true`, method: "POST" }]);
+      // Its receipt keeps the path alone, never the query the sandbox wrote.
+      path: COMPLETIONS, method: "POST" }]);
     // The open carried the body's length; the settle, pi-ai's own reading of the stream as
     // the gateway metered it (its price is the gateway's test, `gateway/test/meter.test.ts`).
     const calls = await env.OWNER_GATE.seen(box.owner);
@@ -319,7 +320,7 @@ describe("the egress door", () => {
   it("streams an SSE answer as the provider writes it, unbuffered, its type kept", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-stream" } }));
+      headers: { "user-agent": "slow-stream" } }));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     const reader = response.body!.getReader();
@@ -355,7 +356,7 @@ describe("the egress door", () => {
     const box = await sandbox();
     for (let i = 0; i < 3; i++) {
       const response = await send(egressRequest(box, COMPLETIONS, {
-        headers: { "x-fake-egress": "nousage" } }));
+        headers: { "user-agent": "nousage" } }));
       expect(response.status).toBe(200);
       expect(await response.text()).toContain("one ");
       await until(async () => (await reservations(box.owner))
@@ -373,7 +374,7 @@ describe("the egress door", () => {
      "listed fallbacks stays unknown", async () => {
     const box = await sandbox();
     const named = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "snapshot" } }));
+      headers: { "user-agent": "snapshot" } }));
     await named.text();
     await settledOf(box.owner);
     const [settled] = await receipts(box.owner);
@@ -381,7 +382,7 @@ describe("the egress door", () => {
     expect(settled!["cost"] as number).toBeGreaterThan(0);
     const other = await sandbox();
     const listed = await send(egressRequest(other, COMPLETIONS, {
-      headers: { "x-fake-egress": "snapshot" },
+      headers: { "user-agent": "snapshot" },
       body: bodyOf(other, { models: [other.model, "someone/else"] }) }));
     await listed.text();
     await settledOf(other.owner);
@@ -526,7 +527,7 @@ describe("the egress door", () => {
   it("passes the provider's own refusal through, and settles it at no cost", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "busy" } }));
+      headers: { "user-agent": "busy" } }));
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("7");
     expect(await response.json()).toEqual({ error: { message: "rate limited" } });
@@ -553,7 +554,7 @@ describe("the egress door", () => {
     expect(await spends(box.owner)).toMatchObject([{ state: "unknown", cost: null }]);
   });
 
-  it("hands the sandbox slice two tokens, its network and its clients' environment once",
+  it("hands the sandbox two tokens, its network and its clients' environment once",
      async () => {
     const box = await sandbox();
     expect(verifyToken(env.ROUTING_MAC_KEY, "egress", box.opened.egress_token))
@@ -684,6 +685,8 @@ describe("a refused call", () => {
       [egressRequest(box, "/openai/v1/chat/completions%2F..%2Fadmin"), 403,
        "egress_endpoint_refused"],
       [egressRequest(box, "/openai/v1/models", { body: "{}" }), 403, "egress_endpoint_refused"],
+      // A query parameter the API's rules do not allow (chat completions allow none).
+      [egressRequest(box, `${COMPLETIONS}?stream=true`), 403, "egress_endpoint_refused"],
       [egressRequest(box, COMPLETIONS, { headers: { "content-length": "" } }), 411,
        "egress_length_required"],
     ] as const) {
@@ -691,6 +694,11 @@ describe("a refused call", () => {
       expect([response.status, await codeOf(response)]).toEqual([status, code]);
     }
     expect(await forwarded()).toEqual([]);
+    // The refused query's receipt keeps its path alone.
+    expect((await receipts(box.owner)).filter(({ code }) => code === "egress_endpoint_refused")
+      .map(({ path }) => path)).toEqual(["/openai/v1/files",
+                                         "/openai/v1/chat/completions%2F..%2Fadmin",
+                                         "/openai/v1/models", COMPLETIONS]);
   });
 
   it("past the owner's spend caps is refused before any forward, its receipt kept",
@@ -738,6 +746,43 @@ describe("a refused call", () => {
       .toEqual([503, "60", { error: { code: "unavailable", message: MAINTENANCE } }]);
     expect(await reservations(box.owner)).toEqual([]);
   });
+
+  it("answers an overloaded owner object in the gateway's own shape, 429 and a second",
+     async () => {
+    const box = await sandbox();
+    const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation(() => ({
+      egressOpen: () => Promise.reject(busy) }) as never);
+    const response = await send(egressRequest(box));
+    expect([response.status, response.headers.get("Retry-After"), await response.json()])
+      .toEqual([429, "1", { error: { code: "object_overloaded",
+                                     message: "this account is busy" } }]);
+    expect(await forwarded()).toEqual([]);
+  });
+
+  it("settles an overloaded object once, never through a fresh stub: the object settles " +
+     "it lost", async () => {
+    const box = await sandbox();
+    const busy = Object.assign(new Error("Durable Object is overloaded"), { overloaded: true });
+    const settle = vi.fn(() => Promise.reject(busy));
+    const getByName = doorsEnv.OWNER.getByName.bind(doorsEnv.OWNER);
+    vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation((name: string) => {
+      const real = getByName(name);
+      return { egressOpen: (binding: Binding, request: EgressRequest) =>
+                 real.egressOpen(binding, request),
+               egressReserve: (binding: Binding, request: ReserveRequest) =>
+                 real.egressReserve(binding, request),
+               egressBeat: () => Promise.resolve(true),
+               egressSettle: settle } as unknown as typeof real;
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const ctx = createExecutionContext();
+    await (await doors.fetch(egressRequest(box), doorsEnv, ctx)).text();
+    await waitOnExecutionContext(ctx);
+    vi.restoreAllMocks();
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(await reservations(box.owner)).toMatchObject([{ state: "open" }]);
+  });
 });
 
 describe("a sandbox token", () => {
@@ -768,7 +813,7 @@ describe("a policy write mid-stream", () => {
      "and the next call through it is answered", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-policy" } }));
+      headers: { "user-agent": "slow-policy" } }));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     // The gateway holds back a secret's length less one, in case a secret spans chunks.
@@ -800,7 +845,7 @@ describe("settlement", () => {
   it("records a client's abort, the provider's request cancelled", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-abort" } }));
+      headers: { "user-agent": "slow-abort" } }));
     const reader = response.body!.getReader();
     await reader.read();
     await reader.cancel();
@@ -858,7 +903,7 @@ describe("settlement", () => {
   it("settles through a fresh stub when the first settle's answer was lost", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-reset" } }));
+      headers: { "user-agent": "slow-reset" } }));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     await reader.read();
@@ -955,7 +1000,7 @@ describe("settlement", () => {
     const box = await sandbox();
     const ctx = createExecutionContext();
     const response = await serveEgress(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-deadline" } }), doorsEnv, ctx, 300);
+      headers: { "user-agent": "slow-deadline" } }), doorsEnv, ctx, 300);
     const reader = response.body!.getReader();
     expect(await drained(reader)).toBe("egress_deadline");
     await settledOf(box.owner);
@@ -966,7 +1011,7 @@ describe("settlement", () => {
   it("ends a stream when its run ends, or its connection is revoked", async () => {
     const box = await sandbox();
     const first = await send(egressRequest(box, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-close" } }));
+      headers: { "user-agent": "slow-close" } }));
     const reader = first.body!.getReader();
     await reader.read();
     await over(box);
@@ -976,7 +1021,7 @@ describe("settlement", () => {
 
     const again = await sandbox();
     const second = await send(egressRequest(again, COMPLETIONS, {
-      headers: { "x-fake-egress": "slow-revoke" } }));
+      headers: { "user-agent": "slow-revoke" } }));
     const held = second.body!.getReader();
     await held.read();
     const revoked = await appPost("connections/revoke", again.app, again.session,

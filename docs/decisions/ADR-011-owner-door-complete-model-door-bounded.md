@@ -4,6 +4,8 @@
 
 Accepted
 
+Superseded by ADR-032 (founder, 2026-11-21), except: the owner's own reads are complete; only the MCP door bounds a model's context (ADR-039 decision 2.7).
+
 ## Date
 
 2026-09-30

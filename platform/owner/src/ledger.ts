@@ -1,9 +1,6 @@
 /**
- * The trusted message ledger (ADR-025, S30), in the owner's own object (ADR-032).
- *
- * Ported from `tinyassets/broker/message_ledger.py` (S3a.1, S3a.2, S3b) and the
- * `message_bodies` half of `tinyassets/broker/conversations.py` (origin/main 8b415f569),
- * whose rules it keeps: who sent what to whom, and who read it.
+ * The trusted message ledger (ADR-039 decision 2.15), in the owner's own object (ADR-032):
+ * who sent what to whom, and who read it.
  *
  * - The agent registry (`outside_agents`): one outside identity is at most one enabled
  *   agent. It registers only from the verified origin the binder passes, as an `api_key`
@@ -12,13 +9,12 @@
  *   agent, which purges its mail and wakes.
  * - ROOM_POST: the sender is the binder's origin (none means the owner; a run, its own
  *   agent), never a field. The room is a pair's (below). A resend with the same client
- *   message id and body hash
- *   returns the original; another hash is a `conflict`. One transaction writes the
- *   message, its body, its recipient, the parent's `replied` state and the recipient's
+ *   message id and body hash returns the original; another hash is a `conflict`. One transaction
+ *   writes the message, its body, its recipient, the parent's `replied` state and the recipient's
  *   wake. A reply holds its time to reply (`reply_s`), so no read needs its parent.
  * - The idempotency window: a resend is matched against the messages the ledger holds hot.
  *   A message leaves the hot set only once every recipient has acked it, moved to an
- *   archive segment (`segments.ts`, slice STORE item 2), so a resend is deduplicated at
+ *   archive segment (`segments.ts`), so a resend is deduplicated at
  *   least until its recipient acks; once archived, the same client message id is a new
  *   message. Nothing is ever evicted: an archived message is the owner's until the owner
  *   deletes its agent, and the chain read and a reply find it by its id, which carries its
@@ -27,20 +23,20 @@
  *   (`read_at`) only the ones it returns; an ack never moves back and never passes the
  *   reader's own newest message, and an ack at or behind the cursor is a no-op, so a
  *   retried ack succeeds. A body whose hash no longer matches is withheld.
- * - Wakes (S3b, W3) are data on the object's one schedule (`ledger_wakes`): one open
+ * - Wakes are data on the object's one schedule (`ledger_wakes`): one open
  *   wake per ringing recipient (`one_open_wake`), claimed under a lease, settled from the
  *   doorbell's answer, and never replayed once a byte may have left. Each fact lives on
  *   the row it describes: a message's read time and why it failed on its recipient row
  *   (which an archive segment holds with it), an ack on its reader's row, a wake's outcome
  *   on its wake row (`receipt_json`).
- * - What rings is data (`wake-kinds.ts`, slice W): an agent rings when its delivery
+ * - What rings is data (`wake-kinds.ts`): an agent rings when its delivery
  *   method's record has a push (MCP Events, `/fire`, a webhook routine); a `pull` agent
  *   never does, and catches up through the digests on its own schedule. A wake says what
  *   changed (`changes`: mail to the agent, a room's rows, the board's) and the owner-wide
  *   change cursor it is after, so the agent's digest returns just the change. Mail to an
  *   agent opens its wake (`post`); a board or room row another writer changes opens one for
  *   every ringing agent (`changed`), folded into any wake already open.
- * - The doorbell's subscriptions (`wake_callbacks`, slice W): an enabled ringing agent's
+ * - The doorbell's subscriptions (`wake_callbacks`): an enabled ringing agent's
  *   client subscribes over MCP Events (`events/subscribe`), or the owner pastes the token
  *   a vendor showed it; each is keyed by the id the server derives, and holds only the blob
  *   the gateway sealed (its URL and secret) and what it follows: mail to its agent always,
@@ -49,14 +45,14 @@
  *   a grant change its client's own (never the owner's pasted token), so nothing is sent
  *   past a revoke. A board or room write rings only agents with a subscription following it
  *   whose grant reads it (the object checks), and only an owner's own write rings: a write
- *   by an outside client or a run rings no agent, as slice ID's mail rings only the agent
- *   it addresses, so no two agents can wake each other without end.
+ *   by an outside client or a run rings no agent, as mail rings only the agent it
+ *   addresses, so no two agents can wake each other without end.
  *
  * - A wake is sent only while its agent's outside client still holds a grant
  *   (`GrantReader.live`), and a changed or revoked grant ends the client's agents' open
- *   wakes and revokes their callbacks (`suppressClient`, P0-3's M3).
+ *   wakes and revokes their callbacks (`suppressClient`).
  *
- * The owner's own agents are identities here too (slice ID; `native_agents`), beside the
+ * The owner's own agents are identities here too (`native_agents`), beside the
  * outside agents: each `/workspace/agents/<agent>/agent.json` is one, `ta_` and its name's
  * digest (`nativeId`, the row's key), made as the file appears and retired as it goes, in
  * the file change's own unit (`appear`, `retire`). A live one counts among the enabled
@@ -69,8 +65,9 @@
  * (`RUN_NO_MAILBOX`): a run's mail is its input, and its agent's mailbox holds every
  * authority's mail. Its mailbox's `queued` and `held_cap` rows are the `runs` lane's alone.
  *
- * Rooms are pairs (`dm:<a>`, the owner and `a`; `dm:<a>+<b>`, two agents, at least one the
- * owner's own, `a` before `b`): a post goes to the other member. Mail to one of the owner's
+ * Rooms are pairs (the owner and an agent, or two agents, at least one the owner's own), each
+ * a row with its two members' rows, named by an opaque id (`pairRoom`): a post goes to the
+ * other member, and nothing reads members out of an id. Mail to one of the owner's
  * agents waits `queued` in its recipient row for the `runs` lane, which starts that agent's
  * run on it (`nextMail`) and marks it taken (`taken`) in the run's admission, held until
  * the run settles (`settled`), or failed (`undeliverable`) when no run may take it; a run
@@ -86,10 +83,9 @@
  * (`chain`).
  *
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind. The
- * object is its owner, so the Python's `owner` columns are gone. The owner's session
- * check and the refusal receipt of a refused register, disable or delete are the
- * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
- * them around the ledger.
+ * object is its owner, so no row has an owner column. The owner's session check and the
+ * refusal receipt of a refused register, disable or delete are the object's (`owner-do.ts`,
+ * `sessions.ts`, `policy.ts`), around the ledger.
  */
 import { apiKeyOrigin, nativeId } from "../../contract/src/binding";
 import { clock } from "./clock";
@@ -109,9 +105,7 @@ import {
 import { ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
-import {
-  Refusal, type RefusalCode, STORAGE_BUSY_RETRY_S,
-} from "../../contract/src/refusal";
+import { Refusal, type RefusalCode } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import {
   agentsPage, asIs, bodied, contentsOf, type Cut, fitPage, headChars, heads, headWindow,
@@ -119,7 +113,7 @@ import {
 } from "./pages";
 import {
   bloomHas, bloomOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
-  parseRecord, RECORD_TRAILER_BYTES, roomMembers, rowLine, SEGMENT_LEAST_BYTES,
+  parseRecord, RECORD_TRAILER_BYTES, rowLine, SEGMENT_LEAST_BYTES,
   SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
@@ -142,6 +136,20 @@ import type { Resealed } from "../../contract/src/gateway";
 
 const OUTSIDE_ID = /^agent_[0-9a-f]{16}$/;
 const NATIVE_ID = /^ta_[0-9a-f]{16}$/;
+
+/** A pair's two member ids, sorted and joined: its room's key (`rooms.members_key`). */
+function membersKey(a: string, b: string): string {
+  return a < b ? `${a}+${b}` : `${b}+${a}`;
+}
+
+/**
+ * A pair's room id before its first post: opaque, and the same for the same two members, so a
+ * pair's room is named (`agents_list`) before it is made, and found again by its members.
+ */
+export function pairRoom(a: string, b: string): string {
+  return "rm_" + sha256Hex(`tinyassets-room\0${membersKey(a, b)}`).slice(0, 32);
+}
+
 /**
  * The mail to the owner's own agents that no run has taken: each agent's rows by
  * `recipients_by_state`, an index seek an agent.
@@ -157,7 +165,7 @@ export const RUN_NO_MAILBOX = "run_no_mailbox: a run's mail is its input; it rea
 /**
  * A framed mail's envelope and closing fence together, past which `mailInput` fails loudly:
  * the queue's room for them. Its widest is about 820 bytes: a display name of 80 four-byte
- * letters, the widest room (`dm:` and an outside and an own agent's ids) and the message id
+ * letters, the widest room id (an old room of two agents, `dm:` and both ids) and the message id
  * three times over (`test/agent-mail.test.ts` costs it).
  */
 export const MAIL_HEADER_BYTES = 1024;
@@ -188,9 +196,13 @@ export function mailInput(mail: Pick<Delivery, "sender_id" | "sender_kind" | "se
   return header + body + footer;
 }
 
-/** New mail to or from an agent whose `agent.json` is gone. */
-export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed; its mail " +
-  "is kept, and new mail to or from it is refused";
+/**
+ * An agent whose `agent.json` is gone, whatever reached it: mail to or from it, a grant
+ * naming it, or its definition read as it.
+ */
+export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed, so nothing " +
+  "acts as it and no new mail goes to or from it; its mail is kept, and it is back when the " +
+  "file is";
 export const NO_AGENT = "no_agent: no such agent of the owner's";
 const DELIVERY_METHODS: readonly string[] =
   Object.freeze(["mcp_event", "routine_fire", "webhook", "a2a", "pull"]);
@@ -210,7 +222,7 @@ const SECRETISH = /(ta_key_|bearer|eyJ|sk-|sk_|https?[:/]|token[=:])/i;
 const LONE_SURROGATE = /\p{Cs}/u;
 
 /**
- * Per-agent wake settings (W3): the owner's own, stored per agent and changed only by the
+ * Per-agent wake settings: the owner's own, stored per agent and changed only by the
  * owner (`policyWakeLimits`), and off by default (the founder's rule: the only limits are
  * the tier's, the owner's own settings off by default, vendors' and recorded technical
  * ceilings). With no hourly cap an agent is woken on each change, one open wake at a time,
@@ -228,41 +240,47 @@ const WAKE_SETTINGS = Object.freeze({
 });
 
 /**
- * Owner-wide bounds on the ledger's growth (the Python's owed L5). Each is a ceiling a
+ * Owner-wide bounds on the ledger's growth. Each is a ceiling a
  * write is refused at, or a retention the ledger prunes to inside the same transaction,
  * so no sweeper is needed and no table grows without bound. Each is read from a counter
  * the schema's triggers keep (`ledger_usage`, `ledger_readers`, `outside_agents`) or an
  * index range, never a scan (`ledger-bounds.test.ts`, "the ledger at its production
  * limits": a post's rows read and written at 1 hot and at 49,999 are the same).
  *
- * Mail is bounded by two technical ceilings, never by a mailbox's count (slice STORE item
- * 2, the founder's one wall): `maxMessages` hot messages, the acked ones moved to archive
+ * Mail is bounded by two technical ceilings, never by a mailbox's count (the founder's one
+ * wall): `maxMessages` hot messages, the acked ones moved to archive
  * segments by the `archive` lane from half of it, and a post at it answered `storage_busy`
  * (retryable) while the lane catches up, never a delete; and `maxUnacked` messages unread
  * owner-wide: the hot ceiling (whose three rows a message the guard already costs, so any
  * unread count up to it fits under half) less one segment's records, so that at the hot
  * ceiling there is always a segment's worth of acked mail to move: 50,000 - 25,000. Past it
  * a post is refused `ledger_full`: too much mail is unread, the readers holding the most
- * named, and reading or acking makes room. Being owner-wide, one noisy sender can fill it. Disabling an agent releases its unacked mail,
- * and deleting one purges it, archived mail included (`archive_purges`). Both ceilings are
- * held at these figures, the busy post landing after one lane pass, by "the ledger at its
- * production limits" (`ledger-bounds.test.ts`), and a move's CPU at the seal by
- * `guards/move-cpu.test.ts`.
+ * named, and reading or acking makes room. Being owner-wide, one noisy sender can fill it.
+ * Disabling an agent releases its unacked mail, and deleting one purges it, archived mail included
+ * (`archive_purges`). Both ceilings are held at these figures, the busy post landing after one lane
+ * pass, by "the ledger at its production limits" (`ledger-bounds.test.ts`), and a move's CPU at the
+ * seal by `guards/move-cpu.test.ts`.
  *
  * How they were chosen (ADR-035; `limits-audit.md`). Bodies past `PLACE_BYTES` live in R2,
  * so the object holds at most that much of each body, and its bytes in R2 count in the
  * tier's storage; the counts are what the owner-bound guard costs within its half of the
  * 10 GB. The ledger's rows are one message, its body's row and its one recipient (the key
  * holds a message to one), so the messages bound them all. A settled wake's row is its
- * delivery's record (`receipt_json`), kept a week (enough to debug a doorbell) and at most
- * 1,000 of them, a chosen retention (`limits-audit.md`): delivery telemetry, never the
- * owner's mail. An owner's hourly cap reads only its agent's one `wake_tat` column.
+ * delivery's record (`receipt_json`): delivery telemetry, never the owner's mail, kept until
+ * the newest `maxSettledWakes` push it out, the guard's `ledger_wakes` term and no age (Fact
+ * 15). An owner's hourly cap reads only its agent's one `wake_tat` column.
  */
 export interface LedgerLimits {
   /** Enabled agents: what the mailboxes are reserved for. */
   readonly maxAgents: number;
   /** Registered agents, enabled or not; the owner deletes a disabled one to make room. */
   readonly maxAgentRows: number;
+  /**
+   * Rooms, and deleted agents' rooms whose archived mail the lane still removes
+   * (`archive_purges`): one ceiling, since a deletion moves its rooms from one to the other.
+   * A pair's room is made by its first post, which is refused `ledger_full` past it.
+   */
+  readonly maxRooms: number;
   /**
    * Messages held hot: the `archive` lane moves the acked ones out from half of it, and a
    * post at it is `storage_busy` until a move lands.
@@ -277,8 +295,6 @@ export interface LedgerLimits {
   /** A segment's seal: its lines' bytes, or its records (`segments.ts`). */
   readonly archiveBytes: number;
   readonly archiveRecords: number;
-  /** How long a settled wake row is kept. */
-  readonly settledWakeRetentionS: number;
   /** Settled wake rows kept, newest first. */
   readonly maxSettledWakes: number;
   readonly maxRead: number;
@@ -296,11 +312,11 @@ const HOT_MESSAGES = 50_000;
 export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxAgents: 1_000,
   maxAgentRows: 1_000,
+  maxRooms: 5_000,
   maxMessages: HOT_MESSAGES,
   maxUnacked: HOT_MESSAGES - SEGMENT_MIN_RECORDS,
   archiveBytes: SEGMENT_MIN_BYTES,
   archiveRecords: SEGMENT_MIN_RECORDS,
-  settledWakeRetentionS: 7 * 24 * HOUR_S,
   maxSettledWakes: 1_000,
   maxRead: 100,
 });
@@ -315,7 +331,7 @@ type Counted = Pick<Usage, "messages" | "unacked" | "acked_bytes">;
 /**
  * Whether a segment's worth of acked mail waits to move: its records, or their own bytes
  * (`line_bytes` less each one's trailer share, as `pack` and the segment count them, so a
- * seal is never short of the least, review N4).
+ * seal is never short of the least).
  */
 export function sealable(usage: Counted,
                          limits: Pick<LedgerLimits, "archiveRecords" | "archiveBytes">): boolean {
@@ -356,10 +372,10 @@ export function postRoom(usage: Pick<Usage, "messages" | "unacked">,
 
 /**
  * How many of a move's rows it takes, oldest first, by their records' own bytes (`lines`,
- * each less its trailer share, review N4). A tail's move (`into` null) takes them until they
+ * each less its trailer share). A tail's move (`into` null) takes them until they
  * reach the seal, so it holds the least. A merge into the segment `into` holds it and its
  * stragglers in the isolate at once, so it takes them only while the two fit `MOVE_BYTES`
- * (review N3: the measured move's bound), and always at least one (so the oldest straggler
+ * (the measured move's bound), and always at least one (so the oldest straggler
  * always moves); the rest merge on the next passes.
  */
 export function moveTake(lines: readonly number[], into: Pick<Fence, "bytes"> | null,
@@ -487,7 +503,7 @@ interface Registration {
   readonly recipe_id: unknown;
 }
 
-/** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
+/** An agent's file, whose agent is a ledger identity while it exists. */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
 export interface Posted {
@@ -534,7 +550,7 @@ export type Wake = {
 
 /**
  * What a doorbell may carry: identifiers, the mailbox cursor, what kind of change it is
- * and the owner-wide change cursor it is after; never a body (S31).
+ * and the owner-wide change cursor it is after; never a body.
  */
 export interface WakeTarget {
   readonly wake_id: string;
@@ -663,6 +679,9 @@ type StoredMessage = {
 };
 
 type StoredNative = NativeAgent & { unacked_to_owner: number };
+
+/** An agent as `agents_list` lists it: with the room the caller reaches it in, if any. */
+export type Roomed<A> = A & { readonly room_id: string | null };
 
 /** A room's member, resolved: the owner, an enabled outside agent, or a live own agent. */
 type Member =
@@ -815,7 +834,7 @@ export type Fence = {
   readonly content_id: string;
   readonly trailer_offset: number;
   readonly trailer_bytes: number;
-  readonly members: string;
+  readonly rooms: string;
 };
 
 /** A row cut to the columns its table exports, in their order: its export line's row. */
@@ -827,7 +846,7 @@ function exportRow(table: string, row: Readonly<Record<string, unknown>>):
 
 /**
  * A message's record, as a segment holds it: its row, its body's row with the body's bytes
- * raw beside it (never escaped, review N3), its recipients.
+ * raw beside it (never escaped), its recipients.
  */
 export function mailRecord(message: Readonly<Record<string, unknown>>,
                            body: Readonly<Record<string, unknown>>,
@@ -841,7 +860,7 @@ export function mailRecord(message: Readonly<Record<string, unknown>>,
 }
 
 /**
- * The bytes a message takes as its segment will hold it (D2), from its rows as they stand:
+ * The bytes a message takes as its segment will hold it, from its rows as they stand:
  * its lines, its body raw (`body_bytes`) and its newline, and its trailer share. Counted
  * again each time its recipient row changes (`Ledger.#restate`), so the count is exact. Its
  * own `line_bytes` and its body's `meta_bytes` are in its lines, so settled to a fixed point;
@@ -983,20 +1002,20 @@ export function keptRecord(table: MoveTable, key: number, offset: number, length
   return table.push(key, head.chain, head.room, head.at, length, MoveTable.KEPT, ref, offset);
 }
 
-/** A fence row's members bloom, as bytes. */
+/** A fence row's rooms bloom, as bytes. */
 function fenceBloom(fence: Fence): Uint8Array {
-  return Uint8Array.from(Buffer.from(fence.members, "hex"));
+  return Uint8Array.from(Buffer.from(fence.rooms, "hex"));
 }
 
-/** The hot messages a move reads at once, its rows and its lines (review N5). */
+/** The hot messages a move reads at once, its rows and its lines. */
 const IMAGE_GROUP = 512;
 
 /** The archive chain read's segments a page reads at most. */
 const CHAIN_SEGMENTS = 8;
 
 /**
- * A read on from `offset` into its page's first message's body names that message (review
- * L2): the `message_id` the earlier part came with; another first message is refused, so a
+ * A read on from `offset` into its page's first message's body names that message: the
+ * `message_id` the earlier part came with; another first message is refused, so a
  * body is never spliced from two messages.
  */
 function readsOn(first: string, offset: number, named: unknown): void {
@@ -1097,14 +1116,19 @@ export class Ledger {
         `${all ? "" : "WHERE retired_at IS NULL "}ORDER BY agent`).toArray();
   }
 
-  #nativeNamed(agent: string): StoredNative | undefined {
-    return this.#sql.exec<StoredNative>("SELECT * FROM native_agents WHERE agent_id = ?",
-                                        nativeId(agent)).toArray()[0];
+  #native(id: string): StoredNative | undefined {
+    return this.#sql.exec<StoredNative>("SELECT * FROM native_agents WHERE agent_id = ?", id)
+      .toArray()[0];
   }
 
   /** A live own agent by name, or refused: gone (`AGENT_RETIRED`) or never one (`NO_AGENT`). */
-  #liveNative(agent: string): StoredNative {
-    const row = this.#nativeNamed(agent);
+  liveNative(agent: string): StoredNative {
+    return this.#live(nativeId(agent));
+  }
+
+  /** `liveNative` by the agent's id. */
+  #live(id: string): StoredNative {
+    const row = this.#native(id);
     if (row === undefined) {
       throw new Refusal("no_agent", NO_AGENT);
     }
@@ -1116,7 +1140,7 @@ export class Ledger {
 
   /**
    * The agents' own files' reaction (`FileReaction`, the files' table): each agent is a
-   * ledger identity while its `agent.json` exists (slice ID).
+   * ledger identity while its `agent.json` exists.
    */
   readonly agentFiles: FileReaction = (path, present, now) => {
     const agent = AGENT_FILE.exec(path)?.[1];
@@ -1142,7 +1166,7 @@ export class Ledger {
     }
     const sql = this.#sql;
     this.#storage.transactionSync(() => {
-      const row = this.#nativeNamed(agent);
+      const row = this.#native(nativeId(agent));
       if (row !== undefined && row.retired_at === null) {
         return;
       }
@@ -1214,7 +1238,7 @@ export class Ledger {
    * Every change to a recipient row's state, `update` (an `UPDATE ledger_recipients`), with
    * its messages' lines counted again from their rows as they now stand (`mailLineBytes`): a
    * message's `line_bytes` and its body's `meta_bytes` are what its segment will hold, exactly,
-   * so a seal holds the bytes it counted and a move frees what it places (review M1). The
+   * so a seal holds the bytes it counted and a move frees what it places. The
    * schema's triggers move the acked bytes and the files' counters with them.
    */
   #restate(update: string, ...bindings: SqlStorageValue[]): void {
@@ -1257,11 +1281,6 @@ export class Ledger {
     if (!admittedMethods().includes(method)) {
       throw new Refusal("refused",
                         `only ${admittedMethods().join(", ")} delivery are available yet`);
-    }
-    // A client subscribes its own callback over the MCP door; an API key has no such door.
-    if (verified.kind === "api_key" && kindFor(method)?.push?.callback === "subscribe") {
-      throw new Refusal("refused",
-                        `an API-key agent cannot subscribe; ${method} is for MCP clients`);
     }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -1380,26 +1399,20 @@ export class Ledger {
       sql.exec("DELETE FROM ledger_readers WHERE reader = ?", agentId);
       sql.exec("DELETE FROM ledger_wakes WHERE agent_id = ?", agentId);
       sql.exec("DELETE FROM outside_agents WHERE agent_id = ?", agentId);
-      // Its archived mail: dropped from every read and the export at once, and rewritten
-      // out of each segment that may hold it by the `archive` lane (`archive_purges`).
+      // Its rooms go. Their archived mail is dropped from every read and the export at once,
+      // and rewritten out of each segment that may hold it by the `archive` lane
+      // (`archive_purges`), each room counted among the rooms until then (`maxRooms`).
       if (sql.exec("SELECT 1 FROM archive_segments LIMIT 1").toArray().length > 0) {
-        // At most `maxAgentRows` purges wait (the guard's term): past them the lane is still
-        // rewriting, and a deletion waits for it, refused in plain words, never lost.
-        if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM archive_purges").one().n
-            >= LEDGER_LIMITS.maxAgentRows) {
-          throw new Refusal("storage_busy",
-                            `${STORAGE_BUSY}: earlier deleted agents' mail is still being ` +
-                            `removed from the archive; try again in ${STORAGE_BUSY_RETRY_S} ` +
-                            "seconds.");
-        }
-        sql.exec("INSERT INTO archive_purges (agent_id, at) VALUES (?, ?) ON CONFLICT " +
-                   "(agent_id) DO NOTHING", agentId, now);
+        sql.exec("INSERT INTO archive_purges (room_id, at) SELECT room_id, ? FROM room_members " +
+                   "WHERE member_id = ? ON CONFLICT (room_id) DO NOTHING", now, agentId);
       }
+      sql.exec("DELETE FROM rooms WHERE room_id IN (SELECT room_id FROM room_members WHERE " +
+                 "member_id = ?)", agentId);
       return { agent_id: agentId, messages: ids.length };
     });
   }
 
-  /** Owner policy (W3): an agent's hourly wake cap and batch window. */
+  /** Owner policy: an agent's hourly wake cap and batch window. */
   setWakeLimits(agentId: unknown, maxWakesPerHour: unknown, batchWindowS: unknown): Agent {
     if (typeof agentId !== "string") {
       throw new Refusal("invalid", "agent_id is an agent id");
@@ -1428,59 +1441,131 @@ export class Ledger {
 
   /** The reader an actor is: the owner, an origin's one enabled agent, or a live own agent. */
   #reader(origin: Actor): string {
-    if (origin === null) {
-      return OWNER;
-    }
     if (isNative(origin)) {
       throw new Refusal("run_no_mailbox", RUN_NO_MAILBOX);
     }
-    const rows = this.#sql.exec<{ agent_id: string }>(
-      "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
-        "AND disabled_reason IS NULL", origin.client, origin.family,
-    ).toArray();
-    if (rows.length !== 1) {
+    return this.#self(origin);
+  }
+
+  /** The id an actor posts and reads as, or refused: an outside identity not one agent. */
+  #self(actor: Actor): string {
+    const me = this.#identity(actor);
+    if (me === null) {
       throw new Refusal("refused", "this outside identity is not one enabled agent");
     }
-    return rows[0]!.agent_id;
+    return me;
   }
 
   /**
-   * A room's two members, resolved: `dm:<a>` is the owner and `a`; `dm:<a>+<b>` two agents,
-   * `a` before `b`, at least one of them the owner's own. An outside member is an enabled
-   * agent; an own one a live one (`AGENT_RETIRED`, `NO_AGENT`).
+   * The id an actor posts and reads as: the owner, its own agent's, or an outside identity's
+   * one enabled agent (null when it has none, or more). A read.
    */
-  #room(room: string): [Member, Member] {
-    const ids = room.startsWith("dm:") ? room.slice(3).split("+") : [];
-    const member = (id: string): Member => {
-      if (OUTSIDE_ID.test(id)) {
-        const agent = this.#sql.exec<Agent>(
-          "SELECT * FROM outside_agents WHERE agent_id = ? AND disabled_reason IS NULL", id,
-        ).toArray()[0];
-        if (agent === undefined) {
-          throw new Refusal("refused", "room is not an enabled agent's dm");
-        }
-        return { kind: "outside", id, agent };
-      }
-      if (NATIVE_ID.test(id)) {
-        const native = this.#sql.exec<StoredNative>(
-          "SELECT * FROM native_agents WHERE agent_id = ?", id).toArray()[0];
-        if (native === undefined) {
-          throw new Refusal("no_agent", NO_AGENT);
-        }
-        if (native.retired_at !== null) {
-          throw new Refusal("agent_retired", AGENT_RETIRED);
-        }
-        return { kind: "native", id, native };
-      }
-      throw new Refusal("refused", "room is not an enabled agent's dm");
-    };
-    if (ids.length === 1) {
-      return [{ kind: "owner", id: OWNER }, member(ids[0]!)];
+  #identity(actor: Actor): string | null {
+    if (actor === null) {
+      return OWNER;
     }
-    if (ids.length !== 2 || !(ids[0]! < ids[1]!) || !ids.some((id) => NATIVE_ID.test(id))) {
+    if (isNative(actor)) {
+      return nativeId(actor.native);
+    }
+    const rows = this.#sql.exec<{ agent_id: string }>(
+      "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
+        "AND disabled_reason IS NULL", actor.client, actor.family,
+    ).toArray();
+    return rows.length === 1 ? rows[0]!.agent_id : null;
+  }
+
+  /**
+   * A room's two members, the owner first: its rows, or for a pair with no row yet, the
+   * actor and the one identity whose pair room with it is `room` (`pairRoom`), whose rows its
+   * first post makes (`#made`). An outside member is an enabled agent; an own one a live one
+   * (`AGENT_RETIRED`, `NO_AGENT`). A read.
+   */
+  #room(room: string, actor: Actor): { members: [Member, Member]; stored: boolean } {
+    const stored = this.#sql.exec<{ member_id: string }>(
+      "SELECT member_id FROM room_members WHERE room_id = ?", room).toArray()
+      .map((row) => row.member_id);
+    const [a, b] = (stored.length === 2 ? stored : this.#pairOf(room, actor))
+      .map((id) => this.#member(id));
+    return { members: b!.kind === "owner" ? [b!, a!] : [a!, b!], stored: stored.length === 2 };
+  }
+
+  /** The pair `room` would be, the actor one of its two, or refused: no such pair of its. */
+  #pairOf(room: string, actor: Actor): [string, string] {
+    const me = this.#self(actor);
+    const partners = this.#sql.exec<{ agent_id: string }>(
+      "SELECT agent_id FROM native_agents UNION ALL SELECT agent_id FROM outside_agents " +
+        "WHERE ?", OUTSIDE_ID.test(me) ? 0 : 1).toArray().map((row) => row.agent_id);
+    // A pair has one room: one whose room has another id (an old room's) is not this one.
+    const partner = [OWNER, ...partners].find((id) => id !== me
+      && pairRoom(me, id) === room && this.roomOf(me, id) === room);
+    if (partner === undefined) {
       throw new Refusal("refused", "room is not an enabled agent's dm");
     }
-    return [member(ids[0]!), member(ids[1]!)];
+    return [me, partner];
+  }
+
+  /** A room's member by its id: the owner, an enabled outside agent, or a live own agent. */
+  #member(id: string): Member {
+    if (id === OWNER) {
+      return { kind: "owner", id };
+    }
+    if (OUTSIDE_ID.test(id)) {
+      const agent = this.#sql.exec<Agent>(
+        "SELECT * FROM outside_agents WHERE agent_id = ? AND disabled_reason IS NULL", id,
+      ).toArray()[0];
+      if (agent === undefined) {
+        throw new Refusal("refused", "room is not an enabled agent's dm");
+      }
+      return { kind: "outside", id, agent };
+    }
+    return { kind: "native", id, native: this.#live(id) };
+  }
+
+  /**
+   * Whether a new pair's room fits: refused past `maxRooms`, a deleted agent's rooms counted
+   * until the lane has removed their archived mail. A read, in both of a post's units.
+   */
+  #roomsFit(): void {
+    const { n } = this.#sql.exec<{ n: number }>(
+      "SELECT (SELECT COUNT(*) FROM rooms) + (SELECT COUNT(*) FROM archive_purges) AS n").one();
+    if (n >= LEDGER_LIMITS.maxRooms) {
+      throw new Refusal("ledger_full", `ledger_full: the owner's ${LEDGER_LIMITS.maxRooms} ` +
+                        "rooms are all in use, a deleted agent's until its archived mail is " +
+                        "removed: delete outside agents to free theirs");
+    }
+  }
+
+  /** In a post's unit: a pair's room and its two members' rows, made by its first post. */
+  #made(room: string, members: readonly Member[], now: number): void {
+    const sql = this.#sql;
+    const [a, b] = members.map((m) => m.id);
+    sql.exec("INSERT INTO rooms (room_id, kind, members_key, created_at) VALUES (?, 'pair', " +
+               "?, ?)", room, membersKey(a!, b!), now);
+    for (const member of members) {
+      sql.exec("INSERT INTO room_members (room_id, member_id) VALUES (?, ?)", room, member.id);
+    }
+  }
+
+  /**
+   * The room `a` and `b` post in to each other: its row's id (an old room keeps the id it had)
+   * or, before its first post, `pairRoom`'s. A read.
+   */
+  roomOf(a: string, b: string): string {
+    return this.#sql.exec<{ room_id: string }>(
+      "SELECT room_id FROM rooms WHERE members_key = ?", membersKey(a, b)).toArray()[0]
+      ?.room_id ?? pairRoom(a, b);
+  }
+
+  /**
+   * Each agent with the room `actor` posts in to reach it, or, on the actor's own entry, its
+   * room with the owner; null for an outside identity that is not one enabled agent, which
+   * posts nowhere. A read.
+   */
+  withRooms<A extends { readonly agent_id: string }>(actor: Actor, agents: readonly A[]):
+      Roomed<A>[] {
+    const me = this.#identity(actor);
+    return agents.map((agent) => ({ ...agent, room_id: me === null ? null
+      : this.roomOf(agent.agent_id === me ? OWNER : me, agent.agent_id) }));
   }
 
   /** The member an actor is in a room, or refused: it posts only in its own rooms. */
@@ -1493,7 +1578,7 @@ export class Ledger {
       return owner;
     }
     if (isNative(actor)) {
-      const own = this.#liveNative(actor.native);
+      const own = this.liveNative(actor.native);
       const found = members.find((m) => m.id === own.agent_id);
       if (found === undefined) {
         throw new Refusal("refused", "an agent posts only in its own dm rooms");
@@ -1515,7 +1600,7 @@ export class Ledger {
    */
   recipient(actor: Actor, roomId: unknown):
       { id: string; native: string | null; outside: boolean } {
-    const members = this.#room(printable(roomId, 128, "room_id"));
+    const { members } = this.#room(printable(roomId, 128, "room_id"), actor);
     const sender = this.#sender(actor, members);
     const to = members.find((m) => m !== sender)!;
     return { id: to.id, native: to.kind === "native" ? to.native.agent : null,
@@ -1554,13 +1639,14 @@ export class Ledger {
       { resend: Posted } | { room: string; cmid: string; parentKey: string | null; sha: string;
                              members: [Member, Member]; from: Member; to: Member;
                              kind: string; sender: string; recipient: string;
-                             parent: StoredMessage | undefined; parentArchived: boolean } {
+                             parent: StoredMessage | undefined; parentArchived: boolean;
+                             stored: boolean } {
     const room = printable(roomId, 128, "room_id");
     const cmid = printable(clientMessageId, 128, "client_message_id");
     const parentKey = parentId === null ? null : printable(parentId, 128, "parent_id");
     const sha = sha256Hex(body);
     const sql = this.#sql;
-    const members = this.#room(room);
+    const { members, stored } = this.#room(room, origin);
     const from = this.#sender(origin, members);
     const to = members.find((m) => m !== from)!;
     const [kind, sender, recipient] = [from.kind, from.id, to.id];
@@ -1602,8 +1688,11 @@ export class Ledger {
         throw new Refusal("refused", "parent is not a message to this sender in this room");
       }
     }
+    if (!stored) {
+      this.#roomsFit();
+    }
     return { room, cmid, parentKey, sha, members, from, to, kind, sender, recipient, parent,
-             parentArchived };
+             parentArchived, stored };
   }
 
   /**
@@ -1625,9 +1714,12 @@ export class Ledger {
         return addressed.resend;
       }
       const { room, cmid, parentKey, sha, members, to, kind, sender, recipient,
-              parent, parentArchived } = addressed;
+              parent, parentArchived, stored } = addressed;
       const size = utf8Bytes(body);
       this.#roomForOne(size);
+      if (!stored) {
+        this.#made(room, members, now);
+      }
       return adopted(body, placed, filer, this.#adopt, (contentId) => {
       // The seq is given here, and the id carries it (`orderedId`): an archived message is
       // found by its id with no row for it.
@@ -1670,7 +1762,7 @@ export class Ledger {
       sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, changed_at) " +
                  "VALUES (?, ?, ?, 'queued', ?)", messageId, recipient, seq, now);
       // One open wake per ringing recipient; never one for the message's own sender. A
-      // new wake waits out the agent's batch window, so a burst of mail rings once (W3).
+      // new wake waits out the agent's batch window, so a burst of mail rings once.
       // Mail to one of the owner's own agents waits `queued` for the `runs` lane instead.
       if (to.kind === "outside" && ringingMethods().includes(to.agent.delivery_method)
           && recipient !== sender) {
@@ -1766,16 +1858,13 @@ export class Ledger {
   /**
    * Whether a segment made after `newest` may hold `room`'s mail past `after`: a move (a
    * tail's, a merge's, a rewrite's) that may have taken that room's hot rows out after a read
-   * took its fences. By its keys and its members bloom, so another room's moves never count
-   * (a room with no agent member is not in any bloom: every new segment past `after` counts).
-   * A read.
+   * took its fences. By its keys and its rooms bloom, so another room's moves never count. A
+   * read.
    */
   movedSince(newest: number, room: string, after: number): boolean {
-    const members = roomMembers(room);
     return this.#sql.exec<Fence>(
       "SELECT * FROM archive_segments WHERE segment > ? AND last_key > ?", newest, after)
-      .toArray().some((fence) => members.length === 0
-        || members.some((member) => bloomHas(fenceBloom(fence), member)));
+      .toArray().some((fence) => bloomHas(fenceBloom(fence), room));
   }
 
   /**
@@ -1895,7 +1984,7 @@ export class Ledger {
       .one().seq;
   }
 
-  // -- THE ARCHIVE: acked mail moved to segments (slice STORE item 2, `segments.ts`) ----------
+  // -- THE ARCHIVE: acked mail moved to segments (`segments.ts`) ----------------------------
 
   /** The key message ids carry their seq under, made with the first message. In a unit. */
   #idKey(): Uint8Array {
@@ -1930,18 +2019,16 @@ export class Ledger {
     return idOrder(Uint8Array.from(Buffer.from(held.id_key, "hex")), messageId.slice(4));
   }
 
-  /** Whether a room's mail is a deleted agent's, its segments not yet all rewritten. A read. */
+  /** Whether a room is a deleted agent's, its segments not yet all rewritten. A read. */
   #purged(room: string): boolean {
-    const members = roomMembers(room);
-    return members.length > 0 && this.#sql.exec(
-      "SELECT 1 FROM archive_purges WHERE agent_id IN (SELECT value FROM json_each(?))",
-      JSON.stringify(members)).toArray().length > 0;
+    return this.#sql.exec("SELECT 1 FROM archive_purges WHERE room_id = ?", room).toArray()
+      .length > 0;
   }
 
-  /** The agents deleted while segments may still hold their mail. A read. */
-  purgedAgents(): string[] {
-    return this.#sql.exec<{ agent_id: string }>("SELECT agent_id FROM archive_purges")
-      .toArray().map((row) => row.agent_id);
+  /** Deleted agents' rooms, while segments may still hold their mail. A read. */
+  purgedRooms(): string[] {
+    return this.#sql.exec<{ room_id: string }>("SELECT room_id FROM archive_purges")
+      .toArray().map((row) => row.room_id);
   }
 
   /**
@@ -1999,7 +2086,7 @@ export class Ledger {
 
   /**
    * The batch's rows as the object holds them, in seq order, a group at a time (never the
-   * batch held at once, review N5): each message's row, its body's and its recipients', as
+   * batch held at once): each message's row, its body's and its recipients', as
    * `each` takes them; false when one is no longer hot and acked.
    */
   #images(seqs: readonly number[],
@@ -2032,8 +2119,8 @@ export class Ledger {
   }
 
   /**
-   * A batch planned into a move's table (review N5: from its rows' lengths, never their
-   * bytes held; review N6: packed, never an object a record): each message's record, its
+   * A batch planned into a move's table (from its rows' lengths, never their bytes held;
+   * packed, never an object a record): each message's record, its
    * length, room, time, and its placed body's content (`place` names it in the table, with
    * the hash it must have as the move reads it) or its inline body, checked here; the digest
    * of its rows as held; null when it changed since it was picked. A read.
@@ -2118,7 +2205,7 @@ export class Ledger {
     }
     // The purges' cursors stay where they are: what this replaced is gone, and what it
     // named comes after every cursor, its bloom naming no purged agent, so each purge still
-    // visits every segment it had not (review N7: a jump past the replaced segments' ids
+    // visits every segment it had not (a jump past the replaced segments' ids
     // would skip the segments between them).
     for (const piece of pieces) {
       if (!kept.has(piece.content_id)) {
@@ -2129,8 +2216,8 @@ export class Ledger {
   }
 
   /**
-   * The segment a bounded rewrite left under the least, for the next pass to go on with
-   * (review N7), derived from the fences alone (so an export's restore keeps it): the
+   * The segment a bounded rewrite left under the least, for the next pass to go on with,
+   * derived from the fences alone (so an export's restore keeps it): the
    * smallest under `SEGMENT_LEAST_BYTES` while it is not the only one. Null when none. A
    * read of one index range.
    */
@@ -2153,10 +2240,10 @@ export class Ledger {
   #fence(contentId: string, fence: Omit<Fence, "segment" | "content_id">, now: number): number {
     return this.#sql.exec<{ segment: number }>(
       "INSERT INTO archive_segments (stream, first_key, last_key, first_at, last_at, records, " +
-        "bytes, content_id, filer, trailer_offset, trailer_bytes, members, made_at) VALUES " +
+        "bytes, content_id, filer, trailer_offset, trailer_bytes, rooms, made_at) VALUES " +
         "('mail', ?, ?, ?, ?, ?, ?, ?, 'owner', ?, ?, ?, ?) RETURNING segment",
       fence.first_key, fence.last_key, fence.first_at, fence.last_at, fence.records,
-      fence.bytes, contentId, fence.trailer_offset, fence.trailer_bytes, fence.members, now)
+      fence.bytes, contentId, fence.trailer_offset, fence.trailer_bytes, fence.rooms, now)
       .one().segment;
   }
 
@@ -2184,7 +2271,7 @@ export class Ledger {
   /**
    * In a unit, as an `archive` pass begins: the passes before it that never ended well and
    * the last one's error (null when it stopped before it could say), then this one counted
-   * among them until it ends (review N3: kept in storage, so a pass killed with its isolate
+   * among them until it ends (kept in storage, so a pass killed with its isolate
    * still counts).
    */
   archiveBegin(): { fails: number; error: string | null } {
@@ -2251,8 +2338,8 @@ export class Ledger {
       return { fence: small, compact: true };
     }
     for (let batch = 0; batch < 64; batch++) {
-      const purges = sql.exec<{ agent_id: string; next_segment: number }>(
-        "SELECT agent_id, next_segment FROM archive_purges ORDER BY next_segment").toArray();
+      const purges = sql.exec<{ room_id: string; next_segment: number }>(
+        "SELECT room_id, next_segment FROM archive_purges ORDER BY next_segment").toArray();
       if (purges.length === 0) {
         return null;
       }
@@ -2263,7 +2350,7 @@ export class Ledger {
       for (const fence of fences) {
         const bloom = fenceBloom(fence);
         if (purges.some((purge) => purge.next_segment < fence.segment
-                        && bloomHas(bloom, purge.agent_id))) {
+                        && bloomHas(bloom, purge.room_id))) {
           sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
                    fence.segment - 1, fence.segment - 1);
           return { fence, compact: false };
@@ -2279,7 +2366,7 @@ export class Ledger {
     return null;
   }
 
-  /** In a unit: past a segment whose bloom named a purged agent but held none of its mail. */
+  /** In a unit: past a segment whose bloom named a purged room but held none of its mail. */
   purgeSkip(segment: number): void {
     this.#sql.exec("UPDATE archive_purges SET next_segment = ? WHERE next_segment < ?",
                    segment, segment);
@@ -2301,9 +2388,9 @@ export class Ledger {
                    stream, intentId, intentId);
   }
 
-  /** The members bloom of a segment's records' rooms, as its fence row keeps it (hex). */
-  static members(members: Iterable<string>): string {
-    return Buffer.from(bloomOf(members)).toString("hex");
+  /** The bloom of a segment's records' rooms, as its fence row keeps it (hex). */
+  static rooms(rooms: Iterable<string>): string {
+    return Buffer.from(bloomOf(rooms)).toString("hex");
   }
 
   // -- MAIL TO THE OWNER'S OWN AGENTS: what the `runs` lane delivers -------------
@@ -2457,12 +2544,12 @@ export class Ledger {
       }
       throw new Refusal("storage_busy",
                         `${STORAGE_BUSY}: your storage is catching up, moving older mail ` +
-                        `out; try again in ${STORAGE_BUSY_RETRY_S} seconds.`);
+                        "out");
     }
   }
 
   /**
-   * The bytes of the owner's mail, as the one number counts them (D2): each hot message's
+   * The bytes of the owner's mail, as the one number counts them: each hot message's
    * lines past its body, its body inline or placed (once a content), and every archive
    * segment's content. A read.
    */
@@ -2663,7 +2750,7 @@ export class Ledger {
   }
 
   /**
-   * Store one doorbell subscription (slice W): from an agent's own client (`origin`, MCP
+   * Store one doorbell subscription: from an agent's own client (`origin`, MCP
    * Events, after the binder verified its callback), for its one enabled agent in the
    * command center it names, whose wake kind its client subscribes; or from the owner
    * (`origin` null), for the agent and the kind it pasted a token for, which must be the
@@ -2852,7 +2939,7 @@ export class Ledger {
 
   /**
    * Fold `bit` and `after` into each agent's open wake, or open one that waits out the
-   * agent's batch window (W3), so a burst rings once.
+   * agent's batch window, so a burst rings once.
    */
   #open(agentIds: readonly string[], bit: number, after: number, now: number): void {
     const sql = this.#sql;
@@ -2873,7 +2960,7 @@ export class Ledger {
   }
 
   /**
-   * A changed or revoked grant (P0-3's M3): every agent of that outside client has its
+   * A changed or revoked grant: every agent of that outside client has its
    * open wakes suppressed and its client's own subscriptions erased, so it subscribes again
    * under the new grant. The owner's pasted tokens stay: the client did not hand them over,
    * and each send still rechecks the client's grant. Its ids; an index range.
@@ -2891,14 +2978,14 @@ export class Ledger {
     });
   }
 
-  // -- the schedule: wakes (S3b, W3) --------------------------------------------
+  // -- the schedule: wakes ---------------------------------------------------------
 
   #suppress(agentId: string, reason: string, now: number): void {
     this.#sql.exec(
       "UPDATE ledger_wakes SET state = 'suppressed', receipt_json = ?, settled_at = ? " +
         `WHERE agent_id = ? AND ${OPEN}`, canonical({ reason }), now, agentId,
     );
-    this.#prune(now);
+    this.#prune();
   }
 
   /**
@@ -2910,11 +2997,9 @@ export class Ledger {
                      (owners ? "" : " AND principal != 'owner'"), agentId);
   }
 
-  /** Settled schedule rows kept for the retention, and at most `maxSettledWakes`. */
-  #prune(now: number): void {
+  /** Settled schedule rows past the newest `maxSettledWakes`. */
+  #prune(): void {
     const sql = this.#sql;
-    sql.exec("DELETE FROM ledger_wakes WHERE settled_at IS NOT NULL AND settled_at < ?",
-             now - LEDGER_LIMITS.settledWakeRetentionS);
     const over = this.#usage().settled_wakes - LEDGER_LIMITS.maxSettledWakes;
     if (over > 0) {
       sql.exec(
@@ -2949,7 +3034,7 @@ export class Ledger {
    * A wake whose agent is gone, disabled or no longer rings, or whose client's grant no
    * longer stands, is suppressed instead. A wake past the owner's hourly cap for its agent
    * waits until the cap allows it (GCRA with no burst: one ring each `3600 / cap` seconds,
-   * so never more than `cap` in any hour), its queued mail held at `held_cap` (W3); with no
+   * so never more than `cap` in any hour), its queued mail held at `held_cap`; with no
    * cap, none counts.
    * The claim is unmarked: the in-process sender calls `mark()` before its first byte.
    * Nothing is claimed while the owner is not admitted (`require_work`, read in the claim's
@@ -3095,7 +3180,7 @@ export class Ledger {
           now, wake.agent_id, wake.through_seq ?? 0,
         );
       }
-      this.#prune(now);
+      this.#prune();
       return true;
     });
   }
@@ -3211,12 +3296,11 @@ export interface AgentDoorbellRequest {
 
 /**
  * A read of the archive that the lane's moves and rewrites changed under each of its
- * `READ_TRIES`: retried soon, never an internal error (reviews N9 and N10).
+ * `READ_TRIES`: retried soon, never an internal error.
  */
 export function archiveMoving(): Refusal {
-  const retry = 1;
   return new Refusal(STORAGE_BUSY, `${STORAGE_BUSY}: the archive moved this mail under each ` +
-    `of ${READ_TRIES} reads; try again in ${retry} second.`, { retryAfterS: retry });
+    `of ${READ_TRIES} reads`, { retryAfterS: 1 });
 }
 
 /**
@@ -3228,10 +3312,6 @@ function parentMoved(): Refusal {
 }
 
 // -- THE DOORS: the `ledger` rows' handlers (`owner/doors.json`) ----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`LedgerDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `ledger` doors reach: the ledger; the archive's reads of archived mail; the
@@ -3251,7 +3331,7 @@ export interface LedgerDoorNeeds extends Pick<DoorUnits, "door" | "sync">,
             request: unknown, rule: string, now: number): number;
   };
   readonly registrations: {
-    take(session: LiveSession, cardId: unknown, shown: unknown, now: number):
+    take(session: LiveSession, cardId: unknown, shown: unknown):
         { readonly origin: Origin; readonly source: Source;
           readonly request: Readonly<Record<string, unknown>> };
   };
@@ -3259,7 +3339,8 @@ export interface LedgerDoorNeeds extends Pick<DoorUnits, "door" | "sync">,
 
 /** The agents a caller sees, a page of them (`outsideAgents`). */
 function agentsListed(o: LedgerDoorNeeds, { account, r }: Call):
-    { agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[]; next?: string } {
+    { agents: Roomed<Agent>[]; owner_agents: Roomed<NativeAgent>[]; apps: ConnectedApp[];
+      next?: string } {
   const own = account.origin === null && account.run === null;
   let natives = o.ledger.natives(own);
   const grant = account.grant;
@@ -3274,13 +3355,17 @@ function agentsListed(o: LedgerDoorNeeds, { account, r }: Call):
                                              { universe, agent: native.agent }));
   }
   // The owner's connected AI apps, to every caller, a narrowed grant's and a run's too:
-  // names and dates, no data (autoconnect_research.md §3.2), so any agent can offer an
+  // names and dates, no data, so any agent can offer an
   // app that is not connected yet.
   const after = r["after"] === undefined ? null : r["after"];
   if (after !== null && typeof after !== "string") {
     throw new Refusal("invalid", "after is a next an agents list answered");
   }
-  return agentsPage({ agents: o.ledger.agents(account.origin), owner_agents: natives,
+  // Each agent's `room_id`: the room the caller reaches it in (`room_post`), named before its
+  // first post. An outside identity that is not one enabled agent has no room to list.
+  const actor = actorOf(account);
+  return agentsPage({ agents: o.ledger.withRooms(actor, o.ledger.agents(account.origin)),
+                      owner_agents: o.ledger.withRooms(actor, natives),
                       apps: o.grants.apps() }, after);
 }
 
@@ -3343,7 +3428,6 @@ function mailsAgent({ account, scope }: Call, authority: MailAuthority | null,
   }
 }
 
-/** The `ledger` doors' handlers, by door. */
 export const ledgerDoors = Object.freeze({
   /**
    * What changed for this agent since its cursor, in one read: its unacknowledged mail
@@ -3351,7 +3435,7 @@ export const ledgerDoors = Object.freeze({
    * (`room:<app>:<room>`) written past `after`, an owner-wide cursor, each as its head.
    * Held to its grant as the mailbox and the collections are: `read_graph`, and a private
    * row only to its writer. Its mail part is a mailbox read, so a run is refused it
-   * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
+   * (`run_no_mailbox`), as at `mailboxRead`; a run reads the board's digest.
    */
   async inboxDigest(o: LedgerDoorNeeds, door: Door<InboxDigestRequest>):
       Promise<{ mail: MailPage; rooms: Heads }> {
@@ -3412,7 +3496,7 @@ export const ledgerDoors = Object.freeze({
   async roomPost(o: LedgerDoorNeeds, door: Door<PostRequest>): Promise<Posted> {
     // A parent archived (acked, moved to a segment) is read from R2 before the units: its
     // seq, from its id, in the gate; then its record, outside. One the lane moved after the
-    // gate found it hot is read so in a post again (review N10's Low), never refused as no
+    // gate found it hot is read so in a post again, never refused as no
     // parent: archived mail never returns hot, so a second post finds it archived.
     const gated = await o.door(() => {
       door.bound();
@@ -3469,17 +3553,18 @@ export const ledgerDoors = Object.freeze({
    * them, the owner's own agents, each a ledger identity while its `agent.json` exists:
    * every one for the owner; for anyone else, the live ones its grant covers (a scoped
    * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
-   * it may mail). One answer holds a page (`pages.ts`, review M3): its agents, the owner's
+   * it may mail). One answer holds a page (`pages.ts`): its agents, the owner's
    * agents and the apps, in that order, each by its stable key, while they fit; when some
-   * are left, `next` is where the next page starts, for `after` on the next read.
+   * are left, `next` is where the next page starts, for `after` on the next read. Each agent
+   * carries the room the caller reaches it in (`withRooms`).
    */
   async outsideAgents(o: LedgerDoorNeeds, door: Door<AgentsRequest>):
-      Promise<{ agents: Agent[]; owner_agents: NativeAgent[]; apps: ConnectedApp[];
-                next?: string }> {
+      Promise<{ agents: Roomed<Agent>[]; owner_agents: Roomed<NativeAgent>[];
+                apps: ConnectedApp[]; next?: string }> {
     return o.door(() => agentsListed(o, door.check()));
   },
   /**
-   * Owner policy (W3): an agent's hourly wake cap and batch window, kept on its registry
+   * Owner policy: an agent's hourly wake cap and batch window, kept on its registry
    * row where the ledger reads them, and changed like any policy write: in the owner's
    * session, against the policy generation, receipted.
    */
@@ -3496,7 +3581,7 @@ export const ledgerDoors = Object.freeze({
     });
   },
   /**
-   * Registering an agent needs the owner's protected session (S30), in one of two forms.
+   * Registering an agent needs the owner's protected session, in one of two forms.
    * The owner itself applies an MCP client's held registration (`CardApply`): the card
    * the client filed on its own verified call, which captured its origin. Or the owner's
    * browser registers an agent for an API key it holds, naming the key's identity
@@ -3507,7 +3592,7 @@ export const ledgerDoors = Object.freeze({
                   Call<Registration | CardApply, "session">): Agent {
     if (origin === null) {
       return o.storage.transactionSync(() => {
-        const card = o.registrations.take(session, r["card_id"], r["digest"], clock());
+        const card = o.registrations.take(session, r["card_id"], r["digest"]);
         return o.ledger.register(card.origin, card.source,
                                      card.request as unknown as Registration);
       });

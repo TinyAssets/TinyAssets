@@ -28,7 +28,8 @@
  *   other `invalid_grant`. OpenAI's model list (`api.openai.com/v1/models`): `200` for
  *   the bearer `at-good`.
  * - Groq's chat completions (`api.groq.com/openai/v1/chat/completions`), for the egress
- *   door: `401` but for a bearer key starting `gsk-good`; else, by `x-fake-egress`, three
+ *   door: `401` but for a bearer key starting `gsk-good`; else, by its `user-agent` (the one
+ *   free-text header the gateway passes on every call, `egressHeaders`), three
  *   SSE chunks (`stream`, the default, `EGRESS_CHUNKS`), the same without the usage chunk
  *   (`nousage`), the same from a dated snapshot of the named model (`snapshot`), a `429`
  *   (`busy`), or one chunk and
@@ -183,7 +184,7 @@ async function completions(request: Request): Promise<Response> {
   if (!bearer(request).startsWith("gsk-good")) {
     return Response.json({ error: { message: `invalid key ${bearer(request)}` } }, { status: 401 });
   }
-  const mode = request.headers.get("x-fake-egress") ?? "stream";
+  const mode = request.headers.get("user-agent") ?? "stream";
   if (mode === "busy") {
     return Response.json({ error: { message: "rate limited" } },
                          { status: 429, headers: { "retry-after": "7" } });
@@ -298,7 +299,7 @@ export default {
     log.push({ method: request.method, url: request.url,
                headers: Object.fromEntries(request.headers), body });
     if (url.hostname === "callback.test") {
-      // An MCP Events receiver (slice W): `/echo...` echoes the verification's challenge,
+      // An MCP Events receiver: `/echo...` echoes the verification's challenge,
       // `/wrong...` answers another, anything else a 404.
       const sent = body === "" ? {} : JSON.parse(body) as { challenge?: string };
       if (url.pathname.startsWith("/echo")) {

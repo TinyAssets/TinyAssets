@@ -1,40 +1,31 @@
 /**
- * The owner's protected interactive sessions, in the owner's own object (ADR-032).
- *
- * Ported from `tinyassets/onboarding/owner_sessions.py` (the `owner_sessions` row: its
- * `lookup`, `extend`, `revoke` and `revoke_owner`) and the check of it in
- * `PolicyStore._session` (`tinyassets/broker/policy.py`, origin/main 1fd430857). A
+ * The owner's protected interactive sessions, in the owner's own object (ADR-032). A
  * widening (registering, disabling or deleting an agent, an owner policy write, a grant)
  * needs the owner's live session, and the object checks that row itself: the binder
  * only forwards the cookie the browser presented, as a typed binding argument, and
  * never vouches for it.
  *
- * The edge binder runs the sign-in itself (tasks 2: server PKCE, `max_age=0`, the
+ * The edge binder runs the sign-in itself (server PKCE, `max_age=0`, the
  * browser-bound callback) and calls `open` with the verified sign-in's time; the object
  * opens a session only for a sign-in at most `signInMaxAgeS` old, mints the cookie, and
  * keeps only its SHA-256. A session lives 8 hours and slides while its browser renews.
  * The cookie names no owner: the binder takes the owner from its own verified
- * credential, and attaches the cookie only to the browser's same-origin requests
- * (tasks 2); the object refuses an outside client's call that carries one at every
+ * credential, and attaches the cookie only to the browser's same-origin requests; the
+ * object refuses an outside client's call that carries one at every
  * door but an agent's registration (`owner-do.ts`).
  *
- * The Python's `revoke_owner` also cancelled the owner's open hosted-model,
- * connection-OAuth and inline model flows: the object's `sessionCloseAll` door cancels
- * every open connection flow in the unit that signs the sessions out, and `sessionClose`
- * the flows its session began (`connections.ts`).
+ * Signing out cancels the owner's open connection flows too: the object's `sessionCloseAll`
+ * door cancels every one in the unit that signs the sessions out, and `sessionClose` the
+ * flows its session began (`connections.ts`).
  *
- * Declared differences from the Python:
- * - The proof is the cookie only. The Python also took its hash (`session_hash`), which
- *   its router forwarded; here a stored hash is never a proof, so reading the store
+ * What a session is:
+ * - The proof is the cookie only: a stored hash is never a proof, so reading the store
  *   yields none.
  * - The object mints the cookie, so a session proof is always 32 random bytes.
  * - The row carries no identity: the object is its owner, so another owner's cookie is
  *   simply not in this object's store.
  * - Live sessions are bounded (`maxSessions`); a sign-in past the bound signs out the
- *   session nearest its expiry, so the owner is never locked out. The Python kept every
- *   live row.
- * - An owner's admission (the Python's `active_owner`) is the binder's, from the owner
- *   directory (tasks 2).
+ *   session nearest its expiry, so the owner is never locked out.
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { randomBytes } from "node:crypto";
@@ -65,7 +56,7 @@ export const SESSION_LIMITS: SessionLimits = Object.freeze({
 
 const SESSION_REQUIRED = "interactive owner session required";
 
-/** A cookie the browser presented: 32 to 512 characters, as the Python's. */
+/** A cookie the browser presented: 32 to 512 characters. */
 function proofOf(value: unknown): string | null {
   return typeof value === "string" && codePoints(value) >= 32 && codePoints(value) <= 512
     ? value : null;
@@ -156,7 +147,7 @@ export class Sessions {
                                       "RETURNING session_hash", sha256Hex(proof)).toArray().length };
   }
 
-  /** Sign every session out: the Python's `revoke_owner`. */
+  /** Sign every session out. */
   closeAll(): { closed: number } {
     return { closed: this.#sql.exec("DELETE FROM owner_sessions RETURNING session_hash")
       .toArray().length };
@@ -164,10 +155,6 @@ export class Sessions {
 }
 
 // -- THE DOORS: the `sessions` rows' handlers (`owner/doors.json`) --------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`SessionsDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `sessions` doors reach: the sessions, the connection flows a sign-out cancels, and
@@ -179,7 +166,6 @@ export interface SessionsDoorNeeds extends Pick<DoorUnits, "synced"> {
   readonly relay: Pick<Relay, "closeAll">;
 }
 
-/** The `sessions` doors' handlers, by door. */
 export const sessionsDoors = Object.freeze({
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
   sessionOpen(o: SessionsDoorNeeds, call: Call<undefined, "owner">):

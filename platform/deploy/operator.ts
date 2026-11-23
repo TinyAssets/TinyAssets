@@ -1,11 +1,11 @@
 /**
- * The kit's operator path (d3 §G; `operator_research.md` §2): what its modes `control` and
- * `owner` (`deploy.ts`) read and send.
+ * The kit's operator path (d3 §G): what its modes `control` and `owner` (`deploy.ts`) read and
+ * send.
  *
  * - **`control`** edits the control record (`contract/src/control.ts`) in KV itself, never
  *   through the doors, so the kill switch works when they don't. Its edits (`--set`,
  *   `controlEdits`) apply to the live record, or to the whole record `--replace` gives in its
- *   place (`edited`), and the result is written only if `parseControl`, the parser every
+ *   place (`edited`), and the result is written only if `controlOf`, the parser every
  *   reader uses, takes it; the plan is each field's difference (`differences`).
  * - **`restore`** asks the doors `restore.source` for an owner, or, given a generation
  *   (`--generation`, `restoreFrom`), its restore from it (`owner/src/restore.ts`): begun,
@@ -25,6 +25,7 @@
  *
  * Node runs this file as it is (type stripping), as the kit does.
  */
+import { canonical } from "../contract/src/canonical.ts";
 import { keyed, object, whole } from "../contract/src/checks.ts";
 import { sha256Hex } from "../contract/src/digest.ts";
 import type { Ring } from "../contract/src/envelope.ts";
@@ -202,7 +203,7 @@ export const ERASE_LOSES = "every door of the owner closed at once and every run
   "its keys, inbound URLs, grants and identity deleted, its R2 copies and database deleted " +
   "once the erasure's grace is past, and its name never admitted again: no restore takes it back";
 
-/** What an owner loses at a restore (`operator_research.md` §3.3), which its plan says. */
+/** What an owner loses at a restore, which its plan says. */
 export const RESTORE_LOSES = "the owner loses its sessions (it signs in again), every agent's " +
   "grant (each authorizes again), its API keys and inbound URLs (it makes new ones), its model " +
   "connections (it connects them again), and anything written after the generation";
@@ -215,9 +216,9 @@ export const WAIT_MS = 120_000;
  * inside the apply job's 30 minutes (`platform-deploy.yml`) with an ask's `WAIT_MS` to spare,
  * never by the job's timeout: mode `restore` asking a pin to write the owner's present state
  * (it stops loudly, the owner still held; a run again carries the same generation on, the
- * longest, the worst stream's, under 42 minutes: `backup.ts`, and a release gives the pin up),
- * and mode `rotation` sweeping the directory (it stops at a page's end, its record saying
- * where a run again goes on).
+ * longest, the worst stream's, under 42 minutes: `owner/src/backup.ts`, and a release gives the
+ * pin up), and mode `rotation` sweeping the directory (it stops at a page's end, its record
+ * saying where a run again goes on).
  */
 export const RUN_MS = 20 * 60_000;
 
@@ -430,8 +431,7 @@ export async function heldRotation(cloudflare: Cloudflare, account: string, cont
   }
   const record = rotationRecord(held, key);
   if (record.keyring !== keyring || record.active !== stored.active
-      || JSON.stringify(Object.entries(record.keys).sort())
-        !== JSON.stringify(Object.entries(keys).sort())) {
+      || canonical(record.keys) !== canonical(keys)) {
     throw new Error(`the rotation record ${key} was begun with another ring under ` +
                     `${stored.active} (kids ${Object.keys(record.keys).join(", ")}): nothing is ` +
                     "asked");

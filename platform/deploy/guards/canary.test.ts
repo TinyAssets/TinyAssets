@@ -2,43 +2,56 @@
  * The platform's canary (`canary.ts`) and its alarm (`alarm.ts`), against a fake platform,
  * GitHub, E2B, WorkOS and Pushover: the canary reads which side serves and checks that side
  * alone, a keyed check unchecked is a failure, the full run runs once a day and its ending is
- * carried, and the off-account copy must have passed a night inside two once configured; the alarm acts only when armed and the doors serve, pages at the second red in a
- * row or a stopped clock, climbs its ladder, stops at the founder's answer and closes on green.
+ * carried, and the off-account copy must have passed a night inside two once configured; the
+ * alarm acts only when armed and the doors serve, pages at the second red in a row or a
+ * stopped clock, climbs its ladder, stops at the founder's answer and closes on green.
  */
 import { readdirSync, readFileSync } from "node:fs";
+import { createServer, type IncomingHttpHeaders } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { PLATFORM, REPO } from "../../ci/paths";
 import { workflow } from "../../ci/workflows";
 import { DISPATCH, PAGER } from "../../contract/src/canary";
+import { EGRESS_HOST } from "../../contract/src/egress";
+import { NAVIGATE, navigation } from "../../contract/src/navigation";
 import { E2B_API } from "../../sandbox/e2b/transport";
 import { TOKEN } from "../actions";
-import { alarm, LABEL, pageDue } from "../alarm";
-import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, type World }
+import { alarm, LABEL, pageDue, type World as AlarmWorld } from "../alarm";
+import { canary, exitOf, FULL_RUN, INPUTS, type Options, type Result, verbatim, type World }
   from "../canary";
-import { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } from "../../contract/src/identity";
-import { E2B_HOOK_URL, EGRESS_DOMAIN } from "../facts";
+import identity from "../../contract/identity.json" with { type: "json" };
+import * as IDENTITY from "../../contract/src/identity";
+import { E2B_HOOK } from "../deploy";
+import { DOORS, E2B_HOOK_URL } from "../facts";
 import { NIGHTLY } from "../offsite";
 import { night, type Night, nightsAnswer } from "./copy-nights";
 
 type Json = Record<string, unknown>;
 
 const HANDLES = JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.json"), "utf8")) as
-  Record<"old" | "new", { authorization_server: string; handles: string[] }>;
+  { old: { authorization_server: string; handles: string[] }; new: { handles: string[] } };
 const NOW = new Date("2026-11-14T09:00:00Z");
 const ISSUER = "https://auth.test";
 const WORKOS_AUTHORIZE = "https://api.workos.com/user_management/authorize";
 const KEYED: Record<string, string> = {
   TA_PROBE_KEY: "probe-key", E2B_API_KEY: "e2b-key-123", OWNER_ISSUER: ISSUER,
   WORKOS_CLIENT_ID: "client_test", [TOKEN]: "run-token" };
-const AUTO: Options = { side: null, unkeyed: false, clock: false, full: false };
-const DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`;
+const AUTO: Options = { side: null, closed: false, clock: false, full: false, smoke: null };
+const { ORIGIN, ZONE } = IDENTITY;
+/** The old stack's resource document, on the zone. */
+const OLD_DOCUMENT = `https://${ZONE}/.well-known/oauth-protected-resource/mcp`;
 
 /** What the fake platform is: which side serves, and what each part answers. */
 interface Platform {
   side: "doors" | "old";
+  /** Whether the doors' host and the zone answer at all. */
+  reachable: boolean;
+  /** Where E2B sends the lifecycle hook. */
+  hookUrl: string;
   /** The old stack's anonymous 401 body; empty is the doors'. */
   oldBody: string;
   served: Set<string>;
@@ -55,7 +68,8 @@ interface Platform {
 const LAST_NIGHT = night("2026-11-14T05:40:00Z", "success");
 
 function platform(change: Partial<Platform> = {}): Platform {
-  return { side: "doors", oldBody: '{"error":"authentication_required"}',
+  return { side: "doors", reachable: true, hookUrl: E2B_HOOK_URL,
+           oldBody: '{"error":"authentication_required"}',
            served: new Set(HANDLES.new.handles), record: null, runState: "succeeded",
            lastDispatch: "2026-11-14T08:50:00Z", nights: [LAST_NIGHT], nightsStatus: 200,
            ...change };
@@ -65,102 +79,131 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json",
                                                          ...headers } });
 
-/** The world the canary runs in, over `p`: each request it sent, by method and URL. */
-function world(p: Platform, env: Record<string, string> = KEYED): World & { sent: string[] } {
+/**
+ * The world the canary runs in, over `p`, with the doors at the identity `doors` gives: each
+ * request it sent, by method and URL. Its `request` reaches the platform with every header as
+ * given; its `fetch` as Node's does, `Sec-Fetch-Mode` overwritten with the request's mode
+ * (the `verbatim` tests below hold Node's fetch to it).
+ */
+function world(p: Platform, env: Record<string, string> = KEYED,
+               doors: typeof IDENTITY = IDENTITY): World & { sent: string[] } {
+  const { APP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT } = doors;
+  const DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`;
   const sent: string[] = [];
+  const request: World["request"] = async (url, init) => {
+    const method = init?.method ?? "GET";
+    const body = init?.body === undefined ? null : JSON.parse(String(init.body)) as Json;
+    sent.push(`${method} ${url}`);
+    const at = new URL(url);
+    if (!p.reachable && (at.host === new URL(ORIGIN).host || at.host === ZONE)) {
+      throw new TypeError("fetch failed",
+                          { cause: new Error(`getaddrinfo ENOTFOUND ${at.host}`) });
+    }
+    // The doors serve their host; the old stack the zone; and a host under the zone that the
+    // doors do not serve answers nothing (no DNS record): the throw at the end. On the zone
+    // the two are one.
+    if (url === DOCUMENT && p.side === "doors") {
+      return json({ resource: `${ORIGIN}/mcp`, authorization_servers: [ORIGIN] });
+    }
+    if (url === `${ORIGIN}/mcp` && p.side === "doors") {
+      return new Response("", { status: 401, headers: {
+        "WWW-Authenticate": `Bearer resource_metadata="${DOCUMENT}"` } });
+    }
+    if (url === OLD_DOCUMENT) {
+      return json({ resource: `https://${ZONE}/mcp`,
+                    authorization_servers: [HANDLES.old.authorization_server] });
+    }
+    if (url === `https://${ZONE}/mcp`) {
+      return new Response(p.oldBody, { status: 401 });
+    }
+    if (url.startsWith(E2B_API)) {
+      if (at.pathname.startsWith("/templates/aliases/")) {
+        return json({ templateID: "t1" });
+      }
+      if (at.pathname === "/templates/t1/tags/exists") {
+        return json({ exists: true });
+      }
+      return json([{ id: "w1", name: E2B_HOOK.name, url: p.hookUrl,
+                     enabled: p.side === "doors" }]);
+    }
+    if (url === `${ISSUER}/.well-known/openid-configuration`) {
+      return json({ issuer: ISSUER, jwks_uri: `${ISSUER}/jwks` });
+    }
+    if (url === `${ISSUER}/jwks`) {
+      return json({ keys: [] });
+    }
+    if (url.startsWith(`${ORIGIN}/authorize?`)) {
+      if (!navigation(new Request(url, init))) {
+        return new Response("Open this page in your browser to sign in.", { status: 403 });
+      }
+      return new Response(null, { status: 302, headers: { Location: `${WORKOS_AUTHORIZE}?${
+        new URLSearchParams({ client_id: "client_test", redirect_uri: UPSTREAM_CALLBACK })}` } });
+    }
+    if (url.startsWith(`${WORKOS_AUTHORIZE}?`)) {
+      return new Response(null, { status: 302, headers: { Location: `${ISSUER}/sign-in` } });
+    }
+    if (url.startsWith(APP_RESOURCE)) {
+      return new Response("<!doctype html>", { headers: { "Content-Type": "text/html",
+                                                          "Content-Security-Policy": "x" } });
+    }
+    if (url === WEB_CLIENT) {
+      return json({ client_id: WEB_CLIENT });
+    }
+    if (url === `https://${EGRESS_HOST}/`) {
+      return json({ error: { code: "not_found", message: "not found" } }, 404);
+    }
+    if (url.startsWith(`${ORIGIN}/api/tools/`)) {
+      const name = at.pathname.slice("/api/tools/".length);
+      if (method === "GET") {
+        return new Response("", { status: p.served.has(name) ? 405 : 404 });
+      }
+      if (name === "file_read") {
+        if (body?.["path"] === FULL_RUN) {
+          return p.record === null ? json({ error: "no such file" }, 404)
+            : json({ text: JSON.stringify(p.record), entry: { etag: "e-record" } });
+        }
+        return json({ text: lastBeat, entry: { etag: "e-beat" } });
+      }
+      if (name === "file_write") {
+        if (body?.["path"] === FULL_RUN) {
+          p.record = JSON.parse(String(body["content"])) as Json;
+          return json({ entry: { etag: "e-record" } });
+        }
+        lastBeat = String(body?.["content"]);
+        return json({ entry: { etag: "e-beat" } });
+      }
+      if (name === "file_remove") {
+        return json({ entry: null });
+      }
+      if (name === "converse") {
+        return json({ run_id: "r1", engine: "pi", state: p.runState, code: null,
+                      result: p.runState === "succeeded" ? "ok" : null, error: null });
+      }
+    }
+    const repository = `https://api.github.com/repos/${DISPATCH.repository}`;
+    if (url.startsWith(repository)
+        && new Headers(init?.headers).get("Authorization") !== `Bearer ${env[TOKEN]}`) {
+      return json({ message: "Bad credentials" }, 401);
+    }
+    if (url.startsWith(`${NIGHTS}?`) && p.nightsStatus !== 200) {
+      return json({ message: "unavailable" }, p.nightsStatus);
+    }
+    const nights = nightsAnswer(url, p.nights);
+    if (nights !== null) {
+      return nights;
+    }
+    if (url.includes("/actions/workflows/") && url.includes("event=workflow_dispatch")) {
+      return json({ workflow_runs: p.lastDispatch === null ? []
+        : [{ created_at: p.lastDispatch }] });
+    }
+    throw new Error(`the fake world has no ${method} ${url}`);
+  };
   return {
-    sent, env, now: () => NOW,
-    fetch: async (url, init) => {
-      const method = init?.method ?? "GET";
-      const body = init?.body === undefined ? null : JSON.parse(String(init.body)) as Json;
-      sent.push(`${method} ${url}`);
-      const at = new URL(url);
-      if (url === DOCUMENT) {
-        return json({ resource: `${ORIGIN}/mcp`, authorization_servers: [
-          HANDLES[p.side === "doors" ? "new" : "old"].authorization_server] });
-      }
-      if (url === `${ORIGIN}/mcp`) {
-        return p.side === "doors" ? new Response("", { status: 401, headers: {
-          "WWW-Authenticate": `Bearer resource_metadata="${DOCUMENT}"` } })
-          : new Response(p.oldBody, { status: 401 });
-      }
-      if (url.startsWith(E2B_API)) {
-        if (at.pathname.startsWith("/templates/aliases/")) {
-          return json({ templateID: "t1" });
-        }
-        if (at.pathname === "/templates/t1/tags/exists") {
-          return json({ exists: true });
-        }
-        return json([{ id: "w1", url: E2B_HOOK_URL, enabled: p.side === "doors" }]);
-      }
-      if (url === `${ISSUER}/.well-known/openid-configuration`) {
-        return json({ issuer: ISSUER, jwks_uri: `${ISSUER}/jwks` });
-      }
-      if (url === `${ISSUER}/jwks`) {
-        return json({ keys: [] });
-      }
-      if (url.startsWith(`${ORIGIN}/authorize?`)) {
-        return new Response(null, { status: 302, headers: { Location: `${WORKOS_AUTHORIZE}?${
-          new URLSearchParams({ client_id: "client_test", redirect_uri: UPSTREAM_CALLBACK })}` } });
-      }
-      if (url.startsWith(`${WORKOS_AUTHORIZE}?`)) {
-        return new Response(null, { status: 302, headers: { Location: `${ISSUER}/sign-in` } });
-      }
-      if (url.startsWith(APP_RESOURCE)) {
-        return new Response("<!doctype html>", { headers: { "Content-Type": "text/html",
-                                                            "Content-Security-Policy": "x" } });
-      }
-      if (url === WEB_CLIENT) {
-        return json({ client_id: WEB_CLIENT });
-      }
-      if (url === `https://${EGRESS_DOMAIN}/`) {
-        return json({ error: { code: "not_found", message: "not found" } }, 404);
-      }
-      if (url.startsWith(`${ORIGIN}/api/tools/`)) {
-        const name = at.pathname.slice("/api/tools/".length);
-        if (method === "GET") {
-          return new Response("", { status: p.served.has(name) ? 405 : 404 });
-        }
-        if (name === "file_read") {
-          if (body?.["path"] === FULL_RUN) {
-            return p.record === null ? json({ error: "no such file" }, 404)
-              : json({ text: JSON.stringify(p.record), entry: { etag: "e-record" } });
-          }
-          return json({ text: lastBeat, entry: { etag: "e-beat" } });
-        }
-        if (name === "file_write") {
-          if (body?.["path"] === FULL_RUN) {
-            p.record = JSON.parse(String(body["content"])) as Json;
-            return json({ entry: { etag: "e-record" } });
-          }
-          lastBeat = String(body?.["content"]);
-          return json({ entry: { etag: "e-beat" } });
-        }
-        if (name === "file_remove") {
-          return json({ entry: null });
-        }
-        if (name === "converse") {
-          return json({ run_id: "r1", engine: "pi", state: p.runState, code: null,
-                        result: p.runState === "succeeded" ? "ok" : null, error: null });
-        }
-      }
-      const repository = `https://api.github.com/repos/${DISPATCH.repository}`;
-      if (url.startsWith(repository)
-          && new Headers(init?.headers).get("Authorization") !== `Bearer ${env[TOKEN]}`) {
-        return json({ message: "Bad credentials" }, 401);
-      }
-      if (url.startsWith(`${NIGHTS}?`) && p.nightsStatus !== 200) {
-        return json({ message: "unavailable" }, p.nightsStatus);
-      }
-      const nights = nightsAnswer(url, p.nights);
-      if (nights !== null) {
-        return nights;
-      }
-      if (url.includes("/actions/workflows/") && url.includes("event=workflow_dispatch")) {
-        return json({ workflow_runs: p.lastDispatch === null ? []
-          : [{ created_at: p.lastDispatch }] });
-      }
-      throw new Error(`the fake world has no ${method} ${url}`);
+    sent, env, now: () => NOW, request,
+    fetch: (url, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("Sec-Fetch-Mode", "cors");
+      return request(url, { ...init, headers });
     },
   };
 }
@@ -185,6 +228,24 @@ describe("the platform canary", () => {
      async () => {
     const result = await canary(world(platform({ side: "old", oldBody: "" })), AUTO);
     expect([result.outcomes[0]!.state, exitOf(result)]).toEqual(["failed", 10]);
+  });
+
+  it("fails an unreachable door, never reading it dark", async () => {
+    const result = await canary(world(platform({ reachable: false })), AUTO);
+    expect([result.side, states(result), exitOf(result)]).toEqual([null,
+      [["the side", "failed"]], 2]);
+    // Named with its cause: which of DNS, the connection or TLS failed.
+    expect(result.outcomes[0]!.line).toBe(`unreachable GET ${OLD_DOCUMENT}: fetch failed ` +
+                                          `(getaddrinfo ENOTFOUND ${ZONE})`);
+  });
+
+  it("fails an enabled hook that E2B sends anywhere but the doors' hook", async () => {
+    const result = await canary(world(platform({ hookUrl: `https://other.${ZONE}/hook` })),
+                                AUTO);
+    expect(result.outcomes.find((each) => each.check === "E2B"))
+      .toMatchObject({ state: "failed", code: 11 });
+    expect(exitOf(await canary(world(platform({ side: "old", hookUrl: "https://other.test/" })),
+                               AUTO))).toBe(0);
   });
 
   it("holds the side asked for", async () => {
@@ -237,13 +298,16 @@ describe("the platform canary", () => {
       .toMatchObject({ state: "failed", code: 4 });
   });
 
-  it("fails without the canary owner's key, and waits on the keyed checks only when asked",
-     async () => {
-    const { TA_PROBE_KEY: _key, ...unkeyed } = KEYED;
-    expect(exitOf(await canary(world(platform(), unkeyed), AUTO))).toBe(7);
-    const routes = await canary(world(platform(), unkeyed), { ...AUTO, side: "doors",
-                                                             unkeyed: true });
-    expect([states(routes).at(-1), exitOf(routes)]).toEqual([["the keyed checks", "waiting"], 0]);
+  it("fails without the canary owner's key, unless the control record admits no owner, " +
+     "where the keyed checks wait, key or none", async () => {
+    const { TA_PROBE_KEY: _key, ...keyless } = KEYED;
+    expect(exitOf(await canary(world(platform(), keyless), AUTO))).toBe(7);
+    for (const env of [keyless, KEYED]) {
+      const w = world(platform(), env);
+      const closed = await canary(w, { ...AUTO, closed: true });
+      expect([states(closed).at(-1), exitOf(closed)]).toEqual([["the keyed checks", "waiting"], 0]);
+      expect(w.sent.filter((each) => each.includes(`${ORIGIN}/api/`))).toEqual([]);
+    }
   });
 
   it("on the watchdog's schedule, sees a stopped clock, a failure enough alone", async () => {
@@ -285,6 +349,102 @@ describe("the platform canary", () => {
       expect([file, /python3?\b/.test(readFileSync(join(dir, file), "utf8"))])
         .toEqual([file, false]);
     }
+  });
+});
+
+describe("the platform canary at a host under the zone", () => {
+  // The canary as it runs while the identity's host is a name under the zone (the live
+  // stage's), its modules loaded afresh over that identity: the old stack keeps the zone.
+  const STAGE = `stage.${ZONE}`;
+  let stage: { canary: typeof canary; identity: typeof IDENTITY };
+  beforeAll(async () => {
+    vi.resetModules();
+    vi.doMock("../../contract/identity.json", () => ({ default: { ...identity, host: STAGE } }));
+    stage = { canary: (await import("../canary")).canary,
+              identity: await import("../../contract/src/identity") };
+    vi.doUnmock("../../contract/identity.json");
+    vi.resetModules();
+  });
+
+  it("reads the platform dark while the host answers nothing and the zone is the old stack's",
+     async () => {
+    const w = world(platform({ side: "old" }), KEYED, stage.identity);
+    const result = await stage.canary(w, AUTO);
+    expect([result.side, states(result), exitOf(result)]).toEqual(["old", [
+      ["the old stack", "passed"], ["E2B", "passed"], ["the doors", "waiting"]], 0]);
+    expect(w.sent).toContain(`POST https://${ZONE}/mcp`);
+  });
+
+  it("checks the doors at the host, leaving the old stack at the zone", async () => {
+    const w = world(platform({ hookUrl: `https://${STAGE}${identity.hook}` }), KEYED,
+                    stage.identity);
+    const result = await stage.canary(w, { ...AUTO, side: "doors", closed: true });
+    expect([result.side, exitOf(result)]).toEqual(["doors", 0]);
+    expect(w.sent).toContain(`POST https://${STAGE}/mcp`);
+    expect(w.sent.filter((each) => each.includes(`//${ZONE}/`))).toEqual([]);
+  });
+});
+
+describe("the doors' smoke at a share below 100", () => {
+  const SMOKE: Options = { ...AUTO, smoke: "v-new" };
+  const DOORS_HOSTS = [new URL(ORIGIN).host, EGRESS_HOST];
+  /**
+   * `w` with each doors answer naming the version that served it: the override's, where it
+   * names the doors and `taken` takes the request, else the version the shares pick. Each
+   * request's override is kept, by method and URL, through either client.
+   */
+  const versioned = (w: World & { sent: string[] }, taken = (_url: string) => true) => {
+    const overrides: string[] = [];
+    const named = (client: World["fetch"]): World["fetch"] => async (url, init) => {
+      const asked = new Headers(init?.headers).get("Cloudflare-Workers-Version-Overrides");
+      overrides.push(`${init?.method ?? "GET"} ${url} ${asked}`);
+      const answer = await client(url, init);
+      if (!DOORS_HOSTS.includes(new URL(url).host)) {
+        return answer;
+      }
+      const by = new Response(answer.body, answer);
+      by.headers.set(IDENTITY.VERSION_HEADER, asked === `${DOORS}="v-new"` && taken(url)
+        ? "v-new" : "v-old");
+      return by;
+    };
+    return { ...w, overrides, fetch: named(w.fetch), request: named(w.request) };
+  };
+
+  it("sends each doors request to the version, holds each answer to it, and runs the doors' " +
+     "checks alone", async () => {
+    const w = versioned(world(platform()));
+    const result = await canary(w, SMOKE);
+    expect([result.side, states(result), exitOf(result)]).toEqual(["doors", [
+      ["the challenge", "passed"], ["the app", "passed"], ["the client document", "passed"],
+      ["the egress host", "passed"], ["the sign-in", "passed"]], 0]);
+    for (const each of w.overrides) {
+      const host = new URL(each.split(" ")[1]!).host;
+      expect([each, each.endsWith(` ${DOORS}="v-new"`)])
+        .toEqual([each, DOORS_HOSTS.includes(host)]);
+    }
+    expect(w.overrides.some((each) => each.includes(`//${EGRESS_HOST}/`))).toBe(true);
+    // No key is read, no E2B, no GitHub.
+    expect(w.sent.filter((each) => each.includes(E2B_API) || each.includes("api.github.com")
+      || each.includes("/api/"))).toEqual([]);
+  });
+
+  it("fails an answer from another version, the override ignored, as exit 16", async () => {
+    const result = await canary(versioned(world(platform()), (url) =>
+      !url.startsWith(IDENTITY.APP_RESOURCE)), SMOKE);
+    expect(exitOf(result)).toBe(16);
+    expect(result.outcomes.find((each) => each.check === "the app")).toEqual({
+      check: "the app", state: "failed", code: 16, alone: false,
+      line: `GET ${IDENTITY.APP_RESOURCE} was answered by the version v-old, not v-new: ` +
+        "Cloudflare ignored the override (a location without the deployment yet, or one that " +
+        "does not hold it)" });
+    // Ignored on the first request, the side itself is unread.
+    const ignored = await canary(versioned(world(platform()), () => false), SMOKE);
+    expect([ignored.side, exitOf(ignored)]).toEqual([null, 16]);
+  });
+
+  it("asks for the doors' side: the old stack serving fails it", async () => {
+    const result = await canary(versioned(world(platform({ side: "old" }))), SMOKE);
+    expect([result.side, exitOf(result)]).toEqual([null, 8]);
   });
 });
 
@@ -382,7 +542,7 @@ function hub(change: Partial<Hub> = {}) {
                    issue: null, comments: [], ...change };
   const sent: string[] = [];
   const pages: URLSearchParams[] = [];
-  const w: World = { env: ARMED, now: () => NOW, fetch: async (url, init) => {
+  const w: AlarmWorld = { env: ARMED, now: () => NOW, fetch: async (url, init) => {
     const method = init?.method ?? "GET";
     sent.push(`${method} ${url.replace(API, "")}`);
     const body = typeof init?.body === "string" ? JSON.parse(init.body) as Json : null;
@@ -474,5 +634,60 @@ describe("the platform canary's alarm", () => {
     const { w, sent } = hub({ issue: { number: 7 } });
     expect(await alarm(w, GREEN)).toEqual(["green: closed #7"]);
     expect(sent.slice(-2)).toEqual(["POST /issues/7/comments", "PATCH /issues/7"]);
+  });
+});
+
+describe("the canary's verbatim request", () => {
+  /** A local server answering `answer`, each request's headers kept: its URL. */
+  const serving = async (answer: (heard: IncomingHttpHeaders) => Response) => {
+    const heard: IncomingHttpHeaders[] = [];
+    const server = createServer((request, response) => {
+      heard.push(request.headers);
+      const out = answer(request.headers);
+      response.writeHead(out.status, Object.fromEntries(out.headers));
+      void out.text().then((text) => response.end(text));
+    });
+    await new Promise<void>((done) => { server.listen(0, "127.0.0.1", done); });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/authorize`;
+    return { url, heard, close: () => new Promise((done) => { server.close(done); }) };
+  };
+  const OVERRIDE = { "Cloudflare-Workers-Version-Overrides": `${DOORS}="v-new"` };
+
+  it("reaches a server with each header as given, where Node's fetch overwrites " +
+     "Sec-Fetch-Mode, as the fake world's fetch does", async () => {
+    const at = await serving(() => new Response(null, { status: 302,
+                                                        headers: { Location: "/next" } }));
+    try {
+      const init = { headers: { ...NAVIGATE, ...OVERRIDE }, redirect: "manual" as const };
+      const [direct, fetched] = [await verbatim(at.url, init), await fetch(at.url, init)];
+      // Neither follows the redirect.
+      expect([direct.status, direct.headers.get("Location"), fetched.status])
+        .toEqual([302, "/next", 302]);
+      const [mine, node] = at.heard;
+      expect(mine).toMatchObject({ "sec-fetch-mode": "navigate", "sec-fetch-dest": "document",
+                                   "cloudflare-workers-version-overrides": `${DOORS}="v-new"` });
+      expect(node).toMatchObject({ "sec-fetch-mode": "cors", "sec-fetch-dest": "document" });
+      // Beside that, the headers fetch sends, but the body encodings it decodes.
+      const { "accept-encoding": _, ...rest } = node!;
+      expect({ ...mine, "sec-fetch-mode": "cors", connection: rest.connection }).toEqual(rest);
+    } finally {
+      await at.close();
+    }
+  });
+
+  it("answers with the server's status, headers and body, a text body sent as given",
+     async () => {
+    const at = await serving((heard) => Response.json({ heard: heard["content-type"] },
+                                                       { status: 404 }));
+    try {
+      const answer = await verbatim(at.url, { method: "POST", body: '{"a":1}',
+                                              headers: { "Content-Type": "application/json" } });
+      expect([answer.status, answer.headers.get("Content-Type"), await answer.json()])
+        .toEqual([404, "application/json", { heard: "application/json" }]);
+      expect(() => verbatim("ftp://example.test/", {})).toThrow(
+        "a verbatim request takes an http(s) URL and a text body or none: ftp://example.test/");
+    } finally {
+      await at.close();
+    }
   });
 });

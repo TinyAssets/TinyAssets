@@ -1,7 +1,7 @@
 /**
  * The owner app's live socket, as both sides spell it (`relay.ts`; the doors' `binder.ts`
  * and `app.ts`): a module with no imports, so the doors Worker takes these names without
- * the object's code. Salvaged from A6 (`platform-a6`), its thread now a conversation.
+ * the object's code.
  *
  * The doors forward an owner app's upgrade as a fresh request of their own: a `GET` of
  * exactly `SOCKET_URL`, with no query, and exactly the headers `Upgrade: websocket`,

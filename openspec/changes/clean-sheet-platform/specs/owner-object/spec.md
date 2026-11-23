@@ -38,7 +38,7 @@ A collection row's body, a collection history entry's and a message's body of mo
 - **THEN** the conflict answers the stored body, as get and pull read it
 
 #### Scenario: An outside client's large bodies
-- **WHEN** an outside client writes large rows past its `client_share` of the owner's files
+- **WHEN** the owner sets a `client_share` and an outside client writes large rows past it
 - **THEN** its write is refused `file_share`, and the owner's own writes still land
 
 #### Scenario: An erasure with puts in flight
@@ -247,7 +247,7 @@ Wakes SHALL be rows on the object's one schedule, the `wakes` lane. No RPC metho
 - **THEN** one pass recovers it, as `unknown` if it was marked, claims none of the rest, and holds the lane's job a retry out
 
 #### Scenario: The kill switch is closed
-- **WHEN** the control record in `CONTROL` is missing, malformed, unreadable, `outside` off, or its maintenance gate leaves the owner out
+- **WHEN** the control record in `CONTROL` is missing, malformed, unreadable with no copy kept, `outside` off, or its maintenance gate leaves the owner out
 - **THEN** the switch reads closed, no wake is claimed, and the lane's job waits `WAKE_RETRY_S`, never a busy loop
 
 ### Requirement: Each vendor's wake is a record, sent by one doorbell
@@ -277,7 +277,7 @@ A doorbell's callback URL, auth and secret (a `/fire` token, a Grok key, a `whse
 - **THEN** the gateway seals the token, the subscription row holds the blob alone, and the answer is its id
 
 #### Scenario: A token the vendor no longer takes
-- **WHEN** a ring with an owner-set token is answered with a status its record lists as a dead token (Claude's `401`)
+- **WHEN** a ring with an owner-set token is answered with a status its record lists as a dead token
 - **THEN** the wake settles failed and the owner is sent one notice to paste a new one, not one a wake, until a new token is pasted
 
 ### Requirement: An agent holds several subscriptions, each by its derived id
@@ -337,7 +337,7 @@ An agent's register, disable, delete or file change, a policy write, a wake-limi
 - **THEN** it is refused as having no session
 
 ### Requirement: Every agent may change the agent trees unless the owner narrowed it
-A change under `OWNER_TREES` (agents' `agent.json`, instructions and skills, the goals, and the owner's profile `/workspace/USER.md`, whose directives every agent follows) SHALL be taken from every agent of the owner by default (founder, 2026-11-03): an outside client under a full grant, a run, and a sandbox sync. A grant the owner narrowed (`scoped`), its runs and its sandbox's sync SHALL be refused there (`AGENTS_OWNER_ONLY`). The owner's own app token SHALL change them only in the live session, receipted when refused.
+A change under `OWNER_TREES` (agents' `agent.json`, instructions and skills, the goals, the owner's profile `/workspace/USER.md`, whose directives every agent follows, and the owner's model ranking `/workspace/model-ranking.json`) SHALL be taken from every agent of the owner by default (founder, 2026-11-03): an outside client under a full grant, a run, and a sandbox sync. A grant the owner narrowed (`scoped`), its runs and its sandbox's sync SHALL be refused there (`AGENTS_OWNER_ONLY`). The owner's own app token SHALL change them only in the live session, receipted when refused.
 
 #### Scenario: A default-grant agent edits another agent's agent.json
 - **WHEN** an outside client under its default full grant widens `/workspace/agents/other/agent.json`
@@ -359,7 +359,7 @@ A widening refused after its call reached the owner's account SHALL leave a `ref
 - **THEN** the call is refused, no agent is registered, and one refusal receipt is kept
 
 ### Requirement: Owner policy is one document written against its generation
-The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown.
+The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown. A pending proposal SHALL have no life of its own: at the pending set's bound a new card SHALL let the oldest pending one go (the proposer's own at its share, else its class's: an outside client's card SHALL never push out the owner's; a card whose class has none to let go is refused), and the owner SHALL be told whose went.
 
 #### Scenario: Two writes from the same view
 - **WHEN** the owner writes twice naming the same generation
@@ -388,7 +388,7 @@ At a door whose row names an act, the object SHALL hold an agent's call (a run's
 - **THEN** a run of `main` is refused `action_never` at a file door, and an outside client's call and the owner's own are not
 
 ### Requirement: The owner answers a held call once
-The owner SHALL answer a held call only in its session, by the card's id and the digest it was shown: a yes SHALL admit that one call once, within a day, and a no SHALL delete the card. A held call SHALL be bound to the policy generation it was asked under, bounded, and swept past its life. Every decision a rule made SHALL be receipted, and a call no rule decides SHALL write nothing.
+The owner SHALL answer a held call only in its session, by the card's id and the digest it was shown: a yes SHALL admit that one call once, whenever it is made, and a no SHALL delete the card. A held call SHALL be bound to the policy generation it was asked under, and SHALL have no life of its own: it waits until it is answered, its generation passes, or the held set's bound needs its place, when the oldest goes (the asking client's own at its share, else its class's: an outside client's call SHALL never push out the owner's own agents'; a call whose class has none to let go is refused), and the owner SHALL be told whose went. Every decision a rule made SHALL be receipted, and a call no rule decides SHALL write nothing.
 
 #### Scenario: A call held and answered yes
 - **WHEN** the owner's rule is `{ act: "workspace.files", do: "ask" }` and an outside client makes a directory
@@ -397,6 +397,39 @@ The owner SHALL answer a held call only in its session, by the card's id and the
 #### Scenario: The rules changed while a call is held
 - **WHEN** the owner writes its policy while a card is pending
 - **THEN** the card is neither shown nor answered, and the call asked again is decided under the new rules
+
+#### Scenario: A card the owner answers a year on
+- **WHEN** a call is held, and the owner answers yes a year later, and the agent makes the call again a year after that
+- **THEN** the card is shown and answered, and the yes admits the call once
+
+### Requirement: A run's CLI's own tool calls are decided at its hook
+Where a run's engine record names a pre-tool hook (`decide`), the run's decide door SHALL answer which of the CLI's tools the owner's rules name, and SHALL decide each call the hook sends as each act it is (its tool kind's, or a rule's tools'), as that act's door call is decided, refused with the card where held. The runner SHALL write the hook only when a rule names a tool it matches, and SHALL fail the run when the hook's helper cannot reach the door before the CLI starts.
+
+#### Scenario: A shell command held at the hook
+- **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }` and a run's Claude Code calls `Bash`
+- **THEN** the call is refused `held_for_owner` with a card naming `Bash`, and a `Read` is let be
+
+### Requirement: Nothing the agent writes changes what its hook answers
+A run's hook SHALL take the door's address only from its root-owned file, and the run's environment SHALL carry only the run's credential, which the door SHALL refuse when forged. A hooked run's CLI SHALL load no settings layer, hook or variable a file the agent writes reaches, at its start or live, or the run SHALL be refused; where a CLI allows neither, its record SHALL say so, and its note SHALL say no rule holds there.
+
+#### Scenario: A spoofed credential
+- **WHEN** the agent's settings set the decide credential to an answer that allows
+- **THEN** the run is refused before its CLI starts, and a hook asked with that credential refuses the call
+
+#### Scenario: The agent's own settings beside the hook
+- **WHEN** the agent's directory holds a Gemini `.gemini/settings.json` that disables the hook by name
+- **THEN** a hooked Gemini run is refused before its CLI starts, and a hooked Claude Code run loads neither its project's nor its local settings, and its home's settings file is root's
+
+#### Scenario: The helper cannot reach the door
+- **WHEN** a run's hook is written and its start check is refused
+- **THEN** the run fails before its CLI starts
+
+### Requirement: The owner sees where each rule holds
+`policyRead` SHALL say, beside each action rule, where it holds and where it can't (`holds_at`, `not_enforced`), from `contract/acts.json` and the engines' records.
+
+#### Scenario: A rule nothing sees on one engine
+- **WHEN** the owner's rule is `{ act: "workspace.shell", do: "ask" }`
+- **THEN** its note holds it at every engine whose hook the agent can't alter, and names `codex`, `main_agent` and `sandbox_programs` among where it can't hold
 
 ### Requirement: A yes to a run's held call resumes its conversation
 A run's held call SHALL be bound to the run's conversation: the owner's yes SHALL admit the call only in that conversation, and SHALL write a run waiting there, under the held run's own authority, on an input that names the card, which starts once the conversation is free. A no SHALL resume nothing. A run whose engine stopped at a tool call it deferred (its record's `deferred` matcher) SHALL settle with the code `tool_deferred`, and its result SHALL post no reply.
@@ -513,7 +546,7 @@ A revoked API key's row nothing holds MAY be forgotten when the binder reports t
 - **THEN** its row is forgotten, and a call with that key is refused with "outside client has no grant"
 
 ### Requirement: An MCP agent registers through a card its client files
-An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held for a bounded time. The owner SHALL apply it, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
+An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held until the owner applies it or its client's grant changes, with no life of its own; at the cards' bound a filing SHALL let the oldest go (the client's own at its share), never refuse for room. The owner SHALL apply it, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
 
 #### Scenario: The owner's browser names an MCP client
 - **WHEN** a call carries an MCP client's origin together with the owner's session to register an agent
@@ -598,18 +631,18 @@ A change past the file index's ceiling or the owner's storage SHALL be refused, 
 - **THEN** it is refused `storage_full`, and the history is kept
 
 ### Requirement: Every entry holds its content
-Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
+Each file entry SHALL hold a reference to its content, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
 
-#### Scenario: A file renamed out of the temporary area
-- **WHEN** a file written under `/.ta/tmp` is renamed into `/workspace`, and housekeeping then collects every due chunk
+#### Scenario: A renamed file
+- **WHEN** a file is renamed into another folder, and housekeeping then collects every due chunk
 - **THEN** the file reads back byte for byte
 
 #### Scenario: Live files' churn inside the window
 - **WHEN** ten files, with `keep_versions` 1 and `keep_recent` 1, are each written ten times inside the retention window
 - **THEN** every write lands and history holds ten rows
 
-### Requirement: The owner frees history, and temporary files keep none
-A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version. Files under `/.ta/tmp` SHALL keep no history and expire after a day.
+### Requirement: The owner frees history
+A version MAY be restored as a new one, or have its content redacted unless it is current; a redacted version's bytes SHALL stay while another entry or row holds the same content. The owner alone MAY purge a path's history but its current version.
 
 #### Scenario: A purge at any time
 - **WHEN** the owner purges a path's history
@@ -638,7 +671,7 @@ Every refusal at the owner's storage figure (the tier's, from the control record
 - **THEN** only the uploads that sandbox's sync began are aborted, and the client's own write still commits
 
 ### Requirement: Every manifest row is bounded in bytes as the object stores it
-Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against the file index's ceiling (`INDEX_BYTES`). The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
+Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against the file index's ceiling (`INDEX_BYTES`). The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
 
 #### Scenario: A client writing 4,096-byte paths
 - **WHEN** an outside client writes file after file at 4,096-byte paths
@@ -649,10 +682,14 @@ Every manifest row (entry, history row, content with its inline bytes and chunk 
 - **THEN** the database grows by more than the charge as pages stay half used, and never by more than the charge times `WORST_FILL`
 
 ### Requirement: An outside client holds a share of the storage and of the index
-Each outside client SHALL hold at most `client_share` percent of the owner's storage and of the file index's ceiling, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own.
+Each outside client SHALL hold at most `client_share` percent of the owner's storage and of the file index's ceiling, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy and off by default (100 and 0, Fact 15), so an owner who sets them always has room of its own.
+
+#### Scenario: The shares are off
+- **WHEN** the owner sets neither and an outside client opens uploads
+- **THEN** the client opens as many as the owner's whole holds, and the next is refused by the whole (`file_quota`), never `file_share`
 
 #### Scenario: A client fills its share
-- **WHEN** an outside client holding `write_files` writes until it is refused `file_share`
+- **WHEN** the owner sets a `client_share` and an outside client holding `write_files` writes until it is refused `file_share`
 - **THEN** the owner's writes, grant changes, revokes and policy writes all still land
 
 #### Scenario: Two clients together
@@ -660,7 +697,7 @@ Each outside client SHALL hold at most `client_share` percent of the owner's sto
 - **THEN** that client's next file, then the other's, is refused `file_share`, and the owner writes on until the whole index is full (`file_index_full`)
 
 ### Requirement: Each scope is charged once for what its own rows reference
-Each scope (an outside client's own, all clients', the owner's writers') SHALL be charged its own entries, history rows and temporary directories, and once for each content and chunk its rows or open uploads reference, while any do, deduplicated within the scope and never across scopes; a chunk no scope references SHALL be charged to the scope that let it go last until it is deleted or revived. The owner-wide total SHALL count each stored row once.
+Each scope (an outside client's own, all clients', the owner's writers') SHALL be charged its own entries and history rows, and once for each content and chunk its rows or open uploads reference, while any do, deduplicated within the scope and never across scopes; a chunk no scope references SHALL be charged to the scope that let it go last until it is deleted or revived. The owner-wide total SHALL count each stored row once.
 
 #### Scenario: A client copies the owner's file
 - **WHEN** the owner writes a file, a client writes the same bytes, and the owner removes and purges its own
@@ -837,48 +874,23 @@ A blob the gateway resealed under its active kid SHALL be stored by compare-and-
 - **WHEN** the platform sweeps an owner (`gatewayReseal`, the platform's door) after the gateway's ring made a new kid active
 - **THEN** every connection blob the object holds under an older kid, an idle one's and one kept for its provider revoke included, is resealed at the next version by the same compare-and-swap, one under the active kid is left as it is, and every doorbell subscription's blob is resealed too; the answer counts every blob not under the gateway's active kid (`left`), a refresh's or a revoke's held one included, and names that kid, so a kid leaves the ring only after a sweep of every owner left none
 
-### Requirement: Every model call is reserved against the owner's model policy
-Each model call the object reserves (`usage.ts`; the runs slice keys it to a run) SHALL be reserved in one unit that reads the owner policy's generation and `models` ceilings: the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
-
-#### Scenario: Concurrent reserves at a ceiling
-- **WHEN** six calls reserve together against a daily ceiling that holds two
-- **THEN** two are reserved and four refused, each refusal kept as a receipt
-
 ### Requirement: A call is estimated by pi-ai's calculateCost and settled at the gateway's price
-A call's reservation SHALL be priced by pi-ai's `calculateCost` over the target model's whole cost record, so a long-context tier prices the whole request once its estimated input passes the tier's threshold, and the most output the cost room takes SHALL be found in about log2 of its bound. A settled call SHALL keep the cost the gateway's pi-ai adapter reported, never one recomputed from the record stored at connect time.
+A sandbox call's charge SHALL be priced by pi-ai's `calculateCost` over the target model's whole cost record, so a long-context tier prices the whole request once its estimated input passes the tier's threshold, and the most output the cost room takes SHALL be found in about log2 of its bound. A settled call SHALL keep the cost the gateway's pi-ai adapter reported, never one recomputed from the record stored at connect time.
 
 #### Scenario: A long-context tier
 - **WHEN** a call's estimated and billed input pass its model's tier threshold
-- **THEN** its estimate and reserved output are at the tier's rates, and it settles at the tier's price the gateway reported
+- **THEN** its charge and output cap are at the tier's rates, and it settles at the tier's price the gateway reported
 
 #### Scenario: A stored record older than the gateway's catalog
 - **WHEN** a connection's stored record prices a model at nothing and the gateway's catalog does not
 - **THEN** the call settles at the gateway's price, and its spend counts against the caps
 
 ### Requirement: The caps read counters, never receipts
-Every ceiling SHALL read only counters the schema's triggers write: `model_spend` per source, day and month, which the sandbox's egress charges move too. Receipts SHALL be history only, bounded without freeing any ceiling.
+Every ceiling SHALL read only counters the schema's triggers write: `model_spend` per source, day and month, which the sandbox's egress charges move, and each run's own. Receipts SHALL be history only, bounded without freeing any ceiling.
 
 #### Scenario: Receipts pruned
 - **WHEN** six calls settle while only the newest three receipts are kept
 - **THEN** the day's and the month's counters hold all six calls' cost
-
-### Requirement: A reservation is dispatched and settled once, in its own units
-A reservation SHALL be dispatched only while still reserved, at the same policy generation, and not refused by its caller; and settled once: `succeeded` from pi-ai's usage, `failed` when the call was refused before any output, `unknown` otherwise, which keeps its whole reservation. A dispatch or settle that cannot be kept SHALL settle the row as it stands (`not_sent` or `unknown`) in the same instance.
-
-#### Scenario: The policy moved before the dispatch
-- **WHEN** the owner's policy moves between a call's reserve and its dispatch
-- **THEN** the call is `not_sent`, and nothing is sent
-
-#### Scenario: A provider's refusal before any output
-- **WHEN** a dispatched call settles `failed`
-- **THEN** it holds nothing, and no ceiling is spent
-
-### Requirement: A dead instance's calls are settled by the next instance
-An open reservation the live instance did not make SHALL be settled by the next reserve or receipts read: `reserved` as `not_sent`, `dispatched` as `unknown`.
-
-#### Scenario: The object dies mid-call
-- **WHEN** a new instance finds a call dispatched by the instance before it
-- **THEN** it settles it `unknown`, and its reservation still counts against the ceilings
 
 ### Requirement: A recurrence's cron is ours and bounded
 A recurrence SHALL be the five classic cron fields in UTC, numbers only (no names, `?`, `L`, `W` or `#`), each value in its field's range, a field `*`, a value, a range, a step (`*/n`, `a-b/n`, `a/n`) or a list of at most 60 of them, the whole at most 256 characters; when both day fields are restricted a day SHALL match if either does. Consecutive occurrences SHALL be at least a minute apart (the tier's simultaneous runs bound what a schedule starts), and an expression SHALL have an occurrence within eight years, else it is refused when parsed. The next occurrence SHALL be the first matching whole minute strictly after the time, found a day at a time. The runs slice (R) schedules a run by it.
@@ -896,11 +908,23 @@ A recurrence SHALL be the five classic cron fields in UTC, numbers only (no name
 - **THEN** it is refused, having no occurrence within eight years
 
 ### Requirement: `auto` is the owner's strongest connected model
-The owner's connected models SHALL be ranked by the data file `model-ranking.json`: the earliest entry a model matches ranks it, newer ids first within an entry; a model no entry matches comes after, by its catalog output price, highest first; then the older connection, then the id. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking.
+The owner's connected keys' models and its signed-in plans (each by the model its engine record says it runs) SHALL be ranked by one ranking: the owner's own file `/workspace/model-ranking.json` where it holds one, whole, else the platform's data file `sources/src/model-ranking.json`, both of one shape (tiers, strongest first, each a list of provider and model-pattern entries). The order SHALL be: by tier; within a tier, a plan before any key, so a plan in the top tier wins over every metered key; then the earliest entry a model matches, newer ids first within an entry. A model no entry matches SHALL be unknown, never placed by a guess: it ranks after every tier, ordered the same way, its keys by their catalog output price, highest first; and an `auto` run on one the agent did not name SHALL tell the owner once while that notice is kept (`model_unranked`). Then the older connection or sign-in, then the id. An owner's file that is no ranking SHALL refuse the run (`invalid`), never fall back silently to the platform's. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking.
 
 #### Scenario: Two connections of one model
 - **WHEN** two connections list the same ranked model
 - **THEN** the older connection's ranks first
+
+#### Scenario: A plan in the top tier and a key ranked above it
+- **WHEN** the owner is signed in to Claude Code (its plan's model in the top tier) and holds an OpenAI key on a model ranked above it in that tier
+- **THEN** `auto` runs on the plan
+
+#### Scenario: A plan lower down and a key a tier above
+- **WHEN** a plan's model is in the second tier and a key's in the first
+- **THEN** `auto` runs on the key; a key of the plan's own tier or below loses to the plan
+
+#### Scenario: The owner's own ranking
+- **WHEN** the owner writes `/workspace/model-ranking.json` ranking OpenAI's models a tier above Claude's
+- **THEN** `auto` ranks by it in place of the platform's, and runs on the OpenAI key
 
 #### Scenario: Nothing connected
 - **WHEN** the owner has no active connection, or one with no models
@@ -914,7 +938,7 @@ What the owner's work reports that no call fails with (a connection's setup chec
 - **THEN** only the newest 100 are kept, newest first
 
 ### Requirement: The agent trees are held by the grant, not by who wrote them
-A change under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills`, `/workspace/prompts` (its agents' files and skills, which every engine reads) or `/workspace/goals` (the owner's goals, whose Agreed section is what its agents may do toward each unasked) SHALL be held at every file door by the rule "Every agent may change the agent trees unless the owner narrowed it": refused only to a narrowed grant, and to the owner's app token outside its session.
+A change under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills`, `/workspace/prompts` (its agents' files and skills, which every engine reads), `/workspace/goals` (the owner's goals, whose Agreed section is what its agents may do toward each unasked), `/workspace/USER.md` or `/workspace/model-ranking.json` SHALL be held at every file door by the rule "Every agent may change the agent trees unless the owner narrowed it": refused only to a narrowed grant, and to the owner's app token outside its session.
 
 #### Scenario: A narrowed client renames a skill
 - **WHEN** a client whose grant the owner narrowed renames a file under `/workspace/skills`
@@ -966,19 +990,27 @@ The `tinyassets-codemode` Worker SHALL bind the namespace of its own `CodemodeSa
 - **THEN** the owner config guard refuses the owner's `CODEMODE_VM` binding
 
 ### Requirement: Code mode's VM runs in the codemode Worker
-Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `CODEMODE_VM` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner's SHA-256 digest and a random id, so no principal's length reaches the bound; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no codemode Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) once the owner's policy turns `codemode.on` off (on by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile, the switch, and the control record's gates the door read (the kill switch for an outside client, the maintenance gate for a run or the owner; one read serving at most a second of calls) as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the codemode Worker's interrupt budget of compute; its answer counts its calls by outcome and lists the calls of tools that change something in order (`landed`, a run of one tool and outcome as one entry), and an answer past `CODE_ANSWER_MAX` (31 MiB as V8 serializes it: a string two bytes a unit when any unit is past Latin-1; within Workers RPC's 32 MiB) SHALL be refused `answer_too_large`, its value and output dropped, its calls kept.
+Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `CODEMODE_VM` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner's SHA-256 digest and a random id, so no principal's length reaches the bound; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no codemode Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`, saying why) while the owner's policy has `codemode.on` off (off by default until code mode's isolation probe, H2, passes; only that pass turns the default on), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile, the switch, and the control record's gates the door read (the kill switch for an outside client, the maintenance gate for a run or the owner; one read serving at most a second of calls) as they stand at that call. A script SHALL run while its caller waits and no longer: `codeRun` takes its caller's stop after its request (its row's `stop`), a call without one refused `invalid` after its admission, and once the stop closes or breaks the script SHALL be stopped (a call in flight awaited and said as it ended), answered `stopped` and logged with its calls and what landed; no clock of the platform's SHALL end it (pi-codemode's own deadline the most a timer takes), only that, or the codemode Worker's interrupt budget of compute or VM memory; its answer counts its calls by outcome and lists the calls of tools that change something in order (`landed`, a run of one tool and outcome as one entry), and its answer SHALL fit one answer, as every read does: output past it cut at a character and said so (`output_cut`), and a value that alone passes it refused `answer_too_large`, its value and output dropped, its calls and what landed kept.
 
 #### Scenario: Code mode off
 - **WHEN** an outside client whose profile holds `code` calls `codeRun` after the owner's policy turns code mode off
 - **THEN** it is refused `code_mode_off`, and its tools list no `code`
 
+#### Scenario: The caller stops waiting mid-script
+- **WHEN** the doors close a script's stop while one of its calls is in flight, and the script would make fifty more after it
+- **THEN** it is answered `stopped`, its earlier calls and the one in flight listed as each ended (the one in flight landed), and it makes no call after
+
 #### Scenario: Outside access switched off mid-script
 - **WHEN** the control record turns outside access off while an outside client's script runs
 - **THEN** the script's next call is refused "outside access is switched off", and what landed before it is listed
 
-#### Scenario: An answer past the RPC's ceiling
-- **WHEN** a script's value and output come to more than `CODE_ANSWER_MAX` as V8 serializes them, mostly ASCII strings each with one wide character among them
+#### Scenario: An answer past one answer
+- **WHEN** a script's value alone is past one answer
 - **THEN** it is answered `answer_too_large`, with its calls and what landed
+
+#### Scenario: Output past one answer
+- **WHEN** a script's output is past one answer and its value is not
+- **THEN** it is answered its value whole and its output cut at a character, with `output_cut` saying how many items were kept
 
 #### Scenario: A tool outside the profile
 - **WHEN** a script reads `tools.file_usage` and the caller's profile does not hold it
@@ -997,7 +1029,7 @@ Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox`
 - **THEN** it refuses "a code mode execution is named" before any sandbox is reached
 
 ### Requirement: Each sandbox egress call is admitted at open and charged at its reserve
-`egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (the newest kept, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it (of the calling run's own connection alone); the run the call's path names is live under that lease (`egress_run_closed`); the connection is the one that run's grant holds (`egress_run_connection`), so a run never spends on another simultaneous run's connection and a run on the vendor's own sign-in may call none; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it, or a re-apply of its network is out under it, since only that network's transform sets it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, as is a call its API's rules cite as free with the provider's page that says so (Anthropic's token count), and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most 16 open for each of the tier's simultaneous runs (`egress_rate`); and a model call's API has the rules the gateway meters it by (`egress_unmetered`). An admitted call SHALL be an open row, uncharged, answered with the blob, its version, the generation, whether it is a model call (`metered`) and an end signal. `egressReserve` (`work`, the same egress binding) SHALL charge an admitted model call once, while it is open and its stream live, for the model and tier the gateway's one parse of its body read (the body's model may be its last key, so no charge is priced before the gateway has read it), or refuse it, its row a refusal receipt and its stream ended; a second reserve, a free call's, a settled one's or another token's SHALL be refused `invalid`. The charge (`egress_spend_refused`, the binding cap its rule) is against its run's requests, tokens and cost (its `runs` row; the model policy's per-turn limits are its caps, each off until the owner sets it), and the owner's and the source's day and month (the spend counters the model reservations move too, pruned past their window at each open): the model policy's caps, no more and no less; reserved for the model the call names (as the gateway's parse read it; for an API whose path names it, the path's; refused `egress_unknown_model` when the connection does not list it), at that model's dearest rates by pi-ai's `calculateCost` over the catalog's records, its input held at that model's context window and its output at that model's cap and what the caps leave, times its tier's multiplier where pi-ai prices the tier (a tier it cannot price refused `egress_unpriced_option`), so the charge bounds what the call can cost once the gateway has clamped every output-cap alias and refused several choices, a key spelled another way, server-side paid tools and options pi-ai does not price. The charge SHALL be the call's own row, set once from none to held (the schema refuses any other change of what it reserved), counted only by the schema's triggers (into its run's row and its source's day and month), and SHALL neither read nor import pi's engine; the reserve answers its metering (the output cap the gateway clamps to, the body length it was admitted by, and the model and tier). Until it is reserved an admitted call is open as any other: it counts to the rate, is beaten, and is settled `lost` when its beats stop, charged nothing. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); its door SHALL beat an open reservation while it streams (`egressBeat`, every `EGRESS_BEAT_S`), and one never settled SHALL be settled `lost`, its charge `unknown`, three beats after its last (`LOST_AFTER_S`), or past the stream's own day (`EGRESS_DEADLINE_S`) whatever its beats.
+`egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (the newest kept, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it (of the calling run's own connection alone); the run the call's path names is live under that lease (`egress_run_closed`); the connection is the one that run's grant holds (`egress_run_connection`), so a run never spends on another simultaneous run's connection and a run on the vendor's own sign-in may call none; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it, or a re-apply of its network is out under it, since only that network's transform sets it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, as is a call its API's rules cite as free with the provider's page that says so (Anthropic's token count), and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most `EGRESS_LIMITS.open` open at once, whichever of the owner's runs opened them (`egress_rate`); and a model call's API has the rules the gateway meters it by (`egress_unmetered`). An admitted call SHALL be an open row, uncharged, answered with the blob, its version, the generation, whether it is a model call (`metered`) and an end signal. `egressReserve` (`work`, the same egress binding) SHALL charge an admitted model call once, while it is open and its stream live, for the model and tier the gateway's one parse of its body read (the body's model may be its last key, so no charge is priced before the gateway has read it), or refuse it, its row a refusal receipt and its stream ended; a second reserve, a free call's, a settled one's or another token's SHALL be refused `invalid`. The charge (`egress_spend_refused`, the binding cap its rule) is against its run's requests, tokens and cost (its `runs` row; the model policy's per-turn limits are its caps, each off until the owner sets it), and the owner's and the source's day and month (the spend counters, each period kept until every charge reserved in it has settled, the older ones pruned at each reserve): the model policy's caps, no more and no less; reserved for the model the call names (as the gateway's parse read it; for an API whose path names it, the path's; refused `egress_unknown_model` when the connection does not list it), at that model's dearest rates by pi-ai's `calculateCost` over the catalog's records, its input held at that model's context window and its output at that model's cap and what the caps leave, times its tier's multiplier where pi-ai prices the tier (a tier it cannot price refused `egress_unpriced_option`), so the charge bounds what the call can cost once the gateway has clamped every output-cap alias and refused several choices, a key spelled another way, server-side paid tools and options pi-ai does not price. The charge SHALL be the call's own row, set once from none to held (the schema refuses any other change of what it reserved), counted only by the schema's triggers (into its run's row and its source's day and month), and SHALL neither read nor import pi's engine; the reserve answers its metering (the output cap the gateway clamps to, the body length it was admitted by, and the model and tier). Until it is reserved an admitted call is open as any other: it counts to the rate, is beaten, and is settled `lost` when its beats stop, charged nothing. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); its door SHALL beat an open reservation while it streams (`egressBeat`, every `EGRESS_BEAT_S`), and one never settled SHALL be settled `lost`, its charge `unknown`, three beats after its last (`LOST_AFTER_S`), or past the stream's own day (`EGRESS_DEADLINE_S`) whatever its beats.
 
 #### Scenario: A call past the owner's caps
 - **WHEN** the run's requests, tokens or cost, the owner's day or month, or the source's leaves less than a call's least charge
@@ -1020,7 +1052,11 @@ Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox`
 - **THEN** it is refused
 
 ### Requirement: A change ends the egress streams it covers
-Once its own unit committed, a policy write SHALL end every open egress stream, and a write that changes the egress table SHALL move the egress generation, leaving the sandbox's network stale, egress refused, until the lease's network is re-applied under the new generation (no other policy change moves it): once the write's unit committed, the `runs` lane it wakes re-applies each live lease whose network is behind through the sandbox Worker's `network`, which replaces the live sandbox's network whole, keeping its own egress token and every launched job's vendor hosts, and keeps it for a paused sandbox to apply as it resumes; the lane sends again each one that failed, had no answer, or was kept for a paused sandbox, `NETWORK_RETRY_S` after it was last sent or failed under the current generation, and at once under a newer one; a suspension every one, a connection's revoke that connection's, the lease's close and a lease that replaces a lapsed one the old lease's, and the owner's erasure every one: the object closes each one's end signal and marks its row with why.
+Once its own unit committed, a policy write SHALL end every open egress stream, and a write that changes the egress table SHALL move the egress generation, leaving the sandbox's network stale, egress refused, until the lease's network is re-applied under the new generation (no other policy change moves it): once the write's unit committed, the `runs` lane it wakes re-applies each live lease whose network is behind through the sandbox Worker's `network`, which replaces the live sandbox's network whole, keeping its own egress token and every launched job's vendor hosts, and keeps it for a paused sandbox to apply as it resumes; the lane sends again each one that failed, had no answer, or was kept for a paused sandbox, `NETWORK_RETRY_S` after it was last sent or failed under the current generation, and at once under a newer one. A write that lets out less than before (a name its network let out that the new one does not) SHALL mark every live lease in its unit, and a lease whose sandbox owes that narrowing for `NARROWED_WITHIN_S` (one lease's TTL) with no re-apply at or past its generation applied SHALL be given back in the lane's unit: its sign-ins ended, its runs settled `failed` (`network_unconfirmed`), their CLIs stopped and its sandbox paused through the Worker, and the owner told by a notice; a widening owes nothing. Of the streams, a suspension every one, a connection's revoke that connection's, the lease's close and a lease that replaces a lapsed one the old lease's, and the owner's erasure every one: the object aborts each one's end signal, which its door takes as the end, and marks its row with why.
+
+#### Scenario: A narrowing the sandbox never confirms
+- **WHEN** the owner narrows the egress policy while a run lives and every re-apply of its lease fails or goes unanswered for `NARROWED_WITHIN_S`
+- **THEN** the lease is given back, the run settles `failed` (`network_unconfirmed`), its runner's next post is refused, and the owner's notices say so
 
 #### Scenario: A connection is revoked while two stream
 - **WHEN** the owner revokes one of two connections each streaming a sandbox request
@@ -1093,7 +1129,7 @@ When the sandbox Worker has no room to start a run's sandbox (`sandbox_waiting`:
 - **THEN** the sandbox Worker is told to release that lease
 
 ### Requirement: `auto` sees the owner's subscriptions, by presence only
-Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its record's `status_argv`) to the object, which SHALL keep them per sandbox, never a credential: the owner's own sandbox's one row an engine (signed in or not, when it was checked and changed, and the models the runner read it offers), and an outside client's sandbox's on its own lease. A login SHALL never be copied between sandboxes (ADR-031 decision 2): a run SHALL use only its own sandbox's sign-ins, so a client's `auto` run takes a plan only where that client's sandbox is known signed in, else the owner's keys. An agent naming the vendor's sign-in SHALL be admitted unless its sandbox is known signed out (the owner's, `signin_lapsed`); the sandbox's start checks the sign-in there and answers `signin_required` when none is, and the run SHALL settle `failed` (`signin_required`) with a notice to sign in inside that sandbox. `auto` SHALL rank the signed-in engines with the owner's connections by the same ranking, and where a subscription and a key cover one provider it SHALL pick the subscription. A sign-in that lapses SHALL leave the owner a "sign in again" notice, and `auto` (and an agent naming that engine on its sign-in) SHALL be refused `signin_lapsed`, never falling back silently to another source.
+Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its record's `status_argv`) to the object, which SHALL keep them per sandbox, never a credential: the owner's own sandbox's one row an engine (signed in or not, when it was checked and changed), and an outside client's sandbox's on its own lease. A login SHALL never be copied between sandboxes (ADR-039 decision 2.20): a run SHALL use only its own sandbox's sign-ins, so a client's `auto` run takes a plan only where that client's sandbox is known signed in, else the owner's keys. An agent naming the vendor's sign-in SHALL be admitted unless its sandbox is known signed out (the owner's, `signin_lapsed`); the sandbox's start checks the sign-in there and answers `signin_required` when none is, and the run SHALL settle `failed` (`signin_required`) with a notice to sign in inside that sandbox. `auto` SHALL rank the signed-in engines with the owner's connections by the same ranking, each by the model its engine record says a run on its plan is given (`cli.login.model`), so no plan ranks as an unknown model on the platform's ranking, and a run on a plan SHALL be given that model unless the agent names one; within a tier a plan SHALL come before a key; where a subscription and a key cover one provider it SHALL pick the subscription. An `auto` agent that names a model SHALL pick only among the sources that offer it (a key whose connection lists it, a plan whose record names it), and SHALL be refused `no_source` where none does, never passing the model to another vendor's engine. A sign-in that lapses SHALL leave the owner a "sign in again" notice, and `auto` (and an agent naming that engine on its sign-in) SHALL be refused `signin_lapsed`, never falling back silently to another source.
 
 #### Scenario: Only a Claude subscription
 - **WHEN** the owner has no connection and its runner reported Claude Code signed in
@@ -1104,7 +1140,7 @@ Each sandbox's runner SHALL report its own sandbox's engines' sign-ins (its reco
 - **THEN** `auto` is refused `signin_lapsed` and the key is not taken in its place
 
 ### Requirement: The tier's numbers are the control record's, the owner's tier the platform's
-The tier numbers SHALL come only from the platform control record, handed by the binder in the binding of every door; the object SHALL keep the last numbers it was handed (`platform_tiers`, written only when they change) for the runs its own lane starts, its files byte quota (`max_bytes`, the tier's storage, or the owner's own lower figure) and its egress rate, and refuse a run, or a change that adds file bytes, with none (`tier_unread`), never a number of its own. When the record holds none, the binder SHALL hand `null`, and the object SHALL forget the numbers it kept and refuse. The owner's tier SHALL be its own admission row's, set only by the platform's reserved caller (`tierSet`), never by a client, a request or the owner. The owner alone SHALL read it (`tierRead`), for its app.
+The tier numbers SHALL come only from the platform control record, which the binder hands whole, as read fresh, in the binding of every door; the object SHALL keep one copy of the record (`control_kept`, written only when it changes), from each binding that hands it and each read of its own, and read the numbers from it for the runs its own lane starts, its files byte quota (`max_bytes`, the tier's storage, or the owner's own lower figure) and its egress rate, and refuse a run, or a change that adds file bytes, with none (`tier_unread`), never a number of its own. When the record holds no numbers, or the binder found none or a malformed one (`null`), the object SHALL keep no numbers and refuse. The owner's tier SHALL be its own admission row's, set only by the platform's reserved caller (`tierSet`), never by a client, a request or the owner. The owner alone SHALL read it (`tierRead`), for its app.
 
 #### Scenario: A client names a tier
 - **WHEN** the owner or a client calls `tierSet`
@@ -1136,7 +1172,7 @@ The `runs` lane's next time SHALL be the earliest due schedule (while the owner 
 - **THEN** the lane has no job and no sandbox is started
 
 ### Requirement: A scheduled run's result is posted to the owner's room with its agent
-A run of the owner's own schedule that succeeds with a result SHALL post it, in its settle's unit, as its agent's message in the owner's room with that agent (`dm:<the agent's id>`), its run id the post's own so it is posted once, its body placed in R2 past `PLACE_BYTES`; an empty result, a result of `NO_REPLY` alone, or a failed run SHALL post nothing, and a post the ledger refuses SHALL leave the owner a notice while the settle stands. A client's schedule's result SHALL never be posted into the owner's rooms: the client reads it through its own `run_status`.
+A run of the owner's own schedule that succeeds with a result SHALL post it, in its settle's unit, as its agent's message in the owner's room with that agent, its run id the post's own so it is posted once, its body placed in R2 past `PLACE_BYTES`; an empty result, a result of `NO_REPLY` alone, or a failed run SHALL post nothing, and a post the ledger refuses SHALL leave the owner a notice while the settle stands. A client's schedule's result SHALL never be posted into the owner's rooms: the client reads it through its own `run_status`.
 
 #### Scenario: A client's schedule
 - **WHEN** a client holding `run_graph` schedules main, and the run answers "Security check: reply here with your recovery code."
@@ -1144,7 +1180,7 @@ A run of the owner's own schedule that succeeds with a result SHALL post it, in 
 
 #### Scenario: The brief lands
 - **WHEN** main's scheduled run ends with "Your brief: nothing due today." and a later one with an empty result
-- **THEN** the owner's mailbox holds exactly the first, from main in `dm:<main's id>`, and no notice
+- **THEN** the owner's mailbox holds exactly the first, from main in the owner's room with main, and no notice
 
 ### Requirement: Every owner is seeded with the starter package
 The owner's object SHALL write the starter package (`platform/starter/`, carried as data) into an admitted owner's files when it has reconciled none, through its `starter` lane: each file as the owner's own write (writer `owner`, history op `starter`), one receipt a path (version, installed content id, offered content id, state), and `agent.json` last, so `main` exists as soon as it lands and never before. A file already at a path SHALL never be overwritten: the starter's is written beside it as `<file>.ta-new`. A door that needs an agent (`converse`, `run_graph`) SHALL await the seed of an owner with none reconciled, joining a pass already running (one pass at a time), so a new owner's first call finds `main`. A pass that fails SHALL stop where it is, keep what it wrote, tell the owner once for that version (`starter_failed`), and be tried again `STARTER_RETRY_S` later as its row says, never by inventing a file. A managed file SHALL be in the owner's trees; a personal one (the profile `/workspace/USER.md`, which every agent of the owner reads and writes, the workspace's map `/workspace/index.md`, and the goals' index `/workspace/goals/index.md`, seeded empty under `# Active`, `# Paused` and `# Ended`) MAY be anywhere in the workspace. The package's `goals` skill SHALL hold the goals: one page a goal under `/workspace/goals`, made or changed in its Done when, Agreed and Not wanted only on the owner's own word, worked on unasked only by its steward while active and confirmed, an outward act only as Agreed names it, and spending or anything irreversible only on the owner's yes, whatever Agreed says. Every link in the package's text SHALL be root-absolute from `/workspace`. Onboarding SHALL run once for all of the owner's agents, keyed on the profile's `Onboarded:` line (a profile with a time zone counts as onboarded), and ask which other AI assistants the owner uses, offering each one not connected its connect step; an agent that learns of an assistant not connected SHALL offer it once, record the offer in `/workspace/USER.md`, and after a no record "Don't suggest" so no agent offers it again; no text SHALL ask an agent to save to its own memory or install anything. A personal file that moved SHALL name its retired old path (`moved_from`): an owner holding a changed file there is seeded at the new path with a copy of it, the old file left as it is, and told once (`starter_moved`, which says to keep the old file while any managed file still holds the owner's own text or an unadopted proposal, naming each, since those may still read it); one holding the starter's untouched text there is seeded with the new text. The owner SHALL read the receipts (`starterReceipts`). The receipts and the reconciled version SHALL be exported and captured into every generation, so a restored owner keeps them; the seed's files SHALL be the owner's own writes through the files plane, counted in the one storage figure, and a seed refused `storage_full` SHALL stop, tell the owner once, and be tried again.
@@ -1187,7 +1223,7 @@ Each `/workspace/agents/<agent>/agent.json` SHALL be a ledger identity, keyed by
 - **THEN** that mail fails and starts no run
 
 ### Requirement: A room is a pair, and a post wakes only the members it addresses
-A room SHALL be a pair's: `dm:<a>` the owner and `a`, `dm:<a>+<b>` two agents (`a` before `b`), at least one the owner's own. A post SHALL go to the other member, from the caller's verified identity (a run's own agent's), and an agent's mail to the owner SHALL count against its share of the owner's mailbox. A post SHALL wake only the members it addresses: a deliberate post addresses the other member; a run's result addresses only the person or outside client whose mail started the run, and is posted as the reply to that mail, never to another agent's. A further turn between agents SHALL take a deliberate post, which needs `converse`. The owner SHALL read any chain whole from any of its messages (`mailChain`). There SHALL be no turn or chain-depth cap of the platform's.
+A room SHALL be a pair's: the owner and an agent, or two agents, at least one the owner's own. A room SHALL be a row with its members' rows, named by an opaque id that no code reads members out of; a pair's id SHALL be the same for the same two members, so `agents_list` names each agent's room with the caller (on the caller's own entry, its room with the owner) before its first post, which makes it. Rooms SHALL be at most `maxRooms`, a deleted agent's counted until its archived mail is removed, and a new pair's first post past them SHALL be refused `ledger_full`. A post SHALL go to the other member, from the caller's verified identity (a run's own agent's), and an agent's mail to the owner SHALL count against its share of the owner's mailbox. A post SHALL wake only the members it addresses: a deliberate post addresses the other member; a run's result addresses only the person or outside client whose mail started the run, and is posted as the reply to that mail, never to another agent's. A further turn between agents SHALL take a deliberate post, which needs `converse`. The owner SHALL read any chain whole from any of its messages (`mailChain`). There SHALL be no turn or chain-depth cap of the platform's.
 
 #### Scenario: One question between two agents
 - **WHEN** an agent's run posts a question to another agent and that agent's run ends with a result, posting nothing
@@ -1279,11 +1315,15 @@ Each owner's object SHALL write its export manifest to R2 once a night when anyt
 - **THEN** each leaves the owner's number at once, the oldest file's chunk is deleted early, and the other three wait out their 30 days
 
 ### Requirement: A deployed migration is never edited
-Every Durable Object class that keeps tables SHALL have a migration lock: the owner's in `platform/owner/migrations.json`, and the sandbox Worker's `SandboxControl` and `SandboxSlots` in `platform/sandbox/migrations/<class>.json`. Once a lock's first deploy is marked, every deployed migration SHALL be pinned there by the SHA-256 of its statements as the code evaluates them, and its Worker's migrations guard SHALL fail a pinned migration that changed or is gone; a new shape SHALL be a new migration at the end. Each object SHALL keep the digest of every migration it applied and refuse to start when one reads differently now, or when one's digest is gone. Each lock itself SHALL only grow against the base branch: its first-deploy marker never changes once set, and its pins are never edited or taken away (a structural guard). The deploy SHALL mark the first deploy and pin each migration it ships, and refuse to deploy unless every lock pins every migration it ships, and unless each Worker it holds to locks reports at least one; nothing SHALL be pinned without that mark, and until it is set migrations may be edited in place. The owner's migrations SHALL be written out as their literal SQL text, no constant interpolated and no module imported (`owner/src/schema.ts`): a new migration SHALL be appended as literal SQL, never editing an earlier one. Each bound the old builder interpolated into that text, and each the text spells that code enforces by a constant of its own, SHALL be a frozen bound, one constant the code that enforces it reads (the contract's, `contract/src/limits.ts`, but three kept in their own modules: `RUNS_CEILING`, which the sandbox template's tag reads from `owner/src/tier.ts`, `SEGMENT_LEAST_BYTES`, which the segments' seal derives, and `SHARE_BYTES`, the manifest's share charge). A guard SHALL hold every place the text spells a frozen bound equal to its constant, with how many times it is spelled there, and SHALL fail on a frozen bound's number anywhere else in the text but the counts it names as the text's own.
+Every Durable Object class that keeps tables SHALL have a migration lock: the owner's in `platform/owner/migrations.json`, and the sandbox Worker's `SandboxControl` and `SandboxSlots` in `platform/sandbox/migrations/<class>.json`. Once a lock's first deploy is marked, every migration SHALL be pinned there, in the change that adds it, by the SHA-256 of its statements as the code evaluates them, and its Worker's migrations guard SHALL fail a migration not pinned, and a pinned migration that changed or is gone; a new shape SHALL be a new migration at the end. Each object SHALL keep the digest of every migration it applied and refuse to start when one reads differently now, or when one's digest is gone. Each lock itself SHALL only grow against the base branch: its first-deploy marker never changes once set, and its pins are never edited or taken away (a structural guard). A Worker's first deploy SHALL mark its locks and pin each migration it ships, and the deploy SHALL refuse unless every lock pins every migration it ships, and unless each Worker it holds to locks reports at least one; nothing SHALL be pinned without that mark, and until it is set migrations may be edited in place. The owner's migrations SHALL be written out as their literal SQL text, no constant interpolated and no module imported (`owner/src/schema.ts`): a new migration SHALL be appended as literal SQL, never editing an earlier one. Each bound the old builder interpolated into that text, and each the text spells that code enforces by a constant of its own, SHALL be a frozen bound, one constant the code that enforces it reads (the contract's, `contract/src/limits.ts`, but three kept in their own modules: `RUNS_CEILING`, which the sandbox template's tag reads from `owner/src/tier.ts`, `SEGMENT_LEAST_BYTES`, which the segments' seal derives, and `SHARE_BYTES`, the manifest's share charge). A guard SHALL hold every place the text spells a frozen bound equal to its constant, with how many times it is spelled there, and SHALL fail on a frozen bound's number anywhere else in the text but the counts it names as the text's own.
 
 #### Scenario: A deployed migration edited in place
 - **WHEN** a pinned migration's statements change, with its pin or without
 - **THEN** the guard fails (the structural guard when the pin changed with it), and the deploy refuses to pin
+
+#### Scenario: A migration added unpinned
+- **WHEN** a change adds a migration to a lock that marks its first deploy, and does not pin it
+- **THEN** its Worker's migrations guard fails that change, naming the pin command, so no deploy meets it
 
 #### Scenario: A frozen bound changed without its SQL
 - **WHEN** a bound the owner's migrations spell changes in the contract, and no new migration changes the SQL with it

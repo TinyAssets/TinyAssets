@@ -2,18 +2,18 @@
  * The agent's definitions (the run doors themselves are `runs.test.ts`'s): its files
  * under `/workspace/agents` and its skills under `/workspace/.agents`, `/workspace/skills`
  * and `/workspace/prompts`, which every engine reads, and its goals under `/workspace/goals`,
- * the owner's alone to change by any file door (review H1).
+ * the owner's alone to change by any file door.
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import type { Binding, Origin } from "../../contract/src/binding";
 import { OwnerDO } from "../src/owner-do";
-import { AGENTS_DIR, GOALS_DIR, OWNER_TREES, within } from "../../contract/src/paths";
+import { AGENTS_DIR, GOALS_DIR, within } from "../../contract/src/paths";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { ALL_SCOPES } from "./runs-support";
-import { admittedOwner, failure, TIERS } from "./support";
+import { admittedOwner, failure, OPEN_RECORD } from "./support";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -23,7 +23,7 @@ async function rig() {
   const stub = await admittedOwner(owner);
   const at = signedIn();
   const unbound = (origin: Origin | null): Binding =>
-    ({ owner, caller: owner, origin, tiers: TIERS,
+    ({ owner, caller: owner, origin, control: OPEN_RECORD,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }) });
   const { session } = await stub.sessionOpen({ ...unbound(null), authenticated_at: at });
   // The owner's own changes to its agents' files are made in its session, as its app makes
@@ -33,7 +33,7 @@ async function rig() {
   return { stub, bind, unbound, admit: (origin: Origin) => stub.outsideAgents(bind(origin)) };
 }
 
-describe("the owner's agent definitions (review H1)", () => {
+describe("the owner's agent definitions", () => {
   const AGENTS_MD = "/workspace/agents/main/AGENTS.md";
 
   it("follow the founder's rule: a default (full) grant changes them, a narrowed one never",
@@ -60,7 +60,7 @@ describe("the owner's agent definitions (review H1)", () => {
     await r.stub.fileMkdir(client, { path: "/workspace/skills/x", expected_etag: null });
     expect(await r.stub.fileWrite(client, { path: "/workspace/skills/x/SKILL.md",
       expected_etag: "", content: bytes("# x") })).toHaveProperty("entry");
-    // An outside agent changes an entry at the etag it read (review R2-L3).
+    // An outside agent changes an entry at the etag it read.
     const etagOf = async (path: string) =>
       (await r.stub.fileStat(r.bind(null), { path })).entry!.etag;
     expect(await r.stub.fileRename(client, { from: "/workspace/skills/x/SKILL.md",
@@ -137,12 +137,6 @@ describe("the owner's agent definitions (review H1)", () => {
                                           content: bytes("mine") })).toHaveProperty("entry");
   });
 
-  it("name the agent trees: the agents, their skills, their prompts and the goals", () => {
-    expect(OWNER_TREES).toEqual([AGENTS_DIR, "/workspace/.agents", "/workspace/skills",
-                                 "/workspace/prompts", "/workspace/goals",
-                                 "/workspace/USER.md"]);
-  });
-
   it("hold the owner's goals as every other agent tree: a default (full) grant writes them, " +
      "a narrowed one never", async () => {
     const r = await ledgerRig();
@@ -193,8 +187,75 @@ describe("the owner's agent definitions (review H1)", () => {
       content: bytes("## Agreed\n") })).toHaveProperty("entry");
   });
 
-  it("hold only the tree and the roots themselves, never a name that merely starts alike " +
-     "(review round 2)", async () => {
+  it("serve a main agent an absent AGENTS.md or SOUL.md as none, and refuse a folder at either " +
+     "by its path, never read as none", async () => {
+    const r = await ledgerRig();
+    await r.register(MUSE);
+    const read = () => r.stub.definitionRead(r.bind(MUSE));
+    const [instructions, soul] = ["AGENTS.md", "SOUL.md"].map((name) =>
+      `${AGENTS_DIR}/main/${name}`);
+    // The seed's two files, removed: each absent, served as none.
+    for (const path of [instructions!, soul!]) {
+      await r.stub.fileRemove(r.session(null), { path, expected_etag: null, recursive: false });
+    }
+    expect(await read()).toMatchObject({ agent: "main", instructions: null, soul: null });
+    // A folder at either refuses the read, naming it.
+    for (const path of [instructions!, soul!]) {
+      await r.stub.fileMkdir(r.session(null), { path, expected_etag: null });
+      expect(await failure(read)).toMatchObject({ code: "invalid",
+                                                  message: `${path} is not a file` });
+      await r.stub.fileRemove(r.session(null), { path, expected_etag: null, recursive: true });
+    }
+  });
+
+  it("serve a connection the agent its grant names, main until the owner names another, and " +
+     "refuse one that is gone, never serving another in its place", async () => {
+    const r = await ledgerRig();
+    await r.register(MUSE);
+    const read = () => r.stub.definitionRead(r.bind(MUSE));
+    const work = `${AGENTS_DIR}/work`;
+    await r.stub.fileMkdir(r.session(null), { path: work, expected_etag: null });
+    for (const [name, text] of [["agent.json", JSON.stringify({ engine: "auto" })],
+                                ["AGENTS.md", "Work."]]) {
+      await r.stub.fileWrite(r.session(null), { path: `${work}/${name}`, expected_etag: "",
+                                                content: bytes(text!) });
+    }
+    expect(await read()).toMatchObject({ agent: "main" });
+    const listed = async () => (await r.stub.grantList(r.bind(null))).clients
+      .find((client) => client.client === MUSE.client)!;
+    const named = async (agent: string, profile = "custom") => {
+      const row = await listed();
+      await r.stub.grantSet(r.session(null), { client: MUSE.client, source: "mcp",
+        mode: row.mode, scopes: row.scopes as never, expected_revision: row.revision,
+        name: "", profile, agent });
+    };
+    expect(await listed()).toMatchObject({ agent: "main", agent_live: true });
+    await named("work");
+    expect(await read()).toMatchObject({ agent: "work", instructions: bytes("Work."),
+                                         soul: null });
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: true });
+    await r.stub.fileRemove(r.session(null), { path: `${work}/agent.json`, expected_etag: null,
+                                               recursive: false });
+    expect((await failure(read)).code).toBe("agent_retired");
+    // The owner sees why on the grant, and the file put back serves the agent again.
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: false });
+    // Keeping it never blocks a save, a narrowing among them.
+    await named("work", "directory");
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: false,
+                                           profile: "directory" });
+    await r.stub.fileWrite(r.session(null), { path: `${work}/agent.json`, expected_etag: "",
+                                              content: bytes(JSON.stringify({ engine: "auto" })) });
+    expect(await listed()).toMatchObject({ agent: "work", agent_live: true });
+    expect(await read()).toMatchObject({ agent: "work" });
+    // Naming it anew once it is gone is refused.
+    await named("main");
+    await r.stub.fileRemove(r.session(null), { path: `${work}/agent.json`, expected_etag: null,
+                                               recursive: false });
+    expect((await failure(() => named("work"))).code).toBe("agent_retired");
+  });
+
+  it("hold only the tree and the roots themselves, never a name that merely starts alike",
+     async () => {
     expect([within("/workspaceX/a", "/workspace"), within("/workspace/agentsX/a", AGENTS_DIR),
             within("/workspace/agents", AGENTS_DIR), within("/workspace/agents/a", AGENTS_DIR)])
       .toEqual([false, false, true, true]);

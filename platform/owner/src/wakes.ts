@@ -1,16 +1,11 @@
 /**
- * Outside-agent wakes, the `wakes` lane of the object's one schedule (S3b, W3; ADR-026
- * zero idle tail), and the doorbell that rings them (slice W, tasks 7).
+ * Outside-agent wakes, the `wakes` lane of the object's one schedule (the zero idle tail,
+ * ADR-039 decision 2.16), and the doorbell that rings them. Each object is its own owner and
+ * schedules itself on its own Lifecycle job queue (`schedule.ts`), so there is no global tick
+ * and nothing to rotate.
  *
- * Ported from `agent_wake` (`tinyassets/broker/message_ledger.py`), `run_due`
- * (`tinyassets/control_plane/outside_wakes.py`) and `send_wake`
- * (`tinyassets/broker/mcp_events.py`). The Python ran one shared tick that walked every
- * owner's ledger with a fairness rotation; here each object is its own owner and
- * schedules itself on its own Lifecycle job queue (`schedule.ts`), so there is no global
- * tick and nothing to rotate.
- *
- * The op journal's may-have-sent record becomes the wake row's `marked` flag, written
- * by `mark()` before the doorbell's first byte. A send abandoned past its lease is
+ * The may-have-sent record is the wake row's `marked` flag, written by `mark()` before the
+ * doorbell's first byte. A send abandoned past its lease is
  * `unknown` if it was marked and is never replayed (the agent's next change opens its
  * next wake); an unmarked one is provably unsent and due again.
  *
@@ -52,7 +47,7 @@ export const WAKE_RETRY_S = 60;
 /** What a pass answers when the kill switch was closed: it claimed nothing. */
 export const CLOSED = "closed";
 
-/** What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). */
+/** What rings an outside agent's doorbell. IDs only: a target never holds a body. */
 export interface WakeSender {
   /**
    * Whether wakes may go now: the outside kill switch on, and the maintenance gate

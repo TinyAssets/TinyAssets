@@ -8,14 +8,14 @@
  */
 import { sha256Hex } from "../../contract/src/digest";
 import { type ChildProcess, spawn, type SpawnOptions, spawnSync } from "node:child_process";
-import { chownSync, existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync,
-         writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, lchownSync, lstatSync, mkdirSync, readdirSync,
+         readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { RUN_BASICS } from "../../sources/src/run-env";
-import { type Served, served } from "../../sources/src/served";
+import { type Served, servedRecord } from "../../sources/src/served";
 
-import { HOMES, isKept, keptPaths, SYSTEM } from "./engine";
+import { HOMES, isKept, keptPaths, resumePaths, SYSTEM } from "./engine";
 import { HEARTBEAT_MS } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite, type Walk, walkFiles } from "./fsafe";
 import { withLock } from "./pid-lock";
@@ -25,13 +25,13 @@ import { give, group, type Identity, killAll, SHARED_GROUP, take } from "./users
 const STATE = STATE_DIR;
 /** Each engine's store: what a run's home is made from and kept back into. */
 export const STORE = `${STATE}/store`;
-/** The conversations of the engines that resume by their working directory. */
-export const CONVERSATIONS = "/var/lib/ta-conv";
 
-export const RECORDS = served();
-
+/**
+ * The engine's CLI record, checked whole when read (`servedRecord`), never at import: so what
+ * imports this module and reads no record (the hook program, `hook-entry.ts`) checks none.
+ */
 export function record(engine: string): Served {
-  const found = RECORDS.get(engine);
+  const found = servedRecord(engine);
   if (found === undefined) {
     throw new Error(`engine ${engine} has no CLI record`);
   }
@@ -141,26 +141,30 @@ export function dropHome(home: string): void {
 }
 
 /**
- * A run's home, made fresh by root in its root-only parent from the engine's store (its
- * kept paths alone), under the store's lock, its snapshot kept (the generation and each
- * secret's digest); `giveTree` then gives it to the run's user entry by entry: no other
- * user can reach it while it is made. A home made for an API-key run (`signedIn` false)
- * carries the store's sessions and never its secrets: the vendor sign-in's files (Codex's
- * `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no key run's
- * CLI can send them anywhere (the route probe proves it live).
+ * A run's home, made fresh by root in its root-only parent from the engine's store, under
+ * the store's lock, its snapshot kept (the generation and each secret's digest); `giveTree`
+ * then gives it to the run's user entry by entry: no other user can reach it while it is
+ * made. Of the store's sessions it holds those a resume of `session` reads (`resumePaths`),
+ * a new conversation's none, so no home copies the whole store. A home made for an API-key
+ * run (`signedIn` false) never carries the store's secrets: the vendor sign-in's files
+ * (Codex's `auth.json`, Claude's `.credentials.json`) stay out of a key run's reach, so no
+ * key run's CLI can send them anywhere (the route probe proves it live). Each file is
+ * written fresh, its time now, so an engine's own age rule (Codex compresses a rollout
+ * 7 days old, `compression.rs`) never finds one old.
  */
-async function makeHome(name: string, rec: Served, signedIn: boolean): Promise<string> {
+async function makeHome(name: string, rec: Served, signedIn: boolean,
+                        session: string | null): Promise<string> {
   safeDirs("/", HOMES, 0o711);
   const home = homeOf(name);
   remove(home);
   mkdirSync(home, { mode: 0o700 });
   const store = `${STORE}/${rec.id}`;
-  const { secrets, sessions } = keptPaths(rec);
+  const { secrets } = keptPaths(rec);
+  const taken = [...(signedIn ? secrets : []), ...resumePaths(rec, session)];
   const copied: Record<string, string> = {};
   const made = await withStore(rec, () => {
     for (const rel of sortedWalk(store)) {
-      if (isKept(signedIn ? [...secrets, ...sessions] : sessions, rel)
-          && (signedIn || !isKept(secrets, rel))) {
+      if (isKept(taken, rel)) {
         const bytes = safeRead(store, join(store, rel));
         if (bytes !== null) {
           safeWrite(home, join(home, rel), bytes, 0o600);
@@ -255,8 +259,11 @@ export async function keepHome(home: string, rec: Served, signin = false): Promi
 /**
  * The run's config files (its MCP config, its settings, its models file) are root's,
  * readable and never writable by its CLI, so an agent cannot rewrite its own MCP door or
- * trust; a directory in the home that holds nothing but them is root's too. In `{system}`,
- * root's, readable by the run's own group alone.
+ * trust; a directory in the home that holds nothing but them is root's too. One that holds
+ * what the CLI keeps as well (its home, its sessions, its secrets) is root's, writable by the
+ * run's group and sticky, so the CLI writes its own files there and never removes or replaces
+ * a config file (R5 P-hooks: a settings layer the record writes is never the agent's). In
+ * `{system}`, root's, readable by the run's own group alone.
  */
 function configOwned(rec: Served, home: string, system: string,
                      files: Iterable<string>, as: Identity): void {
@@ -271,6 +278,8 @@ function configOwned(rec: Served, home: string, system: string,
     lchownSync(file, 0, 0);
     for (let dir = dirname(file); dir.startsWith(`${home}/`); dir = dirname(dir)) {
       if (kept.some((path) => path === dir || path.startsWith(`${dir}/`))) {
+        lchownSync(dir, 0, as.gid);
+        chmodSync(dir, 0o1770);
         break;
       }
       lchownSync(dir, 0, 0);
@@ -295,8 +304,9 @@ export interface RunSession {
 
 /**
  * `act` run as a run runs, by every CLI the runner or the probes start: a pool user taken;
- * its home made from the engine's store (with its secrets when `signedIn`) and its own
- * root-owned directory (`systemOf`); `files` (an invocation's, by path) written, those in
+ * its home made from the engine's store (with its secrets when `signedIn`, and the files of
+ * the session it `resumes`, `makeHome`) and its own root-owned directory (`systemOf`), the
+ * one of its group; `files` (an invocation's, by path) written, those in
  * that directory root's and readable by the user's group, the rest root's in the home
  * (`configOwned`), and the home given to the user. Once `act` is over, however it ends:
  * every process of the user killed, what it left in the shared scratch removed, the home
@@ -305,6 +315,7 @@ export interface RunSession {
  */
 export async function withRunUser<T>(rec: Served, name: string,
                                      opts: { readonly signedIn: boolean;
+                                             readonly resumes: string | null;
                                              readonly keeps: boolean;
                                              readonly files?: ReadonlyMap<string, string> },
                                      act: (session: RunSession) => Promise<T>): Promise<T> {
@@ -312,9 +323,16 @@ export async function withRunUser<T>(rec: Served, name: string,
   const system = systemOf(name);
   let home: string | null = null;
   try {
-    home = await makeHome(name, rec, opts.signedIn);
+    home = await makeHome(name, rec, opts.signedIn, opts.resumes);
     safeDirs("/", SYSTEM, 0o755);
     remove(system);
+    // The one directory of the user's group, by which the dispatcher finds its run
+    // (`hooks.ts` `ownRun`): one a dead runner left for this user's last run goes.
+    for (const left of readdirSync(SYSTEM)) {
+      if (lstatSync(join(SYSTEM, left), { throwIfNoEntry: false })?.gid === as.gid) {
+        remove(join(SYSTEM, left));
+      }
+    }
     mkdirSync(system, { mode: 0o750 });
     chownSync(system, 0, as.gid);
     const files = opts.files ?? new Map<string, string>();

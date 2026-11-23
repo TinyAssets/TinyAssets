@@ -1,9 +1,20 @@
 name: Auto-enroll merge
 
 # An eligible pull request needs someone to arm auto-merge even when all
-# required checks pass. This workflow arms it. The merge queue still applies
-# docs/ops/merge-queue-ruleset.json, including the scope guard's review of
-# the actual diff against main.
+# required checks pass. This workflow arms it; GitHub queues an armed PR itself
+# once they pass. The merge queue still applies docs/ops/merge-queue-ruleset.json's
+# required checks, the `review` check (review.yml, ADR-038) and the scope guard's
+# check of the actual diff against main among them. Nothing is armed while the
+# rules GitHub applies to main differ from the file's (scripts/ruleset_drift.py):
+# a `review` the file requires and GitHub does not would let an unreviewed PR
+# merge.
+#
+# A person's pause holds: a PR whose newest auto-merge event is a disable by a
+# user stays off until a person enables it again. This workflow and
+# queue-handoff.yml disarm only with the repo's GITHUB_TOKEN, as
+# `github-actions[bot]`, so a user's disable is a person's (the coordinator's on
+# #5709, which each push re-armed). A removal from the queue records no disable,
+# so a fix pushed after a queue failure is armed again.
 
 on:
   # pull_request_target so this always runs the trusted copy from the default
@@ -39,11 +50,6 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
-          # Full history of commits and trees, no file contents: enough for the
-          # merge base and `git diff --raw` that the PR's diff key reads, while
-          # still never checking out or executing PR code.
-          fetch-depth: 0
-          filter: blob:none
 
       - name: Require the merge-attribution token
         # Fail loudly (hard rule 8), never fall back to GITHUB_TOKEN. With the
@@ -76,6 +82,8 @@ jobs:
           # No fallback: the step above refuses an empty secret, and after
           # enrolling the step checks that a USER armed or queued the PR.
           GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
+          # Every disarm's: the bot's, so none reads as a person's pause.
+          BOT_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         shell: bash
@@ -95,76 +103,26 @@ jobs:
               --jq '.data.repository.pullRequest | (.autoMergeRequest.enabledBy // .mergeQueueEntry.enqueuer // (if .state == "MERGED" then .mergedBy else null end)) | if . == null then "none" else "\(.__typename):\(.login)" end'
           }
 
-          PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-            --json autoMergeRequest,body,headRefOid,baseRefOid)"
+          # The ruleset is the one gate auto-merge relies on: arm nothing while the
+          # rules GitHub applies to main are not the file's.
+          python scripts/ruleset_drift.py --repo "$REPO"
+
+          PR_JSON="$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest,headRefOid)"
           STATE="$(jq -r \
             'if .autoMergeRequest == null then "no" else "yes" end' \
             <<<"$PR_JSON")"
           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
-          # Base and head from the SAME read, never the event's base with the
-          # current head: a rebase between the two would key the wrong diff.
-          BASE_OID="$(jq -r '.baseRefOid' <<<"$PR_JSON")"
-          jq -r '.body // ""' <<<"$PR_JSON" > "$RUNNER_TEMP/pr-body.md"
 
-          # Same diff key as pr-scope-guard.yml; empty on any failure, which
-          # leaves an exact head receipt as the only match. An unchanged
-          # rebase still carries when the cited commit can be fetched.
-          DIFF_KEY=""
-          if git fetch --no-tags --filter=blob:none origin \
-                "+refs/pull/${PR}/head:refs/remotes/pr/head" \
-                "+refs/heads/main:refs/remotes/origin/main" \
-              && git cat-file -e "${HEAD_OID}^{commit}" \
-              && git cat-file -e "${BASE_OID}^{commit}"; then
-            DIFF_KEY="$(python scripts/drain_review_gate.py --print-diff-key \
-              "$BASE_OID" "$HEAD_OID")" || DIFF_KEY=""
-          fi
-
-          # Every PR needs a receipt for its head (2026-10-02): on 2026-10-01
-          # this step armed #4247 -- a superseded head with a known data-loss
-          # bug and no review receipt -- and the queue accepted it.
-          while IFS= read -r sha; do
-            [ -n "$sha" ] || continue
-            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
-              git fetch --no-tags --filter=blob:none origin "$sha" || true
-            fi
-          done < <(python scripts/drain_review_gate.py --list-carry-heads \
-              --head "$HEAD_OID" \
-              --body-file "$RUNNER_TEMP/pr-body.md" || true)
-          if python scripts/drain_review_gate.py \
-              --head "$HEAD_OID" \
-              --base "$BASE_OID" \
-              --diff-key "$DIFF_KEY" \
-              --body-file "$RUNNER_TEMP/pr-body.md"; then
-            REVIEW_GATE="allow"
-          else
-            REVIEW_GATE="deny"
-          fi
-
-          if [ "$REVIEW_GATE" = "deny" ]; then
-            if [ "$STATE" = "yes" ]; then
-              # Fetch/diff evaluation can outlive a new head or receipt. A
-              # stale denial must not disarm that newer enrollment. Compare
-              # the same fields, including the body and enrollment identity.
-              # This is not an atomic compare-and-disable; the final
-              # read-to-mutation gap remains.
-              CURRENT_PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-                --json autoMergeRequest,body,headRefOid,baseRefOid)"
-              if [ "$CURRENT_PR_JSON" != "$PR_JSON" ]; then
-                echo "PR state changed since receipt evaluation; leaving current enrollment alone."
-                exit 0
-              fi
-              gh pr merge "$PR" --repo "$REPO" --disable-auto
-              echo "Disabled auto-merge: no current review receipt for this head."
-            else
-              echo "PR remains unenrolled pending a review receipt for this head."
-            fi
+          # A person's pause: the newest auto-merge event on the timeline (oldest
+          # first) is a user's disable. Only a person re-arms it.
+          LAST="$(gh api --paginate "repos/$REPO/issues/$PR/timeline?per_page=100" \
+            --jq '.[] | select(.event == "auto_merge_enabled" or .event == "auto_merge_disabled") | "\(.event):\(.actor.type)"' \
+            | tail -n 1)"
+          if [ "$STATE" = "no" ] && [ "$LAST" = "auto_merge_disabled:User" ]; then
             {
               echo "### Auto-merge"
               echo ""
-              echo "Not enrolled: every PR needs exactly one current review receipt:"
-              echo "\`Drain-Review-Verdict: APPROVE\`"
-              echo "\`Drain-Review-Head: <40-character lowercase head SHA>\`"
-              echo "\`Drain-Review-Artifact: <docs path or GitHub URL>\`"
+              echo "Not enrolled: a person disabled auto-merge on this PR. It stays off until a person enables it again."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -177,7 +135,7 @@ jobs:
           python scripts/queue_attempts.py check --repo "$REPO" --pr "$PR" || CAP_RC=$?
           if [ "$CAP_RC" -eq 3 ]; then
             if [ "$STATE" = "yes" ]; then
-              gh pr merge "$PR" --repo "$REPO" --disable-auto || true
+              GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR" --repo "$REPO" --disable-auto || true
             fi
             {
               echo "### Auto-merge"
@@ -200,7 +158,7 @@ jobs:
               exit 0
             fi
             echo "PR #${PR} was enrolled by ${ENROLLER}; re-enrolling with the attribution token."
-            gh pr merge "$PR" --repo "$REPO" --disable-auto
+            GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR" --repo "$REPO" --disable-auto
           fi
 
           # `|| true`: enrolment can legitimately fail — e.g. the PR is already
@@ -220,8 +178,8 @@ jobs:
             {
               echo "### Auto-merge"
               echo ""
-              echo "Enrolled. This PR will merge itself once the required checks pass"
-              echo "(\`docs/ops/merge-queue-ruleset.json\`)."
+              echo "Enrolled. This PR will merge itself once the required checks pass,"
+              echo "\`review\` among them (\`docs/ops/merge-queue-ruleset.json\`)."
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Could not enrol PR #${PR} — not fatal, leaving it to the humans:"

@@ -286,9 +286,8 @@ describe("a file path", () => {
     ["a lone surrogate", `${W}/a\ud800`],
     ["a name past 255 bytes", `${W}/${"é".repeat(128)}`],
     ["a path past 4096 bytes", `${W}/${"a/".repeat(2046)}a`],
-    ["a path outside the roots", "/etc/passwd"],
-    ["the temporary area's parent", "/.ta"],
-    ["a prefix of a root", "/workspaces/a"],
+    ["a path outside the workspace", "/etc/passwd"],
+    ["a prefix of the workspace", "/workspaces/a"],
     ["not text", 7],
   ])("refuses %s", async (_what, path) => {
     const r = await rig();
@@ -512,7 +511,7 @@ describe("every file door", () => {
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await write(r, `${W}/b`, "1");
     // Due now; or workerd already fired the alarm the due job armed, and the lane ran:
-    // the expired upload is gone (the race the slice D review's round 2 found).
+    // the expired upload is gone.
     const due = ((await laneAt(r.stub, "files")) ?? Infinity) <= Date.now() / 1000;
     const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_intents")).length === 0;
     expect(due || ran).toBe(true);
@@ -547,7 +546,6 @@ describe("the manifest's queries", () => {
         plan("SELECT MIN(prune_after) FROM file_history WHERE prune_after IS NOT NULL"),
         plan("SELECT MIN(gc_after) FROM file_chunks WHERE gc_after IS NOT NULL"),
         plan("SELECT MIN(expires_at) FROM file_intents"),
-        plan("SELECT MIN(expires_at) FROM file_temps"),
       ];
     });
     for (const plan of plans) {

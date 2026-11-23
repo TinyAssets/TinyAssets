@@ -1,13 +1,13 @@
 /**
- * Outside-client authority over the owner's agents (agent research §4; tasks 5, A2; kept
- * by ADR-034 as a run's authority): what work an outside client's stamp may still do,
+ * Outside-client authority over the owner's agents (agent research §4; kept by ADR-034 as
+ * a run's authority): what work an outside client's stamp may still do,
  * decided at each check.
  *
  * Work runs under an authority: the owner's, an outside client's stamp, or none. None can
  * do nothing, so the owner's case is explicit, never the absence of a stamp. A stamp is the
  * client, its grant's generation and its sign-in time, plus where the work acts: the
  * universe (the command center) and the agent a scoped grant's triples name, fixed when
- * the work is admitted, as the Python's run context fixed them for `check_identity`.
+ * the work is admitted.
  *
  * Under a client's stamp each check reads, synchronously, that the client's grant still
  * stands at the stamped generation (`Grants.standing`: not changed, not revoked, no revoke
@@ -107,6 +107,8 @@ export interface Grant extends StandingGrant {
   readonly generation: number;
   /** The tool profile the client is served (`directory` or `custom`). */
   readonly profile: ProfileName;
+  /** The owner's agent the client is (`actingAgent`), `MAIN_AGENT` until the owner names one. */
+  readonly agent: string;
 }
 
 /** What holds capabilities: a grant, or a run's own scopes (its grant's, at admission). */
@@ -235,8 +237,21 @@ export class Authority {
   }
 }
 
-/** The agent a scoped client acts as when its call names none. */
+/**
+ * The owner's default agent: the one a grant is until the owner names another, and the
+ * owner's own calls act as. Frozen: the owner's schema spells it (the frozen-bounds guard
+ * holds the two equal).
+ */
 export const MAIN_AGENT = "main";
+
+/**
+ * The owner's agent a call acts as where it names none, whose definition an outside client
+ * reads (`definitionRead`) and where a scoped grant's triples are held: a run's own agent;
+ * an outside client's, the one its grant names; the owner's, `MAIN_AGENT`.
+ */
+export function actingAgent(account: Pick<Account, "run" | "grant">): string {
+  return account.run?.agent ?? account.grant?.agent ?? MAIN_AGENT;
+}
 
 /**
  * Whose files scope a door's rows count in (ADR-035): the owner's, an outside client's

@@ -1,5 +1,5 @@
 /**
- * The archive (slice STORE item 2, `segments.ts`; ADR-035): the `archive` lane's pass, which
+ * The archive (`segments.ts`; ADR-035): the `archive` lane's pass, which
  * moves acked mail out of the hot rows into immutable segments in R2 and rewrites segments a
  * deleted agent's mail is gone from (`MoveReader`, `MoveHold`: a move's reads and its held
  * units), and the reads of archived mail: a post's archived parent, a record by its seq, and
@@ -30,7 +30,7 @@ import { OWNER } from "./authority";
 import type { Notices } from "./notices";
 import {
   type Content as Stored, lineAt, makeChunk, streamChunks, MOVE_BYTES, MOVE_RECORDS,
-  MoveTable, pack, parseTrailer, planSegment, roomMembers, SEGMENT_LEAST_BYTES,
+  MoveTable, pack, parseTrailer, planSegment, SEGMENT_LEAST_BYTES,
   type Source as Run,
 } from "./segments";
 
@@ -47,7 +47,7 @@ const ARCHIVE_FAILS_TOLD = 3;
 const ARCHIVE_RETRY_S = 60;
 
 /**
- * How long a pass refused `busy` holds its lane (review round 11, Lows A and B): the pool's
+ * How long a pass refused `busy` holds its lane: the pool's
  * own wait (`SLOT_WAIT_MS`), the term a full queue of larger holds turns over within (the
  * memory leg checks it), so the units held when it was refused have been given back.
  */
@@ -62,7 +62,7 @@ const ARCHIVE_BUSY_TOLD = "New mail is held at its ceiling because this server i
     ARCHIVE_BUSY_RETRY_S} seconds.`;
 
 /**
- * An archive move's reads of stored contents (review N5): each chunk read whole through
+ * An archive move's reads of stored contents: each chunk read whole through
  * `FILES` (which rechecks its hash), the last one kept for the next range in it; and each
  * content the move's table gives a hash for (a placed body, its message's) checked as its
  * chunks are first read, in order, in the move's first pass (`bodiesChecked`), one hash at a
@@ -290,13 +290,13 @@ export class Archive {
    * a page may show (from `body_offset` when it is the page's first message), the windows
    * stopping at `WINDOWS_BYTES` past the first; the first left unread is the frontier, so
    * the page stops below it and the next goes on from there. Each fence's content and chunks
-   * are located in the fences' own unit, with the archive's mark (review N10); a segment
+   * are located in the fences' own unit, with the archive's mark; a segment
    * replaced after it (a merge, a compaction, a purge's rewrite) is read from its chunks in
    * their grace, and a read that fails all the same (a chunk collected early, past the figure)
    * is a changed archive, read again, when the mark moved (`#segmentsRead`). Its hot rows are
    * read in a later unit, which first checks that no segment made since may hold the chain's
    * room past `after`: a move between them took mail out of the hot rows into a segment the
-   * read never saw (review N9), so the read is null, and `mailChain` reads again from the
+   * read never saw, so the read is null, and `mailChain` reads again from the
    * fences. Another room's moves never count. The page stays the one bounded page
    * `ledger.chain` fits; only the reads are repeated, at most `READ_TRIES`.
    */
@@ -354,7 +354,7 @@ export class Archive {
     }, (read) => read !== null && read.messages.length === 0 && read.placed.length > 0);
   }
 
-  // -- THE ARCHIVE (slice STORE item 2, `segments.ts`) --------------------------------------
+  // -- THE ARCHIVE (`segments.ts`) -----------------------------------------------------------
 
   /**
    * Segments' reads from R2, outside any unit, after the unit that took their fences, their
@@ -423,7 +423,7 @@ export class Archive {
   /**
    * An archived message by the seq its id carries, from its segment; null when none. Its
    * fences' contents are located with them and the archive's mark, and a read that failed
-   * because the archive changed is read again (`#segmentsRead`, review N10), at most
+   * because the archive changed is read again (`#segmentsRead`), at most
    * `READ_TRIES`, then refused `storage_busy`.
    */
   async archived(seq: number, messageId: string): Promise<ArchivedMail | null> {
@@ -451,9 +451,8 @@ export class Archive {
         return null;
       }
       const mail = found.mail;
-      const purged = await this.#door(() => this.#ledger.purgedAgents());
-      return mail.message.message_id === messageId
-        && !roomMembers(mail.message.room_id).some((member) => purged.includes(member))
+      const purged = await this.#door(() => this.#ledger.purgedRooms());
+      return mail.message.message_id === messageId && !purged.includes(mail.message.room_id)
         ? mail : null;
     }
     throw archiveMoving();
@@ -482,7 +481,7 @@ export class Archive {
    * or none: never a poll.
    */
   next(now: number): number | null {
-    return this.#ledger.archiveDue() || this.#ledger.purgedAgents().length > 0
+    return this.#ledger.archiveDue() || this.#ledger.purgedRooms().length > 0
       || this.#ledger.archiveCompactPending() ? now : null;
   }
 
@@ -491,9 +490,9 @@ export class Archive {
    * else one move of acked mail (a straggler's merge, or the tail's new segment). A move
    * that would leave the storage figure higher than it found it is refused for the figure
    * (`archive_full`): the archive is then blocked, and a post at the hot ceiling is the one
-   * wall, `storage_full`, until the owner frees space (review M1). A failure outside (the
+   * wall, `storage_full`, until the owner frees space. A failure outside (the
    * storage service down) holds the lane a while. Each pass is counted in storage as it
-   * begins and cleared as it ends (review N3), so a pass killed with its isolate (for memory,
+   * begins and cleared as it ends, so a pass killed with its isolate (for memory,
    * say) still counts: at `ARCHIVE_FAILS_TOLD` in a row the owner is told once, with the last
    * error as it said it, or that the passes stopped before they could say.
    */
@@ -517,7 +516,7 @@ export class Archive {
       // A purge's rewrite first, so a deleted agent's mail leaves R2 promptly; the order is
       // not needed for correctness (a merge into a segment that still holds it keeps it,
       // and its bloom names the agent, so the purge rewrites that segment in turn). A
-      // rewrite that fails never holds the move behind it (review N7): the move runs, and
+      // rewrite that fails never holds the move behind it: the move runs, and
       // the rewrite's failure is the pass's, counted and told at three.
       // Each holds its own units of the isolate's pool (`MoveHold`), released as it ends.
       let rewrote = false;
@@ -532,7 +531,7 @@ export class Archive {
         }
       }
       // The move runs whenever mail is due (the hot set past half), a rewrite or not, so a
-      // long purge never holds new mail at `storage_busy` (review N8); the rewrite's table
+      // long purge never holds new mail at `storage_busy`; the rewrite's table
       // and units are let go before it, so the pass holds one move's at a time.
       if (!rewrote || await this.#door(() => this.#ledger.archiveDue())) {
         await this.#archiveMove();
@@ -563,8 +562,8 @@ export class Archive {
         return { hold: clock() + ARCHIVE_RETRY_S };
       }
       if (isSlotBusy(error)) {
-        // The isolate's pool full (`busy`, `MoveHold`): contention, not storage (round 11,
-        // Low A). Not a failed pass, never logged: the lane tries again once the pool's own
+        // The isolate's pool full (`busy`, `MoveHold`): contention, not storage. Not a
+        // failed pass, never logged: the lane tries again once the pool's own
         // wait has turned its queue over. The owner is told only when it puts storage at risk,
         // the hot set at its ceiling (the next post refused `storage_busy`) with the moves
         // blocked: once a blocked spell, since the last segment the lane placed.
@@ -584,7 +583,7 @@ export class Archive {
       }
       console.error("the archive lane's pass failed", error);
       if (begun !== null) {
-        // What failed, as it said it, never a cause it did not give (review N1).
+        // What failed, as it said it, never a cause it did not give.
         const said = (error instanceof Error ? error.message.split("\n")[0]! : String(error))
           .slice(0, 200);
         const fails = begun.fails + 1;
@@ -636,7 +635,7 @@ export class Archive {
    * One rewrite pass: the next segment a deleted agent's mail may be in, without that mail;
    * one left under `SEGMENT_LEAST_BYTES` takes in its neighbours by key (never by id), so
    * ranges stay disjoint. Each segment is scanned with the purge's filter: only what is kept
-   * enters the move's table, the rest streams past (review N7).
+   * enters the move's table, the rest streams past.
    *
    * Bounded, compacting across passes: a pass takes in a neighbour only while what it keeps
    * and the neighbour's records stay within `MOVE_RECORDS` and the neighbours it scans
@@ -644,18 +643,18 @@ export class Archive {
    * least, places what it kept as one small segment: the next pass, finding a segment under
    * the least that is not the only one (`purgeNext`, derived from the fences alone, so a
    * restore keeps it), takes it back as its target and goes on taking in its neighbours,
-   * and so on until it holds the least or stands alone. Each pass leaves the archive whole and disjoint, only less compacted
-   * until the last; the first neighbour always fits (a small segment's records are under
-   * the least's worth and a piece's at most 49,933), so every pass makes progress. False
-   * when no rewrite waits.
+   * and so on until it holds the least or stands alone. Each pass leaves the archive whole and
+   * disjoint, only less compacted until the last; the first neighbour always fits (a small
+   * segment's records are under the least's worth and a piece's at most 49,933), so every pass
+   * makes progress. False when no rewrite waits.
    */
   async #archiveRewrite(): Promise<boolean> {
     const target = await this.#door(() => this.#ledger.purgeNext());
     if (target === null) {
       return false;
     }
-    const purged = new Set(await this.#door(() => this.#ledger.purgedAgents()));
-    const keep = (room: string) => !roomMembers(room).some((member) => purged.has(member));
+    const purged = new Set(await this.#door(() => this.#ledger.purgedRooms()));
+    const keep = (room: string) => !purged.has(room);
     // Its table's units before its records arrive, grown as it takes in each neighbour.
     const hold = await MoveHold.take(ownerSlots(), target.fence.records);
     try {
@@ -719,10 +718,10 @@ export class Archive {
   }
 
   /**
-   * A segment's records appended to a move's table as ranges of its content, never held
-   * (review N5): its trailer read, then each record's first line alone (its room, its chain,
+   * A segment's records appended to a move's table as ranges of its content, never held:
+   * its trailer read, then each record's first line alone (its room, its chain,
    * its time), the chunks read whole one at a time, in order. Only the records `keep` takes
-   * (by room) enter the table (review N7: a purge's dropped mail streams past). Its records
+   * (by room) enter the table (a purge's dropped mail streams past). Its records
    * read, and those kept.
    */
   async #scanSegment(fence: Fence, table: MoveTable, reader: MoveReader | null,
@@ -750,7 +749,7 @@ export class Archive {
    * replacing `replaced` and the hot batch `seqs` in its second unit (ADR-035's order: the
    * bytes to R2 first, held by uploads that may pass the storage figure, then named in one
    * unit, which may not leave the stored figure above both the figure and where the move
-   * found it: `archive_full`). Streamed (review N5, the memory research's §2 A): each piece
+   * found it: `archive_full`). Streamed: each piece
    * planned from its records' lengths; pass 1 makes each chunk from the source ranges it
    * covers, hashes it and drops it (and checks each placed body against its message's hash),
    * for `Files.begin`; pass 2 makes each again and sends it, one a call. The sources do not
@@ -783,13 +782,11 @@ export class Archive {
     }, () => reader.letGo());
     reader.bodiesChecked();
     const pieces = plans.map(({ plan, indices: at }) => {
-      const members = new Set<string>();
+      const rooms = new Set<string>();
       let firstAt = Number.MAX_SAFE_INTEGER;
       let lastAt = 0;
       for (const n of at) {
-        for (const member of roomMembers(table.room(n))) {
-          members.add(member);
-        }
+        rooms.add(table.room(n));
         firstAt = Math.min(firstAt, table.at(n));
         lastAt = Math.max(lastAt, table.at(n));
       }
@@ -797,7 +794,7 @@ export class Archive {
         first_key: plan.first, last_key: plan.last, first_at: firstAt, last_at: lastAt,
         records: plan.records.count, bytes: plan.size,
         trailer_offset: plan.trailer_offset, trailer_bytes: plan.trailer_bytes,
-        members: Ledger.members(members) } };
+        rooms: Ledger.rooms(rooms) } };
     });
     const begun = await this.#door(() => {
       const before = this.#files.storedNow().stored;

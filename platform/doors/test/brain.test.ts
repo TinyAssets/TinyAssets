@@ -1,5 +1,5 @@
 /**
- * The shared brain at the doors (slice BRAIN), in workerd: an outside client's agent is told
+ * The shared brain at the doors, in workerd: an outside client's agent is told
  * the brain's rules; each client's vendor is recorded at sign-in (a CIMD host verified, a
  * registered name unverified); dynamic registration only for a vendor with no CIMD, behind
  * `DCR_ENABLED`; and the local proof of one brain: two MCP clients of one owner, a fact one
@@ -7,8 +7,9 @@
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ORIGIN } from "../../contract/src/identity";
 
-import { CLIENT_INSTRUCTIONS, RUN_INSTRUCTIONS } from "../src/instructions";
+import { INSTRUCTIONS } from "../src/instructions";
 import { mcpOrigin } from "../src/binder";
 import type { DoorsEnv } from "../src/env";
 import {
@@ -63,8 +64,7 @@ beforeEach(async () => {
 describe("an outside client's agent", () => {
   it("is told the brain's rules when it connects, and a run its working files", async () => {
     const client = await mcpClient(await connect(await registerClient(), { owner: owner() }));
-    expect(client.getInstructions()).toBe(CLIENT_INSTRUCTIONS);
-    expect(CLIENT_INSTRUCTIONS).not.toBe(RUN_INSTRUCTIONS);
+    expect(client.getInstructions()).toBe(INSTRUCTIONS.custom);
     await client.close();
   });
 });
@@ -108,11 +108,11 @@ describe("dynamic registration (the founder's ruling: for vendors with no CIMD)"
     expect((await register(doorsEnv, "Grok")).status).toBe(404);
     const metadata = await (await call(new Request(
       url("/.well-known/oauth-authorization-server")), on)).json<Record<string, unknown>>();
-    expect(metadata["registration_endpoint"]).toBe("https://tinyassets.io/oauth/register");
+    expect(metadata["registration_endpoint"]).toBe(`${ORIGIN}/oauth/register`);
   });
 
   it("takes no registration for a vendor whose redirects are not recorded yet, a CIMD " +
-     "vendor's name or none, and none of the review's phishing ones (M3)", async () => {
+     "vendor's name or none, and none of the phishing look-alikes", async () => {
     const refused = async (name: string, redirect = "https://client.test/cb") => {
       const answer = await register(on, name, redirect);
       expect(answer.status, name).toBe(400);
@@ -133,7 +133,7 @@ describe("dynamic registration (the founder's ruling: for vendors with no CIMD)"
   });
 
   it("logs one line for a refused registration naming a dcr vendor, for the founder to " +
-     "record its redirects (R2-M1), and none for any other", async () => {
+     "record its redirects, and none for any other", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await register(on, "Grok", "https://real-grok.example/oauth/callback");
@@ -149,7 +149,7 @@ describe("dynamic registration (the founder's ruling: for vendors with no CIMD)"
   });
 });
 
-describe("a CIMD document on a vendor's host that sends access elsewhere (review M2)", () => {
+describe("a CIMD document on a vendor's host that sends access elsewhere", () => {
   it("is that vendor unverified, and its consent says where access goes", async () => {
     const document = "https://chatgpt.com/some/user/path/cimd.json";
     const redirect = "https://attacker.example/cb";
@@ -167,7 +167,7 @@ describe("a CIMD document on a vendor's host that sends access elsewhere (review
   });
 });
 
-describe("file_write over MCP (review H1)", () => {
+describe("file_write over MCP", () => {
   it("never replaces a file with no etag: null is refused, and \"\" on a file there is a " +
      "conflict", async () => {
     const alice = owner();

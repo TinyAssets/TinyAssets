@@ -13,8 +13,9 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM } from "../paths";
@@ -102,7 +103,53 @@ describe("the guard kit", () => {
   });
 });
 
+/**
+ * What the entry at `path` exports that workerd cannot serve, which fails the Worker's start:
+ * workerd takes every named export of an entry as a handler or an entrypoint, so the entry
+ * exports its default and classes alone (a re-export, a class its module declares).
+ */
+function unservable(path: string): string[] {
+  const parsed = (at: string) =>
+    ts.createSourceFile(at, readFileSync(at, "utf8"), ts.ScriptTarget.Latest, true);
+  const classes = (file: ts.SourceFile) =>
+    new Set(file.statements.filter(ts.isClassDeclaration).map((node) => node.name?.text));
+  const file = parsed(path);
+  return file.statements.flatMap((node): string[] => {
+    if (ts.isExportDeclaration(node) && !node.isTypeOnly) {
+      const from = node.moduleSpecifier as ts.StringLiteral | undefined;
+      const declared = classes(from === undefined ? file
+        : parsed(join(dirname(path), `${from.text}.ts`)));
+      return node.exportClause !== undefined && ts.isNamedExports(node.exportClause)
+        ? node.exportClause.elements.filter((each) => !each.isTypeOnly)
+          .map((each) => (each.propertyName ?? each.name).text)
+          .filter((name) => !declared.has(name))
+        : [node.getText(file)];
+    }
+    const exported = ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) =>
+      modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+    return exported && !ts.isClassDeclaration(node) && !ts.isInterfaceDeclaration(node)
+      && !ts.isTypeAliasDeclaration(node) ? [node.getText(file).split("\n")[0]!] : [];
+  });
+}
+
 describe("the Worker kit", () => {
+  it("has every Worker's entry export its default and classes alone, which workerd serves",
+     () => {
+    for (const worker of workerFolders()) {
+      const entry = readWrangler(join(PLATFORM, worker))["main"] as string;
+      expect(unservable(join(PLATFORM, worker, entry)), worker).toEqual([]);
+    }
+    const dir = mkdtempSync(join(tmpdir(), "entry-"));
+    try {
+      writeFileSync(join(dir, "other.ts"), "export class A {}\nexport const B = 1;\n");
+      writeFileSync(join(dir, "index.ts"), 'export { A, B } from "./other";\n' +
+        'export const HEADER = "x";\nexport type T = 1;\nexport default {};\n');
+      expect(unservable(join(dir, "index.ts"))).toEqual(["B", 'export const HEADER = "x";']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reads a Worker's config by its folder or its file, and fails loudly on one that does " +
      "not parse", () => {
     expect(readWrangler(join(PLATFORM, "gateway")))

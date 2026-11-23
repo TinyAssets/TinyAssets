@@ -1,6 +1,6 @@
 /**
- * The vendor's own sign-in through the doors (slice SIGNIN), in workerd through the real owner
- * object (its `SANDBOX` a recording fake, `entry.ts`): the owner app's `signin/*` routes, and
+ * The vendor's own sign-in through the doors, in workerd through the real owner object (its
+ * `SANDBOX` a recording fake, `ci/fake-sandbox.ts`): the owner app's `signin/*` routes, and
  * the sign-in's event door on the egress host, by the egress token E2B's transform sets and
  * the runner's secret, the prompt it posts reaching the owner's sign-in list; and the past
  * runs' route.
@@ -98,7 +98,7 @@ describe("the sign-in routes and door", () => {
     const by = new Map(listed.sources.map((source) => [source.id, source.signin]));
     expect(by.get("claude-code")).toMatchObject({ enabled: true,
                                                   hosted_use: { verdict: "allowed" } });
-    for (const id of ["codex", "gemini", "kimi"]) {
+    for (const id of ["codex", "gemini"]) {
       expect(by.get(id)).toMatchObject({ enabled: false });
     }
     await setControl({ ...OPEN, signins: { codex: true, "claude-code": false } });
@@ -110,8 +110,7 @@ describe("the sign-in routes and door", () => {
     expect(await claude.text()).toMatch(/signin_off/);
   });
 
-  it("read each switch off the catalog the doors serve, in the list and in the binding (D5)",
-     async () => {
+  it("read each switch off the catalog the doors serve, in the list (D5)", async () => {
     // A served catalog unlike the bundled one: Codex's sign-in allowed by its verdict, and
     // one more record that signs in, off by its own until the record switches it on.
     const codex = (records: readonly unknown[], id: string, verdict: string) => {
@@ -135,14 +134,11 @@ describe("the sign-in routes and door", () => {
     };
     const first = await listedOn();
     expect([first.get("codex"), first.get("test_login")]).toEqual([true, false]);
-    // The binding the object holds a sign-in to carries the same switch.
-    expect((await appPost("signin/start", app.access_token, null, { engine: "codex" }, {},
-                          served)).status).toBe(200);
     await setControl({ ...OPEN, signins: { test_login: true } });
     expect((await listedOn()).get("test_login")).toBe(true);
   });
 
-  it("always let a source switched off be signed out, so its login can be removed (review H1)",
+  it("always let a source switched off be signed out, so its login can be removed",
      async () => {
     const { app } = await signedIn();
     // The founder turns Codex off (its vendor's terms turn out to forbid hosting it).

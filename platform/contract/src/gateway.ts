@@ -18,7 +18,7 @@
  * (`metering`, `doorbellInput`, `ringRequest`), so its builder and its reader hold one rule.
  */
 import { keyed, object, whole } from "./checks.ts";
-import type { EgressScope, Source } from "./egress-scope.ts";
+import type { EgressScope, ServiceSource, Source } from "./egress-scope.ts";
 import type { ModelRecord } from "./model-record.ts";
 import { Refusal } from "./refusal.ts";
 import { AUTH_HEADER } from "./wake-records.ts";
@@ -60,7 +60,7 @@ export interface Revoked {
 /**
  * What a setup check found: the credential works, the models it can be asked for, and
  * where sandbox egress may forward it (`egress`, its sealed base URL and endpoints), which
- * the owner's object keeps to refuse an endpoint not sealed before any forward (G4).
+ * the owner's object keeps to refuse an endpoint not sealed before any forward.
  */
 export interface Verified {
   readonly models: readonly ModelRecord[];
@@ -214,7 +214,7 @@ export interface GatewayService {
   resealDoorbell(owner: string, subscription: string, version: number, blob: string):
     Promise<Resealed>;
   /**
-   * One wake sent with a doorbell subscription's sealed secret (slice W): the gateway opens
+   * One wake sent with a doorbell subscription's sealed secret: the gateway opens
    * the blob (and the replaced one's, inside its rotation window) and makes the send.
    */
   ringDoorbell(owner: string, subscription: string, version: number, blob: string,
@@ -227,18 +227,21 @@ export interface GatewayService {
  * forwarding, no keyring). Every failure is one of its fixed codes.
  */
 export interface ConnectService {
-  /** A pasted API key, sealed for the connection with its source record's values. */
-  seal(owner: string, connection: string, version: number, key: string, record: Source):
-    Promise<Sealed>;
+  /**
+   * A pasted API key, sealed for the connection with its source record's values, or a
+   * service's (`serviceSource`).
+   */
+  seal(owner: string, connection: string, version: number, key: string,
+       record: Source | ServiceSource): Promise<Sealed>;
   /** An authorization code exchanged, and what it buys sealed. */
   exchange(owner: string, connection: string, version: number, grant: AuthorizationGrant,
            record: Source): Promise<Exchanged>;
   /** A sealed credential checked against its provider, and its models listed. */
   verify(owner: string, connection: string, version: number, blob: string): Promise<Verified>;
-  /** A wake token the owner pasted, sealed for its subscription (slice W). */
+  /** A wake token the owner pasted, sealed for its subscription. */
   sealDoorbell(owner: string, subscription: string, version: number, input: DoorbellInput):
     Promise<Sealed>;
-  /** An MCP Events callback, verified by a signed challenge, then sealed (slice W). */
+  /** An MCP Events callback, verified by a signed challenge, then sealed. */
   verifyDoorbell(owner: string, subscription: string, version: number, input: DoorbellInput):
     Promise<DoorbellVerified>;
 }

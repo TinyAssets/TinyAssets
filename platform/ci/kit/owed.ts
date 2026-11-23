@@ -1,5 +1,5 @@
 /**
- * The `owed` ratchet (untangle wave 2): a guard can land before the fixes that make it pass.
+ * The `owed` ratchet: a guard can land before the fixes that make it pass.
  *
  * Each workspace's `guards/rules.ts` may export `OWED`, the violations it still owes, each
  * tagged with the fix that removes it. A guard fails on any violation its workspace does not
@@ -12,7 +12,10 @@ import { join } from "node:path";
 import { PLATFORM } from "../paths.ts";
 
 export interface Owed {
-  /** The guard that finds it (`"layers"`, the import-layer table's; `"refusals"`; `"kernels"`). */
+  /**
+   * The guard that finds it (`"layers"`, the import-layer table's; `"refusals"`; `"kernels"`).
+   * `"cutover"` (the manifest's) is owed by the file it finds.
+   */
   readonly guard: string;
   /** The violation, exactly as the guard names it. */
   readonly what: string;
@@ -27,8 +30,8 @@ export interface Found {
 }
 
 /** The guards a workspace may owe: each one's test holds `ratchet` over what it finds. */
-export const GUARDS: readonly string[] = Object.freeze(["kernels", "layers", "literals",
-                                                         "refusals"]);
+export const GUARDS: readonly string[] = Object.freeze(["cutover", "kernels", "layers",
+                                                         "literals", "refusals"]);
 
 /** Each entry owed to a guard no test holds, which would never be found stale. */
 export function unheld(owed: ReadonlyMap<string, readonly Owed[]>): string[] {
@@ -56,9 +59,9 @@ export function kernels(fix: string, kernel: string,
 }
 
 /**
- * The literal guard's finding (`deploy/guards/literals.test.ts`, untangle B10): the file
- * `from`, by its path from the repository root, spells live names `count` times outside the
- * configs and `deploy/platform.json`. It names none, so the entry that owes it spells none.
+ * The literal guard's finding (`deploy/guards/literals.test.ts`): the file `from`, by its path
+ * from the repository root, spells live names `count` times outside the configs and
+ * `deploy/platform.json`. It names none, so the entry that owes it spells none.
  */
 export const literalBreak = (from: string, count: number): string =>
   `${from}: live names ×${count}`;

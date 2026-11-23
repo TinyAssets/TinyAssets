@@ -10,11 +10,15 @@
  *   acknowledged and never reaches it. Each owner's import must also be done (its marker,
  *   `doneName`: the queue's backlog is no field of the Queues API's queue, so the import's own
  *   marker says it is drained). The result goes to the window's record (`--record`, 0600).
- * - `admit`: only once every bundle verified clean in the record and the dead-letter queue is
- *   empty: one `admit` message an owner, in turn, each answered before the next (the doors set
- *   its tier, admit it, suspend it for each old reason, then write its `o:` record). One owner
- *   that failed blocks every admit: going on without it is the founder's call, never this
- *   step's. It never admits an owner the old stack never admitted (`absent`).
+ * - `admit`: first its own deletion check, made by window.sh's admit from the current off-host
+ *   requests right before it and taken once (`deletions.ts`), so no admit runs on an older
+ *   read; then, only once every bundle it admits verified clean in the record and the
+ *   dead-letter queue is empty, each withheld owner (one whose original owner asked to be
+ *   deleted) discarded and unstaged, as `wipe` discards; then one `admit` message for each
+ *   other owner, in turn, each answered before the next (the doors set its tier, admit it,
+ *   suspend it for each old reason, then write its `o:` record). One owner that failed blocks
+ *   every admit: going on without it is the founder's call, never this step's. It never
+ *   admits an owner the old stack never admitted (`absent`), nor a withheld one.
  * - `wipe`: one `discard` message an owner whose index is still staged (`importDiscard`: no
  *   tombstone, no erased record, no issuer's deletion), each answer's namespace kept in the
  *   record; then the directory's `o:rehearsal-<run>-` records deleted and the staging
@@ -52,6 +56,7 @@ import { QUEUES } from "../contract/src/queue-names";
 import type { Cloudflare } from "../deploy/cloudflare";
 
 import { type Answers, clean, type Differences, differences, expectedOf } from "./check";
+import { takeCheck } from "./deletions";
 import {
   bundlesIn, checkRun, cloudflareOf, type Fetcher, type Inputs, queueId, s3Request, type Staged,
 } from "./stage";
@@ -282,20 +287,25 @@ function unverified(bundles: readonly Staged[], record: WindowRecord): number {
 }
 
 /**
- * `admit`: every owner verified clean and the dead-letter queue empty, or nothing is admitted;
- * then each owner admitted in turn, its answer read before the next.
+ * `admit`, after its own deletion check (`takeCheck`, taken once, before anything else): every
+ * owner it admits verified clean and the dead-letter queue empty, or nothing is done; then
+ * each withheld owner discarded; only then each other owner admitted in turn, its answer read
+ * before the next. A withheld owner is never sent an admit.
  */
 export async function admit(out: string, run: string, window: Window, recordFile: string,
-                            print: (line: string) => void): Promise<StepSummary> {
+                            checkFile: string, print: (line: string) => void):
+    Promise<StepSummary> {
   checkRun(run);
   const bundles = bundlesIn(out);
+  const withheld = takeCheck(checkFile, run, bundles);
+  const admitting = bundles.filter((staged) => !withheld.has(staged.key));
   const record = readRecord(recordFile, run);
-  const failed = unverified(bundles, record);
+  const failed = unverified(admitting, record);
   if (failed > 0) {
-    throw new Error(`${failed} of ${bundles.length} owners did not verify clean: no owner is ` +
+    throw new Error(`${failed} of ${admitting.length} owners did not verify clean: no owner is ` +
                     "admitted (going on without one is the founder's call)");
   }
-  for (const staged of bundles) {
+  for (const staged of admitting) {
     const owner = JSON.parse(readFileSync(join(staged.dir, BUNDLE_OWNER), "utf8")) as
       Partial<BundleOwner>;
     if (owner.admission?.state !== "admitted" && owner.admission?.state !== "suspended") {
@@ -308,17 +318,26 @@ export async function admit(out: string, run: string, window: Window, recordFile
                     "admitted until it is read and empty");
   }
   const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
+  const which = (n: number) => `bundle ${n + 1} of ${bundles.length}`;
+  for (const [n, staged] of bundles.entries()) {
+    if (withheld.has(staged.key)) {
+      await discardOwner(window, queue, run, staged, record, recordFile, which(n), print);
+    }
+  }
   const lines: string[] = [];
   for (const [n, staged] of bundles.entries()) {
+    if (withheld.has(staged.key)) {
+      continue;
+    }
     const answer = await ask(window, queue, askOf(staged, run, "admit", window.inputs.importKey));
     if (typeof answer["refused"] === "string" || answer["bundle"] !== staged.bundle) {
       throw new Error(`bundle ${n + 1}'s admit was refused by the doors: nothing more is admitted`);
     }
-    const line = `bundle ${n + 1} of ${bundles.length}: admitted (${String(answer["state"])})`;
+    const line = `${which(n)}: admitted (${String(answer["state"])})`;
     lines.push(line);
     print(line);
   }
-  return { bundles: bundles.length, clean: bundles.length, lines };
+  return { bundles: bundles.length, clean: admitting.length, lines };
 }
 
 /** The directory's KV namespace id, by its title. */
@@ -348,6 +367,37 @@ export interface WipeProof {
 async function indexStaged(window: Window, run: string, staged: Staged): Promise<boolean> {
   return await getText(window, window.names.staging_bucket,
                        stagedName(bundlePrefix(run, staged.key), BUNDLE_INDEX)) !== null;
+}
+
+/**
+ * One owner discarded, for `wipe` and for `admit`'s withheld owners: while its index is still
+ * staged, its `discard` answered, its namespace kept in the record, then its staging deleted,
+ * the index last, so `close` reads it as discarded and a step killed anywhere converges.
+ */
+async function discardOwner(window: Window, queue: string, run: string, staged: Staged,
+                            record: WindowRecord, recordFile: string, which: string,
+                            print: (line: string) => void): Promise<void> {
+  if (!await indexStaged(window, run, staged)) {
+    return;
+  }
+  const answer = await ask(window, queue, askOf(staged, run, "discard", window.inputs.importKey));
+  if (answer["discarded"] !== true || answer["bundle"] !== staged.bundle) {
+    throw new Error(`${which}'s discard was refused by the doors: nothing more is done (an ` +
+                    "owner admitted already is erased with the deploy kit's mode erase)");
+  }
+  const namespace = answer["namespace"];
+  record.discarded[staged.key] = { bundle: staged.bundle,
+                                   namespace: typeof namespace === "string" ? namespace : null };
+  writeRecord(recordFile, record);
+  const prefix = bundlePrefix(run, staged.key);
+  const index = stagedName(prefix, BUNDLE_INDEX);
+  const keys = (await listKeys(window, window.names.staging_bucket, `${prefix}/`))
+    .filter((key) => key !== index);
+  for (const key of [...keys, index]) {
+    await ok(window, s3Request(window.inputs, "DELETE", window.names.staging_bucket, key, {}, null,
+                               window.clock.now()), "a staging delete");
+  }
+  print(`${which}: discarded`);
 }
 
 /** Each bundle index the staging bucket holds under `prefix`: its name, run and key. */
@@ -382,19 +432,8 @@ export async function wipe(out: string, run: string, window: Window, recordFile:
   }
   const queue = await queueId(window.inputs, window.fetcher, QUEUES.IMPORTS);
   for (const [n, staged] of bundles.entries()) {
-    if (!await indexStaged(window, run, staged)) {
-      continue;
-    }
-    const answer = await ask(window, queue, askOf(staged, run, "discard",
-                                                  window.inputs.importKey));
-    if (answer["discarded"] !== true || answer["bundle"] !== staged.bundle) {
-      throw new Error(`bundle ${n + 1}'s discard was refused by the doors: nothing more is done`);
-    }
-    const namespace = answer["namespace"];
-    record.discarded[staged.key] = { bundle: staged.bundle,
-                                     namespace: typeof namespace === "string" ? namespace : null };
-    writeRecord(recordFile, record);
-    print(`bundle ${n + 1} of ${bundles.length}: discarded`);
+    await discardOwner(window, queue, run, staged, record, recordFile,
+                       `bundle ${n + 1} of ${bundles.length}`, print);
   }
   const directory = await directoryId(window);
   const cloudflare = cloudflareOf(window.inputs.apiToken, window.fetcher);
@@ -474,11 +513,13 @@ export async function close(window: Window, print: (line: string) => void):
  * The window closed: the doors' `IMPORT_KEY` deleted with the doors' own token, then their
  * secret listing read back without it, so the kit's rotation may run (`deploy.ts`
  * `rotationNamespaces`). The workflow runs it on its runner, for the real window alone, once
- * the host's `close` passed.
+ * the host's `close` passed. The delete deploys the version it makes at once, so doors serving
+ * two versions (a split) stop it before it (`Cloudflare.serving`).
  */
 export async function unkey(cloudflare: Cloudflare, account: string, doors: string,
                             print: (line: string) => void): Promise<void> {
   if ((await cloudflare.secrets(account, doors)).includes(IMPORT_KEY)) {
+    await cloudflare.serving(account, doors);
     await cloudflare.deleteSecret(account, doors, IMPORT_KEY);
     if ((await cloudflare.secrets(account, doors)).includes(IMPORT_KEY)) {
       throw new Error(`${doors} still lists ${IMPORT_KEY} after its deletion: the window is open`);

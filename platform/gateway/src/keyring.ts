@@ -53,7 +53,6 @@ export interface Opened {
 
 const SALT = "tinyassets/gateway/v1";
 
-/** The ring, read from the one secret; anything short of a usable ring is refused loudly. */
 function ring(env: KeyringEnv): Ring {
   const keys = parseRing(env.GATEWAY_KEYRING);
   if (keys === null) {
@@ -96,7 +95,6 @@ function bound(owner: unknown, connection: string, version: unknown): Binding {
   return Object.freeze({ owner: owner as string, connection, version });
 }
 
-/** The owner's own key, and the additional data binding all three fields. */
 function domain(bound: Binding): Domain {
   return { salt: SALT, info: `cred\0${bound.owner}`,
            context: `ta-cred/v1\0${bound.owner}\0${bound.connection}\0${bound.version}` };
@@ -111,13 +109,11 @@ async function sealWith(keys: Ring, bound: Binding, plaintext: unknown): Promise
   return Object.freeze({ blob, kid: keys.active });
 }
 
-/** `value` sealed for the next version of `bound`'s connection, under the active kid. */
 async function resealWith(keys: Ring, bound: Binding, value: unknown): Promise<Resealed> {
   const next = Object.freeze({ ...bound, version: bound.version + 1 });
   return Object.freeze({ ...(await sealWith(keys, next, value)), version: next.version });
 }
 
-/** Seals `plaintext` for `bound` under the active kid. */
 export async function seal(env: KeyringEnv, bound: Binding,
                            plaintext: Credential): Promise<Sealed> {
   return sealWith(ring(env), bound, credential(plaintext));

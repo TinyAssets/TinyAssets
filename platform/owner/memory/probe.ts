@@ -14,6 +14,9 @@
  *   rung by an owner's post, its pass run by the object's own alarm.
  * - **The store** (`files`, `Store`) answers the files Worker's chunk calls from memory,
  *   each hash checked and a verified range read from its whole chunk, as `FILES` answers.
+ * - **The egress case** (`signals`): the store's isolate stands as the egress door's, opening
+ *   calls at an owner object (`legOpen`, the real `Egress.open`) and holding each one's end
+ *   signal with a read waiting on it, so the owner isolate holds what an open call does.
  *
  * **Checkpoints.** Every chunk call first awaits the leg's driver: the owner's path is then
  * suspended on the store, holding what it holds at that call (a chunk it sends, the chunks
@@ -34,14 +37,20 @@ import { createHash } from "node:crypto";
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { TIERS } from "../../ci/fixtures";
-import { bundledSources } from "../../sources/src/catalog";
-import { signinsOn } from "../../sources/src/signin";
-import { type Binding, type Origin, PLATFORM_CALLER } from "../../contract/src/binding";
+import { OPEN_RECORD } from "../../ci/fixtures";
+import {
+  type Binding, type Origin, PLATFORM_CALLER, type SandboxToken,
+} from "../../contract/src/binding";
+import type { ServiceScope } from "../../contract/src/egress-scope";
+import { randomHex } from "../../contract/src/ids";
+import type { EgressOpened, EgressRefusal, EgressRequest } from "../../contract/src/owner";
+import { EGRESS_BEAT_S } from "../../contract/src/egress";
+import { Egress, EGRESS_LIMITS, OPEN_CALL_BYTES } from "../src/egress";
 import type { Located } from "../src/bodies";
 import { clock } from "../src/clock";
 import { markErasing } from "../src/erasure";
-import { LEDGER_LIMITS } from "../src/ledger";
+import { OWNER } from "../src/authority";
+import { LEDGER_LIMITS, pairRoom } from "../src/ledger";
 import { EDIT_BYTES_MAX } from "../src/files";
 import { WriteGate } from "../src/gate";
 import * as holds from "../src/holds";
@@ -63,6 +72,12 @@ interface LegEnv extends OwnerEnv {
   readonly OWNER: DurableObjectNamespace<LegOwner>;
   readonly STORE: Service<Store>;
   readonly DRIVER: Fetcher;
+}
+
+/** The store's isolate's: the driver, and the owner objects its egress case calls. */
+interface StoreEnv {
+  readonly DRIVER: Fetcher;
+  readonly OWNER: DurableObjectNamespace<LegOwner>;
 }
 
 const MIB = 1024 * 1024;
@@ -104,9 +119,52 @@ const owned = (env: { DRIVER: Fetcher }, at: string) =>
 const STORED = new Map<string, Uint8Array>();
 
 /** The files Worker's chunk calls, answered from memory, each first a checkpoint. */
-export class Store extends WorkerEntrypoint<{ DRIVER: Fetcher }> implements ChunkStore {
+export class Store extends WorkerEntrypoint<StoreEnv> implements ChunkStore {
   async mintKey(): Promise<{ key: string }> {
     return { key: "v1.leg" };
+  }
+
+  /**
+   * The egress case, as the egress door holds its calls (`doors/src/egress.ts`): `calls`
+   * sandbox calls opened at `name`'s object one after another, each by a run of its own, each
+   * end signal held here with a read waiting on it, sampled while all are held; then the
+   * object ends them all, and every read must end within `ENDS_WAIT_MS`. How long the ends
+   * took to reach their reads, in ms.
+   */
+  async signals(name: string, calls: number): Promise<number> {
+    const stub = this.env.OWNER.getByName(name);
+    let ends = 0;
+    let last = 0;
+    let allEnded = () => {};
+    const ended = new Promise<void>((resolve) => { allEnded = resolve; });
+    // Each held as the door holds its own (`signal`), for the case's life.
+    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+    const end = () => {
+      ends += 1;
+      last = Date.now();
+      if (ends === calls) {
+        allEnded();
+      }
+    };
+    for (let n = 0; n < calls; n++) {
+      const opened = await stub.legOpen({ run: `run_${randomHex(16)}`, connection: LEG_CONNECTOR,
+                                          method: "POST", path: "/v1/call", bytes_hint: 1000 });
+      if (!opened.ok) {
+        throw new Error(`the egress case's call ${n} was refused ${opened.code}`);
+      }
+      const reader = opened.ended.getReader();
+      reader.read().then(end, end);
+      readers.push(reader);
+    }
+    await checkpoint(this.env, undefined, "signals");
+    const started = Date.now();
+    await stub.legEnd();
+    await Promise.race([ended, scheduler.wait(ENDS_WAIT_MS)]);
+    if (ends < readers.length) {
+      throw new Error(`${ends} of ${calls} end signals reached their reads within ` +
+                      `${ENDS_WAIT_MS} ms of the object's ending them`);
+    }
+    return last - started;
   }
 
   async putChunks(ns: string, _key: string, chunks: { sha256: string; bytes: Uint8Array }[]):
@@ -314,6 +372,14 @@ const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(6
 const PAT: Origin = Object.freeze({ client: "e".repeat(64), family: "f".repeat(64) });
 const ORIGINS = [MUSE, DOT, PAT];
 
+/** The egress case's (`legOpen`): its sandbox's token, its connector and the service's scope. */
+const LEG_SANDBOX: SandboxToken = Object.freeze({ kind: "egress", token: "e".repeat(64),
+                                                  generation: 1 });
+const LEG_CONNECTOR = `c${"0".repeat(24)}`;
+const LEG_SERVICE: ServiceScope = Object.freeze({
+  kind: "service", base_url: "https://leg.example",
+  endpoints: [{ origin: "https://leg.example", paths: ["/v1/*"], methods: ["POST"] }] });
+
 /**
  * The real owner object, its chunk calls checkpointed in its own isolate (`received`). What a
  * leg reaches directly (the placed bodies, the ledger its archive cases' mail is set up in,
@@ -328,6 +394,8 @@ export class LegOwner extends OwnerDO {
   readonly #id: DurableObjectId;
   readonly #gate: WriteGate;
   readonly #stores: Stores;
+  /** The egress `legOpen` admits through, made at its first call. */
+  #egress: Egress | null = null;
 
   constructor(state: DurableObjectState, env: LegEnv) {
     const own = { ...env, FILES: received(env) };
@@ -599,6 +667,40 @@ export class LegOwner extends OwnerDO {
     });
   }
 
+  /**
+   * One sandbox call admitted by the real `Egress.open`, over the object's own storage and
+   * rows: its reads (the leg's, the one piece of the object it builds) answer every check as
+   * a live lease's run passes a connector's call, the lease's id read fresh each time as
+   * `leaseByToken` reads it from its row. The call's end signal, which the caller reads from
+   * its own isolate, as the egress door does.
+   */
+  async legOpen(request: EgressRequest): Promise<EgressOpened | EgressRefusal> {
+    this.#egress ??= new Egress(this.#gate.storage, {
+      lease: (token) => ({ authority: OWNER, lease_id: randomHex(16), epoch: 1,
+                           egress_token: token, sync_token: token, runner_token: token,
+                           expires_at: Number.MAX_SAFE_INTEGER, network_generation: 1,
+                           network_pending: null, network_tried_at: null,
+                           network_tried_generation: null, narrowed_at: null, signins: [] }),
+      runConnections: () => ({ connection: null, connectors: [LEG_CONNECTOR] }),
+      reaches: () => true,
+      runUsage: () => ({ requests: 0, tokens: 0, cost: 0 }),
+      generation: () => 1,
+      credential: () => ({ blob: "b".repeat(64), version: 1 }),
+      connection: () => ({ scope: LEG_SERVICE, source: "leg", provider: "leg", models: [] }),
+      caps: () => {
+        throw new Error("a connector's call is never charged");
+      },
+    });
+    const egress = this.#egress;
+    // In a unit, as the door's (`egressOpen`).
+    return this.#gate.write(() => egress.open(LEG_SANDBOX, request, clock()));
+  }
+
+  /** Every open call's end signal ended, as an erasure ends them (`Egress.drop`). */
+  legEnd(): void {
+    this.#egress?.drop();
+  }
+
   /** Every message to `reader` acked, through the seq `through`. */
   async legAckSeq(reader: number, through: number): Promise<void> {
     const { ledger } = this.#stores;
@@ -623,7 +725,7 @@ export class LegOwner extends OwnerDO {
     const { ledger } = this.#stores;
     const { fails } = this.#gate.storage.sql.exec<{ fails: number }>(
       "SELECT archive_fails AS fails FROM ledger_usage").one();
-    return fails === 0 && !(ledger.archiveDue() || ledger.purgedAgents().length > 0
+    return fails === 0 && !(ledger.archiveDue() || ledger.purgedRooms().length > 0
                             || ledger.archiveCompactPending());
   }
 
@@ -641,19 +743,15 @@ export class LegOwner extends OwnerDO {
   }
 }
 
-const SIGNINS = Object.freeze(signinsOn(
-  bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
-
 /** The owner's own binding, as the doors hand it. */
 function owner(name: string): Binding {
-  return { owner: name, caller: name, origin: null, tiers: TIERS, signins: SIGNINS } as
-    unknown as Binding;
+  return { owner: name, caller: name, origin: null, control: OPEN_RECORD } as unknown as Binding;
 }
 
 /** The doors' import binding for `name` (`bindImport`): the platform, a bundle, the tiers. */
 function importing(name: string): Binding {
   return { owner: name, caller: PLATFORM_CALLER, origin: null,
-           import: { bundle: "b".repeat(64) }, tiers: TIERS } as unknown as Binding;
+           import: { bundle: "b".repeat(64) }, control: OPEN_RECORD } as unknown as Binding;
 }
 
 /**
@@ -779,7 +877,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // thousand more), so the lane seals a tail of them: 8 MiB of records (8,489 of these),
       // its arrays near the doubling's worst (at 16,384).
       const agents = await stub.legAgents();
-      await stub.legSmall(`dm:${agents[0]}`, 0, 25_000 + mib * 1000);
+      await stub.legSmall(pairRoom(OWNER, agents[0]!), 0, 25_000 + mib * 1000);
       LEG.ready.push({ name, who, agents, want: 1 });
     } else if (path === "merge") {
       // At the production limits: the muse's sealed mail, Dot's merged into it, and Pat's
@@ -788,11 +886,12 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       const sizing = await object(env, `${name}-sizing`);
       const [to] = await sizing.legAgents();
       const own = await sizing.legOverhead((await sizing.roomPost(owner(`${name}-sizing`), {
-        room_id: `dm:${to}`, client_message_id: "a0000", body: "x", parent_id: null }))
+        room_id: pairRoom(OWNER, to!), client_message_id: "a0000", body: "x", parent_id: null }))
         .message_id) + 1 - RECORD_TRAILER_BYTES;
       const mail = mergeMail(own);
       const agents = await stub.legAgents();
-      const lasts = await stub.legInterleaved(agents.map((agent) => `dm:${agent}`), mail);
+      const lasts = await stub.legInterleaved(agents.map((agent) => pairRoom(OWNER, agent)),
+                                              mail);
       await ring(stub, who, agents[0]!, "r0");
       await settled(stub, (seen) => seen.segments >= 1);
       const sealed = await stub.legArchived();
@@ -822,7 +921,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       const agents = await stub.legAgents();
       const post = async (on: DurableObjectStub<LegOwner>, k: number, bytes: number,
                           as = who, to = agents) =>
-        (await on.roomPost(as, { room_id: `dm:${to[k]}`, client_message_id: `b${k}`,
+        (await on.roomPost(as, { room_id: pairRoom(OWNER, to[k]!), client_message_id: `b${k}`,
                                   body: new TextDecoder().decode(letters(seed * 10 + k, bytes)),
                                   parent_id: null })).message_id;
       // A record's own bytes past its body's, read from a message of the same shape on an
@@ -841,7 +940,7 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
       // before it): with them, the hot mail stays past half its ceiling through the last
       // seal, and the unread within `maxUnacked`.
       const rings = path === "rewrite" ? 2 : 1;
-      await stub.legUnread(`dm:${agents[0]}`, LEDGER_LIMITS.maxMessages / 2 - rings);
+      await stub.legUnread(pairRoom(OWNER, agents[0]!), LEDGER_LIMITS.maxMessages / 2 - rings);
       if (path === "rewrite") {
         await ring(stub, who, agents[0]!, "r0");
         await settled(stub, (seen) => seen.segments >= 1);
@@ -866,8 +965,8 @@ async function setup(env: LegEnv, path: string, mib: number, n: number): Promise
 /** An owner's post to the agent `agent`: its door syncs the lanes, so the archive's runs. */
 async function ring(stub: DurableObjectStub<LegOwner>, who: Binding, agent: string,
                     cmid: string): Promise<void> {
-  await stub.roomPost(who, { room_id: `dm:${agent}`, client_message_id: cmid, body: "ring",
-                             parent_id: null });
+  await stub.roomPost(who, { room_id: pairRoom(OWNER, agent), client_message_id: cmid,
+                             body: "ring", parent_id: null });
 }
 
 /**
@@ -876,6 +975,14 @@ async function ring(stub: DurableObjectStub<LegOwner>, who: Binding, agent: stri
  * whole seconds up to three decimals, so 4 characters a row (`".123"`).
  */
 const TIMES_SLACK = 3 * ".123".length;
+
+/**
+ * The most the merge case's seqs widen a record past the measured one's (its object's first,
+ * one digit): the case posts under `10 ** MAIL_SEQ_DIGITS` messages, and two of a record's
+ * rows (the message, its recipient) carry its seq.
+ */
+const MAIL_SEQ_DIGITS = 5;
+const SEQ_SLACK = 2 * (MAIL_SEQ_DIGITS - 1);
 
 /** The merge case's muse acks its mail each this many of its messages, so as many wait unread. */
 const MUSE_ACKS = 50;
@@ -894,12 +1001,12 @@ interface MergeMail {
 /**
  * The merge case's counts, from one record of its mail's shape (`own`, the bytes a seal
  * counts it at) and the ledger's ceilings, so a change to a record's size or a ceiling moves
- * them with it. A seal holds `fewest` to `most` such records (each post's times, and a client
- * message id up to three characters shorter or longer than the measured one's). The rings are the
- * muse's three unread messages, the run's among them.
+ * them with it. A seal holds `fewest` to `most` such records (each post's times, a client
+ * message id up to three characters shorter or longer than the measured one's, and a seq up
+ * to `SEQ_SLACK` wider). The rings are the muse's three unread messages, the run's among them.
  */
 function mergeMail(own: number): MergeMail {
-  const widest = own + TIMES_SLACK + 3;
+  const widest = own + TIMES_SLACK + 3 + SEQ_SLACK;
   const fewest = Math.floor(SEGMENT_MIN_BYTES / widest);
   const most = Math.ceil(SEGMENT_MIN_BYTES / (own - TIMES_SLACK - 3));
   const rings = 3;
@@ -912,20 +1019,24 @@ function mergeMail(own: number): MergeMail {
   const dot = LEDGER_LIMITS.maxUnacked - pat - MUSE_ACKS - rings;
   // Every one of Dot's and Pat's interleaved, and the seal taken from the interleaved mail.
   const interleaved = Math.max(most, Math.ceil(pat / 2), dot);
-  if (muse - interleaved < 0 || muse - most + dot < most) {
+  if (muse - interleaved < 0 || muse - most + dot < most
+      || muse + dot + pat + rings >= 10 ** MAIL_SEQ_DIGITS) {
     throw new Error(`the merge case's counts do not hold at ${own} bytes a record: ${
       JSON.stringify({ fewest, most, muse, pat, dot, interleaved })}`);
   }
-  // The run's merge takes Pat's records within the segment's keys (the first `fewest` of the
-  // muse's, two of Pat's to each) while they fit `MOVE_BYTES` beside the segment's bytes.
+  // The run's merge takes Pat's records within the segment's keys (the muse's first `fewest`
+  // at least, two of Pat's after each but the last) while they fit `MOVE_BYTES` beside the
+  // segment's bytes.
   return { interleaved, more: muse - interleaved, dot, pat,
-           take: (bytes) => Math.min(pat, 2 * fewest,
+           take: (bytes) => Math.min(pat, 2 * (fewest - 1),
                                      Math.floor((MOVE_BYTES - bytes) / widest)) };
 }
 
 /** How often a case looks at its archive object's lane, and how many looks it waits at most. */
 const LANE_POLL_MS = 10;
 const LANE_LOOKS = 12_000;
+/** How long the egress case waits for its ends to reach their reads: as long as for a lane. */
+const ENDS_WAIT_MS = LANE_LOOKS * LANE_POLL_MS;
 
 /** Until the lane's passes stand as `done` says (its own alarm runs them), or loudly not. */
 async function settled(stub: DurableObjectStub<LegOwner>,
@@ -987,6 +1098,10 @@ async function run(env: LegEnv, path: string, mib: number, timed: boolean):
       await owned(env, "start");
       if (path === "records") {
         return await moveRecords(env, MOVE_RECORDS);
+      }
+      if (path === "signals") {
+        // Its size is the calls held open at once.
+        return await env.STORE.signals(name, mib);
       }
       if (path === "burst") {
         return await stub.legBurst();
@@ -1070,7 +1185,9 @@ export default {
                              move_seal_units: holds.moveTableUnits(25_000),
                              move_most_units: holds.moveTableUnits(MOVE_RECORDS),
                              move_records: MOVE_RECORDS,
-                             move_body_units: holds.moveTableUnits(2) });
+                             move_body_units: holds.moveTableUnits(2),
+                             egress_open: EGRESS_LIMITS.open, OPEN_CALL_BYTES,
+                             beat_s: EGRESS_BEAT_S });
     }
     if (url.pathname === "/rest") {
       LEG.runs += 1;

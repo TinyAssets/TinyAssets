@@ -1,7 +1,5 @@
 /**
- * Production workflows run only inside the main-only `production` environment (moved from
- * the Python suite's `tests/test_workflow_production_environment.py`, audit D6; the old
- * host's box-preflight contract stays there and leaves with that host).
+ * Production workflows run only inside the main-only `production` environment.
  *
  * Incident: a `workflow_dispatch` on a branch runs that branch's YAML, so a job-level
  * `if: github.ref == 'refs/heads/main'` guards nothing: the branch can delete the line.
@@ -77,7 +75,7 @@ const ENVIRONMENT_SECRETS: Record<string, string> = {
 
 // The step shapes that take a pull request's own code into a run (GitHub's "Securely using
 // pull_request_target"): a checkout of its head, merge ref or repository, or `gh pr checkout`.
-// Fetching the head to read a diff (auto-enroll-merge.yml, pr-scope-guard.yml) runs nothing.
+// Fetching the head to read a diff (pr-scope-guard.yml, review.yml) runs nothing.
 const PULL_REQUEST_CODE = /github\.event\.pull_request\.head\.|github\.head_ref|refs\/pull\//;
 const GH_PR_CHECKOUT = /\bgh\s+pr\s+checkout\b/;
 

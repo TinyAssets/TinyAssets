@@ -7,6 +7,12 @@ Accepted (founder, 2026-11-01).
 - **It also amends** the principle ADR-023 states and ADR-032 kept, that "the core loop runs outside every box", and withdraws the paid-tier limit on hosted vendor CLIs in ADR-023 and ADR-030 (decision 8).
 - **It builds on** ADR-033 (merged in #5384).
 - **Per ADR-005**, the bodies of ADR-023, ADR-030 and ADR-032 are not edited. Only their Status lines gain "amended by ADR-034".
+- **Amended by ADR-039** (founder, 2026-11-21):
+  - decisions 1.2, 2 and 11: the user's own main agent loads the same agent definition, which the MCP door serves as prompts and resources; hooks are one definition in the agent's files, rendered into each engine's format from its record, under R5's root-owned hooks, not each engine's own; the agent's own MCP servers run beside TinyAssets' door, held to the egress allowlist (ADR-039 decision 3);
+  - decision 12: code mode is off by default until its isolation probe passes (ADR-039 decision 4);
+  - decisions 4.1 and 8: a run past the tier's simultaneous runs waits, never refused for it (ADR-039 decision 6).
+- **Its "What stands"** list of ADR-024 to ADR-031 is held by ADR-039 decision 2.
+- **Built, decisions 2 and 11 as ADR-039 decision 3 amends them** (2026-11-22): the agent's one hook definition (`hooks.json`) runs on every engine through the runner's dispatcher, in the root-owned layer R5's decide hook is in, and no answer of it allows or rewrites a call (`docs/decisions/untangle-2026-11/agent-hooks.md`).
 
 ## Date
 

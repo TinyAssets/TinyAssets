@@ -1,5 +1,5 @@
 /**
- * The builder's RPC recorder (`npm run record`, `ci/record.ts`): every public door of
+ * The builder's RPC recorder (`ci/record.ts`): every public door of
  * `OwnerDO`, called over RPC with a spread of bindings and request shapes, as the owner and
  * as a live run, each answer one `RPC` line, ids taken out (`clean`), so base and head print
  * the same lines for the same behaviour.
@@ -11,7 +11,7 @@ import { rpcReserved } from "../../../contract/src/doors";
 import { gated } from "../gateway-support";
 import { DOT, MCP, MUSE, rig } from "../ledger-support";
 import { ALL_SCOPES, ownerRun, runBinding, runnerBinding } from "../runs-support";
-import { TIERS } from "../support";
+import { OPEN_RECORD } from "../support";
 import { asked } from "./support";
 
 const METHODS = Object.getOwnPropertyNames(OwnerDO.prototype)
@@ -67,7 +67,8 @@ describe("rpc: every door", () => {
   for (const method of METHODS) {
     it(`door ${method}`, async () => {
       const r = await rig();
-      const visitor = { owner: r.owner, caller: `owner-visitor`, origin: null, tiers: TIERS };
+      const visitor = { owner: r.owner, caller: `owner-visitor`, origin: null,
+                        control: OPEN_RECORD };
       await record(r.stub, method, [
         ["own", r.bind(null)],
         ["session", r.session(null)],

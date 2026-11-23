@@ -1,8 +1,8 @@
 /**
- * The import layers (untangle B1): every script under `platform/` and `scripts/` is in
- * exactly one layer, by its path, and each layer names what it may import. This file is data;
- * the checker is `imports.ts`'s `layerProblems`, which `ci/guards/isolation.test.ts` holds over
- * every file, with what each workspace still owes (`owed.ts`) the only exceptions.
+ * The import layers: every script under `platform/` and `scripts/` is in exactly one layer, by
+ * its path, and each layer names what it may import. This file is data; the checker is
+ * `imports.ts`'s `layerProblems`, which `ci/guards/isolation.test.ts` holds over every file,
+ * with what each workspace still owes (`owed.ts`) the only exceptions.
  *
  * Patterns are paths from the repository root:
  * - `*` is any part of one name, `**` any folders (none included), `{a,b}` either;
@@ -69,7 +69,7 @@ export const SOLE_IMPORTERS: Readonly<Record<string, readonly string[]>> = Objec
 
 /** The contract: its modules and its data files. */
 const CONTRACT = Object.freeze(["platform/contract/src/**", "platform/contract/*.json"]);
-/** The source records, a contract module beside their files (untangle A1). */
+/** The source records, a contract module beside their files. */
 const SOURCES = Object.freeze(["platform/sources/src/**", "platform/sources/records/*.json"]);
 /** A workspace's tests, in its `test/` folders or named `*.test.*`, wherever they sit. */
 const NOT_TESTS = Object.freeze(["!**/test/**", "!**/*.test.*"]);
@@ -107,7 +107,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     also: {
       owner: ["platform/starter/starter.json"],
       // The Worker↔runner wire: the Worker writes the documents the runner reads. E2B's
-      // transport and a bundle's install, never the tools' calls (`admin.ts`, B11).
+      // transport and a bundle's install, never the tools' calls (`admin.ts`).
       sandbox: ["platform/sandbox/runner/protocol.ts",
                 "platform/sandbox/e2b/{transport,install}.ts"],
     },
@@ -140,7 +140,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     may: ["platform/sandbox/runner/**", ...CONTRACT, ...SOURCES, ...NOT_TESTS],
   },
   {
-    // E2B's client outside a Worker's runtime (B11): the transport, the tools' calls and a
+    // E2B's client outside a Worker's runtime: the transport, the tools' calls and a
     // bundle's install, shared by the sandbox Worker, the template and the deploy kit. It
     // runs in workerd and in Node, so it imports no package.
     name: "the E2B client",
@@ -150,7 +150,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
     packages: [],
   },
   {
-    // The pin's one reader (`pair.ts`) reads the sandbox's config by `ci/wrangler.ts` (B18).
+    // The pin's one reader (`pair.ts`) reads the sandbox's config by `ci/wrangler.ts`.
     name: "the template",
     files: ["platform/sandbox/template/**", ...NOT_TESTS],
     may: ["platform/sandbox/template/**", "platform/sandbox/runner/**",
@@ -158,7 +158,7 @@ export const LAYERS: readonly Layer[] = Object.freeze([
           ...NOT_TESTS],
   },
   {
-    // The sandbox Worker's build (`wrangler.jsonc`'s `build.command`, B18): the runner and
+    // The sandbox Worker's build (`wrangler.jsonc`'s `build.command`): the runner and
     // the probes, by the workspace's esbuild, from entries it names by path, not by import.
     name: "the sandbox's build",
     files: ["platform/sandbox/build/**", ...NOT_TESTS],

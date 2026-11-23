@@ -10,27 +10,27 @@
  *   and reaches every owner's object by name; only `src/binder.ts` names it.
  * - `GATEWAY`, `EGRESS`, `FILES` and `FILES_LOCATE` (`SERVICES`): one entrypoint each of the
  *   gateway and files Workers, each serving exactly what is listed, so the doors make no model
- *   call, hold no keyring and read no chunk, generation or key (review M5-1): of a generation,
+ *   call, hold no keyring and read no chunk, generation or key: of a generation,
  *   only the owner its header names (`locate`, the operator channel's `restore.locate`).
  * - `OAUTH_KV`, `DIRECTORY` and `CONTROL`: three KV namespaces, distinct, with placeholder ids
- *   (`not-provisioned-…`), so a deploy fails until cutover creates them.
+ *   (`not-provisioned-…`), so the checked-in config cannot deploy: the kit writes the ids.
  * - Four vars, each as checked in its inert value: `DCR_ENABLED` `"false"`; `OWNER_ISSUER`
  *   and `UPSTREAM` unset (`not-configured`), so every sign-in fails loudly until the deploy
  *   kit fills both from the issuer's live discovery (`deploy/deploy.ts`); and
- *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
+ *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's issuer is listed, so any other
  *   issuer is refused, never taken for a new owner.
  * - Four secrets, declared by name (`secrets.required`, which binds nothing):
  *   `ROUTING_MAC_KEY`, the routing key sandbox tokens are MAC'd under, the owner Worker's
  *   too (`SHARED_SECRETS`); `WORKOS_API_KEY`, the upstream's client secret;
- *   `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret (slice P); and
+ *   `E2B_WEBHOOK_SECRET`, E2B's lifecycle webhook's signature secret; and
  *   `OPERATOR_KEYRING`, the ring the operator channel's messages are MAC'd under.
- * - No `ratelimits`: no number of ours bounds any caller (the founder's rule, slice L's
- *   review); Cloudflare's own DDoS protection is in front of every Worker.
+ * - No `ratelimits`: no number of ours bounds any caller (the founder's rule); Cloudflare's
+ *   own DDoS protection is in front of every Worker.
  * - `ASSETS`: the owner app's files (`app/`), Workers Static Assets, the Worker first on every
  *   request, so only `src/pages.ts`'s named pages and files are served, each with its
  *   headers; no HTML handling or not-found page of the assets' own.
  * - The consumer of every queue the platform's Workers produce onto, and of no other: the
- *   sandbox line's ring (slice S, `src/ring.ts`), which turns `{owner}` into that owner's
+ *   sandbox line's ring (`src/ring.ts`), which turns `{owner}` into that owner's
  *   `sandboxRung` and nothing else, the erasure queue, the operator channel's and the import
  *   window's.
  * - The operator channel (`src/operator.ts`, `OPERATOR_CHANNEL`), permanent: the operator
@@ -47,6 +47,8 @@
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - `triggers`: the canary's clock (`src/canary-clock.ts`), whose schedule is the config's.
+ * - `version_metadata` (`CF_VERSION_METADATA`): the serving version, which every answer names
+ *   (`src/index.ts`).
  * - Flags carrying `disable_ctx_exports` (no way to the Worker's own namespaces) and
  *   `global_fetch_strictly_public`, which Client ID Metadata Documents require: the provider
  *   fetches each client's metadata URL, the flag keeps that fetch off same-zone routing (its
@@ -55,6 +57,7 @@
  *   `enable_request_signal`) are its own.
  */
 import type { ConfigRules } from "../../ci/kit/config";
+import type { Exemption } from "../../ci/kit/module-state";
 import type { Owed } from "../../ci/kit/owed";
 
 /**
@@ -76,8 +79,8 @@ export const OBJECTS = Object.freeze({
 
 /**
  * The doors' service bindings, in order, by binding: each Worker's folder, the one entrypoint
- * bound, which extends `WorkerEntrypoint` itself (RPC serves inherited methods too, review
- * L6-1), and exactly the members it serves.
+ * bound, which extends `WorkerEntrypoint` itself (RPC serves inherited methods too), and
+ * exactly the members it serves.
  */
 export const SERVICES = Object.freeze({
   GATEWAY: Object.freeze({ worker: "gateway", entrypoint: "ConnectGateway",
@@ -97,7 +100,7 @@ export const CONFIG: ConfigRules = Object.freeze({
   keys: Object.freeze(["$schema", "name", "main", "compatibility_date", "compatibility_flags",
                        "workers_dev", "preview_urls", "vars", "durable_objects", "services",
                        "kv_namespaces", "secrets", "queues", "assets", "r2_buckets",
-                       "triggers"]),
+                       "triggers", "version_metadata"]),
   flags: Object.freeze({ carries: Object.freeze(["disable_ctx_exports",
                                                  "global_fetch_strictly_public"]) }),
   secrets: Object.freeze([...SHARED_SECRETS["owner"]!, "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
@@ -112,8 +115,19 @@ export const CONFIG: ConfigRules = Object.freeze({
   exact: Object.freeze({
     assets: { directory: "./app", binding: "ASSETS", run_worker_first: true,
               html_handling: "none", not_found_handling: "none" },
+    version_metadata: { binding: "CF_VERSION_METADATA" },
   }),
 });
 
 /** What the doors still owe the platform's guards (`ci/kit/owed.ts`). Nothing, now. */
 export const OWED: readonly Owed[] = Object.freeze([]);
+
+/**
+ * The doors' module state, each by design (`ci/kit/module-state.ts`): the isolate's copy of the
+ * control record last read well formed, the platform's one record and no owner's, which the
+ * doors serve when KV can't be read (`src/control.ts`).
+ */
+export const MODULE_STATE: readonly Exemption[] = Object.freeze([
+  Object.freeze({ file: "doors/src/control.ts", symbol: "held",
+                  reason: "the isolate's last good copy of the control record" }),
+]);

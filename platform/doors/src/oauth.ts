@@ -3,7 +3,7 @@
  * Provider 1.2.4, pinned exactly. Both roles run in this one Worker, so validating a
  * token is a local call and spends no service-binding call.
  *
- * - The issuer is `https://tinyassets.io`, not the identity vendor: AuthKit is only the
+ * - The issuer is the doors' own origin (`ORIGIN`), not the identity vendor: AuthKit is only the
  *   upstream sign-in (`authorize.ts`), so a later vendor change never breaks a
  *   connector. Two resources: `/mcp` for outside clients and `/app` for the owner's own
  *   app (`FIRST_PARTY_CLIENTS`); each grant and token is bound to exactly one, and a new

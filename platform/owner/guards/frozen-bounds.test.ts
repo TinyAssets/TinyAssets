@@ -28,12 +28,11 @@ import { describe, expect, it } from "vitest";
 
 import * as CONTRACT from "../../contract/src/limits";
 import { PLATFORM } from "../../ci/paths";
-import { LOG_WIDE } from "../src/changelog";
 import {
   CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES, HISTORY_BYTES,
-  SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
+  SCOPE_REF_BYTES, SHARE_BYTES,
 } from "../src/manifest";
-import { OWNER } from "../src/authority";
+import { MAIN_AGENT, OWNER } from "../src/authority";
 import type { Migration } from "../../contract/src/migrate";
 import { MIGRATIONS } from "../src/schema";
 import { SEGMENT_LEAST_BYTES } from "../src/segments";
@@ -56,8 +55,23 @@ const LIMITS: Values = Object.freeze({ ...CONTRACT, RUNS_CEILING, SEGMENT_LEAST_
 const ELSEWHERE: readonly string[] = Object.freeze(["RUNS_CEILING", "SEGMENT_LEAST_BYTES",
                                                     "SHARE_BYTES"]);
 
-/** Which statements a place is in: those starting with the head and a space, or matching it. */
-type Head = string | RegExp;
+/**
+ * A trigger as the schema stands: its statement no later one drops. A migration that changes a
+ * trigger's bound drops the trigger and makes it again, and the dropped text, frozen at the
+ * old bound, enforces nothing.
+ */
+class Live {
+  constructor(readonly name: string) {}
+
+  toString(): string {
+    return `CREATE TRIGGER ${this.name}`;
+  }
+}
+/**
+ * Which statements a place is in: those starting with the head and a space, or matching it,
+ * or a trigger's live one.
+ */
+type Head = string | RegExp | Live;
 /**
  * One place the SQL spells a bound: its statements, how many times they spell its text in
  * all, and its text at the bound's value (and the other bounds', for a product of two).
@@ -69,9 +83,14 @@ type At = readonly [number, number];
 /** Every statement of `migrations` that `head` names, with where it is. */
 function statements(head: Head, migrations: readonly Migration[] = MIGRATIONS):
     { sql: string; at: At }[] {
-  return migrations
-    .flatMap((migration, m) => migration.map((sql, s) => ({ sql, at: [m, s] as const })))
-    .filter(({ sql }) => typeof head === "string" ? sql.startsWith(`${head} `) : head.test(sql));
+  const all = migrations
+    .flatMap((migration, m) => migration.map((sql, s) => ({ sql, at: [m, s] as const })));
+  if (head instanceof Live) {
+    return all.filter(({ sql }, k) => sql.startsWith(`${head} `)
+      && !all.slice(k + 1).some((later) => later.sql === `DROP TRIGGER ${head.name}`));
+  }
+  return all.filter(({ sql }) => typeof head === "string" ? sql.startsWith(`${head} `)
+    : head.test(sql));
 }
 
 /** How many times `text` is in `sql`, none overlapping. */
@@ -83,7 +102,7 @@ const TABLE = (name: string, ...texts: ((n: number) => string)[]): Place[] =>
 const MADE = (name: string, times: number, ...texts: ((n: number) => string)[]): Place[] =>
   texts.map((text) => [`CREATE TABLE ${name}`, times, text] as const);
 const TRIGGER = (name: string, ...texts: ((n: number) => string)[]): Place[] =>
-  texts.map((text) => [`CREATE TRIGGER ${name}`, 1, text] as const);
+  texts.map((text) => [new Live(name), 1, text] as const);
 /** A body's placement (ADR-035): inline within the bound, or placed past it. */
 const PLACED = (table: string, body: string, times = 1) => MADE(table, times,
   (n) => `length(CAST(${body} AS BLOB)) <= ${n}`,
@@ -94,8 +113,8 @@ const ID = (column: string) => (n: number) => `length(${column}) = ${n}`;
 const CAPTURE = /^CREATE TRIGGER \w+_logged_(?:insert|update|delete) /;
 const CAPTURE_UPDATE = /^CREATE TRIGGER \w+_logged_update /;
 /** The capture triggers the migrations make, and the updates among them. */
-const CAPTURES = 135;
-const UPDATES = 46;
+const CAPTURES = 149;
+const UPDATES = 51;
 /** The triggers that count a content's chunk list's rows from its size. */
 const CHUNK_LIST = new RegExp("^CREATE TRIGGER (?:file_contents_(?:added|removed)|" +
   "file_scope_contents_(?:added|removed)|file_content_chunks_planned) ");
@@ -132,8 +151,6 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
     ...TRIGGER("sandbox_signins_full", (n) => `>= ${n} BEGIN`,
                (n) => `'sandbox_signins_full: ${n} sign-ins are live'`),
   ],
-  CALLS_OPEN: TRIGGER("model_reservations_open", (n) => `'dispatched')) >= ${n} BEGIN`,
-                      (n) => `'model_calls_full: ${n} model calls are open'`),
   SPEND_KEPT: TRIGGER("model_spend_kept", (n) => `FROM model_spend) > ${n} BEGIN`,
                       (n) => `'model_spend_full: ${n} spend counters are kept'`),
   SOCKET_TICKETS: TRIGGER("socket_tickets_full", (n) => `FROM socket_tickets) >= ${n} `),
@@ -173,6 +190,8 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
                       ...TABLE("platform_signins", (n) => `length(engines) <= ${n} `)],
   SIGNIN_URL_MAX: TABLE("sandbox_signins", (n) => `url IS NULL OR length(url) <= ${n})`),
   SIGNIN_CODE_MAX: TABLE("sandbox_signins", (n) => `code IS NULL OR length(code) <= ${n})`),
+  RUN_CONNECTORS_CHARS: [["ALTER TABLE run_grants ADD COLUMN connectors", 1,
+                          (n) => `CHECK (length(connectors) <= ${n})`]],
   // The bounds the old builder never interpolated: the SQL spelled each as a plain number,
   // its twin in code a constant of its own, now one bound.
   INLINE_BYTES: TABLE("file_contents", (n) => `CHECK (inline IS NULL OR size <= ${n})`),
@@ -212,9 +231,11 @@ export const SPELLED: Readonly<Record<string, readonly Place[]>> = Object.freeze
  *   one its pin wrote, in migrations 10, 11 and 14), a key id and a readable id,
  *   35 a sign-in's id (`si_` and 32 hex)
  *   and 36 a subscription's (`sub_` and 32 hex): ids' lengths, which their grammars hold;
- *   36 also a collection deletion's four numbers in its charge (`collection_erasures`).
+ *   36 also a collection deletion's four numbers in its charge (`collection_erasures`);
+ * - 1000 the open model calls' bound, twice in migration 1's `model_reservations_open`, whose
+ *   table migration 26 drops: frozen text, as a dropped table's other statements are.
  */
-const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1024: 5,
+const SHARED: Values = Object.freeze({ 16: 9, 35: 1, 36: 13, 64: 285, 256: 8, 1000: 2, 1024: 5,
                                        4096: 252 });
 
 /**
@@ -234,6 +255,7 @@ export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze
   ["INSERT INTO file_shares", 1, `VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}, 0), ` +
     `('${OWNER}', 0, 0, 0, 0, ${SHARE_BYTES}, 0)`],
   ["CREATE TABLE archive_segments", 1, `filer = '${OWNER}'`],
+  ["ALTER TABLE outside_clients ADD COLUMN agent", 1, `DEFAULT '${MAIN_AGENT}'`],
   ["CREATE TRIGGER file_entries_added", 2, ENTRY_BYTES("NEW")],
   ["CREATE TRIGGER file_entries_removed", 2, ENTRY_BYTES("OLD")],
   ["CREATE TRIGGER file_history_added", 2, HISTORY_BYTES("NEW")],
@@ -242,13 +264,13 @@ export const NAMED: readonly (readonly [Head, number, string])[] = Object.freeze
   ["CREATE TRIGGER file_contents_removed", 1, CONTENT_BYTES("OLD")],
   ["CREATE TRIGGER file_chunks_added", 1, CHUNK_ROW_BYTES()],
   ["CREATE TRIGGER file_chunks_removed", 2, CHUNK_ROW_BYTES()],
-  ["CREATE TRIGGER file_temps_added", 2, TEMP_BYTES("NEW")],
-  ["CREATE TRIGGER file_temps_removed", 2, TEMP_BYTES("OLD")],
   ["CREATE TRIGGER file_scope_contents_added", 2, SCOPE_REF_BYTES("NEW")],
   ["CREATE TRIGGER file_scope_chunks_removed", 2, SCOPE_REF_BYTES("OLD")],
-  [CAPTURE, CAPTURES + UPDATES, `THEN image ELSE '${LOG_WIDE}' END`],
+  // The wide mark, in place of an image past `IMAGE_MAX`: the change log reads any line
+  // that is no row and no gone as one (`changelog.ts` `segment`).
+  [CAPTURE, CAPTURES + UPDATES, `THEN image ELSE '{"t":"wide"}' END`],
   [CAPTURE, CAPTURES, `(SELECT line FROM change_log WHERE seq = log_capture.last) = ` +
-    `'${LOG_WIDE}')`],
+    `'{"t":"wide"}')`],
 ]);
 
 /** How `head`'s statements fail to spell `text` `count` times, each at least once; or null. */
@@ -441,7 +463,7 @@ describe("the owner's frozen bounds", () => {
       }
     }
     // Every place of every bound, the products of two counted with each.
-    expect(places).toBe(594);
+    expect(places).toBe(645);
   });
 
   it("see a bound changed without its SQL, a place more or less, or a number left over", () => {

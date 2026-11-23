@@ -1,5 +1,5 @@
 /**
- * The key store (tasks 2; slice L): each of the owner's API keys, so the owner's key list
+ * The key store: each of the owner's API keys, so the owner's key list
  * and its erasure can enumerate them. The directory's `k:<id>` entry holds the key's
  * owner, its secret's hash and its mint time (`doors/src/directory.ts`), and the grant row
  * holds only its client hash (`grants.ts`); this row holds what the owner is shown: the key
@@ -10,8 +10,7 @@
  *   concurrent mints cannot pass the count by one. The count is the owner's set clients'
  *   own bound (`GRANT_LIMITS.maxOwnerClients`, the 10 GB's share: each key's grant is an
  *   owner-set client), held equal by a test. An agent's held key request (a policy card,
- *   `api_key_request`) is applied with the grant, once, its scopes the card's (the Python's
- *   `_apply_key_request`).
+ *   `api_key_request`) is applied with the grant, once, its scopes the card's.
  * - **Use**: every call an API key makes marks its row's `last_used_at`, at most once a
  *   `USE_INTERVAL_S`, so a key's use is a read most calls (as a grant's `last_seen`).
  * - **Revoke** follows the grant: a revoke, or a set to `revoked`, marks the row in the
@@ -136,10 +135,6 @@ export interface KeyMintRequest {
 }
 
 // -- THE DOORS: the `keys` rows' handlers (`owner/doors.json`) ------------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`KeysDoorNeeds`) once the row's steps held: the bind, the account, the scope
-// and the fields.
 
 /** What the `keys` doors reach: the keys, and the grant and held request a mint sets. */
 export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
@@ -155,7 +150,6 @@ export interface KeysDoorNeeds extends Pick<ObjectReads, "storage"> {
   };
 }
 
-/** The `keys` doors' handlers, by door. */
 export const keysDoors = Object.freeze({
   /**
    * Mint an API key's record and its grant, in the owner's session, in one unit: the live

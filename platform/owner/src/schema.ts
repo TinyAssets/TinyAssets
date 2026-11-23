@@ -41,7 +41,7 @@ export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMA
   "CHECK ((state = 'suspended') = (reasons != '[]')))";
 
 /**
- * The owner's migrations: one baseline (squashed before the first deploy, slice P), every
+ * The owner's migrations: one baseline (squashed before the first deploy), every
  * table, index, trigger and seed row the owner's object starts with, its parts in the order
  * they were written, numbered as the sources cite them ("part 12"), then each migration
  * since, in the order it shipped.
@@ -56,7 +56,7 @@ export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMA
  */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
-    // Part 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
+    // Part 1: the owner this object serves, and the one revision primitive (ADR-032).
     "CREATE TABLE object_owner (only INTEGER PRIMARY KEY CHECK (only = 1), owner TEXT NOT NULL)",
     "CREATE TABLE collection_rows (" +
       "collection TEXT NOT NULL, row_id TEXT NOT NULL, revision INTEGER NOT NULL, " +
@@ -67,7 +67,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "updated_at REAL NOT NULL, " +
       // Who created the row; a takeover never changes it (a clear by writer matches it).
       "creator TEXT NOT NULL, " +
-      // The owner-wide change of its latest write (`collection_clock`, slice M).
+      // The owner-wide change of its latest write (`collection_clock`).
       "change INTEGER NOT NULL, " +
       "body_bytes INTEGER NOT NULL, content_id TEXT, filer TEXT NOT NULL CHECK (filer = 'owner' OR (length(filer) = 71 AND filer GLOB 'client:*')), CHECK (CASE WHEN content_id IS NULL THEN body_bytes = length(CAST(body AS BLOB)) ELSE body = '' AND body_bytes > 2048 AND length(content_id) = 64 END), " +
       "PRIMARY KEY (collection, row_id), UNIQUE (collection, seq))",
@@ -81,7 +81,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE collection_history (" +
       "collection TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL, " +
       "op TEXT NOT NULL, body_json TEXT NOT NULL CHECK (length(CAST(body_json AS BLOB)) <= 2048), at REAL NOT NULL, writer TEXT NOT NULL, " +
-      // A delete's or clear's entry (slice M's digests): its owner-wide change, and the
+      // A delete's or clear's entry: its owner-wide change, and the
       // erased row's writer when the row was private, so only that writer is told.
       "change INTEGER, private_writer TEXT, " +
       "body_bytes INTEGER NOT NULL, content_id TEXT, filer TEXT NOT NULL CHECK (filer = 'owner' OR (length(filer) = 71 AND filer GLOB 'client:*')), CHECK (CASE WHEN content_id IS NULL THEN body_bytes = length(CAST(body_json AS BLOB)) ELSE body_json = '' AND body_bytes > 2048 AND length(content_id) = 64 END), " +
@@ -101,7 +101,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "charge INTEGER NOT NULL CHECK (charge >= 0), " +
       "rows_charge INTEGER NOT NULL CHECK (rows_charge >= 0), " +
       "revision_floor INTEGER NOT NULL, seq_floor INTEGER NOT NULL, " +
-      // The newest change of a delete's or clear's entry a prune let go (slice M's feed): a
+      // The newest change of a delete's or clear's entry a prune let go: a
       // reader behind it is told to read again (`changed`'s `reset`), never left unaware.
       "erasure_floor INTEGER NOT NULL)",
     "INSERT INTO collection_space VALUES (1, 0, 0, 0, 0, 0)",
@@ -138,7 +138,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE collection_space SET rows_charge = rows_charge - (4096 / max(1, 3066 / ((CASE WHEN (length(CAST(OLD.who AS BLOB)) + 9 + 48) <= 1002 THEN (length(CAST(OLD.who AS BLOB)) + 9 + 48) ELSE 489 END) + 4)) + 4096 * (((length(CAST(OLD.who AS BLOB)) + 9 + 48) - (CASE WHEN (length(CAST(OLD.who AS BLOB)) + 9 + 48) <= 1002 THEN (length(CAST(OLD.who AS BLOB)) + 9 + 48) ELSE 489 END) + 4091) / 4092)); END",
     "CREATE TRIGGER collection_usage_emptied AFTER UPDATE OF charge ON collection_usage " +
       "WHEN NEW.charge = 0 BEGIN DELETE FROM collection_usage WHERE who = NEW.who; END",
-    // The owner-wide change order (slice M's digests): every write, delete and clear takes
+    // The owner-wide change order: every write, delete and clear takes
     // the clock's next change for its row or its erase entry, so one cursor covers many
     // collections. It only ever rises.
     "CREATE TABLE collection_clock (only INTEGER PRIMARY KEY CHECK (only = 1), " +
@@ -152,7 +152,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // A digest reads only what changed past its cursor.
     "CREATE INDEX collection_changes ON collection_rows (change)",
     "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL",
-    // Part 2: the message ledger (S30, S3a, S3b), its bodies, and the W3 wake limits (ledger.ts).
+    // Part 2: the message ledger, its bodies, and the wake limits (ledger.ts).
     // The object is its owner, so no row carries an owner column. Every bound the ledger
     // keeps is a counter that only the triggers below write, inside the statement that
     // changes the rows it counts, and every query a door or a lane runs has an index, so
@@ -165,12 +165,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK (delivery_method IN ('mcp_event', 'routine_fire', 'webhook', 'a2a', 'pull')), " +
       "recipe_id TEXT, revision INTEGER NOT NULL, disabled_reason TEXT, " +
       "created_at REAL NOT NULL, " +
-      // The owner's own settings (W3): set only by the owner's wake-limits setter, never by
+      // The owner's own settings: set only by the owner's wake-limits setter, never by
       // a registration, and off by default (`WAKE_DEFAULTS`): no hourly cap, no batch window.
       "max_wakes_per_hour INTEGER " +
       "CHECK (max_wakes_per_hour IS NULL OR max_wakes_per_hour >= 1), " +
       "batch_window_s INTEGER NOT NULL DEFAULT 0 CHECK (batch_window_s >= 0), " +
-      // The hourly cap's one counter (slice W, ruling M5): GCRA's theoretical arrival time,
+      // The hourly cap's one counter: GCRA's theoretical arrival time,
       // in seconds; null until a capped agent is first woken.
       "wake_tat REAL, " +
       // Messages this agent sent that the owner has not acked yet: its share of the owner's
@@ -178,7 +178,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
       "UNIQUE (command_center_id, outside_client, outside_family))",
     "CREATE INDEX outside_identities ON outside_agents (outside_client, outside_family)",
-    // The enabled agents by delivery method: who a board or room change rings (slice W).
+    // The enabled agents by delivery method: who a board or room change rings.
     "CREATE INDEX outside_ringing ON outside_agents (delivery_method) " +
       "WHERE disabled_reason IS NULL",
     // A registration's id, universe and client never change: its client's grant row counts
@@ -208,7 +208,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // Whether a person sent it (the owner's own call): a run it starts is attended. A
       // run's mail and a client's are not.
       "attended INTEGER NOT NULL DEFAULT 0 CHECK (attended IN (0, 1)), " +
-      // The bytes its rows take as export lines, its body's included (slice STORE item 2):
+      // The bytes its rows take as export lines, its body's included:
       // what it takes in an archive segment, and what the one number counts it at.
       "line_bytes INTEGER NOT NULL CHECK (line_bytes >= body_bytes), " +
       "UNIQUE (sender_id, client_message_id))",
@@ -245,9 +245,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK (state IN ('pending', 'sending', 'sent', 'unknown', 'rate_limited', 'failed', " +
       "'suppressed')), due REAL NOT NULL, claim_id TEXT, " +
       "attempts INTEGER NOT NULL DEFAULT 0, " +
-      // The durable may-have-sent mark (the Python op journal's): set before a byte leaves.
+      // The durable may-have-sent mark: set before a byte leaves.
       "marked INTEGER NOT NULL DEFAULT 0 CHECK (marked IN (0, 1)), through_seq INTEGER, " +
-      // What a wake says changed (slice W, `wake-kinds.ts`): bits for mail 1, rooms 2 and
+      // What a wake says changed (`wake-kinds.ts`): bits for mail 1, rooms 2 and
       // board 4, and the owner-wide change cursor its rooms and board changes are after.
       // `created_at` is the first change's own time, the event's timestamp.
       "changes INTEGER NOT NULL CHECK (changes BETWEEN 1 AND 7), " +
@@ -263,7 +263,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX wakes_open ON ledger_wakes (due) WHERE state IN ('pending', 'rate_limited')",
     "CREATE INDEX wakes_sending ON ledger_wakes (due) WHERE state = 'sending'",
     "CREATE INDEX wakes_settled ON ledger_wakes (settled_at) WHERE settled_at IS NOT NULL",
-    // The doorbell's subscriptions (slice W, MCP Events): each an enabled ringing agent's,
+    // The doorbell's subscriptions (MCP Events): each an enabled ringing agent's,
     // stored by its client's verified `events/subscribe` or by the owner's pasted token,
     // keyed by the id the server derives (principal, callback URL, event, arguments). The
     // secret and the URL are only inside `blob`, which the gateway sealed and alone opens;
@@ -315,7 +315,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 2048), " +
       "created_at REAL NOT NULL, body_bytes INTEGER NOT NULL CHECK (body_bytes >= 1), " +
       // Its message's lines' bytes past the body (`line_bytes` less `body_bytes`), counted in
-      // the one number with the body, in the writer's files scope (slice STORE item 2, D2).
+      // the one number with the body, in the writer's files scope.
       "content_id TEXT, filer TEXT NOT NULL CHECK (filer = 'owner' OR (length(filer) = 71 AND filer GLOB 'client:*')), meta_bytes INTEGER NOT NULL CHECK (meta_bytes >= 0), " +
       "CHECK (CASE WHEN content_id IS NULL THEN body_bytes = length(CAST(body AS BLOB)) ELSE body = '' AND body_bytes > 2048 AND length(content_id) = 64 END))",
     // The owner-wide counters the ledger's bounds read.
@@ -332,7 +332,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "archive_blocked INTEGER NOT NULL DEFAULT 0 CHECK (archive_blocked IN (0, 1)), " +
       // The archive lane's passes begun and not ended well, and the last one's error (null
       // when it stopped before it could say, as an isolate killed for memory does): counted
-      // as a pass begins, so the owner is told after three however they ended (review N3).
+      // as a pass begins, so the owner is told after three however they ended.
       "archive_fails INTEGER NOT NULL DEFAULT 0 CHECK (archive_fails >= 0), " +
       "archive_error TEXT CHECK (archive_error IS NULL OR length(archive_error) <= 200))",
     "INSERT INTO ledger_usage (only, agents, enabled_agents, messages, settled_wakes) " +
@@ -403,8 +403,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER ledger_wakes_removed AFTER DELETE ON ledger_wakes " +
       "WHEN OLD.settled_at IS NOT NULL BEGIN " +
       "UPDATE ledger_usage SET settled_wakes = settled_wakes - 1; END",
-    // Part 3: owner policy, outside-client grants and the owner's protected sessions (N10,
-    // P0-3; tasks 3.5): policy.ts, grants.ts, sessions.ts. Each bound reads `policy_usage`,
+    // Part 3: owner policy, outside-client grants and the owner's protected sessions:
+    // policy.ts, grants.ts, sessions.ts. Each bound reads `policy_usage`,
     // which only the triggers below write, and every query has an index.
     // A session row holds the hash of the cookie the object minted, never the cookie.
     "CREATE TABLE owner_sessions (" +
@@ -465,7 +465,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "owner_set INTEGER NOT NULL DEFAULT 0 CHECK (owner_set IN (0, 1)), " +
       "agents INTEGER NOT NULL DEFAULT 0 CHECK (agents >= 0), " +
       "held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0), " +
-      // The tool profile it is served (slice M, `contract/profiles.json`).
+      // The tool profile it is served (`contract/profiles.json`).
       "profile TEXT NOT NULL DEFAULT 'custom' CHECK (profile IN ('directory', 'custom')), " +
       // A grant's revision apart from its authority (part 9): the owner's concurrency token,
       // moved by every set and revoke and named by the owner's set; `generation` moves only
@@ -504,7 +504,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "INSERT INTO policy_usage (only, sessions, owner_clients, free_clients, " +
       "pending_proposals, applied_proposals, owner_receipts, agent_receipts, " +
       "refusal_receipts) VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0)",
-    // An MCP client's held registration (slice 3's review L2): filed through the client's
+    // An MCP client's held registration: filed through the client's
     // own verified call, so the object captured its origin, and applied by the owner in
     // its session by card id. One pending card per outside identity; it holds its client's
     // grant row and carries the authority it was filed under.
@@ -600,9 +600,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (30 days, the
     // object's point-in-time recovery; SQLite's clock: the schedule compares it with the
     // object's, and a 30-day grace does not mind which), or sooner, oldest first, once the
-    // garbage passes the tier's storage (`garbage_bytes`, files.ts `run`). So content any entry or kept row names is never garbage. A history
-    // row never changes but for its prune time, its `released` mark and a redaction of
-    // its content.
+    // garbage passes the tier's storage (`garbage_bytes`, files.ts `run`). So content any entry or
+    // kept row names is never garbage. A history row never changes but for its prune time, its
+    // `released` mark and a redaction of its content.
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       // The owner's chunk namespace, made on first use (files.ts `ns`), and its data key,
       // wrapped: only the files Worker's keyring opens it (`files/src/datakey.ts`).
@@ -685,7 +685,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "kind TEXT CHECK (kind IS NULL OR kind IN ('file', 'dir')), content_id TEXT, " +
       "size INTEGER NOT NULL, mode INTEGER NOT NULL, writer TEXT NOT NULL, at REAL NOT NULL, " +
       // `released`: the path is gone, so retention has let the row go (it is always due).
-      // Since untangle F1 nothing marks or reads it (files.ts `#retain`); F2 reshapes the table.
+      // Nothing marks or reads it (files.ts `#retain`).
       "prune_after REAL, released INTEGER NOT NULL DEFAULT 0 CHECK (released IN (0, 1)), " +
       "CHECK (released = 0 OR prune_after IS NOT NULL))",
     "CREATE INDEX file_history_paths ON file_history (path, version)",
@@ -733,7 +733,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "kind TEXT NOT NULL CHECK (kind IN ('api_key', 'oauth2')), " +
       "display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128), " +
       "provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 64), " +
-      // In bytes (review L5-1): its ceiling's reason is records of bytes (`connections.ts`
+      // In bytes: its ceiling's reason is records of bytes (`connections.ts`
       // `MODELS_JSON_MAX`), and a row image's width is bytes.
       "models TEXT NOT NULL DEFAULT '[]' CHECK (length(CAST(models AS BLOB)) <= 655360), " +
       "status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked', 'error')), " +
@@ -961,20 +961,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER model_spend_kept AFTER INSERT ON model_spend " +
       "WHEN (SELECT COUNT(*) FROM model_spend) > 4300 BEGIN " +
       "SELECT RAISE(ABORT, 'model_spend_full: 4300 spend counters are kept'); END",
-    // Part 8: the owner's erasure (erasure.ts; S4-S5): the owner being erased is one row
+    // Part 8: the owner's erasure (erasure.ts): the owner being erased is one row
     // (`owner_erasure`, with the step it reached), the mark every door and lane refuses on.
     "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)), " +
-      // The erasure's outside record, confirmed by the doors (`erasure.ts` step 2, slice L).
+      // The erasure's outside record, confirmed by the doors (`erasure.ts` step 2).
       "outside INTEGER NOT NULL DEFAULT 0 CHECK (outside IN (0, 1)))",
-    // Part 10: the owner's admission (tasks 5, F1): `owner_admission` is the owner's one
+    // Part 10: the owner's admission: `owner_admission` is the owner's one
     // admission row (`admission.ts`): pending when the object is first made, admitted only by
-    // the platform's explicit admit at sign-up (slice L), suspended for billing or abuse by
+    // the platform's explicit admit at sign-up, suspended for billing or abuse by
     // the platform, or, as the last step of the owner's erasure, the erased tombstone, alone
     // in the wiped database.
     ADMISSION_TABLE,
     "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'pending', '[]')",
-    // Part 11: the egress door (tasks 4 G4; egress.ts). The owner's policy row keeps the egress
+    // Part 11: the egress door (egress.ts). The owner's policy row keeps the egress
     // generation, moved only by a write that changes the egress table (each sandbox lease,
     // migration 12, keeps the one its network was last applied under).
     // A connection keeps where its credential may be forwarded (`egress`: its sealed base
@@ -1077,8 +1077,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // `waiting` row (not live: it holds no slot, grant or lease), its input kept beside it
     // (`run_inputs`) until it starts, at most `QUEUE_ROWS` and `QUEUE_BYTES` of input in all.
     // Each engine's sign-in, as the runner last reported it (`engine_signins`, one row an
-    // engine, at most `ENGINE_SIGNINS`): signed in or not, when, and the models it offers;
-    // never a credential.
+    // engine, at most `ENGINE_SIGNINS`): signed in or not, and when; never a credential.
+    // Its `models` is read by nothing (a plan's model is its record's), its drop owed.
     "CREATE TABLE runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
       "id TEXT NOT NULL UNIQUE CHECK (length(id) = 36), " +
       "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +
@@ -1094,7 +1094,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
       "request TEXT CHECK (request IS NULL OR length(request) = 64), " +
       "unattended INTEGER NOT NULL CHECK (unattended IN (0, 1)), " +
-      // The mail it answers, when mail to one of the owner's agents started it (slice ID):
+      // The mail it answers, when mail to one of the owner's agents started it:
       // the mail is held in the ledger until the run settles.
       "mail TEXT CHECK (mail IS NULL OR length(mail) = 36), " +
       "cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)), " +
@@ -1112,7 +1112,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "beat_at REAL, " +
       // The time its sandbox ran between its start and its settle (part 15, `sandbox-time.ts`).
       "sandbox_ms INTEGER CHECK (sandbox_ms IS NULL OR sandbox_ms >= 0), " +
-      // A run waiting for a sandbox (slice S: E2B ran as many as its plan allows, or another
+      // A run waiting for a sandbox (E2B ran as many as its plan allows, or another
       // owner waits ahead): not started again until the platform's line rings the owner.
       "sandbox_wait INTEGER NOT NULL DEFAULT 0 CHECK (sandbox_wait IN (0, 1) AND " +
       "(sandbox_wait = 0 OR state = 'waiting')), " +
@@ -1254,7 +1254,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
       "AND ((CASE WHEN NEW.charge IN ('held', 'unknown') THEN NEW.est_cost WHEN NEW.charge IN ('succeeded', 'failed') THEN coalesce(NEW.cost, 0) ELSE 0 END) != (CASE WHEN OLD.charge IN ('held', 'unknown') THEN OLD.est_cost WHEN OLD.charge IN ('succeeded', 'failed') THEN coalesce(OLD.cost, 0) ELSE 0 END) OR (CASE WHEN NEW.charge IN ('held', 'unknown') THEN NEW.est_tokens WHEN NEW.charge IN ('succeeded', 'failed') THEN coalesce(NEW.tokens, 0) ELSE 0 END) != (CASE WHEN OLD.charge IN ('held', 'unknown') THEN OLD.est_tokens WHEN OLD.charge IN ('succeeded', 'failed') THEN coalesce(OLD.tokens, 0) ELSE 0 END)) BEGIN " +
       "UPDATE runs SET requests = requests + 0, tokens = tokens + ((CASE WHEN NEW.charge IN ('held', 'unknown') THEN NEW.est_tokens WHEN NEW.charge IN ('succeeded', 'failed') THEN coalesce(NEW.tokens, 0) ELSE 0 END) - (CASE WHEN OLD.charge IN ('held', 'unknown') THEN OLD.est_tokens WHEN OLD.charge IN ('succeeded', 'failed') THEN coalesce(OLD.tokens, 0) ELSE 0 END)), cost = cost + ((CASE WHEN NEW.charge IN ('held', 'unknown') THEN NEW.est_cost WHEN NEW.charge IN ('succeeded', 'failed') THEN coalesce(NEW.cost, 0) ELSE 0 END) - (CASE WHEN OLD.charge IN ('held', 'unknown') THEN OLD.est_cost WHEN OLD.charge IN ('succeeded', 'failed') THEN coalesce(OLD.cost, 0) ELSE 0 END)) WHERE id = NEW.run; END",
-    // Part 13: the owner's own agents as ledger identities (slice ID; ledger.ts). Each
+    // Part 13: the owner's own agents as ledger identities (ledger.ts). Each
     // `/workspace/agents/<agent>/agent.json` is one, made as the file appears and retired as
     // it goes, in the file change's own unit: a mail recipient and sender beside the outside
     // agents, counted with them in the registry's rows and, while live, its reserved
@@ -1338,8 +1338,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
     "CREATE TRIGGER message_bodies_kept BEFORE UPDATE ON message_bodies " +
       "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
-    // Part 15: before real data (slice P). The nightly manifest's bookkeeping (backup.ts): at most
-    // two manifests, the newest finished and the one being written, each with its parts as
+    // Part 15: before real data. The nightly manifest's bookkeeping (backup.ts): at most two
+    // manifests, the newest finished and the one being written, each with its parts as
     // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS). The sandbox
     // meter (sandbox-time.ts): the cursor of the sandbox Worker's log, each authority's
     // running spans a run not yet metered may overlap (one open at most), the seconds a UTC
@@ -1358,7 +1358,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "segment_list TEXT NOT NULL DEFAULT '' CHECK (length(segment_list) <= " +
       "1753088), " +
       "bytes INTEGER NOT NULL CHECK (bytes >= 0), s INTEGER NOT NULL CHECK (s >= 1), " +
-      // The schema version it was begun under: a migration while it runs ends it (review L5-2).
+      // The schema version it was begun under: a migration while it runs ends it.
       "schema INTEGER NOT NULL CHECK (schema >= 1), " +
       "e INTEGER, ended_at REAL, started_at REAL NOT NULL, " +
       "finished_at REAL, retry_at REAL, " +
@@ -1816,7 +1816,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN " +
       "UPDATE file_space SET body_bytes = body_bytes - OLD.body_bytes; " +
       "UPDATE file_shares SET body_bytes = body_bytes - (OLD.body_bytes) WHERE who IN (CASE WHEN OLD.filer GLOB 'client:*' THEN '*' ELSE 'owner' END, OLD.filer); END",
-    // A message's lines past its body (slice STORE item 2, D2): the one number counts mail at
+    // A message's lines past its body: the one number counts mail at
     // its real bytes, hot as archived.
     "CREATE TRIGGER message_bodies_meta_added AFTER INSERT ON message_bodies WHEN NEW.meta_bytes > 0 " +
       "BEGIN UPDATE file_space SET body_bytes = body_bytes + NEW.meta_bytes; " +
@@ -1824,7 +1824,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER message_bodies_meta_removed AFTER DELETE ON message_bodies WHEN OLD.meta_bytes > 0 " +
       "BEGIN UPDATE file_space SET body_bytes = body_bytes - OLD.meta_bytes; " +
       "UPDATE file_shares SET body_bytes = body_bytes - (OLD.meta_bytes) WHERE who IN (CASE WHEN OLD.filer GLOB 'client:*' THEN '*' ELSE 'owner' END, OLD.filer); END",
-    // Part 16: the doors' records in the owner's object (slice L). `owner_keys`, the key store
+    // Part 16: the doors' records in the owner's object. `owner_keys`, the key store
     // (`keys.ts`): each API key's id, name, mint time, last use and revoke, its row only while
     // its owner-set grant row stands (its `client`), so the owner's list and its erasure can
     // enumerate them. `inbound_bindings` (`inbound.ts`): each inbound event source, its agent,
@@ -1864,7 +1864,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER inbound_bindings_logged_delete AFTER DELETE ON inbound_bindings WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'inbound_bindings', 'key', json_array(OLD.binding_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
-    // Part 17: the vendor's own sign-in inside a sandbox (slice SIGNIN, `signins.ts`).
+    // Part 17: the vendor's own sign-in inside a sandbox (`signins.ts`).
     // `sandbox_signins`: the sign-in in progress, one an authority, holding that sandbox's
     // lease, its latest prompt (the vendor's URL and code, never a token) and its runner's
     // last beat; gone at its end. `platform_signins`: the served records whose vendor sign-in
@@ -1888,7 +1888,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE platform_signins (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "engines TEXT NOT NULL CHECK (length(engines) <= 256 " +
       "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
-    // Part 18: the archive (slice STORE item 2, `segments.ts`). `archive_segments`: one row a
+    // Part 18: the archive (`segments.ts`). `archive_segments`: one row a
     // segment, its fence: the stream, its key range and time, its records, its content (a
     // files-plane content the row names, counted as a placed body is), its trailer's range,
     // and a bloom of the agents its rooms name; a segment never changes, a rewrite makes a
@@ -1910,7 +1910,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX archive_segments_by_last ON archive_segments (stream, last_key)",
     // The segments under the least (`SEGMENT_LEAST_BYTES`), found at once: at most one
     // stands at a time, the lone one or the one a bounded rewrite left for the next pass
-    // (review N7: compaction across passes, derived from the fences alone).
+    // (compaction across passes, derived from the fences alone).
     "CREATE INDEX archive_segments_small ON archive_segments (bytes) WHERE bytes < 8388608",
     "CREATE TRIGGER archive_segments_placed AFTER INSERT ON archive_segments " +
       "BEGIN UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
@@ -1921,7 +1921,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER archive_segments_kept BEFORE UPDATE ON archive_segments " +
       "BEGIN SELECT RAISE(ABORT, 'a segment never changes; a rewrite makes a new one'); END",
     // No two segments of a stream overlap in key range: a lookup by key finds at most one,
-    // and the chain read's frontier is the next segment's first key (review H1).
+    // and the chain read's frontier is the next segment's first key.
     "CREATE TRIGGER archive_segments_disjoint BEFORE INSERT ON archive_segments " +
       "WHEN EXISTS (SELECT 1 FROM archive_segments WHERE stream = NEW.stream AND " +
       "last_key >= NEW.first_key AND first_key <= NEW.last_key) BEGIN SELECT RAISE(ABORT, " +
@@ -2012,7 +2012,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'starter_state', 'key', json_array(OLD.only)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
-  // 4, after the starter's 3 (slice BRAIN): which of `apps.json`'s vendors an MCP client is,
+  // 4: which of `apps.json`'s vendors an MCP client is,
   // as its sign-in knew it (`contract/src/apps.ts`): an app's id, verified (1) by its CIMD
   // host or named (0) by its self-declared name; null when none matched, and for an API
   // key. `agents_list` answers the owner's connected apps from it. The table is exported,
@@ -2032,7 +2032,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'outside_clients', 'row', json_object('client', NEW.client, 'source', NEW.source, 'mode', NEW.mode, 'scopes', NEW.scopes, 'generation', NEW.generation, 'revoked_at', NEW.revoked_at, 'name', NEW.name, 'first_seen', NEW.first_seen, 'last_seen', NEW.last_seen, 'owner_set', NEW.owner_set, 'agents', NEW.agents, 'held', NEW.held, 'profile', NEW.profile, 'revision', NEW.revision, 'vendor', NEW.vendor, 'vendor_verified', NEW.vendor_verified)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
-  // 5, after the vendor's 4 (E2): a live lease's network re-applied under a newer egress
+  // 5: a live lease's network re-applied under a newer egress
   // generation (`Launcher.reapply`): the generation a re-apply is out with, whose calls are
   // admitted under it too; and the lane's retry clock, when the last was sent or failed
   // and under which generation.
@@ -2043,7 +2043,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE sandbox_leases ADD COLUMN network_tried_at REAL",
     "ALTER TABLE sandbox_leases ADD COLUMN network_tried_generation INTEGER",
   ]),
-  // 6, after E2's 5 (R5 slice 1, d3 §N): the policy document's new shape, its `egress` table
+  // 6 (d3 §N): the policy document's new shape, its `egress` table
   // and the optional tables (`contract/src/policy-document.ts`), with no `entries` or `spend`.
   // The old default document becomes the new default, its generation kept, since nothing it
   // says changed. Any other document has no new shape SQL can write, its digest being
@@ -2064,19 +2064,18 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "document = '{\"egress\":{\"destinations\":[],\"mode\":\"open\"}}'",
     "DROP TRIGGER policy_reshape_refused",
   ]),
-  // 7, after R5's 6 (untangle H1, `history_keys_research.md` §2.2): every history entry keyed
-  // by the owner-wide change its write ticked, linked to the entry it follows (`prev`), and
-  // a delete's or clear's entry moved to its own table, `collection_erasures`, keyed the same
-  // way, so the feed reads deletions as a range of that key and an erase never drops an
-  // earlier deletion. A rebuild: SQLite changes no CHECK in place. The old table is renamed
-  // with its taking-back triggers, the new tables made with their charge, placement and
-  // inline triggers, the entries copied, and the old ones deleted, so each counter and
-  // content reference goes up before it comes down and no content reaches zero references.
-  // Each live row's newest entry takes the row's own change; the older entries take negative
-  // keys in their insertion order (`rowid`, which within a key is revision order), so no
-  // cursor moves and the clock does not tick. An erased key's next revision goes past the
-  // newest an erase gave (`revision_floor`), as a key with no entries left already did.
-  // A migration ends the generation under way (`backup.ts`), so no capture runs mid-way.
+  // 7: every history entry keyed by the owner-wide change its write ticked, linked to the
+  // entry it follows (`prev`), and a delete's or clear's entry moved to its own table,
+  // `collection_erasures`, keyed the same way, so the feed reads deletions as a range of that
+  // key and an erase never drops an earlier deletion. A rebuild: SQLite changes no CHECK in place.
+  // The old table is renamed with its taking-back triggers, the new tables made with their charge,
+  // placement and inline triggers, the entries copied, and the old ones deleted, so each counter
+  // and content reference goes up before it comes down and no content reaches zero references. Each
+  // live row's newest entry takes the row's own change; the older entries take negative keys in
+  // their insertion order (`rowid`, which within a key is revision order), so no cursor moves and
+  // the clock does not tick. An erased key's next revision goes past the newest an erase gave
+  // (`revision_floor`), as a key with no entries left already did. A migration ends the generation
+  // under way (`backup.ts`), so no capture runs mid-way.
   Object.freeze([
     "DROP TRIGGER collection_history_logged_insert",
     "DROP TRIGGER collection_history_logged_update",
@@ -2163,12 +2162,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'collection_erasures', 'key', json_array(OLD.change)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
-  // 8, after H1's 7 (untangle F1, `datashapes_research.md` §2.4): file retention is off by
-  // default (Fact 15), so the retention the kept rows were marked by may be off, each
-  // setting null (`files.ts` `#reretain`). The three columns are made again without their
-  // NOT NULL (SQLite changes none in place; no index, check or trigger names them), null as
-  // the new defaults are, and an owner that keeps any history re-marks it all on its next
-  // housekeeping pass (`retain_cursor` '' starts one), so rows marked under the old defaults
+  // 8: file retention is off by default (Fact 15), so the retention the kept rows were
+  // marked by may be off, each setting null (`files.ts` `#reretain`). The three columns are made
+  // again without their NOT NULL (SQLite changes none in place; no index, check or trigger names
+  // them), null as the new defaults are, and an owner that keeps any history re-marks it all on its
+  // next housekeeping pass (`retain_cursor` '' starts one), so rows marked under the old defaults
   // are kept as the retention in force says. `file_space` is not exported, so no capture.
   Object.freeze([
     "ALTER TABLE file_space DROP COLUMN retained_keep",
@@ -2179,7 +2177,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE file_space ADD COLUMN retained_days INTEGER",
     "UPDATE file_space SET retain_cursor = '' WHERE EXISTS (SELECT 1 FROM file_history)",
   ]),
-  // 9, after F1's 8 (untangle 3b, `datashapes_research.md`): the ledger's receipts deleted,
+  // 9: the ledger's receipts deleted,
   // each fact on the row it describes. A recipient row holds when its reader read the
   // message (`read_at`) and why it failed (`failed_reason`), so an archive segment holds
   // them with the message; a reply holds its time to reply (`reply_s`), written as it is
@@ -2243,7 +2241,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'ledger_messages', 'row', json_object('seq', NEW.seq, 'message_id', NEW.message_id, 'command_center_id', NEW.command_center_id, 'room_id', NEW.room_id, 'sender_kind', NEW.sender_kind, 'sender_id', NEW.sender_id, 'client_message_id', NEW.client_message_id, 'body_sha256', NEW.body_sha256, 'parent_id', NEW.parent_id, 'chain_root', NEW.chain_root, 'chain_depth', NEW.chain_depth, 'created_at', NEW.created_at, 'body_bytes', NEW.body_bytes, 'unacked', NEW.unacked, 'authority', NEW.authority, 'attended', NEW.attended, 'line_bytes', NEW.line_bytes, 'reply_s', NEW.reply_s)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
       "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
   ]),
-  // 10, after 3b's 9 (lane R's restore, `restore.ts`; `untangle-2026-11/r5r.md`): a restore's
+  // 10 (the restore, `restore.ts`; `untangle-2026-11/r5r.md`): a restore's
   // record, one row (its generation's namespace and id, its step, where the step is, the
   // owner's admission at E held until the check passes, each base part's span of tables, and
   // a failure's words), and the log's rows it stages, the last line per key (null once gone),
@@ -2262,7 +2260,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE owner_backups ADD COLUMN log_bytes INTEGER NOT NULL DEFAULT 0 CHECK " +
       "(log_bytes >= 0)",
   ]),
-  // 11 (lane R's wipe, `restore.ts`; `untangle-2026-11/r5w.md`): a restore's record begins
+  // 11 (the restore's wipe, `restore.ts`; `untangle-2026-11/r5w.md`): a restore's record begins
   // at the pin, on a live owner, and holds through the wipe: two steps before `index`
   // (`pinned`, the generation held and the owner's present state written; `wiped`, the object
   // emptied for it), and the generation the pin wrote of the present state (`fresh`): the
@@ -2286,12 +2284,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE owner_restore_next RENAME TO owner_restore",
     "ALTER TABLE owner_backups ADD COLUMN seq INTEGER NOT NULL DEFAULT 0 CHECK (seq >= 0)",
   ]),
-  // 12 (lane R, `untangle-2026-11/r-fallback-chunks.md`): each generation's first change
+  // 12 (`untangle-2026-11/r-fallback-chunks.md`): each generation's first change
   // since it began (`changed_at`, seconds; null while none), which no later begin clears, so a
   // given-up generation leaves the newest known stale and the deleted rows it holds go within
   // 30 days; one from before counts from its start, but the newest of an owner unchanged since
   // (no change marked, none being written, and no give-up told since it finished: a give-up's
-  // begin cleared the mark (review F3), so `told` is its only trace).
+  // begin cleared the mark, so `told` is its only trace).
   // The owner's one change mark it replaces goes. When the last generation was begun
   // (`began_at`), from which the next night is counted, so a given-up one is tried the next
   // night, never at once. And whether the owner was told none can be restored (`lost`; null
@@ -2310,7 +2308,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "state = 'done')",
     "ALTER TABLE owner_backup_state DROP COLUMN changed",
   ]),
-  // 13 (lane R's sweep, `backup.ts`; `untangle-2026-11/r7-sweep.md`): the sweeps owed for
+  // 13 (the sweep, `backup.ts`; `untangle-2026-11/r7-sweep.md`): the sweeps owed for
   // generations in R2 no row names any more (`sweep`, counted, so one owed while a sweep ran
   // outlives its settling), and when a failed one is tried again (`sweep_retry`, seconds;
   // null: at once). An object that ever began or held a generation owes one: what a prune
@@ -2322,7 +2320,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "UPDATE owner_backup_state SET sweep = 1 WHERE began_at IS NOT NULL OR EXISTS (SELECT 1 " +
       "FROM owner_backups)",
   ]),
-  // 14 (lane R, `restore.ts`; `untangle-2026-11/r-restore-chunks.md`): a restore's two steps
+  // 14 (`restore.ts`; `untangle-2026-11/r-restore-chunks.md`): a restore's two steps
   // between `chunks` and `clear`, while it holds the owner (`names`, every chunk row's name in
   // the bucket added to a filter; `sweep`, every chunk of the namespace the filter says no row
   // names deleted), the record made again with them, its row kept; and the filter, one row of
@@ -2344,7 +2342,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE restore_filter (only INTEGER PRIMARY KEY CHECK (only = 1), bits BLOB NOT " +
       "NULL CHECK (typeof(bits) = 'blob'))",
   ]),
-  // 15 (lane R, `changelog.ts`, `restore.ts`; `untangle-2026-11/r-log-staged-bytes.md`): what a
+  // 15 (`changelog.ts`, `restore.ts`; `untangle-2026-11/r-log-staged-bytes.md`): what a
   // restore stages of a generation's log, the last line per key, at its most (its peak at a
   // segment's end), in place of the segments' sum (`staged`, the renamed `log_bytes`: one from
   // before keeps that sum, never less than its peak). The capture's count of it: each key the
@@ -2364,7 +2362,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "what it staged was never measured; wipe it and restore again' WHERE step IN ('log', " +
       "'apply', 'check', 'chunks', 'names', 'sweep', 'clear')",
   ]),
-  // 16 (lane R, `restore.ts`; `untangle-2026-11/r-restore-schema.md`): a restore's record keeps
+  // 16 (`restore.ts`; `untangle-2026-11/r-restore-schema.md`): a restore's record keeps
   // the object's schema when it was begun (`schema`), so a restore a migration lands under is
   // failed at its next piece, and its generation's (`source`), which the generation it adopts
   // keeps. A restore under way is recorded as begun at 15, so its next piece fails it.
@@ -2374,7 +2372,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "UPDATE owner_restore SET schema = 15 WHERE step IN ('index', 'log', 'apply', 'check', " +
       "'chunks', 'names', 'sweep', 'clear')",
   ]),
-  // 17 (R5 P-decide, `actions.ts`; `untangle-2026-11/r5-decide.md`): the calls the owner's action
+  // 17 (`actions.ts`; `untangle-2026-11/r5-decide.md`): the calls the owner's action
   // rules hold, each its card, its digest and its call's, the client whose share it takes
   // (indexed) and the policy generation it was asked under, and, once the owner said yes, when;
   // and the decisions' receipts, a bucket of their own, kept to the newest `receiptsPerBucket`
@@ -2408,7 +2406,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER action_receipts_removed AFTER DELETE ON action_receipts BEGIN " +
       "UPDATE policy_usage SET action_receipts = action_receipts - 1; END",
   ]),
-  // 18 (R5 P-resume, `actions.ts`; `untangle-2026-11/r5-resume-hooks.md`): a run's held call
+  // 18 (`actions.ts`; `untangle-2026-11/r5-resume-hooks.md`): a run's held call
   // keeps the run it was held in, whose receipt (and conversation) a yes resumes under, and
   // that run's origin's family, which the receipt does not keep. Set when the call is held and
   // never changed, so the held call's trigger names them too. Not exported, so no
@@ -2422,6 +2420,213 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "client, generation, filed_at, run, family ON action_requests " +
       "BEGIN SELECT RAISE(ABORT, 'a held call changes only by its answer'); END",
   ]),
+  // 19 (`ledger.ts`; `untangle-2026-11/shapes.md`): a room is a row and its members rows, its
+  // id opaque, so nothing reads members out of an id. The hot mail's rooms are kept under their
+  // old ids, each `dm:<a>` (the owner and `a`) or `dm:<a>+<b>` read here once into its sorted
+  // members. An agent's mail to the owner counts in its share by its `owner` recipient row. A
+  // fence's bloom holds its records' room ids, every older one all ones (it may hold any room);
+  // a purge names a deleted agent's room, a pending one each room it may have had (with the
+  // owner, and with each of the owner's own agents). It reads other
+  // tables' rows, so no generation from before it is brought forward (`FORWARD`).
+  Object.freeze([
+    // An id is `rm_` and 32 hex, or an old room's `dm:` and at most two ids and a `+`; a
+    // members' key is two ids and a `+`; a member's id is the owner's or an agent's.
+    "CREATE TABLE rooms (room_id TEXT PRIMARY KEY CHECK (length(room_id) BETWEEN 1 AND 45 " +
+      "AND room_id NOT GLOB '*[^a-z0-9_:+]*'), kind TEXT NOT NULL CHECK (kind IN ('pair')), " +
+      "members_key TEXT NOT NULL UNIQUE CHECK (length(members_key) <= 45 AND members_key " +
+      "NOT GLOB '*[^a-z0-9_+]*'), created_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TABLE room_members (room_id TEXT NOT NULL, member_id TEXT NOT NULL " +
+      "CHECK (length(member_id) <= 22), PRIMARY KEY (room_id, member_id)) WITHOUT ROWID",
+    "CREATE INDEX room_members_by_member ON room_members (member_id, room_id)",
+    "CREATE TRIGGER rooms_kept BEFORE UPDATE ON rooms " +
+      "BEGIN SELECT RAISE(ABORT, 'a room never changes its members'); END",
+    "CREATE TRIGGER rooms_removed AFTER DELETE ON rooms " +
+      "BEGIN DELETE FROM room_members WHERE room_id = OLD.room_id; END",
+    "INSERT INTO rooms (room_id, kind, members_key, created_at) SELECT room_id, 'pair', " +
+      "CASE WHEN instr(room_id, '+') > 0 THEN substr(room_id, 4) " +
+      "WHEN substr(room_id, 4) < 'owner' THEN substr(room_id, 4) || '+owner' " +
+      "ELSE 'owner+' || substr(room_id, 4) END, min(created_at) " +
+      "FROM ledger_messages GROUP BY room_id",
+    "INSERT INTO room_members (room_id, member_id) SELECT room_id, " +
+      "substr(members_key, 1, instr(members_key, '+') - 1) FROM rooms",
+    "INSERT INTO room_members (room_id, member_id) SELECT room_id, " +
+      "substr(members_key, instr(members_key, '+') + 1) FROM rooms",
+    "DROP TRIGGER ledger_outside_held",
+    "DROP TRIGGER ledger_outside_removed",
+    "DROP TRIGGER ledger_native_held",
+    "DROP TRIGGER ledger_native_removed",
+    // An agent's message to the owner, while the owner holds it, counts in that agent's share
+    // of the owner's mailbox (an outside or an own agent's).
+    "CREATE TRIGGER owner_mail_held AFTER INSERT ON ledger_recipients " +
+      "WHEN NEW.agent_id = 'owner' AND NEW.unacked = 1 BEGIN " +
+      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner + 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner + 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); END",
+    "CREATE TRIGGER owner_mail_released AFTER UPDATE OF unacked ON ledger_recipients " +
+      "WHEN NEW.agent_id = 'owner' AND OLD.unacked = 1 AND NEW.unacked = 0 BEGIN " +
+      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = NEW.message_id); END",
+    "CREATE TRIGGER owner_mail_removed AFTER DELETE ON ledger_recipients " +
+      "WHEN OLD.agent_id = 'owner' AND OLD.unacked = 1 BEGIN " +
+      "UPDATE outside_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = OLD.message_id); " +
+      "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1 WHERE agent_id = " +
+      "(SELECT sender_id FROM ledger_messages WHERE message_id = OLD.message_id); END",
+    "DROP TRIGGER archive_segments_kept",
+    "DROP TRIGGER archive_segments_logged_insert",
+    "DROP TRIGGER archive_segments_logged_update",
+    "DROP TRIGGER archive_segments_logged_delete",
+    "ALTER TABLE archive_segments RENAME COLUMN members TO rooms",
+    "UPDATE archive_segments SET rooms = " +
+      "'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" +
+      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
+    "CREATE TRIGGER archive_segments_kept BEFORE UPDATE ON archive_segments " +
+      "BEGIN SELECT RAISE(ABORT, 'a segment never changes; a rewrite makes a new one'); END",
+    "ALTER TABLE archive_purges RENAME TO archive_agent_purges",
+    "CREATE TABLE archive_purges (room_id TEXT PRIMARY KEY CHECK (length(room_id) " +
+      "BETWEEN 1 AND 45 AND room_id NOT GLOB '*[^a-z0-9_:+]*'), at REAL NOT NULL, " +
+      "next_segment INTEGER NOT NULL DEFAULT 0 CHECK (next_segment >= 0))",
+    "INSERT INTO archive_purges (room_id, at, next_segment) " +
+      "SELECT 'dm:' || agent_id, at, next_segment FROM archive_agent_purges",
+    // A deleted (outside) agent's rooms with the owner's own agents: `agent_` sorts first.
+    "INSERT INTO archive_purges (room_id, at, next_segment) SELECT 'dm:' || p.agent_id || " +
+      "'+' || n.agent_id, p.at, p.next_segment FROM archive_agent_purges p, native_agents n",
+    "DROP TABLE archive_agent_purges",
+    "CREATE TRIGGER rooms_logged_insert AFTER INSERT ON rooms WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'rooms', 'row', json_object('room_id', NEW.room_id, 'kind', NEW.kind, 'members_key', NEW.members_key, 'created_at', NEW.created_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER rooms_logged_update AFTER UPDATE ON rooms WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'rooms', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.room_id IS NEW.room_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'rooms', 'row', json_object('room_id', NEW.room_id, 'kind', NEW.kind, 'members_key', NEW.members_key, 'created_at', NEW.created_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER rooms_logged_delete AFTER DELETE ON rooms WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'rooms', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER room_members_logged_insert AFTER INSERT ON room_members WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'room_members', 'row', json_object('room_id', NEW.room_id, 'member_id', NEW.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER room_members_logged_update AFTER UPDATE ON room_members WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'room_members', 'key', json_array(OLD.room_id, OLD.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.room_id IS NEW.room_id AND OLD.member_id IS NEW.member_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'room_members', 'row', json_object('room_id', NEW.room_id, 'member_id', NEW.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER room_members_logged_delete AFTER DELETE ON room_members WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'room_members', 'key', json_array(OLD.room_id, OLD.member_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_segments_logged_insert AFTER INSERT ON archive_segments WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_segments', 'row', json_object('segment', NEW.segment, 'stream', NEW.stream, 'first_key', NEW.first_key, 'last_key', NEW.last_key, 'first_at', NEW.first_at, 'last_at', NEW.last_at, 'records', NEW.records, 'bytes', NEW.bytes, 'content_id', NEW.content_id, 'filer', NEW.filer, 'trailer_offset', NEW.trailer_offset, 'trailer_bytes', NEW.trailer_bytes, 'rooms', NEW.rooms, 'made_at', NEW.made_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_segments_logged_update AFTER UPDATE ON archive_segments WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_segments', 'key', json_array(OLD.segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.segment IS NEW.segment); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_segments', 'row', json_object('segment', NEW.segment, 'stream', NEW.stream, 'first_key', NEW.first_key, 'last_key', NEW.last_key, 'first_at', NEW.first_at, 'last_at', NEW.last_at, 'records', NEW.records, 'bytes', NEW.bytes, 'content_id', NEW.content_id, 'filer', NEW.filer, 'trailer_offset', NEW.trailer_offset, 'trailer_bytes', NEW.trailer_bytes, 'rooms', NEW.rooms, 'made_at', NEW.made_at)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_segments_logged_delete AFTER DELETE ON archive_segments WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_segments', 'key', json_array(OLD.segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_purges_logged_insert AFTER INSERT ON archive_purges WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_purges', 'row', json_object('room_id', NEW.room_id, 'at', NEW.at, 'next_segment', NEW.next_segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_purges_logged_update AFTER UPDATE ON archive_purges WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_purges', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.room_id IS NEW.room_id); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'archive_purges', 'row', json_object('room_id', NEW.room_id, 'at', NEW.at, 'next_segment', NEW.next_segment)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER archive_purges_logged_delete AFTER DELETE ON archive_purges WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'archive_purges', 'key', json_array(OLD.room_id)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
+  // 20 (`untangle-2026-11/control-last-good.md`): the control record's last good copy, which
+  // the object's own gate serves when KV can't be read (`contract/src/control.ts`
+  // `SqlKeeper`). The platform's, not the owner's: not exported.
+  Object.freeze([
+    "CREATE TABLE control_kept (only INTEGER PRIMARY KEY CHECK (only = 1), text TEXT NOT NULL, " +
+      "read_at INTEGER NOT NULL)",
+  ]),
+  // 21 (`untangle-2026-11/network-narrow-bound.md`): a live lease's sandbox owing a narrowed
+  // egress policy, the latest narrowing's egress generation and since when it is owed
+  // (`Launcher.reapply` gives the lease back past `NARROWED_WITHIN_S`). `sandbox_leases` is
+  // kept out of the export, so no capture trigger.
+  Object.freeze([
+    "ALTER TABLE sandbox_leases ADD COLUMN narrowed_generation INTEGER CHECK " +
+      "(narrowed_generation IS NULL OR narrowed_generation >= 1)",
+    "ALTER TABLE sandbox_leases ADD COLUMN narrowed_at REAL",
+  ]),
+  // 22 (`runs.ts`, `egress.ts`; `untangle-2026-11/connector-credentials.md`): a run grant's
+  // connectors, the services' keys its agent's MCP servers are bound to, which its calls may
+  // name beside its model connection. A grant from before holds none. Not exported, so no
+  // generation's line changes.
+  Object.freeze([
+    "ALTER TABLE run_grants ADD COLUMN connectors TEXT NOT NULL DEFAULT '[]' " +
+      "CHECK (length(connectors) <= 2048)",
+  ]),
+  // 23 (`grants.ts`, `definition.ts`; `untangle-2026-11/registered-agent.md`): which of the
+  // owner's agents a client is, `main` (`MAIN_AGENT`) until the owner names another: its
+  // definition's agent and where its scoped triples are held. An agent id (`AGENT_ID`), as
+  // `native_agents` holds one. The table is exported, so its capture triggers that write rows
+  // are made again with the column, and no generation from before is brought forward
+  // (`GRANT_AGENT`).
+  Object.freeze([
+    "ALTER TABLE outside_clients ADD COLUMN agent TEXT NOT NULL DEFAULT 'main' " +
+      "CHECK (length(agent) BETWEEN 1 AND 128 AND agent NOT GLOB '*[^A-Za-z0-9._-]*')",
+    "DROP TRIGGER outside_clients_logged_insert",
+    "DROP TRIGGER outside_clients_logged_update",
+    "CREATE TRIGGER outside_clients_logged_insert AFTER INSERT ON outside_clients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'outside_clients', 'row', json_object('client', NEW.client, 'source', NEW.source, 'mode', NEW.mode, 'scopes', NEW.scopes, 'generation', NEW.generation, 'revoked_at', NEW.revoked_at, 'name', NEW.name, 'first_seen', NEW.first_seen, 'last_seen', NEW.last_seen, 'owner_set', NEW.owner_set, 'agents', NEW.agents, 'held', NEW.held, 'profile', NEW.profile, 'revision', NEW.revision, 'vendor', NEW.vendor, 'vendor_verified', NEW.vendor_verified, 'agent', NEW.agent)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+    "CREATE TRIGGER outside_clients_logged_update AFTER UPDATE ON outside_clients WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'gone', 'table', 'outside_clients', 'key', json_array(OLD.client)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168 AND NOT (OLD.client IS NEW.client); " +
+      "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= 1572864 THEN image ELSE '{\"t\":\"wide\"}' END FROM (SELECT json_object('t', 'row', 'table', 'outside_clients', 'row', json_object('client', NEW.client, 'source', NEW.source, 'mode', NEW.mode, 'scopes', NEW.scopes, 'generation', NEW.generation, 'revoked_at', NEW.revoked_at, 'name', NEW.name, 'first_seen', NEW.first_seen, 'last_seen', NEW.last_seen, 'owner_set', NEW.owner_set, 'agents', NEW.agents, 'held', NEW.held, 'profile', NEW.profile, 'revision', NEW.revision, 'vendor', NEW.vendor, 'vendor_verified', NEW.vendor_verified, 'agent', NEW.agent)) AS image) WHERE (SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < 71303168; " +
+      "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND (bytes >= 71303168 OR (SELECT line FROM change_log WHERE seq = log_capture.last) = '{\"t\":\"wide\"}'); END",
+  ]),
+  // 24 (`untangle-2026-11/drop-temp-area.md`): the temporary area `/.ta/tmp` goes, which no
+  // door ever made a directory in. Any entry under it and every temporary directory's row are
+  // deleted first, so their triggers take back what they charged (a dropped table's rows fire
+  // none), then the table, its index and its triggers. `file_temps` was exported, so no
+  // generation from before is brought forward (`TEMPS_DROPPED`).
+  Object.freeze([
+    "DELETE FROM file_entries WHERE parent = '/.ta/tmp' OR parent GLOB '/.ta/tmp/*'",
+    "DELETE FROM file_temps",
+    "DROP TABLE file_temps",
+  ]),
+  // 25 (`usage.ts`, `money.ts`; `untangle-2026-11/spend-periods.md`): a spend counter is kept
+  // until every charge reserved in its period has settled, a day and a beat (`keptFrom`), so
+  // a source holds at most three days' and two months' at once and the count is five periods'
+  // (`SPEND_KEPT`). The counters past that go at the next prune, which every reservation runs
+  // before it adds one. `model_spend` is exported and a generation from before may hold more,
+  // so none is brought forward (`SPEND_PERIODS`).
+  Object.freeze([
+    "DROP TRIGGER model_spend_kept",
+    "CREATE TRIGGER model_spend_kept AFTER INSERT ON model_spend " +
+      "WHEN (SELECT COUNT(*) FROM model_spend) > 500 BEGIN " +
+      "SELECT RAISE(ABORT, 'model_spend_full: 500 spend counters are kept'); END",
+  ]),
+  // 26 (`untangle-2026-11/model-reservations.md`): the object's own model reservations go,
+  // which nothing has made since the in-object loop was deleted (#5389); the spend counters
+  // stay, every charge now a sandbox call's (`egress.ts`). The drop takes the table's index and
+  // triggers with it, the bound on its open rows and its capture among them, and moves no
+  // counter: a row's spend outlives it, as it outlived each row the prune let go.
+  // `model_reservations` was exported, so no generation from before is brought forward
+  // (`RESERVATIONS_DROPPED`).
+  Object.freeze([
+    "DROP TABLE model_reservations",
+  ]),
+  // 27 (`untangle-2026-11/control-row.md`): the tier numbers the binder handed go, folded into
+  // the control record's one kept copy (`control_kept`, migration 20), which the binding now
+  // carries whole and the tiers are read from (`admission.ts`). An object that keeps no copy
+  // yet admits no run until its next read of the record (its next bind, or its `runs` lane's
+  // next pass). The platform's, not the owner's: `platform_tiers` was not exported.
+  Object.freeze([
+    "DROP TABLE platform_tiers",
+  ]),
+  // 28 (`untangle-2026-11/owner-control-signins.md`): the switched-on sign-ins the binder and
+  // the lane handed go, folded into the same kept copy (`control_kept`), which the switches
+  // are now read from (`signins.ts`, `switchedOn`). An object that keeps no copy yet starts no
+  // sign-in until its next read of the record. The platform's, not the owner's:
+  // `platform_signins` was not exported.
+  Object.freeze([
+    "DROP TABLE platform_signins",
+  ]),
 ]);
 
 /**
@@ -2432,6 +2637,38 @@ const UNREPLAYABLE = "before a restore could bring a generation forward: migrati
   "collection history by insertion order and migration 9 reads other tables' rows, neither of " +
   "which a generation holds";
 
+/** Why no generation from before migration 19 can be brought forward. */
+const ROOMS_BACKFILLED = "before a restore could bring a generation forward: migration 19 " +
+  "makes each room's rows from the mail's rows, which a generation's lines do not follow";
+
+/**
+ * Why no generation from before migration 23 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/registered-agent.md`).
+ */
+const GRANT_AGENT = "before a restore could bring a generation forward: migration 23 names " +
+  "each grant's agent, which a generation's grant lines do not hold";
+
+/**
+ * Why no generation from before migration 24 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/drop-temp-area.md`).
+ */
+const TEMPS_DROPPED = "before a restore could bring a generation forward: migration 24 drops " +
+  "the temporary directories' table, whose lines this schema has no table for";
+
+/**
+ * Why no generation from before migration 25 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/spend-periods.md`).
+ */
+const SPEND_PERIODS = "before a restore could bring a generation forward: migration 25 keeps " +
+  "fewer spend counters than a generation's lines may hold";
+
+/**
+ * Why no generation from before migration 26 can be brought forward. Declared before the
+ * cutover, when no owner keeps a generation (`untangle-2026-11/model-reservations.md`).
+ */
+const RESERVATIONS_DROPPED = "before a restore could bring a generation forward: migration " +
+  "26 drops the model reservations' table, whose lines this schema has no table for";
+
 /**
  * How a generation of an older schema is brought forward across each migration, one entry a
  * migration in `MIGRATIONS`' order (`restore.ts`; `untangle-2026-11/r-restore-schema.md`):
@@ -2439,9 +2676,9 @@ const UNREPLAYABLE = "before a restore could bring a generation forward: migrati
  * of the schema before is the same line after it; else why no generation from before it can
  * be brought forward, in the words a restore refuses it with. The migrations guard holds one
  * entry a migration, and a null one's text to naming no exported table, nor a table whose
- * triggers write one (`guards/migrations.test.ts`). A migration that changes an exported table declares a form
- * that brings each line forward alone, built in its own PR; declaring one refused after the
- * cutover strands every owner's kept generations, which is the founder's call.
+ * triggers write one (`guards/migrations.test.ts`). A migration that changes an exported table
+ * declares a form that brings each line forward alone, built in its own PR; declaring one refused
+ * after the cutover strands every owner's kept generations, which is the founder's call.
  */
 export const FORWARD: readonly (string | null)[] = Object.freeze([
   UNREPLAYABLE,  // 1
@@ -2462,6 +2699,16 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 16
   null,  // 17
   null,  // 18
+  ROOMS_BACKFILLED,  // 19
+  null,  // 20
+  null,  // 21
+  null,  // 22
+  GRANT_AGENT,  // 23
+  TEMPS_DROPPED,  // 24
+  SPEND_PERIODS,  // 25
+  RESERVATIONS_DROPPED,  // 26
+  null,  // 27
+  null,  // 28
 ]);
 
 /**

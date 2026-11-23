@@ -1,14 +1,13 @@
 /**
- * The owner object's one write gate: every owner write is one synchronous unit (ADR-032;
- * tasks 5, S3).
+ * The owner object's one write gate: every owner write is one synchronous unit (ADR-032).
  *
  * No agent loop shares the object's database (agents run on unmodified engines, ADR-034),
  * so no outside transaction ever opens in the owner's SQLite, and the gate keeps no queue.
  * It holds the one rule every owner write keeps: a unit is a synchronous body run in one
  * `transactionSync`, so it reads what it decides on itself and writes before anything else
- * runs in the object, and it never spans an outside call (`FILES`, the gateway): a door or a lane pass writes through it a unit at a
- * time, awaiting outside calls only between units. A unit is never an async
- * `ctx.storage.transaction()`, which would hold the input gate across its awaits.
+ * runs in the object, and it never spans an outside call (`FILES`, the gateway): a door or a lane
+ * pass writes through it a unit at a time, awaiting outside calls only between units. A unit is
+ * never an async `ctx.storage.transaction()`, which would hold the input gate across its awaits.
  *
  * The gate changes no unit's atomicity: a unit's own `transactionSync` keeps it, and what
  * a unit wrote before it threw stands, as it would without the gate, so a refusal receipt
@@ -23,7 +22,7 @@
  * changes nothing a manifest holds: the export's and the manifest's own bookkeeping, and a
  * session's renewal; it marks nothing.
  */
-import { slotBusy } from "../../contract/src/slots";
+import { slotBusy, slotted, type SlotPool } from "../../contract/src/slots";
 
 /** What the object's modules use of its storage: SQL, and `transactionSync`. */
 export interface OwnerStorage {
@@ -43,7 +42,7 @@ export const ASYNC_UNIT = "a write unit is synchronous; await outside calls befo
 
 /**
  * What `take` holds of the chunk pool now, or refused `busy`: inside the alarm a lane never
- * waits on the pool, since the object's other lanes would wait with it (round 11, Low B). A
+ * waits on the pool, since the object's other lanes would wait with it. A
  * call that does not fit at once leaves its queue at the next turn of the event loop; the
  * lane holds and tries again.
  */
@@ -55,6 +54,12 @@ export async function unitsNow<T>(take: (signal: AbortSignal) => Promise<T>): Pr
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** A lane's `slotted`: `work` run holding `units` of `pool` taken now (`unitsNow`), or `busy`. */
+export function slottedNow<T>(pool: SlotPool, units: number, work: () => Promise<T>):
+    Promise<T> {
+  return unitsNow((signal) => slotted(pool, units, work, signal));
 }
 
 function thenable(value: unknown): boolean {

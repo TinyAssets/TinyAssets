@@ -7,12 +7,9 @@ nothing:
 
   1. `concurrency` grouped main runs by ref, so each push killed the previous
      main run and the post-merge job almost never finished.
-  2. `push: branches: [main]` does not fire at all on the normal merge path.
-     auto-enroll-merge.yml enrols PRs with the repo's GITHUB_TOKEN, so GitHub
-     performs the merge as `app/github-actions`, and events raised by
-     GITHUB_TOKEN never start a workflow run (AGENTS.md hard rule 14). Of the
-     last 6 merges, the 5 app-performed ones produced ZERO push runs; only the
-     one merged by a human PAT produced a run.
+  2. `push: branches: [main]` did not fire on the merge path then: the merge
+     was the repo's GITHUB_TOKEN's, whose events start no run. The merge queue
+     now merges as `github-merge-queue[bot]`, whose push does start one.
 
 So the assertions below are not style checks. Each one pins a property whose
 absence silently converts a gate into decoration.
@@ -37,6 +34,7 @@ transitive.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -312,11 +310,10 @@ def _expr(value: object) -> str:
 
 
 def test_full_suite_runs_on_an_in_repo_schedule() -> None:
-    """The post-merge tripwire needs a trigger `push:` cannot provide.
+    """`heavy-tests` runs only on a schedule, and `main` is checked hourly.
 
-    Regression guard for bug (2). `push: branches: [main]` may stay — it still
-    catches the rare human-PAT merge — but it cannot carry the tripwire, and
-    `workflow_dispatch` needs a human to press it.
+    Regression guard for bug (2). The queue's merges start `push` runs, but
+    `heavy-tests` runs on none of them, and `workflow_dispatch` needs a human.
 
     This deliberately requires an **in-repository `schedule`** rather than
     "any automatic trigger". A `repository_dispatch` driven by some external
@@ -331,9 +328,8 @@ def test_full_suite_runs_on_an_in_repo_schedule() -> None:
     schedule = _triggers(_load()).get("schedule")
     assert isinstance(schedule, list) and schedule, (
         f"tests.yml needs a non-empty `schedule:` — got {schedule!r}. Without "
-        f"it the heavy-tests tripwire never runs: `push: branches: [main]` does "
-        f"NOT fire when auto-merge lands a PR via GITHUB_TOKEN, and "
-        f"workflow_dispatch needs a human."
+        f"it heavy-tests never runs: it skips `push`, and workflow_dispatch "
+        f"needs a human."
     )
     for entry in schedule:
         assert isinstance(entry, dict) and "cron" in entry, (
@@ -1296,7 +1292,7 @@ def test_npm_settings_guard_catches_each_mutation(path, text):
 
 
 # Events that do not change the head. A workflow that listens to them must be
-# the receipt/label gate or auto-enroll, never the build or the test jobs.
+# the body's gate, auto-enroll or review, never the build or the test jobs.
 _NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})
 _NON_CODE_WORKFLOWS = frozenset({
     "pr-scope-guard.yml",
@@ -1307,13 +1303,13 @@ _NON_CODE_WORKFLOWS = frozenset({
 
 
 def test_comment_and_label_events_do_not_start_tests() -> None:
-    """A receipt comment or a label must not rerun Tests.
+    """A body edit or a label must not rerun Tests.
 
     Measured 2026-10-12: Tests listened to edited/labeled/unlabeled with
     cancel-in-progress, and 140 of 331 PR runs were cancelled. The check is
     per head SHA. Those events leave the SHA alone, so the run already
     reported for it stays. pr-scope-guard.yml is the small job that re-reads
-    the receipt.
+    the body.
     """
     triggers = _triggers(_load())
     types = set(triggers["pull_request"]["types"])
@@ -1348,8 +1344,8 @@ def test_comment_and_label_events_do_not_start_tests() -> None:
 def test_every_shard_runs_its_user_venue_and_plans_within_half_its_watchdog() -> None:
     """The measured table's packing, as the six shard jobs compute it.
 
-    A shard whose user venue owns no measured file runs an empty pytest (exit 5)
-    or falls under its case floor; an eight-minute root proof packed with the
+    A shard whose user venue owns no measured file runs an empty pytest (exit 5);
+    an eight-minute root proof packed with the
     whole surface's longest-first order leaves its shard nothing else. Half the
     watchdog leaves the shard's image build (about five minutes) and a fifth.
     """
@@ -1364,6 +1360,78 @@ def test_every_shard_runs_its_user_venue_and_plans_within_half_its_watchdog() ->
         users[index] += rel not in _ci.ROOT_TEST_FILES and seconds > 0
     assert all(users), users
     assert max(planned) <= job["timeout-minutes"] * 60 / 2, planned
+
+
+def _aggregate_whole_surface(tmp_path, owner, cases, *, skipped=False, drop=(),
+                             heavy=_REPO / ".github" / "heavy-test-files.txt"):
+    """The workflow's whole-surface aggregate over shard results built from `owner`."""
+    shards = tmp_path / "shards"
+    shards.mkdir(parents=True)
+    for index in range(1, 7):
+        suite = ET.Element("testsuite")
+        for rel in sorted(r for r, s in owner.items() if s == index and r not in drop):
+            for n in range(cases):
+                case = ET.SubElement(suite, "testcase", file=rel, name=f"test_{n}",
+                                     classname=rel[:-3].replace("/", "."))
+                if skipped:
+                    ET.SubElement(case, "skipped")
+        ET.ElementTree(suite).write(shards / f"junit-shard-{index}.xml")
+        (shards / f"junit-shard-{index}.json").write_text(json.dumps(
+            {"shard": index, "total": 6, "pytest_exit": 0, "selection": ""}))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GITHUB_STEP_SUMMARY", "GITHUB_ACTIONS")}
+    return subprocess.run(
+        [sys.executable, str(_SCRIPT), "--aggregate", str(shards), "--expect-shards", "6",
+         "--shard-job-result", "success", "--junit", str(tmp_path / "junit.xml"),
+         "--min-ran", str(_ci.MIN_RAN_FLOOR), "--exclude-from", str(heavy)],
+        cwd=_REPO, env=env, capture_output=True, text=True)
+
+
+def test_a_whole_surface_run_passes_however_its_files_pack(tmp_path, monkeypatch) -> None:
+    """One added file reshuffles the packing (#5709); no test lost must stay green."""
+    measured = _ci.whole_surface_cover(None)
+    packed = {rel: _ci.shard_of(rel, 6) for rel in measured}
+    table = _ci.load_durations()
+    user = [rel for rel in measured if rel not in _ci.ROOT_TEST_FILES]
+    root = [rel for rel in measured if rel in _ci.ROOT_TEST_FILES]
+    reshuffled = {**_ci.pack(user + ["tests/test_added_unmeasured.py"], table, 6),
+                  **_ci.pack(root, table, 6)}
+    reshuffled.pop("tests/test_added_unmeasured.py")
+    assert any(packed[rel] != reshuffled[rel] for rel in measured)
+    for index, owner in enumerate((packed, reshuffled)):
+        result = _aggregate_whole_surface(tmp_path / str(index), owner, 20)
+        assert result.returncode == 0, result.stdout + result.stderr
+    # A measured file moved to the heavy list leaves the shards, and the gate with it.
+    (tmp_path / "heavy.txt").write_text(measured[0] + "\n")
+    result = _aggregate_whole_surface(tmp_path / "heavy", packed, 20, drop={measured[0]},
+                                      heavy=tmp_path / "heavy.txt")
+    assert result.returncode == 0, result.stdout + result.stderr
+    # A shard left with a root proof's two cases passes its own verdict.
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    two = {"tests/test_owner_volumes_proof.py::test_a", "tests/test_owner_volumes_proof.py::test_b"}
+    assert _ci.evaluate(set(), two, _ci.MIN_RAN_FLOORS["shard"], [0], "### shard") == 0
+
+
+@pytest.mark.parametrize("case", ["collapse", "skip", "deselect"])
+def test_a_vacuous_whole_surface_run_fails_and_names_why(tmp_path, case) -> None:
+    """A shard that drops its files, a mass skip, a mass deselect: each fails by name."""
+    measured = _ci.whole_surface_cover(None)
+    owner = {rel: _ci.shard_of(rel, 6) for rel in measured}
+    biggest = max(range(1, 7), key=lambda i: sum(s == i for s in owner.values()))
+    lost = [rel for rel, s in owner.items() if s == biggest][1:]
+    if case == "collapse":
+        # The union still clears the floor: only the coverage check sees it.
+        result = _aggregate_whole_surface(tmp_path, owner, 20, drop=set(lost))
+        assert (len(measured) - len(lost)) * 20 >= _ci.MIN_RAN_FLOOR
+        assert "reported no case at all" in result.stdout and lost[0] in result.stdout
+    elif case == "skip":
+        result = _aggregate_whole_surface(tmp_path, owner, 20, skipped=True)
+        assert "only 0 tests ran" in result.stdout
+    else:
+        result = _aggregate_whole_surface(tmp_path, owner, 2)
+        assert f"only {len(measured) * 2} tests ran" in result.stdout
+    assert result.returncode == 1, result.stdout
 
 
 def test_the_durations_refresh_reads_only_whole_surface_runs(tmp_path, monkeypatch) -> None:
@@ -1394,3 +1462,23 @@ pytestmark = pytest.mark.verifies(
     'ci-linux-proof-venue:'
     'The required shards run the unchanged gate runner',
 )
+
+
+# The old suite's scheduled prune (`test-shape-prune.yml`), which leaves with this file.
+@pytest.mark.verifies(
+    "test-suite-follows-shape:A test already checked another way is pruned automatically"
+)
+def test_scheduled_prune_is_one_draft_pr_with_no_deploy_or_auto_merge():
+    workflow = yaml.safe_load((_REPO / ".github/workflows/test-shape-prune.yml").read_text())
+    assert "schedule" in workflow.get("on", workflow.get(True))
+    steps = workflow["jobs"]["prune"]["steps"]
+    create = next(
+        s for s in steps if s.get("uses", "").startswith("peter-evans/create-pull-request@")
+    )
+    assert create["with"]["draft"] is True
+    assert create["with"]["branch"] == "automation/test-shape-prune"
+    assert "body-path" in create["with"]
+    assert all("merge --auto" not in s.get("run", "") for s in steps)
+    report = next(s for s in steps if s.get("name") == "Report subsets and delete orphaned tests")
+    assert '"$COVERAGE_OUTCOME" = success' in report["run"]
+    assert "git diff --name-only -z -- tests | xargs -0 -r" in report["run"]

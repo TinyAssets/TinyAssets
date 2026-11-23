@@ -1,36 +1,21 @@
 /**
- * The doors' router: every path the doors Worker serves on `tinyassets.io`, and the egress
- * door on `egress.tinyassets.io`.
+ * The doors' router: every path the doors Worker serves on its public host (`HOST`), and the
+ * egress door on the egress host (`egress.ts`), which the deploy kit's mode `routes`
+ * attaches. Nothing else is served on that origin, and the egress door is served on no other,
+ * so a sandbox token reaches no other door. Any other origin or path is `404`.
  *
- * - `egress.tinyassets.io/r/<run>/...`: a run's model calls (`c/<connection>/*`), its MCP
- *   door (`mcp`) and its event door (`events`), by the egress token (`egress.ts`), the
- *   `Cookie` header removed. Nothing else is served on that
- *   origin, and the egress door is served on no other, so a sandbox token reaches no other
- *   door. No route is deployed for it until the routes slice.
+ * Every door a token, a key or a capability opens (`/mcp`, `/api/*`, `/hooks/*` and the
+ * egress door) sees the request without its `Cookie` header; the owner surface, the app's
+ * pages and the sign-in keep it.
  *
- * - `/mcp`: the `Cookie` header removed, a present `Origin` refused (`403`), then the
- *   resource host (the token), the kill switch, the binder and the MCP handler.
- * - `/api/*`: the `Cookie` header removed, then the key (`api.ts`).
- * - `/hooks/inbound/<token>`: the inbound door (`inbound.ts`), the `Cookie` header removed;
- *   any other `/hooks/` path is `404`, its request never read.
- *
- * No caller is counted or capped by the doors (the founder's rule: no invented limits;
- * slice L's review). An owner object the runtime reports overloaded (Cloudflare's soft
- * limit of 1,000 requests a second an object) is answered `429` with `Retry-After`, never
+ * No caller is counted or capped by the doors (the founder's rule: no invented limits). An
+ * owner object the runtime reports overloaded is the refusal `object_overloaded`
+ * (`contract/src/refusal.ts`), answered by each door's surface as any refusal is, never
  * retried: a technical ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS
  * protection, in front of every Worker.
- * - `/app/api/*`: the owner surface (`app.ts`).
- * - `/app` and its named pages and files: the owner app itself (`pages.ts`).
- * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
- * - `/oauth/connect/callback/<source>[/<state>]`: a model source's OAuth redirect
- *   (`connect.ts`).
- * - `/oauth/clients/web.json`: the first-party app's Client ID Metadata Document.
- * - `/.well-known/oauth-protected-resource/mcp`: the resource's metadata.
- * - `/.well-known/oauth-authorization-server`, `/oauth/token`, `/oauth/register` (only
- *   with `DCR_ENABLED`): the provider's own endpoints.
  *
- * Any other origin or path is `404`. The source records are the caller's: `index.ts`
- * passes the bundled records, and a test of a record the bundle lacks its own catalog.
+ * The source records are the caller's: `index.ts` passes the bundled records, and a test of a
+ * record the bundle lacks its own catalog.
  */
 import { e2bLifecycle } from "./e2b-hooks";
 import { serveApi } from "./api";
@@ -38,15 +23,19 @@ import { serveApp } from "./app";
 import { serveEgress } from "./egress";
 import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
-import { bindMcp, withAccount } from "./binder";
+import { presentedKey } from "./api-keys";
+import { type Bound, bindMcp } from "./binder";
 import {
   AUTHORIZE_PATH, CONNECT_CALLBACK_PATH, E2B_HOOK_PATH, INBOUND_PATH, MCP_PATH,
   UPSTREAM_CALLBACK_PATH,
 } from "./config";
-import { ORIGIN, WEB_CLIENT, WEB_REDIRECT } from "../../contract/src/identity";
+import {
+  ORIGIN, VERSION_HEADER, WEB_CLIENT, WEB_REDIRECT,
+} from "../../contract/src/identity";
+import type { AccountBinding } from "../../contract/src/binding";
 import type { DoorsEnv } from "./env";
 import { EGRESS_ORIGIN } from "../../contract/src/egress";
-import { outsideRead } from "./control";
+import { outsideAccount } from "./control";
 import { serveInbound } from "./inbound";
 import { plain } from "./kit";
 import { serveMcp } from "./mcp";
@@ -69,45 +58,47 @@ function webClient(): Response {
   }, { headers: { "Cache-Control": "public, max-age=3600" } });
 }
 
-async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                       sources: Sources): Promise<Response> {
+/**
+ * `/mcp`, for both credentials an outside caller holds, served by one handler: an owner's
+ * key (ADR-039 decision 2.18), checked as the `/api` door checks it (`presentedKey`) and
+ * held to its own grant, or an OAuth token for `/mcp`. Any other bearer, a key that does not
+ * verify included, is the OAuth resource's, so it is answered the one `401` naming the
+ * resource's metadata.
+ */
+async function mcpDoor(request: Request, env: DoorsEnv,
+                       ctx: ExecutionContext): Promise<Response> {
   // No browser origin may send to `/mcp`: a present `Origin` is refused (MCP 2026-07-28
   // Streamable HTTP), an absent one is allowed.
   if (request.headers.get("Origin") !== null) {
     return plain(403, "origin not allowed");
   }
-  return mcpResource(async (req, environment, token) => {
-    const bound = await bindMcp(environment, token);
-    return answered(asJson, async () => serveMcp(
-      req, withAccount(bound, await outsideRead(environment, bound.binding.owner), sources),
-      environment));
-  }).fetch(request, env, ctx);
+  const key = await presentedKey(env, request);
+  if (key !== null) {
+    return outsideMcp(request, env, key);
+  }
+  return mcpResource(async (req, environment, token) =>
+    outsideMcp(req, environment, await bindMcp(environment, token)))
+    .fetch(request, env, ctx);
+}
+
+function outsideMcp(request: Request, env: DoorsEnv,
+                    bound: Bound<AccountBinding>): Promise<Response> {
+  return answered(asJson, async () => serveMcp(request, await outsideAccount(env, bound), env));
 }
 
 /**
- * Whether `error` is the runtime's report that a Durable Object is overloaded (its
- * `.overloaded`, which Cloudflare's error-handling page says never to retry).
+ * `answer`, naming `version`: Cloudflare ignores a version override for a version outside
+ * the deployment and still answers, so a check reads which version served it here.
  */
-export function overloaded(error: unknown): boolean {
-  return typeof error === "object" && error !== null
-    && (error as { overloaded?: unknown }).overloaded === true;
+export function versioned(answer: Response, version: WorkerVersionMetadata): Response {
+  const named = new Response(answer.body, answer);
+  named.headers.set(VERSION_HEADER, version.id);
+  return named;
 }
 
 /** Serve one request through the doors, over the source records `sources`. */
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                             sources: Sources): Promise<Response> {
-  try {
-    return await route(request, env, ctx, sources);
-  } catch (error) {
-    if (overloaded(error)) {
-      return plain(429, "this account is busy; try again shortly", { "Retry-After": "1" });
-    }
-    throw error;
-  }
-}
-
-async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                     sources: Sources): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin === EGRESS_ORIGIN) {
     return serveEgress(withoutCookie(request), env, ctx);
@@ -117,16 +108,16 @@ async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
   }
   const path = url.pathname;
   if (path === MCP_PATH || path.startsWith(`${MCP_PATH}/`)) {
-    return mcpDoor(withoutCookie(request), env, ctx, sources);
+    return mcpDoor(withoutCookie(request), env, ctx);
   }
   if (path.startsWith("/api/")) {
-    return serveApi(withoutCookie(request), env, sources);
+    return serveApi(withoutCookie(request), env);
   }
   if (path === E2B_HOOK_PATH) {
     return e2bLifecycle(withoutCookie(request), env);
   }
   if (path.startsWith(INBOUND_PATH)) {
-    return serveInbound(withoutCookie(request), env, sources);
+    return serveInbound(withoutCookie(request), env);
   }
   if (path.startsWith("/hooks/")) {
     return notFound();

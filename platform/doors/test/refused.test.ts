@@ -10,10 +10,10 @@ import { ProtocolError } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 
 import { MAINTENANCE } from "../../contract/src/control";
-import { Refusal } from "../../contract/src/refusal";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import {
-  answered, asEgress, asEgressFault, asEvent, asInbound, asJson, asRedirect, asShared, asTool,
-  EVENT_ERRORS,
+  answered, asEgress, asEgressFault, asEvent, asInbound, asJson, asRedirect, asRequest, asShared,
+  asTool, EVENT_ERRORS,
 } from "../src/refused";
 
 async function said(response: Response): Promise<[number, string | null, unknown]> {
@@ -115,41 +115,107 @@ describe("the inbound hooks' answer", () => {
   });
 });
 
+/** A tool's error result's text, each line. */
+function toolText(refusal: Refusal): string[] {
+  const result = asTool(refusal);
+  expect(result.isError).toBe(true);
+  expect(result.content).toHaveLength(1);
+  return (result.content[0] as { text: string }).text.split("\n");
+}
+
 describe("an MCP tool's answer", () => {
-  it("is the tool's error result, its text the refusal's message", () => {
-    expect(asTool(new Refusal("refused", "agent not found")))
-      .toEqual({ isError: true, content: [{ type: "text", text: "agent not found" }] });
+  it("is the tool's error result: the refusal's message, then that it is final", () => {
+    expect(asTool(new Refusal("refused", "agent not found"))).toEqual({ isError: true,
+      content: [{ type: "text", text: "agent not found\nThis refusal is final: the same call " +
+                                      "is refused again until what it names changes." }] });
+    expect(toolText(new Refusal("storage_full", "storage_full: used 9 of 9",
+                                { retryAfterS: 2 })))
+      .toEqual(["storage_full: used 9 of 9", "This refusal is final: the same call is " +
+                "refused again until what it names changes."]);
+    expect(toolText(new Refusal("invalid", "a room is room:<app>:<room>")))
+      .toEqual(["a room is room:<app>:<room>", "This refusal is final: the call is malformed, " +
+                "and is refused again until it is corrected."]);
+  });
+
+  it("tells the model to call again, and in how many seconds, for any refusal for the moment",
+     () => {
+    for (const [refusal, wait] of [[new Refusal("unavailable", MAINTENANCE), "60 seconds"],
+                                   [new Refusal("restoring", "restoring"), "60 seconds"],
+                                   [new Refusal("storage_busy", "full", { retryAfterS: 7 }),
+                                    "7 seconds"],
+                                   [refusalOf(Object.assign(new Error("overloaded"),
+                                                            { overloaded: true }))!, "1 second"],
+                                  ] as const) {
+      expect(toolText(refusal)).toEqual(
+        [refusal.message, `This refusal is temporary: try the same call again in ${wait}.`]);
+    }
+  });
+});
+
+function thrown(surface: (refusal: Refusal) => never, refusal: Refusal): ProtocolError {
+  try {
+    surface(refusal);
+  } catch (error) {
+    return error as ProtocolError;
+  }
+  throw new Error("the surface answered nothing");
+}
+
+/** A JSON-RPC error as the SDK sends it: its code, message and data. */
+function rpcError(surface: (refusal: Refusal) => never, refusal: Refusal): unknown[] {
+  const error = thrown(surface, refusal);
+  return [error.code, error.message, error.data];
+}
+
+describe("every MCP request's answer but a tool call's", () => {
+  it("is invalid params for an invalid request, else an internal error, with its reason",
+     () => {
+    for (const surface of [asRequest, asEvent]) {
+      expect(rpcError(surface, new Refusal("invalid", "a room is room:<app>:<room>")))
+        .toEqual([-32602, "a room is room:<app>:<room>",
+                  { reason: "a room is room:<app>:<room>" }]);
+    }
+    expect(rpcError(asRequest, new Refusal("refused", "no agent here")))
+      .toEqual([-32603, "no agent here", { reason: "no agent here" }]);
+    // A final refusal names no wait to a client, as it tells a model none (`asTool`).
+    expect(rpcError(asRequest, new Refusal("storage_full", "full", { retryAfterS: 2 })))
+      .toEqual([-32603, "full", { reason: "full" }]);
+  });
+
+  it("is a recoverable failure with its reason and wait for any refusal for the moment, on " +
+     "MCP Events too, never Forbidden, which a client stops on", () => {
+    for (const [refusal, ms] of [[new Refusal("unavailable", MAINTENANCE), 60_000],
+                                 [new Refusal("restoring", "restoring"), 60_000],
+                                 [new Refusal("storage_busy", "full", { retryAfterS: 7 }), 7_000],
+                                 [refusalOf(Object.assign(new Error("overloaded"),
+                                                          { overloaded: true }))!, 1_000],
+                                ] as const) {
+      for (const surface of [asRequest, asEvent]) {
+        expect(rpcError(surface, refusal)).toEqual(
+          [-32603, refusal.message, { reason: refusal.message, retryAfterMs: ms }]);
+      }
+    }
   });
 });
 
 describe("MCP Events' answer", () => {
-  function thrown(refusal: Refusal): ProtocolError {
-    try {
-      asEvent(refusal);
-    } catch (error) {
-      return error as ProtocolError;
-    }
-    throw new Error("asEvent answered nothing");
-  }
-
-  it("is the design sketch's error: exhausted, invalid params, or forbidden", () => {
+  it("is the design sketch's error for any other refusal: exhausted, or forbidden", () => {
     // The owner's limit, as its refusal carries it: never the doors' own figure.
     const limit = { limit: "subscriptions", max: 3 };
-    const full = thrown(new Refusal("subscription_limit", "subscription_limit: 3",
-                                    { facts: limit }));
+    const full = thrown(asEvent, new Refusal("subscription_limit", "subscription_limit: 3",
+                                             { facts: limit }));
     expect([full.code, full.data]).toEqual([EVENT_ERRORS.exhausted, limit]);
-    const bad = thrown(new Refusal("invalid", "a room is room:<app>:<room>"));
-    expect([bad.code, bad.message]).toEqual([EVENT_ERRORS.invalidParams,
-                                             "a room is room:<app>:<room>"]);
-    const no = thrown(new Refusal("refused", "no agent here"));
-    expect([no.code, no.data]).toEqual([EVENT_ERRORS.forbidden, { reason: "no agent here" }]);
+    for (const code of ["refused", "owner_suspended"] as const) {
+      expect(rpcError(asEvent, new Refusal(code, "no agent here")))
+        .toEqual([EVENT_ERRORS.forbidden, "Forbidden", { reason: "no agent here" }]);
+    }
   });
 
   it("throws a full agent's refusal that carries no limit, a bug, rather than answer it", () => {
     for (const facts of [undefined, {}, { limit: "subscriptions" }, { max: 3 },
                          { limit: "subscriptions", max: "3" }]) {
-      const missing = thrown(new Refusal("subscription_limit", "subscription_limit: 3",
-                                         facts === undefined ? {} : { facts }));
+      const missing = thrown(asEvent, new Refusal("subscription_limit", "subscription_limit: 3",
+                                                  facts === undefined ? {} : { facts }));
       expect(missing).not.toBeInstanceOf(ProtocolError);
       expect(missing.message).toBe("a subscription_limit refusal carries no {limit, max}");
     }

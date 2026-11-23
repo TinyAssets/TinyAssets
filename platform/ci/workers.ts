@@ -10,6 +10,7 @@
  * imports name their `.ts` files.
  */
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
@@ -46,6 +47,7 @@ export interface WorkerConfig {
   readonly main?: string;
   readonly secrets?: { readonly required?: readonly string[] };
   readonly assets?: Readonly<Record<string, unknown>>;
+  readonly version_metadata?: { readonly binding: string };
 }
 
 /** A Worker's config, typed for the fields its auxiliary Worker is built from. */
@@ -157,6 +159,7 @@ const READ_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "rules", "vars",
   "kv_namespaces", "services", "queues", "durable_objects", "migrations", "r2_buckets", "assets",
   "workers_dev", "preview_urls", "build", "limits", "secrets", "observability", "triggers",
+  "version_metadata",
 ]);
 
 /** A queue consumer's config fields, as miniflare names them (`max_concurrency`: none). */
@@ -170,7 +173,8 @@ const CONSUMER_FIELDS: Readonly<Record<string, string | null>> = Object.freeze({
 /**
  * The bindings a Worker's config gives it in miniflare, by miniflare's option, each kind
  * only when the config has one: its vars, KV namespaces, queue producers and consumers and
- * services, as wrangler's own conversion hands a Worker its own; its
+ * services, as wrangler's own conversion hands a Worker its own (its version's metadata as
+ * `wrangler dev` gives it: a fresh id, no tag); its
  * namespaces (`objectBindings`); and its buckets. Never a secret: a config names its secrets
  * and holds no value, and nothing here reads the environment (wrangler's conversion reads
  * `.dev.vars`, `.env` and `process.env` for them, and for any var the environment names).
@@ -184,7 +188,8 @@ export function configBindings(config: WorkerConfig): Record<string, Named> {
                     `${[...unread, ...queues.map((key) => `queues.${key}`)].join(", ")}`);
   }
   const kinds: Record<string, Named> = {
-    bindings: { ...config.vars },
+    bindings: { ...config.vars, ...(config.version_metadata === undefined ? {}
+      : { [config.version_metadata.binding]: { id: randomUUID(), tag: "", timestamp: "0" } }) },
     kvNamespaces: Object.fromEntries((config.kv_namespaces ?? [])
       .map((kv) => [kv.binding, { id: kv.id }])),
     queueProducers: Object.fromEntries((config.queues?.producers ?? [])

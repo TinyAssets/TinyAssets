@@ -6,16 +6,20 @@
  * placeholder keys; the binder admits the request at the owner's object, which hands it
  * the blob, and calls `forward`. The gateway opens the blob, requires the request's
  * method, origin and path to be among the sealed endpoints, strips every credential the
- * request carried (headers and the API-key query parameters), injects the sealed one by
- * the sealed auth template, and sends it to the sealed origin. The provider's own answer
- * streams back, status and body, so the client sees its own API; only the secret is
- * redacted from the body, in case a provider quotes it back. A call is cut at
- * `FORWARD_DEADLINE_MS`, or once its answer is silent for `IDLE_CUT_MS`, and redirects are
- * never followed.
+ * request carried (the API-key query parameters; any other parameter its API's rules do not
+ * allow is refused, `egressTarget`; every header its rules do not name is dropped,
+ * `egressHeaders`, and named when the provider refuses the call, `logDropped`), injects the
+ * sealed one by the sealed auth template, and sends it to the sealed origin. The provider's
+ * own answer streams back, status and body, so the client sees its own API; only the secret
+ * is redacted from it, in every spelling a provider could quote it back in (`redact.ts`). A
+ * call is cut at `FORWARD_DEADLINE_MS`, and redirects are never followed. A silent answer is
+ * its engine's to give up on: each engine's own client ends a stream that sends nothing for
+ * 300 s or less (`limits-audit.md`, "Left to the engines"), and its leaving cancels the
+ * answer here, which ends the provider's request.
  *
  * User CLIs speak their provider's wire format. An unmetered call (a read, a cited free
  * call) only moves bytes: its body streams through. A metered one is the one request the
- * gateway holds whole (egress shape research, A′): under the pool's slots, and only while it
+ * gateway holds whole (egress shape research): under the pool's slots, and only while it
  * reads, rewrites and uploads it, it parses it once and asks the owner's object, through the
  * door's `reserve`, to reserve the call for the model and tier that parse read. The gateway
  * measures nothing it would keep: the binder counts the bytes it streams and settles the
@@ -26,7 +30,8 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type Catalog, modelInfos } from "./catalog";
 import { bearer, type Credential } from "./credential";
 import {
-  type EgressScope, egressTarget, type Meter, meteredCall, meteredModel,
+  egressHeaders, type EgressScope, egressTarget, isService, type Meter, meteredCall,
+  meteredModel, type ModelScope, type Upstream,
 } from "../../contract/src/egress-scope";
 import {
   metering, MODEL_NAME, type MeterOutcome, type Resealed, type Reservation, type Reserve,
@@ -46,6 +51,7 @@ import {
   gatewaySlots, heldDeadlineMs, Hold, raced, weighedBody, weightSlots,
 } from "./held";
 import { timeout } from "./deadline";
+import { redaction } from "./redact";
 import { RESEALED_HEADER } from "../../contract/src/egress";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract/src/limits";
 
@@ -56,19 +62,8 @@ import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, SLOT_WAIT_MS } from "../../contract
  */
 const FORWARD_DEADLINE_MS = EGRESS_DEADLINE_S * 1000;
 
-/**
- * How long an answer may go without a byte from the provider while the gateway waits on it:
- * then the answer is errored and the provider's request ended, so a stalled stream lets go
- * of its run's slot. The engines' own idle cut (Claude Code's byte-level and body idle
- * timeouts, Codex's `DEFAULT_STREAM_IDLE_TIMEOUT_MS`, each 300 s): a stream their own
- * clients would already have given up on (the untangle's decision on S1). A provider's
- * keep-alive (an SSE ping) is a byte; the wait for the answer's headers is not counted.
- */
-export const IDLE_CUT_MS = 300 * 1000;
-
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
-
 
 /** The bytes each write of a metered call's upload carries. */
 const UPLOAD_SLICE = 64 * 1024;
@@ -116,106 +111,51 @@ function uploaded(whole: Uint8Array, ended: () => void): Upload {
   };
 }
 
-/** Headers that carry a credential, or route, in any provider's or proxy's convention. */
-const CREDENTIAL_HEADERS: readonly string[] = Object.freeze([
-  "authorization", "proxy-authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie",
-  "host", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip",
-  // A method override would let a sealed `POST` act as a method that is not sealed.
-  "x-http-method-override", "x-http-method", "x-method-override",
-]);
-/** Query parameters that carry an API key (Google's `key` among them). */
-const CREDENTIAL_PARAMS: readonly string[] = Object.freeze(["key", "api_key", "access_token"]);
-/** Headers that belong to one hop, never forwarded either way. */
+/** An answer's headers that belong to one hop, never passed back. */
 const HOP_HEADERS: readonly string[] = Object.freeze([
   "connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade", "content-length",
 ]);
 
-/** Whether a header is ours or Cloudflare's, never passed on either way. */
+/** Whether a header is ours or Cloudflare's: never passed back, nor a sandbox's drop. */
 function internal(name: string): boolean {
   return name.startsWith("x-ta-") || name.startsWith("cf-");
+}
+
+/**
+ * The most names one drop line shows, and the longest name it shows: the line stays a few
+ * kilobytes whatever a request carries; a name past either is counted, not shown.
+ */
+const DROPS_SHOWN = 64;
+const DROP_NAME_SHOWN = 64;
+
+/** The provider's answers that refuse the call as sent (`upstreamCode`), not its own state. */
+const AS_SENT: readonly GatewayCode[] = Object.freeze(["upstream_unauthorized",
+                                                       "upstream_rejected"]);
+
+/**
+ * Logs which of the sandbox's request headers (`sent`) were not sent on (`forwarded`: what
+ * `egressHeaders` kept and the gateway set), when the provider refused the call as sent
+ * (`AS_SENT`: a 4xx, but a timeout's or a rate limit's). A header its API needs that its
+ * rules do not name shows only as that refusal, and this line names it, for its API's data
+ * to take (`api-rules.ts` `headers`). Names only (HTTP's tokens, lower-cased), never a value,
+ * which may carry a secret; a call the provider served logs nothing, so an engine's telemetry
+ * headers, dropped on every call, never flood the log.
+ */
+function logDropped(sent: Headers, forwarded: Headers, status: number, api: string): void {
+  const dropped = [...sent.keys()].filter((name) => !forwarded.has(name) && !internal(name));
+  if (!AS_SENT.includes(upstreamCode(status)) || dropped.length === 0) {
+    return;
+  }
+  const shown = dropped.filter((name) => name.length <= DROP_NAME_SHOWN).slice(0, DROPS_SHOWN);
+  console.warn(`a sealed ${api} call its provider refused (${status}) had ` +
+               `${dropped.length} request headers dropped: ` +
+               `${shown.join(" ")}${shown.length < dropped.length ? " ..." : ""}`);
 }
 
 /** The header value the sealed template makes of the credential's secret. */
 function authValue(credential: Credential): string {
   const scheme = credential.upstream.auth.scheme;
   return scheme === "" ? bearer(credential) : `${scheme} ${bearer(credential)}`;
-}
-
-const REDACTED = "[redacted]";
-
-/**
- * Each secret as the provider could write it back: as it is, and JSON-escaped (a JSON
- * writer may escape `/` as `\/`).
- */
-function spellings(secrets: readonly string[]): string[] {
-  const all = secrets.filter((secret) => secret.length > 0).flatMap((secret) => [
-    secret, secret.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\//g, "\\/"),
-  ]);
-  return [...new Set(all)].sort((a, b) => b.length - a.length);
-}
-
-/** `value` with every spelling of each of `secrets` replaced by `[redacted]`. */
-function redactText(value: string, secrets: readonly string[]): string {
-  let out = value;
-  for (const spelling of spellings(secrets)) {
-    out = out.split(spelling).join(REDACTED);
-  }
-  return out;
-}
-
-/**
- * Replaces every occurrence of each spelling of each of `secrets` in a byte stream with
- * `[redacted]`, across chunk boundaries: it holds back the last `longest - 1` bytes of
- * each chunk until the next one shows whether they start a secret.
- */
-export function redact(body: ReadableStream<Uint8Array>,
-                       secrets: readonly string[]): ReadableStream<Uint8Array> {
-  const needles = spellings(secrets).map((secret) => new TextEncoder().encode(secret));
-  const longest = Math.max(0, ...needles.map((needle) => needle.byteLength));
-  if (longest === 0) {
-    return body;
-  }
-  const mark = new TextEncoder().encode(REDACTED);
-  let held = new Uint8Array(0);
-  const scrub = (bytes: Uint8Array, final: boolean): Uint8Array[] => {
-    const out: Uint8Array[] = [];
-    let start = 0;
-    let at = 0;
-    const limit = final ? bytes.byteLength : Math.max(0, bytes.byteLength - (longest - 1));
-    while (at < limit) {
-      const hit = needles.find((needle) => needle.byteLength <= bytes.byteLength - at
-        && needle.every((byte, index) => bytes[at + index] === byte));
-      if (hit === undefined) {
-        at++;
-        continue;
-      }
-      out.push(bytes.subarray(start, at), mark);
-      at += hit.byteLength;
-      start = at;
-    }
-    out.push(bytes.subarray(start, Math.max(start, limit)));
-    held = bytes.slice(Math.max(start, limit));
-    return out;
-  };
-  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      const joined = new Uint8Array(held.byteLength + chunk.byteLength);
-      joined.set(held);
-      joined.set(chunk, held.byteLength);
-      for (const part of scrub(joined, false)) {
-        if (part.byteLength > 0) {
-          controller.enqueue(part);
-        }
-      }
-    },
-    flush(controller) {
-      for (const part of scrub(held, true)) {
-        if (part.byteLength > 0) {
-          controller.enqueue(part);
-        }
-      }
-    },
-  }));
 }
 
 /** The secrets a credential holds, each redacted from what the provider sends back. */
@@ -238,7 +178,7 @@ function refusal(code: GatewayCode, resealed?: Resealed): Response {
 }
 
 /**
- * A sandbox's model call, metered (G4), once the owner's object admitted it: held to pi-ai's
+ * A sandbox's model call, metered, once the owner's object admitted it: held to pi-ai's
  * own model call for the sealed API (the call's `Meters`); its slots taken as it arrives
  * (`held.ts`), its body read to its `Content-Length` and parsed once; refused for what no
  * reservation bounds; its model and tier read from that parse and reserved through
@@ -273,14 +213,14 @@ type Serialized = { readonly refused: GatewayCode }
  * (measured in workerd: the egress memory leg, `gateway/memory/egress.mjs`, read the tree
  * beside the text and its bytes here).
  */
-async function prepared(request: Request, length: number, credential: Credential,
+async function prepared(request: Request, length: number, upstream: Upstream,
                         meters: Meters, any: Meter, path: string, catalog: Catalog,
                         reserve: Reserve, hold: Hold, signal: AbortSignal,
                         ended: () => void): Promise<Prepared> {
   // The body, read under slots taken as it arrives; then its weight's slots, before the parse.
   const read = await weighedBody(request, length, hold, signal);
   await hold.grow(weightSlots(read.weight));
-  const call = await serialized(read, request.method, credential, meters, any, path, catalog,
+  const call = await serialized(read, request.method, upstream, meters, any, path, catalog,
                                 reserve, signal);
   if ("refused" in call) {
     return call;
@@ -295,7 +235,7 @@ async function prepared(request: Request, length: number, credential: Credential
  * bound, so a refused shape is never charged.
  */
 async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method: string,
-                          credential: Credential, meters: Meters, any: Meter, path: string,
+                          upstream: Upstream, meters: Meters, any: Meter, path: string,
                           catalog: Catalog, reserve: Reserve, signal: AbortSignal):
     Promise<Serialized> {
   let parsed: unknown;
@@ -305,7 +245,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
     return { refused: "invalid_request" };
   }
   read.text = null;
-  const rules = apiRules(credential.upstream.api);
+  const rules = apiRules(upstream.api);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
       || rules === null) {
     return { refused: "unmetered" };
@@ -321,7 +261,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   if (id === null) {
     return { refused: "unmetered" };
   }
-  const model = MODEL_NAME.test(id) ? meteredRecord(catalog, credential.upstream, id) : null;
+  const model = MODEL_NAME.test(id) ? meteredRecord(catalog, upstream, id) : null;
   if (model === null) {
     return { refused: "unknown_model" };
   }
@@ -351,7 +291,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   // The reserve, to the caller's stop and the pool's wait: an object that does not answer
   // within it leaves the call `busy`, its units let go. A reserve already in flight when the
   // caller stops may still commit at the owner's object, which then keeps the charge (the
-  // door settles a stopped call `unknown`), as before A′.
+  // door settles a stopped call `unknown`).
   const reserving = new AbortController();
   const late = setTimeout(() => reserving.abort(new Refusal("busy")), SLOT_WAIT_MS);
   let reserved: Reservation;
@@ -373,7 +313,7 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
   }
   const listed = fallbackList(rules, parsed);
   const text = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
-                                      terms.max_output_tokens, credential.upstream.api));
+                                      terms.max_output_tokens, upstream.api));
   return { text, model, listed };
 }
 
@@ -381,9 +321,10 @@ async function serialized(read: Awaited<ReturnType<typeof weighedBody>>, method:
  * A sandbox's free call on a sealed endpoint, forwarded unmetered: a read (`GET`, `HEAD`: a
  * model list), which carries no model use, or a call its API's rules cite as free
  * (`freeCall`: a token count). Any other is `unmetered`, so no call the owner's object did
- * not charge reaches a provider's model. Its request (its method, path, query, headers and
- * body; its host is ignored) goes to the credential's sealed origin; the provider's own
- * answer passes through.
+ * not charge reaches a provider's model. A service's every call on its sealed URL is free:
+ * it reaches no model (`isService`). Its request (its method, path, query, the headers its
+ * rules name, and body; its host is ignored) goes to the credential's sealed origin; the
+ * provider's own answer passes through.
  */
 export async function forwardRead(env: KeyringEnv, bound: Binding, blob: unknown,
                                   request: Request, stop: ReadableStream<Uint8Array>):
@@ -410,26 +351,22 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     return refused(codeOf(error, "internal"));
   }
   const { credential, resealed } = opened;
+  // A model source's upstream; null for a service's, which is never metered.
+  const priced = isService(credential.upstream) ? null : credential.upstream;
   let incoming: URL;
   try {
     incoming = new URL(request.url);
   } catch {
     return refused("invalid_request", resealed);
   }
-  const target = egressTarget(scopeOf(credential), request.method,
-                              `${incoming.pathname}${incoming.search}`);
+  const scope = scopeOf(credential);
+  const target = egressTarget(scope, request.method, `${incoming.pathname}${incoming.search}`);
   if (target === null) {
     return refused("endpoint_refused", resealed);
   }
-  if (metered === null && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
-                        request.method, target.pathname)) {
+  if (metered === null && priced !== null
+      && !freeCall(apiRules(priced.api), priced.provider, request.method, target.pathname)) {
     return refused("unmetered", resealed);
-  }
-  // Every spelling of each credential parameter, as some servers read them case-blind.
-  for (const name of [...target.searchParams.keys()]) {
-    if (CREDENTIAL_PARAMS.includes(name.toLowerCase())) {
-      target.searchParams.delete(name);
-    }
   }
   let body: BodyInit | null = READS.includes(request.method) ? null : request.body;
   let model: Model<Api> | null = null;
@@ -437,16 +374,19 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   let upload: Upload | null = null;
   let held: AbortSignal | null = null;
   if (metered !== null) {
+    if (priced === null) {
+      return refused("unmetered", resealed);
+    }
     const { reserve, catalog } = metered;
     // Only pi-ai's own model call for the sealed API is metered; nothing else is read. A throw
-    // here sent nothing, so it is `failed` (M3), as every end before the fetch is.
-    const meters = new Meters(catalog, credential.upstream, bearer(credential));
+    // here sent nothing, so it is `failed`, as every end before the fetch is.
+    const meters = new Meters(catalog, priced, bearer(credential));
     const any = await meters.any().catch(() => undefined);
     if (any === undefined) {
       return refused("internal", resealed);
     }
-    if (any === null || !meteredCall(scopeOf(credential, any), request.method,
-                                     target.pathname)) {
+    if (any === null || !meteredCall(modelScope(priced, credential.endpoints, any),
+                                     request.method, target.pathname)) {
       return refused("unmetered", resealed);
     }
     // Its declared length, which the owner's object admitted it by: read exactly it.
@@ -455,17 +395,21 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
         || Number(declared) > EGRESS_BODY_MAX) {
       return refused("invalid_request", resealed);
     }
+    // The parse reads plain bytes: a coded body is refused before it is read.
+    if (request.headers.has("content-encoding")) {
+      return refused("egress_body_encoded", resealed);
+    }
     // Held from its first unit to its upload's last write, to its stop; its sender's deadline
     // is the read's (`readHeld`), its reserve's the pool's wait, its upload's its own.
     const hold = new Hold(gatewaySlots(), bound.owner, cancelled.signal);
     let ready: Prepared;
     try {
-      ready = await prepared(request, Number(declared), credential, meters, any,
+      ready = await prepared(request, Number(declared), priced, meters, any,
                              target.pathname, catalog, reserve, hold, cancelled.signal,
                              () => hold.release());
     } catch (error) {
       hold.release();
-      // Nothing was sent: the call is `failed`, whatever stopped it (M3).
+      // Nothing was sent: the call is `failed`, whatever stopped it.
       return refused(cancelled.signal.aborted ? "aborted" : codeOf(error, "internal"),
                      resealed);
     }
@@ -480,33 +424,22 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                             timeout(heldDeadlineMs(Number(declared)))]);
     held.addEventListener("abort", () => upload?.stop(), { once: true });
   }
-  const headers = new Headers();
+  let headers: Headers;
   let deadline: AbortSignal;
   let signal: AbortSignal;
   try {
-    // A metered call's provider beta headers go only where its API's rules account for them.
-    const betas = metered === null ? null : apiRules(credential.upstream.api)?.betas ?? [];
-    for (const [name, value] of request.headers) {
-      if (!CREDENTIAL_HEADERS.includes(name) && !HOP_HEADERS.includes(name) && !internal(name)
-          && !(betas !== null && /-beta$/.test(name) && !betas.includes(name))) {
-        headers.append(name, value);
-      }
-    }
-    // `set` replaces every value the request sent under the sealed header's name.
+    headers = egressHeaders(scope, metered === null, request.headers);
     headers.set(credential.upstream.auth.header, authValue(credential));
     // Plain bytes back, so the redaction reads what the provider wrote.
     headers.set("accept-encoding", "identity");
-    if (metered !== null) {
-      headers.delete("content-length");
-    }
     deadline = timeout(FORWARD_DEADLINE_MS);
     signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
   } catch {
-    // Nothing was sent: the upload's slots go with it (L2), and the call is `failed` (M3).
+    // Nothing was sent: the upload's slots go with it, and the call is `failed`.
     upload?.stop();
     return refused("internal", resealed);
   }
-  // A call its caller stopped before it was sent is never sent (L3).
+  // A call its caller stopped before it was sent is never sent.
   if (cancelled.signal.aborted) {
     upload?.stop();
     return refused("aborted", resealed);
@@ -524,11 +457,12 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                                resealed),
              outcome: Promise.resolve(metered === null ? FAILED : UNKNOWN) };
   }
+  logDropped(request.headers, headers, upstream.status, priced?.api ?? "service");
   const answer = new Headers();
-  const secrets = secretsOf(credential);
+  const redacted = redaction(secretsOf(credential));
   for (const [name, value] of upstream.headers) {
     if (!HOP_HEADERS.includes(name) && !internal(name)) {
-      answer.append(name, redactText(value, secrets));
+      answer.append(name, redacted.text(value));
     }
   }
   // The body is rewritten when redacted, so its encoding headers no longer describe it.
@@ -538,19 +472,19 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   }
   let outcome: Promise<MeterOutcome> = Promise.resolve(UNKNOWN);
   let source = upstream.body;
-  if (metered !== null && model !== null) {
+  if (metered !== null && model !== null && priced !== null) {
     if (upstream.status < 200 || upstream.status >= 300) {
-      // A refusal before any output: the provider produced nothing, as the loop settles it.
+      // A refusal before any output: the provider produced nothing.
       outcome = Promise.resolve(FAILED);
     } else if (source !== null) {
       const [toCaller, toMeters] = source.tee();
       const [toMeter, toTier] = toMeters.tee();
       source = toCaller;
-      const rules = apiRules(credential.upstream.api)!;
+      const rules = apiRules(priced.api)!;
       // An answer served at a tier pi-ai does not price is unknown, whatever pi-ai read (and
       // one whose tier cannot be read, a cut, is unknown by the rejection below).
       const tierPriced = servedPriced(rules, toTier);
-      outcome = Promise.all([meteredUsage(metered.catalog, credential.upstream,
+      outcome = Promise.all([meteredUsage(metered.catalog, priced,
                                           bearer(credential), model, upstream.status,
                                           new Headers(upstream.headers), toMeter, listed),
                              tierPriced])
@@ -567,9 +501,9 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   if (source === null) {
     upload?.stop();
   }
-  const redacted = passed === null ? null : redact(passed, secrets);
-  return { response: new Response(redacted, { status: upstream.status,
-                                              statusText: upstream.statusText, headers: answer }),
+  return { response: new Response(passed === null ? null : redacted.stream(passed),
+                                  { status: upstream.status, statusText: upstream.statusText,
+                                    headers: answer }),
            outcome };
 }
 
@@ -579,20 +513,16 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
  * ends there: closed, not errored with the abort the stop caused. The caller already knows
  * why it stopped, and an abort error carried back over the RPC stream to a door that no
  * longer reads it is a rejection nothing can handle (workerd logs each one as uncaught). A
- * provider's own failure, the gateway's deadline, or a wait on the provider longer than
- * `IDLE_CUT_MS` still errors the answer, and cancels the provider's, which ends its request.
+ * provider's own failure or the gateway's deadline still errors the answer, and cancels the
+ * provider's, which ends its request.
  */
 function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
                    ended: () => void): ReadableStream<Uint8Array> {
   const reader = body.getReader();
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const silent = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Refusal("deadline")), IDLE_CUT_MS);
-      });
       try {
-        const { done, value } = await Promise.race([reader.read(), silent]);
+        const { done, value } = await reader.read();
         if (done) {
           ended();
           controller.close();
@@ -608,8 +538,6 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
           // Through the fetch's signal, so a metered answer's tee (its meter's readers) ends too.
           cancelled.abort();
         }
-      } finally {
-        clearTimeout(timer);
       }
     },
     cancel(reason) {
@@ -621,9 +549,17 @@ function abortable(body: ReadableStream<Uint8Array>, cancelled: AbortController,
 }
 
 /** Where a credential may be forwarded: its sealed base URL and endpoints, no secret. */
-function scopeOf(credential: Credential, meter: Meter | null = null): EgressScope {
-  return Object.freeze({ api: credential.upstream.api, base_url: credential.upstream.base_url,
-                         endpoints: credential.endpoints, meter });
+function scopeOf(credential: Credential): EgressScope {
+  const { upstream, endpoints } = credential;
+  return isService(upstream)
+    ? Object.freeze({ kind: "service", base_url: upstream.base_url, endpoints })
+    : modelScope(upstream, endpoints, null);
+}
+
+/** A model source's scope, with pi-ai's own model call for its API (`meter`), or none. */
+function modelScope(upstream: Upstream, endpoints: Credential["endpoints"],
+                    meter: Meter | null): ModelScope {
+  return Object.freeze({ api: upstream.api, base_url: upstream.base_url, endpoints, meter });
 }
 
 /**
@@ -631,13 +567,20 @@ function scopeOf(credential: Credential, meter: Meter | null = null): EgressScop
  * endpoints, sent like `forward` sends): a 2xx answer is a working credential, and the
  * models are pi-ai's catalog for its provider (or its declared models), with their
  * metadata, and its egress scope, which the binder hands the owner object's
- * `connectionCommit`. Anything else is
- * the upstream outcome's fixed code; the answer's body is never read.
+ * `connectionCommit`. Anything else is the upstream outcome's fixed code; the answer's body
+ * is never read. A service's key has no models and no check a service shares (an MCP server
+ * answers only its own protocol, with a session), so it opens and its scope is all there
+ * is: a wrong key is the server's own refusal at its first call, which the run sees.
  */
 export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
                              catalog: Catalog): Promise<Verified> {
   const { credential, resealed } = await open(env, bound, blob);
-  const url = credential.upstream.verify_url;
+  const kept = resealed === undefined ? {} : { resealed };
+  const upstream = credential.upstream;
+  if (isService(upstream)) {
+    return Object.freeze({ models: Object.freeze([]), egress: scopeOf(credential), ...kept });
+  }
+  const url = upstream.verify_url;
   if (url === undefined) {
     throw new Refusal("unsupported_source");
   }
@@ -659,8 +602,8 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
   if (answer.status < 200 || answer.status >= 300) {
     throw new Refusal(upstreamCode(answer.status));
   }
-  return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)),
-                         egress: scopeOf(credential, await new Meters(
-                           catalog, credential.upstream, bearer(credential)).any()),
-                         ...(resealed === undefined ? {} : { resealed }) });
+  return Object.freeze({ models: Object.freeze(modelInfos(catalog, upstream)),
+                         egress: modelScope(upstream, credential.endpoints, await new Meters(
+                           catalog, upstream, bearer(credential)).any()),
+                         ...kept });
 }

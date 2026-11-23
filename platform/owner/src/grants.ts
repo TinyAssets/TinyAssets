@@ -1,26 +1,25 @@
 /**
- * Outside-client grants (P0-3, decision A1), in the owner's own object (ADR-032).
- *
- * Ported from the outside-client half of `PolicyStore` on `p0-3-outside-grants` (PR
- * #5343, `tinyassets/broker/policy.py` at be88c9116): `outside_admit`, `outside_check`,
- * `outside_standing`, `outside_live`, `outside_list`, `outside_set`, `outside_revoke`
- * and `_grant`, whose rules it keeps. An outside client has the owner's normal
- * authority by default (`full`), or exact `{universe, agent, capability}` triples
- * (`scoped`), or none (`revoked`).
+ * Outside-client grants, in the owner's own object (ADR-032). An outside client has the
+ * owner's normal authority by default (`full`), or exact `{universe, agent, capability}`
+ * triples (`scoped`), or none (`revoked`).
  *
  * A scoped grant holds exact `{universe, agent, capability}` triples. The capabilities
  * the object's doors check (`RUN_CAPABILITIES`): `read_graph` and `write_graph` (the mailbox,
  * its doorbell subscription and the collections), `propose_policy` (an agent's policy
  * proposal), `read_files` and `write_files` (the file doors), `converse` and `run_graph`
- * (the Python's REST scopes for a message to an agent and a run of one, whose doors the
- * runs slice (R) brings back).
+ * (a message to an agent and a run of one).
  *
- * A grant also names its **tool profile** (`profile`, slice M; `contract/profiles.json`):
+ * A grant also names its **tool profile** (`profile`, `contract/profiles.json`):
  * which of the MCP door's tools the client is served. `custom` (the owner's own choice of
  * tools, its policy's `tools.custom`), since every grant here is a custom connector's; the
  * owner may name `directory` (no `code`). Code mode is the owner's choice that way, and its
  * policy's switch, so no capability stands for it. A profile is authority: changing it
  * moves the generation.
+ *
+ * And a grant names **which of the owner's agents** the client is (`agent`, `MAIN_AGENT` until
+ * the owner names another in `set`): the agent whose definition it reads (`definitionRead`)
+ * and where a scoped grant's triples are held when a call names no agent
+ * (`authority.ts` `actingAgent`). An agent is authority too: changing it moves the generation.
  *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
@@ -31,8 +30,8 @@
  * - Only the owner, in its protected session, changes a grant (`set`); revoking one is
  *   a narrowing the owner's account makes without a session (`revoke`), as a key's
  *   revoke does. Both are receipted, and a grant change ends the client's agents' open
- *   wakes and revokes their doorbell subscriptions in the same transaction (the
- *   Python's M3), so the agent subscribes again under the new grant.
+ *   wakes and revokes their doorbell subscriptions in the same transaction, so the agent
+ *   subscribes again under the new grant.
  * - A grant has two numbers. Its `revision` is the owner's concurrency token: every set
  *   and every revoke moves it, and a set names the one it was made against
  *   (`expected_revision`), so a set from a stale view is refused, a rename included. Its
@@ -46,14 +45,13 @@
  *   its client's row (`held`), as an agent does, so the free-row bound can never forget
  *   it and turn a standing grant into "no grant".
  *
- * The runs slice (R) stamps an outside client's runs, each call checked with `standing`
- * and the scope's capability (`authority.ts`), a grant change ending them. Owed by a later
- * slice, written into its task: the doorbell rechecks the grant just before it sends (7).
+ * An outside client's runs are stamped, each call checked with `standing` and the scope's
+ * capability (`authority.ts`), a grant change ending them; the doorbell rechecks the grant
+ * just before it sends (`GrantReader.live`).
  *
- * The rows stay bounded without ever forgetting a fence (slice 3's review L1, and slice
- * 5's review M1). A row an agent or stamped work holds is kept: it is what that work is
- * checked against. A row the owner set is kept, and only the owner's own act lifts a
- * revoke:
+ * The rows stay bounded without ever forgetting a fence. A row an agent or stamped work holds is
+ * kept: it is what that work is checked against. A row the owner set is kept, and only the owner's
+ * own act lifts a revoke:
  * - An API key's revoked row is forgotten when the binder reports the directory deleted
  *   the key (`forgetKey`): a narrowing, since an API key with no row is refused, never
  *   recorded, so it needs no session.
@@ -67,21 +65,12 @@
  * free: past `maxFreeClients` the oldest free row goes, and a new client is never
  * refused. The owner's live set rows are bounded by `maxOwnerClients`, refused at the
  * owner's own `set` with the way out named (revoke one); a revoked row never counts there
- * (slice L: a revoked key never holds a live key's place). Revoked set rows are bounded
+ * (a revoked key never holds a live key's place). Revoked set rows are bounded
  * apart, by `maxOwnerClients` again: past it the oldest revoked row no agent or held
  * registration holds is forgotten, as `forgetRevoked` forgets it (an MCP client's moves the
  * owner-wide fence, so its pre-revoke credentials stay dead). A revoke, a narrowing that
- * must always land, is never refused. Rows agents and stamped
- * work hold are bounded by their own bounds.
- *
- * Declared differences from the Python:
- * - Admission is the object's own, per call, where the grant lives: the Python router's
- *   identity stamp and the box's recheck of it have no counterpart.
- * - The platform's outside kill switch (`TINYASSETS_OUTSIDE_DENY`) is the binder's, from
- *   the owner directory (tasks 2), and the `wakes` lane's (tasks 7): the object has no env.
- * - A held API-key request applied with its grant (`_apply_key_request`) needs the
- *   directory's key ids, so it comes with the key store (tasks 2).
- * - Rows are bounded as above; the Python kept every row.
+ * must always land, is never refused. Rows agents and stamped work hold are bounded by
+ * their own bounds.
  */
 import { HEX64 } from "../../contract/src/ids";
 import { Refusal } from "../../contract/src/refusal";
@@ -89,13 +78,13 @@ import { SCOPES_JSON_MAX } from "../../contract/src/limits";
 import type { OwnerStorage } from "./gate";
 import { appList, connectUrl, type Vendor } from "../../contract/src/apps";
 import { CLIENT_PROFILES, DEFAULT_PROFILE, type ProfileName } from "../../contract/src/doors";
-import { type ConnectedApp, type Grant, may, type Scope } from "./authority";
+import { type ConnectedApp, type Grant, MAIN_AGENT, may, type Scope } from "./authority";
 import { RUN_CAPABILITIES } from "../../contract/src/capabilities";
 import { keyed } from "../../contract/src/checks";
 import { canonical } from "../../contract/src/canonical";
 import { policyDigest } from "../../contract/src/policy-document";
 import type { Policy } from "./policy";
-import { codePoints, utf8Bytes } from "../../contract/src/text";
+import { agentId, codePoints, utf8Bytes } from "../../contract/src/text";
 import { type Call, type LiveSession, type ObjectReads, proven } from "./door";
 import type { Keys } from "./keys";
 import type { Launcher } from "./launch";
@@ -139,7 +128,9 @@ export type Client = {
   readonly mode: string;
   readonly scopes: Scope[];
   readonly profile: string;
-  /** Its authority: moves only with its mode, scopes or profile, a revoke among them. */
+  /** The owner's agent the client is. */
+  readonly agent: string;
+  /** Its authority: moves only with its mode, scopes, profile or agent, a revoke among them. */
   readonly generation: number;
   /** Its concurrency token: moves on every owner set and every revoke. */
   readonly revision: number;
@@ -148,8 +139,8 @@ export type Client = {
   readonly first_seen: number;
   readonly last_seen: number;
   /**
-   * Which of `apps.json`'s vendors the client is, as its sign-in knew it (migration 4,
-   * slice BRAIN), or null; `vendor_verified` 1 when its CIMD host verified it.
+   * Which of `apps.json`'s vendors the client is, as its sign-in knew it (migration 4),
+   * or null; `vendor_verified` 1 when its CIMD host verified it.
    */
   readonly vendor: string | null;
   readonly vendor_verified: number;
@@ -176,11 +167,18 @@ export interface GrantChange {
   readonly name: unknown;
   /** The tool profile; omitted, the grant keeps its own (a new one, `custom`). */
   readonly profile?: unknown;
+  /** The owner's agent the client is; omitted, the grant keeps its own (a new one, `main`). */
+  readonly agent?: unknown;
 }
 
-/** What a grant holds, as one value: equal exactly when `holds` and its profile answer alike. */
-function authority(mode: string, held: readonly Scope[], profile: string): string {
-  return canonical([mode, [...new Set(held.map((scope) => canonical(scope)))].sort(), profile]);
+/**
+ * What a grant holds, as one value: equal exactly when `holds`, its profile and its agent
+ * answer alike.
+ */
+function authority(mode: string, held: readonly Scope[], profile: string, agent: string):
+    string {
+  return canonical([mode, [...new Set(held.map((scope) => canonical(scope)))].sort(), profile,
+                    agent]);
 }
 
 /**
@@ -253,12 +251,13 @@ export class Grants {
       throw new Refusal("refused", "a fresh sign-in is required after a revoke");
     }
     return { mode: row.mode as Grant["mode"], scopes: JSON.parse(row.scopes) as Scope[],
-             generation: row.generation, profile: row.profile as ProfileName };
+             generation: row.generation, profile: row.profile as ProfileName,
+             agent: row.agent };
   }
 
   /**
    * The grant of the verified outside client making this call. An MCP client's first
-   * verified call records it `full` (A1), making room by forgetting the least recently
+   * verified call records it `full`, making room by forgetting the least recently
    * seen free row; an API key's row is written with the key. `authenticatedAt` is when
    * the client's credential was signed in, if the binder knows.
    */
@@ -335,14 +334,15 @@ export class Grants {
   }
 
   /**
-   * Whether a client's grant, as it stands, holds `scope` (a full grant holds every one):
-   * what a wake is held to before it rings (slice W). A read: it never records a client.
+   * Whether a client's grant, as it stands, holds `capability` in `universe` as the agent it
+   * names (a full grant holds every one): what a wake is held to before it rings. A read: it
+   * never records a client.
    */
-  reads(client: string, scope: Scope): boolean {
+  reads(client: string, universe: string, capability: string): boolean {
     const row = this.#row(client);
     return row !== undefined && row.mode !== "revoked"
-      && may({ mode: row.mode, scopes: JSON.parse(row.scopes) as Scope[] }, scope.capability,
-             scope);
+      && may({ mode: row.mode, scopes: JSON.parse(row.scopes) as Scope[] }, capability,
+             { universe, agent: row.agent });
   }
 
   /**
@@ -389,14 +389,15 @@ export class Grants {
   }
 
   /**
-   * `outside_set`, an owner widening from its protected session: one client's mode, scopes
-   * and name, against the revision the owner was shown; `expected_revision` 0 creates the
-   * row, as a key's mint does. The revision always moves; the generation only when the
-   * authority does (`moved`), which is when the caller ends the client's work.
+   * `outside_set`, an owner widening from its protected session: one client's mode, scopes,
+   * profile, agent and name, against the revision the owner was shown; `expected_revision` 0
+   * creates the row, as a key's mint does. The revision always moves; the generation only when
+   * the authority does (`moved`), which is when the caller ends the client's work. `named`: the
+   * set names an agent other than the grant's own, which the caller checks is live.
    */
   set(session: LiveSession, change: GrantChange, now: number):
-      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
-        revision: number; moved: boolean } {
+      { client: string; mode: string; scopes: Scope[]; profile: string; agent: string;
+        generation: number; revision: number; moved: boolean; named: boolean } {
     proven(session, "session");
     const client = outsideClient(change.client, change.source);
     const { mode, expected_revision: expected, name } = change;
@@ -418,6 +419,7 @@ export class Grants {
       .includes(change.profile)) {
       throw new Refusal("invalid", `a grant's profile is one of ${CLIENT_PROFILES.join(", ")}`);
     }
+    const asked = change.agent === undefined ? undefined : agentId(change.agent);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = this.#row(client);
@@ -434,9 +436,10 @@ export class Grants {
                           "one to make room");
       }
       const profile = (change.profile ?? row?.profile ?? DEFAULT_PROFILE) as string;
+      const agent = asked ?? row?.agent ?? MAIN_AGENT;
       const moved = row === undefined
-        || authority(row.mode, JSON.parse(row.scopes) as Scope[], row.profile)
-          !== authority(mode, held, profile);
+        || authority(row.mode, JSON.parse(row.scopes) as Scope[], row.profile, row.agent)
+          !== authority(mode, held, profile, agent);
       const generation = (row?.generation ?? 0) + (moved ? 1 : 0);
       const revision = expected + 1;
       // A revoke is timed when it lands; a revoked grant set again keeps its fence.
@@ -444,25 +447,26 @@ export class Grants {
       const named = name === "" ? row?.name ?? "" : name;
       sql.exec(
         "INSERT INTO outside_clients (client, source, mode, scopes, generation, revision, " +
-          "revoked_at, name, first_seen, last_seen, owner_set, profile) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) " +
+          "revoked_at, name, first_seen, last_seen, owner_set, profile, agent) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) " +
           "ON CONFLICT (client) DO UPDATE SET mode = excluded.mode, scopes = excluded.scopes, " +
-          "profile = excluded.profile, " +
+          "profile = excluded.profile, agent = excluded.agent, " +
           "generation = excluded.generation, revision = excluded.revision, " +
           "revoked_at = excluded.revoked_at, owner_set = 1, " +
           "name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END",
         client, source, mode, canonical(held), generation, revision, revokedAt, name, now, now,
-        profile,
+        profile, agent,
       );
       // The receipt's digest names the set whole, so a rename's differs from a set that
       // changes nothing; its generation is the authority's.
       this.#policy.receipt("outside_grant", {
         session_id: session.hash,
         request_digest: policyDigest({ client, mode, scopes: held, name: named, revision,
-                                       profile }),
+                                       profile, agent }),
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
-      return { client, mode, scopes: held, profile, generation, revision, moved };
+      return { client, mode, scopes: held, profile, agent, generation, revision, moved,
+               named: asked !== undefined && asked !== row?.agent };
     });
   }
 
@@ -610,10 +614,6 @@ export interface ForgetRequest {
 }
 
 // -- THE DOORS: the `grants` rows' handlers (`owner/doors.json`) ----------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`GrantsDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `grants` doors reach: the grants and their keys, and what a grant change ends of
@@ -622,13 +622,19 @@ export interface ForgetRequest {
 export interface GrantsDoorNeeds extends Pick<ObjectReads, "storage"> {
   readonly grants: Grants;
   readonly keys: Pick<Keys, "revoked" | "forgotten">;
-  readonly ledger: { suppressClient(client: string, now: number): void };
+  readonly ledger: {
+    suppressClient(client: string, now: number): void;
+    /** One of the owner's live agents by name, else refused (`no_agent`, `agent_retired`). */
+    liveNative(agent: string): unknown;
+    /** The owner's live agents (`all` false). */
+    natives(all: false): readonly { readonly agent: string }[];
+  };
   readonly registrations: { endClient(client: string): void };
   readonly launcher: Pick<Launcher, "endClient">;
 }
 
 /**
- * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
+ * A grant change ends what its client set going: its agents' open wakes and
  * callbacks and its held registrations, in the caller's transaction.
  */
 function endClient(o: GrantsDoorNeeds, client: string): void {
@@ -645,22 +651,36 @@ function evictRevoked(o: GrantsDoorNeeds): void {
   }
 }
 
-/** The `grants` doors' handlers, by door. */
 export const grantsDoors = Object.freeze({
-  grantList(o: GrantsDoorNeeds, _call: Call<undefined>): { clients: Client[] } {
-    return { clients: o.grants.list() };
+  /**
+   * Every grant, each with whether the agent it names is one of the owner's live agents
+   * (`agent_live`): one that is not has its definition refused (`no_agent`, `agent_retired`)
+   * until the owner names another or its `agent.json` is back.
+   */
+  grantList(o: GrantsDoorNeeds, _call: Call<undefined>):
+      { clients: (Client & { agent_live: boolean })[] } {
+    const live = new Set(o.ledger.natives(false).map((native) => native.agent));
+    return { clients: o.grants.list().map((client) =>
+      ({ ...client, agent_live: live.has(client.agent) })) };
   },
   /**
    * The owner's widening, in its session, against the grant's revision. A set that moves
-   * the grant's authority (its mode or scopes) ends the client's agents' wakes and held
-   * registrations with it, as `grantRevoke` ends them; one that moves only the revision, a
-   * rename, ends nothing: every stamp of the client's still stands.
+   * the grant's authority (its mode, scopes, profile or agent) ends the client's agents' wakes
+   * and held registrations with it, as `grantRevoke` ends them; one that moves only the
+   * revision, a rename, ends nothing: every stamp of the client's still stands. An agent it
+   * names anew is one of the owner's live agents, else refused (`no_agent`, `agent_retired`);
+   * the grant's own, kept, is not checked, so no save waits on it, a narrowing or revoke among
+   * them.
    */
   grantSet(o: GrantsDoorNeeds, { session, r }: Call<GrantChange, "session">):
-      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
-        revision: number } {
+      { client: string; mode: string; scopes: Scope[]; profile: string; agent: string;
+        generation: number; revision: number } {
     return o.storage.transactionSync(() => {
-      const { moved, ...set } = o.grants.set(session, r as unknown as GrantChange, clock());
+      const { moved, named, ...set } = o.grants.set(session, r as unknown as GrantChange,
+                                                    clock());
+      if (named) {
+        o.ledger.liveNative(set.agent);
+      }
       if (moved) {
         endClient(o, set.client);
       }
@@ -686,8 +706,8 @@ export const grantsDoors = Object.freeze({
     });
   },
   /**
-   * Forget a revoked API key's grant (slice 3's review L1): the binder calls it once the
-   * directory has deleted the key (tasks 2). A narrowing, since a key with no row is
+   * Forget a revoked API key's grant: the binder calls it once the directory has deleted
+   * the key. A narrowing, since a key with no row is
    * refused, so the owner's account makes it without a session. Never an MCP client's.
    */
   grantForget(o: GrantsDoorNeeds, { r }: Call<ClientRequest>):

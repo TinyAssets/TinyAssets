@@ -35,7 +35,8 @@ whether any external catalog repository is still a contribution target.
    ([docs/reference/executable-gates.md](docs/reference/executable-gates.md)).
    CI runs the rest.
 4. Open the pull request against `main`. Every pull request is reviewed before
-   it merges: the scope guard requires a review receipt for its head.
+   it merges: the required `review` check needs an `APPROVE` PR review that
+   carries to its head.
 
 TODO(owner): the public developers page says every change gets a review from
 a second model family (`WebSite/site-react/app/developers/page.tsx`). The rule
@@ -49,9 +50,8 @@ from a docs-shaped pull request that also edits a workflow.
 
 The user-facing name is **command center**. Code, stored data, and many older
 docs still say **universe**. The map is
-[docs/architecture.md](docs/architecture.md). A drive-by rename is a large
-change of its own; the open note is
-`openspec/changes/rename-universe-to-command-center/`.
+[docs/architecture.md](docs/architecture.md). The old stack keeps the old name
+until the cutover deletes it, so don't rename it in passing.
 
 ## Issues
 

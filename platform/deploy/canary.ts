@@ -1,31 +1,34 @@
 /**
- * The platform's canary (d3 §J2, untangle B14 as d3 §A7 has it): the platform checked from
- * outside, through its public routes, as a user's client reaches it. It runs on GitHub's
- * runners (`.github/workflows/platform-canary.yml`), started every ten minutes by the doors'
- * clock (`doors/src/canary-clock.ts`), and after each deploy by the kit (`deploy.ts`). A
- * check run inside Cloudflare could not prove the routes: a Worker's fetch of its own zone's
- * routes never reaches them.
+ * The platform's canary (d3 §J2, §A7): the platform checked from outside, through its public
+ * routes, as a user's client reaches it. It runs on GitHub's runners
+ * (`.github/workflows/platform-canary.yml`), started every ten minutes by the doors' clock
+ * (`doors/src/canary-clock.ts`), and after each deploy by the kit (`deploy.ts`). A check run
+ * inside Cloudflare could not prove the routes: a Worker's fetch of its own zone's routes never
+ * reaches them.
  *
- *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--unkeyed]
+ *   node --experimental-strip-types platform/deploy/canary.ts [--side doors|old] [--closed]
  *        [--clock] [--full] [--result <file>]
+ *   node --experimental-strip-types platform/deploy/canary.ts --smoke <version id>
  *
- * It first reads which side serves `tinyassets.io/mcp`: the authorization server the public
- * resource document names, each side's in `scripts/canary_handles.json`.
+ * It first reads which side serves: the doors, when the resource document on their host (the
+ * identity's) names their own issuer, their origin; else the old stack, when the one on the
+ * zone, where it serves until the cutover, names its authorization server
+ * (`scripts/canary_handles.json`). The two are one document while the host is the zone.
  * - **The old stack** (before `routes`, and after a `handback`): the platform is dark. It
- *   checks that the old stack still answers `/mcp` (its anonymous `401` carries a body, the
- *   doors' none, so a `routes` stopped partway is seen) and that E2B holds the pinned template
- *   and the doors' lifecycle hook, disabled. The doors' own checks wait for `routes`, each
- *   named, never passed.
+ *   checks that the old stack still answers the zone's `/mcp` (its anonymous `401` carries a
+ *   body, the doors' none, so a `routes` stopped partway is seen) and that E2B holds the
+ *   pinned template and the doors' lifecycle hook, disabled. The doors' own checks wait for
+ *   `routes`, each named, never passed.
  * - **The doors:** the anonymous challenge and the resource document; the app page (`/app`,
  *   `/app?upgrade=1`) with its CSP; the first-party client document; the egress host's
  *   refusal; the sign-in's start (the doors' `/authorize` to WorkOS, WorkOS to AuthKit's
- *   page, the issuer's discovery and JWKS); E2B's template and the hook, enabled; the
- *   off-account copy, a night of which must have passed inside two nights once it is
- *   configured (`offsite.ts` `watch`: an erased owner's hide there is owed within a week; it
- *   says so while unconfigured). Then, with the canary owner's API key (`TA_PROBE_KEY`): the
- *   handle set (one read-only `GET /api/tools/<name>` a name: each doors tool `405`, each
- *   old-only one and an unknown name `404`); a file written, read and removed in the owner's
- *   workspace; and the full run.
+ *   page, the issuer's discovery and JWKS); E2B's template and the hook, enabled at the
+ *   doors' hook; the off-account copy, a night of which must have passed inside two nights
+ *   once it is configured (`offsite.ts` `watch`: an erased owner's hide there is owed within
+ *   a week; it says so while unconfigured). Then, with the canary owner's API key
+ *   (`TA_PROBE_KEY`): the handle set (one read-only `GET /api/tools/<name>` a name: each
+ *   doors tool `405`, each old-only one and an unknown name `404`); a file written, read and
+ *   removed in the owner's workspace; and the full run.
  * - **The full run:** one short turn of the canary owner's main agent (`converse`), on the
  *   model source the founder connected to that owner (a free tier's), which boots a sandbox,
  *   runs the engine and calls the model through the egress host. It runs once a day: its
@@ -33,42 +36,62 @@
  *   every run in between carries that ending, so a failed day stays red until a full run
  *   passes. `--full` runs it now.
  *
- * `--side` holds the side asked for (exit 8 if the other serves); `--unkeyed` (the `routes`
- * run's own, since no canary owner can exist before the doors serve) leaves the keyed checks
- * waiting; `--clock` (the workflow's own schedule, the watchdog) checks that the clock
- * dispatched a run in the last 30 minutes. Every check runs and prints one line; the exit is
- * the first failure's code, else 0. A run with a check waiting exits 0 and says what waits:
- * a waiting check is not a pass. `--result` writes the outcomes for the alarm (`alarm.ts`).
- * No credential is ever printed.
+ * `--side` holds the side asked for (exit 8 if the other serves). `--closed` says the control
+ * record admits no owner (`closedToAll`): no canary owner can sign in or pass the doors' gate,
+ * so the keyed checks wait, key or none. The kit reads the record and passes it (`deploy.ts`
+ * `canary`); where it is not passed (the workflow holds no Cloudflare token to read the record)
+ * a canary owner is owed, and a missing key fails (exit 7). `--clock` (the workflow's own
+ * schedule, the watchdog) checks that the clock dispatched a run in the last 30 minutes.
+ * Every check runs and prints one line; the exit is the first failure's code, else 0. A run
+ * with a check waiting exits 0 and says what waits: a waiting check is not a pass. `--result`
+ * writes the outcomes for the alarm (`alarm.ts`). No credential is ever printed.
+ *
+ * `--smoke` is the deploy kit's smoke of the doors' new version at a share below 100
+ * (`deploy.ts` `workers`), alone: the doors must serve, and only their checks run (the
+ * challenge, the app, the client document, the egress host and the sign-in's start), each
+ * request to the doors' host or the egress host carrying Cloudflare's version override for
+ * that version and each answer held to it (`VERSION_HEADER`). An override Cloudflare ignores
+ * still answers, from the version the shares pick: exit 16, never a pass.
  *
  * Exit codes: 0 every check passed, or the platform dark; 2 unreachable; 4 handle drift; 5 the
  * sign-in's start; 6 an authentication boundary or a gate refused; 7 the keyed checks
  * unchecked (no `TA_PROBE_KEY`); 8 the side asked for is not serving; 9 neither side's
  * resource document; 10 a split, the doors and the old stack each serving a part; 11 E2B; 12
- * the owner's files; 13 the full run; 14 the clock stopped; 15 the off-account copy; 1 the
- * canary itself stopped. GitHub is read with the job's own token (`actions.ts` `github`).
+ * the owner's files; 13 the full run; 14 the clock stopped; 15 the off-account copy; 16 the
+ * smoke answered by another version than its own; 1 the canary itself stopped. GitHub is read
+ * with the job's own token (`actions.ts` `github`).
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { REPO } from "../ci/paths.ts";
 import { DISPATCH } from "../contract/src/canary.ts";
+import { EGRESS_HOST } from "../contract/src/egress.ts";
+import { NAVIGATE } from "../contract/src/navigation.ts";
 import { E2bAdmin } from "../sandbox/e2b/admin.ts";
 import { pinned } from "../sandbox/template/pair.ts";
 import { github, type Reach, TOKEN } from "./actions.ts";
-import { authorizeCheck, heldHook, probeLink, upstreamFrom } from "./deploy.ts";
+import {
+  authorizeCheck, egressRefusal, fetchFailure, firstPartyLink, heldHook, upstreamFrom,
+} from "./deploy.ts";
 import identity from "../contract/identity.json" with { type: "json" };
 import {
-  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, WEB_CLIENT,
+  APP_RESOURCE, MCP_RESOURCE, ORIGIN, UPSTREAM_CALLBACK, VERSION_HEADER, WEB_CLIENT, ZONE,
 } from "../contract/src/identity.ts";
-import { AUTHORIZE, E2B_HOOK_URL, EGRESS_DOMAIN } from "./facts.ts";
+import { AUTHORIZE, DOORS, E2B_HOOK_URL } from "./facts.ts";
 import { watch } from "./offsite.ts";
 
 type Json = Record<string, unknown>;
 
-/** The canary's world: replaced whole by its tests. */
+/**
+ * The canary's world: replaced whole by its tests. `fetch` is Node's; `request` sends each
+ * header as given (`verbatim`), for a request setting one `fetch` overwrites (`OVERWRITTEN`).
+ */
 export interface World extends Reach {
+  readonly request: Reach["fetch"];
   readonly now: () => Date;
 }
 
@@ -77,9 +100,11 @@ export type Side = "doors" | "old";
 
 export interface Options {
   readonly side: Side | null;
-  readonly unkeyed: boolean;
+  readonly closed: boolean;
   readonly clock: boolean;
   readonly full: boolean;
+  /** `--smoke`: the doors' version the smoke sends each request to, or null for the canary. */
+  readonly smoke: string | null;
 }
 
 /** One check's ending: its line, and its exit code when it failed. */
@@ -119,8 +144,11 @@ export const INPUTS = Object.freeze({
   key: "TA_PROBE_KEY", e2b: "E2B_API_KEY", issuer: "OWNER_ISSUER", client: "WORKOS_CLIENT_ID",
   github: TOKEN });
 
-/** The resource document `/mcp` names (RFC 9728's path form). */
+/** The resource document `/mcp` names (RFC 9728's path form), on the doors' host. */
 const RESOURCE_DOCUMENT = `${ORIGIN}/.well-known/oauth-protected-resource${identity.mcp}`;
+/** The old stack's MCP door and its resource document: on the zone, until the cutover. */
+const OLD_MCP = `https://${ZONE}${identity.mcp}`;
+const OLD_DOCUMENT = `https://${ZONE}/.well-known/oauth-protected-resource${identity.mcp}`;
 /** A name no side serves: the `404` a profile answers for a tool outside it. */
 const UNKNOWN_TOOL = "no_such_tool";
 /** Each request's limit: GitHub's runners reach some answers slowly. */
@@ -143,23 +171,118 @@ const INITIALIZE = JSON.stringify({
   params: { protocolVersion: "2025-06-18", capabilities: {},
             clientInfo: { name: "tinyassets-canary", version: "1" } } });
 
-/** Each side's handle set and authorization server (`scripts/canary_handles.json`). */
-interface SideRecord {
-  readonly authorization_server: string;
-  readonly handles: readonly string[];
+/**
+ * Each side's handle set (`scripts/canary_handles.json`), and the old stack's authorization
+ * server: the doors' is their own origin (`doors/src/config.ts` `ISSUER`).
+ */
+interface SideRecords {
+  readonly old: { readonly authorization_server: string; readonly handles: readonly string[] };
+  readonly new: { readonly handles: readonly string[] };
 }
-function records(): Readonly<Record<"old" | "new", SideRecord>> {
+function records(): SideRecords {
   return JSON.parse(readFileSync(join(REPO, "scripts", "canary_handles.json"), "utf8"));
 }
 
-/** One request, bounded: unreachable is exit 2, never an answer. */
-async function send(world: World, url: string, init: RequestInit = {}): Promise<Response> {
-  try {
-    return await world.fetch(url, { redirect: "manual", ...init,
-                                    signal: AbortSignal.timeout(REQUEST_MS) });
-  } catch (error) {
-    throw new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${(error as Error).message}`);
+/**
+ * The request headers Node's fetch (undici, Node 22) overwrites with its own whatever the
+ * request gives: `Sec-Fetch-Mode` becomes the request's mode, `cors`, so a fetch can never
+ * present a browser's navigation (`NAVIGATE`), which the doors' `/authorize` takes alone.
+ */
+const OVERWRITTEN: readonly string[] = Object.freeze(["Sec-Fetch-Mode"]);
+
+/**
+ * The headers Node's fetch adds to a request that gives none of them, which `verbatim` adds
+ * too: so a request sent verbatim meets Cloudflare's checks in front of the doors as the
+ * canary's fetches do. Its `Accept-Encoding` is left out: `verbatim` decodes no body.
+ */
+const FETCH_DEFAULTS: Readonly<Record<string, string>> = Object.freeze({
+  Accept: "*/*", "Accept-Language": "*", "User-Agent": "node" });
+
+/** The statuses whose answer has no body (the Fetch standard's null body statuses). */
+const NO_BODY: readonly number[] = Object.freeze([101, 204, 205, 304]);
+
+/**
+ * One request over `node:http(s)`, each header sent as given (`FETCH_DEFAULTS` beside them),
+ * answered as a `Response` once its body is read whole; a redirect is never followed, and a
+ * body is text or none. The canary's `World.request`, for a request setting a header fetch
+ * overwrites (`OVERWRITTEN`).
+ */
+export function verbatim(url: string, init: RequestInit = {}): Promise<Response> {
+  const { protocol } = new URL(url);
+  const client = protocol === "https:" ? httpsRequest : protocol === "http:" ? httpRequest : null;
+  if (client === null || !(init.body === undefined || init.body === null
+                           || typeof init.body === "string")) {
+    throw new Error(`a verbatim request takes an http(s) URL and a text body or none: ${url}`);
   }
+  const headers = new Headers(FETCH_DEFAULTS);
+  new Headers(init.headers).forEach((value, name) => { headers.set(name, value); });
+  return new Promise((resolve, reject) => {
+    const sent = client(url, { method: init.method ?? "GET", headers: Object.fromEntries(headers),
+                               signal: init.signal ?? undefined }, (answer) => {
+      const chunks: Buffer[] = [];
+      answer.on("data", (chunk: Buffer) => { chunks.push(chunk); });
+      answer.on("error", reject);
+      answer.on("end", () => {
+        const got = new Headers();
+        for (let at = 0; at < answer.rawHeaders.length; at += 2) {
+          got.append(answer.rawHeaders[at]!, answer.rawHeaders[at + 1]!);
+        }
+        const status = answer.statusCode!;
+        resolve(new Response(NO_BODY.includes(status) ? null : Buffer.concat(chunks),
+                             { status, headers: got }));
+      });
+    });
+    sent.on("error", reject);
+    sent.end(init.body ?? undefined);
+  });
+}
+
+/**
+ * One request, bounded: unreachable is exit 2, never an answer, named with its cause. One
+ * setting a header fetch overwrites goes by `world.request`.
+ */
+async function send(world: World, url: string, init: RequestInit = {}): Promise<Response> {
+  const given = new Headers(init.headers);
+  const client = OVERWRITTEN.some((name) => given.has(name)) ? world.request : world.fetch;
+  try {
+    return await client(url, { redirect: "manual", ...init,
+                               signal: AbortSignal.timeout(REQUEST_MS) });
+  } catch (error) {
+    throw error instanceof Failure ? error
+      : new Failure(2, `unreachable ${init.method ?? "GET"} ${url}: ${fetchFailure(error)}`);
+  }
+}
+
+/** Cloudflare's request header that sends a request to one version in a Worker's deployment. */
+const OVERRIDE = "Cloudflare-Workers-Version-Overrides";
+/** The hosts the doors serve: their own, and the egress host (their custom domain). */
+const DOORS_HOSTS: readonly string[] = Object.freeze([new URL(ORIGIN).host, EGRESS_HOST]);
+
+/**
+ * `world` with each request to the doors sent to their version `version` by Cloudflare's
+ * override (a dictionary of the Worker's name to the version's id, as a string), and each
+ * answer held to name it: the override is ignored where the deployment at the location
+ * answering does not hold the version yet, and the answer comes from the version the shares
+ * pick (Cloudflare's version-overrides page). Every other request is sent as it is. Both of
+ * the world's clients are held so.
+ */
+function smoked(world: World, version: string): World {
+  const held = (client: World["fetch"]): World["fetch"] => async (url, init = {}) => {
+    if (!DOORS_HOSTS.includes(new URL(url).host)) {
+      return client(url, init);
+    }
+    const headers = new Headers(init.headers);
+    headers.set(OVERRIDE, `${DOORS}="${version}"`);
+    const answer = await client(url, { ...init, headers });
+    const by = answer.headers.get(VERSION_HEADER);
+    if (by !== version) {
+      throw new Failure(16, `${init.method ?? "GET"} ${url} was answered by ${by === null
+        ? "no version it names" : `the version ${by}`}, not ${version}: Cloudflare ignored the ` +
+        "override (a location without the deployment yet, or one that does not hold it)");
+    }
+    return answer;
+  };
+  return { ...world, fetch: held(world.fetch), request: held(world.request) };
 }
 
 /** The world's reach, each request bounded by `send`. */
@@ -188,34 +311,52 @@ async function json(response: Response, what: string, code: number): Promise<Jso
   throw new Failure(code, `${what} answered no JSON object (HTTP ${response.status})`);
 }
 
-/** The side whose authorization server the public resource document names. */
-async function sideOf(world: World): Promise<Side> {
-  const answer = await send(world, RESOURCE_DOCUMENT);
+/** The authorization servers the resource document `document` names, as JSON. */
+async function serversAt(world: World, document: string): Promise<string> {
+  const answer = await send(world, document);
   if (answer.status !== 200) {
-    throw new Failure(9, `${RESOURCE_DOCUMENT} answered ${answer.status}`);
+    throw new Failure(9, `${document} answered ${answer.status}`);
   }
-  const servers = JSON.stringify(
-    (await json(answer, RESOURCE_DOCUMENT, 9))["authorization_servers"]);
-  const sides = records();
-  if (servers === JSON.stringify([sides.new.authorization_server])) {
+  return JSON.stringify((await json(answer, document, 9))["authorization_servers"]);
+}
+
+/**
+ * The side that serves: the doors, when their host's resource document names their issuer,
+ * their origin; else the old stack, when the zone's names its authorization server.
+ */
+async function sideOf(world: World): Promise<Side> {
+  let doors: string | null;
+  try {
+    doors = await serversAt(world, RESOURCE_DOCUMENT);
+  } catch (error) {
+    // A host under the zone with no route has no DNS record, so it answers nothing: the doors
+    // serve nowhere, and the zone's document says the rest. On the zone this read and the
+    // next are one.
+    if (!(error instanceof Failure && error.code === 2)) {
+      throw error;
+    }
+    doors = null;
+  }
+  if (doors === JSON.stringify([ORIGIN])) {
     return "doors";
   }
-  if (servers === JSON.stringify([sides.old.authorization_server])) {
+  const servers = await serversAt(world, OLD_DOCUMENT);
+  if (servers === JSON.stringify([records().old.authorization_server])) {
     return "old";
   }
   throw new Failure(9, `the resource document names ${servers}, neither side's authorization ` +
                        "server");
 }
 
-/** An anonymous `initialize` of `/mcp`. */
-function anonymous(world: World): Promise<Response> {
-  return send(world, MCP_RESOURCE, { method: "POST", body: INITIALIZE, headers: {
+/** An anonymous `initialize` of the MCP door `url`. */
+function anonymous(world: World, url: string): Promise<Response> {
+  return send(world, url, { method: "POST", body: INITIALIZE, headers: {
     "Content-Type": "application/json", Accept: "application/json, text/event-stream" } });
 }
 
 /** The old stack's `401` carries its body; the doors' none. */
 async function oldAnswers(world: World): Promise<string> {
-  const answer = await anonymous(world);
+  const answer = await anonymous(world, OLD_MCP);
   const body = await answer.text();
   if (answer.status !== 401 || body.trim() === "") {
     throw new Failure(10, `split: the resource document is the old stack's, but /mcp answered ${
@@ -226,7 +367,7 @@ async function oldAnswers(world: World): Promise<string> {
 }
 
 async function challenge(world: World): Promise<string> {
-  const answer = await anonymous(world);
+  const answer = await anonymous(world, MCP_RESOURCE);
   const header = answer.headers.get("WWW-Authenticate") ?? "";
   if (answer.status !== 401 || !header.startsWith("Bearer ")
       || !header.includes(`resource_metadata="${RESOURCE_DOCUMENT}"`)
@@ -262,13 +403,12 @@ async function clientDocument(world: World): Promise<string> {
 }
 
 async function egressHost(world: World): Promise<string> {
-  const url = `https://${EGRESS_DOMAIN}/`;
+  const url = `https://${EGRESS_HOST}/`;
   const answer = await send(world, url);
-  const error = answer.status === 404 ? (await json(answer, url, 2))["error"] : null;
-  if (typeof (error as Json | null)?.["code"] !== "string") {
+  if (!(await egressRefusal(answer))) {
     throw new Failure(2, `${url} answered ${answer.status}, not the egress door's refusal`);
   }
-  return `${EGRESS_DOMAIN} answers with the egress door's refusal`;
+  return `${EGRESS_HOST} answers with the egress door's refusal`;
 }
 
 async function signIn(world: World): Promise<string> {
@@ -280,7 +420,9 @@ async function signIn(world: World): Promise<string> {
   if (keys.status !== 200 || !Array.isArray((await json(keys, record.jwks_uri, 5))["keys"])) {
     throw new Failure(5, `the issuer's JWKS ${record.jwks_uri} answered ${keys.status}, no keys`);
   }
-  const answer = await send(world, probeLink());
+  // The doors take `GET /authorize` only as a browser's top-level navigation, which `send`
+  // sends verbatim.
+  const answer = await send(world, firstPartyLink(), { headers: NAVIGATE });
   const to = answer.headers.get("Location");
   const sent = to === null ? null : new URL(to, AUTHORIZE);
   if (answer.status !== 302 || sent === null
@@ -293,7 +435,10 @@ async function signIn(world: World): Promise<string> {
     await failingAs(5, () => authorizeCheck(upstream, false, fetcher))}`;
 }
 
-/** E2B holds the pinned template, and the doors' lifecycle hook, enabled only once routed. */
+/**
+ * E2B holds the pinned template, and the doors' lifecycle hook, enabled only once routed, and
+ * then sent to the doors' hook (`heldHook` finds it by its name).
+ */
 function sandbox(world: World, side: Side): Promise<string> {
   return failingAs(11, async () => {
     const e2b = new E2bAdmin(world.env[INPUTS.e2b] ?? "", bounded(world).fetch);
@@ -303,7 +448,8 @@ function sandbox(world: World, side: Side): Promise<string> {
     }
     const hook = await heldHook(e2b);
     const enabled = side === "doors";
-    if (hook === null || (hook["enabled"] === true) !== enabled) {
+    if (hook === null || (hook["enabled"] === true) !== enabled
+        || (enabled && hook["url"] !== E2B_HOOK_URL)) {
       throw new Failure(11, `E2B holds no ${enabled ? "enabled" : "disabled"} lifecycle hook ` +
                             `for ${E2B_HOOK_URL}`);
     }
@@ -503,13 +649,15 @@ async function outcome([check, act]: Check): Promise<Outcome> {
 const waiting = (check: string, line: string): Outcome =>
   ({ check, state: "waiting", line, code: 0, alone: false });
 
-/** The canary, each check once, in order. */
-export async function canary(world: World, options: Options): Promise<Result> {
+/** The canary, each check once, in order; or the doors' smoke alone (`smoked`). */
+export async function canary(reached: World, options: Options): Promise<Result> {
+  const world = options.smoke === null ? reached : smoked(reached, options.smoke);
+  const asked = options.smoke === null ? options.side : "doors";
   let side: Side;
   try {
     side = await sideOf(world);
-    if (options.side !== null && side !== options.side) {
-      throw new Failure(8, `asked for the ${options.side} side, but the ${side} side serves ${
+    if (asked !== null && side !== asked) {
+      throw new Failure(8, `asked for the ${asked} side, but the ${side} side serves ${
         MCP_RESOURCE}`);
     }
   } catch (error) {
@@ -528,18 +676,22 @@ export async function canary(world: World, options: Options): Promise<Result> {
       waiting("the doors", "the doors' checks, the off-account copy, the keyed ones and the " +
                            "clock wait for routes: the old stack serves /mcp") ] };
   }
+  const doors: Check[] = [["the challenge", () => challenge(world)], ["the app", () => app(world)],
+                          ["the client document", () => clientDocument(world)],
+                          ["the egress host", () => egressHost(world)],
+                          ["the sign-in", () => signIn(world)]];
+  if (options.smoke !== null) {
+    return { side, outcomes: await run(doors) };
+  }
   const keyed: Check[] = [["the handle set", () => handles(world)],
                           ["the owner's files", () => ownerFiles(world)],
                           ["the full run", () => fullRun(world, options.full)]];
   return { side, outcomes: [
-    ...await run([["the challenge", () => challenge(world)], ["the app", () => app(world)],
-                  ["the client document", () => clientDocument(world)],
-                  ["the egress host", () => egressHost(world)],
-                  ["the sign-in", () => signIn(world)], ["E2B", () => sandbox(world, side)],
+    ...await run([...doors, ["E2B", () => sandbox(world, side)],
                   ["the off-account copy", () => offsiteCopy(world)]]),
-    ...options.unkeyed
+    ...options.closed
       ? [waiting("the keyed checks", "the handle set, the owner's files and the full run wait " +
-                                     `for the canary owner's key (${INPUTS.key})`)]
+                                     "for a canary owner: the control record admits no owner")]
       : await run(keyed),
     ...options.clock ? await run([["the clock", () => clock(world)]]) : [] ] };
 }
@@ -568,11 +720,17 @@ async function main(argv: readonly string[]): Promise<number> {
   if (side !== null && side !== "doors" && side !== "old") {
     throw new Error("--side is doors or old");
   }
+  const smoke = option(argv, "--smoke");
+  if (argv.includes("--smoke") && (smoke === null || argv.length !== 2)) {
+    throw new Error("--smoke takes its version's id, and no other option");
+  }
   // A canary that stops is a red run like any other, so the alarm still reads its result.
-  const result = await canary({ fetch: (url, init) => fetch(url, init), env: process.env,
+  const result = await canary({ fetch: (url, init) => fetch(url, init), request: verbatim,
+                                env: process.env,
                                 now: () => new Date() },
-                              { side, unkeyed: argv.includes("--unkeyed"),
-                                clock: argv.includes("--clock"), full: argv.includes("--full") })
+                              { side, closed: argv.includes("--closed"),
+                                clock: argv.includes("--clock"), full: argv.includes("--full"),
+                                smoke })
     .catch((error: Error): Result => ({ side: null, outcomes: [{
       check: "the canary", state: "failed", line: `it stopped: ${error.message}`, code: 1,
       alone: false }] }));

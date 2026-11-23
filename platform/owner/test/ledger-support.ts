@@ -1,8 +1,9 @@
 import { runInDurableObject } from "cloudflare:test";
 
 import {
-  type Agent, type Ledger, LEDGER_LIMITS, type Outcome, type WakeTarget,
+  type Agent, type Ledger, LEDGER_LIMITS, type Outcome, pairRoom, type WakeTarget,
 } from "../src/ledger";
+import { OWNER } from "../src/authority";
 import { apiKeyOrigin } from "../../contract/src/binding";
 import { clock } from "../src/clock";
 import type { Binding, Origin, Source } from "../../contract/src/binding";
@@ -10,8 +11,14 @@ import type { OwnerDO, Stores } from "../src/owner-do";
 import { subscriptionId } from "../../contract/src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import {
-  admitted, alarmOf, atClock, EVERY_SIGNIN, laneAt, seeded, storesOn, type TestStores, TIERS,
+  admitted, alarmOf, atClock, EVERY_SIGNIN_RECORD, laneAt, seeded, storesOn,
+  type TestStores,
 } from "./support";
+
+/** A pair's room, as `agents_list` names it: the owner's with `a`, or `a`'s with `b`. */
+export function dm(a: string, b: string = OWNER): string {
+  return pairRoom(a, b);
+}
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -111,7 +118,7 @@ export function ballast(s: Pick<Stores, "grants" | "ledger">, unread: number,
   const { maxMessages, maxUnacked } = LEDGER_LIMITS;
   const agent = registerOn(s, BALLAST, { command_center_id: "alpha", display_name: "Ballast",
                                          delivery_method: "pull", recipe_id: null }).agent_id;
-  const room = `dm:${agent}`;
+  const room = dm(agent);
   const acked = maxMessages - hot - (maxUnacked - unread);
   let last = 0;
   for (let n = 0; n < acked; n++) {
@@ -149,8 +156,8 @@ export async function unseededRig() {
   const stub: DurableObjectStub<OwnerDO> = await admitted(owner);
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), tiers: TIERS,
-       ...("sandbox" in extra ? {} : { signins: EVERY_SIGNIN }), ...extra });
+    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }),
+       control: EVERY_SIGNIN_RECORD, ...extra });
   const { session: cookie } = await stub.sessionOpen(bind(null, { authenticated_at: signedIn() }));
   const session = (origin: Origin | null, source: Source = MCP): Binding =>
     bind(origin, { session: cookie, source });
@@ -274,7 +281,8 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
       "AS mailboxes, " +
       "(SELECT json_group_object(sender_id, n) FROM (SELECT sender_id, " +
       "COUNT(*) AS n FROM ledger_messages WHERE sender_kind = 'outside' " +
-      "AND message_id IN (SELECT message_id FROM ledger_recipients WHERE unacked = 1) " +
+      "AND message_id IN (SELECT message_id FROM ledger_recipients WHERE unacked = 1 " +
+      "AND agent_id = 'owner') " +
       "GROUP BY sender_id ORDER BY sender_id)) AS shares, " +
       "(SELECT json_group_object(message_id, n) FROM (SELECT message_id, COUNT(*) AS n " +
       "FROM ledger_recipients WHERE unacked = 1 GROUP BY message_id ORDER BY message_id)) " +

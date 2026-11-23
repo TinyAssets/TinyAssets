@@ -1,5 +1,5 @@
 /**
- * `/api` keys (research §5; checklist 13, 14, 15): the Python's format and hash, mint
+ * `/api` keys (research §5; checklist 13, 14, 15): the key's format and hash, mint
  * in session as grant-then-entry, use bound to the key's origin and mint time, a wrong
  * key never reaching an object, and the revoke and delete orders.
  */
@@ -15,6 +15,7 @@ import { sha256Hex } from "../../contract/src/digest";
 import { now } from "../src/config";
 import type { DoorsEnv } from "../src/env";
 import { DEFAULT_PROFILE, profileNames } from "../../contract/src/doors";
+import { ORIGIN } from "../../contract/src/identity";
 import {
   appPost, call, connect, doorsEnv, grantsOf, legacyPost, OPEN, ownDoor, reached, refuseOnce,
   registerClient, serveFirstPartyDocument, setControl, signInApp, TIERS, url,
@@ -51,7 +52,7 @@ async function mint(o: Owner, environment?: DoorsEnv):
   const response = environment === undefined
     ? await appPost("keys", o.token, o.session, { name: "laptop", scopes: SCOPES })
     : await call(new Request(url("/app/api/keys"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${o.token}`,
                                  Cookie: `__Host-ta-owner=${o.session}` },
       body: JSON.stringify({ name: "laptop", scopes: SCOPES }) }), environment);
@@ -122,7 +123,7 @@ describe("a refusal across the object's RPC", () => {
       .toEqual([status, retry, { error: message }]);
   });
 
-  // The doors' one answer on every surface that answers as JSON (review N1): a busy
+  // The doors' one answer on every surface that answers as JSON: a busy
   // refusal's 503 and its Retry-After on the app's tools, MCP's profile and an upload's
   // bytes, as on the API above.
   it("answers busy 503 with Retry-After on the app's tools", async () => {
@@ -148,7 +149,7 @@ describe("a refusal across the object's RPC", () => {
     await refuseOnce("fileUploadTarget", o.owner, slotBusy());
     const busy = await call(new Request(url(`/app/api/files/upload/${"a".repeat(32)}/0`), {
       method: "PUT", body: new Uint8Array(1),
-      headers: { "Content-Type": "application/octet-stream", Origin: "https://tinyassets.io",
+      headers: { "Content-Type": "application/octet-stream", Origin: ORIGIN,
                  "Sec-Fetch-Site": "same-origin", Authorization: `Bearer ${o.token}`,
                  Cookie: `__Host-ta-owner=${o.session}` } }));
     expect([busy.status, busy.headers.get("Retry-After"), await busy.json()])
@@ -180,7 +181,7 @@ describe("the key format", () => {
     expect((await api(key, "agents_list", {})).status).toBe(200);
   });
 
-  it("is the Python's: ta_key_<16 hex>_<43 urlsafe>", () => {
+  it("is ta_key_<16 hex>_<43 urlsafe>", () => {
     for (let i = 0; i < 20; i++) {
       const { key, keyId, secret } = newKey();
       expect(key).toMatch(/^ta_key_[0-9a-f]{16}_[A-Za-z0-9_-]{43}$/);
@@ -195,11 +196,11 @@ describe("the key format", () => {
     }
   });
 
-  it("keeps a cutover-imported key working", async () => {
+  it("takes a key whose entry holds its secret's SHA-256 hex, whoever wrote the entry",
+     async () => {
     const o = await signedIn();
     const { key_id } = await mint(o);
-    // The Python minted this key: its entry is the same shape, its digest
-    // `hashlib.sha256(secret.encode()).hexdigest()`.
+    // An entry the doors did not mint: its digest is the SHA-256 hex of the secret's UTF-8.
     const imported = `ta_key_${key_id}_${"Z".repeat(43)}`;
     await env.DIRECTORY.put(`k:${key_id}`, JSON.stringify({
       o: o.owner, h: "4587a2535bc507ba17c302e7fd1e46a8028d13c6528ed84d89b9e2794072d632",
@@ -234,7 +235,7 @@ describe("a mint", () => {
     let puts = 0;
     const counted = directoryWith({ put: async () => { puts++; } });
     const response = await call(new Request(url("/app/api/keys"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${o.token}`,
                                  Cookie: `__Host-ta-owner=${o.session}` },
       body: JSON.stringify({ name: "laptop", scopes: [{ universe: "*", agent: "main",
@@ -270,7 +271,7 @@ describe("a mint", () => {
     await refuseOnce("keyMint", o.owner, new Refusal("refused", "no more keys for this owner"));
     const over = await call(new Request(url("/app/api/keys"), {
       method: "POST", headers: { "Content-Type": "application/json",
-                                 Origin: "https://tinyassets.io",
+                                 Origin: ORIGIN,
                                  Authorization: `Bearer ${o.token}`,
                                  Cookie: `__Host-ta-owner=${o.session}` },
       body: JSON.stringify({ name: "one more", scopes: SCOPES }) }), counted);
@@ -381,7 +382,7 @@ describe("a revoke", () => {
     const { key, key_id } = await mint(o);
     const stuck = directoryWith({ delete: async () => { throw new Error("KV down"); } });
     await expect(call(new Request(url("/app/api/keys/revoke"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${o.token}` },
       body: JSON.stringify({ key_id }) }), stuck)).rejects.toThrow("KV down");
     expect(await env.DIRECTORY.get(`k:${key_id}`)).not.toBeNull();
@@ -428,7 +429,7 @@ describe("a delete", () => {
       await env.DIRECTORY.delete(name);
     } });
     const response = await call(new Request(url("/app/api/keys/delete"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${o.token}` },
       body: JSON.stringify({ key_id }) }), observed);
     expect(await response.json()).toEqual({ key_id, deleted: true });
@@ -443,7 +444,7 @@ describe("a delete", () => {
     const { key, key_id } = await mint(o);
     const stuck = directoryWith({ delete: async () => { throw new Error("KV down"); } });
     await expect(call(new Request(url("/app/api/keys/delete"), {
-      method: "POST", headers: { "Content-Type": "application/json", Origin: "https://tinyassets.io",
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN,
                                  Authorization: `Bearer ${o.token}` },
       body: JSON.stringify({ key_id }) }), stuck)).rejects.toThrow("KV down");
     expect(await grantRow(o.owner, key_id)).toEqual([

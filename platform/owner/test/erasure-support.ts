@@ -1,10 +1,10 @@
 /**
- * The owner's erasure as the tests drive it, through its doors and its own job alone (B23
- * question 2): begun at `ownerErase`; its outside record confirmed by the test as the doors
- * confirm it (`erasureOutsideDone`) once the erasure queue took the object's message (the
- * fake consumer, `fake-erasures.ts`); and the put grace (`PUT_GRACE_MS`) and the retry
- * interval (`ERASE_RETRY_MS`) passed on the object's clock by a fake `Date` (`later`), its job
- * then run by its alarm. A test that uses these makes the clock real again after it.
+ * The owner's erasure as the tests drive it, through its doors and its own job alone: begun
+ * at `ownerErase`; its outside record confirmed by the test as the doors confirm it
+ * (`erasureOutsideDone`) once the erasure queue took the object's message (the fake
+ * consumer, `fake-erasures.ts`); and the put grace (`PUT_GRACE_MS`) and the retry interval
+ * (`ERASE_RETRY_MS`) passed on the object's clock by a fake `Date` (`later`), its job then
+ * run by its alarm. A test that uses these makes the clock real again after it.
  */
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";

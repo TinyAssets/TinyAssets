@@ -7,18 +7,17 @@
  * At run time the gate's storage view refuses a write outside a unit; this guard keeps the
  * source shaped so the view is the only storage the object's code writes through, and so
  * every write in an awaiting context is inside a unit:
- * - every door of `OwnerDO` begins in the gate. Its method, which the door table defines
- *   (untangle B4), hands its row's handler to the one runner (`#call`), which runs it in a
- *   unit of the row's gate (`#door`, `#quiet`, `#synced`, `#filing`), or, for a row whose
- *   handler makes its own units (`units`), hands it the door, and that handler's first
- *   statement (or its `try`'s first) returns or awaits a unit of what it is handed
- *   (`o.door`, `o.synced`, `o.filing`, `o.quiet`, the bodies' placement, ...). Those are the
- *   gate (`#door` is `this.#gate.write`, `#quiet` its `quiet`, the others call `#door`; the
- *   bodies' placement writes through the gate's `write`, `bodies.ts`). A row whose door waits
- *   for a new owner's seed (`seeded`, slice BRAIN) has its caller checked in a unit before
- *   the wait, by the runner. A door's handler is in the module its row names
- *   (`owner/doors.json`'s `handler`: `<module>Doors.<door>`, untangle A2), handed the
- *   object's parts, whose gate members are those helpers;
+ * - every door of `OwnerDO` begins in the gate. Its method, which the door table defines, hands its
+ *   row's handler to the one runner (`#call`), which runs it in a unit of the row's gate (`#door`,
+ *   `#quiet`, `#synced`, `#filing`), or, for a row whose handler makes its own units (`units`),
+ *   hands it the door, and that handler's first statement (or its `try`'s first) returns or awaits
+ *   a unit of what it is handed (`o.door`, `o.synced`, `o.filing`, `o.quiet`, the bodies'
+ *   placement, ...). Those are the gate (`#door` is `this.#gate.write`, `#quiet` its `quiet`, the
+ *   others call `#door`; the bodies' placement writes through the gate's `write`, `bodies.ts`). A
+ *   row whose door waits for a new owner's seed (`seeded`) has its caller checked in a unit before
+ *   the wait, by the runner. A door's handler is in the module its row names (`owner/doors.json`'s
+ *   `handler`: `<module>Doors.<door>`), handed the object's parts, whose gate members are those
+ *   helpers;
  * - the object names `ctx.storage` once, to make the gate, and its modules are handed the
  *   gate's view, and no other source names a `ctx.storage`; no source builds a SQLite
  *   adapter (`DurableObjectSqliteDatabase`) over the owner's storage, and no source opens an
@@ -259,9 +258,9 @@ export function ungatedHandlers(
 
 /**
  * The state's members that hold no storage of the gate's: the app's sockets, the events
- * posts' count, and the env's bindings (R2, the sandbox's service).
+ * posts' count, the env's bindings (R2), and the sandbox Worker bound to the owner.
  */
-const NOT_STORED: ReadonlySet<string> = new Set(["relay", "posts", "env"]);
+const NOT_STORED: ReadonlySet<string> = new Set(["relay", "posts", "env", "sandbox"]);
 /** Each gate helper of the parts, and which of its arguments run in its unit. */
 const UNIT_ARGUMENTS: Readonly<Record<string, readonly number[]>> = Object.freeze({
   door: [0], quiet: [0], synced: [0], filing: [0], "bodies.placing": [0, 1],
@@ -408,7 +407,16 @@ export function strayCalls(fileName: string, source: string): string[] {
   return problems;
 }
 
-/** The bodies of `OwnerDO`'s gate helpers, or of `Bodies`' placement, by name. */
+/**
+ * Code as any reformat leaves it: no space beside a bracket, a dot, a comma or a semicolon,
+ * one for any other run, and no trailing comma.
+ */
+function canonical(code: string): string {
+  return code.replace(/\s+/g, " ").replace(/ ?([()[\]{}.,;]) ?/g, "$1")
+    .replace(/,([)\]}])/g, "$1");
+}
+
+/** The bodies of `OwnerDO`'s gate helpers, or of `Bodies`' placement, by name, canonical. */
 function helpers(source: string): Record<string, string> {
   const file = parse("owner-do.ts", source);
   const found: Record<string, string> = {};
@@ -416,7 +424,7 @@ function helpers(source: string): Record<string, string> {
     if (ts.isMethodDeclaration(node)
         && ["#door", "#synced", "#filing", "#quiet", "#call", "#handled",
             ...PLACEMENT].includes(node.name.getText(file))) {
-      found[node.name.getText(file)] = node.body?.getText(file) ?? "";
+      found[node.name.getText(file)] = canonical(node.body?.getText(file) ?? "");
     }
     ts.forEachChild(node, visit);
   };
@@ -477,37 +485,38 @@ describe("write-gate guard", () => {
     expect(ungatedHandlers(doorHandlers(sources), rows)).toEqual([]);
     expect(rows.filter((row) => row.gate === "units").length).toBeGreaterThan(40);
     const bodies = helpers(sources.get(OWNER_DO)!);
+    const holds = (body: string | undefined, code: string) =>
+      expect(body).toContain(canonical(code));
     // The runner's every other gate is a unit of the gate, and so is its decide step.
     for (const gate of ["#door", "#quiet", "#synced", "#filing"]) {
-      expect(bodies["#handled"]).toContain(`return this.${gate}(unit);`);
+      holds(bodies["#handled"], `return this.${gate}(unit);`);
     }
-    expect(bodies["#call"]).toContain(
-      "return this.#door(() => this.#decide(row, act, binding, asked, lease))");
-    expect(bodies["#door"]).toBe("{\n    return this.#gate.write(act);\n  }");
+    holds(bodies["#call"],
+          "return this.#door(() => this.#decide(row, act, binding, asked, lease))");
+    expect(bodies["#door"]).toBe(canonical("{ return this.#gate.write(act); }"));
     // A quiet unit is a unit of the same gate, which marks nothing changed (`gate.ts`).
-    expect(bodies["#quiet"]).toBe("{\n    return this.#gate.quiet(act);\n  }");
-    expect(bodies["#synced"]).toContain("await this.#door(act)");
-    expect(bodies["#filing"]).toContain("await this.#door(act)");
+    expect(bodies["#quiet"]).toBe(canonical("{ return this.#gate.quiet(act); }"));
+    holds(bodies["#synced"], "await this.#door(act)");
+    holds(bodies["#filing"], "await this.#door(act)");
     // A seeded row's caller is checked in a unit before its door waits for the seed.
-    expect(bodies["#handled"]).toContain(
-      "return this.#door(() => door.authorized()).then(() => this.#launcher.seeded())");
+    holds(bodies["#handled"],
+          "return this.#door(() => door.authorized()).then(() => this.#launcher.seeded())");
     // The doors with a body (ADR-035): each begins in a unit, and every step that writes is
     // one, the R2 calls between them.
     const placement = helpers(sources.get(BODIES)!);
-    expect(placement["placing"]).toContain("first = await this.#write(");
-    expect(placement["placing"]).toContain(
-      "done = await this.#write(() => located(this.#files.held(writer, () => act(placed))));");
-    expect(placement["reading"]).toContain("const { value, located, wants } = await this.#write(");
-    expect(placement["rereading"]).toContain("const located = await this.#write(");
-    expect(placement["rereading"]).toContain(
-      "const value = await this.#write(() => read(bodies));");
-    expect(placement["rereadingPage"]).toContain("return this.rereading(");
+    holds(placement["placing"], "first = await this.#write(");
+    holds(placement["placing"],
+          "done = await this.#write(() => located(this.#files.held(writer, () => act(placed))));");
+    holds(placement["reading"], "const { value, located, wants } = await this.#write(");
+    holds(placement["rereading"], "const located = await this.#write(");
+    holds(placement["rereading"], "const value = await this.#write(() => read(bodies));");
+    holds(placement["rereadingPage"], "return this.rereading(");
     // The handlers' gate members are the object's helpers, in the parts it hands them.
-    const source = sources.get(OWNER_DO)!;
-    const parts = source.slice(source.indexOf("this.#parts = Object.freeze({"));
+    const source = canonical(sources.get(OWNER_DO)!);
+    const parts = source.slice(source.indexOf(canonical("this.#parts = Object.freeze({")));
     expect(parts).not.toBe(source);
     for (const name of UNIT_HELPERS) {
-      expect(parts).toMatch(new RegExp(`\\n      ${name}: [^]*?=>\\s*this\\.#${name}\\(`));
+      expect(parts).toMatch(new RegExp(`[{,]${name}:[^]*?=> ?this\\.#${name}\\(`));
     }
   });
 

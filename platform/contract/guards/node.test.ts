@@ -1,7 +1,7 @@
 /**
  * Every contract module runs in Node as it is (type stripping), as the deploy kit, the ci kit
- * and the template run it, so the kit imports the contract's own checks and never copies them
- * (untangle C8). Node resolves a specifier only as written: a sibling imported without its
+ * and the template run it, so the kit imports the contract's own checks and never copies
+ * them. Node resolves a specifier only as written: a sibling imported without its
  * `.ts` is not found there, though a bundler finds it, and that one rule is what made the
  * kit copy `checks.ts`'s shape checks six times.
  */

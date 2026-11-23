@@ -1,8 +1,8 @@
 /**
  * A metered call's request, held whole by the gateway while it reads, parses, rewrites and
- * uploads it (egress shape research, A′, and its review, H1 and H2): weighed in slots of the
- * isolate's pool (`slots.ts`) by what it can cost, taken as the bytes arrive, and held to a
- * deadline and to its caller's stop.
+ * uploads it (egress shape research): weighed in slots of the isolate's pool (`slots.ts`) by
+ * what it can cost, taken as the bytes arrive, and held to a deadline and to its caller's
+ * stop.
  *
  * **What it costs** (measured in workerd, the pinned binary, live set after a swept
  * collection, 4 MiB bodies of 19 shapes: `gateway/memory/egress.mjs` asserts it at each phase):
@@ -16,7 +16,7 @@
  *   `BYTE_COST` (4.25, or `ASCII_BYTE_COST` 2.25) a byte plus `TOKEN_COST` (32) a token;
  *   the tokens are counted as the bytes stream in, outside strings, by a byte scan
  *   (`Tokens`), so the weight is known before the parse. A `\u` escape counts as
- *   non-ASCII: the parse makes its string two-byte (review V-H1).
+ *   non-ASCII: the parse makes its string two-byte.
  *
  * **When it is taken.** While it reads, a call holds ⌈`TEXT_COST`·read / unit⌉ units of a
  * lease (`SlotPool.lease`, wait-die), one more taken before the bytes that need it are kept,
@@ -24,10 +24,9 @@
  * (`weightSlots`) are taken before the parse. A call is refused `egress_too_large` as soon as
  * its weight so far passes what one call may hold (the ceiling the costs derive: 15 MiB of a
  * body with a non-ASCII character, 28 MiB of an ASCII one, the egress door's 16 MiB first).
- * Each wait for a unit
- * is the pool's own (`busy` past it, the owners waiting taking turns and sharing the pool
- * under contention), and a holder that cannot grow at once and is not the oldest holder gives
- * everything back, `busy`, before its reserve, so nothing is charged.
+ * Each wait for a unit is the pool's own (`busy` past it, the owners waiting taking turns and
+ * sharing the pool under contention), and a holder that cannot grow at once and is not the
+ * oldest holder gives everything back, `busy`, before its reserve, so nothing is charged.
  *
  * **How long.** Each unit's worth of body must arrive within `SLOT_WAIT_MS` of that unit's
  * grant (`readHeld`), so no unit is held longer than a waiter waits for one; its clock runs
@@ -54,7 +53,6 @@ export const GATEWAY_POOL_SLOTS = 16;
  */
 const ISOLATE: Isolate = { pool: null, tails: null };
 
-/** The isolate's pool, at the gateway's capacity. */
 export function gatewaySlots(): SlotPool {
   return isolatePool(ISOLATE, GATEWAY_POOL_SLOTS);
 }
@@ -80,7 +78,6 @@ export function parseWeight(bytes: number, tokens: number, ascii: boolean): numb
   return (ascii ? ASCII_BYTE_COST : BYTE_COST) * bytes + TOKEN_COST * tokens;
 }
 
-/** The slots `weight` bytes take. */
 export function weightSlots(weight: number): number {
   return Math.max(1, Math.ceil(weight / UNIT_BYTES));
 }
@@ -91,7 +88,7 @@ export function weightSlots(weight: number): number {
  * character, so a byte scan reads the same structure the parse will. `ascii` is whether the
  * parse's strings are all one-byte: every byte ASCII, and no `\u` escape (which may name a
  * character past Latin-1, and Python's `json.dumps` writes one for every non-ASCII
- * character: review V-H1).
+ * character).
  */
 export class Tokens {
   count = 0;
@@ -226,12 +223,12 @@ function senderLate(ms: number): { late: Promise<never>; clear: () => void } {
  * shorter or longer is `invalid_request`), each chunk decoded as it comes (a streaming fatal
  * `TextDecoder`) and counted (`Tokens`), so no copy of its bytes is gathered; `hold` grown
  * before each chunk is kept, to ⌈`TEXT_COST`·read / unit⌉; refused `egress_too_large` as soon
- * as its weight so far passes what one call may hold (review item 6); stopped by `signal`.
+ * as its weight so far passes what one call may hold; stopped by `signal`.
  *
- * **The sender's deadline** (review V-H2, V-M2): each unit's worth of body must arrive
- * within `SLOT_WAIT_MS` of that unit's grant, or the call is `invalid_request`, its units let
- * go. The clock runs only while the call waits on its sender: a wait for a unit is the pool's
- * own (`busy` past it), never counted against the sender.
+ * **The sender's deadline**: each unit's worth of body must arrive within `SLOT_WAIT_MS` of
+ * that unit's grant, or the call is `invalid_request`, its units let go. The clock runs only
+ * while the call waits on its sender: a wait for a unit is the pool's own (`busy` past it),
+ * never counted against the sender.
  */
 export async function readHeld(request: Request, length: number, hold: Hold | null,
                                signal: AbortSignal):

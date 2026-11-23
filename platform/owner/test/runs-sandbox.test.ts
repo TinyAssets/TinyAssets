@@ -1,5 +1,5 @@
 /**
- * What slice S's sandbox Worker answers changes in the owner's object, in workerd with the
+ * What the sandbox Worker answers changes in the owner's object, in workerd with the
  * fake sandbox Worker behind `SANDBOX` (`ci/fake-sandbox.ts`):
  *
  * - a start the sandbox has no room for (`sandbox_waiting`: E2B runs as many sandboxes as
@@ -15,8 +15,9 @@ import { describe, expect, it } from "vitest";
 import { until } from "../../ci/workerd";
 import { SANDBOX_WAITING } from "../../contract/src/sandbox";
 import { gated } from "./gateway-support";
-import { defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf,
-         TIERS } from "./runs-support";
+import {
+  defineAgent, ownerRun, recorder, runnerBinding, scripted, startOf,
+} from "./runs-support";
 import { drainDue } from "./support";
 
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
@@ -29,7 +30,7 @@ describe("a run the sandbox has no room for", () => {
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await scripted(r.stub, { answer: [{ started: false, code: SANDBOX_WAITING },
                                       { started: true }] });
-    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+    const run = await r.stub.agentSubmit(r.bind(),
                                          { message: "the input", client_send_id: "w-1" });
     expect(run).toMatchObject({ state: "waiting", code: SANDBOX_WAITING });
     // It holds no lease and no grant; its input is kept for its turn.
@@ -66,7 +67,7 @@ describe("a lease that ends", () => {
   it("is released to the sandbox Worker once its last run settles", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    const run = await r.stub.agentSubmit(r.bind({ tiers: TIERS }),
+    const run = await r.stub.agentSubmit(r.bind(),
                                          { message: "x", client_send_id: "l-1" });
     const start = await startOf(r.stub, run.run_id);
     expect((await recorder(r.stub)).releases).toEqual([]);
@@ -91,10 +92,10 @@ describe("the vendor hosts a job hands the sandbox Worker", () => {
     expect(keyed.start.hosts).toEqual([]);
   });
 
-  it("are a sign-in's engine's and its chosen region's alone", async () => {
+  it("are a sign-in's engine's alone", async () => {
     const r = await gated();
-    await r.stub.signinStart(r.bind(), { engine: "kimi", region: "global" });
+    await r.stub.signinStart(r.bind(), { engine: "codex" });
     expect((await recorder(r.stub)).signins.at(-1)!.hosts)
-      .toEqual(["auth.kimi.ai", "api.kimi.ai", "www.kimi.ai"]);
+      .toEqual(["auth.openai.com", "chatgpt.com"]);
   });
 });

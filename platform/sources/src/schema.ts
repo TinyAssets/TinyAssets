@@ -1,9 +1,8 @@
 /**
- * Model source records (gateway research §2.4, §2.6, §7.2; tasks 4 G3): what an owner can
- * connect, as data. Each is an editable JSON file (`platform/sources/records/`,
- * Direction 3), ported from the Python's `tinyassets/providers/source_records/`, and checked
- * whole (`check.ts`), so a record that does not fit fails loudly where it is used and in the
- * tests, never half-read.
+ * Model source records: what an owner can connect, as data. Each is an editable JSON file
+ * (`platform/sources/records/`, Direction 3), ported from the Python's
+ * `tinyassets/providers/source_records/`, and checked whole (`check.ts`), so a record that
+ * does not fit fails loudly where it is used and in the tests, never half-read.
  *
  * A record names how it connects (`connect`):
  * - `api_key`: a pasted key, sealed by the gateway (`doors/src/connect.ts`).
@@ -14,18 +13,21 @@
  *   unmodified command-line agent, run whole in the owner's sandbox, never a backend of
  *   ours, so it has no single-inference `invoke`. It never enters the gateway, so it names
  *   no upstream. Its record is everything the sandbox runner needs, as data (`CliSpec`):
- *   install, sign-in, the new-run and resume invocations and their event matchers, the
- *   instruction and skills paths, the MCP template, tool filters and unattended flags, its
+ *   install, sign-in, the new-run and resume invocations and their event matchers, how the
+ *   agent's definition reaches it, the MCP template, tool filters and unattended flags, its
  *   home, the credentials it runs on, whether each may run unattended (with the vendor
  *   page that says so), its `session_paths`, which sync to the owner's files, and its
- *   `secret_paths`, which never leave the sandbox (ADR-031 decision 2). Every path is
+ *   `secret_paths`, which never leave the sandbox (ADR-039 decision 2.20). Every path is
  *   under `{home}`, the runner's engine home, which is sandbox-only and outside
  *   `/workspace`, so secret and session paths compare in one namespace. A prompt goes on
  *   stdin or joined to its option (`--prompt={prompt}`), never bare; no value configures
  *   the engine to nothing (an empty argument, list or map); a run on the vendor's own
  *   sign-in carries none of the variables its `forbid_env` lists, its API-key variables
- *   among them; and a sign-in with regions takes the owner's choice as `{region}`. The
- *   checker holds shape only: no vendor is named there.
+ *   among them. The checker holds shape only: no vendor is named there.
+ *
+ * A CLI's own pre-tool hook (`decide`, R5 P-hooks; d3 §N3) is data too: where its root-owned
+ * config goes, its template, the CLI's own names for each tool kind and for an MCP tool, and
+ * whether a hook that cannot start lets the call through; or why none holds.
  *
  * A gateway source (`api_key`, `oauth`) names the pi-ai provider (`custom` for a declared
  * endpoint), the API its models speak, the base URL, how the secret is sent (`auth`), the
@@ -40,6 +42,8 @@
  * A record from outside the platform's own (an MCP server's authorization server, a source
  * from an owner's package) is marked `curated: false`; none exists yet.
  */
+import type { HookKind } from "../../contract/src/acts";
+import type { HookEvent } from "../../contract/src/agent-definition";
 import type { Endpoint, Upstream } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
@@ -72,10 +76,6 @@ export interface UserKey {
 
 export type OAuthSpec = Rfc6749 | UserKey;
 
-/** Every credential an engine runs on (`CredentialKind`). */
-export const CREDENTIAL_KINDS: readonly CredentialKind[] = Object.freeze([
-  "vendor_login_in_sandbox", "api_key"]);
-
 /**
  * How the engine binary is installed into the sandbox template, pinned: an npm package by
  * version, integrity and the digest of its committed lock (`platform/sources/locks/<id>/`),
@@ -93,33 +93,134 @@ export type Install =
 
 /**
  * One run of the engine (ADR-034 decision 4.3): a new conversation's argv, and the argv
- * that resumes one, by its session id (`{sid}`) or by continuing in the conversation's own
- * working directory when the stream names no id.
+ * that resumes one by its session id (`{sid}`).
  */
 export interface Engine {
   readonly argv: readonly string[];
   readonly resume_argv: readonly string[];
-  readonly resume: "session_id" | "continue_in_cwd";
   readonly stdin?: "{prompt}";
   readonly model_argv?: readonly string[];
   readonly events: EngineEvents;
 }
 
-/** Where the agent's canonical `AGENTS.md` is read, and what would shadow it. */
+/**
+ * Where the agent's canonical `AGENTS.md` is read, and what would shadow it: a run is refused
+ * while one of `shadowed_by` is in its cwd or an ancestor under `/workspace`, or while the
+ * `file`s there hold more than `max_bytes` together, which the engine would cut.
+ */
 export interface Instructions {
   readonly file: string;
-  /** Files that, when present, the engine reads instead: the runner never projects them. */
+  /** Files that, when present, the engine reads instead. */
   readonly shadowed_by: readonly string[];
+  /** The engine's cap on the instructions it reads, whole bytes; absent, none. */
   readonly max_bytes?: number;
   /** The record's file whose template makes the engine read `file`. */
   readonly setting?: string;
 }
 
-/** How TinyAssets' run-scoped MCP door reaches the engine, and how its trust is handled. */
-export type Mcp =
-  | { readonly argv: readonly string[]; readonly file?: string; readonly template?: string;
-      readonly trust: { readonly argv: readonly string[]; readonly note: string } }
+/**
+ * How the agent's own hooks (`hooks.json`) reach the engine: through the runner's dispatcher
+ * (`sandbox/runner/hooks.ts`, `<runner> hooks <event>`), which the engine runs from a file in
+ * the root-owned layer its `decide` hook is in, and which runs each of the agent's hooks the
+ * event's call matches from the run's own file of the event's (`{system}/hooks.<event>.json`,
+ * there only where its agent has hooks on it). The dispatcher answers in the
+ * one shape every engine here reads: exit 2 and the reason on stderr blocks, exit 0 and
+ * `hookSpecificOutput.additionalContext` (under the event's `hookEventName`) adds context.
+ * - `events`: the engine's own name of each engine-neutral event (`HOOK_EVENTS`), every one.
+ * - `file`: where the dispatcher's entries go: `decide.file` (a shared one is that alone), or
+ *   another file of the run's own under `{system}`.
+ * - `template`: what the file holds once; `each`: what it holds for each event it carries,
+ *   `{event}` the event, `{native}` the engine's name of it, `{on_failure}` what a dispatcher
+ *   that fails does to it (`block` where the event takes a block, else `continue`, by
+ *   `HOOK_EVENTS`). A file every run shares carries
+ *   every event (any run's agent may have a hook on it); a run's own carries the events the
+ *   run's agent has hooks on, and is written only when there is one. `{dispatcher}` is the
+ *   dispatcher's shell command line before its event, which starts the dispatcher only where
+ *   the run has hooks on the event (`dispatcherCommand`), `{dispatcher_argv}` its argv as JSON, and
+ *   `{hook_events}` the run's events as JSON. Several parts of one JSON file merge, lists
+ *   joined; of any other file, their texts are joined.
+ * - `argv`: what loads a file of the run's own, added whenever the file is written.
+ * - `runs`: how the engine runs the dispatcher (a shell and its arguments, or `exec`, the
+ *   record's own file starting it by its argv), which its start check runs it through.
+ * - `fails`: whether a dispatcher that cannot start lets the call through (`open`) or blocks it.
+ * - `alterable`: how the agent can change what the dispatcher does, where it can (the owner's
+ *   note says its hooks are not held there).
+ * - `cite`, `read`: the vendor's hooks page, and when it was read.
+ * An engine with no root-owned layer has none (`unsupported`), as its `decide` has none.
+ */
+export type DefinitionHooks =
+  | { readonly events: Readonly<Record<HookEvent, string>>; readonly file: string;
+      readonly template?: string; readonly each?: string; readonly argv?: readonly string[];
+      readonly runs: { readonly shell: readonly string[] } | { readonly exec: true };
+      readonly fails: "open" | "closed"; readonly alterable?: string;
+      readonly cite: string; readonly read: string }
   | { readonly unsupported: string };
+
+/**
+ * How the agent's skills reach the engine: `paths`, the folders in the agent's directory each
+ * skill is linked into (the projection); `argv_each`, the arguments the run adds for each
+ * skill, `{skill}` its directory.
+ */
+export interface DefinitionSkills {
+  readonly paths: readonly string[];
+  readonly argv_each?: readonly string[];
+}
+
+/**
+ * The engine's own layers an agent's folder could hold beside its definition (its settings,
+ * custom commands, subagents, extensions), which the definition never renders: `refuses`, the
+ * paths the engine loads them from, relative to its cwd and each ancestor under `/workspace`,
+ * a run refused while one is there (Fact 8: never a file loaded beside the definition, nor one
+ * silently ignored); `argv`, what keeps the engine from loading the rest, or from starting
+ * what a part of the definition names for it alone, on every run; from the vendor's page
+ * (`cite`, read on `read`).
+ */
+export interface DefinitionNative {
+  readonly refuses: readonly string[];
+  readonly argv?: readonly string[];
+  readonly cite: string;
+  readonly read: string;
+}
+
+/**
+ * How the agent's definition (`contract/src/agent-definition.ts`) reaches the engine, part by
+ * part: its instructions, its skills, the engine's own layers kept out and its own hooks. Its
+ * own MCP servers go where the run's door does (`Mcp`).
+ */
+export interface Definition {
+  readonly instructions: Instructions;
+  readonly skills: DefinitionSkills;
+  readonly native: DefinitionNative;
+  readonly hooks: DefinitionHooks;
+}
+
+/**
+ * How a run's MCP servers reach the engine, each the same way: TinyAssets' run-scoped door
+ * (`RUN_DOOR_SERVER`, an `http` server), which every engine's run takes, and the agent's own
+ * (`mcp.json`, as its run's admission kept them).
+ * - `servers`: the dotted key every server goes under, in `file` (JSON), or with `flag` as one
+ *   `<flag> <servers>.<name>.<key>=<value>` pair a value (a map one pair an entry,
+ *   `.<key>.<entry>`), each value JSON, which TOML reads as its own.
+ * - `http`, `stdio`: a server's entry in the engine's own keys, each value a fixed text or the
+ *   server's own (`{url}`; `{command}`, `{args}`, `{env}`).
+ * - `template`: what else `file` holds, merged over the servers (the door's own header, the
+ *   file's other settings); `names`, a dotted key of `file` whose list names every server.
+ * - `argv`: what makes the engine read them (`{mcp_config}` is `file`); `argv_each`, what each
+ *   server adds, `{name}` its name.
+ * - `trust`: why the engine runs them with no prompt, and loads no other.
+ */
+export interface Mcp {
+  readonly servers: string;
+  readonly file?: string;
+  readonly template?: string;
+  readonly flag?: string;
+  readonly http: Readonly<Record<string, string>>;
+  readonly stdio: Readonly<Record<string, string>>;
+  readonly names?: string;
+  readonly argv: readonly string[];
+  readonly argv_each?: readonly string[];
+  readonly trust: string;
+}
 
 /** A tool filter: joined into `{tools}`, one argv per tool (`{tool}`), or a file's key. */
 export type ToolFilter =
@@ -161,12 +262,6 @@ export interface PerCredential {
   readonly forbid_env?: readonly string[];
 }
 
-/** A region the owner chooses for the vendor's own sign-in: its hosts, `{region}` its id. */
-export interface Region {
-  readonly display_name: string;
-  readonly hosts: Readonly<Record<"login" | "provider", readonly string[]>>;
-}
-
 /** The verdicts on the vendor's terms for a platform hosting its CLI's sign-in. */
 export type HostedUse = "allowed" | "unclear" | "forbidden";
 
@@ -201,6 +296,12 @@ export interface LoginSpec {
   /** The vendor's code's lifetime, whole seconds, and where that is documented or measured. */
   readonly expires: { readonly s: number; readonly citation: string };
   readonly hosted_use: { readonly verdict: HostedUse; readonly citation: string };
+  /**
+   * The model a run on the sign-in is given: the vendor's default for a plan on the pinned
+   * version, as `engine.model_argv`'s `{model}` takes it, and where that is documented or
+   * read. `auto` ranks the plan by it, and the run passes it.
+   */
+  readonly model: { readonly id: string; readonly citation: string };
   readonly status_argv?: readonly string[];
   readonly status_equals?: Readonly<Record<string, string | number | boolean>>;
   readonly state_checks?: readonly StateCheck[];
@@ -209,20 +310,66 @@ export interface LoginSpec {
   readonly logout_argv?: readonly string[];
 }
 
+/**
+ * The CLI's own pre-tool hook, written only for a run whose owner has a rule it can hold. It
+ * asks the runs' decide door (`contract/src/egress.ts` `decideDoor`) of each tool call it
+ * matches: the door's address is the hook file's, which root owns, and the run's credential
+ * the run's environment's (`DECIDE_ENV`), so all an agent could forge is a credential the door
+ * refuses. How the CLI runs it (`runs`):
+ * - `http`: the CLI posts the call to the door itself, no process started, and the door answers
+ *   in the CLI's own words: an empty object lets it be, `deny` (a JSON template, `{reason}`
+ *   the door's) refuses it.
+ * - `shell`: the CLI runs the hook helper's command line (`sandbox/runner/decide.ts`) through
+ *   this shell and its arguments, which the runner's start check runs it through as well.
+ * - `exec`: the record's own file starts the helper by its argv, with no shell.
+ * The helper reads the call as every CLI here hands it (`tool_name`, `tool_input`) and
+ * answers exit 0 and `{}` to let it be, exit 2 with the reason on stderr to refuse it.
+ * - `file`: where the config goes. Under `{system}`, the run's own (merged into the record's
+ *   file of that path, if any); else a root path under `/etc` every run of the engine shares
+ *   (a managed settings file), which the latest run's start writes for the owner's rules.
+ * - `template`: the file, `{matcher}` the anchored pattern of the CLI's tool names to match;
+ *   `{decide_url}`, `{decide_header}` and `{decide_env}` the door, its credential's header and
+ *   the variable it is in (`http`); `{decide}` the helper's command line, `{decide_argv}` its
+ *   argv as JSON. Each is filled as its quoted value.
+ * - `argv`: what a hooked run adds to the CLI's command line: what loads a file of the run's
+ *   own, and what keeps the CLI from loading a settings layer the agent can write. A layer it
+ *   still loads in the home is one of the record's `files`, root's in every run and never
+ *   replaceable by the run's user, so it is never the agent's (Claude Code's user layer).
+ * - `kinds`: the CLI's own names of the tools that are each kind (`acts.json` `kinds`); a kind
+ *   it lacks, no rule holds at its hook.
+ * - `mcp`: how it names an MCP server's tool: `prefix`, the server, `join`, the tool.
+ * - `fails`: whether a hook that cannot start lets the call through (`open`, closed by the
+ *   runner's start check alone) or blocks it.
+ * - `alterable`: how the agent can change what the hook answers, where it can, from files it
+ *   writes: the hook is written all the same, and the owner's note says no rule holds there.
+ * - `cite`, `read`: the vendor's page for all of it, and when it was read.
+ */
+export type HookRuns =
+  | { readonly http: { readonly deny: string } }
+  | { readonly shell: readonly string[] }
+  | { readonly exec: true };
+
+export type Decide =
+  | { readonly file: string; readonly template: string; readonly argv?: readonly string[];
+      readonly runs: HookRuns;
+      readonly kinds: Readonly<Partial<Record<HookKind, readonly string[]>>>;
+      readonly mcp: { readonly prefix: string; readonly join: string };
+      readonly fails: "open" | "closed"; readonly alterable?: string;
+      readonly cite: string; readonly read: string }
+  | { readonly unsupported: string };
+
 /** An engine (`connect: ["cli"]`): a provider's own CLI, run whole in the sandbox. */
 export interface CliSpec {
   readonly install: Install;
   readonly credential: readonly CredentialKind[];
   readonly login?: LoginSpec;
-  /** The sign-in's regions, by id: the owner's choice fills `{region}` and adds its hosts. */
-  readonly regions?: Readonly<Record<string, Region>>;
   readonly api_key_env?: Readonly<Record<string, ApiKeyEnv>>;
   readonly unattended: Readonly<Partial<Record<CredentialKind, Unattended>>>;
   readonly per_credential?: Readonly<Partial<Record<CredentialKind, PerCredential>>>;
   readonly engine: Engine;
-  readonly instructions: Instructions;
-  readonly skills_paths: readonly string[];
+  readonly definition: Definition;
   readonly mcp: Mcp;
+  readonly decide: Decide;
   /**
    * Where the CLI's model calls carry the run's own secret as a header (`x-ta-run`) rather
    * than in their base URL's path: the variable it reads extra headers from, and the
@@ -246,6 +393,13 @@ export interface CliSpec {
     | { readonly reason: string };
   readonly secret_paths: readonly string[];
   readonly session_paths: readonly string[];
+  /**
+   * The files of its sessions a resume of `{sid}` reads, each under one of its
+   * `session_paths` (a `*` any run of characters within a segment, a trailing `/` a tree):
+   * all a resumed run's home holds of its store, fetched from the owner's files first where
+   * the store lacks them.
+   */
+  readonly resume_paths: readonly string[];
   readonly hosts: Readonly<Record<"registry" | "login" | "provider", readonly string[]>>;
 }
 

@@ -1,5 +1,5 @@
 /**
- * The vendor's own sign-in inside a sandbox (slice SIGNIN; ADR-031 decision 2, ADR-033,
+ * The vendor's own sign-in inside a sandbox (ADR-039 decision 2.20, ADR-033,
  * ADR-034): a subscription is used only through the vendor's unmodified CLI, signed in inside
  * the owner's own sandbox (or one client's own, for that client), and a login is never copied
  * between sandboxes.
@@ -19,26 +19,25 @@
  * lapsed with it. So is one past its deadline (`deadline`): the vendor's code's lifetime
  * (the record's `expires`, cited), and one lease TTL for its runner's last frame.
  *
- * Only what the trusted side checked leaves this module for the owner's app (review M1): a
+ * Only what the trusted side checked leaves this module for the owner's app: a
  * sign-in's fixed states (`SIGNIN_STATES`), the record's own URL and code (`signinShape`,
  * again here, outside the VM), and a refusal's fixed reason (`SIGNIN_REFUSALS`).
  *
- * Each source's sign-in sits behind its own switch (review H1): the served records whose
- * sign-in the platform's control record switches on, as the binder hands them with every
- * call (`Binding.signins`), kept for the runs the object's own lane starts
- * (`platform_signins`). None kept, none is on.
+ * Each source's sign-in sits behind its own switch: the served records whose sign-in the
+ * control record the object keeps (`control_kept`, its one copy: `control-gate.ts`) switches
+ * on (`switchedOn`). No record kept, none is on.
  */
 import { AUTHORITY, randomHex, SIGNIN_ID } from "../../contract/src/ids";
 
+import { bundledSources } from "../../sources/src/catalog";
 import { servedRecord, signsIn } from "../../sources/src/served";
 import {
-  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape,
+  SIGNIN_REFUSALS, SIGNIN_STATES, type SigninRefusal, signinShape, signinsOn,
 } from "../../sources/src/signin";
 
+import { controlOf, SqlKeeper, staleRefusal } from "../../contract/src/control";
 import { Refusal } from "../../contract/src/refusal";
-import {
- ENGINE_SIGNINS, LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX,
-} from "../../contract/src/limits";
+import { LEASE_TTL_S, SIGNIN_LIST_CHARS, SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { OWNER } from "./authority";
 import type { OwnerStorage } from "./gate";
 import { isPrintable } from "../../contract/src/text";
@@ -50,19 +49,26 @@ import type { Notices } from "./notices";
 import type { Relay } from "./relay";
 import { signinUrls } from "../../contract/src/egress";
 import { FRAME_VERSION } from "../../contract/src/run-events";
-import { started, vendorHosts } from "./sandbox";
+import { startOutcome, vendorHosts } from "./sandbox";
 import { clock } from "./clock";
 import { sealRoute } from "../../contract/src/routing-mac";
 import type { Runs } from "./runs";
 import { eventsRequest, signinRequest } from "./reports";
-import type { Started } from "../../contract/src/sandbox";
 import type { SigninEventsRequest } from "../../contract/src/owner";
+import type { SandboxSignin } from "../../contract/src/sandbox";
 
 /** `si_` and 32 hex: as long as a conversation's id, so an app socket's ticket names it. */
 
 /** A live sign-in is the authority's one at a time. */
 export const SIGNIN_LIVE = "signin_live: a sign-in is already in progress in that sandbox";
-const NO_SIGNIN = "no such sign-in";
+/** No live sign-in of that id: it ended, or never was. */
+export const NO_SIGNIN = "no such sign-in";
+/**
+ * Every source while the object keeps no control record (`switchedOn`): a switch is never
+ * taken as on unless a record says so, as no run is admitted without its tiers (`TIER_UNREAD`).
+ */
+export const SIGNIN_UNREAD = "signin_off: no sign-in is switched on while the platform's " +
+  "control record is not known here";
 /** A source whose sign-in the platform's control record has switched off. */
 export const SIGNIN_OFF = "signin_off: signing in to this source inside a sandbox is switched " +
   "off until its vendor's terms for hosted use are verified";
@@ -76,7 +82,6 @@ interface SigninRow {
   readonly authority: string;
   readonly engine: string;
   readonly mode: SigninMode;
-  readonly region: string | null;
   readonly lease_id: string;
   readonly epoch: number;
   readonly state: string;
@@ -196,17 +201,17 @@ export class Signins {
   }
 
   /** In a unit: a sign-in begun in `authority`'s sandbox under its lease. Refused while one is. */
-  begin(authority: string, engine: string, mode: SigninMode, region: string | null,
+  begin(authority: string, engine: string, mode: SigninMode,
         lease: { lease_id: string; epoch: number }, now: number): SigninRow {
     if (this.#sql.exec("SELECT 1 FROM sandbox_signins WHERE authority = ?", authority)
       .toArray().length > 0) {
       throw new Refusal("signin_live", SIGNIN_LIVE);
     }
     const id = Signins.id();
-    this.#sql.exec("INSERT INTO sandbox_signins (id, authority, engine, mode, region, lease_id, " +
-                     "epoch, state, started_at, beat_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'starting', " +
-                     "?, ?)", id, authority, engine, mode, region, lease.lease_id, lease.epoch, now,
-                   now);
+    // Its `region` column (migration 1) stays null: no sign-in has a region any more.
+    this.#sql.exec("INSERT INTO sandbox_signins (id, authority, engine, mode, lease_id, epoch, " +
+                     "state, started_at, beat_at) VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?)",
+                   id, authority, engine, mode, lease.lease_id, lease.epoch, now, now);
     return this.get(id);
   }
 
@@ -221,7 +226,7 @@ export class Signins {
    * In a unit: the runner's frames of sign-in `id`, under the lease that holds it: the latest
    * prompt kept, its beat renewed; an end frame (or the post's end) ends it, and so does its
    * deadline (`expired`). Only a sign-in's fixed states pass; a refusal keeps only its fixed
-   * reason, and no other frame any text (review M1). A prompt that is not the record's own
+   * reason, and no other frame any text. A prompt that is not the record's own
    * shape (`signinShape`: the pinned page, a device code, nothing credential-shaped) is
    * checked here, outside the VM, and refused, as is a state no sign-in reports: the sign-in
    * ends `refused`, the prompt never kept nor relayed (a hijacked engine shows no look-alike
@@ -266,7 +271,7 @@ export class Signins {
         const nextUrl = typeof event["url"] === "string" ? event["url"] : null;
         const nextCode = typeof event["code"] === "string" ? event["code"] : null;
         const why = nextUrl === null && nextCode === null ? "state"
-          : signinShape(rec, row.region, nextUrl, nextCode);
+          : signinShape(rec, nextUrl, nextCode);
         if (why !== null) {
           refuse(why);
           continue;
@@ -286,7 +291,7 @@ export class Signins {
                        ? { reason: event["reason"] } : {}) });
     }
     if (!ENDS.includes(state) && deadline(row) <= now) {
-      // Past the vendor's code's lifetime: what it showed is dead (review M4).
+      // Past the vendor's code's lifetime: what it showed is dead.
       stopped = true;
       state = "expired";
       url = null;
@@ -304,7 +309,7 @@ export class Signins {
   }
 
   /**
-   * The live sign-in `id`, now asking for a pasted code (review L1): its record takes one,
+   * The live sign-in `id`, now asking for a pasted code: its record takes one,
    * it is showing the vendor's prompt (or took a code already, which the vendor may ask
    * again), and it is within its deadline. A read.
    */
@@ -329,33 +334,23 @@ function pastedCode(value: unknown): string {
 }
 
 /**
- * In a unit: the served records whose sign-in is switched on, as the binder handed them
- * (`Binding.signins`), kept (written only when they changed) for the runs the lane starts;
- * a door that handed none reads the kept ones. None kept, none is on: a switch is never
- * taken as on unless the control record, as the doors read it, says so.
+ * The served records whose vendor sign-in the control record the object keeps switches on
+ * (`control_kept`, `signinsOn`), or null when it keeps none, and then none is on. A read.
  */
-export function switchedOn(storage: OwnerStorage, handed: unknown, now: number): Set<string> {
-  const sql = storage.sql;
-  const kept = sql.exec<{ engines: string }>("SELECT engines FROM platform_signins")
-    .toArray()[0];
-  if (handed === undefined) {
-    return new Set(kept === undefined || kept.engines === "" ? [] : kept.engines.split(","));
+export function switchedOn(storage: OwnerStorage): Set<string> | null {
+  const kept = new SqlKeeper(storage.sql).kept();
+  return kept === null ? null : new Set(signinsOn(bundledSources(), controlOf(kept.text)));
+}
+
+/** `engine`'s sign-in refused unless it is switched on (`switchedOn`). */
+function requireOn(storage: OwnerStorage, engine: string): void {
+  const on = switchedOn(storage);
+  if (on === null) {
+    throw new Refusal("signin_off", SIGNIN_UNREAD);
   }
-  if (!Array.isArray(handed) || handed.length > ENGINE_SIGNINS
-      || !handed.every((id) => typeof id === "string" && signsIn(servedRecord(id)))) {
-    throw new Refusal("invalid", "the switched-on sign-ins are served records that sign in");
+  if (!on.has(engine)) {
+    throw new Refusal("signin_off", SIGNIN_OFF);
   }
-  const engines = [...new Set(handed as string[])].sort().join(",");
-  if (engines.length > SIGNIN_LIST_CHARS) {
-    throw new Refusal("invalid",
-                      `the switched-on sign-ins are at most ${SIGNIN_LIST_CHARS} characters`);
-  }
-  if (kept?.engines !== engines) {
-    sql.exec("INSERT INTO platform_signins (only, engines, read_at) VALUES (1, ?, ?) " +
-               "ON CONFLICT (only) DO UPDATE SET engines = excluded.engines, " +
-               "read_at = excluded.read_at", engines, now);
-  }
-  return new Set(engines === "" ? [] : engines.split(","));
 }
 
 /** The authority a sign-in is for: the owner's own sandbox, or one client's. */
@@ -374,8 +369,6 @@ export interface SigninStartRequest {
   readonly engine: string;
   /** `owner` (the default), or one client's id: that client's own sandbox. */
   readonly authority?: string;
-  /** The owner's choice among the record's `cli.regions`, when it has any. */
-  readonly region?: string;
   readonly mode?: SigninMode;
 }
 export interface SigninRequestById {
@@ -386,38 +379,33 @@ export interface SigninCodeRequest extends SigninRequestById {
 }
 /**
  * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
- * that signs in with the vendor's own login, whether its record's `status_argv` succeeded,
- * and the models it read the engine offers. Presence only: never a credential.
+ * that signs in with the vendor's own login, whether its record's `status_argv` succeeded.
+ * Presence only: never a credential.
  */
 export interface SigninRequest {
-  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean;
-                               readonly models?: readonly string[] }[];
+  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean }[];
 }
 
 // -- THE DOORS: the `signins` rows' handlers (`owner/doors.json`) ---------------------------------
-//
-// Each door's body, which the object's runner (`owner-do.ts`, `#call`) hands what its
-// doors reach (`SigninsDoorNeeds`) once the row's steps held: the bind, the account, the
-// scope and the fields.
 
 /**
  * What the `signins` doors reach: the sign-ins; the sandbox's leases they open, renew and
- * free, and the sandbox Worker and the route key they reach it by; the switched-on engines; the runs' signed-in engines; the
- * app sockets a sign-in's frames go to; a client's grant; and the owner's notices.
+ * free, and the sandbox Worker and the route key they reach it by; the switched-on engines; the
+ * runs' signed-in engines; the app sockets a sign-in's frames go to; a client's grant; and the
+ * owner's notices.
  */
 export interface SigninsDoorNeeds extends Pick<DoorUnits, "door">,
-                                          Pick<ObjectReads, "owner" | "storage"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY" | "SANDBOX">;
+                                          Pick<ObjectReads, "owner" | "sandbox" | "storage"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
   readonly signins: Signins;
   readonly files: Pick<Files, "leaseRenew" | "leaseSignins" | "liveLeases" | "sandboxLease">;
   readonly grants: { live(client: string): boolean };
-  readonly launcher: Pick<Launcher, "leaseFreed" | "openLease">;
+  readonly launcher: Pick<Launcher, "landed" | "leaseFreed" | "openLease" | "stopAfter">;
   readonly notices: Pick<Notices, "add">;
   readonly relay: Pick<Relay, "relay" | "settled">;
   readonly runs: Pick<Runs, "reportSignin" | "signins">;
 }
 
-/** The `signins` doors' handlers, by door. */
 export const signinsDoors = Object.freeze({
   /**
    * Begin the vendor's own sign-in to `engine` (`mode: "in"`), or its sign-out (`"out"`),
@@ -427,7 +415,11 @@ export const signinsDoors = Object.freeze({
    * starts the record's `cli.login` there (`SandboxService.signin`). The answer is the
    * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
    * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
-   * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
+   * a pasted code), or why it did not start (`StartOutcome`'s code: `sandbox_waiting`, ...),
+   * a start with no answer the object can read stopped in the sandbox too. A sign-in stands
+   * while its row is live: one whose row ended while its start was out (the owner stopped it,
+   * or it was lost) is never sent again, is stopped in the sandbox if it launched, and is
+   * refused as no such sign-in.
    */
   async signinStart(o: SigninsDoorNeeds, door: Door<SigninStartRequest>):
       Promise<SigninView | { started: false; code: string }> {
@@ -442,18 +434,14 @@ export const signinsDoors = Object.freeze({
       if (mode !== "in" && mode !== "out") {
         throw new Refusal("invalid", "a sign-in's mode is in or out");
       }
-      // A sign-in sits behind its source's switch; a sign-out never does, so a login is
-      // always removable (review H1).
-      if (mode === "in" && !switchedOn(o.storage, binding.signins, clock()).has(rec.id)) {
-        throw new Refusal("signin_off", SIGNIN_OFF);
-      }
-      const regions = rec.cli.regions === undefined ? [] : Object.keys(rec.cli.regions);
-      const region = r["region"] ?? null;
-      if (mode === "in" ? (regions.length === 0 ? region !== null
-                                                : !regions.includes(region as string))
-          : region !== null) {
-        throw new Refusal("invalid", regions.length === 0 ? "this sign-in takes no region"
-          : `this sign-in takes the owner's choice of region: ${regions.join(", ")}`);
+      // A sign-in sits behind its source's switch, read fresh (a binding that hands no record
+      // was served from a kept copy; one that does, the bind kept); a sign-out never does, so
+      // a login is always removable.
+      if (mode === "in") {
+        if (binding.control === undefined) {
+          throw staleRefusal("signin");
+        }
+        requireOn(o.storage, rec.id);
       }
       const authority = signinAuthority(r["authority"]);
       if (authority !== OWNER && !o.grants.live(authority)) {
@@ -466,33 +454,44 @@ export const signinsDoors = Object.freeze({
       const live = o.files.sandboxLease(now, authority);
       const opened = live === null ? o.launcher.openLease(now, authority) : null;
       const lease = live ?? opened!.lease;
-      const row = o.signins.begin(authority, rec.id, mode, region as string | null,
-                                      { lease_id: lease.lease_id, epoch: lease.epoch }, now);
-      return { row, opened, region: region as string | null,
-               lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
+      const row = o.signins.begin(authority, rec.id, mode,
+                                  { lease_id: lease.lease_id, epoch: lease.epoch }, now);
+      return { row, opened, lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
     });
-    let answer: Started | null = null;
-    try {
-      answer = started(await o.env.SANDBOX.signin(o.owner(), {
-        id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
-        authority: begun.row.authority, lease: begun.lease,
-        tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
-        hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox", begun.region),
-        route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
-                                                     authority: begun.row.authority }),
-        urls: signinUrls(begun.row.id) }));
-    } catch {
-      console.error("a sign-in's start had no answer");
-      answer = null;
-    }
-    if (answer?.started === true) {
+    const signin: SandboxSignin = {
+      id: begun.row.id, engine: begun.row.engine, mode: begun.row.mode,
+      authority: begun.row.authority, lease: begun.lease,
+      tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
+      hosts: vendorHosts(begun.row.engine, "vendor_login_in_sandbox"),
+      route: sealRoute(o.env.ROUTING_MAC_KEY, { owner: o.owner(),
+                                                   authority: begun.row.authority }),
+      urls: signinUrls(begun.row.id) };
+    const answer = await startOutcome("a sign-in", () => o.sandbox.signin(signin),
+                                      () => o.door(() => o.signins.owned(begun.row.id)));
+    const ended = await o.door(() => {
+      if (answer.started === true && o.signins.owned(begun.row.id)) {
+        return null;
+      }
+      o.signins.end(begun.row.id);
+      if (answer.started === false) {
+        o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
+        return { stopped: null };
+      }
+      // Its CLI may have launched (no answer it can read), or did after its row ended (the
+      // owner stopped it, or it was lost, while its start was out): stopped, as a run's is,
+      // and its sandbox released after the stop (`landed`).
+      return o.launcher.landed(begun.lease, () => o.sandbox.signinCancel({
+        authority: begun.row.authority, id: begun.row.id }));
+    });
+    if (ended === null) {
       return signinView(begun.row);
     }
-    await o.door(() => {
-      o.signins.end(begun.row.id);
-      o.launcher.leaseFreed(begun.lease.lease_id, begun.lease.epoch);
-    });
-    return { started: false, code: answer === null ? "start_lost" : answer.code };
+    await ended.stopped?.catch((error: unknown) =>
+      console.error("a sign-in's stop after its start did not reach the sandbox", error));
+    if (answer.started === true) {
+      throw new Refusal("refused", NO_SIGNIN);  // it ended before its start answered
+    }
+    return { started: false, code: answer.code };
   },
   /**
    * The runner's frames of a sign-in (`ta.signin`: its state, the vendor's URL and code),
@@ -514,7 +513,12 @@ export const signinsDoors = Object.freeze({
       if (done.ended) {
         o.launcher.leaseFreed(lease.lease_id, lease.epoch);
       }
-      return { ...done, frames: r.frames };
+      // Its CLI stopped (what it showed is not the vendor's page, or it is past its deadline),
+      // before its lease's release.
+      const row = done.row;
+      return { ...done, frames: r.frames, stopped: !done.stopped ? null
+        : o.launcher.stopAfter(() => o.sandbox.signinCancel({ authority: row.authority,
+                                                              id: row.id })) };
     });
     // Only what the trusted side kept: each frame's own, checked event.
     const last = frames.at(-1);
@@ -524,12 +528,7 @@ export const signinsDoors = Object.freeze({
     if (ended) {
       o.relay.settled(row.id);  // its tail goes with it
     }
-    if (stopped) {
-      // Its CLI stopped: what it showed is not the vendor's page, or it is past its deadline.
-      await o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority,
-                                                               id: row.id })
-        .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
-    }
+    await stopped?.catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
     return { accepted: frames.length, ended };
   },
   /**
@@ -538,22 +537,32 @@ export const signinsDoors = Object.freeze({
    */
   async signinCode(o: SigninsDoorNeeds, door: Door<SigninCodeRequest>): Promise<{ delivered: boolean }> {
     const { row, code } = await o.door(() => {
-      const { binding, r } = door.check();
+      const { r } = door.check();
       const code = pastedCode(r["code"]);
       const row = o.signins.wantsCode(r["id"], clock());
-      if (!switchedOn(o.storage, binding.signins, clock()).has(row.engine)) {
-        throw new Refusal("signin_off", SIGNIN_OFF);
-      }
+      requireOn(o.storage, row.engine);
       return { row, code };
     });
-    return o.env.SANDBOX.signinInput(o.owner(), { authority: row.authority, id: row.id,
-                                                  code });
+    return o.sandbox.signinInput({ authority: row.authority, id: row.id, code });
   },
-  /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
+  /**
+   * A sign-in stopped, the owner's own door: its row ended at once and its lease given back
+   * once nothing holds it, so a start still out or waiting to be sent again is never sent
+   * again, one that launches late is stopped as its answer comes (`signinStart`), and its
+   * runner's next post is refused; then its CLI stopped in the sandbox, whether one was live
+   * there to stop (`cancelled`), before that lease's sandbox is released (`stopAfter`).
+   */
   async signinCancel(o: SigninsDoorNeeds, door: Door<SigninRequestById>):
       Promise<{ cancelled: boolean }> {
-    const row = await o.door(() => o.signins.get(door.check().r["id"]));
-    return o.env.SANDBOX.signinCancel(o.owner(), { authority: row.authority, id: row.id });
+    const { row, stopped } = await o.door(() => {
+      const row = o.signins.get(door.check().r["id"]);
+      o.signins.end(row.id);
+      o.launcher.leaseFreed(row.lease_id, row.epoch);
+      return { row, stopped: o.launcher.stopAfter(() => o.sandbox.signinCancel({
+        authority: row.authority, id: row.id })) };
+    });
+    o.relay.settled(row.id);  // its tail goes with it
+    return stopped;
   },
   /**
    * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
@@ -568,9 +577,9 @@ export const signinsDoors = Object.freeze({
   /**
    * The runner's report of the engines' sign-ins (`SigninRequest`), on the egress host by
    * the egress token of the live lease: each engine's row (signed in or not, when it was
-   * checked, the models it offers), never a credential; `auto` ranks the signed-in ones
-   * with the owner's connections. A sign-in that lapsed (signed in, now not) leaves a
-   * "sign in again" notice, and `auto` stops picking that engine.
+   * checked), never a credential; `auto` ranks the signed-in ones, each by its record's
+   * plan model, with the owner's connections. A sign-in that lapsed (signed in, now not)
+   * leaves a "sign in again" notice, and `auto` stops picking that engine.
    */
   signinReport(o: SigninsDoorNeeds, { lease: held, r }: Call<SigninRequest>):
       { recorded: number; lapsed: string[] } {
@@ -603,8 +612,7 @@ export const signinsDoors = Object.freeze({
       return { recorded: reports.length, lapsed };
     }
     for (const report of reports) {
-      if (o.runs.reportSignin(report.engine, report.signed_in, report.models, clock())
-            .lapsed) {
+      if (o.runs.reportSignin(report.engine, report.signed_in, clock()).lapsed) {
         lapsed.push(report.engine);
         o.notices.add("signin_lapsed", `${report.engine}: sign in again`, clock());
       }

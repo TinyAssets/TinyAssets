@@ -1,5 +1,5 @@
 /**
- * The AI apps an owner may connect (`apps.json`, data; autoconnect_research.md §2.3, §3):
+ * The AI apps an owner may connect (`apps.json`, data):
  * which vendor a signed-in client is, how each vendor's client registers with our sign-in,
  * and each app's connect step. No code here names a vendor.
  *
@@ -7,24 +7,25 @@
  *   is its URL, which the authorization server fetched; it names the vendor **verified** only
  *   when that host is the app's and every redirect the document registered is one of the
  *   app's own (`match.redirects`), so a document a stranger publishes on a vendor's host
- *   that sends access elsewhere is not the vendor's (review M2). Any other client
+ *   that sends access elsewhere is not the vendor's. Any other client
  *   (registered, dynamically or by us) is known only by its self-declared name, a word of
  *   which names the vendor **unverified**. A client matching no app is no vendor (null).
  * - **Dynamic registration** (`registrationRefusal`): the founder's ruling (2026-11-04)
  *   allows it for the vendors that offer no CIMD, as data (`registration: "dcr"`), the one
  *   pre-login exception to no anonymous traffic. With `DCR_ENABLED` on, a registration is
  *   taken only when its `client_name` names a `dcr` app and every one of its `redirect_uris`
- *   is that app's (review M3): an approval under a vendor's name sends codes only to that
+ *   is that app's: an approval under a vendor's name sends codes only to that
  *   vendor. A `dcr` app with no redirects recorded has dynamic registration off.
  * - **Connect** (`connectUrl`): the public connect page's anchor for the app, which shows
- *   its current steps; agents hand the link, never copied steps. The page built from this
- *   file lands at the cutover (branch `platform-brain-site`, `tasks.md` §9).
+ *   its current steps; agents hand the link, never copied steps. The page is built from this
+ *   file in the site's cutover PR (`tasks.md`, the public `/connect` page).
  *
  * `checkedApps` holds the file to its shape, loudly, wherever it is read.
  */
 import raw from "../apps.json" with { type: "json" };
 
 import { keyed, object } from "./checks.ts";
+import { MCP_RESOURCE } from "./identity.ts";
 
 export interface AppConnect {
   /** A deep link where the vendor has one. */
@@ -78,6 +79,14 @@ function texts(value: unknown, what: string, pattern?: RegExp): readonly string[
     throw new Error(`apps.json: ${what} is a list of ${pattern === undefined ? "texts" : pattern}`);
   }
   return Object.freeze([...value] as string[]);
+}
+
+/**
+ * Where a connect step names the MCP door, the file writes `{mcp}`, never its URL, which is the
+ * identity's (`MCP_RESOURCE`); in a link it stands for the URL as a query value encodes it.
+ */
+function withDoor(value: string, inLink: boolean): string {
+  return value.replaceAll("{mcp}", inLink ? encodeURIComponent(MCP_RESOURCE) : MCP_RESOURCE);
 }
 
 function https(value: unknown, what: string): string {
@@ -177,7 +186,8 @@ export function checkedApps(value: unknown = raw): Apps {
     if (!/^https:\/\//.test(sources)) {
       throw new Error(`apps.json: ${id}.source names the vendor page its steps were read from`);
     }
-    const steps = texts(connect["steps"], `${id}.connect.steps`);
+    const steps = Object.freeze(texts(connect["steps"], `${id}.connect.steps`)
+      .map((step) => withDoor(step, false)));
     if (steps.length === 0) {
       throw new Error(`apps.json: ${id}.connect.steps names at least one step`);
     }
@@ -189,10 +199,13 @@ export function checkedApps(value: unknown = raw): Apps {
                              names: texts(match["names"], `${id}.match.names`, NAME),
                              redirects: redirectPatterns(match["redirects"], id) }),
       connect: Object.freeze({
-        ...(connect["link"] === undefined ? {} : { link: https(connect["link"], `${id}.link`) }),
-        ...(connect["say"] === undefined ? {} : { say: text(connect["say"], `${id}.say`) }),
+        ...(connect["link"] === undefined ? {}
+          : { link: withDoor(https(connect["link"], `${id}.link`), true) }),
+        ...(connect["say"] === undefined ? {}
+          : { say: withDoor(text(connect["say"], `${id}.say`), false) }),
         steps,
-        ...(connect["code"] === undefined ? {} : { code: text(connect["code"], `${id}.code`) }),
+        ...(connect["code"] === undefined ? {}
+          : { code: withDoor(text(connect["code"], `${id}.code`), false) }),
       }),
       source: sources, checked: app["checked"] as string,
     });
@@ -237,7 +250,7 @@ function byName(name: string, apps: readonly App[]): App | null {
 /**
  * Which vendor a signed-in client is. A Client ID Metadata Document's client (its id an https
  * URL): the app its host is under, verified only when every redirect it registered is that
- * app's (`redirects`; review M2), else that app unverified, or null under no app's host. Any
+ * app's (`redirects`), else that app unverified, or null under no app's host. Any
  * other client: the app a word of its self-declared name names, unverified, or null.
  */
 export function vendorOf(clientId: string, clientName: string | null,
@@ -265,7 +278,7 @@ const LOGGED_CHARS = 256;
 
 /**
  * The one log line of a refused registration whose `client_name` names a `dcr` app, or null
- * for any other (review R2-M1): its app's id, `client_name` and `redirect_uris`, the
+ * for any other: its app's id, `client_name` and `redirect_uris`, the
  * client's own public metadata, cut to `LOGGED_REDIRECTS` URIs of `LOGGED_CHARS` characters
  * and escaped as JSON, no header and nothing else of the request. It is what the founder
  * reads (`wrangler tail` or the doors' Workers logs) at a vendor's first connect attempt, to
@@ -291,7 +304,7 @@ export function refusedRegistrationLine(metadata: Record<string, unknown>,
 /**
  * Why a dynamic registration is refused, or null to take it: its `client_name` must name an
  * app whose client registers dynamically (`registration: "dcr"`), and every one of its
- * `redirect_uris` must be that app's (review M3); an app with none recorded takes none.
+ * `redirect_uris` must be that app's; an app with none recorded takes none.
  */
 export function registrationRefusal(metadata: Record<string, unknown>,
                                     apps: readonly App[] = appList()): string | null {

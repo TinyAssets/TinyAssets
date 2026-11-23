@@ -12,12 +12,17 @@
  * shape (`contract/guards/refusal.test.ts` holds the compatibility settings;
  * `doors/test/api-keys.test.ts` crosses the owner's object's real RPC boundary).
  *
+ * The runtime refuses too: a Durable Object past its soft limit (1,000 requests a second an
+ * object, Cloudflare's limits page) throws an error whose `.overloaded` is true, which
+ * Cloudflare's error-handling page says not to retry. `refusalOf` reads it as the refusal
+ * `object_overloaded`, so every caller answers or settles it as it does any transient one.
+ *
  * A code is `transient` or terminal. A transient refusal says nothing of the request: the
- * same one succeeds later. Most say when, with their `Retry-After` (a pool, a ceiling or a
- * post gate full for the moment, a platform gate closed); a files root that changed under a
- * rewrap is run again at once. So a lane that settles a run, a schedule or a mail on a
- * refusal settles it only on a terminal one, and leaves the item to be tried again on a
- * transient one.
+ * same one succeeds later. Each says when, with its `Retry-After` (a pool, a ceiling or a
+ * post gate full for the moment, a platform gate closed). So a lane that settles a run, a
+ * schedule or a mail on a refusal settles it only on a terminal one, and leaves the item to
+ * be tried again on a transient one. Its message says what happened, never when to try
+ * again: that is its wait, which each door says as its protocol does (`doors/src/refused.ts`).
  *
  * A `quiet` code is one a protocol that shows a code (the egress door, the inbound hooks)
  * does not show: it shows the refusal's message in its place, or the egress door's
@@ -37,7 +42,7 @@ interface Entry {
 }
 
 /** How long a `storage_busy` refusal says to wait before trying again: about one lane pass. */
-export const STORAGE_BUSY_RETRY_S = 30;
+const STORAGE_BUSY_RETRY_S = 30;
 /** How long an inbound sender is told to wait before it delivers the event again. */
 const INBOUND_RETRY_S = 5;
 
@@ -148,6 +153,10 @@ export const REFUSALS = Object.freeze({
   // outside switch (`OUTSIDE_OFF`), each the refusal's message.
   unavailable: Object.freeze({ status: 503, retryAfterS: 60, transient: true }),
 
+  // The runtime's: an object it reports overloaded (see the header), a technical ceiling,
+  // not ours. The caller waits a second.
+  object_overloaded: Object.freeze({ status: 429, retryAfterS: 1, transient: true }),
+
   // The doors' own: a request with no credential the door takes, at a path it does not
   // serve, by a method it does not take, or too large to read; an API key or a connect
   // refused takes `invalid`, `refused` or `not_found`.
@@ -205,6 +214,8 @@ export const REFUSALS = Object.freeze({
   // whose bytes are not their digest, or that speaks a protocol the Worker does not.
   sandbox_runner_mismatch: BAD_GATEWAY,
   sandbox_runner_protocol: BAD_GATEWAY,
+  // Its own fault before a job's launch (`#launch`): logged there, and nothing launched.
+  sandbox_start_failed: BAD_GATEWAY,
 
   // The gateway's, the only text it lets out (`gateway/src/failure.ts`): provider prose can
   // echo credentials, so its message is its code and nothing else.
@@ -215,7 +226,7 @@ export const REFUSALS = Object.freeze({
   credential_refused: REFUSED,
   endpoint_refused: REFUSED,
   unmetered: REFUSED,
-  // A sandbox call the reservation cannot bound (G4): several choices, or a server-side
+  // A sandbox call the reservation cannot bound: several choices, or a server-side
   // tool the provider bills beyond tokens.
   egress_multiple_choices: Object.freeze({ status: 400 }),
   egress_unmetered_tool: REFUSED,
@@ -224,10 +235,11 @@ export const REFUSALS = Object.freeze({
   // The metered path's (`forward.ts`): a key the rules read spelled another way (`aliased`);
   // the owner's object refused the call's reservation (the egress door answers the object's
   // own code and receipt in its place); a call that alone weighs more than the pool
-  // (`held.ts`).
+  // (`held.ts`); a body sent coded (`content-encoding`), which the parse cannot read.
   egress_aliased_key: Object.freeze({ status: 400 }),
   egress_reserve_refused: REFUSED,
   egress_too_large: Object.freeze({ status: 413 }),
+  egress_body_encoded: Object.freeze({ status: 415 }),
   // A pool full past its wait, the gateway's (`held.ts`) or an isolate's (`slots.ts`):
   // told, retryable after `Retry-After`, never a loss.
   busy: Object.freeze({ status: 503, retryAfterS: 1, transient: true }),
@@ -263,11 +275,12 @@ export const GATEWAY_CODES = Object.freeze([
   "invalid_request", "invalid_binding", "invalid_source", "not_found", "credential_refused",
   "endpoint_refused", "unmetered", "egress_multiple_choices", "egress_unmetered_tool",
   "egress_unpriced_option", "egress_aliased_key", "egress_reserve_refused", "egress_too_large",
-  "busy", "unknown_model", "unsupported_source", "not_refreshable", "deadline",
-  "keyring_unavailable", "internal", "upstream_unauthorized", "upstream_rate_limited",
-  "upstream_timeout", "upstream_rejected", "upstream_overloaded", "upstream_server_error",
-  "upstream_unreachable", "upstream_error", "aborted", "oauth_invalid_grant",
-  "oauth_rejected", "oauth_unavailable", "oauth_unreachable", "oauth_malformed",
+  "egress_body_encoded", "busy", "unknown_model", "unsupported_source", "not_refreshable",
+  "deadline", "keyring_unavailable", "internal", "upstream_unauthorized",
+  "upstream_rate_limited", "upstream_timeout", "upstream_rejected", "upstream_overloaded",
+  "upstream_server_error", "upstream_unreachable", "upstream_error", "aborted",
+  "oauth_invalid_grant", "oauth_rejected", "oauth_unavailable", "oauth_unreachable",
+  "oauth_malformed",
 ] as const satisfies readonly RefusalCode[]);
 export type GatewayCode = (typeof GATEWAY_CODES)[number];
 
@@ -320,9 +333,14 @@ export class Refusal extends Error {
     return REFUSALS[this.code].status;
   }
 
-  /** The `Retry-After` it is answered with, in seconds, if any. */
+  /**
+   * The `Retry-After` it is answered with, in seconds: a transient one's own, or its code's.
+   * A terminal one names none, whatever it carries, so no door tells a caller to try again.
+   */
   get retryAfter(): number | undefined {
-    return this.retryAfterS ?? (REFUSALS[this.code] as Entry).retryAfterS;
+    return this.transient
+      ? this.retryAfterS ?? (REFUSALS[this.code] as Entry).retryAfterS
+      : undefined;
   }
 
   /** Whether the request itself was malformed, the `invalid` family's (`400`). */
@@ -341,20 +359,55 @@ export class Refusal extends Error {
   }
 }
 
+/**
+ * What a refusal is to whoever would make the request again, read one way by every MCP answer
+ * (`doors/src/refused.ts`) and a code-mode script's tool call (`owner/src/codemode.ts`): for the
+ * moment, with the seconds until the same request may succeed (each transient code names its
+ * wait, `contract/guards/refusal.test.ts`), a malformed request, or final.
+ */
+export type Told = { readonly kind: "temporary"; readonly waitS: number }
+  | { readonly kind: "invalid" | "final" };
+
+export function told(refusal: Refusal): Told {
+  if (refusal.transient) {
+    return { kind: "temporary", waitS: refusal.retryAfter ?? 0 };
+  }
+  return { kind: refusal.invalid ? "invalid" : "final" };
+}
+
+/**
+ * The line a model reads after a refused tool call's message: whether to make the call again,
+ * and when. MCP names no field for it, and the connectors give the model a tool result's text
+ * (`docs/decisions/untangle-2026-11/tool-transient.md`).
+ */
+export function callAgain(refusal: Refusal): string {
+  const said = told(refusal);
+  if (said.kind === "temporary") {
+    return `This refusal is temporary: try the same call again in ${said.waitS} ` +
+      `second${said.waitS === 1 ? "" : "s"}.`;
+  }
+  return said.kind === "invalid"
+    ? "This refusal is final: the call is malformed, and is refused again until it is corrected."
+    : "This refusal is final: the same call is refused again until what it names changes.";
+}
+
 function plainObject(value: unknown): value is Facts {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
- * The refusal `error` is, here or as it crossed RPC; null for anything else, which is a
- * bug. The one test of a refusal against a bug: a refusal of an unknown code (another
- * version's) is a bug too, loudly.
+ * The refusal `error` is, here, as it crossed RPC, or the runtime's overload; null for
+ * anything else, which is a bug. The one test of a refusal against a bug: a refusal of an
+ * unknown code (another version's) is a bug too, loudly.
  */
 export function refusalOf(error: unknown): Refusal | null {
   if (error instanceof Refusal) {
     return error;
   }
-  if (!(error instanceof Error) || error.name !== "Refusal") {
+  if (error instanceof Error && (error as { overloaded?: unknown }).overloaded === true) {
+    return new Refusal("object_overloaded", "this account is busy");
+  }
+  if (!namedRefusal(error)) {
     return null;
   }
   const { code, retryAfterS, facts } = error as Error & Record<string, unknown>;
@@ -368,6 +421,14 @@ export function refusalOf(error: unknown): Refusal | null {
   return new Refusal(code as RefusalCode, error.message, {
     ...(retryAfterS === undefined ? {} : { retryAfterS: retryAfterS as number }),
     ...(facts === undefined ? {} : { facts }) });
+}
+
+/**
+ * Whether `error` crossed as a refusal, read by `refusalOf` or not: one it does not read
+ * (another version's code) was still thrown as an answer, never lost on the way.
+ */
+export function namedRefusal(error: unknown): error is Error & { readonly name: "Refusal" } {
+  return error instanceof Error && error.name === "Refusal";
 }
 
 /**

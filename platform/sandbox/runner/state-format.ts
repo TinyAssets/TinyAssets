@@ -20,9 +20,16 @@
  * rollback of one deploy is safe in either direction. The marker (`/var/lib/ta/format`) is
  * the newest format on the disk and is never lowered: a rolled-back runner leaves it as it
  * found it. A runner meeting a format it does not read fails loudly (`checkFormat`, at
- * `prepare` and `adopt`), and nothing runs. The protocol (`protocol.ts`: the commands and
- * the `state` answer the Worker relies on) moves the same way: the Worker speaks `SPEAKS`,
- * its runner's protocol and at most the ones either side of it.
+ * `prepare` and `adopt`), and nothing runs. The two deploys keep a disk that lives across
+ * one, or across its rollback, readable; where no disk can live across a rollback (no owner
+ * admitted to a served route), the contract deploy may come alone: it writes F+1 and reads
+ * F, and the runner before, meeting F+1, refuses it by name at `adopt`, so the Worker keeps
+ * that sandbox's runner (`control.ts` `#adopt`) and a rollback leaves it on the newer one
+ * (format 2). The protocol (`protocol.ts`: the commands and the documents) moves the
+ * same way: the Worker speaks `SPEAKS`, its runner's protocol and at most the ones either
+ * side of it. Its `state` answer never moves: every protocol gives it alike, so the Worker
+ * reads any runner's protocol, and adopts its own over one nothing lives on whatever that
+ * one speaks.
  *
  * `state-format.json` records each format (the mirror's schema, and each persisted file's
  * fields and their types) and `protocol.json` each protocol; both are frozen once recorded
@@ -36,9 +43,9 @@ import { join } from "node:path";
 import { remove, safeWrite } from "./fsafe";
 
 /** The format this runner writes. */
-export const STATE_FORMAT = 1;
+export const STATE_FORMAT = 2;
 /** The formats it reads: its own, the one before, and (an expand deploy) the one after. */
-export const READS: readonly number[] = Object.freeze([1]);
+export const READS: readonly number[] = Object.freeze([1, 2]);
 /** What a runner writes and reads. */
 export interface FormatRule {
   readonly writes: number;

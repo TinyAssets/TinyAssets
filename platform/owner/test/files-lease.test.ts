@@ -212,7 +212,7 @@ describe("a sync commit", () => {
       { op: "mkdir", path: `${W}/ok`, base: null },
       { op: "chmod", path: `${W}/x`, base: null } as unknown as SyncOp,
       { op: "mkdir", path: `${W}/ok`, base: null },
-      { op: "mkdir", path: "/.ta/tmp/x", base: null },
+      { op: "mkdir", path: "/elsewhere/x", base: null },
       { op: "write", path: `${W}/big`, base: null, inline: new Uint8Array(INLINE_BYTES + 1) },
       { op: "mkdir", path: `${W}/zero`, base: 0 },
       { op: "write", path: `${W}/unsent`, base: null, intent_id: never.intent_id },
@@ -313,7 +313,7 @@ describe("a sync commit", () => {
     expect(await readText(r, copies[0]!)).toBe("vm one");
     expect(await readText(r, copies[2]!)).toBe("vm two");
     expect(await readText(r, taken)).toBe("a file the API made under the copy's name");
-    // The next free name is found past every one taken, in one range read (review rvlim N6).
+    // The next free name is found past every one taken, in one range read.
     const third = await sync(r, lease, [
       { op: "write", path: `${W}/notes.md`, base: notes.version, inline: text("vm again") },
     ]);

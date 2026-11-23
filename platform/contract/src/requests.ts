@@ -55,7 +55,8 @@ export interface DoorRequests {
   readonly actionApprove: DoorFields<"card_id" | "digest">;
   readonly actionRefuse: DoorFields<"card_id" | "digest">;
   readonly grantSet:
-    DoorFields<"client" | "source" | "mode" | "scopes" | "expected_revision" | "name", "profile">;
+    DoorFields<"client" | "source" | "mode" | "scopes" | "expected_revision" | "name", "profile"
+      | "agent">;
   readonly grantRevoke: DoorFields<"client">;
   readonly grantForget: DoorFields<"client">;
   readonly grantForgetRevoked: DoorFields<"clients">;
@@ -91,7 +92,8 @@ export interface DoorRequests {
   readonly fileHistoryPurge: DoorFields<"path">;
   readonly fileChanges: DoorFields<"after" | "limit">;
   readonly runEvents: DoorFields<"frames", "end">;
-  readonly signinStart: DoorFields<"engine", "authority" | "region" | "mode">;
+  readonly runDecide: DoorFields<never, "check" | "tool_name" | "tool_input">;
+  readonly signinStart: DoorFields<"engine", "authority" | "mode">;
   readonly signinCode: DoorFields<"id" | "code">;
   readonly signinCancel: DoorFields<"id">;
   readonly runList: DoorFields<never, "before" | "limit">;

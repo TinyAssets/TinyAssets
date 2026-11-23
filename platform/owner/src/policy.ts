@@ -35,8 +35,9 @@
  *   door, `egress.ts`), and owner-wide and per-source daily and monthly cost ceilings.
  *   The Python's per-turn limits were code constants; here they are policy.
  * - The optional `codemode` table holds one switch: whether code mode scripts may run
- *   (`on`, on unless the owner turns it off; `CODEMODE_DEFAULTS`), their VMs in the
- *   codemode Worker. The MCP door's `code` tool refuses while it is off (slice M).
+ *   (`on`, off unless the owner turns it on, until its isolation probe passes;
+ *   `CODEMODE_DEFAULTS`), their VMs in the codemode Worker. The MCP door's `code` tool
+ *   refuses while it is off (slice M).
  * - The optional `tools` table is the owner's own tool profile (`custom`, slice M): the
  *   MCP door's tools a client whose grant names `custom` is served, each a tool of the
  *   table, none twice. Left out, `custom` is every tool (`contract/profiles.json`).
@@ -88,10 +89,13 @@ import { codePoints } from "../../contract/src/text";
 import {
   type Call, type Door, type DoorUnits, type ImportLine, type LiveSession, proven,
 } from "./door";
-import type { ActionReceipt, Actions } from "./actions";
+import { type ActionReceipt, type Actions, hookNote, type RuleNote, ruleNotes } from "./actions";
 import type { Egress } from "./egress";
+import type { Files } from "./files";
+import { narrows } from "./network";
 import { clock } from "./clock";
 import { OWNER } from "./authority";
+import type { Notices } from "./notices";
 
 /**
  * The files settings a document leaves in force: its own, and the defaults for the rest;
@@ -150,12 +154,26 @@ interface PolicyState {
   readonly document: PolicyDocument;
 }
 
-/** What `read` shows the owner: the Python's `OwnerPolicy.projection()`. */
+/**
+ * What `read` shows the owner: the Python's `OwnerPolicy.projection()`, where each of its
+ * action rules holds and can't (`ruleNotes`, d3 §N5), where its agents' own hooks run and
+ * where they can't be held (`hookNote`), and the code mode settings in force
+ * (`codemodeSettings`), so the app shows the switch with no copy of its default.
+ */
 export interface Projection {
   readonly owner: string;
   readonly generation: number;
   readonly digest: string;
   readonly policy: PolicyDocument;
+  readonly notes: readonly RuleNote[];
+  readonly hooks: RuleNote;
+  readonly codemode: { readonly on: boolean };
+}
+
+/** The projection of `owner`'s policy as it stands. */
+function projected(owner: string, { generation, digest, document }: PolicyState): Projection {
+  return { owner, generation, digest, policy: document, notes: ruleNotes(document),
+           hooks: hookNote(), codemode: codemodeSettings(document) };
 }
 
 type ReceiptKind = "write" | "wake_limits" | "outside_grant" | "proposal" | "refusal";
@@ -213,9 +231,11 @@ function expected(value: unknown): number {
 
 export class Policy {
   readonly #storage: OwnerStorage;
+  readonly #notices: Pick<Notices, "once">;
 
-  constructor(storage: OwnerStorage) {
+  constructor(storage: OwnerStorage, notices: Pick<Notices, "once">) {
     this.#storage = storage;
+    this.#notices = notices;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -244,7 +264,7 @@ export class Policy {
     return customTools(this.read().document);
   }
 
-  /** Whether code mode is on (`codemode.on`, its default on). */
+  /** Whether code mode is on (`codemode.on`, off by default). */
   codemode(): boolean {
     return codemodeSettings(this.read().document).on;
   }
@@ -282,8 +302,7 @@ export class Policy {
   }
 
   projection(owner: string): Projection {
-    const { generation, digest, document } = this.read();
-    return { owner, generation, digest, policy: document };
+    return projected(owner, this.read());
   }
 
   /** One receipt; each bucket keeps its newest `receiptsPerBucket`. */
@@ -318,7 +337,7 @@ export class Policy {
 
   /**
    * The owner's write, in its session; with `proposal`, only as that held card's one apply.
-   * The held proposal must be pending, unexpired, a `policy_proposal` of exactly this
+   * The held proposal must be pending, a `policy_proposal` of exactly this
    * document and generation with the digest the owner was shown, and is marked applied in
    * the same transaction.
    */
@@ -347,8 +366,7 @@ export class Policy {
       if (proposal !== null) {
         const held = sql.exec<{ digest: string; document: string }>(
           "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-            "AND applied_at IS NULL AND at > ?",
-          proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
+            "AND applied_at IS NULL", proposal["request_id"] as string,
         ).toArray()[0];
         const change: unknown = held === undefined ? {} : JSON.parse(held.document);
         if (held === undefined || held.digest !== proposal["digest"] || !object(change)
@@ -422,8 +440,11 @@ export class Policy {
 
   /**
    * An agent's proposal, receipted; with its card's id, held for the owner. Refiling a
-   * held card with another change is refused (the same change again is a no-op);
-   * expired proposals and all but the newest applied ones are pruned first.
+   * held card with another change is refused (the same change again is a no-op); all but
+   * the newest applied ones are pruned first, and a new card at a bound lets the oldest
+   * pending one go to make its room: the proposer's own at its share, else the oldest of its
+   * class's (outside clients' or the owner's), refused when its class has none; the owner
+   * told whose (`held_request_evicted`).
    */
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
       { request_digest: string; generation: number } {
@@ -438,7 +459,6 @@ export class Policy {
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       if (requestId !== null) {
-        sql.exec("DELETE FROM policy_proposals WHERE at < ?", now - POLICY_LIMITS.proposalTtlS);
         const over = this.#usage().applied_proposals - POLICY_LIMITS.appliedProposals;
         if (over > 0) {
           sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +
@@ -452,15 +472,21 @@ export class Policy {
           throw new Refusal("refused", "a proposal is already held for this card");
         }
         if (held === undefined) {
-          if (this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
-            throw new Refusal("refused", "too many pending policy proposals");
-          }
           const share = sql.exec<{ pending: number }>(
             "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
           ).toArray()[0]?.pending ?? 0;
-          if (proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient) {
-            throw new Refusal("refused",
-                              "this client's pending policy proposals are at their limit");
+          const own = proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient;
+          if (own || this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
+            const gone = sql.exec<{ proposer: string }>(
+              "DELETE FROM policy_proposals WHERE request_id = (SELECT request_id FROM " +
+                "policy_proposals WHERE applied_at IS NULL AND proposer " +
+                `${own || proposer === OWNER ? "=" : "!="} ? ORDER BY at, rowid LIMIT 1) ` +
+                "RETURNING proposer", own ? proposer : OWNER).toArray()[0];
+            if (gone === undefined) {
+              throw new Refusal("refused", "too many pending policy proposals");
+            }
+            this.#notices.once("held_request_evicted", `a proposal of ${gone.proposer} was ` +
+                               "let go to make room for a newer one", now);
           }
           sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
                      "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,
@@ -476,7 +502,7 @@ export class Policy {
   /**
    * In the mint's unit (`keyMint`), in the owner's session: an agent's held key request
    * applied with its key's grant, once (the Python's `_apply_key_request`). The card must
-   * be pending, unexpired, an `api_key_request` whose scopes are exactly the grant's, with
+   * be pending, an `api_key_request` whose scopes are exactly the grant's, with
    * the digest the owner was shown; it is marked applied here.
    */
   applyKeyRequest(session: LiveSession, proposal: unknown, scopes: unknown, now: number): void {
@@ -487,8 +513,7 @@ export class Policy {
     }
     const held = this.#sql.exec<{ digest: string; document: string }>(
       "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-        "AND applied_at IS NULL AND at > ?",
-      proposal["request_id"] as string, now - POLICY_LIMITS.proposalTtlS,
+        "AND applied_at IS NULL", proposal["request_id"] as string,
     ).toArray()[0];
     const change: unknown = held === undefined ? {} : JSON.parse(held.document);
     if (held === undefined || held.digest !== proposal["digest"] || !object(change)
@@ -500,14 +525,14 @@ export class Policy {
                    proposal["request_id"] as string);
   }
 
-  /** The pending, unexpired proposal held under a card id, and its digest, or null. */
-  held(requestId: unknown, now: number): { change: Change; digest: string } | null {
+  /** The pending proposal held under a card id, and its digest, or null. */
+  held(requestId: unknown): { change: Change; digest: string } | null {
     if (!cardId(requestId)) {
       return null;
     }
     const row = this.#sql.exec<{ digest: string; document: string }>(
       "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-        "AND applied_at IS NULL AND at > ?", requestId, now - POLICY_LIMITS.proposalTtlS,
+        "AND applied_at IS NULL", requestId,
     ).toArray()[0];
     return row === undefined ? null
       : { change: JSON.parse(row.document) as Change, digest: row.digest };
@@ -546,12 +571,13 @@ export interface CardRequest {
 // scope and the fields.
 
 /**
- * What the `policy` doors reach: the policy, the sandbox egress a write ends, and the action
- * rules' receipts, listed beside the policy's own.
+ * What the `policy` doors reach: the policy, the sandbox egress a write ends, the live leases
+ * a narrowing write marks, and the action rules' receipts, listed beside the policy's own.
  */
 export interface PolicyDoorNeeds extends Pick<DoorUnits, "door" | "synced"> {
   readonly policy: Policy;
   readonly egress: Pick<Egress, "end">;
+  readonly files: Pick<Files, "leasesNarrowed">;
   readonly actions: Pick<Actions, "receipts">;
 }
 
@@ -577,24 +603,30 @@ export const policyDoors = Object.freeze({
   /**
    * The owner's write, in its session; with `proposal`, a held card's one apply. A new
    * files retention is applied to rows already kept by housekeeping, so the schedule is
-   * synced after it (the `files` lane re-applies it). Once it committed, it ends the
-   * sandbox's in-flight egress streams; a call opened after it is admitted under the new
-   * generation.
+   * synced after it (the `files` lane re-applies it). A write that lets out less marks every
+   * live lease in its unit (`leasesNarrowed`): each sandbox's network is wider than the
+   * policy until a re-apply lands, and its lease is given back if none lands in time
+   * (`Launcher.reapply`). Once it committed, it ends the sandbox's in-flight egress streams;
+   * a call opened after it is admitted under the new generation.
    */
   async policyWrite(o: PolicyDoorNeeds, door: Door<PolicyWriteRequest, "session">):
       Promise<Projection> {
     const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
+      const before = o.policy.read().document.egress;
+      const now = clock();
       const written = o.policy.write(session, r["expected_generation"], r["policy"],
-                                         r["proposal"] ?? null, clock());
-      return { owner, generation: written.generation, digest: written.digest,
-               policy: written.document };
+                                     r["proposal"] ?? null, now);
+      if (narrows(before, written.document.egress)) {
+        o.files.leasesNarrowed(o.policy.egressGeneration(), now);
+      }
+      return projected(owner, written);
     }));
     await o.door(() => o.egress.end("policy"));
     return done;
   },
   /** The pending card the owner is shown, and the digest its apply must name. */
   policyProposal(o: PolicyDoorNeeds, { r }: Call<CardRequest>): { change: Change; digest: string } {
-    const held = o.policy.held(r["request_id"], clock());
+    const held = o.policy.held(r["request_id"]);
     if (held === null) {
       throw new Refusal("refused", "no pending proposal for this card");
     }

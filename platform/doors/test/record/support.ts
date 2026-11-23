@@ -1,10 +1,10 @@
 /**
- * What the doors' recorders share (`*.record.ts`, run by `npm run record`, `ci/record.ts`):
+ * What the doors' recorders share (`*.record.ts`, run by `ci/record.ts`):
  * an owner signed in to its app with its agent defined, and one answer's text with the ids a
  * run mints at random taken out, so base and head print the same lines for the same answer.
  */
 import type { Binding } from "../../../contract/src/binding";
-import { defineMain, OPEN, signInApp } from "../support";
+import { defineMain, OPEN_RECORD, signInApp } from "../support";
 
 /** The agent every recorder's owner has: Claude Code, signed in inside its sandbox. */
 export const SIGNED_IN = Object.freeze({ engine: "claude-code",
@@ -23,7 +23,7 @@ export function clean(text: string): string {
 /** Owner `who` signed in to its app, its agent `main` written as `SIGNED_IN` (`defineMain`). */
 export async function owned(who: string) {
   const app = await signInApp({ owner: who });
-  const binding: Binding = { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
+  const binding: Binding = { owner: who, caller: who, origin: null, control: OPEN_RECORD };
   await defineMain(who, app, SIGNED_IN);
   return { who, app, binding };
 }

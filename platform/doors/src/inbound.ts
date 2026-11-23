@@ -1,11 +1,10 @@
 /**
- * `/hooks/inbound/<token>` (tasks 2; slice L), ported from the Python's `owner_router.inbound`
- * and `broker/inbound_verification.py`: an outside service's event, proved and routed by
- * the binder, accepted by the owner's object (`inboundAccept`, `owner/src/inbound.ts`).
+ * `/hooks/inbound/<token>`: an outside service's event, proved and routed by the binder,
+ * accepted by the owner's object (`inboundAccept`, `owner/src/inbound.ts`).
  *
  * Order, before any object is reached:
  * 1. The `inbound` gate of the platform's control record (`CONTROL`): off or missing, the
- *    door does not exist (`404`, as the Python's switch); malformed or unreadable, `503`.
+ *    door does not exist (`404`); malformed or unreadable, `503`.
  * 2. `POST`, one path segment, and a body within the platform's one request ceiling
  *    (`EGRESS_BODY_MAX`); the `Cookie` header is gone before this sees it (`doors.ts`).
  * 3. The two shapes:
@@ -46,13 +45,11 @@ import { bindInbound, type Bound, withAccount } from "./binder";
 import { INBOUND_PATH, namedSecret, now } from "./config";
 import { ORIGIN } from "../../contract/src/identity";
 import type { DoorsEnv } from "./env";
-import {
-  inboundGate, MAINTENANCE, ordinaryAdmits, readControl,
-} from "../../contract/src/control";
+import { inboundGate, MAINTENANCE, ordinaryAdmits } from "../../contract/src/control";
+import { controlRead } from "./control";
 import { deleteRoute, putRoute, readRoute } from "./directory";
 import { answer, boundedBytes, mediaType, randomToken } from "./kit";
 import { answered, asInbound, asShared } from "./refused";
-import type { Sources } from "../../sources/src/schema";
 
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
 const STAMP = /^[0-9]{1,12}$/;
@@ -118,7 +115,7 @@ function headersOf(request: Request): Record<string, string> | null {
   return out;
 }
 
-/** A JSON object from an uncompressed UTF-8 JSON body, or null (`_json_object`). */
+/** A JSON object from an uncompressed UTF-8 JSON body, or null. */
 function envelopeOf(request: Request, body: Uint8Array): Record<string, unknown> | null {
   const encoding = (request.headers.get("Content-Encoding") ?? "identity").toLowerCase();
   if (mediaType(request) !== "application/json" || encoding !== "identity") {
@@ -138,7 +135,7 @@ type Routed =
   | { readonly kind: "event"; readonly route: string; readonly shared: boolean;
       readonly eventId: string; readonly eventAt: number };
 
-/** A shared app's request: proved, then its envelope read (`extract_single_installation`). */
+/** A shared app's request: proved, then its envelope's one installation read. */
 function sharedEvent(app: SharedApp, request: Request, body: Uint8Array,
                      headers: Record<string, string>, env: DoorsEnv): Routed {
   const secret = namedSecret(env, app.secret);
@@ -211,13 +208,12 @@ function delivered(accepted: InboundAnswer): Response {
 }
 
 /** `POST /hooks/inbound/<token>`. */
-export function serveInbound(request: Request, env: DoorsEnv, sources: Sources):
-    Promise<Response> {
-  return answered(asInbound, () => inbound(request, env, sources));
+export function serveInbound(request: Request, env: DoorsEnv): Promise<Response> {
+  return answered(asInbound, () => inbound(request, env));
 }
 
-async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promise<Response> {
-  const read = await readControl(env.CONTROL);
+async function inbound(request: Request, env: DoorsEnv): Promise<Response> {
+  const read = await controlRead(env);
   const gate = inboundGate(read);
   if (gate === "unavailable") {
     throw new Refusal("unavailable");
@@ -254,8 +250,8 @@ async function inbound(request: Request, env: DoorsEnv, sources: Sources): Promi
     if (!ordinaryAdmits(gate, entry.o)) {
       throw new Refusal("unavailable", MAINTENANCE);
     }
-    // The run an event starts is held to the switched-on sign-ins as a door's is (slice SIGNIN).
-    const { binding, stub } = withAccount(bindInbound(env, entry), read, sources);
+    // The run an event starts is held to the record's tiers and sign-ins as a door's is.
+    const { binding, stub } = withAccount(bindInbound(env, entry), read);
     return delivered(await stub.inboundAccept(binding, {
       event_id: routed.eventId, event_at: routed.eventAt, body, headers }));
   });

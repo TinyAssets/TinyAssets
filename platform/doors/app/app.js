@@ -1,4 +1,4 @@
-// The owner's app (tasks 2, the owner app): a thin surface over the doors' owner routes
+// The owner's app: a thin surface over the doors' owner routes
 // (`/app/api/*`). It builds no feature editor (Direction 3): an agent is its files, which
 // the owner reads and writes here as text, and everything else is one door's answer shown
 // in plain words. Every request goes to this origin only.
@@ -19,7 +19,7 @@ const SECTIONS = Object.freeze([
 ]);
 
 /**
- * The doors this app knows are not on the platform yet, each with its slice: only these say
+ * The doors this app knows are not on the platform yet: only these say
  * "not here yet", shown before anything is clicked. Any other missing door is a bug, and its
  * refusal is shown as it came. Each entry goes when its door lands.
  */
@@ -210,7 +210,6 @@ async function agents(arg) {
   const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
                                                        || record.signin?.enabled === true);
   const engines = sources.filter((s) => usable(s).length > 0);
-  const signinOnly = sources.filter((s) => s.credentials.length > 0 && usable(s).length === 0);
   const name = h("input", { type: "text", placeholder: "main", autocomplete: "off" });
   const engine = h("select", {}, h("option", { value: "auto" },
     "Your strongest connected source"), engines.map((s) => h("option", { value: s.id },
@@ -268,10 +267,6 @@ async function agents(arg) {
            "AGENTS.md. This writes both; you change them later as files."),
          field("Name", name),
          field("Engine", engine, "What runs the agent: a provider's own app in your sandbox."),
-         signinOnly.length === 0 ? null : h("p", { class: "muted" }, "Signing in with a " +
-           `subscription is switched off for ${signinOnly.map((s) => s.display_name)
-             .join(", ")}, so ${signinOnly.length === 1 ? "it" : "they"} cannot run an ` +
-           "agent yet (Model sources says why)."),
          field("Runs on", credential),
          field("API key connection", connection, "Only for an agent that runs on an API key."),
          h("div", { class: "field" }, h("span", {}, "What its runs may do"),
@@ -501,7 +496,7 @@ async function rooms(arg = null) {
     call("tools/inbox_digest", { limit: 100, after: 0 }),
     call("tools/board_digest", { limit: 100, after: 0 }), call("tools/agents_list")]);
   const room = h("select", {}, owned.filter((a) => a.retired_at === null).map((a) =>
-    h("option", { value: `dm:${a.agent_id}` }, `You and ${a.agent}`)));
+    h("option", { value: a.room_id }, `You and ${a.agent}`)));
   const body = h("textarea", {});
   const mail = inbox.mail.messages;
   paint(turn,
@@ -532,7 +527,7 @@ async function rooms(arg = null) {
 
 // -- Model sources --------------------------------------------------------------------
 
-// The vendor's own sign-in inside your sandbox (slice SIGNIN): TinyAssets starts the
+// The vendor's own sign-in inside your sandbox: TinyAssets starts the
 // vendor's own CLI's login there and shows only what it prints for you to do: a link to the
 // vendor's own sign-in page, which opens in your browser (TinyAssets never sees your
 // password), a code to type there, and a box for the code the vendor's page gives back.
@@ -568,9 +563,6 @@ function signinEnded(record, event) {
 
 function signinPanel(record, present, live) {
   const box = h("div", { class: "signin" });
-  const regionPick = record.signin.regions.length === 0 ? null
-    : h("select", {}, record.signin.regions.map((region) =>
-      h("option", { value: region.id }, region.display_name)));
   const show = (view) => {
     if (view === null && !record.signin.enabled) {
       // Off: no sign-in is offered, but a login already here can always be removed.
@@ -589,7 +581,6 @@ function signinPanel(record, present, live) {
              ? `Signed in with your ${record.display_name} subscription inside your sandbox.`
              : `Use your ${record.display_name} subscription: sign in inside your sandbox, ` +
                "on the vendor's own page."),
-           regionPick === null ? null : field("Region", regionPick),
            h("div", { class: "row" },
              action(present?.signed_in ? "Sign in again" : `Sign in to ${record.display_name}`,
                     () => begin("in"), report),
@@ -657,8 +648,7 @@ function signinPanel(record, present, live) {
   };
   const begin = async (mode) => {
     const view = await call("signin/start", {
-      engine: record.id, ...(mode === "out" ? { mode } : {}),
-      ...(mode === "in" && regionPick !== null ? { region: regionPick.value } : {}) });
+      engine: record.id, ...(mode === "out" ? { mode } : {}) });
     if (view.started === false) {
       say(view.code === "sandbox_waiting" ? "Your sandbox is waiting for room. Try again in a " +
           "moment." : `The sign-in could not start (${view.code}).`, "bad");
@@ -733,19 +723,43 @@ async function sources(arg = null) {
            .map((record) => h("div", { class: "card" }, h("b", {}, record.display_name),
              record.help_url ? [" ", h("a", { href: record.help_url, rel: "noreferrer",
                                                target: "_blank" }, "Where to get one")] : null,
-             connect(record)))));
+             connect(record)))),
+       h("section", {},
+         h("h2", {}, "An MCP server's key"),
+         h("p", { class: "muted" }, "A key for one of your agents' MCP servers, by the server's " +
+           "URL exactly as its mcp.json names it. Its runs reach that server through TinyAssets, " +
+           "which puts the key in; your agents never see it. Disconnect it above to stop it."),
+         serverKey()));
+}
+
+/** The connector door's form: the server's URL, how it takes its key, and the key. */
+function serverKey() {
+  const url = h("input", { type: "url", placeholder: "The server's URL" });
+  // The MCP authorization spec's own way; a server that reads another header says so.
+  const header = h("input", { type: "text", value: "authorization", "aria-label": "Header" });
+  const scheme = h("input", { type: "text", value: "Bearer", "aria-label": "Scheme" });
+  const key = h("input", { type: "password", autocomplete: "off", placeholder: "Key" });
+  return h("div", { class: "card" }, h("div", { class: "row" }, url, header, scheme, key,
+    action("Save the key", async () => {
+      const view = await call("connections/connector", {
+        url: url.value.trim(), key: key.value.trim(), header: header.value.trim(),
+        scheme: scheme.value.trim() });
+      key.value = "";
+      say(`Saved a key for ${view.display_name}.`);
+      await sources();
+    }, report)));
 }
 
 // -- Connected apps: code mode, each client's tools, revokes --------------------------
 
 async function apps(arg = null) {
   const turn = turnOf("apps", arg);
-  const [policy, { clients }, { tools }, { agents: mains, apps: known }, { kinds }] =
-    await Promise.all([
+  const [policy, { clients }, { tools }, { agents: mains, owner_agents: owned, apps: known },
+         { kinds }] = await Promise.all([
     call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
     call("agent/doorbell/kinds")]);
   const document_ = policy.policy;
-  const codemode = h("input", { type: "checkbox", checked: document_.codemode?.on !== false });
+  const codemode = h("input", { type: "checkbox", checked: policy.codemode.on });
   const custom = document_.tools?.custom ?? null;
   const every = h("input", { type: "checkbox", checked: custom === null });
   const picks = tools.map((tool) => h("label", {},
@@ -810,26 +824,34 @@ async function apps(arg = null) {
          h("h2", {}, "Apps you connected"),
          outside.length === 0 ? h("p", { class: "muted" }, "No app is connected.")
            : h("div", { class: "scroll" }, h("table", {},
-             h("thead", {}, h("tr", {}, ["App", "Access", "Tools", "Last used", ""].map((t) =>
-               h("th", {}, t)))),
+             h("thead", {}, h("tr", {}, ["App", "Access", "Tools", "Agent", "Last used", ""]
+               .map((t) => h("th", {}, t)))),
              h("tbody", {}, outside.map((c) => {
                const profile = h("select", {},
                  h("option", { value: "custom", selected: c.profile === "custom" }, "Your choice above"),
                  h("option", { value: "directory", selected: c.profile === "directory" },
                    "The public directory's set (no code mode)"));
+               // Its own agent always among the choices, so a save never moves it unasked.
+               const agent = h("select", {}, [...new Set([c.agent, ...owned
+                 .filter((a) => a.retired_at === null).map((a) => a.agent)])].map((a) =>
+                 h("option", { value: a, selected: a === c.agent },
+                   a === c.agent && !c.agent_live ? `${a} (deleted)` : a)));
                return h("tr", {}, h("td", {}, named(c),
                  c.vendor !== null && c.vendor_verified === 0 && c.name === ""
                    ? h("span", { class: "muted" }, " (its own name, not verified)") : null),
                  h("td", {}, c.mode === "full" ? "Everything" : `${c.scopes.length} scopes`),
-                 h("td", {}, profile, action("Save", async () => {
+                 h("td", {}, profile),
+                 h("td", {}, agent, c.agent_live ? null : h("p", { class: "muted" },
+                   "This agent was deleted, so the app cannot read its instructions. Choose " +
+                   "another, or put its agent.json back.")),
+                 h("td", {}, when(c.last_seen)),
+                 h("td", {}, action("Save", async () => {
                    await call("grants/set", { client: c.client, source: c.source, mode: c.mode,
                      scopes: c.scopes, expected_revision: c.revision, name: c.name,
-                     profile: profile.value });
+                     profile: profile.value, agent: agent.value });
                    say("Saved.");
                    await apps();
-                 }, report, { class: "quiet" })),
-                 h("td", {}, when(c.last_seen)),
-                 h("td", {}, action("Disconnect", async () => {
+                 }, report, { class: "quiet" }), action("Disconnect", async () => {
                    await call("grants/revoke", { client: c.client });
                    say(`Disconnected ${named(c)}.`);
                    await apps();

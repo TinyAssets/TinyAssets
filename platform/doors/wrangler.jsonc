@@ -7,8 +7,9 @@
 // guards/config.test.ts allows:
 // - OWNER: the owner Worker's namespace, by script_name. Only src/binder.ts reaches it.
 // - GATEWAY: the model gateway's ConnectGateway entrypoint, which serves only the connect
-//   steps (seal, exchange, verify): no model call, no egress forwarding, and the keyring
-//   stays in the gateway. Only src/connect.ts reaches it.
+//   steps (seal, exchange, verify) and a doorbell's (sealDoorbell, verifyDoorbell): no model
+//   call, no egress forwarding, and the keyring stays in the gateway. Only src/connect.ts
+//   reaches it.
 // - EGRESS: the model gateway's EgressGateway entrypoint, which serves only forward: the
 //   egress door streams a sandbox request the owner's object admitted through it. Only
 //   src/egress.ts reaches it.
@@ -19,26 +20,27 @@
 // - FILES: the files Worker's FilesUpload entrypoint, which serves putChunks alone, what the
 //   file door's bytes call (the binder streams an upload's chunks to it, src/file-bytes.ts):
 //   the doors hold an uploading owner's wrapped data key, so they bind no read and no key
-//   call of the files Worker's (review M5-1). Only src/file-bytes.ts reaches it.
+//   call of the files Worker's. Only src/file-bytes.ts reaches it.
 // - FILES_LOCATE: the files Worker's FilesLocate entrypoint, which serves locate, namespaces
 //   and erase: a namespace's owner, read from its newest generation's header in the files
 //   Worker, the namespaces the bucket holds, and a namespace deleted whole for an owner the
 //   directory records erased, for the operator channel's restore.locate and restore.namespaces
 //   (a restore after an account's loss, or of a lost object). Only src/operator.ts reaches it.
-// - No ratelimits: no number of ours bounds any caller (slice L's review). Cloudflare's own
+// - No ratelimits: no number of ours bounds any caller. Cloudflare's own
 //   DDoS protection is in front of every Worker; a metadata fetch the OAuth provider makes
 //   is bounded by the provider (public URLs, 5 KiB, 10 s; global_fetch_strictly_public).
-// - queues: also the consumer of the erasure queue (slice L, src/erase.ts), whose one
+// - queues: also the consumer of the erasure queue (src/erase.ts), whose one
 //   producer is the owner Worker: {owner}, the erasure's outside record.
 // - DCR_ENABLED: dynamic registration for the vendors that offer no CIMD (the founder's
 //   ruling, 2026-11-04), off until the doors go live (mode `routes`); on, it takes only a client
 //   named for such a vendor whose every redirect is that vendor's (apps.json). OWNER_ISSUER:
 //   AuthKit's issuer, whose subjects stay owner ids; until the deploy sets it, every
 //   sign-in fails loudly. FOREIGN_ISSUERS: the other issuers whose owners are
-//   namespaced, each listed by its own slice; none today, and any unlisted issuer fails.
+//   namespaced, each listed as its provider is added; none today, and any unlisted issuer
+//   fails.
 //   UPSTREAM: the owner issuer's endpoints and our client at it (src/oidc.ts), filled by
 //   the deploy from the issuer's live discovery once its issuer is OWNER_ISSUER exactly.
-// - queues: the consumer of the sandbox line's ring queue (slice S, src/ring.ts), which
+// - queues: the consumer of the sandbox line's ring queue (src/ring.ts), which
 //   turns {owner} into that owner's sandboxRung (its waiting runs start again) and nothing
 //   else; the sandbox Worker is its one producer.
 // - ROUTING_MAC_KEY: the key sandbox tokens are MAC'd under (32 random
@@ -58,7 +60,7 @@
 // - ASSETS: the owner app's own files (`app/`: its pages, script and style), Workers Static
 //   Assets, served only through src/pages.ts (`run_worker_first`), which names each page and
 //   sets its security headers; no file is served past the Worker. The app sits on the same
-//   origin as `/app/api`, so its session cookie and CSP hold (tasks 2, the owner app).
+//   origin as `/app/api`, so its session cookie and CSP hold.
 // `enable_request_signal` fires a request's `signal` when its client disconnects, so the
 // egress door settles a call whose client left before the answer at once.
 // - The cutover's import window (src/import/), deleted at the cutover with platform/import/:
@@ -81,12 +83,16 @@
 //   dispatches nothing. `wrangler deploy` and the routes' `triggers deploy` set the
 //   schedule; a version upload leaves it as it is.
 // - observability: Workers Logs, as every platform Worker has them (ci/kit/config.ts).
+// - CF_VERSION_METADATA: the version serving a request, which every answer names
+//   (`x-tinyassets-version`, src/index.ts), so a check sent to one version by Cloudflare's
+//   version override sees which one answered: an override Cloudflare ignores still answers.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-doors",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-23",
   "observability": { "enabled": true },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "triggers": { "crons": ["*/10 * * * *"] },
   "compatibility_flags": ["nodejs_compat", "disable_ctx_exports", "global_fetch_strictly_public",
                           "enable_request_signal"],

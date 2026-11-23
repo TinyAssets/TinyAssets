@@ -1,13 +1,19 @@
 /**
  * Runs launched, delivered and given their sandbox (ADR-034 decision 4;
- * `docs/decisions/untangle-2026-11-wave-1.md` A2): the object's half of a run, around `runs.ts`'s
- * rows and decisions. One `Launcher` an object, which serves Runs its one narrow interface
- * (`RunHost`) and holds:
+ * `docs/decisions/untangle-2026-11-wave-1.md` A2): the object's half of a run, around
+ * `runs.ts`'s rows and decisions. One `Launcher` an object, which serves Runs its one narrow
+ * interface (`RunHost`) and holds:
  *
- * - **a launch** (`launch`): the agent's `agent.json` read whole (`readAgent`), its run admitted
- *   in one unit against the file still at the etag it was read at, then started through the
- *   sandbox Worker (`SANDBOX`), and what came of it recorded (`running`, `failed` with the
- *   sandbox's code, `unknown` when its answer never came, or `waiting` for a sandbox to free);
+ * - **a launch** (`launch`): the agent's `agent.json`, `mcp.json` and `hooks.json` read whole
+ *   (`readAgent`), with the ranking its `auto` ranks by (the owner's
+ *   `/workspace/model-ranking.json`, else the platform's), its run admitted in one unit
+ *   against the file still at the etag it was read at, with the agent's own MCP servers the owner's egress lets out (`agentServers`; the
+ *   owner told of each left out), each one an owner's connector is sealed for bound to it on
+ *   the run's grant and reached through the egress door (`connectorsOf`), and only the
+ *   servers' and hooks' commands the owner's rules let its run start (`#ownCommands`), then started
+ *   through the sandbox Worker (`SANDBOX`), and what came of it recorded (`running`,
+ *   `failed` with the sandbox's code or for an answer out of its shape, `unknown` when its
+ *   answer never came, or `waiting` for a sandbox to free);
  *   a door's bounded wait for its run to settle (`settledWithin`), woken on this instance;
  * - **the `runs` lane's pass** (`pass`): runs whose runner was lost settled, waiting runs
  *   started on their turn, mail no run took delivered as its agent's run (`#deliver`), and due
@@ -30,38 +36,47 @@ import {
   type Egressible, runUrls, sandboxEnv, withEgressToken,
 } from "../../contract/src/egress";
 import type { PolicyDocument } from "../../contract/src/policy-document";
-import { PLACE_BYTES } from "../../contract/src/limits";
-import { Refusal } from "../../contract/src/refusal";
+import { LEASE_TTL_S, PLACE_BYTES } from "../../contract/src/limits";
+import { slotted, type SlotPool } from "../../contract/src/slots";
+import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
+import { type Ranking, rankingOf, shippedRanking } from "../../sources/src/ranking";
 import { runEnv } from "../../sources/src/run-env";
 import { SourceRecordError } from "../../sources/src/schema";
 
-import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
+import {
+  AGENT_FILES, AGENT_UNDEFINED, type AgentFile, agentFile, type AgentHooks, agentHooks,
+  type AgentMcp, agentMcp, agentPath, type McpServer,
+} from "../../contract/src/agent-definition";
 import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
 import type { DoorUnits, ObjectReads } from "./door";
 import type { Egress } from "./egress";
+import { slottedNow } from "./gate";
 import type { OwnerEnv } from "./env";
 import { type Files, type Lease, type SandboxLease } from "./files";
+import { ADMITTED_FILE_BYTES, ADMITTED_FILE_UNITS, ownerSlots } from "./holds";
 import { type Delivery, type Ledger, type MailAuthority, mailInput } from "./ledger";
-import { nativeId } from "../../contract/src/binding";
+import { nativeId, type Origin } from "../../contract/src/binding";
+import { RANKING } from "../../contract/src/paths";
 import { clock, inTime } from "./clock";
-import { networkDocument } from "./network";
+import { agentServers, connectorsOf, networkDocument, throughConnectors } from "./network";
 import type { Notices } from "./notices";
 import type { Relay } from "./relay";
 import {
   type Ask, type LiveLease, type MailAnswer, mailConversation, NO_SCHEDULE,
   type OpenedTokens, type RunHost, type RunReceipt, Runs, scheduleAuthority,
-  type SpendCaps, type UsableSource,
+  type SpendCaps,
 } from "./runs";
-import { started, vendorHosts } from "./sandbox";
-import { LANE_CALL_MS } from "./schedule";
+import type { Usable } from "./auto";
+import { networkOutcome, startOutcome, vendorHosts } from "./sandbox";
+import { type Held, LANE_CALL_MS } from "./schedule";
 import type { Starter } from "./starter";
-import { type Signins, switchedOn } from "./signins";
+import type { Signins } from "./signins";
 import type { TierName, Tiers } from "../../contract/src/control";
 import {
-  type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, SIGNIN_REQUIRED,
-  type Started,
+  type CredentialKind, type NetworkPlan, type RunConfig, SANDBOX_WAITING, type SandboxStart,
+  SIGNIN_REQUIRED,
 } from "../../contract/src/sandbox";
 
 /**
@@ -73,6 +88,44 @@ import {
  * taking it again.
  */
 export const NETWORK_RETRY_S = 30;
+
+/**
+ * How long a live lease's sandbox may owe a narrowed egress policy (a host the owner dropped
+ * still let out by its older network) before its lease is given back and its runs stopped
+ * (`Launcher.reapply`, `NETWORK_UNCONFIRMED`): one lease's TTL, the time the platform already
+ * lets a sandbox run unconfirmed (a runner unheard that long is settled lost). It holds two
+ * whole tries, the write's own and the retry `NETWORK_RETRY_S` on, each answered within
+ * `LANE_CALL_MS` (a test holds this), so a re-apply that lands is never cut short
+ * (`untangle-2026-11/network-narrow-bound.md`).
+ */
+export const NARROWED_WITHIN_S = LEASE_TTL_S;
+
+/** A run's settle code, and the owner's notice, when a narrowing was not in force in time. */
+export const NETWORK_UNCONFIRMED = "network_unconfirmed";
+
+/**
+ * What a run is admitted on (`readAgent`): its `agent.json` at its etag, its servers and its
+ * hooks.
+ */
+export interface AgentRead {
+  readonly file: AgentFile;
+  readonly etag: string;
+  readonly ranking: Ranking;
+  readonly mcp: AgentMcp;
+  readonly hooks: AgentHooks;
+}
+
+/** How a read holds the isolate's pool: a door's waits its turn, a lane's takes it now. */
+type PoolHold = <T>(pool: SlotPool, units: number, work: () => Promise<T>) => Promise<T>;
+
+/** `agent`'s definition file `name`, as text: strict UTF-8, or the run is refused. */
+function definitionText(agent: string, name: string, bytes: Uint8Array): string {
+  try {
+    return utf8Decoder("strip").decode(bytes);
+  } catch {
+    throw new Refusal("agent_file_invalid", `${agentPath(agent, name)} is not UTF-8 text`);
+  }
+}
 
 /** The agent's file changed between its read and the admission: the caller tries again. */
 export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";
@@ -98,16 +151,29 @@ export interface SandboxRun {
   readonly connection?: string;
 }
 
+/** A run as the owner's rules decide its calls (`actions.ts`): its id, agent and conversation. */
+interface DecidedRun {
+  readonly id: string;
+  readonly agent: string;
+  readonly conversation: string;
+}
+
 /**
  * What the launcher reaches of the object, handed it once by the object that builds it: the
  * files' leases and the bodies a run's mail and reply place; the mail it delivers; the
  * owner's model connections, policy, spend and grants a run is admitted against; the tier
  * and admission; the sandbox's egress, sign-ins and the app sockets a run's end tells; its
- * starter seed; and the object's units and reads.
+ * starter seed; and the object's units and reads; the owner's rules on a run's own commands.
  */
 export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
-                                       Pick<ObjectReads, "owner" | "storage" | "control"> {
-  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY" | "SANDBOX">;
+                                       Pick<ObjectReads, "owner" | "sandbox" | "storage"
+                                         | "control"> {
+  readonly env: Pick<OwnerEnv, "ROUTING_MAC_KEY">;
+  /** The owner's rules on a run's own definition's commands (`actions.ts` `decideCommand`). */
+  readonly actions: {
+    decideCommand(run: DecidedRun, origin: Origin | null,
+                  asked: { readonly door: string; readonly request: unknown }, now: number): void;
+  };
   readonly admission: {
     numbers(): Tiers;
     tier(): TierName;
@@ -116,29 +182,28 @@ export interface LauncherNeeds extends Pick<DoorUnits, "door" | "sync">,
   };
   readonly bodies: Pick<Bodies, "begin" | "fetch" | "rereading">;
   readonly connections: {
-    usable(): readonly UsableSource[];
+    usable(): readonly Usable[];
     egressible(): readonly Egressible[];
   };
-  readonly egress: Pick<Egress, "end">;
-  readonly files: Pick<Files, "fetch" | "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
-    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "open"
+  readonly egress: Pick<Egress, "end" | "spent">;
+  readonly files: Pick<Files, "held" | "leaseAcquire" | "leaseRelease" | "leaseRenew"
+    | "leasesLapsed" | "liveLeases" | "networkAnswered" | "networkSent" | "openFile" | "range"
     | "sandboxLease" | "stat">;
   readonly grants: {
     standing(client: unknown, generation: unknown, authenticatedAt: number | null):
         StandingGrant;
   };
   readonly ledger: Pick<Ledger, "answer" | "hold" | "mailDue" | "mailFor" | "nextMail" | "post"
-    | "release" | "settled" | "taken" | "undeliverable">;
-  readonly notices: Pick<Notices, "add">;
+    | "release" | "roomOf" | "settled" | "taken" | "undeliverable">;
+  readonly notices: Pick<Notices, "add" | "once">;
   readonly policy: {
     egressGeneration(): number;
     models(): SpendCaps;
     read(): { readonly document: PolicyDocument };
   };
   readonly relay: Pick<Relay, "settled">;
-  readonly signins: Pick<Signins, "holds">;
+  readonly signins: Pick<Signins, "end" | "holds" | "list">;
   readonly starter: Pick<Starter, "seeded" | "version">;
-  readonly usage: { spent(period: string, source: string | null): number };
 }
 
 export class Launcher implements RunHost {
@@ -152,6 +217,16 @@ export class Launcher implements RunHost {
    * synchronous unit, for its settle to post by reference (`answer`).
    */
   #replyPlaced: Placed | null = null;
+  /**
+   * The jobs' stops sent to the sandbox and not yet answered (`stopAfter`). A lease's release
+   * is sent only once those out when it is due have answered (`#released`), so it reaches the
+   * sandbox's serial chain after the stops of its lease's jobs: a release drops its lease's
+   * `launched` rows, so a run's cancel after it finds nothing to stop, and it pauses only a
+   * sandbox nothing lives in (`sandbox/src/control.ts` `release`).
+   */
+  readonly #stopping = new Set<Promise<void>>();
+  /** The leases whose release is asked and not yet sent: each is sent once. */
+  readonly #releasing = new Set<string>();
 
   constructor(o: LauncherNeeds) {
     this.#o = o;
@@ -172,7 +247,7 @@ export class Launcher implements RunHost {
     return this.#o.admission.tiers();
   }
 
-  reachable(): readonly UsableSource[] {
+  reachable(): readonly Usable[] {
     const reachable = new Set(this.#o.connections.egressible().map((entry) => entry.connection));
     return this.#o.connections.usable().filter((entry) => reachable.has(entry.connection));
   }
@@ -186,7 +261,7 @@ export class Launcher implements RunHost {
   }
 
   spent(period: string, source: string | null): number {
-    return this.#o.usage.spent(period, source);
+    return this.#o.egress.spent(period, source);
   }
 
   lease(now: number, authority: string): LiveLease | null {
@@ -198,11 +273,9 @@ export class Launcher implements RunHost {
   }
 
   releaseLease(leaseId: string, epoch: number): void {
-    // A lease a sign-in holds stays: its sandbox is in use with no run (slice SIGNIN).
-    if (!this.#o.signins.holds(leaseId) && this.#o.files.leaseRelease(leaseId, epoch).released) {
-      this.#o.egress.end("lease", (live) => live.lease === leaseId);
-      // Once the unit is over, its sandbox paused: no run lives in it (slice S).
-      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+    // A lease a sign-in holds stays: its sandbox is in use with no run.
+    if (!this.#o.signins.holds(leaseId)) {
+      this.#giveBack(leaseId, epoch);
     }
   }
 
@@ -211,9 +284,9 @@ export class Launcher implements RunHost {
   }
 
   leasesLapsed(now: number): void {
-    // Each lapsed lease's sandbox paused, as a given-back one's is (slice S).
+    // Each lapsed lease's sandbox paused, as a given-back one's is.
     for (const leaseId of this.#o.files.leasesLapsed(now)) {
-      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+      this.#released(leaseId);
     }
   }
 
@@ -251,11 +324,45 @@ export class Launcher implements RunHost {
     this.#o.notices.add(type, detail, clock());
   }
 
-  /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
+  noticeOnce(type: string, detail: string): void {
+    this.#o.notices.once(type, detail, clock());
+  }
+
+  /** From a unit: each run's cancel sent to the sandbox once the unit is over (`stopAfter`). */
   stop(runs: readonly string[]): void {
     for (const run of runs) {
-      queueMicrotask(() => void this.cancel(run));
+      void this.stopAfter(() => this.cancel(run));
     }
+  }
+
+  /**
+   * From a unit: `stop`, a job's stop in the sandbox (a run's cancel, a sign-in's), sent once
+   * the unit is over, before the release of any lease given back meanwhile (`#released`).
+   * What it answers.
+   */
+  stopAfter<T>(stop: () => Promise<T>): Promise<T> {
+    const stopped = Promise.resolve().then(stop);
+    const out = stopped.then(() => undefined, () => undefined);
+    this.#stopping.add(out);
+    void out.then(() => this.#stopping.delete(out));
+    return stopped;
+  }
+
+  /**
+   * In a unit: a job whose start may have launched after it stopped standing (cancelled,
+   * ended or lost while its start was out: `#start`, `signinStart`), stopped (`stopAfter`);
+   * then, when nothing holds its lease now, that lease given back and its sandbox released
+   * after the stop, however the lease went: one given back while the start was out had its
+   * release reach the sandbox first, and the start then resumed it. What the stop answers.
+   */
+  landed<T>(lease: { readonly lease_id: string; readonly epoch: number },
+            stop: () => Promise<T>): { stopped: Promise<T> } {
+    const stopped = this.stopAfter(stop);
+    if (!this.runs.holds(lease.lease_id) && !this.#o.signins.holds(lease.lease_id)) {
+      this.#giveBack(lease.lease_id, lease.epoch);
+      this.#released(lease.lease_id);
+    }
+    return { stopped };
   }
 
   /**
@@ -275,7 +382,7 @@ export class Launcher implements RunHost {
 
   /**
    * A new owner's starter seed, awaited before a door reads an agent: its first `converse`
-   * finds `main` however soon it comes (review L3), the lane's pass joined if it runs.
+   * finds `main` however soon it comes, the lane's pass joined if it runs.
    */
   async seeded(): Promise<void> {
     if (this.#o.starter.version() === 0) {
@@ -284,107 +391,221 @@ export class Launcher implements RunHost {
     }
   }
 
-  /** An agent's `agent.json`, read whole, and the etag it was read at. */
-  async readAgent(agent: string): Promise<{ file: AgentFile; etag: string }> {
-    const path = agentFilePath(agent);
-    const content = await this.#o.door(() => {
-      const entry = this.#o.files.stat(path);
-      if (entry === null || entry.kind !== "file") {
-        throw new Refusal("agent_undefined", AGENT_UNDEFINED);
-      }
-      return this.#o.files.open(path);
-    });
-    let bytes = content.inline;
-    if (bytes === undefined) {
-      const parts = await this.#o.files.fetch((content.chunks ?? []).map(({ sha256 }) =>
-        ({ sha256 })));
-      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-      let at = 0;
-      for (const part of parts) {
-        bytes.set(part, at);
-        at += part.byteLength;
-      }
-    }
-    let text: string;
-    try {
-      text = utf8Decoder("strip").decode(bytes);
-    } catch {
-      throw new Refusal("agent_file_invalid", `${path} is not UTF-8 text`);
-    }
-    return { file: agentFile(text), etag: content.entry.etag };
+  /**
+   * What a run of `agent` is admitted on: its `agent.json`, read whole, the etag it was read
+   * at, the ranking its `auto` ranks by (the owner's own file, `RANKING`, whole, else the
+   * platform's), its `mcp.json` (none, no servers) and its `hooks.json` (none, no hooks). An
+   * owner's file that is no ranking
+   * refuses the run (`invalid`), never a silent fall back to the platform's; a definition
+   * file that does not fit refuses it too (`agent_file_invalid`), never half-read. A door's
+   * read waits its turn on the isolate's pool (`slotted`).
+   */
+  readAgent(agent: string): Promise<AgentRead> {
+    return this.#readAgent(agent, slotted);
   }
 
   /**
-   * Admit a run in one unit (`ask`, which binds the call again, and the agent's file still
-   * at the etag it was read at), then start it through the sandbox and record what came of
-   * it: `running`, `failed` with the sandbox's code, or `unknown` when its answer never came
-   * (the run is then cancelled too, in case it did start). Its id: a run that waits for
-   * its conversation's live run is written `waiting` and starts from the lane, its turn
-   * come (`waiting`, the run the lane starts).
+   * `readAgent` for the `runs` lane, whose read takes the pool's units now or is refused
+   * `busy` (`slottedNow`), which holds the lane (`run`): inside the alarm a lane never waits
+   * on the pool, since the object's other lanes would wait with it (`unitsNow`).
    */
-  async launch(read: { file: AgentFile; etag: string }, ask: () => Omit<Ask, "file">,
-               waiting: string | null = null, taken: () => void = () => {}): Promise<string> {
-    const { admitted, agent, unattended } = await this.#o.door(() => {
+  #laneAgent(agent: string): Promise<AgentRead> {
+    return this.#readAgent(agent, slottedNow);
+  }
+
+  async #readAgent(agent: string, hold: PoolHold): Promise<AgentRead> {
+    const read = await this.#whole(agentPath(agent, AGENT_FILES.agent), hold);
+    if (read === null) {
+      throw new Refusal("agent_undefined", AGENT_UNDEFINED);
+    }
+    const servers = await this.#whole(agentPath(agent, AGENT_FILES.mcp), hold);
+    const hooks = await this.#whole(agentPath(agent, AGENT_FILES.hooks), hold);
+    return { file: agentFile(definitionText(agent, AGENT_FILES.agent, read.bytes)),
+             etag: read.etag, ranking: await this.#ranking(hold),
+             mcp: servers === null ? { servers: {} }
+               : agentMcp(definitionText(agent, AGENT_FILES.mcp, servers.bytes)),
+             hooks: agentHooks(hooks === null ? '{"hooks": {}}'
+               : definitionText(agent, AGENT_FILES.hooks, hooks.bytes)) };
+  }
+
+  async #ranking(hold: PoolHold): Promise<Ranking> {
+    const read = await this.#whole(RANKING, hold);
+    if (read === null) {
+      return shippedRanking();
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(utf8Decoder("strip").decode(read.bytes));
+    } catch {
+      throw new Refusal("invalid", `${RANKING} is not JSON text`);
+    }
+    return rankingOf(value, RANKING);
+  }
+
+  /**
+   * The owner's file at `path`, read whole, and its etag; null where nothing is. Anything else
+   * there (a folder) refuses the run (`Files.openFile`), never read as no file (Fact 8). A file
+   * past an inline one is read holding the pool's units as `hold` takes them.
+   */
+  async #whole(path: string, hold: PoolHold):
+      Promise<{ bytes: Uint8Array; etag: string } | null> {
+    const content = await this.#o.door(() => this.#o.files.openFile(path));
+    if (content === null) {
+      return null;
+    }
+    if (content.entry.size > ADMITTED_FILE_BYTES) {
+      throw new Refusal("invalid", `${path} is past the ${ADMITTED_FILE_BYTES} bytes a run's ` +
+                        "admission reads whole");
+    }
+    const bytes = content.inline ?? await hold(ownerSlots(), ADMITTED_FILE_UNITS, () =>
+      this.#o.files.range(content.chunks ?? [], 0, content.entry.size));
+    return { bytes, etag: content.entry.etag };
+  }
+
+  /**
+   * A door's run: admitted (`#admit`), and, when it starts now, started through the sandbox
+   * with what came of it recorded (`#start`). Its id: a run that waits for its conversation's
+   * live run is written `waiting` and starts from the lane, its turn come.
+   */
+  async launch(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking" | "connectors">):
+      Promise<string> {
+    const start = await this.#admit(read, ask, null, () => {});
+    if (typeof start === "string") {
+      return start;
+    }
+    await this.#start(start);
+    return start.run;
+  }
+
+  /**
+   * A lane row's run (`waiting`, the waiting run the lane starts; `taken`, the row's input
+   * taken in the admission's unit), as a door's, but the pass waits on its start only to
+   * `LANE_CALL_MS` (`inTime`), as on every outside call a row makes. A start still out then
+   * stays fenced in its row: the run is `queued`, which no pass starts again; its answer is
+   * recorded when it comes, against the run as it then stands (`#start`); and one that never
+   * comes leaves the run to `Runs.lost`, a lease's TTL after its admission, which settles it
+   * `unknown` and stops it. A fault of the start's own after the pass went on is a bug,
+   * logged, since no pass is left to fail.
+   */
+  async #laneLaunch(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking" | "connectors">,
+                    waiting: string | null, taken: (run: string) => void): Promise<void> {
+    const start = await this.#admit(read, ask, waiting, taken);
+    if (typeof start === "string") {
+      return;
+    }
+    const started = this.#start(start);
+    if (await inTime(started, LANE_CALL_MS) === "late") {
+      started.catch((error: unknown) =>
+        console.error("a run's start failed after the lane's pass went on", error));
+    }
+  }
+
+  /**
+   * A run admitted in one unit (`ask`, which binds the call again, and the agent's file still
+   * at the etag it was read at), and its start built once, so a second send is the same start;
+   * or the run's id alone when it does not start now (a retry's run, or one written waiting).
+   */
+  async #admit(read: AgentRead, ask: () => Omit<Ask, "file" | "ranking" | "connectors">,
+               waiting: string | null, taken: (run: string) => void):
+      Promise<string | SandboxStart> {
+    const admission = await this.#o.door(() => {
       const made = ask();
-      if (this.#o.files.stat(agentFilePath(made.agent))?.etag !== read.etag) {
+      if (this.#o.files.stat(agentPath(made.agent, AGENT_FILES.agent))?.etag !== read.etag) {
         throw new Refusal("agent_changed", AGENT_CHANGED);
       }
-      const done = { agent: made.agent, unattended: made.unattended,
-                     admitted: this.runs.admit({ ...made, file: read.file }, clock(), (chosen) =>
-                       this.#runConfig({ run: chosen.run, secret: chosen.secret,
-                                         engine: chosen.engine, credential: chosen.credential,
-                                         ...(chosen.connection === null ? {}
-                                           : { connection: chosen.connection }) }), waiting) };
-      taken();  // the input it was asked on is its own now (a mail's, taken)
-      return done;
+      const { file, ranking } = read;
+      // The servers under the policy the run's network is made by, in this same unit, each
+      // one an owner's connector is sealed for bound to it, reached through the egress door.
+      const kept = agentServers(read.mcp, this.#o.policy.read().document.egress);
+      const bound = connectorsOf(kept.servers, this.#o.connections.egressible());
+      const admitted = this.runs.admit({ ...made, file, ranking,
+                                         connectors: [...new Set(Object.values(bound))] },
+                                       clock(), (chosen) =>
+        this.#runConfig({ run: chosen.run, secret: chosen.secret,
+                          engine: chosen.engine, credential: chosen.credential,
+                          ...(chosen.connection === null ? {}
+                            : { connection: chosen.connection }) }), waiting);
+      taken(admitted.run);  // the input it was asked on is its own now (a mail's, taken)
+      if (admitted.existing) {
+        return admitted.run;
+      }
+      for (const { name, host, why } of kept.dropped) {
+        this.#o.notices.once("mcp_server_dropped", `${made.agent}: its MCP server ${name} (${
+          host}) is left out of its runs: ${why}`, clock());
+      }
+      // Only a run that starts now decides its definition's commands, so a run retried or
+      // written waiting uses no yes. A command server is bound to no connector, so one left
+      // out changes no grant.
+      const own = this.#ownCommands({ id: admitted.run, agent: made.agent,
+                                      conversation: admitted.conversation }, made.origin,
+                                    kept.servers, read.hooks.hooks);
+      return { agent: made.agent, unattended: made.unattended, admitted, hooks: own.hooks,
+               servers: throughConnectors(own.servers, bound, admitted.run, admitted.secret) };
     });
-    if (admitted.existing) {
-      return admitted.run;
+    if (typeof admission === "string") {
+      return admission;
     }
-    let answer: Started | null = null;
-    try {
-      answer = started(await this.#o.env.SANDBOX.start(this.#o.owner(), {
-        run: admitted.run, agent, conversation: admitted.conversation,
-        engine: admitted.engine, credential: admitted.credential, model: admitted.model,
-        session_id: admitted.session_id, prompt: admitted.prompt, unattended,
-        authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
-        network: admitted.network, config: admitted.config,
-        hosts: vendorHosts(admitted.engine, admitted.credential, null),
-        route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
-                                                        authority: admitted.authority }),
-        urls: runUrls(admitted.run, admitted.secret) }));
-    } catch {
-      console.error("a run's start had no answer; it is settled unknown");
-      answer = null;
-    }
-    await this.#o.door(() => {
-      if (answer === null) {
-        this.runs.settle(admitted.run, "unknown", "start_lost", null, clock());
+    const { admitted, agent, unattended, servers, hooks } = admission;
+    return {
+      run: admitted.run, agent, conversation: admitted.conversation,
+      engine: admitted.engine, credential: admitted.credential, model: admitted.model,
+      session_id: admitted.session_id, prompt: admitted.prompt, unattended,
+      authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
+      network: admitted.network, config: admitted.config,
+      hosts: vendorHosts(admitted.engine, admitted.credential),
+      route: sealRoute(this.#o.env.ROUTING_MAC_KEY, { owner: this.#o.owner(),
+                                                      authority: admitted.authority }),
+      urls: runUrls(admitted.run, admitted.secret), mcp_servers: servers, hooks };
+  }
+
+  /**
+   * An admitted run started through the sandbox, and what came of it (`StartOutcome`)
+   * recorded against the run as it stands when the answer comes: `running`, `failed` with
+   * the sandbox's code or its refusal's (a transient one's once its start, sent again while
+   * the run stands, did not start within the bound), `failed` `start_malformed` when its
+   * answer came out of the contract's shape, or `unknown` when no answer came. A run stands
+   * while it holds its grant (a cancel, a revocation, a settle or a lost runner each take it),
+   * and only a run that stands gets a second chance: its start sent again, or its wait for a
+   * sandbox; one that no longer stands settles by its start's answer (one cancelled,
+   * `cancelled`: `Runs.settle`). Whatever may have launched and no longer stands is stopped in
+   * the sandbox, and its sandbox released after once nothing holds its lease (`landed`): a
+   * start with no answer it can read, and one that started after its run stopped standing
+   * (cancelled while its start was out, or settled lost while it was late), which then
+   * settles from its runner's end, or is refused at its first post.
+   */
+  async #start(start: SandboxStart): Promise<void> {
+    const { run } = start;
+    const stands = () => this.runs.grant(run) !== null;
+    const answer = await startOutcome("a run", () => this.#o.sandbox.start(start),
+                                      () => this.#o.door(stands));
+    const stopped = await this.#o.door(() => {
+      const standing = stands();
+      if (answer.started === null) {
+        this.runs.settle(run, answer.state, answer.code, null, clock());
       } else if (answer.started) {
-        this.runs.started(admitted.run, clock());
-      } else if (answer.code === SANDBOX_WAITING) {
+        this.runs.started(run, clock());
+      } else if (answer.code === SANDBOX_WAITING && standing) {
         // E2B runs as many sandboxes as its plan allows: the run waits, never refused, and
         // the lane starts it again when the platform's line rings the owner (`sandboxRung`).
         // The founder's alert reads E2B's own count (owed: `sandbox-probe.md`); this line is
         // the Worker log's record of it.
-        if (this.runs.waitForSandbox(admitted.run, admitted.prompt)) {
+        if (this.runs.waitForSandbox(run, start.prompt)) {
           console.warn(`${SANDBOX_WAITING}: a run waits for a sandbox to free`);
         }
       } else {
-        this.runs.settle(admitted.run, "failed", answer.code, null, clock());
+        this.runs.settle(run, "failed", answer.code, null, clock());
         if (answer.code === SIGNIN_REQUIRED) {
           // No login inside that sandbox: the owner signs in there, never copies one.
-          this.#o.notices.add(SIGNIN_REQUIRED, `${agent}: sign in to ${admitted.engine} inside ${
-            admitted.authority === OWNER ? "your own" : `${admitted.authority}'s`
+          this.#o.notices.add(SIGNIN_REQUIRED, `${start.agent}: sign in to ${start.engine
+          } inside ${start.authority === OWNER ? "your own" : `${start.authority}'s`
           } sandbox, through the vendor's own flow`, clock());
         }
       }
+      return answer.started === null || (answer.started && !standing)
+        ? this.landed(start.lease, () => this.cancel(run)) : null;
     });
-    if (answer === null) {
-      await this.cancel(admitted.run);
-    }
+    await stopped?.stopped;
     await this.#o.sync();
-    return admitted.run;
   }
 
   /** The run as it stands once settled, or once `waitMs` passed; the caller's own. */
@@ -419,7 +640,7 @@ export class Launcher implements RunHost {
   /** Stop a run's CLI through the sandbox; a failure is logged, the run settles regardless. */
   async cancel(run: string): Promise<void> {
     try {
-      await this.#o.env.SANDBOX.cancel(this.#o.owner(), { run });
+      await this.#o.sandbox.cancel({ run });
     } catch {
       console.error("a run's cancel did not reach the sandbox");
     }
@@ -433,9 +654,34 @@ export class Launcher implements RunHost {
    */
   async #sandboxRelease(leaseId: string): Promise<void> {
     try {
-      await this.#o.env.SANDBOX.release(this.#o.owner(), { lease_id: leaseId });
+      await this.#o.sandbox.release({ lease_id: leaseId });
     } catch {
       console.error("a lease's release did not reach the sandbox; its idle reap pauses it");
+    }
+  }
+
+  /**
+   * From a unit: the lease's sandbox released (`#sandboxRelease`) once the unit is over and
+   * the jobs' stops out then have answered (`#stopping`), once however often it is asked
+   * before it is sent.
+   */
+  #released(leaseId: string): void {
+    if (this.#releasing.has(leaseId)) {
+      return;
+    }
+    this.#releasing.add(leaseId);
+    queueMicrotask(() => void (async () => {
+      await Promise.all(this.#stopping);
+      this.#releasing.delete(leaseId);
+      await this.#sandboxRelease(leaseId);
+    })());
+  }
+
+  /** In a unit: the lease given back if it lives, its streams ended and its sandbox released. */
+  #giveBack(leaseId: string, epoch: number): void {
+    if (this.#o.files.leaseRelease(leaseId, epoch).released) {
+      this.#o.egress.end("lease", (live) => live.lease === leaseId);
+      this.#released(leaseId);
     }
   }
 
@@ -469,8 +715,7 @@ export class Launcher implements RunHost {
 
   /**
    * A mail's reply posted in this unit, or a scheduled run's result in the owner's room with
-   * its agent (`dm:<agent's id>`, `dm:main`'s for main; the run's id its post's own, so it is
-   * posted once), its body
+   * its agent (the run's id its post's own, so it is posted once), its body
    * placed or not; a refusal a notice.
    */
   #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
@@ -478,8 +723,9 @@ export class Launcher implements RunHost {
       // The reply is the owner's agents' content: held to the tier's storage too.
       this.#o.files.held(OWNER, () => {
         if (answer.mail === null) {
-          this.#o.ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`,
-                              answer.run, answer.result, null, clock(), authority, placed,
+          this.#o.ledger.post({ native: answer.agent },
+                              this.#o.ledger.roomOf(OWNER, nativeId(answer.agent)), answer.run,
+                              answer.result, null, clock(), authority, placed,
                               scopeOf(authority?.client ?? null));
         } else {
           this.#o.ledger.answer({ native: answer.agent }, answer.mail, answer.run,
@@ -513,20 +759,10 @@ export class Launcher implements RunHost {
       return now;
     }
     const times = [this.runs.next(now, admitted),
-                   ...(admitted ? this.#behind(now).map((each) => each.due) : [])]
+                   ...(admitted ? this.#behind(now).map((each) => each.due) : []),
+                   ...this.#narrowed(now).map((each) => each.due)]
       .filter((time): time is number => time !== null);
     return times.length === 0 ? null : Math.min(...times);
-  }
-
-  /**
-   * The switched-on sign-ins, read by the lane itself from the control record the object
-   * binds (`CONTROL`), and kept (review N1): so a source switched off stops powering the
-   * lane's runs (a schedule's, a mail's, a waiting one's) at its next pass, though the owner
-   * makes no door call (`ControlGate.signins`, fail-closed).
-   */
-  async #laneSignins(): Promise<void> {
-    const on = await this.#o.control().signins();
-    await this.#o.door(() => switchedOn(this.#o.storage, on, clock()));
   }
 
   /**
@@ -536,9 +772,32 @@ export class Launcher implements RunHost {
    * to one of the owner's agents that no run took, oldest first, starting that agent's run
    * (`#deliver`); then each due schedule claimed, once, and run the same way; a refusal kept
    * on its row and in the owner's notices, never thrown.
+   *
+   * A refusal for the moment (as it crossed, or the runtime's overload: `refusalOf`) says the
+   * same request succeeds after its `Retry-After`, and nothing of the row it met: it comes of
+   * what every row shares (the owner's storage catching up, the isolate's pool, a binding
+   * busy). So the pass takes no more rows and holds the lane until then (`Held`), the row as
+   * it was (the run waits on, the mail is delivered again, the schedule stays due), where
+   * `schedule.ts` reads a throw as a bug. Anything else thrown is one.
    */
-  async run(_now: number, until: number): Promise<void> {
-    await this.#laneSignins();
+  async run(_now: number, until: number): Promise<Held | undefined> {
+    try {
+      await this.#pass(until);
+      return undefined;
+    } catch (error) {
+      const refusal = refusalOf(error);
+      if (refusal === null || !refusal.transient) {
+        throw error;
+      }
+      return { hold: clock() + (refusal.retryAfter ?? 0) };
+    }
+  }
+
+  async #pass(until: number): Promise<void> {
+    // The lane reads the control record itself (`CONTROL`), so its kept copy, whose tiers and
+    // switched-on sign-ins the lane's runs take, moves though the owner makes no door call: a
+    // source switched off stops powering a schedule's, a mail's or a waiting run at this pass.
+    await this.#o.control().read();
     await this.#o.door(() => this.runs.lost(clock()));
     await this.reapply();
     while (clock() < until) {
@@ -550,22 +809,23 @@ export class Launcher implements RunHost {
         break;
       }
       try {
-        const read = await this.readAgent(waiting.ask.agent);
+        const read = await this.#laneAgent(waiting.ask.agent);
         const prompt = waiting.ask.mail === null ? waiting.ask.prompt
           : await this.#mailPrompt(waiting.ask.mail.message, waiting.ask.agent);
-        await this.launch(read, () => ({
+        await this.#laneLaunch(read, () => ({
           ...waiting.ask, prompt, tiers: this.#o.admission.numbers() }),
-                          waiting.run);
+                               waiting.run, () => {});
       } catch (error) {
-        if (!(error instanceof Refusal) || error.transient) {
-          throw error;  // a transient refusal fails the pass, and the run waits on
+        const refusal = refusalOf(error);
+        if (refusal === null || refusal.transient) {
+          throw error;  // a transient refusal holds the lane, and the run waits on
         }
-        if (error.code === "conversation_busy" || error.code === "tier_runs") {
+        if (refusal.code === "conversation_busy" || refusal.code === "tier_runs") {
           break;  // not its turn after all: it keeps waiting, and the lane comes back
         }
-        const reason = error.message;
+        const reason = refusal.message;
         await this.#o.door(() => {
-          if (this.runs.refuseWaiting(waiting.run, error, clock())) {
+          if (this.runs.refuseWaiting(waiting.run, refusal, clock())) {
             this.#o.notices.add("run_refused", `${waiting.ask.agent}: ${reason}`, clock());
           }
         });
@@ -595,7 +855,8 @@ export class Launcher implements RunHost {
     // it fires once: a run admitted claims it; a terminal refusal claims it with the refusal
     // kept; a transient refusal claims nothing, and it stays due for the lane's next pass.
     // (A unit keeps what it wrote before a throw, `gate.ts`: so the claim is the admission's
-    // last write, never its first.)
+    // last write, never its first; its record beside it, before the run's sandbox can
+    // report a hold, `Runs.#hold`, that a later record would clear.)
     while (clock() < until) {
       const row = await this.#o.door(() => this.#o.admission.unadmitted() !== null
         ? null : this.runs.due(clock()));
@@ -604,8 +865,8 @@ export class Launcher implements RunHost {
       }
       let gone = false;
       try {
-        const read = await this.readAgent(row.agent);
-        const run = await this.launch(read, () => {
+        const read = await this.#laneAgent(row.agent);
+        await this.#laneLaunch(read, () => {
           if (!this.runs.stands(row)) {
             gone = true;
             throw new Refusal("no_schedule", NO_SCHEDULE);
@@ -615,16 +876,19 @@ export class Launcher implements RunHost {
             conversation: null, request: null,
             tiers: this.#o.admission.numbers(), unattended: true,
             prompt: row.input, mail: null };
-        }, null, () => this.runs.claim(row, clock()));
-        await this.#o.door(() => this.runs.ran(row.id, run, null));
+        }, null, (run) => {
+          this.runs.claim(row, clock());
+          this.runs.ran(row.id, run, null);
+        });
       } catch (error) {
-        if (!(error instanceof Refusal) || error.transient) {
-          throw error;  // a transient refusal fails the pass: unclaimed, the schedule stays due
+        const refusal = refusalOf(error);
+        if (refusal === null || refusal.transient) {
+          throw error;  // a transient refusal holds the lane: unclaimed, the schedule stays due
         }
         if (gone) {
           continue;  // cancelled, or claimed, since it was read: nothing of it fires now
         }
-        const reason = error.message;
+        const reason = refusal.message;
         await this.#o.door(() => {
           if (this.runs.claim(row, clock())) {
             this.runs.ran(row.id, null, reason);
@@ -668,7 +932,8 @@ export class Launcher implements RunHost {
    * the client's grant there, and refused once that grant moved), its retry key the mail and
    * agent. The mail is taken in the admission's own unit, waiting runs and runs past the
    * tier included. A run that must wait while the inputs' queue is full leaves the mail
-   * held, until the queue has room; any other refusal fails the mail, with a notice.
+   * held, until the queue has room; one refused for the moment leaves it as it was (the pass
+   * holds the lane, `run`); any other refusal fails the mail, with a notice.
    */
   async #deliver(mail: Delivery): Promise<void> {
     const authority = mail.authority;
@@ -684,31 +949,32 @@ export class Launcher implements RunHost {
                           `mail_${mail.integrity}: the mail's body is ${mail.integrity}`);
       }
       const prompt = mailInput(mail, mail.body);
-      const read = await this.readAgent(mail.agent);
+      const read = await this.#laneAgent(mail.agent);
       const conversation = mailConversation(mail.agent, mail.thread, origin?.client ?? null);
-      await this.launch(read, () => ({
+      await this.#laneLaunch(read, () => ({
         initiator: "mail", stamp, origin, agent: mail.agent,
         conversation: this.runs.kept(conversation, mail.agent, origin?.client ?? null)
           ? conversation : null,
         request: sha256Hex(`mail\0${mail.message_id}\0${mail.agent_id}`),
         tiers: this.#o.admission.numbers(), unattended: !mail.attended,
         prompt, mail: { message: mail.message_id, conversation } }), null,
-                        () => this.#o.ledger.taken(mail.message_id, mail.agent_id, clock()));
+                             () => this.#o.ledger.taken(mail.message_id, mail.agent_id, clock()));
     } catch (error) {
-      if (!(error instanceof Refusal) || error.transient) {
-        throw error;  // a transient refusal fails the pass, and the mail is delivered again
+      const refusal = refusalOf(error);
+      if (refusal === null || refusal.transient) {
+        throw error;  // a transient refusal holds the lane, and the mail is delivered again
       }
-      if (error.code === "agent_changed") {
+      if (refusal.code === "agent_changed") {
         return;  // read again on the next turn of the pass
       }
-      const reason = error.message;
+      const reason = refusal.message;
       await this.#o.door(() => {
-        if (error.code === "run_inputs_full") {
+        if (refusal.code === "run_inputs_full") {
           this.#o.ledger.hold(mail.message_id, mail.agent_id, clock());
           return;
         }
         // Its code on the recipient row; its words, a quiet one's own, in the notice.
-        this.#o.ledger.undeliverable(mail.message_id, mail.agent_id, error.code, clock());
+        this.#o.ledger.undeliverable(mail.message_id, mail.agent_id, refusal.code, clock());
         this.#o.notices.add("mail_refused", `${mail.agent}: ${reason}`, clock());
       });
     }
@@ -718,12 +984,8 @@ export class Launcher implements RunHost {
 
   /** In a unit: a lease no run and no sign-in holds now given back, as a settle gives it. */
   leaseFreed(leaseId: string, epoch: number): void {
-    if (this.runs.holds(leaseId) || this.#o.signins.holds(leaseId)) {
-      return;
-    }
-    if (this.#o.files.leaseRelease(leaseId, epoch).released) {
-      this.#o.egress.end("lease", (live) => live.lease === leaseId);
-      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+    if (!this.runs.holds(leaseId) && !this.#o.signins.holds(leaseId)) {
+      this.#giveBack(leaseId, epoch);
     }
   }
 
@@ -784,19 +1046,67 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * Each live lease whose network is behind the current egress generation, made again
-   * under it and re-applied on its sandbox (the sandbox Worker's `network`, which keeps the
-   * live egress token and the launched jobs' vendor hosts), each one due (`#behind`): at
-   * once after a policy write that moved the egress generation, whose unit wakes this lane
-   * (`synced`). Its send is a unit (`networkSent`): the lease's calls are admitted under
-   * the new generation from there on, since only that network's transform sets it. Its
-   * answer is another (`networkAnswered`): `applied` confirms it; `at_resume` keeps it out
-   * for its paused sandbox; `lost` or a throw clears it. No answer within `LANE_CALL_MS`
-   * records nothing: the send's retry clock stands.
+   * In a unit: each live lease owing a narrowed egress policy, with when it is given back if
+   * no re-apply confirms it first (`#unconfirmed`).
+   */
+  #narrowed(now: number): { lease: SandboxLease; due: number }[] {
+    return this.#o.files.liveLeases(now).flatMap((lease) => lease.narrowed_at === null
+      ? [] : [{ lease, due: lease.narrowed_at + NARROWED_WITHIN_S }]);
+  }
+
+  /**
+   * In a unit: each live lease whose sandbox has owed a narrowed egress policy for
+   * `NARROWED_WITHIN_S`, no re-apply having confirmed it, given back, so no host the owner
+   * dropped stays reachable from it: its sign-ins ended and its runs settled `failed`
+   * (`NETWORK_UNCONFIRMED`), so its runner's next post is refused and stops each CLI (which
+   * needs neither the sandbox Worker nor E2B, whose fault may be why no re-apply landed);
+   * its tokens and streams end with it; each CLI stopped through the Worker as well, and its
+   * sandbox paused after those stops (`#released`); and the owner told. Whatever the owner's
+   * admission: a stop is never held.
+   */
+  #unconfirmed(now: number): void {
+    const due = this.#narrowed(now).filter(({ due: at }) => at <= now)
+      .map(({ lease }) => lease);
+    const held = due.length === 0 ? [] : this.#o.signins.list();
+    for (const lease of due) {
+      const signins = held.filter((row) => row.lease_id === lease.lease_id);
+      for (const row of signins) {
+        this.#o.signins.end(row.id);
+        this.#o.relay.settled(row.id);
+      }
+      const runs = this.runs.endLease(lease.lease_id, NETWORK_UNCONFIRMED, now);
+      this.leaseFreed(lease.lease_id, lease.epoch);
+      this.stop(runs);
+      for (const row of signins) {
+        void this.stopAfter(() => this.#o.sandbox.signinCancel({ authority: row.authority,
+                                                                 id: row.id }))
+          .catch(() => console.error("a stopped sign-in's cancel did not reach the sandbox"));
+      }
+      const sandboxOf = lease.authority === OWNER ? "your own sandbox"
+        : `client ${lease.authority}'s sandbox`;
+      this.#o.notices.add(NETWORK_UNCONFIRMED, `The egress policy you narrowed was not in ` +
+        `force on ${sandboxOf} within ${NARROWED_WITHIN_S} s, so it was stopped: ` +
+        `${runs.length} run(s) and ${signins.length} sign-in(s) ended. A new run starts it ` +
+        "again under the policy in force.", now);
+    }
+  }
+
+  /**
+   * Each live lease past its narrowing's bound given back (`#unconfirmed`); then each whose
+   * network is behind the current egress generation, made again under it and re-applied on
+   * its sandbox (the sandbox Worker's `network`, which keeps the live egress token and the
+   * launched jobs' vendor hosts), each one due (`#behind`): at once after a policy write
+   * that moved the egress generation, whose unit wakes this lane (`synced`). Its send is a
+   * unit (`networkSent`): the lease's calls are admitted under the new generation from
+   * there on, since only that network's transform sets it. Its answer is another
+   * (`networkAnswered`, as `networkOutcome` reads it): `applied` confirms it; `at_resume`
+   * keeps it out for its paused sandbox; a failure clears it. No answer within
+   * `LANE_CALL_MS` records nothing: the send's retry clock stands.
    */
   async reapply(): Promise<void> {
-    const sandbox = this.#o.env.SANDBOX;
+    const { sandbox } = this.#o;
     const sent = await this.#o.door(() => {
+      this.#unconfirmed(clock());
       if (this.#o.admission.unadmitted() !== null) {
         return [];
       }
@@ -812,18 +1122,11 @@ export class Launcher implements RunHost {
       return out;
     });
     await Promise.all(sent.map(async ({ lease, generation, network }) => {
-      let answer: "applied" | "at_resume" | "failed" = "failed";
-      try {
-        const got = await inTime(sandbox.network(this.#o.owner(), {
-          authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-          network }), LANE_CALL_MS);
-        if (got === "late") {
-          return;
-        }
-        answer = got.state === "lost" ? "failed" : got.state;
-      } catch (error) {
-        console.error("a lease's network re-apply did not reach the sandbox; the lane tries " +
-                      "again", error);
+      const answer = await inTime(networkOutcome(() => sandbox.network({
+        authority: lease.authority, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
+        network })), LANE_CALL_MS);
+      if (answer === "late") {
+        return;
       }
       await this.#o.door(() => this.#o.files.networkAnswered(
         lease.lease_id, lease.epoch, generation, answer, clock()));
@@ -831,7 +1134,45 @@ export class Launcher implements RunHost {
   }
 
   /**
-   * One run's whole environment (slice E's `runEnv`, G4's `sandboxEnv`), from its record,
+   * In the admission's unit: `servers` and `hooks` less each command of them (a server started
+   * by its command, a hook) the owner's rules hold for `run` (`decideCommand`, its door the
+   * definition's file, its request the entry), the owner told once of each left out, and why.
+   * A held one's card is filed and noticed by the decision; its yes resumes the run's
+   * conversation, whose next run's admission admits it once.
+   */
+  #ownCommands(run: DecidedRun, origin: Origin | null,
+               servers: Readonly<Record<string, McpServer>>, hooks: AgentHooks["hooks"]):
+      { servers: Readonly<Record<string, McpServer>>; hooks: AgentHooks["hooks"] } {
+    const now = clock();
+    const runs = (door: string, what: string, request: object): boolean => {
+      try {
+        this.#o.actions.decideCommand(run, origin, { door, request }, now);
+        return true;
+      } catch (error) {
+        const refusal = refusalOf(error);
+        if (refusal === null) {
+          throw error;
+        }
+        const card = refusal.facts?.["card_id"];
+        this.#o.notices.once("definition_command_dropped", `${run.agent}: ${what} is left ` +
+          `out of this run: ${typeof card === "string" ? `it waits for your answer to card ${
+            card}` : refusal.message}`, now);
+        return false;
+      }
+    };
+    return {
+      servers: Object.freeze(Object.fromEntries(Object.entries(servers).filter(([name, server]) =>
+        !("command" in server) || runs(AGENT_FILES.mcp, `its MCP server ${name} (${
+          server.command})`, { server: name, ...server })))),
+      hooks: Object.freeze(Object.fromEntries(Object.entries(hooks).map(([event, list]) =>
+        [event, Object.freeze(list.filter((hook, at) => runs(AGENT_FILES.hooks,
+          `its ${event} hook ${hook.run[0]!}`, { hook: `${event}[${at}]`, ...hook })))]))) as
+        AgentHooks["hooks"],
+    };
+  }
+
+  /**
+   * One run's whole environment, from its record,
    * its credential and an API-key run's connection, with the owner's egress policy and its
    * generation: refused (`invalid`) when the record does not run on that credential.
    */

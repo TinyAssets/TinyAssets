@@ -1,5 +1,5 @@
 /**
- * MCP Events at the MCP door (slice W2; OpenAI's MCP Events page and the MCP Events design
+ * MCP Events at the MCP door (OpenAI's MCP Events page and the MCP Events design
  * sketch it cites): `events/list`, `events/subscribe` and `events/unsubscribe` on the same
  * authenticated endpoint as the tools, and `events` in the capabilities `initialize` and
  * `server/discover` answer. ChatGPT supports webhook delivery and callback verification
@@ -28,6 +28,7 @@ import {
   callbackSecret, callbackUrl, eventKind, type WakeKind,
 } from "../../contract/src/wake-records";
 import { COMMAND_CENTER_MAX } from "../../contract/src/limits";
+import { Refusal } from "../../contract/src/refusal";
 import { follows, subscriptionId } from "../../contract/src/wake-kinds";
 
 import type { Bound } from "./binder";
@@ -77,16 +78,11 @@ const PARAMS: StandardSchemaV1<Record<string, unknown>> = Object.freeze({
   }),
 });
 
-function invalid(message: string): ProtocolError {
-  return new ProtocolError(EVENT_ERRORS.invalidParams, message);
-}
-
-/** The caller's principal, or Forbidden: an outside client's own call, never a run's. */
+/** The caller's principal, or refused: an outside client's own call, never a run's. */
 function principal(bound: Bound): string {
   const binding = bound.binding as { origin?: { client?: unknown } | null; run?: unknown };
   if (binding.run !== undefined || typeof binding.origin?.client !== "string") {
-    throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden",
-                            { reason: "an agent's own client only" });
+    throw new Refusal("refused", "an agent's own client only");
   }
   return binding.origin.client;
 }
@@ -106,11 +102,11 @@ function argumentsOf(value: unknown): Record<string, unknown> {
   try {
     follow = follows(value, ["command_center_id"]);
   } catch {
-    throw invalid("arguments do not match the event's inputSchema");
+    throw new Refusal("invalid", "arguments do not match the event's inputSchema");
   }
   const center = (value as Record<string, unknown>)["command_center_id"];
   if (typeof center !== "string" || !center || center.length > COMMAND_CENTER_MAX) {
-    throw invalid("arguments do not match the event's inputSchema");
+    throw new Refusal("invalid", "arguments do not match the event's inputSchema");
   }
   return { command_center_id: center, board: follow.board, rooms: follow.rooms };
 }
@@ -120,7 +116,7 @@ function deliveryOf(kind: WakeKind & { push: NonNullable<WakeKind["push"]> }, va
                     withSecret: boolean): { url: string; secret: string } {
   const delivery = value as Record<string, unknown> | null;
   if (typeof value !== "object" || delivery === null) {
-    throw invalid("delivery is an object");
+    throw new Refusal("invalid", "delivery is an object");
   }
   if (delivery["mode"] !== undefined && delivery["mode"] !== "webhook") {
     throw new ProtocolError(EVENT_ERRORS.unsupported, "Unsupported", { feature: "delivery.mode" });
@@ -140,7 +136,8 @@ function grantedTtl(kind: WakeKind & { push: NonNullable<WakeKind["push"]> },
   }
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0
       || Number.isNaN(new Date(Date.now() + value).getTime())) {
-    throw invalid("ttlMs is a positive whole number of milliseconds a date can reach, or null");
+    throw new Refusal("invalid",
+                      "ttlMs is a positive whole number of milliseconds a date can reach, or null");
   }
   return value;
 }
@@ -149,11 +146,11 @@ function grantedTtl(kind: WakeKind & { push: NonNullable<WakeKind["push"]> },
 export function serveEvents(mcp: McpServer, bound: Bound, env: DoorsEnv): void {
   mcp.server.registerCapabilities({ events: {} } as never);
 
-  // Each handler answers an object's refusal as the design sketch's error (`asEvent`).
+  // Each handler answers a refusal, the object's or its own, as `asEvent` says.
   mcp.server.setRequestHandler("events/list", { params: PARAMS }, (params) =>
     answered(asEvent, async () => {
       if (params["cursor"] !== undefined && params["cursor"] !== null) {
-        throw invalid("events/list has one page");
+        throw new Refusal("invalid", "events/list has one page");
       }
       const listed = await bound.stub.wakeEvents(bound.binding);
       return {
@@ -175,7 +172,7 @@ export function serveEvents(mcp: McpServer, bound: Bound, env: DoorsEnv): void {
       const listed = await bound.stub.wakeEvents(bound.binding,
                                                  args["command_center_id"] as string);
       if (!listed.events.some((event) => event.name === kind.push.events!.name)) {
-        throw new ProtocolError(EVENT_ERRORS.forbidden, "Forbidden", { reason: "no read_graph" });
+        throw new Refusal("refused", "this agent subscribes another event");
       }
       const id = subscriptionId(caller, url, kind.push.events!.name, args);
       const verified = await verifyDoorbell(env, bound.binding.owner, id,

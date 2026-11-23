@@ -1,12 +1,12 @@
 /**
  * Cloudflare, as the deploy kit and the import window speak to it over its REST API with the
- * account's token: the zone and its account, the account's Workers and their secrets' names,
- * KV namespaces, keys and values, R2 buckets with their lock rules and objects, queues with
- * their messages and consumers, and the zone's Worker routes, DNS records and Workers custom
- * domains. Every call is checked: a failed
+ * account's token: the zone and its account, the account's Workers, their secrets' names,
+ * their deployments and their versions' tags, KV namespaces, keys and values, R2 buckets with
+ * their lock rules and objects, queues with their messages and consumers, and the zone's
+ * Worker routes, DNS records and Workers custom domains. Every call is checked: a failed
  * listing or read throws, never reads as "absent", and a body that is not JSON throws. Every
- * listing is read to its last page.
- * The kit's other Cloudflare tool is wrangler (`deploy.ts`), which deploys and sets secrets.
+ * listing is read to its last page. The kit's other Cloudflare tool is wrangler (`deploy.ts`),
+ * which uploads and deploys the run's versions; a rollback's deployment is this client's.
  *
  * Node runs this file as it is (type stripping), as the kit does.
  */
@@ -71,6 +71,17 @@ function rows(result: unknown, what: string): Record<string, unknown>[] {
   return result as Record<string, unknown>[];
 }
 
+/** A deployments listing's page: each deployment's versions, in its order, or a throw. */
+function deploymentsOf(result: unknown, what: string): Serving[][] {
+  return rows((result as { deployments?: unknown } | null)?.deployments, what).map((deployment) =>
+    rows(deployment["versions"] ?? [], what).map((each) => {
+      if (typeof each["version_id"] !== "string" || typeof each["percentage"] !== "number") {
+        throw new Error(`${what} holds a version out of shape`);
+      }
+      return { version: each["version_id"], percentage: each["percentage"] };
+    }));
+}
+
 /**
  * An R2 bucket's lock rule, as the API takes and lists it: objects under `prefix` ("" is every
  * object) kept, unchangeable and undeletable, until they are `maxAgeSeconds` old.
@@ -94,6 +105,12 @@ export interface Pulled {
   readonly id: string;
   readonly body: unknown;
   readonly lease: string;
+}
+
+/** One version of a Worker's active deployment, and the percentage of its traffic it serves. */
+export interface Serving {
+  readonly version: string;
+  readonly percentage: number;
 }
 
 /** A Worker route on the zone, as Cloudflare's routes API lists it. */
@@ -172,7 +189,10 @@ export interface DnsRecord {
   readonly content: string;
 }
 
-/** The DNS record types a Workers custom domain's own record takes the host's place of. */
+/**
+ * The address record types: what a Workers custom domain's own record takes the host's place
+ * of, and what a name under the zone holds for a Worker route on it to take anything.
+ */
 export const ADDRESS: readonly string[] = Object.freeze(["A", "AAAA", "CNAME"]);
 
 /** A route as a record keeps it: its pattern, and the Worker it points to (null: none). */
@@ -403,6 +423,69 @@ export class Cloudflare {
     await this.#ok(`deleting the secret ${name} of ${script}`,
                    `/accounts/${account}/workers/scripts/${script}/secrets/${name}`,
                    { method: "DELETE" });
+  }
+
+  /**
+   * The versions the Worker `script`'s active deployment serves, in its order, each with its
+   * percentage: the first of its deployments listing, which Cloudflare names "the latest
+   * deployment actively serving traffic". None when it lists no deployment.
+   */
+  async deployment(account: string, script: string): Promise<Serving[]> {
+    const what = `the deployments listing of ${script}`;
+    const { result } = await this.#ok(what,
+                                      `/accounts/${account}/workers/scripts/${script}/deployments`);
+    const [latest] = deploymentsOf(result, what);
+    return latest ?? [];
+  }
+
+  /**
+   * Every deployment of the Worker `script`, newest first, each its versions as `deployment`
+   * reads them: Cloudflare's history of what it served, which only a token with Workers
+   * Scripts Write makes or deletes. Read to its last page.
+   */
+  async deployments(account: string, script: string): Promise<Serving[][]> {
+    const what = `the deployments listing of ${script}`;
+    return (await this.#pages(what, `/accounts/${account}/workers/scripts/${script}/deployments` +
+                                    "?per_page=100"))
+      .flatMap((result) => deploymentsOf(result, what));
+  }
+
+  /**
+   * The one version serving all of the Worker `script`'s traffic. Two versions (a split), or
+   * no deployment, throw: a secret set or deleted on a Worker mid-split deploys a version
+   * Cloudflare documents no behaviour for, and a split has no one version to go back to.
+   */
+  async serving(account: string, script: string): Promise<string> {
+    const versions = await this.deployment(account, script);
+    if (versions.length !== 1 || versions[0]!.percentage !== 100) {
+      throw new Error(`${script} ${versions.length === 0 ? "has no deployment" : `is split (${
+        versions.map((each) => `${each.version} at ${each.percentage}%`).join(", ")})`}: end ` +
+                      "the split first (deploy.ts --mode rollback, or its Deployments in the " +
+                      "dashboard); nothing is changed");
+    }
+    return versions[0]!.version;
+  }
+
+  /** The tag of the Worker `script`'s version `version` (`workers/tag`), or null when untagged. */
+  async tag(account: string, script: string, version: string): Promise<string | null> {
+    const { result } = await this.#ok(
+      `reading the version ${version} of ${script}`,
+      `/accounts/${account}/workers/scripts/${script}/versions/${version}`);
+    const tag = (result as { annotations?: Record<string, unknown> } | null)?.annotations?.[
+      "workers/tag"];
+    return typeof tag === "string" && tag !== "" ? tag : null;
+  }
+
+  /**
+   * The Worker `script`'s version `version` deployed to all its traffic, changing nothing
+   * else, never forced: Cloudflare's refusals (a class lifecycle change since, or secrets
+   * changed since, its 10220) stop it loudly.
+   */
+  async deploy(account: string, script: string, version: string): Promise<void> {
+    await this.#send(`deploying ${version} of ${script}`, "POST",
+                     `/accounts/${account}/workers/scripts/${script}/deployments`,
+                     { strategy: "percentage",
+                       versions: [{ version_id: version, percentage: 100 }] });
   }
 
   /**
@@ -675,6 +758,22 @@ export class Cloudflare {
       .filter((row) => row["name"] === name && ADDRESS.includes(String(row["type"])))
       .map((row) => ({ id: String(row["id"]), type: String(row["type"]),
                        content: String(row["content"]) }));
+  }
+
+  /**
+   * The DNS record `record` made on `name`, proxied, so a Worker route on `name` takes its
+   * requests: its id, type and content as the API answers them. A refusal throws.
+   */
+  async makeDns(zone: string, name: string, record: Omit<DnsRecord, "id">): Promise<DnsRecord> {
+    const what = `making the DNS record ${record.type} ${name} (${record.content})`;
+    const { result } = await this.#send(what, "POST", `/zones/${zone}/dns_records`,
+                                        { ...record, name, proxied: true });
+    const made = (result ?? {}) as Partial<Record<keyof DnsRecord, unknown>>;
+    if (typeof made.id !== "string" || made.type !== record.type
+        || made.content !== record.content) {
+      throw new Error(`${what} answered no such record`);
+    }
+    return { id: made.id, type: record.type, content: record.content };
   }
 
   /** Deletes the DNS record `record`; a refusal throws. */

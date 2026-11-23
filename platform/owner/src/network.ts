@@ -1,6 +1,6 @@
 /**
- * The sandbox's network, from the owner's own state (gateway research §5.4 steps 1-3; tasks
- * 4 G4). Pure functions: the sandbox slice (8b) sends the network document to E2B, and
+ * The sandbox's network, from the owner's own state (gateway research §5.4 steps 1-3). Pure
+ * functions: the sandbox Worker sends the network document to E2B, and
  * nothing here reaches E2B. The egress wire it names (the door's host, its headers, the
  * resolver) and the environment a run's model clients reach the door by (`sandboxEnv`) are
  * the contract's (`contract/src/egress.ts`).
@@ -48,8 +48,18 @@
  *   key can read it back from the sandbox's info (`SandboxNetworkRuleInfo`), so that key is
  *   a platform secret with the token's custody.
  *
+ * **The agent's own MCP servers** (`agentServers`) are held to the same rule at each run's
+ * admission: one its sandbox's network would never let out is left out of the run, and the
+ * owner is told which and why, so no engine is handed a server it cannot reach. A kept server
+ * whose URL one of the owner's connectors is sealed for (`connectorsOf`) is reached through the
+ * egress door instead (`throughConnectors`), where the gateway puts that connector's key in:
+ * the key is bound to its URL by the seal, so it never goes to another host.
  */
-import { closedNetwork, withGeneration } from "../../contract/src/egress";
+import type { AgentMcp, McpServer } from "../../contract/src/agent-definition";
+import {
+  closedNetwork, connectorUrl, type Egressible, withGeneration,
+} from "../../contract/src/egress";
+import { allows } from "../../contract/src/egress-scope";
 import {
   checkDestination, EGRESS_MODES, type EgressMode,
 } from "../../contract/src/policy-document";
@@ -71,15 +81,12 @@ export interface EgressPolicy {
 }
 
 /**
- * E2B's network configuration for the owner's egress policy at egress `generation`, its
- * door's transform setting the generation (`withGeneration`) and no egress token: the start
- * that opens a lease adds the lease's (`withEgressToken`), and a re-apply's goes as it is,
- * the sandbox Worker setting the live sandbox's own (`NetworkReapply`), since the object
- * holds only its hash.
+ * The names the owner's egress policy lets out of the sandbox (`*`, every name, in `open`
+ * mode), and the destinations E2B cannot express, which it never lets out.
  */
-export function networkDocument(egress: EgressPolicy, generation: number): NetworkPlan {
-  const mode = egress.mode;
-  if (!EGRESS_MODES.includes(mode)) {
+function letOut(egress: EgressPolicy):
+    { names: ReadonlySet<string>; unexpressed: readonly Unexpressed[] } {
+  if (!EGRESS_MODES.includes(egress.mode)) {
     throw new Refusal("invalid", "invalid egress policy");
   }
   const allowed = new Set<string>();
@@ -88,12 +95,35 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
     checkDestination(entry);  // an IP literal is refused here as in the policy itself
     if (!NAMED_PORTS.includes(entry.port)) {
       unexpressed.push(Object.freeze({ host: entry.host, port: entry.port, reason: "port" }));
-    } else if (mode !== "open") {
+    } else {
       allowed.add(entry.host);
     }
   }
-  // `open` lets every name out (`*`); either way the door is listed, last (`allowList`).
-  const closed = withGeneration(closedNetwork(mode === "open" ? ["*"] : allowed), generation);
+  return egress.mode === "open" ? { names: new Set(["*"]), unexpressed: [] }
+    : { names: allowed, unexpressed };
+}
+
+/**
+ * Whether `after` lets out less than `before`: a name `before`'s network lets out that
+ * `after`'s does not. Names are compared as written, so one a wider name of `after`'s covers
+ * counts as dropped: the safe side, as a narrowing is never missed.
+ */
+export function narrows(before: EgressPolicy, after: EgressPolicy): boolean {
+  const kept = letOut(after).names;
+  return !kept.has("*") && [...letOut(before).names].some((name) => !kept.has(name));
+}
+
+/**
+ * E2B's network configuration for the owner's egress policy at egress `generation`, its
+ * door's transform setting the generation (`withGeneration`) and no egress token: the start
+ * that opens a lease adds the lease's (`withEgressToken`), and a re-apply's goes as it is,
+ * the sandbox Worker setting the live sandbox's own (`NetworkReapply`), since the object
+ * holds only its hash.
+ */
+export function networkDocument(egress: EgressPolicy, generation: number): NetworkPlan {
+  const { names, unexpressed } = letOut(egress);
+  // Either way the door is listed, last (`allowList`).
+  const closed = withGeneration(closedNetwork(names), generation);
   return Object.freeze({
     network: Object.freeze({
       allowOut: Object.freeze(closed.allowOut),
@@ -101,9 +131,101 @@ export function networkDocument(egress: EgressPolicy, generation: number): Netwo
       dnsServers: Object.freeze(closed.dnsServers),
       rules: Object.freeze(closed.rules),
     }),
-    mode,
-    unexpressed: Object.freeze(mode === "open" ? [] : unexpressed),
+    mode: egress.mode,
+    unexpressed: Object.freeze(unexpressed),
     boundary: false,
     note: BOUNDARY_NOTE,
   });
+}
+
+/** An agent's server its runs go without, and why, for the owner's notice. */
+export interface DroppedServer {
+  readonly name: string;
+  readonly host: string;
+  readonly why: string;
+}
+
+/**
+ * The agent's own MCP servers (`mcp.json`, `agentMcp`) its runs take under the owner's egress
+ * policy, and those left out. A server started by its command is kept: it runs in the sandbox,
+ * whose network holds its traffic as it holds any other. A server reached by its URL is kept
+ * when the sandbox's network lets its host out by the rule `networkDocument` makes it by: a
+ * name (`checkDestination`, so never an IP address), on 80 or 443, the only ports E2B matches
+ * a name on, and in `allowlist` mode a destination's host on one of them.
+ */
+export function agentServers(mcp: AgentMcp, egress: EgressPolicy):
+    { readonly servers: Readonly<Record<string, McpServer>>;
+      readonly dropped: readonly DroppedServer[] } {
+  const servers: Record<string, McpServer> = {};
+  const dropped: DroppedServer[] = [];
+  for (const [name, server] of Object.entries(mcp.servers)) {
+    const url = "url" in server ? new URL(server.url) : null;
+    const why = url === null ? null : serverUnreached(url, egress);
+    if (why === null) {
+      servers[name] = server;
+    } else {
+      dropped.push(Object.freeze({ name, host: url!.host, why }));
+    }
+  }
+  return Object.freeze({ servers: Object.freeze(servers), dropped: Object.freeze(dropped) });
+}
+
+/**
+ * Why the sandbox's network never lets the server at `url` out, or null when it does: the rule
+ * a run's servers are kept by at its admission, and a connector's calls at each open
+ * (`egress.ts`), so a narrowed policy holds a live run's servers through the egress door too.
+ */
+export function serverUnreached(url: URL, egress: EgressPolicy): string | null {
+  return unreached(url.hostname, url.port === "" ? 443 : Number(url.port), egress);
+}
+
+/** Why the sandbox's network never lets `host` out on `port`, or null when it does. */
+function unreached(host: string, port: number, egress: EgressPolicy): string | null {
+  try {
+    checkDestination({ host, port });
+  } catch (error) {
+    if (!(error instanceof Refusal)) {
+      throw error;
+    }
+    return error.code === "egress_ip_literal" ? "the sandbox's network lets no IP address out"
+      : "its host is no name the sandbox's network can let out";
+  }
+  if (!NAMED_PORTS.includes(port)) {
+    return `the sandbox's network lets a name out on ports ${NAMED_PORTS.join(" and ")} alone`;
+  }
+  if (egress.mode === "allowlist" && !egress.destinations.some((entry) =>
+    entry.host === host && NAMED_PORTS.includes(entry.port))) {
+    return "its host is not on your egress allowlist";
+  }
+  return null;
+}
+
+/**
+ * Each of `servers` reached by a URL one of the owner's active connectors is sealed for (its
+ * scope `allows` a `POST` there: its origin, its exact path), by name, bound to the newest
+ * such one of `connections` (oldest first): a newer key for a URL is its rotation, and the
+ * older one goes unused until the owner disconnects it.
+ */
+export function connectorsOf(servers: Readonly<Record<string, McpServer>>,
+                             connections: readonly Egressible[]):
+    Readonly<Record<string, string>> {
+  const bound: Record<string, string> = {};
+  for (const [name, server] of Object.entries(servers)) {
+    const url = "url" in server ? new URL(server.url) : null;
+    const newest = url === null ? undefined : connections.findLast(({ egress }) =>
+      "kind" in egress && allows(egress.endpoints, "POST", url));
+    if (newest !== undefined) {
+      bound[name] = newest.connection;
+    }
+  }
+  return Object.freeze(bound);
+}
+
+/** `servers`, each one `bound` names reached through the egress door on `run`'s own path. */
+export function throughConnectors(servers: Readonly<Record<string, McpServer>>,
+                                  bound: Readonly<Record<string, string>>, run: string,
+                                  secret: string): Readonly<Record<string, McpServer>> {
+  return Object.freeze(Object.fromEntries(Object.entries(servers).map(([name, server]) =>
+    [name, bound[name] === undefined || !("url" in server) ? server
+      : Object.freeze({ url: connectorUrl(bound[name], run, secret, server.url) })])));
 }

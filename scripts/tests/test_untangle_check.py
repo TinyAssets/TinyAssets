@@ -1,8 +1,7 @@
-"""The required receipt check also asks a change to more than prose for an Untangle check,
+"""The required scope guard asks a change to more than prose for an Untangle check,
 whose left, owed or later items name their fix."""
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -12,7 +11,7 @@ import pytest
 
 _SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SCRIPTS))
-import drain_review_gate as gate  # noqa: E402
+import review_checks as gate  # noqa: E402
 
 _ENV = {
     **os.environ,
@@ -92,22 +91,14 @@ def _commit(root: Path, files: dict[str, str]) -> str:
 
 def _decide(repo: Path, base: str, head: str, check: str) -> subprocess.CompletedProcess:
     root = repo.parent
-    url = "https://github.com/o/r/pull/7#issuecomment-1"
-    receipt = f"Drain-Review-Verdict: APPROVE\nDrain-Review-Head: {head}\n"
-    (root / "body.md").write_text(f"{receipt}Drain-Review-Artifact: {url}\n\n{check}",
-                                  encoding="utf-8")
-    (root / "comments.ndjson").write_text(
-        json.dumps({"url": url, "association": "OWNER", "body": receipt}) + "\n",
-        encoding="utf-8")
+    (root / "body.md").write_text(check, encoding="utf-8")
     return subprocess.run(
-        [sys.executable, str(_SCRIPTS / "drain_review_gate.py"), "--blocking-review",
-         "--head", head, "--base", base, "--body-file", str(root / "body.md"),
-         "--review-repo", "o/r", "--review-pr", "7",
-         "--review-comments-file", str(root / "comments.ndjson")],
+        [sys.executable, str(_SCRIPTS / "review_checks.py"), "--untangle-check",
+         "--head", head, "--base", base, "--body-file", str(root / "body.md")],
         cwd=repo, capture_output=True, text=True)
 
 
-def test_the_required_decision_reads_the_check_beside_the_receipt(tmp_path: Path) -> None:
+def test_the_required_decision_reads_the_body_s_check(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -125,3 +116,64 @@ def test_the_required_decision_reads_the_check_beside_the_receipt(tmp_path: Path
         == "allow"
     unread = _decide(repo, "not-a-commit", code, "## Untangle check\n")
     assert unread.stdout.strip() == "deny" and "changed paths" in unread.stderr
+
+
+OWED = ("# x as built\n\n## Owed\n\n- [ ] `a.ts` `f` goes, with the next change to it\n"
+        "  (`untangle/a-f`).\n- [ ] `b.ts` `g`'s retry is decided (live: the dark deploy).\n")
+
+
+def test_an_owed_item_is_a_checkbox_line_with_its_wrapped_lines() -> None:
+    assert gate.owed_items(OWED + "  - a note under it\n- [x] Done (#5700).\n- plain\n") == [
+        (5, False, "`a.ts` `f` goes, with the next change to it (`untangle/a-f`)."),
+        (7, False, "`b.ts` `g`'s retry is decided (live: the dark deploy)."),
+        (9, True, "Done (#5700)."),
+    ]
+
+
+def test_a_change_keeps_every_open_owed_item_until_it_is_ticked(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    log = "docs/decisions/log/x.md"
+    base = _commit(repo, {log: OWED})
+    _git(repo, "checkout", "-q", "-b", "pr")
+    check = "## Untangle check\n\nNothing left.\n"
+
+    def decided(files: dict[str, str]) -> subprocess.CompletedProcess:
+        _git(repo, "checkout", "-q", "-B", "pr", base)
+        return _decide(repo, base, _commit(repo, files), check)
+
+    # Removed without being done: refused, though the change is only prose.
+    dropped = decided({log: OWED.replace("- [ ] `b.ts`", "- `b.ts`")})
+    assert dropped.stdout.strip() == "deny" and "gone without being ticked" in dropped.stderr
+    assert "`b.ts` `g`" in dropped.stderr
+    assert decided({log: OWED.replace("- [ ] `b.ts`", "- [x] `b.ts`")}).stdout.strip() \
+        == "allow"
+    # A tick may say what did it, after the item's text; an open item may not change.
+    noted = OWED.replace("- [ ] `b.ts`", "- [x] `b.ts`").replace(
+        "dark deploy).", "dark deploy). Done (#5730).")
+    assert decided({log: noted}).stdout.strip() == "allow"
+    reworded = decided({log: OWED.replace("dark deploy).", "dark deploy). Soon.")})
+    assert reworded.stdout.strip() == "deny" and "reworded" in reworded.stderr
+    moved = OWED.split("## Owed\n\n")[1]
+    assert decided({log: "# x as built\n", "docs/decisions/log/y.md": moved}).stdout.strip() \
+        == "allow"
+    unnamed = decided({"docs/decisions/log/z.md": "- [ ] `c.ts` waits for lane O.\n"})
+    assert unnamed.stdout.strip() == "deny" and "z.md:1: an owed item names no PR" in \
+        unnamed.stderr
+
+
+def test_the_owed_list_is_every_open_item_in_the_decision_files(tmp_path: Path) -> None:
+    (tmp_path / "docs/decisions/log").mkdir(parents=True)
+    (tmp_path / "docs/decisions/log/x.md").write_text(OWED + "- [x] Done (#5700).\n",
+                                                      encoding="utf-8")
+    listed = subprocess.run([sys.executable, str(_SCRIPTS / "review_checks.py"), "--owed"],
+                            cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert listed.stdout.splitlines() == [
+        "docs/decisions/log/x.md:5: `a.ts` `f` goes, with the next change to it "
+        "(`untangle/a-f`).",
+        "docs/decisions/log/x.md:7: `b.ts` `g`'s retry is decided (live: the dark deploy).",
+    ]
+    elsewhere = subprocess.run([sys.executable, str(_SCRIPTS / "review_checks.py"), "--owed"],
+                               cwd=tmp_path / "docs", capture_output=True, text=True)
+    assert elsewhere.returncode == 2 and "repository's root" in elsewhere.stderr

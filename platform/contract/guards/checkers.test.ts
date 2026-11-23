@@ -1,5 +1,5 @@
 /**
- * The services' checkers (untangle B6): each value one Worker builds and another reads is
+ * The services' checkers: each value one Worker builds and another reads is
  * held, beside its type, to one checker that takes its type's fixture and refuses each way
  * out of shape; and a builder's output is held to its reader's checker.
  */
@@ -8,8 +8,9 @@ import { describe, expect, it } from "vitest";
 import { doorbellInput, metering, ringRequest } from "../src/gateway";
 import { manifestLists, objectPrefix } from "../src/files";
 import { MANIFEST_PARTS } from "../src/limits";
+import { acceptanceOf, type OperatorMessage } from "../src/operator-message";
 import { refusalOf } from "../src/refusal";
-import { doorbellRequest, type WakeContent } from "../src/wake-kinds";
+import { doorbellRequest, subscriptionId, type WakeContent } from "../src/wake-kinds";
 import { wakeKinds } from "../src/wake-records";
 
 const code = (call: () => unknown): string | undefined => {
@@ -63,12 +64,51 @@ describe("ringRequest", () => {
       expect(code(() => doorbellRequest(pushing[0]!, "sub_x", wake, id, 1)))
         .toBe("invalid_request");
     });
+  it("takes a wake at its kind's cited body size where it is built, and refuses one past it",
+     () => {
+       const capped = pushing.filter((kind) => kind.push!.max_body_bytes !== null);
+       expect(capped.length).toBeGreaterThan(0);
+       for (const kind of capped) {
+         const sized = (n: number) => ({ ...wake, read: ["r".repeat(n)] });
+         const built = (n: number) => doorbellRequest(kind, "sub_x", sized(n), "w1", 1);
+         const fits = kind.push!.max_body_bytes! - built(0).body.length;
+         expect(built(fits).body.length).toBe(kind.push!.max_body_bytes);
+         expect(code(() => built(fits + 1))).toBe("invalid");
+       }
+     });
   const fixture = { headers: { "content-type": "application/json" }, body: "{}", event_id: "w1" };
   it.each([[{ ...fixture, headers: { Authorization: "Bearer x" } }],
            [{ ...fixture, headers: { "webhook-id": "w1" } }],
            [{ ...fixture, headers: { n: 1 } }], [{ ...fixture, headers: [] }],
            [{ ...fixture, extra: 1 }], [{ ...fixture, body: 1 }]])("refuses %j", (value) => {
     expect(code(() => ringRequest(value))).toBe("invalid_request");
+  });
+});
+
+describe("subscriptionId", () => {
+  // The object stores the id the doors derive, and an unsubscribe derives it again, so a
+  // version that spells the canonical JSON otherwise strands every stored subscription.
+  it("is the digest of the canonical JSON, keys sorted, an undefined field left out", () => {
+    const id = "sub_246535f87b40229cba4292a4d303d280";
+    expect(subscriptionId("owner", "https://x.test/fire", "claude_routine_fire",
+                          { rooms: ["room:app:r"], board: false, agent_id: "a" })).toBe(id);
+    expect(subscriptionId("owner", "https://x.test/fire", "claude_routine_fire",
+                          { rooms: ["room:app:r"], board: false, agent_id: "a",
+                            command_center_id: undefined })).toBe(id);
+  });
+});
+
+describe("acceptanceOf", () => {
+  // The bucket keeps an acceptance record for good, and a redelivery after a deploy is held
+  // to it, so its args' digest is pinned to the bytes the records already hold.
+  it("names the digest of the args' canonical JSON, keys sorted", () => {
+    const digest = (args: OperatorMessage["args"]) =>
+      acceptanceOf({ op: "owner.tier", owner: "owner", args } as OperatorMessage).digest;
+    expect(digest({})).toBe(
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    expect(digest({ z: "é\u2028\"x\u0001", a: 1, m: false, b_2: -9007199254740991,
+                    a0: "" })).toBe(
+      "b76a210e407d6986b350c4a07f0f5501b70e66626e6f582b5844ef5a956e53a7");
   });
 });
 

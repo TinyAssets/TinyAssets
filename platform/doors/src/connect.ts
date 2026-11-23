@@ -1,5 +1,5 @@
 /**
- * The connect doors (gateway research §7.2, §7.3; tasks 4 G3): an owner connects a model
+ * The connect doors (gateway research §7.2, §7.3): an owner connects a model
  * source by pasting a key or by OAuth, revokes one, and lists them. The only source that
  * reaches `GATEWAY`, and only its `ConnectGateway` entrypoint (`seal`, `exchange`,
  * `verify`, and a doorbell's `sealDoorbell` and `verifyDoorbell`).
@@ -14,13 +14,22 @@
  * (an outside credential is refused before any object call), a POST of exactly
  * `application/json` within `EGRESS_BODY_MAX`, the maintenance gate, and the session
  * cookie, which the object checks at every session door (its row's caller). Each body is a
- * closed set of fields, checked with everything else that can be checked here before the object is
- * reached: the owner comes from the token alone, and the connection and its version from
- * the object alone.
+ * closed set of fields, checked with everything else that can be checked here before the
+ * object is reached: the owner comes from the token alone, and the connection and its
+ * version from the object alone.
  *
  * - `connections/key` `{source, key, display_name?}`: the key held to the gateway's own
  *   secret grammar, then `connectionPrepare`, `GATEWAY.seal`, `GATEWAY.verify` (the setup
  *   check, which lists the models) and `connectionCommit`.
+ * - `connections/connector` `{url, key, header, scheme, display_name?}`: a key the owner gives
+ *   for one of its agents' MCP servers, by the server's URL, and how the server takes it (its
+ *   header and scheme, which differ by server: data, never a vendor's code). The same steps as
+ *   a pasted model key: `connectionPrepare`, `GATEWAY.seal` with the service's values
+ *   (`serviceSource`: that URL alone; its host a name by the egress table's own rule,
+ *   `checkDestination`, so the key is for a host the sandbox's network can name),
+ *   `GATEWAY.verify` (which opens it; a service has no models to list) and
+ *   `connectionCommit`. A run whose agent's server is at that URL is given the connector, and
+ *   reaches the server through the egress door, where the gateway puts the key in.
  * - `connections/oauth` `{source, display_name?}`: `connectionPrepare`, which begins the
  *   flow in the same unit, bound to this session; answers the authorize URL and sets the
  *   flow's browser binding (`session.ts`). Hosted presets (a key-exchange source,
@@ -51,14 +60,18 @@
  * dropped silently.
  */
 import { keyed } from "../../contract/src/checks";
-import { secret, SECRET_MAX } from "../../contract/src/egress-scope";
+import {
+  secret, SECRET_MAX, SERVICE_PROVIDER, serviceSource,
+} from "../../contract/src/egress-scope";
+import { navigation } from "../../contract/src/navigation";
+import { checkDestination } from "../../contract/src/policy-document";
+import { SOURCE_ID } from "../../contract/src/text";
 import type { Verified } from "../../contract/src/gateway";
 import {
   type GatewayCode, isGatewayCode, Refusal, REFUSALS, refusalOf,
 } from "../../contract/src/refusal";
 
 import type { Bound } from "./binder";
-import { navigation } from "./authorize";
 import {
   CONNECT_CALLBACK, CONNECT_CALLBACK_PATH, CONNECTED_PAGE, now,
 } from "./config";
@@ -84,7 +97,10 @@ const CODE = /^[\x21-\x7e]{1,2048}$/;
 const RESPONSE_PARAMS: readonly string[] = Object.freeze(["state", "code", "iss", "error"]);
 const MIXED_UP = "the authorization came back on another source's callback";
 
-/** Exactly `required`, and any of `optional`: the owner, connection and version are never fields. */
+/**
+ * Exactly `required`, and any of `optional`: the owner, connection and version are never
+ * fields.
+ */
 function fields(body: Record<string, unknown>, required: readonly string[],
                 optional: readonly string[] = []): Record<string, unknown> {
   if (!keyed(body, required, optional)) {
@@ -171,13 +187,7 @@ async function connectKey(context: ConnectContext): Promise<Response> {
   const { env, bound: { binding, stub }, sources } = context;
   const body = fields(context.body, ["source", "key"], ["display_name"]);
   const record = connectable(sources, body["source"], "api_key");
-  const key = body["key"];
-  try {
-    secret(key);  // the gateway's own grammar: what it would refuse is refused here first
-  } catch {
-    throw new Refusal("invalid", `the key is 1 to ${SECRET_MAX} visible ASCII characters, ` +
-                                  "with no space");
-  }
+  const key = pastedKey(body["key"]);
   const sealing = sealedSource(record, "api_key");
   const name = displayName(body["display_name"], record);
   const { connection, version } = await stub.connectionPrepare(binding, {
@@ -187,11 +197,64 @@ async function connectKey(context: ConnectContext): Promise<Response> {
   let kid: string;
   let verified: Verified;
   try {
-    ({ blob, kid } = await env.GATEWAY.seal(binding.owner, connection, version, key as string,
-                                            sealing));
+    ({ blob, kid } = await env.GATEWAY.seal(binding.owner, connection, version, key, sealing));
     verified = await env.GATEWAY.verify(binding.owner, connection, version, blob);
   } catch (error) {
     // The owner holds the key: nothing was issued here, so the connection is given up.
+    return abandoned(context, connection, error);
+  }
+  return answer(200, await stub.connectionCommit(binding, {
+    connection, version, blob, kid, models: [...verified.models], egress: verified.egress }));
+}
+
+/** The key, held to the gateway's own grammar: what it would refuse is refused here first. */
+function pastedKey(key: unknown): string {
+  try {
+    return secret(key);
+  } catch {
+    throw new Refusal("invalid", `the key is 1 to ${SECRET_MAX} visible ASCII characters, ` +
+                                  "with no space");
+  }
+}
+
+/**
+ * `connections/connector`: a pasted key for the MCP server at `url`, sealed by the gateway to
+ * that URL and its header and scheme, its blob committed. Its source is the server's host,
+ * which the owner reads it by.
+ */
+async function connectConnector(context: ConnectContext): Promise<Response> {
+  const { env, bound: { binding, stub } } = context;
+  const body = fields(context.body, ["url", "key", "header", "scheme"], ["display_name"]);
+  const key = pastedKey(body["key"]);
+  let sealing: ReturnType<typeof serviceSource>;
+  try {
+    sealing = serviceSource(body["url"], { header: body["header"], scheme: body["scheme"] });
+    const url = new URL(sealing.upstream.base_url);
+    checkDestination({ host: url.hostname, port: Number(url.port || 443) });
+  } catch {
+    throw new Refusal("invalid", "the url is an https URL with no query, at a host name (no " +
+                                  "IP address), written as a URL parser writes it; the header " +
+                                  "a lower-case header name; the scheme a word, or empty");
+  }
+  const host = new URL(sealing.upstream.base_url).hostname;
+  if (!SOURCE_ID.test(host)) {
+    throw new Refusal("invalid", "the url's host is at most 64 characters, as a connection's " +
+                                  "source is");
+  }
+  const name = body["display_name"] ?? host;
+  if (typeof name !== "string") {
+    throw new Refusal("invalid", "display_name is text");
+  }
+  const { connection, version } = await stub.connectionPrepare(binding, {
+    source: host, kind: "api_key", display_name: name, provider: SERVICE_PROVIDER,
+    revocable: false });
+  let blob: string;
+  let kid: string;
+  let verified: Verified;
+  try {
+    ({ blob, kid } = await env.GATEWAY.seal(binding.owner, connection, version, key, sealing));
+    verified = await env.GATEWAY.verify(binding.owner, connection, version, blob);
+  } catch (error) {
     return abandoned(context, connection, error);
   }
   return answer(200, await stub.connectionCommit(binding, {
@@ -317,7 +380,10 @@ export async function connectCallback(request: Request, sources: Sources): Promi
                   { "Referrer-Policy": "no-referrer" });
 }
 
-/** `connections/oauth/finish`: the flow used up in its session, its code exchanged and committed. */
+/**
+ * `connections/oauth/finish`: the flow used up in its session, its code exchanged and
+ * committed.
+ */
 async function finishOAuth(context: ConnectContext): Promise<Response> {
   const { env, bound: { binding, stub }, sources, request } = context;
   const body = fields(context.body, ["state", "code", "redirect_uri"]);
@@ -384,13 +450,12 @@ async function list({ bound: { binding, stub }, body }: ConnectContext): Promise
   return answer(200, await stub.connectionList(binding));
 }
 
-/** The connect routes, by their path under the owner surface. */
 /**
- * A wake's secret, handed straight to the gateway (slice W, ruling H1), as a pasted model
- * key is: the owner's pasted `/fire` or routine token sealed (`sealDoorbell`), or an MCP
- * Events callback verified by its signed challenge and sealed (`verifyDoorbell`). The
- * doors keep neither; the owner's object stores only the blob, under `DOORBELL_VERSION`,
- * which the gateway opens it by.
+ * A wake's secret, handed straight to the gateway, as a pasted model key is: the owner's
+ * pasted `/fire` or routine token sealed (`sealDoorbell`), or an MCP Events callback
+ * verified by its signed challenge and sealed (`verifyDoorbell`). The doors keep neither; the
+ * owner's object stores only the blob, under `DOORBELL_VERSION`, which the gateway opens it
+ * by.
  */
 export const DOORBELL_VERSION = 1;
 
@@ -412,9 +477,11 @@ export async function verifyDoorbell(env: DoorsEnv, owner: string, subscription:
   }
 }
 
+/** The connect routes, by their path under the owner surface. */
 export const CONNECT_ROUTES: Readonly<Record<string, (context: ConnectContext) =>
     Promise<Response>>> = Object.freeze({
   "connections/key": connectKey,
+  "connections/connector": connectConnector,
   "connections/oauth": beginOAuth,
   "connections/oauth/finish": finishOAuth,
   "connections/revoke": revoke,

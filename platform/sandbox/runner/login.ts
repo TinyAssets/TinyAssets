@@ -1,6 +1,6 @@
 /**
- * The vendor's own sign-in, as data (ADR-031 decision 2, ADR-034): each record's
- * `cli.login` names the command (`argv`, `{bin}` and `{region}` filled), what of its output
+ * The vendor's own sign-in, as data (ADR-039 decision 2.20, ADR-034): each record's
+ * `cli.login` names the command (`argv`, `{bin}` filled), what of its output
  * the owner sees (`url_pattern`, `code_pattern`: each pattern's first group, and nothing else
  * of the output, then held to the record's pinned page, `signinShape`), whether it takes a
  * pasted code on its stdin (`accepts_code`), and how it is known done (its exit, or
@@ -46,13 +46,9 @@ export function credentialShaped(value: string, atoms: readonly string[]): boole
   return heldSecret(value, atoms) !== null || credentialLike(value);
 }
 
-/** The login's argv: `{bin}` the engine's binary, `{region}` the owner's choice. */
-export function loginArgv(login: LoginSpec, bin: string, region: string | null): string[] {
-  const { argv } = login;
-  if (argv.some((arg) => arg.includes("{region}")) && region === null) {
-    throw new Error("this sign-in takes the owner's choice of region");
-  }
-  return argv.map((arg) => arg.replaceAll("{bin}", bin).replaceAll("{region}", region ?? ""));
+/** The login's argv: `{bin}` the engine's binary. */
+export function loginArgv(login: LoginSpec, bin: string): string[] {
+  return login.argv.map((arg) => arg.replaceAll("{bin}", bin));
 }
 
 /** One argument for a POSIX shell, single-quoted. */

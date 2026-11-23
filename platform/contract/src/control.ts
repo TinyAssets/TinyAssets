@@ -1,24 +1,30 @@
 /**
- * The platform's control record (research §7, checklist 11): one record, `c:control`, in a
- * KV namespace of its own (`CONTROL`), which the founder edits with no deploy. The doors read
- * it on every outside and owner call, and hand its tier numbers and switched-on sign-ins in
- * the binding (`doors/src/binder.ts`, `withAccount`); the owner's object at a code-mode script's
- * tool calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start and once per look
- * (`sandbox/src/control.ts`); and a first deploy writes it closed (`deploy/deploy.ts`). Each
- * reads it here, by this module's key, parse and gates, and nowhere else.
+ * The platform's control record: one record, `c:control`, in a KV namespace of its own
+ * (`CONTROL`), which the founder edits with no deploy. The doors read it on every outside and
+ * owner call, and hand the record read fresh in the binding (`doors/src/binder.ts`,
+ * `withAccount`); the owner's object at a code-mode script's tool
+ * calls and its lanes' passes (`owner/src/control-gate.ts`); the sandbox Worker once per start
+ * and once per look (`sandbox/src/control.ts`); and a first deploy writes it closed
+ * (`deploy/deploy.ts`). Each reads it here, by this module's key, parse and gates, and
+ * nowhere else.
+ *
+ * **When it can't be read** (the founder's rule, 2026-11-21): a reader serves the last copy it
+ * read well formed, of any age, kept by the keeper it hands (`ControlKeeper`), and refuses only
+ * the acts that need the record fresh (`FRESH_ONLY`). A record that reads but is not well
+ * formed (a bad write, a typo in a kill flip) never uses the copy: it closes every gate, as
+ * a kill flip with a typo must.
  *
  * It holds:
- * - **the gates:** `outside`, the outside kill switch (the Python's `TINYASSETS_OUTSIDE_DENY`
- *   and durable switch); `ordinary`, the maintenance gate (all owners, the `canary` owners
- *   only, or none); `inbound`, the hooks gate (`/hooks/inbound` serves nothing unless it is
- *   on);
+ * - **the gates:** `outside`, the outside kill switch; `ordinary`, the maintenance gate (all
+ *   owners, the `canary` owners only, or none); `inbound`, the hooks gate (`/hooks/inbound`
+ *   serves nothing unless it is on);
  * - **the tier numbers** (`tiers`, ADR-034 decision 8);
  * - **each source's vendor sign-in switch** (`signins`);
- * - **the sandbox's platform numbers** and **its scratch retention**.
+ * - **the sandbox's platform numbers**.
  *
  * Every field but the gates is optional, and a record any part of which is malformed is
- * malformed whole: never a guess. A flip reaches every location within KV's 60 s; no revoke
- * depends on it.
+ * malformed whole: never a guess, and never a key dropped unread. A flip reaches every
+ * location within KV's 60 s; no revoke depends on it.
  */
 
 import { keyed, object, whole } from "./checks.ts";
@@ -94,19 +100,12 @@ export interface Control {
   /** The tier numbers; null when the record holds none, and every run is then refused. */
   readonly tiers: Tiers | null;
   /**
-   * The sandbox's numbers (slice S; the founder's rule of 2026-11-03), which the sandbox
+   * The sandbox's numbers (the founder's rule of 2026-11-03), which the sandbox
    * Worker reads at each start: null when the record holds none, and it then starts nothing.
    */
   readonly sandbox: SandboxCeilings | null;
   /**
-   * How many days an agent's sandbox scratch may go unused before it is deleted
-   * (`scratch_retention_days`; `sandbox/runner/scratch.ts`): a chosen retention, refusing
-   * nothing, which the sandbox Worker hands each run's runner. Null when the record names
-   * none: then only the disk's own pressure lets scratch go.
-   */
-  readonly scratch_retention_days: number | null;
-  /**
-   * Each source's vendor sign-in, on or off (slice SIGNIN), by source id: a source the record
+   * Each source's vendor sign-in, on or off, by source id: a source the record
    * does not name takes its record's verdict on the vendor's terms for hosted use
    * (`sources/src/signin.ts`, `signinsOn`). Null when the record names none.
    */
@@ -114,18 +113,117 @@ export interface Control {
 }
 
 /**
- * The record as read: there and well formed, missing, malformed (an operator's bad write),
- * or unreadable (an outage, or a value that is not JSON). The gates tell them apart; the
- * last two are reported.
+ * The record as read: there and well formed, with the text it was read from; kept (the
+ * namespace could not be read, and the reader's keeper held the copy last read well formed,
+ * first read at `read_at`, ms); missing;
+ * malformed (an operator's bad write: not JSON, too long, or out of shape); or unreadable (an
+ * outage, with no copy kept). The gates tell them apart; the last three are reported.
  */
 export type ControlRead =
-  | { readonly kind: "read"; readonly control: Control }
+  | { readonly kind: "read"; readonly control: Control; readonly text: string }
+  | { readonly kind: "kept"; readonly control: Control; readonly read_at: number }
   | { readonly kind: "missing" }
   | { readonly kind: "malformed" }
   | { readonly kind: "unreadable" };
 
 /** What the record is read from: its namespace, as each Worker binds it (`CONTROL`). */
 export type ControlStore = Pick<KVNamespace, "get">;
+
+/**
+ * The most bytes the record's text may hold: what each reader's kept copy is costed for (the
+ * owner's database bound, `owner/guards/owner-bound.test.ts`), far past any record (a hundred
+ * canary owners and every source's switch take a few KiB). A longer text is malformed.
+ */
+export const CONTROL_TEXT_MAX = 64 * 1024;
+
+/** The record's text as a reader last read it well formed, and when it first read that text. */
+export interface Kept {
+  readonly text: string;
+  /** Epoch ms. */
+  readonly read_at: number;
+}
+
+/**
+ * Where a reader keeps its last good copy of the record, which `readControl` writes at every
+ * well-formed read and reads only when the namespace can't be read. Each reader hands its own:
+ * the doors the isolate's memory and the location's cache (`doors/src/control.ts`), the
+ * owner's and the sandbox's objects their own SQLite (`SqlKeeper`). Neither shares KV's
+ * backend, as R2 or a second namespace would.
+ */
+export interface ControlKeeper {
+  /** The copy kept, or null when none is. */
+  kept(): Kept | null | Promise<Kept | null>;
+  /**
+   * `text`, read well formed at `at`, kept: written only when it is not the copy kept. Null, a
+   * read that found no record or a malformed one, drops the copy, so the gates that read closed
+   * stay closed through an outage after it (a kill flip with a typo).
+   */
+  keep(text: string | null, at: number): void | Promise<void>;
+}
+
+/**
+ * A keeper in an object's own SQLite (the owner's and the sandbox's): one row of its table
+ * `control_kept` (`only`, `text`, `read_at`), which each object's own migrations make.
+ */
+export class SqlKeeper implements ControlKeeper {
+  readonly #sql: Pick<SqlStorage, "exec">;
+
+  constructor(sql: Pick<SqlStorage, "exec">) {
+    this.#sql = sql;
+  }
+
+  kept(): Kept | null {
+    const row = this.#sql.exec<{ text: string; read_at: number }>(
+      "SELECT text, read_at FROM control_kept").toArray()[0];
+    return row === undefined ? null : { text: row.text, read_at: row.read_at };
+  }
+
+  keep(text: string | null, at: number): void {
+    // Read first: an owner unit that runs any write is marked changed (`owner/src/gate.ts`).
+    if ((this.kept()?.text ?? null) === text) {
+      return;
+    }
+    if (text === null) {
+      this.#sql.exec("DELETE FROM control_kept");
+      return;
+    }
+    this.#sql.exec("INSERT INTO control_kept (only, text, read_at) VALUES (1, ?, ?) " +
+                     "ON CONFLICT (only) DO UPDATE SET text = excluded.text, " +
+                     "read_at = excluded.read_at", text, at);
+  }
+}
+
+/**
+ * The acts a kept copy never admits, each by the words its refusal names it in: each opens
+ * something that outlasts the outage, on a record that may have changed since the copy (a
+ * switch just turned off), so it waits for the record read fresh. Writing the record's own
+ * numbers into lasting state is the other such act: a read that is not fresh hands none
+ * (`freshRecord`), so no reader rewrites what it keeps. Everything else runs on the copy.
+ */
+export const FRESH_ONLY = Object.freeze({
+  /** An outside client's new authorization (`doors/src/authorize.ts`). */
+  authorization: "a new authorization",
+  /** A new owner's first admit, at its first sign-in (`doors/src/authorize.ts`). */
+  admit: "a first sign-in",
+  /** A new API key (`doors/src/app.ts`). */
+  key: "a new API key",
+  /** A vendor sign-in started under its source's switch (`owner/src/signins.ts`). */
+  signin: "a vendor sign-in",
+});
+export type FreshAct = keyof typeof FRESH_ONLY;
+
+/** The temporary refusal of `act` while the record can't be read fresh: a 503 to retry. */
+export function staleRefusal(act: FreshAct): Refusal {
+  return new Refusal("unavailable", `${FRESH_ONLY[act]} needs the platform's control record ` +
+                     "read fresh, and it can't be read just now");
+}
+
+/** `act` refused when `read` is a kept copy (`staleRefusal`); any other read is the gates'. */
+export function requireFresh(read: ControlRead, act: FreshAct): void {
+  if (read.kind === "kept") {
+    throw staleRefusal(act);
+  }
+}
 
 const SANDBOX_KEYS: readonly string[] = Object.freeze([
   "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling", "sandbox_renewal_window_s"]);
@@ -134,7 +232,7 @@ const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ord
                                                        "outside"]);
 const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
   "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
-  "sandbox_renewal_window_s", "scratch_retention_days", "signins"]);
+  "sandbox_renewal_window_s", "signins"]);
 
 /** The tier numbers exactly, or `invalid`. */
 export function parseTiers(value: unknown): Tiers {
@@ -177,9 +275,7 @@ export function parseControl(value: unknown): Control | null {
     return null;
   }
   const sandbox = SANDBOX_KEYS.map((key) => value[key]);
-  const retention = value["scratch_retention_days"];
-  if ((retention !== undefined && !whole(retention, 1))
-      || (outside !== "on" && outside !== "off")
+  if ((outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
       || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY
       || !(sandbox.every((part) => part === undefined)
@@ -192,31 +288,77 @@ export function parseControl(value: unknown): Control | null {
              signins: signins === undefined ? null
                : Object.freeze({ ...(signins as Record<string, boolean>) }),
              sandbox: sandbox[0] === undefined ? null
-               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]),
-             scratch_retention_days: retention === undefined ? null : retention };
+               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]) };
   } catch {
     return null;
   }
 }
 
-/** The record from its namespace, as read. Never throws: an outage is `unreadable`. */
-export async function readControl(store: ControlStore): Promise<ControlRead> {
+/**
+ * The record from its text, parsed exactly, or null when it is anything else: longer than
+ * `CONTROL_TEXT_MAX`, not JSON, or out of shape. Every reader's parser, and the kit's.
+ */
+export function controlOf(text: string): Control | null {
+  if (new TextEncoder().encode(text).byteLength > CONTROL_TEXT_MAX) {
+    return null;
+  }
   let value: unknown;
   try {
-    value = await store.get(CONTROL_KEY, { type: "json" });
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return parseControl(value);
+}
+
+/**
+ * The record from its namespace, as read, each well-formed read's text kept in `keeper` and a
+ * missing or malformed one dropping it; when the namespace throws, the copy `keeper` holds. Never throws: an outage with no copy
+ * is `unreadable`. A keeper that fails is reported and is no copy: a good read stays good.
+ */
+export async function readControl(store: ControlStore,
+                                  keeper: ControlKeeper): Promise<ControlRead> {
+  let text: string | null;
+  try {
+    text = await store.get(CONTROL_KEY, { type: "text" });
   } catch (error) {
-    console.error("the control record is unreadable", error);
+    return kept(keeper, error);
+  }
+  const control = text === null ? null : controlOf(text);
+  if (text !== null && control === null) {
+    console.error("the control record is malformed: every gate is closed until it is fixed");
+  }
+  try {
+    await keeper.keep(control === null ? null : text, Date.now());
+  } catch (error) {
+    console.error("the control record's last good copy could not be kept", error);
+  }
+  return text === null ? { kind: "missing" }
+    : control !== null ? { kind: "read", control, text } : { kind: "malformed" };
+}
+
+/** The read an outage gives: the copy `keeper` holds, or `unreadable`. */
+async function kept(keeper: ControlKeeper, outage: unknown): Promise<ControlRead> {
+  let copy: Kept | null = null;
+  try {
+    copy = await keeper.kept();
+  } catch (error) {
+    console.error("the control record's last good copy could not be read", error);
+  }
+  const control = copy === null ? null : controlOf(copy.text);
+  if (copy === null || control === null) {
+    console.error("the control record is unreadable and no copy is kept: every gate is closed",
+                  outage);
     return { kind: "unreadable" };
   }
-  if (value === null) {
-    return { kind: "missing" };
-  }
-  const control = parseControl(value);
-  if (control === null) {
-    console.error("the control record is malformed");
-    return { kind: "malformed" };
-  }
-  return { kind: "read", control };
+  console.error(`the control record is unreadable: served from the copy first read at ${
+    new Date(copy.read_at).toISOString()}; the acts that need it fresh are refused`, outage);
+  return { kind: "kept", control, read_at: copy.read_at };
+}
+
+/** The record a read gives the gates: as read, or as kept; null when it gives none. */
+export function gating(read: ControlRead): Control | null {
+  return read.kind === "read" || read.kind === "kept" ? read.control : null;
 }
 
 /** Whether the maintenance gate admits `owner`: every owner, or a canary one. */
@@ -227,24 +369,24 @@ export function ordinaryAdmits(control: Control, owner: string): boolean {
 
 /**
  * Whether the record admits an outside call for `owner` (an MCP tool call, an `/api` call, an
- * MCP authorization): only a record that reads well formed, with `outside` on and the
+ * MCP authorization): only a record read well formed or kept, with `outside` on and the
  * maintenance gate admitting its owner. Missing, malformed or unreadable refuses it: the kill
  * switch is off unless it is provably on.
  */
 export function outsideOpen(read: ControlRead, owner: string): boolean {
-  return read.kind === "read" && read.control.outside === "on"
-    && ordinaryAdmits(read.control, owner);
+  const control = gating(read);
+  return control !== null && control.outside === "on" && ordinaryAdmits(control, owner);
 }
 
 /**
  * Whether the record admits the owner's own call (`/app/api/*`, the owner's sign-in, a run's
  * or the owner's code-mode call): held by the maintenance gate alone. With no record at all it
- * is open, so a fresh deployment's owner can reach their account (research checklist 11); a
- * record that is malformed or unreadable closes it, as the Python's `router_traffic.admits`
- * did, since a gate that cannot be read is never taken as open.
+ * is open, so a fresh deployment's owner can reach their account; a record that is malformed
+ * or unreadable with no copy closes it, since a gate that cannot be read is never taken as open.
  */
 export function ownerOpen(read: ControlRead, owner: string): boolean {
-  return read.kind === "missing" || (read.kind === "read" && ordinaryAdmits(read.control, owner));
+  const control = gating(read);
+  return read.kind === "missing" || (control !== null && ordinaryAdmits(control, owner));
 }
 
 /**
@@ -260,14 +402,23 @@ export function closedToAll(control: Control): boolean {
 /**
  * The hooks gate (`/hooks/inbound`), before any route is read: `unavailable` when the record
  * is malformed or unreadable, `off` when it is missing or its `inbound` is off, else the
- * record, by whose maintenance gate the event's owner is then held (`ordinaryAdmits`).
+ * record read or kept, by whose maintenance gate the event's owner is then held
+ * (`ordinaryAdmits`).
  */
 export function inboundGate(read: ControlRead): Control | "off" | "unavailable" {
+  const control = gating(read);
   return read.kind === "malformed" || read.kind === "unreadable" ? "unavailable"
-    : read.kind === "missing" || !read.control.inbound ? "off" : read.control;
+    : control === null || !control.inbound ? "off" : control;
 }
 
-/** The record's tier numbers: null when it holds none, or when it was not read well formed. */
-export function tiersOf(read: ControlRead): Tiers | null {
-  return read.kind === "read" ? read.control.tiers : null;
+/**
+ * The record a read hands the owner's object to keep as its one copy (`Binding.control`, its
+ * `SqlKeeper`), which its tier numbers and sign-in switches are read from: the text when it
+ * read well formed; null when it found none or a malformed one (the object then drops its
+ * copy, refuses every run for want of numbers and starts no sign-in); none (`undefined`) when
+ * it was not read fresh, so the object keeps its own (`FRESH_ONLY`).
+ */
+export function freshRecord(read: ControlRead): string | null | undefined {
+  return read.kind === "kept" || read.kind === "unreadable" ? undefined
+    : read.kind === "read" ? read.text : null;
 }

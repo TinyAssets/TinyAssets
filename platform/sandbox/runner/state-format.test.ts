@@ -23,7 +23,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { canonical } from "../../contract/src/canonical";
 import { ANSWERS, COMMAND, EXIT, inboxCode, inboxDoc, incoming, INSTALL, INTERNAL_COMMANDS,
-         JOBS, LEASE_FILE, LOADER, PROTOCOL, RETIRED_IN_1, RUNNERS, SPEAKS, STATE_DIR,
+         JOBS, LEASE_FILE, LOADER, PROTOCOL, RUNNERS, SPEAKS, STATE_DIR,
          WORKER_COMMANDS } from "./protocol";
 import { checkFormat, dropRunners, type FormatRule, formatStep, READS,
          STATE_FORMAT } from "./state-format";
@@ -35,8 +35,13 @@ import { FORMATS, PROTOCOLS, sample, shapeProblems, type Format } from "./test/s
  * changes. A new format or protocol is a new entry, and its pin is added here with it.
  */
 const FROZEN = Object.freeze({
-  formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263" },
-  protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2" },
+  formats: { "1": "a19128179e56fbfc00a07a0aec3a84aa274a692db344bf2b042e56cab0f07263",
+             "2": "5f02a16dd4a6685627097767309b32800cfaa89fa94daeec41752c5c14b1fff7" },
+  protocols: { "1": "aa417ab2b758c766a2278a57f2437bb570fa6ece2cd3ced66b20f684eb42c8b2",
+               "2": "c38091d43b77abc01243f22e52285771355d6680a9d0ae3cce9ac438c5440fc0",
+               "3": "f46e144d6b9eaa1cd38a394722a8135501755a85a5e79020246a06957a79d5ff",
+               "4": "1d3c4ee19355036e58b6ea8e2a9cc35adc6bfce46bd29eabe9e0e17769b5932b",
+               "5": "a3efe25ff510dedbc5fe39966e90009228083cbab0c572221954643f368e2f77" },
 });
 
 const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
@@ -90,13 +95,21 @@ describe("the runner's on-disk format", () => {
   it("is the mirror this runner writes, exactly as its format's record says", () => {
     const path = join(temp(), "mirror.db");
     const mirror = openMirror(path);
-    mirror.put("/workspace/a.md", { version: 3, size: 5, mtime_ms: 1, sha256: "0".repeat(64) });
+    mirror.put("/workspace/a.md", { version: 3, size: 5, mtime_ms: 1, sha256: "0".repeat(64),
+                                    unread: false });
     mirror.setCursor(7);
     mirror.close();
     expect(schema(path)).toEqual(FORMATS[String(STATE_FORMAT)]!.mirror);
   });
 
   it("reads every format's mirror it reads, as each was recorded", () => {
+    // A synced row and a marked one, as each format wrote them: format 1's mark was its hash
+    // `""`, format 2's is a column of its own, the hash kept.
+    const hash = "0".repeat(64);
+    const rows: Record<string, string> = {
+      "1": `('/workspace/a.md', 3, 5, 1, '${hash}'), ('/workspace/b.md', 4, 0, 0, '')`,
+      "2": `('/workspace/a.md', 3, 5, 1, '${hash}', 0), ('/workspace/b.md', 4, 0, 0, '', 1)`,
+    };
     for (const format of READS) {
       const path = join(temp(), "mirror.db");
       const db = new DatabaseSync(path);
@@ -105,14 +118,19 @@ describe("the runner's on-disk format", () => {
           db.exec(entry.sql);
         }
       }
-      db.exec("INSERT INTO meta VALUES (1, 7); INSERT INTO files VALUES " +
-              `('/workspace/a.md', 3, 5, 1, '${"0".repeat(64)}')`);
+      db.exec(`INSERT INTO meta VALUES (1, 7); INSERT INTO files VALUES ${rows[String(format)]!}`);
       db.close();
-      const mirror = openMirror(path);
-      expect(mirror.cursor()).toBe(7);
-      expect(mirror.get("/workspace/a.md")).toEqual({ version: 3, size: 5, mtime_ms: 1,
-                                                      sha256: "0".repeat(64) });
-      mirror.close();
+      // Opened twice: a mirror rebuilt once is this format's, read alike after.
+      for (let open = 0; open < 2; open += 1) {
+        const mirror = openMirror(path);
+        expect(mirror.cursor()).toBe(7);
+        expect(mirror.get("/workspace/a.md")).toEqual({ version: 3, size: 5, mtime_ms: 1,
+                                                        sha256: hash, unread: false });
+        expect(mirror.get("/workspace/b.md")).toEqual({ version: 4, size: 0, mtime_ms: 0,
+                                                        sha256: "", unread: true });
+        mirror.close();
+      }
+      expect(schema(path)).toEqual(FORMATS[String(STATE_FORMAT)]!.mirror);
     }
   });
 
@@ -195,13 +213,22 @@ describe("the Worker's protocol with the runner", () => {
     expect(new Set(named).size).toBe(named.length);
     // Each the runner takes is the Worker's or the runner's own: one of them alone.
     expect([...WORKER_COMMANDS, ...INTERNAL_COMMANDS].sort()).toEqual([...named].sort());
-    // Protocol 1 records those and the retired ones (`RETIRED_IN_1`: the probe commands,
-    // which `probes.ts` runs, and `status`), which the runner takes none of: every other is in
-    // its record.
-    expect(RETIRED_IN_1.filter((command) => (named as readonly string[]).includes(command)))
-      .toEqual([]);
-    expect([...named, ...(PROTOCOL === 1 ? RETIRED_IN_1 : [])].sort())
-      .toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
+    expect([...named].sort()).toEqual([...PROTOCOLS[String(PROTOCOL)]!.commands].sort());
+  });
+
+  it("has every protocol answer `state` alike, so the Worker reads any runner's", () => {
+    // A sandbox may hold a runner of any deploy before (paused across several): the Worker
+    // asks it `state` for its protocol and whether anything lives on it, and adopts its own
+    // over one nothing lives on, whatever that one speaks.
+    for (const [protocol, record] of Object.entries(PROTOCOLS)) {
+      expect(record.commands, `protocol ${protocol}`).toContain(COMMAND.state);
+      expect(record.answers[COMMAND.state], `protocol ${protocol}`)
+        .toEqual(ANSWERS[COMMAND.state]);
+      // Asked through the template's loader, by its path and its exit codes, and answered.
+      expect({ loader: record.paths.loader, ok: record.exit.ok, absent: record.exit.absent,
+               mismatch: record.exit.mismatch }, `protocol ${protocol}`)
+        .toEqual({ loader: LOADER, ok: EXIT.ok, absent: EXIT.absent, mismatch: EXIT.mismatch });
+    }
   });
 
   it("has the Worker send only commands every protocol it speaks records", () => {

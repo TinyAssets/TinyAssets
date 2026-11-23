@@ -8,7 +8,7 @@
 // entrypoint and the owner's its whole service, so a new owner's starter seed really writes
 // its files.
 //
-// The browser believes it talks to https://tinyassets.io: its resolver sends our hosts to the
+// The browser believes it talks to the doors' origin: its resolver sends our hosts to the
 // local workerd (`--host-resolver-rules`), so every request it makes, the app's live socket
 // too, reaches the doors over the network. Two other hosts answer, each a top-level navigation by
 // design: the identity provider (`upstream.test`, which signs the owner in at once) and the
@@ -31,12 +31,12 @@ import { installed } from "../../ci/deps.ts";
 import { keyring as newKeyring, OPEN, writeControl } from "../../ci/fixtures.ts";
 import { PLATFORM } from "../../ci/paths.ts";
 import { auxiliary, fake, pool, workerConfig } from "../../ci/workers.ts";
+import { EGRESS_HOST, EGRESS_ORIGIN } from "../../contract/src/egress.ts";
+import { HOST, ORIGIN } from "../../contract/src/identity.ts";
 import { AUTHKIT } from "./fake-providers.ts";
 
 installed();
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
-const ORIGIN = "https://tinyassets.io";
-const EGRESS = "https://egress.tinyassets.io";
 const UPSTREAM = AUTHKIT.OWNER_ISSUER;
 const SOURCE_AUTH = "https://auth.test";
 /** The hosts the doors' sign-in reaches, the fake AuthKit's: its record's token and JWKS. */
@@ -52,7 +52,7 @@ const HAND_OFF = `
 export default {
   fetch(request, env) {
     const url = new URL(request.url);
-    const back = new URL(url.searchParams.get("redirect_uri") ?? "https://tinyassets.io/");
+    const back = new URL(url.searchParams.get("redirect_uri") ?? "${ORIGIN}/");
     const state = url.searchParams.get("state") ?? "";
     if (url.hostname === "upstream.test" && url.pathname === "/authorize") {
       const signIn = JSON.stringify({ subject: env.WHO,
@@ -137,7 +137,7 @@ before(async () => {
   // No proxy: the browser reaches only the local workerd, by the rules below.
   const env = Object.fromEntries(Object.entries(process.env)
     .filter(([name]) => !/proxy/i.test(name)));
-  const local = ["tinyassets.io", "egress.tinyassets.io", "upstream.test", "auth.test"]
+  const local = [HOST, EGRESS_HOST, "upstream.test", "auth.test"]
     .map((host) => `MAP ${host}:443 127.0.0.1:${port}`).join(", ");
   browser = await chromium.launch({ env, args: [
     "--no-proxy-server",
@@ -240,7 +240,7 @@ const LEASE_TOKENS = new Map();
 
 /** What E2B's transform sets on every call through the door: the egress token and generation. */
 function stampedOf(opened) {
-  return opened.network.network.rules["egress.tinyassets.io"][0].transform.headers;
+  return opened.network.network.rules[EGRESS_HOST][0].transform.headers;
 }
 
 /** The lease's egress token: only the network's transform carries it, as E2B sets it. */
@@ -264,7 +264,7 @@ async function starts() {
 async function report(start, body) {
   await starts();
   const tokens = LEASE_TOKENS.get(start.lease.lease_id);
-  const answer = await mf.dispatchFetch(`${EGRESS}/r/${start.run}/events`, {
+  const answer = await mf.dispatchFetch(`${EGRESS_ORIGIN}/r/${start.run}/events`, {
     method: "POST", body: JSON.stringify(body),
     headers: { "Content-Type": "application/json", "x-ta-sandbox": tokens.egress_token,
                "x-ta-network-generation": "1", "x-ta-runner": tokens.runner_token } });
@@ -359,7 +359,7 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   await connection.selectOption(groq);
   await form.getByRole("checkbox", { name: "Read your files" }).check();
   // Every change the making sends, in order: the agent is its agent.json, so that is the
-  // last write, after its folder and its AGENTS.md (review L3).
+  // last write, after its folder and its AGENTS.md.
   const changes = [];
   const onRequest = (request) => {
     const path = new URL(request.url()).pathname;
@@ -429,22 +429,22 @@ test("the agent form offers a subscription signed in inside the sandbox, beside 
   const file = written.find((each) => each.path === "/workspace/agents/subscribed/agent.json");
   assert.ok(file, "the form wrote the agent's agent.json");
   assert.match(JSON.stringify(file), /vendor_login_in_sandbox/);
-  // Kimi signs in only: switched off (its terms unverified), the form says so and offers it
-  // not; switched on in the control record, it is an engine a Kimi agent is made on.
-  await page.goto(`${ORIGIN}/app#agents`);
-  await page.getByRole("heading", { name: "New agent" }).waitFor();
-  assert.match(await page.locator("section", { hasText: "New agent" }).innerText(),
-               /switched off for [^.]*Kimi/);
-  const control = await mf.getKVNamespace("CONTROL", workerConfig(DOORS).name);
-  await writeControl(control, JSON.stringify({ ...OPEN, signins: { kimi: true } }));
-  try {
+  // Codex's sign-in is switched off (its terms unclear), so the form offers its key alone;
+  // switched on in the control record, the form offers its sign-in beside it.
+  const offered = async () => {
     await page.goto(`${ORIGIN}/app#home`);
     await page.goto(`${ORIGIN}/app#agents`);
     const again = page.locator("section", { hasText: "New agent" });
-    await again.getByLabel(/^Engine/).selectOption("kimi");
-    assert.deepEqual(await again.getByLabel(/^Runs on/).locator("option").allInnerTexts(),
-                     ["Whichever the engine has",
-                      "Your subscription, signed in inside your sandbox"]);
+    await again.getByLabel(/^Engine/).selectOption("codex");
+    return await again.getByLabel(/^Runs on/).locator("option").allInnerTexts();
+  };
+  assert.deepEqual(await offered(), ["Whichever the engine has", "An API key you connected"]);
+  const control = await mf.getKVNamespace("CONTROL", workerConfig(DOORS).name);
+  await writeControl(control, JSON.stringify({ ...OPEN, signins: { codex: true } }));
+  try {
+    assert.deepEqual(await offered(), ["Whichever the engine has",
+                                       "Your subscription, signed in inside your sandbox",
+                                       "An API key you connected"]);
   } finally {
     await writeControl(control, JSON.stringify(OPEN));
   }
@@ -472,7 +472,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
   let signin = await asked(0);
   assert.equal(signin.engine, "claude-code");
   const post = async (body) => {
-    const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
+    const answer = await mf.dispatchFetch(`${EGRESS_ORIGIN}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
                  ...stampedOf(signin),
@@ -508,7 +508,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
                end: { exit_code: 0 } });
   await page.locator(".message.good", { hasText: "Signed in to Claude." }).waitFor();
   await shot("signin");
-  // A look-alike page is refused in plain words (review L6), and the panel offers a new one.
+  // A look-alike page is refused in plain words, and the panel offers a new one.
   /** A new sign-in started from the panel, its page shown (so the app is watching it). */
   const again = async (n) => {
     await card.getByRole("button", { name: /^Sign in/ }).click();
@@ -524,7 +524,7 @@ test("the owner signs in to a subscription inside its sandbox: the vendor's page
                                                    code: null } }] });
   await page.locator(".message.bad", {
     hasText: "it showed a link that is not the vendor's own sign-in page" }).waitFor();
-  // A code past its lifetime ends the sign-in, and the app offers to start again (review M4).
+  // A code past its lifetime ends the sign-in, and the app offers to start again.
   await again(2);
   await post({ frames: [{ seq: 2, at: 2, event: { type: "ta.signin", state: "expired" } }] });
   await page.locator(".message.bad", { hasText: "The code expired; start again." }).waitFor();
@@ -561,7 +561,7 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
   }
   assert.ok(signin, "the app did not ask the sandbox to start the sign-in");
   const post = async (body) => {
-    const answer = await mf.dispatchFetch(`${EGRESS}/signin/${signin.id}/events`, {
+    const answer = await mf.dispatchFetch(`${EGRESS_ORIGIN}/signin/${signin.id}/events`, {
       method: "POST", body: JSON.stringify(body),
       headers: { "Content-Type": "application/json",
                  ...stampedOf(signin),
@@ -604,8 +604,8 @@ test("a sign-in whose socket drops is followed on a new socket, and ends as it e
   await page.locator(".message.good", { hasText: "Signed in to Claude." }).last().waitFor();
 });
 
-test("a talk whose socket drops mid-run goes on on a new socket, each frame shown once " +
-     "(review M1)", { timeout: 120_000 }, async () => {
+test("a talk whose socket drops mid-run goes on on a new socket, each frame shown once",
+     { timeout: 120_000 }, async () => {
   // The sockets are kept by the script the sign-in drop's test added to the context.
   await page.goto(`${ORIGIN}/app#agents/helper`);
   await page.reload();
@@ -674,25 +674,26 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.getByRole("checkbox", { name: "Read your files" }).check();
   await page.getByRole("button", { name: "Make the key" }).click();
   assert.match(await page.locator(".secret").innerText(), /^ta_key_[0-9a-f]{16}_/);
-  // Code mode off, in the owner's session.
+  // Code mode, off by default, turned on in the owner's session.
   await page.goto(`${ORIGIN}/app#apps`);
   const codemode = page.locator("section", { hasText: "Code mode" });
-  await codemode.getByRole("checkbox").uncheck();
+  assert.equal(await codemode.getByRole("checkbox").isChecked(), false);
+  await codemode.getByRole("checkbox").check();
   await codemode.getByRole("button", { name: "Save" }).click();
   await page.locator(".message.good", { hasText: "Saved." }).waitFor();
   assert.equal(await page.locator("section", { hasText: "Code mode" }).getByRole("checkbox")
-    .isChecked(), false);
+    .isChecked(), true);
   // No main agent has joined, so no wake-up is offered.
   await page.goto(`${ORIGIN}/app#apps`);
   await page.getByText("No main agent has joined yet.").waitFor();
-  // "Every tool" holds every pick on, fixed, so no choice is silently dropped (review L5).
+  // "Every tool" holds every pick on, fixed, so no choice is silently dropped.
   const picks = page.locator("section", { hasText: "Tools your connected apps see" });
   assert.equal(await picks.getByRole("checkbox", { name: /Every tool/ }).isChecked(), true);
   assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), true);
   await picks.getByRole("checkbox", { name: /Every tool/ }).uncheck();
   assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), false);
   // The doors this app knows are missing say so before anything is clicked, with no button;
-  // past runs are said plainly under Talk (review M3).
+  // past runs are said plainly under Talk.
   await page.goto(`${ORIGIN}/app#data`);
   await page.getByText(/^Exporting everything you hold is not here yet/).waitFor();
   assert.equal(await page.getByRole("button", { name: /Export/ }).count(), 0);
@@ -700,7 +701,37 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.getByText(/not kept across reloads/).waitFor();
 });
 
-// -- The review's attacks, kept as tests (slice APP review) ---------------------------------
+test("a connected app whose agent was deleted says so on its row, and its save names the " +
+     "agent chosen", { timeout: 60_000 }, async () => {
+  // No app connects in this harness, so the doors' list is answered with one whose grant
+  // names an agent since deleted; the save goes to the real doors.
+  const gone = { client: "c".repeat(64), source: "mcp", mode: "full", scopes: [], revision: 3,
+                 revoked_at: null, vendor: null, vendor_verified: 0, name: "Muse",
+                 profile: "custom", agent: "gone", agent_live: false, first_seen: 0,
+                 last_seen: 0 };
+  const listed = (route) => route.fulfill({ json: { clients: [gone] } });
+  await page.route("**/app/api/grants", listed);
+  try {
+    await page.goto(`${ORIGIN}/app#apps`);
+    const row = page.locator("tr", { hasText: "Muse" });
+    await row.getByText(/^This agent was deleted/).waitFor();
+    const agent = row.getByRole("combobox").nth(1);
+    assert.equal(await agent.locator("option:checked").innerText(), "gone (deleted)");
+    await agent.selectOption("main");
+    const sent = page.waitForRequest((request) =>
+      request.url().endsWith("/app/api/grants/set"));
+    await row.getByRole("button", { name: "Save" }).click();
+    assert.deepEqual((await sent).postDataJSON(), {
+      client: gone.client, source: "mcp", mode: "full", scopes: [], expected_revision: 3,
+      name: "Muse", profile: "custom", agent: "main" });
+    // The real doors know no such client, and say so.
+    await page.locator("#notice .message.bad").waitFor();
+  } finally {
+    await page.unroute("**/app/api/grants", listed);
+  }
+});
+
+// -- Attacks on the app, kept as tests -----------------------------------------------------
 
 const P_IMG = `<img src=x onerror="window.__xss=(window.__xss||0)+1">`;
 const P_SVG = `"><svg onload="window.__xss=(window.__xss||0)+1"></svg>`;
@@ -837,7 +868,7 @@ test("no payload runs through file names, file text, frames, results, posts or t
   assert.equal(await page.locator("textarea.editor").inputValue(), PAYLOAD);
   await page.getByRole("link", { name: `${P_IMG}.md` }).click();
   await page.locator("textarea.editor").waitFor();
-  // A run whose frames and result are the payload, and one frame with no event (review L2).
+  // A run whose frames and result are the payload, and one frame with no event.
   const before = (await starts()).length;
   await page.getByPlaceholder("Say something to helper").fill(PAYLOAD);
   await page.getByRole("button", { name: "Send" }).click();
@@ -880,7 +911,7 @@ test("no payload runs through file names, file text, frames, results, posts or t
   page.off("dialog", onDialog);
 });
 
-test("a malformed hash opens home, with no page error (review L1)", { timeout: 30_000 },
+test("a malformed hash opens home, with no page error", { timeout: 30_000 },
      async () => {
   await page.goto(`${ORIGIN}/app#data`);
   await page.getByRole("heading", { name: "Your data" }).waitFor();
@@ -918,7 +949,8 @@ test("no cross-site post changes anything (CSRF)", { timeout: 60_000 }, async ()
       contentType: "text/html", body: "<p>hi</p>" }));
     await evil.goto(`${attacker}/`);
     const body = JSON.stringify({ expected_generation: generation,
-                                  policy: { ...policy.body.policy, codemode: { on: true } } });
+                                  policy: { ...policy.body.policy,
+                                            codemode: { on: !policy.body.codemode.on } } });
     await evil.evaluate(async ([origin, b]) => {
       for (const init of [
         { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },
@@ -966,8 +998,8 @@ test("the return pages exchange no stranger's code and send no one off-site", { 
   assert.ok(!seen.slice(from).some((r) => r.url.startsWith("https://evil.test")));
 });
 
-test("a leaked token alone changes no agent's definition, and a missing door is a real 404 " +
-     "(review M1, M3)", { timeout: 60_000 }, async () => {
+test("a leaked token alone changes no agent's definition, and a missing door is a real 404",
+     { timeout: 60_000 }, async () => {
   await page.goto(`${ORIGIN}/app#home`);
   await page.getByRole("heading", { name: "Home" }).waitFor();
   const read = await bare("files/read", { path: "/workspace/agents/main/agent.json" });
@@ -1071,7 +1103,7 @@ async function holding(pattern, body) {
   }
 }
 
-test("a save re-lists its own folder, never the folder the owner went to since (review L2)",
+test("a save re-lists its own folder, never the folder the owner went to since",
      { timeout: 60_000 }, async () => {
   const folder = "/workspace/agents/helper";
   await page.goto(`${ORIGIN}/app#data/${encodeURIComponent(folder)}`);
@@ -1099,7 +1131,7 @@ test("a save re-lists its own folder, never the folder the owner went to since (
   assert.equal(await page.getByRole("heading", { name: `Files in ${folder}` }).count(), 0);
 });
 
-test("a screen still loading never paints over the signed-out view (review L1)",
+test("a screen still loading never paints over the signed-out view",
      { timeout: 60_000 }, async () => {
   await page.goto(`${ORIGIN}/app#home`);
   await page.getByRole("heading", { name: "Home", exact: true }).waitFor();

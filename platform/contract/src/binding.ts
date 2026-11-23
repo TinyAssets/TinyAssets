@@ -8,6 +8,7 @@ import type { Vendor } from "./apps.ts";
 import { keyed, object, whole } from "./checks.ts";
 import { sha256Hex } from "./digest.ts";
 import { HEX16, HEX32, HEX64, RUN_ID } from "./ids.ts";
+import { controlOf } from "./control.ts";
 import { Refusal, type RefusalCode } from "./refusal.ts";
 import { principal } from "./text.ts";
 
@@ -45,7 +46,7 @@ export type SandboxToken =
       readonly runner?: string }
   /**
    * The sync agent's call: its sync token's hash, and the egress token's E2B's transform
-   * set beside it (slice S review M-5): the sync token alone, taken out of the VM, reaches
+   * set beside it: the sync token alone, taken out of the VM, reaches
    * nothing, since only a call from inside the sandbox carries its own lease's egress token.
    */
   | { readonly kind: "sync"; readonly token: string; readonly egress: string };
@@ -75,10 +76,10 @@ export interface Binding {
   /** The owner's protected-session cookie, as the browser presented it. */
   readonly session?: string;
   /**
-   * The sandbox, as the egress door read its token (`owner/src/egress.ts`): which token it is (the
-   * egress token or the sync token), the SHA-256 of its secret and, for the egress token,
-   * the egress generation its
-   * network's transform set. Only the egress doors take it; every other door refuses it.
+   * The sandbox, as the egress door read its token (`owner/src/egress.ts`): which token it
+   * is (the egress token or the sync token), the SHA-256 of its secret and, for the egress
+   * token, the egress generation its network's transform set. Only the egress doors take
+   * it; every other door refuses it.
    */
   readonly sandbox?: SandboxToken;
   /**
@@ -88,17 +89,14 @@ export interface Binding {
    */
   readonly run?: string;
   /**
-   * The tier numbers of the platform's control record (`admission.ts`), as the binder read them
-   * for a run door: never a request field, and never the owner's tier, which is the
-   * object's own row.
+   * The platform's control record as the binder read it fresh for this call (`freshRecord`):
+   * its text, well formed, or null when it found none or a malformed one. Never a request
+   * field. The object keeps it as its one copy of the record (`control_kept`), which its tier
+   * numbers (`admission.ts`) and its switched-on sign-ins (`signins.ts`) are read from; the
+   * owner's tier is the object's own row. None when the binder could not read the record
+   * fresh: the object keeps its own, and starts no sign-in.
    */
-  readonly tiers?: unknown;
-  /**
-   * The served records whose vendor sign-in the platform's control record switches on, as
-   * the binder read it for this call (`signins.ts`, `switches`): never a request field. The
-   * object keeps the last list it was handed for the runs its own lane starts.
-   */
-  readonly signins?: unknown;
+  readonly control?: string | null;
   /**
    * The first-party grant the owner's token was issued under, and that token's expiry
    * (whole seconds), from the provider's own unwrap: a socket ticket's binding, and a
@@ -135,16 +133,24 @@ export interface Binding {
 // error. A parser refuses anything else as `invalid`. The two doors that take no binding
 // (`UNBOUND_DOORS`, `doors.ts`) take the kind `none`.
 
-/** The tier numbers and switched-on sign-ins a door's binding carries, as the binder read them. */
-type Gated = Pick<Binding, "tiers" | "signins">;
+/**
+ * The fields the doors' version before still hands beside the control record on an account's
+ * and an inbound event's binding, which their parsers take and drop. The deploy kit deploys
+ * the owner before the doors (`deploy/facts.ts` `WORKERS`), so from the owner's 100% until the
+ * doors' (their 0% smoke, or a run stopped there) the doors' version before binds this owner:
+ * expand, then contract (`deploy/platform.json` `forward`). They go once the doors the stage
+ * serves hand neither (`untangle-2026-11/owner-control-signins.md`, owed).
+ */
+const HANDED_BEFORE = Object.freeze(["tiers", "signins"] as const);
 
 /**
  * The owner's own account, acting itself or through a verified outside client (an MCP
  * client or an API key), or another owner visiting; its first-party token's grant, a fresh
- * sign-in's time, and the browser's session cookie where one rode the request.
+ * sign-in's time, the browser's session cookie where one rode the request, and the control
+ * record as the binder read it.
  */
 export type AccountBinding = Pick<Binding, "owner" | "caller" | "origin" | "source"
-  | "authenticated_at" | "session" | "grant" | "expires_at" | "vendor"> & Gated;
+  | "authenticated_at" | "session" | "grant" | "expires_at" | "vendor" | "control">;
 /** The owner in its live session: an account binding with its session cookie. */
 export type SessionBinding = AccountBinding & { readonly session: string };
 /** A sandbox's token of kind `T` at its own doors. */
@@ -158,8 +164,8 @@ export type SyncBinding = TokenBinding<"sync">;
 export type RunBinding = Pick<Binding, "owner" | "caller"> & {
   readonly origin: null; readonly sandbox: Extract<SandboxToken, { kind: "egress" }>;
   readonly run: string };
-/** An inbound event's route, at its binding's revision. */
-export type InboundBinding = Pick<Binding, "owner" | "caller"> & Gated & {
+/** An inbound event's route, at its binding's revision, and the control record as read. */
+export type InboundBinding = Pick<Binding, "owner" | "caller" | "control"> & {
   readonly origin: null; readonly inbound: NonNullable<Binding["inbound"]> };
 /**
  * The platform's reserved caller for an owner, with no outside client and no session: its
@@ -167,9 +173,9 @@ export type InboundBinding = Pick<Binding, "owner" | "caller"> & Gated & {
  */
 export type ReservedBinding = Pick<Binding, "owner"> & {
   readonly caller: typeof PLATFORM_CALLER; readonly origin: null };
-/** The cutover's import: the reserved caller with the verified bundle and the tier numbers. */
-export type ImportBinding = ReservedBinding & {
-  readonly import: NonNullable<Binding["import"]>; readonly tiers: unknown };
+/** The cutover's import: the reserved caller with the verified bundle and the control record. */
+export type ImportBinding = ReservedBinding & Pick<Binding, "control"> & {
+  readonly import: NonNullable<Binding["import"]> };
 
 function invalid(kind: string): never {
   throw new Refusal("invalid", `invalid ${kind} binding`);
@@ -219,6 +225,12 @@ function vendor(value: unknown, kind: string): Vendor | null {
     ? Object.freeze({ id, verified }) : invalid(kind);
 }
 
+/** The control record as the binder read it fresh: a text the contract parses, or null. */
+function record(value: unknown, kind: string): string | null {
+  return value === null || (typeof value === "string" && controlOf(value) !== null) ? value
+    : invalid(kind);
+}
+
 /** The owner's own principal, as its caller too, with no outside client. */
 function own(given: Record<string, unknown>, kind: string): string {
   const owner = principal(given["owner"]);
@@ -237,7 +249,7 @@ export function accountBinding(value: unknown): AccountBinding {
   const kind = "account";
   const given = fields(value, kind, ["owner", "caller", "origin"],
                        ["source", "authenticated_at", "session", "grant", "expires_at", "vendor",
-                        "tiers", "signins"]);
+                        "control", ...HANDED_BEFORE]);
   const has = (key: string) => key in given;
   return Object.freeze({
     owner: principal(given["owner"]), caller: principal(given["caller"]),
@@ -249,8 +261,7 @@ export function accountBinding(value: unknown): AccountBinding {
     ...(has("grant") ? { grant: text(given["grant"], kind) } : {}),
     ...(has("expires_at") ? { expires_at: integer(given["expires_at"], 0, kind) } : {}),
     ...(has("vendor") ? { vendor: vendor(given["vendor"], kind) } : {}),
-    ...(has("tiers") ? { tiers: given["tiers"] } : {}),
-    ...(has("signins") ? { signins: given["signins"] } : {}),
+    ...(has("control") ? { control: record(given["control"], kind) } : {}),
   });
 }
 
@@ -330,15 +341,14 @@ export function runBinding(value: unknown): RunBinding {
 export function inboundBinding(value: unknown): InboundBinding {
   const kind = "inbound";
   const given = fields(value, kind, ["owner", "caller", "origin", "inbound"],
-                       ["tiers", "signins"]);
+                       ["control", ...HANDED_BEFORE]);
   const owner = own(given, kind);
   const { binding, revision } = fields(given["inbound"], kind, ["binding", "revision"]);
   return Object.freeze({
     owner, caller: owner, origin: null,
     inbound: Object.freeze({ binding: hex(binding, HEX32, kind),
                              revision: integer(revision, 1, kind) }),
-    ...("tiers" in given ? { tiers: given["tiers"] } : {}),
-    ...("signins" in given ? { signins: given["signins"] } : {}),
+    ...("control" in given ? { control: record(given["control"], kind) } : {}),
   });
 }
 
@@ -352,12 +362,13 @@ export function reservedBinding(value: unknown): ReservedBinding {
 /** An import binding (`ImportBinding`), or `invalid`. */
 export function importBinding(value: unknown): ImportBinding {
   const kind = "import";
-  const given = fields(value, kind, ["owner", "caller", "origin", "import", "tiers"]);
+  const given = fields(value, kind, ["owner", "caller", "origin", "import"], ["control"]);
   const owner = platform(given, kind);
   const { bundle } = fields(given["import"], kind, ["bundle"]);
   return Object.freeze({ owner, caller: PLATFORM_CALLER, origin: null,
                          import: Object.freeze({ bundle: hex(bundle, HEX64, kind) }),
-                         tiers: given["tiers"] });
+                         ...("control" in given ? { control: record(given["control"], kind) }
+                           : {}) });
 }
 
 /**
@@ -409,9 +420,8 @@ export type InboundAnswer =
   | { readonly state: "no_op"; readonly error: string };
 
 /**
- * The outside identity an API key resolves to, by its key id alone (the Python's
- * `api_keys._client` and `_family`, byte for byte): the binder binds a key's call to it, and
- * the object re-derives it wherever it matters (`registrant`).
+ * The outside identity an API key resolves to, by its key id alone: the binder binds a key's
+ * call to it, and the object re-derives it wherever it matters (`registrant`).
  */
 export function apiKeyOrigin(keyId: string): Origin {
   return {

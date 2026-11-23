@@ -28,7 +28,12 @@
  *   taken and its home made from the engine's store (its `secret_paths` and
  *   `session_paths`, nothing else: a CLI's other home files never outlive a run), the
  *   refusal of env files the CLI would load (its home's, the agent's, and every ancestor's
- *   of its cwd), the CLI as that user from the record, its events framed and posted (a batch
+ *   of its cwd; for a hooked run, none that sets the decide credential or a variable that
+ *   loads code), the CLI's own pre-tool hook where the owner's rules name tools it matches
+ *   (asked of the decide door first, its file written, then its start check, the hook run as
+ *   the CLI runs it: one that fails fails the run, so a hook that fails open never starts
+ *   broken), the agent's own hooks' dispatcher where its agent has a hook (its start check
+ *   the same way, `hooks check`), the CLI as that user from the record, its events framed and posted (a batch
  *   at least every `HEARTBEAT_MS`); at its end every process of the user killed, the kept
  *   paths back into the store, the files synced out, the user given back, then the end.
  * - `cancel <run>`: SIGTERM to the CLI, a kill after `KILL_GRACE_MS`; 3 when not live.
@@ -43,6 +48,10 @@
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
+ * - `decide` and `hooks` (internal, as a run's user, by its CLI's hook file): the hook helper
+ *   (`decide.ts`) and the agent's own hooks' dispatcher (`hooks.ts`), taken by the hook
+ *   program built into these bytes (`hook-entry.ts`), not here: each run's start writes it
+ *   beside the runner (`writeHookProgram`), and checks each as its CLI runs it.
  * - `login-launch <id>`: the vendor's own sign-in (`login.ts`), its document
  *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
  *   login as a user of its own, its home made from the engine's store, the URL or code the
@@ -61,45 +70,49 @@
  */
 import { HEX64, RUN_ID, SIGNIN_ID } from "../../contract/src/ids";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, lchownSync, mkdirSync, openSync, readdirSync, readFileSync,
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
          renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
 
-import { RUN_BASICS } from "../../sources/src/run-env";
-import { type Served, signsIn } from "../../sources/src/served";
+import { CODE_LOADING_ENV, RUN_BASICS } from "../../sources/src/run-env";
+import type { Decide, Definition, DefinitionHooks } from "../../sources/src/schema";
+import { type Served, served, signsIn } from "../../sources/src/served";
 import { SIGNIN_REFUSALS, type SigninRefusal, signinShape } from "../../sources/src/signin";
-import { RUNNER_HEADER } from "../../contract/src/egress";
+import { DECIDE_HEADER, decideDoor, RUNNER_HEADER } from "../../contract/src/egress";
 import { SIGNIN_PASTE_MAX } from "../../contract/src/limits";
 import { AGENTS_DIR, WORKSPACE } from "../../contract/src/paths";
 import { FRAME_UNITS_MAX, readEvent } from "../../contract/src/run-events";
 
-import { binPath, HOMES, invocation, isKept, keptPaths } from "./engine";
-import { HEARTBEAT_MS, lineEvent, Outbox } from "./frames";
+import { binPath, dispatcherArgv, HOMES, type Invocation, invocation, isKept,
+         keptPaths, resumePaths } from "./engine";
+import { DECIDE_ENV, DECIDE_MS, helperArgv, helperCommand, hookTools } from "./decide";
+import { FLUSH_MS, HEARTBEAT_MS, lineEvent, Outbox, Poster } from "./frames";
 import { remove, safeDirs, safeRead, safeWrite } from "./fsafe";
 import { alive, withLock } from "./pid-lock";
-import { ancestorEnvFile, envScanReach, homeEnvFile, projectEnvFile,
+import { ancestorEnvFile, definitionRefusal, envScanReach, homeEnvFile, projectEnvFile,
          projectEnvRefusal, secretAtoms } from "./guards";
-import { project } from "./project";
-import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
-         scratchCleared, type ScratchCleared,
-         markUsed,
-         writeOrRelease } from "./scratch";
+import { project, skillsOf } from "./project";
+import { diskLow, type DiskLow, diskOf, keepReserve, letGoSessions, low, markUsed,
+         pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchCleared, type ScratchCleared,
+         scratchEnv, writeOrRelease } from "./scratch";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { AUTOMATON_STATES, LIST_BYTES } from "../../contract/src/sync-ignore";
 import {
-  openMirror, SESSIONS_SEEN, stageSessions, SyncClient, SyncFenced, syncIn, syncOut,
-  type SyncReport,
+  type Fetch, fetchSessions, type Held, keepSeen, openMirror, SESSIONS, SESSIONS_SEEN,
+  stageSessions, stillHashed, storeSessions, type StoreSession, SyncClient, SyncFenced, syncIn,
+  syncOut, type SyncReport, tookSessions,
 } from "./sync";
-import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, inboxCode, inboxDoc, JOB_FILES,
-         type JobKind, JOBS, INBOX, LEASE_FILE, type LeaseFile, PROTOCOL, type QuietAnswer,
-         RUNNERS, type SigninDoc, type StartDoc, type StateAnswer,
-         STATE_DIR } from "./protocol";
-import { type Bounded, CONVERSATIONS, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM,
-         loginFiles, nextGeneration, readJson, record, RECORDS, shared, sortedWalk,
-         spawnBounded, STORE, systemOf, withRunUser, withStore } from "./session";
+import { sha256Hex } from "../../contract/src/digest";
+import { CODE_SUFFIX, type Command, COMMAND, COMMAND_MS, EXIT, type HookCommand, hookProgram,
+         inboxCode, inboxDoc, JOB_FILES, type JobKind, JOBS, INBOX, LEASE_FILE,
+         type LeaseFile, PROTOCOL, type QuietAnswer, RUNNERS, type SigninDoc, type StartDoc,
+         type StateAnswer, STATE_DIR } from "./protocol";
+import { type Bounded, dropHome, engineEnv, homeOf, keepHome, KILLED_BY_TERM, loginFiles,
+         nextGeneration, readJson, record, shared, sortedWalk, spawnBounded, STORE,
+         systemOf, withRunUser, withStore } from "./session";
 import { checkFormat, dropRunners } from "./state-format";
 import { asUser, E2B_USER, killAll, POOL_PREFIX, SYNC_HOME, SYNC_USER, user } from "./users";
 
@@ -110,8 +123,6 @@ const RESERVE = `${STATE}/reserve`;
 /** What the runner keeps that is a cache alone, discarded when its format changes. */
 const CACHES: readonly string[] = Object.freeze([SESSIONS_SEEN]);
 
-/** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
-const FLUSH_MS = 250;
 const OK = EXIT.ok;
 const NO = EXIT.no;
 const FENCED = EXIT.fenced;
@@ -377,32 +388,89 @@ class Job {
   }
 }
 
-/** The engines' sessions the sync agent took from the feed, into each store it lacks. */
-function importSessions(): void {
-  const staged = `${SYNC_HOME}/in`;
-  for (const rel of sortedWalk(staged)) {
-    const [engine, ...rest] = rel.split("/");
-    const rec = RECORDS.get(engine ?? "");
-    const inHome = rest.join("/");
-    if (rec === undefined || !isKept(keptPaths(rec).sessions, inHome)) {
-      continue;
+/**
+ * The files a resume of `session` reads, in its engine's store before its home is made: the
+ * sync agent fetches those the store lacks or holds stale (`fetchSessions`), each moved from
+ * the sync agent's directory of this run's (`in/<run>`) into the store, which keeps no second
+ * copy; one the owner's files no longer hold leaves the store. A store copy holding changes of its own is never replaced: the
+ * resume reads it, and the run's staging sends it. The sync agent then moves the mirror's
+ * rows of what the store took, and only those (`tookSessions`): a copy a run kept meanwhile
+ * is sent against the base it was made on.
+ */
+async function storeResume(rec: Served, run: string, authority: string, session: string | null,
+                           sync: (job: Pick<SyncJob, "direction" | "have" | "took">) =>
+                             Promise<SyncAnswer>): Promise<void> {
+  if (session === null) {
+    return;
+  }
+  const store = join(STORE, rec.id);
+  const prefix = `${SESSIONS}/${authority}/${rec.id}/`;
+  const resumed = resumePaths(rec, session);
+  // Hashed under the store's lock, as a let-go deletes (`sessionsRoom`): a copy it lets go
+  // after this is one it sees this run resume. The sync agent fetches over no copy holding
+  // changes of its own (`fetchSessions`), and what it fetched goes in only where the store
+  // still holds the copy hashed: a newer one a run kept meanwhile stays, to be sent.
+  const hashed = await withStore(rec, () => {
+    const found = new Map<string, { sha256: string; size: number; mtime_ms: number }>();
+    for (const rel of existsSync(store) ? sortedWalk(store) : []) {
+      const bytes = isKept(resumed, rel) ? safeRead(store, join(store, rel)) : null;
+      if (bytes !== null) {
+        const stat = lstatSync(join(store, rel));
+        found.set(rel, { sha256: sha256Hex(bytes), size: stat.size, mtime_ms: stat.mtimeMs });
+      }
     }
-    const store = join(STORE, rec.id);
-    const target = join(store, inHome);
-    if (!existsSync(target)) {
+    return found;
+  });
+  const still = (rel: string) => {
+    const was = hashed.get(rel);
+    return was === undefined ? lstatSync(join(store, rel), { throwIfNoEntry: false }) === undefined
+      : stillHashed(join(store, rel), was);
+  };
+  const answered = async (job: Pick<SyncJob, "direction" | "have" | "took">) => {
+    const done = await sync(job);
+    if (done.code === FENCED) {
+      throw new SyncFenced("the sync door fenced the lease");
+    }
+    if (done.code !== OK || done.report === null) {
+      throw new Error(`the sync agent's ${job.direction} for the resume of ${session} failed ` +
+                      `(exit ${done.code}): the run does not start on a store it cannot trust`);
+    }
+    return done.report;
+  };
+  const { fetched, cursor } = await answered({ direction: "fetch", have: Object.fromEntries(
+    [...hashed].map(([rel, each]) => [`${prefix}${rel}`, each.sha256])) }) as
+    { fetched: Fetch[]; cursor: number };
+  const staged = `${SYNC_HOME}/in/${run}/${rec.id}`;
+  const took: Fetch[] = [];
+  await withStore(rec, () => {
+    for (const each of fetched) {
+      const rel = each.path.slice(prefix.length);
+      if (!each.path.startsWith(prefix) || !isKept(resumed, rel) || !still(rel)) {
+        continue;
+      }
+      if (each.got === null) {
+        remove(join(store, rel));
+        took.push(each);
+        continue;
+      }
       const bytes = safeRead(staged, join(staged, rel));
       if (bytes !== null) {
         safeDirs("/", store, 0o700);
-        safeWrite(store, target, bytes, 0o600);
+        safeWrite(store, join(store, rel), bytes, 0o600);
+        took.push(each);
       }
     }
+    remove(`${SYNC_HOME}/in/${run}`);
+  });
+  if (took.length > 0) {
+    await answered({ direction: "took", took: { fetched: took, cursor } });
   }
 }
 
 /** Every secret's atoms, from every engine's store (its `secret_paths` files). */
 function atoms(): string[] {
   const found: string[] = [];
-  for (const rec of RECORDS.values()) {
+  for (const rec of served().values()) {
     const store = `${STORE}/${rec.id}`;
     for (const rel of sortedWalk(store)) {
       if (isKept(keptPaths(rec).secrets, rel)) {
@@ -435,8 +503,8 @@ async function signedIn(rec: Served): Promise<boolean> {
   }
   const argvOf = login.status_argv;
   const equals = login.status_equals;
-  return withRunUser(rec, `check-${rec.id}-${process.pid}`, { signedIn: true, keeps: false },
-                     async ({ as, home }) => {
+  return withRunUser(rec, `check-${rec.id}-${process.pid}`,
+                     { signedIn: true, resumes: null, keeps: false }, async ({ as, home }) => {
     const check = spawnBounded(asUser(as, [shared()], argvOf.map((arg) =>
       arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home))), {
       env: engineEnv(rec, home), cwd: home, stdio: ["ignore", "pipe", "ignore"] }, COMMAND_MS);
@@ -535,16 +603,15 @@ function lockSudo(): void {
  * - `/scratch`, group `ta` below its top: the agents' working files (`scratch.ts`), every
  *   run of the sandbox's by design, as the founder's rule has every agent of a user full
  *   power by default;
- * - each run's own home, each conversation's own cwd, the sync agent's directory: their
- *   own users', 0700, reached by no one else;
+ * - each run's own home, the sync agent's directory: their own users', 0700, reached by no
+ *   one else;
  * - `/proc` and `/sys`: the kernel's own;
  * and, wherever they are, sticky directories (`/tmp`, `/var/tmp`, `/dev/shm`, `/run/lock`:
  * every user's own entries, none another's), and device, socket and pipe nodes and links
  * (a node is no file root runs or reads as code; a link's own mode means nothing).
  */
 const WRITABLE: readonly string[] = Object.freeze(["/proc", "/sys", WORKSPACE, HOMES,
-                                                   "/var/lib/ta-conv", "/var/lib/ta-sync",
-                                                   SCRATCH]);
+                                                   "/var/lib/ta-sync", SCRATCH]);
 /**
  * Every path another user may write made root's alone, then checked: anything left fails
  * `prepare` loudly. E2B's base image boots with root's own programs world-writable
@@ -575,6 +642,18 @@ function ownDigest(): string {
     throw new Error("the runner is run by the loader, which names the runner's digest");
   }
   return own;
+}
+
+/** The hook program built into these bytes (`build/bundle.mjs`, from `hook-entry.ts`). */
+declare const TA_HOOK_PROGRAM: string;
+
+/**
+ * The hook program written beside this runner, root's and 0644 as the loader installs the
+ * runner, before a run's files name it (`hookProgram`): where the runner's digest names it.
+ */
+function writeHookProgram(): void {
+  safeWrite(RUNNERS, hookProgram(ownDigest()), new TextEncoder().encode(TA_HOOK_PROGRAM),
+            0o644);
 }
 
 /**
@@ -682,8 +761,13 @@ async function recover(): Promise<number> {
 // -- the sync agent, as its own user ---------------------------------------------------
 
 interface SyncJob {
-  /** In, out, or `known`: the mirror's hash of each of `paths`, read under the lock. */
-  readonly direction: "in" | "out" | "known";
+  /**
+   * In, out, `known` (the mirror's hash and mark of each of `paths`), `fetch` (the files a
+   * resume of `session` reads, those the store holds (`have`) only where the owner's changed
+   * and the store's holds no change of its own), or `took` (the rows of those the store took,
+   * `took`), each under the lock.
+   */
+  readonly direction: "in" | "out" | "known" | "fetch" | "took";
   readonly origin: string;
   readonly token: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
@@ -693,15 +777,27 @@ interface SyncJob {
   readonly run: string;
   readonly atoms: readonly string[];
   readonly paths?: readonly string[];
+  readonly session?: string;
+  /** A fetch's store copies of the resume's files, each by its hash. */
+  readonly have?: Readonly<Record<string, string>>;
+  /** What the store took of a fetch, and the feed's cursor at it (`tookSessions`). */
+  readonly took?: { readonly fetched: readonly Fetch[]; readonly cursor: number };
+}
+
+/** The sync agent's report (null when it printed none) and its exit. */
+interface SyncAnswer {
+  readonly report: Record<string, unknown> | null;
+  readonly code: number;
 }
 
 /**
  * The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. It runs
  * as a child the runner waits on without blocking, so the run's heartbeat goes on posting
- * (each post renews the lease) however long a sync takes.
+ * (each post renews the lease) however long a sync takes; stopped, and thrown, once the
+ * job's (`work`) heartbeat has lapsed: its lease is over, so no sync of it lands, and one
+ * that cannot reach the object would wait on it for ever.
  */
-async function syncAgent(job: SyncJob):
-    Promise<{ report: Record<string, unknown> | null; code: number }> {
+async function syncAgent(job: SyncJob, work: Job): Promise<SyncAnswer> {
   const as = user(SYNC_USER);
   const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
                                        process.argv[1]!, COMMAND.sync]);
@@ -723,7 +819,11 @@ async function syncAgent(job: SyncJob):
   // write's EPIPE is let go here, and the child's exit status says what happened.
   child.stdin!.on("error", () => undefined);
   child.stdin!.end(JSON.stringify(job));
-  const status = await agent.exit;
+  const status = await Promise.race([agent.exit, work.poster.lapse.then(() => null)]);
+  if (status === null) {
+    agent.stop();
+    throw new Error("the job's heartbeat lapsed: its lease is over, so its sync is stopped");
+  }
   // Its report whole, however many paths.
   const done = { status, stdout: Buffer.concat(out).toString("utf8"),
                  stderr: Buffer.concat(err).toString("utf8") };
@@ -749,10 +849,10 @@ async function syncCommand(): Promise<number> {
 async function syncLocked(job: SyncJob): Promise<number> {
   try {
     const client = new SyncClient(job.origin, job.token, FLUSH_MS, HEARTBEAT_MS);
-    const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
+    // Each run's own `in` and `out`: a run's import lets go only what its own fetch put there.
+    const place = { local: WORKSPACE, sessionsIn: `${SYNC_HOME}/in/${job.run}`,
                     sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
-                    records: RECORDS };
-    safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
+                    records: served() };
     // The mirror is a database on disk, written as each change lands (`openMirror`): a sync
     // cut short keeps what it sent.
     const mirror = openMirror(`${SYNC_HOME}/mirror.db`);
@@ -760,16 +860,31 @@ async function syncLocked(job: SyncJob): Promise<number> {
       if (job.direction === "known") {
         // What the owner's files hold of each path, as this sandbox last synced it.
         process.stdout.write(JSON.stringify({ known: Object.fromEntries((job.paths ?? [])
-          .map((path) => [path, mirror.get(path)?.sha256 ?? null])) }));
+          .map((path): [string, Held] => {
+            const row = mirror.get(path);
+            return [path, row === undefined ? null : { sha256: row.sha256, unread: row.unread }];
+          })) }));
         return OK;
       }
       if (job.direction === "in") {
         await syncIn(client, place, mirror);
         const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
         const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
-        const made = project(WORKSPACE, job.agent, record(job.engine).cli.skills_paths,
+        const made = project(WORKSPACE, job.agent, record(job.engine).cli.definition.skills.paths,
                              previous);
         safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
+        process.stdout.write(JSON.stringify({ ok: true }));
+        return OK;
+      }
+      if (job.direction === "fetch") {
+        safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
+        process.stdout.write(JSON.stringify(await fetchSessions(
+          client, place, mirror, job.engine, resumePaths(record(job.engine), job.session!),
+          new Map(Object.entries(job.have ?? {})))));
+        return OK;
+      }
+      if (job.direction === "took") {
+        tookSessions(mirror, job.took!.fetched, job.took!.cursor);
         process.stdout.write(JSON.stringify({ ok: true }));
         return OK;
       }
@@ -852,112 +967,24 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
 
 // -- a run ----------------------------------------------------------------------------
 
-/** The run's posts to its event door: one in flight, held during a renewal's pause. */
-class Poster {
-  holding = false;
-  #last = 0;
-  #busy = false;
-  #wait = FLUSH_MS;
-  #refused: string | null = null;
-
-  constructor(readonly url: string, readonly token: string, readonly outbox: Outbox,
-              readonly onRefused: (why: string) => void) {}
-
-  get refused(): string | null {
-    return this.#refused;
-  }
-
-  /**
-   * One post of the next frames, with `end` when they are the last ones: `taken`, `retry`
-   * (the network, or `events_busy` after its `Retry-After`, a retry's wait doubling to at
-   * most a heartbeat), or `refused` (the object ended the run: cancelled, revoked, settled,
-   * its lease closed).
-   */
-  async #post(end: { exit_code: number } | null): Promise<"taken" | "retry" | "refused"> {
-    const frames = this.outbox.peek();
-    const last = end !== null && frames.length === this.outbox.pending;
-    let response: Response;
-    try {
-      response = await fetch(this.url, {
-        method: "POST",
-        headers: { "content-type": "application/json", [RUNNER_HEADER]: this.token },
-        body: JSON.stringify({ frames, ...(last ? { end } : {}) }) });
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, this.#wait));
-      return "retry";
-    }
-    const text = await response.text();
-    if (response.status === 200) {
-      this.outbox.taken(frames);
-      this.#last = Date.now();
-      return "taken";
-    }
-    if (response.status === 503 || response.status === 429) {
-      const after = Number(response.headers.get("retry-after") ?? "0") * 1000;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(HEARTBEAT_MS,
-        Number.isFinite(after) && after > 0 ? after : this.#wait)));
-      return "retry";
-    }
-    if (response.status === 401 || response.status === 403 || response.status === 404) {
-      this.#refused = text;
-      this.onRefused(this.#refused);
-      return "refused";
-    }
-    await new Promise((resolve) => setTimeout(resolve, this.#wait));
-    return "retry";
-  }
-
-  async #once(end: { exit_code: number } | null): Promise<"taken" | "retry" | "refused"> {
-    this.#busy = true;
-    try {
-      const answer = await this.#post(end);
-      this.#wait = answer === "retry" ? Math.min(this.#wait * 2, HEARTBEAT_MS) : FLUSH_MS;
-      return answer;
-    } finally {
-      this.#busy = false;
-    }
-  }
-
-  /** Post whatever waits, and a heartbeat when nothing went for `HEARTBEAT_MS`. */
-  async tick(): Promise<void> {
-    if (this.holding || this.#refused !== null || this.#busy) {
-      return;
-    }
-    if (this.outbox.pending > 0 || Date.now() - this.#last >= HEARTBEAT_MS) {
-      await this.#once(null);
-    }
-  }
-
-  /** The post in flight finished, and every frame that waits posted (or refused). */
-  async drain(): Promise<void> {
-    while (this.#busy) {
-      await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
-    }
-    while (this.outbox.pending > 0 && this.#refused === null) {
-      await this.#once(null);
-    }
-  }
-
-  /** Every frame, then the end with the last of them, until taken or refused. */
-  async finish(exitCode: number): Promise<void> {
-    for (;;) {
-      if (this.#refused !== null) {
-        return;
-      }
-      if (this.holding || this.#busy) {
-        await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
-        continue;
-      }
-      const last = this.outbox.peek().length === this.outbox.pending;
-      if (await this.#once({ exit_code: exitCode }) === "taken" && last) {
-        return;
-      }
-    }
-  }
-}
-
 class RunRefused extends Error {
   override readonly name = "RunRefused";
+}
+
+/**
+ * Refuses the run, saying why, while its cwd or an ancestor under `/workspace` holds what its
+ * engine would read beside its definition, or instructions past what it reads
+ * (`definitionRefusal`). Checked before each start of the CLI, so a file the agent wrote
+ * mid-run never reaches a resumed one. Root follows no link of the agent's: a link counts as
+ * itself (the sync carries none, so the owner's files are measured whole).
+ */
+function definitionHeld(definition: Definition, cwd: string, outbox: Outbox): void {
+  const refusal = definitionRefusal(definition, cwd, (path) =>
+    lstatSync(path, { throwIfNoEntry: false })?.size ?? null);
+  if (refusal !== null) {
+    outbox.push({ type: "ta.refused", ...refusal });
+    throw new RunRefused(refusal.code);
+  }
 }
 
 /**
@@ -1009,31 +1036,159 @@ function roomForEnd(): void {
   }
 }
 
+/** This run's start and every other live run's, as each one's job holds it. */
+function liveStarts(start: StartDoc, run: string): StartDoc[] {
+  return [start, ...liveRuns().filter((each) => each.id !== run).flatMap((each) => {
+    try {
+      return [readJson<StartDoc>(`${jobDir("run", each.id)}/${JOB_FILES.start}`)];
+    } catch {
+      return [];
+    }
+  })];
+}
+
 /**
  * The run's agent's scratch (`scratch.ts`): made (root's at the top, group `ta`'s below), old
- * scratch let go first (unused past the control record's retention, then least recently used
- * while the disk is low, never a live run's agent), and the agent's marked used now. What
- * went, in plain words for the agent and the user, or null.
+ * scratch let go first (least recently used while the disk is low, never a `live` run's
+ * agent), and the agent's marked used now. What went, in plain words for the agent and the
+ * user, or null.
  */
-function scratchFor(start: StartDoc, run: string):
+function scratchFor(start: StartDoc, live: readonly StartDoc[]):
     { dir: string; notice: ScratchCleared | null } {
   const dir = `${SCRATCH}/${start.agent}`;
   safeDirs("/", SCRATCH, 0o755);
-  const live = new Set([start.agent, ...liveRuns().filter((each) => each.id !== run)
-    .flatMap((each) => {
-      try {
-        return [readJson<StartDoc>(`${jobDir("run", each.id)}/${JOB_FILES.start}`).agent];
-      } catch {
-        return [];
-      }
-    })]);
   const index = readIndex(SCRATCH_INDEX);
   const pruned = pruneScratch(SCRATCH, index, Date.now(),
-                              start.scratch_retention_days ?? null, live);
+                              new Set(live.map((each) => each.agent)));
   safeDirs(SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
   writeOrRelease(() => markUsed(index, start.agent, Date.now()), RESERVE);
   keepReserve(RESERVE);
   return { dir, notice: scratchCleared(pruned) };
+}
+
+/**
+ * The disk still low after scratch (`scratch.ts`): the engines' stores' copies of sessions the
+ * owner's files hold as they are (`known`, the mirror's hashes) let go, least recently changed
+ * first, never one a live run resumes (a resume fetches its own again); still low, what the
+ * run says of it, with the stores' bytes left, or null. The let-go holds every store's lock,
+ * the live runs read again under it and each copy still the one hashed: a run that began
+ * since, or a home kept since (a newer copy, not sent yet), keeps its files.
+ */
+async function sessionsRoom(start: StartDoc, run: string,
+                            known: (paths: readonly string[]) =>
+                              Promise<Record<string, Held>>): Promise<DiskLow | null> {
+  if (!low(diskOf(STATE))) {
+    return null;
+  }
+  const { sessions, seen } = storeSessions(start.authority);
+  keepSeen(seen);
+  const held = sessions.length === 0 ? {} : await known(sessions.map((each) => each.path));
+  const local = (session: StoreSession) => join(STORE, session.rec.id, session.rel);
+  const freed = await withStores([...served().values()], () => {
+    const live = liveStarts(start, run);
+    const resumed = (session: StoreSession) => live.some((each) =>
+      each.engine === session.rec.id
+      && isKept(resumePaths(session.rec, each.session_id), session.rel));
+    return letGoSessions(STATE, sessions.filter((each) => held[each.path]?.sha256 === each.digest
+      && stillHashed(local(each), each) && !resumed(each)).map((each) => ({
+      local: local(each), size: each.size, mtime_ms: each.mtime_ms })));
+  });
+  return diskLow(sessions.reduce((sum, each) => sum + each.size, 0) - freed, diskOf(STATE));
+}
+
+/** `act` holding every store's lock in `recs`, each taken in their order. */
+async function withStores<T>(recs: readonly Served[], act: () => T): Promise<T> {
+  return recs.length === 0 ? act()
+    : await withStore(recs[0]!, async () => await withStores(recs.slice(1), act));
+}
+
+/** Each shared hook file's policy generation, as the start that last wrote it asked it. */
+const HOOK_GENERATIONS = `${STATE}/hooks`;
+
+/**
+ * The hook file every run of an engine shares (`Invocation.shared`): written root's, readable
+ * by every user, or removed when the owner's rules name no tool it matches, under one lock,
+ * and only by a start whose rules are as new as the last writer's (`generation`): two starts
+ * at once around a policy write never leave the older rules there.
+ */
+async function writeShared(engine: string, shared: Invocation["shared"],
+                           generation: number): Promise<void> {
+  if (shared === null) {
+    return;
+  }
+  const locks = `${STATE}/locks`;
+  safeDirs("/", locks, 0o700);
+  await withLock(`${locks}/hooks.lock`, COMMAND_MS, () => new Error(
+    `the shared hook files stayed locked past ${COMMAND_MS} ms`), () => {
+    const mark = `${HOOK_GENERATIONS}/${engine}`;
+    const last = Number(safeRead(STATE, mark)?.toString("utf8") ?? "0");
+    if (last > generation) {
+      return;
+    }
+    if (shared.text === null) {
+      remove(shared.path);
+    } else {
+      safeWrite("/", shared.path, new TextEncoder().encode(shared.text), 0o644, undefined,
+                0o755);
+    }
+    safeWrite(STATE, mark, new TextEncoder().encode(String(generation)), 0o600);
+  });
+}
+
+/**
+ * The hook's start check, the hook run as its CLI runs it (`runs`), in the CLI's own
+ * environment: an `http` hook's post of the door's check, by the credential its header takes
+ * from that environment; the helper's command line through the CLI's shell, as the run's
+ * user; or the helper's argv as the record's own file starts it, with only what that file
+ * hands it. Any failure fails the run loudly.
+ */
+async function startCheck(as: { uid: number; gid: number }, call: Invocation,
+                          decide: Exclude<Decide, { unsupported: string }>, url: string):
+    Promise<void> {
+  const runs = decide.runs;
+  if ("http" in runs) {
+    await hookTools(url, call.env[DECIDE_ENV] ?? "").catch((error: unknown) => {
+      throw new Error(`the CLI's hook could not reach the owner's rules: ${String(error)}`);
+    });
+    return;
+  }
+  const argv = "shell" in runs
+    ? [...runs.shell, `${helperCommand(ownDigest(), url)} check`]
+    : [...helperArgv(ownDigest(), url), "check"];
+  const env = "shell" in runs ? { ...call.env }
+    : Object.fromEntries([DECIDE_ENV, "NODE_EXTRA_CA_CERTS"].flatMap((name) =>
+      call.env[name] === undefined ? [] : [[name, call.env[name]!]]));
+  await checkAs(as, argv, call.cwd, env, "the CLI's hook could not reach the owner's rules");
+}
+
+/**
+ * The agent's hooks' start check (D5): the dispatcher's `check` run as its CLI runs the
+ * dispatcher, past `dispatcherCommand`'s skip, which no `check` would pass
+ * (`definition.hooks.runs`: through the CLI's shell, or by its argv as the record's own file
+ * starts it), as the run's user, in the CLI's own environment, so a hook whose program is not
+ * there, or a dispatcher that cannot read the run's hooks, fails the run loudly before its CLI.
+ */
+async function hooksCheck(as: { uid: number; gid: number }, call: Invocation,
+                          hooks: Exclude<DefinitionHooks, { unsupported: string }>):
+    Promise<void> {
+  const argv = [...dispatcherArgv(ownDigest()), "check"];
+  await checkAs(as, "shell" in hooks.runs ? [...hooks.runs.shell, argv.join(" ")] : argv,
+                call.cwd, { ...call.env }, "the agent's hooks cannot run");
+}
+
+/** `argv` run as the run's user, in `cwd` and `env`, bounded; any exit but 0 throws `what`. */
+async function checkAs(as: { uid: number; gid: number }, argv: readonly string[], cwd: string,
+                       env: Record<string, string>, what: string): Promise<void> {
+  const check = spawnBounded(asUser(as, [shared()], argv), {
+    cwd, env, stdio: ["ignore", "ignore", "pipe"] }, DECIDE_MS * 2);
+  let stderr = "";
+  check.child.stderr!.on("data", (data: Buffer) => {
+    stderr = (stderr + data.toString("utf8")).slice(-FRAME_UNITS_MAX);
+  });
+  const code = await check.exit;
+  if (code !== 0) {
+    throw new Error(`${what} (exit ${code}): ${stderr}`);
+  }
 }
 
 async function runCommand(run: string, recovering: boolean): Promise<number> {
@@ -1084,58 +1239,80 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     direction, origin: new URL(start.urls.events).origin, token: lease.tokens.sync_token,
     lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
     run, atoms: secrets });
+  const known = async (paths: readonly string[]) =>
+    ((await syncAgent({ ...job("known"), paths }, work)).report?.["known"] ?? {}) as
+      Record<string, Held>;
   let synced = false;
   try {
     if (recovering) {
       outbox.push({ type: "ta.recovered" });
     }
     await reportSignins(start, lease);
-    if ((await syncAgent(job("in"))).code === FENCED) {
+    if ((await syncAgent(job("in"), work)).code === FENCED) {
       throw new SyncFenced("the sync door fenced the lease");
     }
     synced = true;
-    importSessions();
     const agentDir = `${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
     }
-    const scratch = scratchFor(start, run);
+    const live = liveStarts(start, run);
+    const scratch = scratchFor(start, live);
     if (scratch.notice !== null) {
       outbox.push(scratch.notice);
     }
+    const pressed = await sessionsRoom(start, run, known);
+    if (pressed !== null) {
+      outbox.push(pressed);
+    }
+    await storeResume(rec, run, start.authority, start.session_id, (part) =>
+      syncAgent({ ...job(part.direction), session: start.session_id!, ...part }, work));
     const home = homeOf(run);
     const system = systemOf(run);
-    let conversationDir: string | undefined;
-    let continued = false;
-    if (cli.engine.resume === "continue_in_cwd") {
-      conversationDir = `${CONVERSATIONS}/${rec.id}/${start.conversation}`;
-      continued = existsSync(conversationDir);
-      safeDirs("/", conversationDir, 0o700);
-    }
+    // The tools the owner's rules name that the CLI's own hook matches, asked first: its
+    // file is written only for those.
+    const decide = "unsupported" in cli.decide ? null : cli.decide;
+    const door = decide === null ? null : decideDoor(start.urls.mcp);
+    const asked = door === null ? null : await hookTools(door.url, door.credential);
+    const hook = asked === null ? {} : { hook: { tools: asked.tools, digest: ownDigest() } };
+    const hooked = asked !== null && asked.tools.length > 0;
+    const skills = [...skillsOf(WORKSPACE, start.agent).values()];
+    writeHookProgram();
     let call = invocation(rec, start, process.env, {
-      continued, home, system,
-      ...(conversationDir === undefined ? {} : { conversationDir }),
-      ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
+      home, system, skills, ...hook, ...(recovering ? { prompt: CONTINUE_PROMPT } : {}) });
+    await writeShared(rec.id, call.shared, asked?.generation ?? 0);
     if (recovering && !call.resumed) {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
                            "rebooted sandbox cannot continue it");
     }
     await withRunUser(rec, run, { signedIn: start.credential === "vendor_login_in_sandbox",
-                                  keeps: true, files: call.files }, async ({ as }) => {
+                                  resumes: start.session_id, keeps: true, files: call.files },
+                      async ({ as }) => {
       try {
-        if (conversationDir !== undefined) {
-          lchownSync(conversationDir, as.uid, as.gid);
+        // Before each start of the CLI, a resume's too: the env files it would load, never
+        // one that sets what the run's own environment does not take, nor, for a hooked run,
+        // the decide credential or a variable that loads code, which would reach the hook;
+        // and nothing beside the agent's definition.
+        const forbid = [...cli.per_credential?.[start.credential]?.forbid_env ?? [],
+                        ...(hooked ? [DECIDE_ENV, ...CODE_LOADING_ENV] : [])];
+        const held = () => {
+          const found = envFiles(home, call.cwd, call.files);
+          const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
+            ?? projectEnvRefusal(found.project, forbid)
+            ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
+          if (refusal !== null) {
+            outbox.push({ type: "ta.refused", ...refusal });
+            throw new RunRefused(refusal.code);
+          }
+          definitionHeld(cli.definition, call.cwd, outbox);
+        };
+        held();
+        if (hooked) {
+          await startCheck(as, call, decide!, door!.url);
         }
-        // The env files the CLI would load: never one that sets what the run's own
-        // environment does not take.
-        const forbid = cli.per_credential?.[start.credential]?.forbid_env ?? [];
-        const found = envFiles(home, call.cwd, call.files);
-        const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
-          ?? projectEnvRefusal(found.project, forbid)
-          ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
-        if (refusal !== null) {
-          outbox.push({ type: "ta.refused", ...refusal });
-          throw new RunRefused(refusal.code);
+        if (Object.values(start.hooks).some((hooks) => hooks.length > 0)
+            && !("unsupported" in cli.definition.hooks)) {
+          await hooksCheck(as, call, cli.definition.hooks);
         }
         const events = cli.engine.events;
         for (let attempt = 0; ; attempt += 1) {
@@ -1183,17 +1360,20 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           state.cli_pid = null;
           save();
           // A CLI that failed across a renewal (its model call cut by the pause) is resumed
-          // from its session, once; a cancel never is.
-          if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed) {
+          // from its session, once; a cancel never is, nor a hooked run's: its CLI would load
+          // again what the agent wrote since the start's refusals (its project's settings, its
+          // home's), so it ends, and its conversation goes on in a run checked afresh.
+          if (exitCode === 0 || attempt > 0 || work.stopped || work.cancelled() || !renewed
+              || hooked) {
             break;
           }
           await killAll(as);
           call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
-            continued: true, home, system, prompt: CONTINUE_PROMPT,
-            ...(conversationDir === undefined ? {} : { conversationDir }) });
+            home, system, prompt: CONTINUE_PROMPT, skills, ...hook });
           if (!call.resumed) {
             break;
           }
+          held();
           outbox.push({ type: "ta.resumed", after: "renewal" });
         }
       } finally {
@@ -1212,13 +1392,11 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       roomForEnd();
       if (synced) {
         const secrets = atoms();
-        const refused = await stageSessions(start.authority, run, secrets, async (paths) =>
-          ((await syncAgent({ ...job("known"), paths })).report?.["known"] ?? {}) as
-            Record<string, string | null>);
+        const refused = await stageSessions(start.authority, run, secrets, known);
         for (const path of refused) {
           outbox.push({ type: "ta.sync_refused", path, code: "secret_bytes" });
         }
-        const done = await syncAgent(job("out", secrets));
+        const done = await syncAgent(job("out", secrets), work);
         remove(`${SYNC_HOME}/out/${run}`);
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
@@ -1243,7 +1421,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
 
 async function reportSignins(start: StartDoc, lease: LeaseFile): Promise<void> {
   const signins: { engine: string; signed_in: boolean }[] = [];
-  for (const rec of [...RECORDS.values()].filter(signsIn)) {
+  for (const rec of [...served().values()].filter(signsIn)) {
     signins.push({ engine: rec.id, signed_in: await safeSignedIn(rec) });
   }
   await postSignins(start.urls.signin, lease, signins);
@@ -1339,7 +1517,8 @@ async function loginRun(id: string): Promise<number> {
       // The vendor's own sign-out first, which may revoke the login on the vendor's side.
       const logout = login.logout_argv;
       if (logout !== undefined) {
-        await withRunUser(rec, id, { signedIn: true, keeps: false }, async ({ as, home }) => {
+        await withRunUser(rec, id, { signedIn: true, resumes: null, keeps: false },
+                          async ({ as, home }) => {
           const argv = asUser(as, [shared()], logout.map((arg) =>
             arg.replaceAll("{bin}", binPath(rec)).replaceAll("{home}", home)));
           await spawnBounded(argv, { env: engineEnv(rec, home), cwd: home, stdio: "ignore" },
@@ -1357,10 +1536,11 @@ async function loginRun(id: string): Promise<number> {
       });
       end = "signed_out";
     } else {
-      end = await withRunUser(rec, id, { signedIn: true, keeps: false }, async (session) => {
+      end = await withRunUser(rec, id, { signedIn: true, resumes: null, keeps: false },
+                              async (session) => {
         const { as, home } = session;
         loginFiles(rec, session);
-        const command = loginArgv(login, binPath(rec), doc.region);
+        const command = loginArgv(login, binPath(rec));
         const secrets = atoms();
         let shown: Prompt = { url: null, code: null };
         let text = "";
@@ -1381,7 +1561,7 @@ async function loginRun(id: string): Promise<number> {
           }
           // Only the record's own shapes leave the VM (its login hosts, a device code); a
           // credential-shaped value is refused as a second line.
-          const why = signinShape(rec, doc.region, next.url, next.code)
+          const why = signinShape(rec, next.url, next.code)
             ?? ([next.url, next.code].some((value) => value !== null
               && credentialShaped(value, secrets)) ? "credential" : null);
           if (why !== null) {
@@ -1475,9 +1655,12 @@ async function loginRun(id: string): Promise<number> {
 /** What a run's runner restarted after a reboot (`recover`) is started with. */
 const RECOVERING = "--recover";
 
-/** Each protocol command's handler, by its name: one for every command, and no other. */
+/**
+ * Each protocol command's handler, by its name: one for every command but the hook program's
+ * (`hook-entry.ts`), and no other.
+ */
 type Handler = (args: readonly string[]) => number | Promise<number>;
-const HANDLERS: { readonly [C in Command]: Handler } = {
+const HANDLERS: { readonly [C in Exclude<Command, HookCommand>]: Handler } = {
   [COMMAND.prepare]: (args) => prepare(args),
   [COMMAND.adopt]: () => adopt(),
   [COMMAND.signinCheck]: async (args) => await signedIn(record(args[0] ?? "")) ? OK : NO,
@@ -1506,7 +1689,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.stderr.write(`ta-runner: no command ${String(command)}\n`);
     return EXIT.usage;
   }
-  return HANDLERS[command as Command](args);
+  return HANDLERS[command as keyof typeof HANDLERS](args);
 }
 
 if (process.argv[1] !== undefined && /runner\.(?:mjs|ts|js)$/.test(process.argv[1])) {

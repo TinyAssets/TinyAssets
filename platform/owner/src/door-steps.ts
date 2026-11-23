@@ -1,5 +1,5 @@
 /**
- * The owner object's runner's steps, by door (`owner/doors.json`; untangle B4): for each door
+ * The owner object's runner's steps, by door (`owner/doors.json`): for each door
  * of the contract's table (`contract/doors.json`, what every caller of it sees), how the
  * object takes its call. The runner (`owner-do.ts`, `#call`) does each step from its row, in
  * this order:
@@ -193,6 +193,9 @@ export function stepProblems(steps: unknown, rows: readonly DoorRow[]): string[]
     }
     if (step["seeded"] !== undefined && (step["seeded"] !== true || step["gate"] !== "units")) {
       say("a seeded door's handler makes its own units");
+    }
+    if (row?.stop === true && step["gate"] !== "units") {
+      say("a door that takes its caller's stop makes its own units (`Door.left`)");
     }
     if (among(["owner", "session"], caller) && !("action" in step)) {
       say("an owner's door names what only the owner may do");

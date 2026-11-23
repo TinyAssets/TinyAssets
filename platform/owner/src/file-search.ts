@@ -1,8 +1,8 @@
 /**
  * Reading and finding the owner's files at the MCP door, for an agent that cannot walk them
- * itself: a main agent over MCP, with no sandbox and no grep (ai_storage_research.md §8.2).
+ * itself: a main agent over MCP, with no sandbox and no grep.
  * Everything here is deterministic and lexical: no model, no index the platform keeps, no
- * embedding (ADR-006; Direction 3).
+ * embedding (ADR-039 decision 2.2; Direction 3).
  *
  * - `file_read` is a file's text, a window of its UTF-8 bytes at a time, cut back to a
  *   character boundary, with where the next window starts.

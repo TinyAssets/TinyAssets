@@ -96,8 +96,8 @@ describe("an MCP binding", () => {
   // that changes them fails here.
   it("derives the client and family with their domain, our issuer and the client id", async () => {
     expect(await mcpOrigin("c", "https://a.test/cb")).toEqual({
-      client: "2b9b91265a35498afa8bf62d3c18a77e81535b9c427ab556324ea51933ae9ee5",
-      family: "c6cf8165215729cc68d98a711153e36b8a2b99798809aaeb8e11cf05d76803e5",
+      client: "c7cb6bbdf0dff33ec1f926003adf5a464f324e441b9897f37e66969bdfa6becb",
+      family: "8c97bf5574457398c2cf6ae09cc7950316cb3658abb12e416919bc4903d0923b",
     });
   });
 
@@ -192,7 +192,7 @@ describe("the other bindings", () => {
 });
 
 describe("the owner a sign-in names", () => {
-  /** The doors once two providers' slices have listed their issuers. */
+  /** The doors once two providers' issuers are listed. */
   const LISTED: DoorsEnv = { ...doorsEnv,
     FOREIGN_ISSUERS: JSON.stringify(["https://auth.openai.com", "https://other.example"]) };
 
@@ -211,7 +211,7 @@ describe("the owner a sign-in names", () => {
   it.each([
     ["the owner issuer with a trailing slash", `${ISSUER}/`],
     ["the owner issuer's host in capitals", "https://UPSTREAM.test"],
-    ["an issuer no slice has listed", "https://auth.openai.com"],
+    ["an issuer no one has listed", "https://auth.openai.com"],
     ["a listed issuer with a trailing slash", "https://auth.openai.com/"],
   ])("refuses %s loudly, never a new owner", async (_what, issuer) => {
     // The unlisted issuer against today's empty list; the rest against a list with two.

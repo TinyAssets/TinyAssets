@@ -86,7 +86,7 @@ export function action(text, act, report, props = {}) {
 
 // -- the runner's events, in words ----------------------------------------------------
 // The sandbox's runner sends its own events as codes and facts, never the words a person
-// reads (the untangle's S69): these are those words, so a wording change ships with the
+// reads: these are those words, so a wording change ships with the
 // app, not a runner. Each event is shown as it always was, its words in their place; any
 // other event, or one whose facts are not of their shape (the VM is untrusted), as it came.
 
@@ -106,8 +106,8 @@ function texts(value) {
   return Array.isArray(value) && value.every((each) => typeof each === "string");
 }
 
-/** Bytes as a person reads them, decimal (as storage is sold), as the scratch notice says. */
-function scratchBytes(n) {
+/** Bytes as a person reads them, decimal (as storage is sold), as the disk's notices say. */
+function diskBytes(n) {
   const gb = n / 1e9;
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
 }
@@ -142,18 +142,25 @@ function unnamedWords({ count, paths }) {
     paths.slice(0, 5).join(", ")}${count > 5 ? ", …" : ""}. Rename them to sync them.`;
 }
 
-function scratchWords({ evicted, expired, freed_bytes, free_bytes, total_bytes }) {
-  if (!texts(evicted) || !texts(expired) || !whole(freed_bytes) || !whole(free_bytes)
-      || !whole(total_bytes)) {
+function scratchWords({ evicted, freed_bytes, free_bytes, total_bytes }) {
+  if (!texts(evicted) || !whole(freed_bytes) || !whole(free_bytes) || !whole(total_bytes)) {
     return null;
   }
-  const why = evicted.length > 0
-    ? "The sandbox's working disk was running low"
-    : "Some working files had not been used for a long time";
-  return `${why}, so old scratch was cleared (${[...evicted, ...expired].join(", ")}; ${
-    scratchBytes(freed_bytes)} freed; ${scratchBytes(free_bytes)} of ${
-    scratchBytes(total_bytes)} free now). Scratch is a temporary cache: a cleared repository ` +
+  return `The sandbox's working disk was running low, so old scratch was cleared (${
+    evicted.join(", ")}; ${diskBytes(freed_bytes)} freed; ${diskBytes(free_bytes)} of ${
+    diskBytes(total_bytes)} free now). Scratch is a temporary cache: a cleared repository ` +
     "is cloned again when needed. Your storage is unaffected.";
+}
+
+function diskLowWords({ store_bytes, free_bytes, total_bytes }) {
+  if (!whole(store_bytes) || !whole(free_bytes) || !whole(total_bytes)) {
+    return null;
+  }
+  return `The sandbox's working disk is nearly full (${diskBytes(free_bytes)} of ${
+    diskBytes(total_bytes)} free), with old scratch and the session copies your files already ` +
+    `hold cleared; the engines' sessions left here take ${diskBytes(store_bytes)}. A run may ` +
+    "stop for lack of room until some of its agent's scratch is cleared. The working disk is " +
+    "the same on every plan.";
 }
 
 function projectEnvWords({ code, path, helper, sets }) {
@@ -166,6 +173,26 @@ function projectEnvWords({ code, path, helper, sets }) {
       ? `project_env_refused: ${path} sets ${sets}, which a run's environment never takes ` +
         "from the agent's files"
       : null;
+}
+
+/** Why a run read nothing beside its agent's definition, nor a cut of it. */
+function definitionWords({ code, path, paths, bytes, max_bytes }) {
+  if (code === "instructions_shadowed" && typeof path === "string") {
+    return `instructions_shadowed: the engine would read ${path} instead of the agent's ` +
+      "AGENTS.md; move what it says into AGENTS.md and remove it";
+  }
+  if (code === "engine_settings_refused" && typeof path === "string") {
+    return `engine_settings_refused: ${path} is the engine's own, which no run loads beside ` +
+      "the agent's definition (agent.json, AGENTS.md, skills, mcp.json, hooks.json); move " +
+      "what it does there and remove it";
+  }
+  if (code === "instructions_too_large" && Array.isArray(paths)
+      && paths.every((each) => typeof each === "string") && whole(bytes) && whole(max_bytes)) {
+    return `instructions_too_large: ${paths.join(", ")} hold ${bytes.toLocaleString("en-US")} ` +
+      `bytes of instructions, and the engine reads ${max_bytes.toLocaleString("en-US")}; ` +
+      "shorten them, or move detail into skills";
+  }
+  return null;
 }
 
 /** A runner's event as a person is shown it: its words in their place. */
@@ -191,8 +218,12 @@ export function eventShown(event) {
     const text = scratchWords(event);
     return text === null ? event : { type, text };
   }
+  if (type === "ta.disk_low") {
+    const text = diskLowWords(event);
+    return text === null ? event : { type, text };
+  }
   if (type === "ta.refused") {
-    const reason = projectEnvWords(event);
+    const reason = projectEnvWords(event) ?? definitionWords(event);
     return reason === null ? event : { type, reason };
   }
   if (type === "ta.sync_refused" && Object.hasOwn(REFUSED, event.code)) {

@@ -1,10 +1,9 @@
 /**
- * `/api` keys (research §5; checklist 13, 14, 15), ported from `tinyassets/api_keys.py`.
+ * `/api` keys (research §5; checklist 13, 14, 15).
  *
- * The key is the Python's, exactly, so keys imported at cutover keep working:
- * `ta_key_<16 hex id>_<43 urlsafe secret>`, the id `secrets.token_hex(8)` and the secret
- * `secrets.token_urlsafe(32)`, and only the SHA-256 hex of the secret's UTF-8 is stored,
- * compared in constant time (a 256-bit random secret needs no KDF). The directory's
+ * A key is `ta_key_<16 hex id>_<43 urlsafe secret>`: 8 random bytes as hex, and 32 as
+ * unpadded base64url. Only the SHA-256 hex of the secret's UTF-8 is stored, compared in
+ * constant time (a 256-bit random secret needs no KDF). The directory's
  * `k:<id>` holds the owner, that hash and the mint time; the owner's object holds the key's
  * grant row (scopes, revoke) and its key-store row (`owner/src/keys.ts`: id, name, mint
  * time, last use), so the owner's key list and its erasure enumerate the keys.
@@ -15,9 +14,11 @@
  *   held key request with it when the owner names one (`proposal`), and writes the key's
  *   row; then the directory entry, then the secret, once. A refused mint writes no entry;
  *   an entry that fails to write leaves a grant the owner can revoke.
- * - **Use**: parse, read the entry, compare hashes, then the kill switch. A wrong key is
- *   `401` before any object is reached. The binding's origin is `apiKeyOrigin(id)` and
- *   its sign-in the mint time, so a revoked key never passes the fence.
+ * - **Use** (`presentedKey`, the one check of both doors a key opens, `/api` and `/mcp`):
+ *   the `Authorization: Bearer` header alone, never a query or a cookie; parse, read the
+ *   entry, compare hashes, then the kill switch. A wrong key is `401` before any object is
+ *   reached. The binding's origin is `apiKeyOrigin(id)` and its sign-in the mint time, so a
+ *   revoked key never passes the fence. A key has no expiry: it is live until revoked.
  * - **Revoke**: `grantRevoke` first, so the object refuses the key at once, then the
  *   directory entry goes, so dead keys stop at the edge.
  * - **Delete**: revoked first, then the directory entry, then `grantForget`, which the
@@ -36,10 +37,10 @@ import { KEY_NAME_MAX } from "../../contract/src/limits";
 import { Refusal } from "../../contract/src/refusal";
 
 import { bindApiKey, type Bound } from "./binder";
-import { apiKeyOrigin } from "../../contract/src/binding";
+import { type AccountBinding, apiKeyOrigin } from "../../contract/src/binding";
 import type { DoorsEnv } from "./env";
 import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
-import { randomToken } from "./kit";
+import { bearer, randomToken } from "./kit";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
@@ -54,10 +55,6 @@ export function parseKey(token: string): { keyId: string; secret: string } | nul
   return match === null ? null : { keyId: match[1]!, secret: match[2]! };
 }
 
-/**
- * `secrets.token_hex(8)` and `secrets.token_urlsafe(32)`; the directory stores the secret's
- * SHA-256 hex (`api_keys._digest`).
- */
 export function newKey(): { keyId: string; secret: string; key: string } {
   const keyId = randomHex(8);
   const secret = randomToken(32);
@@ -70,9 +67,11 @@ function equal(a: string, b: string): boolean {
   return left.byteLength === right.byteLength && crypto.subtle.timingSafeEqual(left, right);
 }
 
-/** The owner's binding for a key whose secret matches its entry, or null. */
-export async function verifyKey(env: DoorsEnv, token: string): Promise<Bound | null> {
-  const parsed = parseKey(token);
+/** The owner's binding for the request's bearer key whose secret matches its entry, or null. */
+export async function presentedKey(env: DoorsEnv, request: Request):
+    Promise<Bound<AccountBinding> | null> {
+  const token = bearer(request);
+  const parsed = token === null ? null : parseKey(token);
   if (parsed === null) {
     return null;
   }

@@ -1,10 +1,10 @@
 /**
  * The capabilities a run's MCP door can hold (ADR-034 decision 6): what an agent's
- * `agent.json` names as its `scopes` (`owner/src/agent-file.ts`), and what the owner's app
+ * `agent.json` names as its `scopes` (`agent-definition.ts`), and what the owner's app
  * shows the owner of each (`doors/src/app.ts`).
  */
 
-/** What a run's MCP door can hold: every door capability but code mode's (slice M). */
+/** What a run's MCP door can hold: every door capability but code mode's. */
 export const RUN_CAPABILITIES = Object.freeze(
   ["read_graph", "write_graph", "propose_policy", "read_files", "write_files", "converse",
    "run_graph"] as const);

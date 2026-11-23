@@ -13,7 +13,10 @@ three jobs:
 3. **`apply`** runs the mode with `--yes`, in the main-only `production` environment, held
    to that plan: before any change it makes the plan job's plan again from the live state,
    and stops, naming each difference, if anything changed between the jobs (the dispatch,
-   a repository variable, or the account's state). It applies only its own run's plan.
+   a repository variable, or the account's state). It applies only its own run's plan. Then
+   each line its own steps say, as each says it and before its change, must be that plan's
+   line, or one the plan job left to it ("checked by the apply job before any change")
+   with its answer in place of those words; any other line stops it there.
 
 Starting a run with a mode other than `plan` is the approval. Do not add a required reviewer
 to `production`: the uptime canary, the DR drill, deploy-prod and the host installs run there
@@ -35,14 +38,14 @@ variables, and both migration locks pinned. Later runs need only what follows.
 record holds.**
 - **What the kit needs.** `routes` lists the egress host's DNS records before any change.
   Cloudflare's API reference accepts either DNS Read or DNS Write (Edit) for that listing.
-  `handback` deletes the DNS record the custom domain made, if the detach leaves it, which
-  needs DNS Write. So **DNS Edit covers both**. Attaching and detaching the custom domain
+  On a doors' host under the zone (the stage's), `routes` also makes that host's DNS record,
+  and `handback` deletes it. `handback` deletes the DNS record the custom domain made, if
+  the detach leaves it. Both need DNS Write. So **DNS Edit covers all of it**. Attaching and detaching the custom domain
   need **Workers Scripts edit** on the account, which the kit's deploys need too.
 - **What the token holds.** The infra-ops reference (`.claude/skills/infra-ops/references/
   cloudflare.md`) records this secret with Zone DNS Edit and Account Workers Scripts edit,
-  and `emergency-dns.yml` writes DNS records with it. A run has shown it reading DNS:
-  `cloud-only-preflight.yml` (run 35704397255, 2026-09-22) read the zone's records with this
-  secret, and `internal_origin_dns` passed. No run has written DNS with it yet.
+  and `emergency-dns.yml` writes DNS records with it. The stage's first `routes` (run
+  45059834265, 2026-11-22) read and wrote the zone's DNS records with it.
 - **How to check without reading the token.**
   - In the Cloudflare dashboard, My Profile → API Tokens lists each token's permissions and
     never shows its value.
@@ -75,15 +78,13 @@ More on two of them:
 - **The migration locks.** The kit refuses to run unless each lock
   (`platform/owner/migrations.json`, and the sandbox Worker's
   `platform/sandbox/migrations/<class>.json`) marks the first deploy and pins every migration
-  the code ships, in order. **A deploy that adds a migration** pins it first:
-  1. **Pin.** On a branch made from the current `main`, run this in `platform/`, naming the
-     Worker (`owner` or `sandbox`):
-     `node ci/kit/locks.ts pin owner $(git rev-parse HEAD)`.
-     It appends a digest for each new migration to that Worker's locks.
-  2. **Land it.** Commit only those files and merge them to `main` by pull request. The workflow
-     runs only from `main`, and the kit reads the lock there.
-  3. **Pin only when you deploy.** A pinned migration is frozen for good: from then on a
-     change to it is a new migration, even if no deploy follows.
+  the code ships, in order. Every lock marks its first deploy, so **the pull request that adds
+  a migration pins it** (`node ci/kit/locks.ts pin owner HEAD` in `platform/`, naming the
+  Worker); its Worker's migrations guard fails the PR until it does, so `main` is always
+  pinned and a deploy pins nothing. From its merge a migration is frozen: a change to it is
+  a new migration, even if no deploy has run it. A new Worker's lock marks its first deploy
+  by the same command, on a branch from `main` with the commit it deploys, merged before
+  that deploy: the workflow runs only from `main`, and the kit reads the lock there.
 - **The sandbox's template is built** (`E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`).
   The kit checks E2B has a ready build, and the `pair` job checks the pair.
 
@@ -100,21 +101,32 @@ It never counts as "absent".
    the callback, with a throwaway challenge; not the doors' own `/authorize`) must answer a
    302 to AuthKit's sign-in on `OWNER_ISSUER`'s host. A `client-id-invalid` or
    `redirect-uri-invalid` page stops the kit, naming it. Mode `plan` cannot list the
-   callback, so there a `redirect-uri-invalid` answer reads "dark registers it"; every
-   other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
-   `auth_time` only a real sign-in shows: mode `probe` settles them, after `dark` and
-   before `routes`.
+   callback, so there a `redirect-uri-invalid` answer is left to the apply job, which
+   registers the callback and answers that line; every other refusal still stops. Any miss stops the kit. The access token's exact `iss` and its
+   `auth_time` only a real sign-in shows: the stage's first sign-in settles them (d3 §H).
+   If its `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS
+   value (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in
+   `upstreamFrom` (`deploy.ts`, one line), a change of its own.
 2. **Storage, created only when its listing answered and lacks it:** the KV namespaces
    `platform/deploy/platform.json` titles, one for each binding the configs make, and the
    R2 buckets and the queues the Workers' configs name (a queue its producer's), each listed
    to its last page and made over Cloudflare's API (`deploy/cloudflare.ts`).
 3. **Secrets, set only when the Worker's secret listing answered and lacks them** (or the
-   account's Workers listing lacks the Worker). Values come from the environment's secrets: each
+   account's Workers listing lacks the Worker), and only with the version step 4 deploys
+   (`--secrets-file`, never `wrangler secret put`, which deploys the code already there at
+   once). Values come from the environment's secrets: each
    Worker's `secrets.required` (its `wrangler.jsonc`), and on the doors, if set, each shared
    app's signing secret (`platform/doors/shared-apps.json`). A secret two Workers require
-   (the routing key, the doors' and the owner's) is set on both or neither.
+   (the routing key, the doors' and the owner's) is set on both or neither. The plan job
+   holds no secret, so for an optional one the doors lack (a shared app's, the canary
+   clock's) it says "if the run is given it", and the apply job says whether it is; so does
+   the doors' rollout line, since a secret the run sets makes them forward-only (step 4).
 
-   A held secret is never replaced unless `rotate` names it. A held keyring is never
+   A held secret is never replaced unless `rotate` names it, so a run that changes no
+   secret sets none, and leaves every Worker one a rollback can take back. **A value changed
+   in `production` alone is never deployed:** Cloudflare lists a secret's name, never its
+   value, and the kit keeps no hash, so it cannot tell the value changed. After changing one
+   (a rotated `WORKOS_API_KEY`), dispatch with `rotate` naming it. A held keyring is never
    generated, and its old kids leave it only by mode `retire` (below). It is rotated only by
    adding a key: run `keyring-add` on your copy
    of the stored keyring, store the result, then run with `rotate` naming it. The
@@ -127,11 +139,38 @@ It never counts as "absent".
    than the stored ring's stops the run.
 4. **Every Worker deployed with no public route,** each after the Workers it binds (`WORKERS`,
    `deploy/facts.ts`). None has a `workers.dev` or preview URL. A Worker's first deploy is
-   `wrangler deploy`. Later deploys upload a version, then deploy it (`wrangler versions
-   upload`, then `versions deploy`), which never touches a route. Wrangler refuses a version
+   `wrangler deploy`. Later deploys upload a version, then deploy it in **stages**
+   (`platform/deploy/platform.json` `stages`, each `wrangler versions deploy`, which never
+   touches a route): first at 0% beside the version it serves, the new one listed first, then
+   at 100%. Each deployment is read back before anything follows it, from Cloudflare's
+   deployments listing, which can lag a deployment just made: it is read again every 2 s for
+   up to a minute, never deployed again, and one that still reads back otherwise stops the run
+   there, naming what it last read. At 0% only a request carrying Cloudflare's version override
+   reaches the new version, and no override reaches a call between Workers, so only the doors
+   are smoked there: once they hold their routes, the kit waits `soak_s` (a deployment takes a
+   few seconds to reach every location) and runs the platform canary's doors checks with the
+   override (`canary.ts --smoke`), each answer held to name the new version in
+   `x-tinyassets-version`. Before `routes` hands the doors their routes (every `dark` run until
+   the cutover, and the cutover's own `routes` run, which hands them over after the Workers)
+   no request reaches them, so the plan says each Worker is not smoked and the run goes from
+   0% to 100% with no wait. A Worker the run deploys first or whole, sets a secret on, or
+   marks with a `forward` change goes to 100% at once, in its place in the order: it cannot
+   serve beside its version before. Wrangler refuses a version
    upload with a pending Durable Object migration (read in wrangler 4.154's source). Name that
    Worker in `migrate` to deploy it whole; `migrate` takes only a Worker whose config declares
-   Durable Object migrations.
+   Durable Object migrations. Each version is tagged with the commit's first 12 digits and, on
+   a Worker with migration locks, `-m` and each lock's count (`-m3`; the sandbox's, by lock
+   path, `-m2.1`), its message the whole commit: a rollback to a version whose counts are
+   lower strands every object the newer one migrated. The doors name the version serving each
+   answer in `x-tinyassets-version`.
+
+   Before the first of them, the run keeps a **rollout record**, `deploy:rollout:<run id>` in
+   the control namespace (a copy in the job summary): each Worker's version before the run
+   and that version's tag, and what the run's version carries that the one before cannot
+   take back. Its plan says, Worker by Worker, where a `rollback` of the run would stop. A
+   Worker serving two versions (a split: a run stopped between a Worker's stages, a failed
+   smoke among them, or the dashboard) stops the run before any deploy: end the split first,
+   with `rollback` of the stopped run (below), then dispatch again.
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers. It is `platform/deploy/control.json`, as is. If the
@@ -140,12 +179,15 @@ It never counts as "absent".
    callback (`signin.callback` in `platform/contract/identity.json`), with the checks in
    step 1, before any Cloudflare change, since the early sign-in check needs it. The kit
    never deletes one.
-7. **E2B's lifecycle webhook** (the doors' `hook` in `identity.json`, matched by
-   its URL, listed with the checks before any change): registered **disabled** if E2B's
-   listing lacks it, and the run that registers it sets the doors' `E2B_WEBHOOK_SECRET` from
-   `production` too, so the two start equal. After that its secret changes only with the
-   doors' (`rotate` naming `E2B_WEBHOOK_SECRET`): E2B never shows a hook's secret, so the kit
-   cannot compare them. It is never disabled or deleted.
+7. **E2B's lifecycle webhook** (`tinyassets-lifecycle`, found by its name, listed with the
+   checks before any change): registered **disabled** at the doors' `hook` in
+   `identity.json` if E2B's listing lacks it, its URL moved to that one when the identity's
+   host has changed, with production's `E2B_WEBHOOK_SECRET`, the value a first deploy sets on
+   the doors, so the two start equal. If E2B holds none while the doors hold the secret, the
+   apply job stops before any secret or Worker: dispatch again with `rotate` naming
+   `E2B_WEBHOOK_SECRET`, which sets both. After that its secret changes only with the
+   doors' (`rotate` naming it): E2B never shows a hook's secret, so the kit cannot compare
+   them. It is never disabled or deleted.
 8. **The platform's canary** (Fact 11, `deploy/canary.ts`) runs against
    `tinyassets.io/mcp`. No route moves, so the old stack still answers: it reads the platform
    dark, checks that the old stack still answers `/mcp` and that E2B holds the pinned
@@ -160,36 +202,9 @@ It never counts as "absent".
 
 ## Later steps, each its own approved run
 
-- **Mode `probe`: one real sign-in through the doors, between `dark` and `routes`.** Every
-  sign-in at `routes` rests on three things only a real sign-in through the doors' own code
-  shows: User Management's `authenticate` takes the API key as the client's secret, the
-  access token's `iss` is the one the kit expects (`upstreamFrom`'s `token_issuer`,
-  `https://api.workos.com/user_management/<client id>` by WorkOS's docs), and it carries a
-  fresh `auth_time`. The probe:
-  - runs only after `dark`: the doors deployed, the control record admitting nobody, and
-    WorkOS listing the callback. It reads each live and stops otherwise. Before a route
-    moves, it runs `dark`'s early sign-in check again;
-  - hands the doors only the routes that take the sign-in's own two paths (`PROBE_ROUTES`,
-    `deploy/facts.ts`), by the same handover. No Worker serves those paths today (they
-    answer `404`), and the probe
-    stops if one does. It deploys nothing and changes no gate. Then the platform's canary;
-  - prints one sign-in link, the doors' own app's (`/authorize`, its client, its
-    `/app/signed-in` redirect, the `/app` resource and a fresh S256 challenge).
-
-  **Open the link and sign in once.** Read where the browser ends against the pass and
-  fail signs the apply job prints under the link (`PROBE_SIGNS` in `deploy.ts`), and report
-  it.
-
-  If the `502` names the issuer, it quotes the `iss` the token carries. Only a WorkOS value
-  (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer` in `upstreamFrom`
-  (`deploy.ts`, one line), a change of its own, then
-  `dark` and the probe again. `routes`
-  later finds both paths already the doors'. Until `routes`, never delete the control
-  record (`CONTROL_KEY` in `contract/src/control.ts`): the doors read a missing record as open and would admit owners on
-  these two paths.
 - **Mode `routes`: the cutover's routes.** It does everything `dark` does. Then it hands
-  the doors' routes over (`routes` in `platform/contract/identity.json`) one route at a
-  time, through Cloudflare's routes API, so no path is ever served by nothing:
+  the doors' routes over (`routes` in `platform/contract/identity.json`, on its `host`) one
+  route at a time, through Cloudflare's routes API, so no path is ever served by nothing:
   - A pattern another Worker holds is moved to the doors in place (`PUT`, one change). Today
     those are the old proxy's (`tinyassets-mcp-proxy`) `mcp*`, `api*` and `app*`, so the old
     proxy is left with no route.
@@ -206,10 +221,28 @@ It never counts as "absent".
     (`doors/guards/identity.test.ts`).
   - A refused change stops the run and says which steps are done.
 
-  It then adds the egress custom domain (`egress` in `identity.json`; `wrangler triggers
-  deploy`),
-  enables E2B's lifecycle webhook now that the doors serve its path, and runs the
-  platform's canary's unkeyed checks (`--side doors --unkeyed`, below). The same
+  On a `host` under the zone (the stage's) the zone's routes hold none of its patterns, so
+  each is added and the old proxy's are left as they are. Such a host also needs a proxied
+  DNS record, or its routes take nothing (Cloudflare's routes page). Right after the route
+  record is kept, and before anything is deployed, `routes` makes `AAAA <host> 100::`,
+  proxied, and writes it into the route record. A placeholder like it there already (an
+  earlier `routes` run's, or yours) is left. Any other address record on the host stops
+  the run before any change. A refused make (a token without DNS Edit) stops the run with
+  only the route record written: add the record yourself (Cloudflare → `tinyassets.io` →
+  DNS → Records → Add record: `AAAA`, the host's first label, `100::`, Proxied) and run
+  `routes` again (Re-run all jobs, or a new dispatch): the route record it keeps has the
+  host bare, so it keeps your record as the handover's, and its handback deletes it. The
+  zone itself holds the site's record, so on it nothing is made.
+
+  It then adds the egress custom domain (`host` in `platform/contract/egress.json`;
+  `wrangler triggers deploy`), waits up to ten minutes for the egress door's own refusal on
+  the host, a fresh connection each attempt (the host has no TLS for its name until Cloudflare
+  issues its certificate, about two minutes on the stage, and Cloudflare's own error pages do
+  not count), and stops naming the last failure's cause if
+  it does not,
+  enables E2B's lifecycle webhook at the doors' path on the host now that the doors serve
+  it, and runs the
+  platform's canary on the doors' side (`--side doors`, below). The same
   `triggers deploy` sets the doors' Cron Trigger, the canary's clock. Every connector then
   signs in again once.
 
@@ -218,12 +251,15 @@ It never counts as "absent".
   the before-state of everything `routes` changes that `dark` does not:
   - every route of the zone as it read them, and the handover's changes;
   - the egress custom domain's Worker, or none;
+  - the doors' host, whether it held its DNS record, and the one `routes` made;
   - whether E2B's lifecycle webhook was held, and enabled.
 
   It also holds the zone, the run id and the time, and no secret. The job summary names its
   id (the run's, which heads the plan) and holds a copy. If the record cannot be written, the
-  run stops with nothing changed. A re-run attempt of the same run keeps its first attempt's
-  record. Re-run all its jobs, not the apply job alone: once an attempt has changed
+  run stops with nothing changed. The handover has one record, the state before its first
+  `routes` run: while the namespace holds a route record of the host, every `routes` run (a
+  re-run attempt, or a later dispatch) keeps the oldest as it is and writes none, and its plan
+  names the id to hand back. Re-run all its jobs, not the apply job alone: once an attempt has changed
   anything, the live state no longer plans what the first plan job showed, and the apply job
   stops before any change.
 
@@ -231,8 +267,10 @@ It never counts as "absent".
   custom domain or holds an address record (A, AAAA or CNAME). Run from the workflow,
   wrangler's custom-domain deploy replaces either, and no handback could give it back. The
   plan job shows this stop too.
-- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id
-  `routes`' summary names. Its plan job reads the record and the zone and changes nothing,
+- **Mode `handback`: the routes' rollback.** Dispatch it with `record` set to the id every
+  `routes` plan names, the host's first `routes` run's. A record kept after it (a kit before
+  2026-11-22 wrote one each `routes` run, holding the handover's own state as its before) is
+  refused, naming the first. Its plan job reads the record and the zone and changes nothing,
   so run it once right after `routes`, to see what a handback would do. The apply job puts
   back what `routes` changed, in reverse order:
   1. E2B's lifecycle webhook is disabled, unless the record has it enabled before. A hook
@@ -250,6 +288,8 @@ It never counts as "absent".
      attach's DNS record, none is deleted, and the read-back holds the host to no address
      record, as it was before `routes`. A record left there is named for you to delete by
      hand.
+  5. The DNS record `routes` made on the doors' host, if it made one, is deleted the same
+     way: only it, as the record holds it. A record the host held before is left.
 
   It changes no other route. Before any change, it holds the zone to the record. If a
   route the record or the handover holds was changed by someone after `routes`, or the egress
@@ -259,12 +299,21 @@ It never counts as "absent".
 
   After its changes it reads each back, and stops, naming each difference,
   unless they are the record's. A rerun changes only what is not back yet, and a killed run
-  is simply run again.
+  is simply run again. Read back, it ends the handover: it deletes every route record of the
+  host, the one it names last, each copied into its job summary first, so the next `routes`
+  records the host afresh. A handback run after that finds no record and stops.
 
   It doesn't run the handles canary. Until the old stack is up, the routes it gave back
   serve nothing, so the canary would fail a correct handback. The order is:
   1. the handback;
-  2. restart the old stack on its untouched volumes;
+  2. restart the old stack on its untouched volumes: dispatch **Restart daemon**
+     (`restart-daemon.yml`; the daemon unit's `up -d` starts the tunnel), then on the droplet
+     `sudo systemctl start daemon-watchdog.timer tinyassets-watchdog.timer`, and, while
+     `deploy-prod.yml` is still in the tree, `gh workflow enable deploy-prod.yml` (the window
+     stopped all three before its backup). That reopens its
+     deletion requests while the platform still holds every admitted owner, so an owner who
+     asks the old stack to delete them is also erased on the platform (mode `erase`) before
+     any later `routes`;
   3. the handles canary (Fact 11) for the old side: dispatch **Handles canary**
      (`handles-canary.yml`). Its token is a `production` secret no machine
      holds, so it runs there. It is the old stack's own `--assert-handles` check, and changes
@@ -274,22 +323,63 @@ It never counts as "absent".
 
   It leaves what `dark` made: storage, secrets, the Workers, the control record and the
   WorkOS redirect URI. They serve no one without the routes, the domain and the hook.
+- **Mode `rollback`: a deploy's Workers taken back.** Dispatch it with `record` set to the
+  id a `dark` or `routes` run's summary names. Its plan job reads the rollout record and
+  each Worker's deployment and changes nothing. The apply job takes the Workers back to the
+  versions they served before the run, callers first (the doors, then the owner, ...), each
+  a deployment of that one version, read back, then runs the canary. It touches no route
+  (that is `handback`'s), no secret and no storage. It stops at the first Worker the run made
+  **forward-only**, which stays on the run's version with every Worker before it in the
+  deploy order, each named:
+  - the run deployed it first, or whole (`migrate`): there is no version to go back to, or
+    Cloudflare rolls back across no Durable Object class change;
+  - the run set its secrets: its version before holds the old values, and Cloudflare
+    refuses that deployment (10220) unless forced, which the kit never does;
+  - its version's `-m` counts are higher than its version before's tag names, or that tag
+    names none: every object the newer version migrated would refuse to start;
+  - its version's `-f` count is higher than its version before's tag names: a change in
+    `platform.json` `forward` says its version before cannot read what it writes, or answer
+    what sandboxes, open pages or queued messages send it. Its author adds that change in
+    the same pull request, and its reviewer finds one missing.
+
+  A Worker a stopped run left at 0% beside its version before is taken back whatever its
+  version carries: at 0% it served only requests with an override for it, and Cloudflare
+  assigns no Durable Object a version at 0%, so no object ran its migrations.
+
+  With no Worker to take back it changes nothing. Then roll forward with a fix, or close
+  the gates (mode `control`). Before any change it holds the record whole to Cloudflare,
+  which only the deploy's token writes (other Workers can write the KV record): its Workers
+  are this tree's, in its deploy order; each Worker serves only its version before or ones
+  tagged with the run's commit (else a deploy since stops it, named); the record's tags and
+  counts are Cloudflare's tags; and each version it takes a Worker back to is one the
+  Worker's Deployments show serving alone just before a deployment of the run's commit.
+  Any difference stops it, named, with nothing changed.
+
+  **A rollback by hand** (the dashboard's Deployments, Rollback, from a phone) follows the
+  same rules, which Cloudflare cannot know: never to a version whose tag's `-m` or `-f`
+  counts are lower than the live version's, nor past a run that set the Worker's secrets
+  (the dashboard asks to confirm changed secrets: refuse), and callers first, the doors
+  before the owner. The run's rollout record names each version before; its Deployments
+  show the same one just before the run's.
 - **The platform's canary** (Fact 11, d3 §J2): `deploy/canary.ts`, run by **Platform canary**
   (`platform-canary.yml`) and by the kit after each mode. It checks the platform from
   outside, through the public routes, and changes nothing but one file in the canary owner's
   workspace. Each side's record is data (`scripts/canary_handles.json`): the doors' handle
   set is held to their tool table by a guard, the old stack's to its own canary's list.
-  - **Which side serves.** The public resource document's authorization server (AuthKit, or
-    `https://tinyassets.io`). While it is the old stack's, the platform is **dark**: the
-    canary checks that the old stack still answers `/mcp` (its anonymous `401` carries a
-    body, the doors' none, so a `routes` or `handback` stopped partway is exit 10) and that
-    E2B holds the pinned template and the hook, disabled. The doors' checks wait, named.
+  - **Which side serves.** The doors serve when the resource document on their host (the
+    identity's) names their own origin as its authorization server; else the old stack,
+    when the one on the zone names AuthKit. A host under the zone that the doors do not
+    serve yet has no DNS record and answers nothing. While the old stack serves, the
+    platform is **dark**: the canary checks that the old stack still answers the zone's
+    `/mcp` (its anonymous `401` carries a body, the doors' none, so a `routes` or `handback`
+    stopped partway is exit 10) and that E2B holds the pinned template and the hook,
+    disabled. The doors' checks wait, named.
   - **The doors' checks:** the anonymous challenge and resource document; `/app` and
     `/app?upgrade=1` with their CSP; the first-party client document; the egress host's
     refusal; the sign-in's start (the doors' `/authorize` to WorkOS, WorkOS to AuthKit, the
-    issuer's JWKS); E2B's template and the hook, enabled; **the off-account copy**: read
-    with the job's own token, a night of `offsite-copy.yml` must have passed inside two and
-    a half days once the copy is configured (exit 15, enough alone to page). While the
+    issuer's JWKS); E2B's template and the hook, enabled at the doors' path; **the
+    off-account copy**: read with the job's own token, a night of `offsite-copy.yml` must
+    have passed inside two and a half days once the copy is configured (exit 15, enough alone to page). While the
     newest night found no setting stored, it waits and says "not configured". Then, with
     `TA_PROBE_KEY`, the canary owner's API key: the handle set (one read-only `GET
     /api/tools/<name>` a name: each doors tool `405`, each old-only handle `404`), a file
@@ -298,9 +388,13 @@ It never counts as "absent".
     `/workspace/canary-full-run.json`; a failed day stays red until a full run passes;
     dispatch with `full` to run it now). It boots one sandbox a day.
 
-    Without `TA_PROBE_KEY` it fails (exit 7), since an unchecked check is not a pass. A
-    closed gate (`503`) is named too. The handle set assumes the canary owner keeps the
-    default policy (every tool, and code mode on): a narrowed one reads as drift.
+    The keyed checks wait, key or none, only while the control record admits no owner (the
+    dark record's `ordinary: "canary"` with `canary: []`, or `ordinary: "none"`): no canary
+    owner can sign in or pass the gate then. The kit reads the record after every mode it
+    runs the canary for and says so (`--closed`); the workflow holds no token to read it, so
+    its runs always need the key. Otherwise, without `TA_PROBE_KEY` it fails (exit 7), since
+    an unchecked check is not a pass. A closed gate (`503`) is named too. The handle set
+    assumes the canary owner keeps the default policy (every tool, and code mode on): a narrowed one reads as drift.
   - **Its clock and alarm.** The doors' Cron Trigger dispatches the workflow every ten
     minutes with `PLATFORM_CANARY_TOKEN`; without the token it dispatches nothing. A failed
     dispatch pages Pushover directly at `:00` and `:30`. The workflow's own hourly schedule
@@ -311,10 +405,10 @@ It never counts as "absent".
     overdue) open the `platform-down` issue and page, re-paging at 1 h, 4 h and 24 h until
     someone comments; green closes it.
   - **After `routes`, in this order:**
-    1. **The `routes` run's own canary.** It runs the unkeyed checks alone (`--side doors
-       --unkeyed`): the doors answer `/mcp` and its document, and the old stack doesn't. It
-       says the keyed checks wait. It can't run them itself: no canary owner's key exists
-       until the doors serve `/app/api`, and the dark control record admits no one.
+    1. **The `routes` run's own canary** (`--side doors`): the doors answer `/mcp` and its
+       document, and the old stack doesn't. It says the keyed checks wait: the dark control
+       record admits no one, so no canary owner exists yet. Every mode's canary says the same
+       until step 3, and from step 3 each needs `TA_PROBE_KEY`.
     2. **Disable the old pager:** `gh workflow disable uptime-canary.yml` (the manifest's
        `routes` phase). Its old-stack probes would page on every run against the doors.
     3. **Open the control record for the canary owner, both gates:** `outside: "on"`,
@@ -338,14 +432,61 @@ It never counts as "absent".
        sets the doors' copy. From then the clock runs and the alarm pages.
   - **After `handback` and the old stack's restart:** dispatch **Handles canary**. The
     platform's canary reads the platform dark again, and its alarm stands down.
+- **The live stage: `routes` at `stage.tinyassets.io`, before the cutover** (d3 §H,
+  `docs/decisions/untangle-2026-11/stage.md`). While `identity.json`'s `host` names the
+  stage's host, `routes` serves the doors there and nothing else moves: the old stack keeps
+  `tinyassets.io`. In this order:
+  1. **`routes`, plan then apply.** The plan shows the route record, the host's DNS record
+     to make (`AAAA stage.tinyassets.io 100::`, proxied), everything `dark` does, every
+     doors route added on the stage host and none of the zone's touched, the egress custom
+     domain, and the hook moved to the stage host's path and enabled. Its canary checks the
+     doors on the stage host, the keyed checks waiting while the record is closed.
+  2. **`handback`'s plan job once**, read-only, to see what a handback would do.
+  3. **The first sign-in, with the gate closed.** It settles what only a real sign-in through
+     the doors shows: User Management's `authenticate` takes the API key as the client's
+     secret, and the access token's `iss` is `upstreamFrom`'s `token_issuer`, with a fresh
+     `auth_time`. Sign up with each stage account at `https://stage.tinyassets.io/app`, an
+     address that is not your main one (a plus-alias works).
+     - **Pass:** the browser ends at `…/app/signed-in?error=temporarily_unavailable` (the
+       page reads as a sign-in error, which is expected). The closed gate refused it after
+       every check passed (the client, the callback, the token's signature, `iss`,
+       `client_id`, `sub` and `auth_time`), and no owner was made.
+     - **Fail, at `/authorize`, a `400` page:** the doors could not read their own app's
+       client document.
+     - **Fail, at `error.workos.com` or another error page:** WorkOS refused the doors'
+       client or the callback.
+     - **Fail, at `/oauth/upstream/callback`, a `502` page** naming the check that failed
+       (the token endpoint's status and error code, `auth_time`, `client_id`...), the same
+       line in the doors' log. On the issuer it quotes the `iss` the token carries. Only a
+       WorkOS value (`https://api.workos.com/...` or `OWNER_ISSUER`) becomes `token_issuer`
+       in `upstreamFrom` (`deploy.ts`, one line), a change of its own, then `routes` again.
+     - **Fail, at `…/app/signed-in?error=access_denied` ("sign in again"):** `auth_time` is
+       more than 600 s old or ahead of the clock, so `max_age=0` did not force a fresh
+       sign-in.
+
+     If sign-up is closed, make the two users in WorkOS → Production → Users instead.
+  4. **Open the gate to the stage accounts alone** with mode `control`: their two WorkOS
+     user ids (`user_…`) as `canary`, `outside` on, `ordinary` still `canary`. A sign-in by
+     any other id is refused at the gate, with no owner made.
+  5. **Each account signs in and mints one API key**; store the probe keys (`TA_PROBE_KEY`
+     and the rest, as after `routes` above) and run the platform's canary keyed.
+  6. **The end:** each stage account's own erasure in the owner app, then `handback` of the
+     stage's route record, the one the next `routes` plan or a refused handback names. It
+     deletes the stage host's routes and DNS record, detaches the
+     egress domain and disables the hook; the old stack never stopped, so its last line's
+     restart does not apply. Then empty the OAuth namespace (`OAUTH_KV` in `platform.json`'s
+     titles) and close the control record. The platform's canary reads the platform dark
+     again: the stage host answers nothing.
 - **Optional: a WAF rate-limiting rule of your own.** The platform sets no number on any
   caller. If you ever want a per-IP backstop at the edge, make one zone rule in the
   dashboard (Free allows one, Pro two), with your own number. It is your setting, recorded
   as such. The zone's plan is **unverified** here.
 - **Mode `h2`: H2's probes alone**, once a probe owner exists. They deploy nothing. Store
   the probe keys `deploy/h2-probes.ts` names (`INPUTS`: two owners' API keys, plus an app
-  token and a key id for the revoke probe) as `production` secrets. It prints one row per
-  probe.
+  token and a key id for the revoke probe) as `production` secrets. Each probe owner first
+  turns code mode on in its owner app (Connected apps, Code mode): it is off by default until
+  H2 passes, and a probe's `code` call is refused `code_mode_off` until its owner turns it on.
+  It prints one row per probe.
 - **Open the gates with mode `control`** when you are ready (the cutover's Step 14): canary
   owners first (`set`: `outside=on canary+=<owner>`), then everyone (`ordinary=all`), and
   `inbound=true` for `/hooks/inbound`. The plan job shows each field's old and new value; the
@@ -353,6 +494,16 @@ It never counts as "absent".
   `deploy:control:<run id>` (put it back with `replace`), and reads the write back. It edits
   KV itself, never through the doors, so `outside=off`, the kill switch, works when they
   don't. A missing or malformed record is shown as it is; `replace` gives the whole record.
+  **A kill flipped while KV is down reaches no kept copy.** While KV can't be read, each reader
+  serves the copy it last read well formed (the doors' per-location cache, the owner's and the
+  sandbox's objects' own row), `outside=on` included, until KV answers again; the mode's own
+  read and write go to KV, so they fail too. The kill that needs no KV is an edge switch at
+  Cloudflare, and **there is none yet**: slice B1, two WAF custom rules on the zone kept
+  disabled (`TinyAssets kill: outside`, blocking the doors' outside paths, and `TinyAssets
+  kill: all`, every doors path and the egress host), each toggled from the dashboard or the
+  app, is owed (`untangle/kill-switch-cloudflare`). Until it lands, the one kill that reads no
+  KV is a custom rule you make by hand (Security, WAF, Custom rules) blocking those paths; mode
+  `handback` reads its route record from KV too.
 - **Mode `owner`** asks the doors one op for one owner through the operator channel (`owner`
   and `act`: `state`, `tier=<tier>`, `suspend=<reason>`, `lift=<reason>`, `admit`, `rewrap`
   or `reseal`) and prints their answer between the owner's state before and after it, or
@@ -416,9 +567,10 @@ metadata service (it serves the host's `user_data`, which holds its private SSH 
 host's boot script drops it for Docker's containers).
 
 It reads these `production` secrets. Every mode needs `DO_SSH_KEY` (already set),
-`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` and `deletions` need the Spaces pair too, `bundle` the
-exclusion list, `stage`, `verify`, `wipe`, `admit`, `dlq` and `close` the R2 pair, the API
-token and `IMPORT_KEY`, and `offsite` the Spaces pair and the R2 pair. A mode that lacks one
+`IMPORT_DO_TOKEN` and `IMPORT_RESERVED_IP`. `census` needs the Spaces pair too, `bundle` the
+exclusion list, `stage`, `verify`, `wipe`, `dlq` and `close` the R2 pair, the API
+token and `IMPORT_KEY`, `admit` the Spaces pair and those four, and `offsite` the Spaces pair
+and the R2 pair. A mode that lacks one
 stops before any step and names it. The account id is no secret: the seven Cloudflare modes
 read it from the repository **variable** `CLOUDFLARE_ACCOUNT_ID` (step 0), held to 32 hex
 digits. The real window's `close` alone also reads `IMPORT_DOORS_API_TOKEN`, on the runner,
@@ -430,10 +582,25 @@ Use the checkout for the window. From its root, install the platform dependencie
 files and `platform/deploy/platform.json`.
 Use the values of the fields below when selecting resources in Cloudflare.
 
-After bundling, mode `deletions` compares current off-host erasure records with the original
-owners of this run's bundles. It reports bundle ordinals and exits 3 on a match. A clean
-comparison applies only at the time of the scan. Step 11 still requires the matching pending
-owners to be discarded and withheld before admission.
+Each `admit` first reads the old broker's current off-host deletion jobs itself, finished or
+not, and compares them with the original owners of this run's bundles
+(`i-deletion-withhold.md`). It names each match by bundle ordinal, discards it and admits
+none of them, then admits the rest. A failed read admits no one. No `admit` runs on an older
+read, so there is nothing to rescan by hand.
+
+**The old stack stops taking requests before the window's backup.** At the real window's
+opening, once Stripe's endpoint is disabled and before the full backup, run
+`gh workflow disable deploy-prod.yml`, then on the droplet
+`sudo systemctl stop daemon-watchdog.timer tinyassets-watchdog.timer`, then
+`sudo docker stop tinyassets-tunnel`. Each of the three would start the tunnel again: a
+deploy's `up -d`, and each watchdog's restart of `tinyassets-daemon.service`, whose `up -d`
+names the tunnel. So does a reboot (that unit at boot): after one, run the two stops on the
+droplet and the check again. Then check that
+`curl -s -o /dev/null -w '%{http_code}' https://tinyassets.io/mcp` no longer answers `401`
+(the old stack's anonymous answer). From then until `routes`, no request reaches the old
+stack, so no deletion request can arrive after an `admit` has read the jobs. At `routes`, the
+doors' erase door takes them. The canaries' old side reads red from the stop, as expected. A
+rehearsal stops nothing. A handback's restart is its step 2 above.
 
 | `production` secret | What it is | Scope |
 |---|---|---|
@@ -550,7 +717,11 @@ command line. **Reserve the IP first:** the job's two Cloudflare tokens are mint
    printf %s "$k" | npx wrangler secret put IMPORT_KEY --config doors/wrangler.jsonc
    unset k
    ```
-   Without the doors' copy, the consumer drops every import message.
+   Without the doors' copy, the consumer drops every import message. `secret put` deploys at
+   once: run it only while the doors serve one version (their Deployments in the dashboard),
+   and while no deploy runs. A version uploaded before a secret changes keeps the secrets of
+   the version before it, so a deploy running across the put, or across the window's close,
+   undoes it; the close itself refuses while the doors are split.
 8. **`IMPORT_DOORS_API_TOKEN`.** Manage Account → Account API Tokens → Create Token → Custom
    token, named `tinyassets-import-window-doors`: Workers · Editor, resources Specified Workers
    → the Worker named by `doors` alone (Cloudflare's per-Worker roles, 2026-09-15; Editor
