@@ -2639,6 +2639,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "due REAL) WITHOUT ROWID",
     "CREATE INDEX connection_credit_due ON connection_credit (due) WHERE due IS NOT NULL",
   ]),
+  // 30 (`collections.ts`; `untangle-2026-11/row-stamps.md`): a row made again starts its
+  // revisions at 1, so the owner-wide floor that made it go past every revision an erase gave
+  // goes: it told any writer of a new row the revisions of rows hidden from it. And the
+  // object's incarnation, which every cursor carries: '' until the first cursor makes one, and
+  // again after a restore, so no cursor of the object before is read as a place in it. Not
+  // exported (`collection_space` is the triggers' counters, the feed's floors and this).
+  Object.freeze([
+    "ALTER TABLE collection_space DROP COLUMN revision_floor",
+    "ALTER TABLE collection_space ADD COLUMN incarnation TEXT NOT NULL DEFAULT ''",
+  ]),
 ]);
 
 /**
@@ -2722,6 +2732,7 @@ export const FORWARD: readonly (string | null)[] = Object.freeze([
   null,  // 27
   null,  // 28
   null,  // 29
+  null,  // 30
 ]);
 
 /**

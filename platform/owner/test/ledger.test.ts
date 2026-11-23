@@ -442,7 +442,7 @@ describe("outside agents register from a verified identity", () => {
       () => r.stub.policyWrite(outside, { expected_generation: 1, policy: {} as never }),
       () => r.stub.grantList(outside),
       () => r.stub.sessionExtend(outside),
-      () => r.stub.collectionPull(outside, { collection: "board", after: 0, limit: 1 }),
+      () => r.stub.collectionPull(outside, { collection: "board", limit: 1 }),
     ]) {
       const refused = await failure(call);
       expect([refused.code, refused.message])

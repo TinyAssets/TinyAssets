@@ -303,7 +303,7 @@ describe("the owner app's sources and tools routes", () => {
     expect(listed).toEqual({ agents: [], owner_agents: expect.any(Array), apps: expect.any(Array) });
     expect((listed["owner_agents"] as { agent: string }[]).map((a) => a.agent)).toEqual(["main"]);
     expect(await answered(await appPost("tools/inbox_digest", app.access_token, null,
-                                        { limit: 10, after: 0 })))
+                                        { limit: 10 })))
       .toMatchObject({ mail: { messages: [] }, rooms: { rows: [] } });
     expect(await answered(await appPost("tools/no_such_tool", app.access_token, null, {}), 404))
       .toEqual({ error: "no such tool" });
@@ -338,7 +338,7 @@ describe("an app's agent registration, answered in the owner app", () => {
 
   /** Whether the client's mailbox answers: its digest and its read, each refused or not. */
   async function mailbox(tokens: Tokens): Promise<(string | null)[]> {
-    return Promise.all([["inbox_digest", { limit: 5, after: 0 }], ["mailbox_read", { limit: 5 }]]
+    return Promise.all([["inbox_digest", { limit: 5 }], ["mailbox_read", { limit: 5 }]]
       .map(async ([name, args]) => {
         const result = await legacyTool(tokens.access_token, name as string, args);
         return result.isError === true ? result.content[0]!.text.split("\n")[0]! : null;

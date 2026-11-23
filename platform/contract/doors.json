@@ -8,10 +8,10 @@
       "args": {
         "refused": "invalid ledger request",
         "required": {
-          "limit": { "type": "integer", "description": "At most this many messages, and this many room rows" },
-          "after": { "type": "integer", "description": "Changes after this cursor: 0 at first, then the last answer's cursor" }
+          "limit": { "type": "integer", "description": "At most this many messages, and this many room rows" }
         },
         "optional": {
+          "after": { "type": "string", "description": "Changes after this cursor: the last answer's cursor (left out at first)" },
           "max_bytes": { "type": "integer", "description": "At most this many mail body bytes in all" },
           "head_chars": { "type": "integer", "description": "At most this many characters of each row's body (512 when omitted)" }
         }
@@ -27,17 +27,17 @@
       "args": {
         "refused": "invalid collection request",
         "required": {
-          "limit": { "type": "integer", "description": "At most this many rows" },
-          "after": { "type": "integer", "description": "Changes after this cursor: 0 at first, then the last answer's cursor" }
+          "limit": { "type": "integer", "description": "At most this many rows" }
         },
         "optional": {
+          "after": { "type": "string", "description": "Changes after this cursor: the last answer's cursor (left out at first)" },
           "head_chars": { "type": "integer", "description": "At most this many characters of each row's body (512 when omitted)" }
         }
       },
       "tool": {
         "name": "board_digest", "title": "Board digest", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "Read the owner's board rows changed after a cursor in one call, each with its etag and the head of its body. Claim a row with collection_write on its etag; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the board again whole (collection_list of the board collection from after 0), then go on from the cursor given."
+        "description": "Read the owner's board rows changed after a cursor in one call, each with its etag and the head of its body. Claim a row with collection_write on its etag; read a whole row with collection_get. An answer with reset true means a deletion past the cursor is no longer kept: read the board again whole (collection_list of the board collection, after left out), then go on from the cursor given."
       }
     },
     {
@@ -168,15 +168,16 @@
         "refused": "invalid collection request",
         "required": {
           "collection": { "type": "string", "description": "The collection's name" },
-          "after": { "type": "integer", "description": "Rows changed after this revision" },
           "limit": { "type": "integer", "description": "At most this many rows" }
         },
-        "optional": {}
+        "optional": {
+          "after": { "type": "string", "description": "Rows changed after this cursor: the last answer's cursor (left out at first)" }
+        }
       },
       "tool": {
         "name": "collection_list", "title": "List collection rows", "readOnlyHint": true,
         "destructiveHint": false, "idempotentHint": true, "openWorldHint": false,
-        "description": "List a collection's rows changed after a revision, as many as one answer holds (at most 50000 characters); go on from the cursor it gives. A first row whose body does not fit is cut (truncated true): read the rest with collection_get."
+        "description": "List a collection's rows changed after a cursor, as many as one answer holds (at most 50000 characters); go on from the cursor it gives. A first row whose body does not fit is cut (truncated true): read the rest with collection_get."
       }
     },
     {
@@ -188,7 +189,7 @@
           "row_id": { "type": "string", "description": "The row's id" }
         },
         "optional": {
-          "before": { "type": "integer", "description": "Entries before this change: the before an answer gave" },
+          "before": { "type": "string", "description": "Entries before this cursor: the before an answer gave" },
           "body_offset": { "type": "integer", "description": "The first item's body from this byte: a body_next_offset an answer gave (0 when omitted)" }
         }
       },

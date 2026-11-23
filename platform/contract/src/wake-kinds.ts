@@ -29,8 +29,8 @@ export interface WakeContent {
   readonly changes: readonly Change[];
   /** The agent's own acknowledged mailbox cursor: its unread mail is past it. */
   readonly cursor: number;
-  /** The change cursor to read rooms and the board after: the newest the agent could see. */
-  readonly after: number;
+  /** The cursor to read rooms and the board after: the change feed's before the change. */
+  readonly after: string;
   /** The digests that answer just this change. */
   readonly read: readonly string[];
 }

@@ -36,7 +36,7 @@ describe("the platform's admit", () => {
     const { stub, owner } = pending();
     const o = stub as unknown as DurableObjectStub<import("../src/owner-do").OwnerDO>;
     expect((await failure(() => o.grantList(own(owner)))).message).toBe(OWNER_UNADMITTED);
-    expect((await failure(() => o.collectionPull(own(owner), { collection: "board", after: 0,
+    expect((await failure(() => o.collectionPull(own(owner), { collection: "board",
                                                                limit: 1 }))).message)
       .toBe(OWNER_UNADMITTED);
     expect(await o.admissionSet(platform(owner), { admit: true }))

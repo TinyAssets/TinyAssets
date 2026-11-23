@@ -349,7 +349,7 @@ export function ownerStores(units: Units, env: OwnerEnv, id: DurableObjectId) {
                                       () => fileLimits(policy.read().document, null));
   const grants = new Grants(storage, policy);
   const ledger = new Ledger(storage, grants, () => admission.admitted(),
-                            () => collections.seen(namedOwner(id)), bodies.adopt,
+                            () => collections.clock(), bodies.adopt,
                             (needed) => files.fullRefusal(needed));
   const backups = new Backups({
     storage, write: units.quiet, store: env.FILES, space: () => files.space(), log,

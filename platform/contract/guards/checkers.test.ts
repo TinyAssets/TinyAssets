@@ -50,7 +50,7 @@ describe("doorbellInput", () => {
 
 describe("ringRequest", () => {
   const wake: WakeContent = { agent_id: "a1", command_center_id: "cc1", changes: [], cursor: 0,
-                              after: 0, read: [] };
+                              after: "0".repeat(64), read: [] };
   const pushing = wakeKinds().filter((kind) => kind.push !== null);
   it("takes what doorbellRequest builds for every kind that pushes", () => {
     expect(pushing.length).toBeGreaterThan(0);

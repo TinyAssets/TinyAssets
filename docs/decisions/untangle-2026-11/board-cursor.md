@@ -152,7 +152,9 @@ replaces `Collections.clock()`, whose only readers were the wakes.
 
 ## Owed
 
-- [ ] live: after the next owner deploy, the stage's `board_digest` from 0 with no board row
-  answers cursor 0, whatever the rooms hold.
-- [ ] untangle/row-stamps: the stamps' oracle ("Left"), researched first (Fact 14); with it,
-  `seen`'s and the digests' rereads of what their reader can't see.
+- [x] live: after the next owner deploy, the stage's `board_digest` from 0 with no board row
+  answers cursor 0, whatever the rooms hold. Superseded before that deploy: a cursor is opaque
+  now, and `row-stamps.md`'s live line checks it.
+- [x] untangle/row-stamps: the stamps' oracle ("Left"), researched first (Fact 14); with it,
+  `seen`'s and the digests' rereads of what their reader can't see. Done (`row-stamps.md`:
+  opaque cursors that read on past hidden changes, so `seen` and the rereads went).

@@ -176,7 +176,7 @@ function wakeContent(target: WakeTarget, changes: readonly Change[]): WakeConten
     ...(changes.includes("board") ? ["board_digest"] : []),
   ];
   return { agent_id: target.agent_id, command_center_id: target.command_center_id,
-           changes, cursor: target.cursor, after: target.after, read };
+           changes, cursor: target.cursor, after: target.after_cursor, read };
 }
 
 /**

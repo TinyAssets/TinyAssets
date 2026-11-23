@@ -33,8 +33,8 @@
  *   method's record has a push (MCP Events, `/fire`, a webhook routine); a `pull` agent
  *   never does, and catches up through the digests on its own schedule. A wake says what
  *   changed (`changes`: mail to the agent, a room's rows, the board's) and the change
- *   cursor it is after, the newest change the agent could see before it (`Collections.seen`),
- *   so the agent's digest returns just the change. Mail to an
+ *   cursor it is after, the collections' clock before it (`Collections.clock`), opaque
+ *   (`changeCursor`), so the agent's digest returns just the change. Mail to an
  *   agent opens its wake (`post`); a board or room row another writer changes opens one for
  *   every ringing agent (`changed`), folded into any wake already open.
  * - The doorbell's subscriptions (`wake_callbacks`): an enabled ringing agent's
@@ -104,7 +104,7 @@ import {
   type Adopt, adopted, bodyOffset, inlineWindow, PAGE_BYTES, type Placed,
   READ_TRIES, type Window,
 } from "./bodies";
-import { ROOM_PREFIX } from "./collections";
+import { changeCursor, ROOM_PREFIX } from "./collections";
 import { jsonBytes } from "../../contract/src/encoded";
 import { exported } from "./export";
 import { NOT_AN_AGENT, Refusal, type RefusalCode } from "../../contract/src/refusal";
@@ -114,11 +114,12 @@ import {
   INBOX_PART,
 } from "./pages";
 import {
-  bloomHas, bloomOf, idKey, idOrder, ImageDigest, MOVE_BYTES, MoveTable, orderedId,
+  bloomHas, bloomOf, ImageDigest, MOVE_BYTES, MoveTable,
   parseRecord, RECORD_TRAILER_BYTES, rowLine, SEGMENT_LEAST_BYTES,
   SEGMENT_MIN_BYTES,
   SEGMENT_MIN_RECORDS, type SegmentRecord, type SegmentRow,
 } from "./segments";
+import { heldIdKey, idOrder, orderedId, readIdKey } from "./ordered";
 import {
   admittedMethods, eventKind, kindFor, ringingMethods, wakeKinds,
 } from "../../contract/src/wake-records";
@@ -572,7 +573,10 @@ export interface WakeTarget {
   readonly cursor: number;
   readonly through: number;
   readonly changes: readonly Change[];
+  /** The collections' clock before the first change: what `touched` reads past. */
   readonly after: number;
+  /** The change feed's cursor at `after`, as the wake carries it (`changeCursor`). */
+  readonly after_cursor: string;
   /** The first change's own time, in seconds: the event's timestamp. */
   readonly at: number;
   /** How many changes folded into it since it opened: a subscription is owed each fold. */
@@ -1065,10 +1069,7 @@ export class Ledger {
   /** Whether the owner is admitted (`admission.ts`'s `require_work`), read in each claim. */
   readonly #admitted: () => boolean;
 
-  /**
-   * The newest change the owner's agents may see (`Collections.seen`): what a mail wake is
-   * after.
-   */
+  /** The collections' clock (`Collections.clock`): what a mail wake is after. */
   readonly #changes: () => number;
 
   /** How a posting unit adopts a placed body's content (`Bodies.adopt`). */
@@ -1751,7 +1752,7 @@ export class Ledger {
       const seq = sql.exec<{ last_seq: number }>(
         "UPDATE ledger_usage SET last_seq = max(last_seq, coalesce((SELECT max(seq) FROM " +
           "ledger_messages), 0)) + 1 RETURNING last_seq").one().last_seq;
-      const messageId = "msg_" + orderedId(this.#idKey(), seq);
+      const messageId = "msg_" + orderedId(heldIdKey(this.#sql), seq);
       const depth = kind === OWNER ? 0 : (parent?.chain_depth ?? 0) + 1;
       // The owner's dm with an outside agent is in that agent's command center; any other
       // room's mail, in the universe its authority acts in.
@@ -2011,19 +2012,6 @@ export class Ledger {
 
   // -- THE ARCHIVE: acked mail moved to segments (`segments.ts`) ----------------------------
 
-  /** The key message ids carry their seq under, made with the first message. In a unit. */
-  #idKey(): Uint8Array {
-    const held = this.#sql.exec<{ id_key: string }>("SELECT id_key FROM ledger_ids")
-      .toArray()[0];
-    if (held !== undefined) {
-      return Uint8Array.from(Buffer.from(held.id_key, "hex"));
-    }
-    const made = idKey();
-    this.#sql.exec("INSERT INTO ledger_ids (only, id_key) VALUES (1, ?)",
-                   Buffer.from(made).toString("hex"));
-    return made;
-  }
-
   /**
    * In a unit, once a restore has loaded the rows (`restore.ts`): the seq allocator past every
    * seq they name, the archived ones' too, so none is given again.
@@ -2036,12 +2024,9 @@ export class Ledger {
 
   /** The seq a message id carries, or null for one the object never gave. A read. */
   seqOf(messageId: string): number | null {
-    const held = this.#sql.exec<{ id_key: string }>("SELECT id_key FROM ledger_ids")
-      .toArray()[0];
-    if (held === undefined || !messageId.startsWith("msg_")) {
-      return null;
-    }
-    return idOrder(Uint8Array.from(Buffer.from(held.id_key, "hex")), messageId.slice(4));
+    const key = readIdKey(this.#sql);
+    return key === null || !messageId.startsWith("msg_") ? null
+      : idOrder(key, messageId.slice(4));
   }
 
   /** Whether a room is a deleted agent's, its segments not yet all rewritten. A read. */
@@ -3113,7 +3098,8 @@ export class Ledger {
           command_center_id: agent.command_center_id, client: agent.outside_client,
           family: agent.outside_family, cursor, through,
           changes: CHANGES.filter((change) => (wake.changes & CHANGE_BIT[change]) !== 0),
-          after: wake.after, at: wake.created_at, fold: wake.fold,
+          after: wake.after, after_cursor: changeCursor(sql, wake.after), at: wake.created_at,
+          fold: wake.fold,
         },
       };
     });
@@ -3277,10 +3263,13 @@ export interface ChainRequest {
 export interface AckRequest {
   readonly through: number;
 }
-/** What changed for a main agent: its unread mail, and its rooms' rows past `after`. */
+/**
+ * What changed for a main agent: its unread mail, and its rooms' rows past the cursor `after`
+ * (from the start when it is left out).
+ */
 export interface InboxDigestRequest {
   readonly limit: number;
-  readonly after: number;
+  readonly after?: string;
   readonly max_bytes?: number;
   readonly head_chars?: number;
 }

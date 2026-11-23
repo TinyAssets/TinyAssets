@@ -327,8 +327,8 @@ export interface DoorMethods<H> {
    * Read the owner's board rows changed after a cursor in one call, each with its etag and the head
    * of its body. Claim a row with collection_write on its etag; read a whole row with
    * collection_get. An answer with reset true means a deletion past the cursor is no longer kept:
-   * read the board again whole (collection_list of the board collection from after 0), then go on
-   * from the cursor given.
+   * read the board again whole (collection_list of the board collection, after left out), then go
+   * on from the cursor given.
    */
   boardDigest(binding: Binding, request: RequestIn<H, "boardDigest">):
     Promise<AnswerIn<H, "boardDigest">>;
@@ -382,7 +382,7 @@ export interface DoorMethods<H> {
   collectionGet(binding: Binding, request: RequestIn<H, "collectionGet">):
     Promise<AnswerIn<H, "collectionGet">>;
   /**
-   * List a collection's rows changed after a revision, as many as one answer holds (at most 50000
+   * List a collection's rows changed after a cursor, as many as one answer holds (at most 50000
    * characters); go on from the cursor it gives. A first row whose body does not fit is cut
    * (truncated true): read the rest with collection_get.
    */

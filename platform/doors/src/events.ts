@@ -60,7 +60,7 @@ function payloadSchema() {
     command_center_id: { type: "string" },
     changes: { type: "array", items: { type: "string", enum: ["mail", "rooms", "board"] } },
     cursor: { type: "integer", minimum: 0 },
-    after: { type: "integer", minimum: 0 },
+    after: { type: "string" },
     read: { type: "array", items: { type: "string", enum: ["inbox_digest", "board_digest"] } },
   },
   required: ["agent_id", "command_center_id", "changes", "cursor", "after", "read"],

@@ -11,7 +11,7 @@
  * silently.
  */
 import { inlineWindow, PAGE_BYTES, type Window } from "./bodies";
-import type { Changed, Changes, Row } from "./collections";
+import type { Changed, Changes, ReadsOn, Row } from "./collections";
 import { fitted, jsonBytes, RESULT_CHARS } from "../../contract/src/encoded";
 import { Refusal } from "../../contract/src/refusal";
 
@@ -139,7 +139,7 @@ export type RowHead =
 
 /** Rows changed past a digest's cursor, and the next cursor; `reset` as `Changes`'. */
 export interface Heads {
-  readonly cursor: number;
+  readonly cursor: string;
   readonly rows: RowHead[];
   readonly reset?: true;
 }
@@ -167,22 +167,30 @@ export function headWindow(chars: number): number {
 }
 
 /**
+ * The cursor after a door's page that kept the first `kept` of the store's items: the
+ * store's own when it kept them all, else the one after the last it kept.
+ */
+export function onFrom(page: { readonly cursor: string; readonly rows: readonly ReadsOn<object>[] },
+                       kept: number): string {
+  return kept < page.rows.length ? page.rows[kept - 1]!.next : page.cursor;
+}
+
+/**
  * Changed rows as a digest shows them, fitted to one answer (`pages.ts`): each body cut to
  * its first `chars` characters, read from its row or its placed body's window; the rows in
  * order while they fit, at least one, the first's head cut further when it does not; the
- * page ends before a placed body not read, and the cursor is the last kept row's change, or
- * the store's (the one given, or a reset's floor) when none is kept.
+ * page ends before a placed body not read, and the cursor reads on after the last kept
+ * (`onFrom`).
  */
 export function heads(changes: Changes, chars: number, windows: ReadonlyMap<string, Window>,
                bytes: number = PAGE_BYTES): Heads {
   const rows: { row: RowHead }[] = [];
-  for (const row of changes.rows) {
+  for (const { next: _next, ...row } of changes.rows) {
     if (row.deleted) {
       rows.push({ row });
       continue;
     }
-    const { body, content_id: contentId, ...rest } =
-      row as Extract<Changed, { deleted: false }> & { content_id?: string };
+    const { body, content_id: contentId, ...rest } = row;
     const window = contentId === undefined ? inlineWindow(body, 0) : windows.get(contentId);
     if (window === undefined) {
       break;
@@ -206,9 +214,7 @@ export function heads(changes: Changes, chars: number, windows: ReadonlyMap<stri
   if (kept.length === 0 && changes.rows.length > 0) {
     throw new Error("a digest's first row is always read");
   }
-  return { ...reset,
-           cursor: kept.at(-1)?.change ?? changes.cursor,
-           rows: kept };
+  return { ...reset, cursor: onFrom(changes, kept.length), rows: kept };
 }
 
 /**

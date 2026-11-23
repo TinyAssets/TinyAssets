@@ -175,8 +175,11 @@ function signed(id: string, stamp: string, body: string): string {
   return "v1," + createHmac("sha256", KEY).update(`${id}.${stamp}.${body}`).digest("base64");
 }
 
+/** A wake's change cursor: opaque (`ordered.ts` `cursorAt`). */
+const CURSOR = /^[0-9a-f]{64}$/;
+
 type Delivered = { eventId: string; name: string; timestamp: string; cursor: null;
-                   data: { agent_id: string; changes: string[]; after: number; read: string[] } };
+                   data: { agent_id: string; changes: string[]; after: string; read: string[] } };
 
 describe("each wake kind sends its own record's shape, its secret the gateway's alone", () => {
   it("ChatGPT MCP Events: a signed event, IDs and cursors only, nothing in the clear here",
@@ -204,7 +207,7 @@ describe("each wake kind sends its own record's shape, its secret the gateway's 
       eventId: wake!["wake_id"], name: EVENT, cursor: null,
       timestamp: new Date(Math.floor((wake!["created_at"] as number) * 1000)).toISOString(),
       data: { agent_id: muse, command_center_id: "alpha", changes: ["mail"], cursor: 0,
-              after: 0, read: ["inbox_digest"] },
+              after: expect.stringMatching(CURSOR), read: ["inbox_digest"] },
     });
     expect(sent!.body).not.toContain("secret plan");
   });
@@ -233,8 +236,8 @@ describe("each wake kind sends its own record's shape, its secret the gateway's 
       "anthropic-beta": "experimental-cc-routine-2026-04-01", "anthropic-version": "2023-06-01",
     });
     expect(JSON.parse(sent!.body)).toEqual({
-      text: `TinyAssets: new board for agent ${claude} in alpha. Read just the change: ` +
-        "board_digest with after=0." });
+      text: expect.stringMatching(new RegExp(`^TinyAssets: new board for agent ${claude} in ` +
+        `alpha. Read just the change: board_digest with after=[0-9a-f]{64}[.]$`)) });
   });
 
   it("Grok's webhook routine: the routine's key as a bearer, the wake as JSON", async () => {
@@ -250,7 +253,8 @@ describe("each wake kind sends its own record's shape, its secret the gateway's 
     const [sent] = await received(r);
     expect(sent!.headers["authorization"]).toBe(`Bearer ${TOKEN}`);
     expect(JSON.parse(sent!.body)).toEqual({
-      agent_id: grok, command_center_id: "alpha", changes: ["rooms"], cursor: 0, after: 1,
+      agent_id: grok, command_center_id: "alpha", changes: ["rooms"], cursor: 0,
+      after: expect.stringMatching(CURSOR),
       read: ["inbox_digest"] });
   });
 
@@ -409,12 +413,13 @@ describe("a write rings only who follows it and may read it, and never on an age
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await subscribed(r, MUSE, { board: true, rooms: ["room:app:lobby"] });
     const bob = { owner: r.owner, caller: "bob", origin: null };
-    // A visiting owner's private row is no change the agent can see: no wake is after it.
+    // A wake's cursor is opaque, so a visiting owner's private row before the change tells
+    // the agent nothing, and the digest after it is just the change.
     await write(r, "board", "bob's", bob, true);
     await write(r, "board", "t0");
     const [first] = (await rings(r, 1)).map((ring) => JSON.parse(ring.request.body) as Delivered);
     expect([first!.data.changes, first!.data.read, first!.data.after])
-      .toEqual([["board"], ["board_digest"], 0]);
+      .toEqual([["board"], ["board_digest"], expect.stringMatching(CURSOR)]);
     const board = await r.stub.boardDigest(r.bind(MUSE), { limit: 50, after: first!.data.after });
     expect(board.rows.map((row) => row.row_id)).toEqual(["t0"]);
     await write(r, "board", "secret", r.bind(null), true);  // a private row rings no one
@@ -423,7 +428,6 @@ describe("a write rings only who follows it and may read it, and never on an age
     await r.stub.policyWakeLimits(r.session(null), {
       agent_id: muse, max_wakes_per_hour: null, batch_window_s: 3600,
       expected_generation: (await r.stub.policyRead(r.bind(null))).generation });
-    const before = (await r.sql("SELECT change FROM collection_clock"))[0]!["change"];
     await write(r, "room:app:lobby", "aside", bob, true);
     await r.post(null, dm(muse), { body: "new mail" });
     await write(r, "room:app:lobby", "m1");
@@ -431,8 +435,7 @@ describe("a write rings only who follows it and may read it, and never on an age
     await r.sql("UPDATE ledger_wakes SET due = ? WHERE state = 'pending'", clock() - 1);
     await write(r, "notes", "n1");  // a door re-derives the lane's job from the rows
     const last = JSON.parse((await rings(r, 2))[1]!.request.body) as Delivered;
-    expect([last.data.changes, last.data.read, last.data.after])
-      .toEqual([["mail", "rooms"], ["inbox_digest"], before]);
+    expect([last.data.changes, last.data.read]).toEqual([["mail", "rooms"], ["inbox_digest"]]);
     const inbox = await r.stub.inboxDigest(r.bind(MUSE), { limit: 50, after: last.data.after });
     expect(inbox.mail.messages.map((m) => m.body)).toEqual(["new mail"]);
     expect(inbox.rooms.rows.map((row) => row.row_id)).toEqual(["m1", "m2"]);

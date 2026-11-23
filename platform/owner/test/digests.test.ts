@@ -1,14 +1,15 @@
 /**
  * A main agent's digests: `inboxDigest` gives its unacknowledged mail and the owner's rooms' rows
  * written past its cursor, `boardDigest` the board's, each row as its head, in one call; only since
- * the cursor, which never goes back; each delete and clear reported too, to whoever could see the
- * row; and only what its grant holds: `read_graph`, a private row only to its writer, no revoked
- * client.
+ * the cursor, which is opaque; each delete and clear reported too, to whoever could see the row;
+ * and only what its grant holds: `read_graph`, a private row only to its writer, no revoked
+ * client. Nothing a reader gets tells it of a change it cannot see.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { changedSql } from "../src/collections";
+import { changeCursor, changedSql } from "../src/collections";
+import { sha256Hex } from "../../contract/src/digest";
 import type { OwnerDO } from "../src/owner-do";
 import type { Binding } from "../../contract/src/binding";
 import type { RowHead } from "../src/pages";
@@ -16,6 +17,9 @@ import { MUSE, rig, type Rig, dm } from "./ledger-support";
 import { failure, fillHistory, inFilled, inObject, ownerObject } from "./support";
 
 type Live = Extract<RowHead, { deleted: false }>;
+
+/** A cursor, or an etag: 64 hex, opaque (`ordered.ts` `cursorAt`) or random. */
+const CURSOR = /^[0-9a-f]{64}$/;
 
 /** A digest's rows, each a live row's head. */
 function live(rows: readonly RowHead[]): Live[] {
@@ -40,7 +44,7 @@ describe("the inbox digest", () => {
     await write(r, "room:app:lobby", "m1", "x".repeat(1000));
     await write(r, "board", "t1", "a task");
     await write(r, "room:app:den", "m1", "hello den");
-    const first = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    const first = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10 });
     expect(first.mail.messages.map((m) => m.body)).toEqual(["are you there?"]);
     expect(live(first.rooms.rows).map((row) => [row.collection, row.row_id, row.body_bytes]))
       .toEqual([["room:app:lobby", "m1", 1000], ["room:app:den", "m1", 9]]);
@@ -50,15 +54,14 @@ describe("the inbox digest", () => {
     // Only since the cursor: nothing new, then only the one row written since.
     const again = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10,
                                                           after: first.rooms.cursor });
-    expect(again.rooms).toEqual({ cursor: first.rooms.cursor, rows: [] });
+    expect(again.rooms).toEqual({ cursor: expect.stringMatching(CURSOR), rows: [] });
     await write(r, "room:app:lobby", "m2", "later");
     const later = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: again.rooms.cursor,
                                                           head_chars: 3 });
     expect(live(later.rooms.rows).map((row) => [row.row_id, row.head])).toEqual([["m2", "lat"]]);
-    expect(later.rooms.cursor).toBeGreaterThan(first.rooms.cursor);
     // Mail is since its own acknowledged cursor.
     await r.ack(MUSE, first.mail.messages.at(-1)!.seq);
-    expect((await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 })).mail.messages)
+    expect((await r.stub.inboxDigest(r.bind(MUSE), { limit: 10 })).mail.messages)
       .toEqual([]);
   });
 
@@ -68,9 +71,9 @@ describe("the inbox digest", () => {
     const visitor: Binding = { owner: r.owner, caller: "bob", origin: null };
     await write(r, "room:app:lobby", "secret", "bob's own", visitor, true);
     await write(r, "room:app:lobby", "open", "everyone's", visitor);
-    const seen = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    const seen = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10 });
     expect(seen.rooms.rows.map((row) => row.row_id)).toEqual(["open"]);
-    const own = await r.stub.boardDigest(visitor, { limit: 10, after: 0 });
+    const own = await r.stub.boardDigest(visitor, { limit: 10 });
     expect(own.rows).toEqual([]);
   });
 
@@ -85,26 +88,26 @@ describe("the inbox digest", () => {
         mode: "scoped", scopes: scopes as never, expected_revision: row.revision, name: "" });
     };
     await set([{ universe: "alpha", agent: "main", capability: "write_graph" }]);
-    for (const door of [() => r.stub.inboxDigest(r.bind(MUSE), { limit: 1, after: 0 }),
-                        () => r.stub.boardDigest(r.bind(MUSE), { limit: 1, after: 0 })]) {
+    for (const door of [() => r.stub.inboxDigest(r.bind(MUSE), { limit: 1 }),
+                        () => r.stub.boardDigest(r.bind(MUSE), { limit: 1 })]) {
       expect((await failure(door)).message).toBe("outside client capability not granted");
     }
     await set([{ universe: "alpha", agent: "main", capability: "read_graph" }]);
-    expect((await r.stub.boardDigest(r.bind(MUSE), { limit: 1, after: 0 })).rows).toEqual([]);
+    expect((await r.stub.boardDigest(r.bind(MUSE), { limit: 1 })).rows).toEqual([]);
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
-    expect((await failure(() => r.stub.inboxDigest(r.bind(MUSE), { limit: 1, after: 0 })))
+    expect((await failure(() => r.stub.inboxDigest(r.bind(MUSE), { limit: 1 })))
       .message).toBe("outside client revoked");
   });
 });
 
 describe("a digest past a pruned deletion", () => {
-  it("tells a reader behind a pruned tombstone to read again from the floor, never hides the " +
-     "delete, and resets a reader behind one it could not see too", { tags: ["large"] },
+  it("tells a reader behind a pruned tombstone to read again, never hides the delete, and " +
+     "resets a reader behind one it could not see too", { tags: ["large"] },
      async () => {
     const { stub, name } = await ownerObject();
     await inFilled(stub, (store, state) => {
       const made = store.write(name, name, "board", "gone", "x", "", false);
-      const cursor = store.changed(name, { collection: "board" }, 0, 100).cursor;
+      const cursor = store.changed(name, { collection: "board" }, undefined, 100).cursor;
       store.delete(name, "board", "gone", made.etag);
       // Bob's private row, cleared: a deletion only bob may see.
       store.write(name, "bob", "board", "mine", "x", "", true);
@@ -113,83 +116,165 @@ describe("a digest past a pruned deletion", () => {
         "SELECT COUNT(*) AS n FROM collection_erasures WHERE collection = 'board'").one().n;
       expect(tombstones()).toBe(2);
       // A reader past the delete is told it while it is kept, and goes on from it alone.
-      const told = store.changed("cara", { collection: "board" }, cursor, 100);
+      // Cara's cursor before bob's clear, which it cannot see.
+      const told = store.changed("cara", { collection: "board" }, cursor, 1);
       expect(told.rows.map((row) => [row.row_id, row.deleted])).toEqual([["gone", true]]);
-      expect(told.cursor).toBe(told.rows[0]!.change);
+      const past = store.changed("cara", { collection: "board" }, told.cursor, 100).cursor;
       const cleared = store.changed("bob", { collection: "board" }, told.cursor, 100).rows;
       expect(cleared.map((row) => [row.row_id, row.deleted])).toEqual([["mine", true]]);
+      const newest = state.storage.sql.exec<{ change: number }>(
+        "SELECT max(change) AS change FROM collection_erasures").one().change;
       // Entries past the history's charge: the tombstones, the oldest, go first.
       fillHistory(store, name, () => tombstones() === 0);
-      const floor = cleared[0]!.change;
       expect(state.storage.sql.exec("SELECT erasure_floor FROM collection_space").one())
-        .toEqual({ erasure_floor: floor });
+        .toEqual({ erasure_floor: newest });
       // Behind the delete it saw, or only behind bob's, which it never could: told to read
-      // again, and to go on from the floor, the newest deletion let go.
+      // again, and to go on from the cursor given, past which nothing was let go.
       for (const after of [cursor, told.cursor]) {
-        expect(store.changed("cara", { collection: "board" }, after, 100))
-          .toEqual({ cursor: floor, rows: [], reset: true });
+        const reset = store.changed("cara", { collection: "board" }, after, 100);
+        expect(reset).toEqual({ cursor: expect.stringMatching(CURSOR), rows: [], reset: true });
+        expect(store.changed("cara", { collection: "board" }, reset.cursor, 100))
+          .toEqual({ cursor: expect.stringMatching(CURSOR), rows: [] });
       }
-      // From the cursor it was given, the feed goes on as before; a fresh reader is never
-      // reset: it holds no row to forget.
-      expect(store.changed("cara", { collection: "board" }, floor, 100))
-        .toEqual({ cursor: floor, rows: [] });
-      expect(store.changed(name, { collection: "board" }, 0, 100)).not.toHaveProperty("reset");
+      // A reader that read on past bob's clear, which it never saw, is not reset by it: its
+      // cursor is past every change hidden from it when it read.
+      expect(store.changed("cara", { collection: "board" }, past, 100))
+        .toEqual({ cursor: expect.stringMatching(CURSOR), rows: [] });
+      // A fresh reader is never reset: it holds no row to forget.
+      expect(store.changed(name, { collection: "board" }, undefined, 100))
+        .not.toHaveProperty("reset");
     });
   });
 });
 
-describe("a cursor counts only what its reader can see", () => {
-  it("stays put for a visiting owner while the host writes private rows", async () => {
+/**
+ * Every answer a reader gets along one run of calls, the same calls whether or not another
+ * writes rows hidden from it between them (`hidden`), each cursor and etag (64 hex alike) and
+ * time as its kind alone: random or opaque, they are no reader's to compare.
+ */
+async function answers(reader: "visitor" | "host", hidden: boolean): Promise<string> {
+  const r = await rig();
+  const visitor: Binding = { owner: r.owner, caller: "bob", origin: null };
+  const [me, other] = reader === "visitor" ? [visitor, r.bind(null)] : [r.bind(null), visitor];
+  const lobby = "room:app:lobby";
+  let n = 0;
+  // The other writer's rows hidden from the reader: written, written again, and the host's
+  // deleted (only the owner deletes), in the board and the room alike.
+  const elsewhere = async () => {
+    for (const collection of hidden ? ["board", lobby] : []) {
+      const made = await write(r, collection, `h${n++}`, "not yours", other, true);
+      let etag = "row" in made ? made.row.etag : "";
+      for (const body of ["again", "and again"]) {
+        const again = await r.stub.collectionWrite(other, { collection, row_id: `h${n - 1}`,
+          body, expected_etag: etag, private: true });
+        etag = "row" in again ? again.row.etag : "";
+      }
+      if (reader === "visitor") {
+        await r.stub.collectionDelete(r.bind(null), { collection, row_id: `h${n - 1}`,
+                                                      expected_etag: etag });
+      }
+    }
+  };
+  const seen: unknown[] = [];
+  await write(r, lobby, "hello", "everyone's");
+  await elsewhere();
+  const mine = await write(r, lobby, "mine", "my own", me, true);
+  seen.push(mine);
+  await elsewhere();
+  const etag = "row" in mine ? mine.row.etag : "";
+  seen.push(await r.stub.collectionWrite(me, { collection: lobby, row_id: "mine",
+                                               body: "my own, again", expected_etag: etag,
+                                               private: true }));
+  await elsewhere();
+  seen.push(await r.stub.collectionWrite(me, { collection: lobby, row_id: "mine", body: "late",
+                                               expected_etag: etag, private: true }));
+  seen.push(await write(r, "board", "fresh", "a new row of my own", me, true));
+  const board = await r.stub.boardDigest(me, { limit: 10 });
+  const pull = await r.stub.collectionPull(me, { collection: lobby, limit: 10 });
+  seen.push(board, pull);
+  await elsewhere();
+  seen.push(await r.stub.boardDigest(me, { limit: 10, after: board.cursor }));
+  seen.push(await r.stub.collectionPull(me, { collection: lobby, after: pull.cursor,
+                                              limit: 10 }));
+  seen.push(await r.stub.collectionHistory(me, { collection: lobby, row_id: "mine" }));
+  seen.push(await r.stub.collectionGet(me, { collection: lobby, row_id: "mine" }));
+  if (reader === "host") {
+    seen.push((await r.stub.inboxDigest(me, { limit: 10 })).rooms);
+  }
+  return JSON.stringify(seen, (key, value: unknown) => key === "at" ? "<at>"
+    : value === r.owner ? "<owner>"
+    : typeof value === "string" && CURSOR.test(value) ? "<opaque>" : value);
+}
+
+describe("nothing a reader gets tells it of a change it cannot see", () => {
+  it("a visiting owner's answers, its own private rows' among them, are the same whatever " +
+     "the host writes privately", async () => {
+    const quiet = await answers("visitor", false);
+    expect(quiet).toContain("<opaque>");
+    expect(await answers("visitor", true)).toBe(quiet);
+  });
+
+  it("nor the host's, whatever a visiting owner writes privately", async () => {
+    expect(await answers("host", true)).toBe(await answers("host", false));
+  });
+
+  it("an etag is drawn at random: no count of changes hashed with the body is it",
+     async () => {
+    const r = await rig();
+    const visitor: Binding = { owner: r.owner, caller: "bob", origin: null };
+    await write(r, "board", "plan", "the host's own", r.bind(null), true);
+    const made = await write(r, "board", "mine", "my own", visitor, true);
+    const etag = "row" in made ? made.row.etag : "";
+    expect(etag).toMatch(/^[0-9a-f]{64}$/);
+    for (let n = 0; n < 1000; n++) {
+      expect(sha256Hex(`${n}:my own`)).not.toBe(etag);
+    }
+  });
+
+  it("a visitor's board and room cursors read on past the host's private rows", async () => {
     const r = await rig();
     const visitor: Binding = { owner: r.owner, caller: "bob", origin: null };
     await write(r, "room:app:lobby", "hello", "everyone's");
-    const room = await r.stub.collectionPull(visitor, { collection: "room:app:lobby", after: 0,
+    const room = await r.stub.collectionPull(visitor, { collection: "room:app:lobby",
                                                         limit: 10 });
     expect(room.rows.map((row) => row.row_id)).toEqual(["hello"]);
-    expect(await r.stub.boardDigest(visitor, { limit: 10, after: 0 }))
-      .toEqual({ cursor: 0, rows: [] });
+    const empty = await r.stub.boardDigest(visitor, { limit: 10 });
+    expect(empty).toEqual({ cursor: expect.stringMatching(CURSOR), rows: [] });
     await write(r, "board", "plan", "the host's own", r.bind(null), true);
     await write(r, "room:app:lobby", "aside", "the host's own", r.bind(null), true);
-    expect(await r.stub.boardDigest(visitor, { limit: 10, after: 0 }))
-      .toEqual({ cursor: 0, rows: [] });
-    expect(await r.stub.collectionPull(visitor, { collection: "room:app:lobby",
-                                                  after: room.cursor, limit: 10 }))
-      .toEqual({ cursor: room.cursor, rows: [] });
-    // A row it can see moves it to that row, and no further.
+    const board = await r.stub.boardDigest(visitor, { limit: 10, after: empty.cursor });
+    expect(board.rows).toEqual([]);
+    expect((await r.stub.collectionPull(visitor, { collection: "room:app:lobby",
+                                                   after: room.cursor, limit: 10 })).rows)
+      .toEqual([]);
+    // A row it can see is read past them, and nothing it read before.
     await write(r, "board", "open", "everyone's");
     await write(r, "board", "plan2", "the host's own", r.bind(null), true);
-    const seen = await r.stub.boardDigest(visitor, { limit: 10, after: 0 });
+    const seen = await r.stub.boardDigest(visitor, { limit: 10, after: board.cursor });
     expect(live(seen.rows).map((row) => row.row_id)).toEqual(["open"]);
-    expect(seen.cursor).toBe(live(seen.rows)[0]!.change);
+    expect((await r.stub.boardDigest(visitor, { limit: 10, after: seen.cursor })).rows)
+      .toEqual([]);
   });
 
-  it("an empty board's stays put across writes elsewhere and rows it cannot see", async () => {
+  it("a wake's is the clock before its change, and a restore resets every cursor before it " +
+     "and none after it",
+     async () => {
     const r = await rig();
-    const visitor: Binding = { owner: r.owner, caller: "bob", origin: null };
-    await write(r, "room:app:lobby", "m1", "a room's");
-    await write(r, "board", "mine", "bob's own", visitor, true);
-    await write(r, "room:app:lobby", "m2", "bob's own", visitor, true);
-    expect(await r.stub.boardDigest(r.bind(null), { limit: 10, after: 0 }))
-      .toEqual({ cursor: 0, rows: [] });
-    // The rooms' cursor is the last room row the owner can see, not bob's after it.
-    const inbox = await r.stub.inboxDigest(r.bind(null), { limit: 10, after: 0 });
-    expect(live(inbox.rooms.rows).map((row) => row.row_id)).toEqual(["m1"]);
-    expect(inbox.rooms.cursor).toBe(live(inbox.rooms.rows)[0]!.change);
-  });
-
-  it("a wake's is the newest change its reader may see, never under the floor", async () => {
-    const r = await rig();
-    await inObject(r.stub, (store) => {
+    await inObject(r.stub, (store, state) => {
       store.write(r.owner, r.owner, "board", "t", "open", "", false);
-      const open = store.seen(r.owner);
+      const before = store.clock();
       store.write(r.owner, "bob", "board", "b", "bob's own", "", true);
       store.clear(r.owner, "board", "bob");
-      expect([store.seen(r.owner), store.seen("bob")]).toEqual([open, open + 2]);
-      // A restore puts the floor at the clock: a wake after it is never reset.
+      expect(store.clock()).toBe(before + 2);
+      const held = store.changed(r.owner, { collection: "board" }, undefined, 10).cursor;
+      // A restore puts the floor at the clock: a wake after it is never reset. A cursor of the
+      // object before it is of another incarnation, so it is reset, never read as a place here.
       store.restored();
-      expect(store.seen(r.owner)).toBe(open + 2);
-      expect(store.changed(r.owner, { collection: "board" }, open + 2, 10))
-        .toEqual({ cursor: open + 2, rows: [] });
+      expect(store.changed(r.owner, { collection: "board" }, held, 10))
+        .toEqual({ cursor: expect.stringMatching(CURSOR), rows: [], reset: true });
+      expect(store.changed(r.owner, { collection: "board" },
+                           changeCursor(state.storage.sql, store.clock()), 10))
+        .toEqual({ cursor: expect.stringMatching(CURSOR), rows: [] });
     });
   });
 });
@@ -206,12 +291,12 @@ describe("a digest's placed bodies (ADR-035)", () => {
     await write(r, "board", "task", row);
     expect(await r.sql("SELECT COUNT(*) AS n FROM collection_rows WHERE content_id IS NOT NULL"))
       .toEqual([{ n: 2 }]);
-    const inbox = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    const inbox = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10 });
     expect(inbox.mail.messages.map((m) => [m.body, m.integrity])).toEqual([[mail, "ok"]]);
     expect(live(inbox.rooms.rows).map((m) => [m.row_id, m.head, m.body_bytes]))
       .toEqual([["big", "é".repeat(512), 4000]]);
     expect(live(inbox.rooms.rows)[0]!).not.toHaveProperty("content_id");
-    const board = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    const board = await r.stub.boardDigest(r.bind(MUSE), { limit: 10 });
     expect(live(board.rows).map((m) => [m.row_id, m.body_bytes])).toEqual([["task", 4000]]);
     // A delete's entry carries no body: the row's placed entries go, and the digest reports
     // the deletion.
@@ -234,10 +319,9 @@ describe("the board digest", () => {
     await write(r, "board", "t1", "first");
     await write(r, "room:app:lobby", "m1", "not the board");
     await write(r, "board", "t2", "second");
-    const page = await r.stub.boardDigest(r.bind(MUSE), { limit: 1, after: 0 });
+    const page = await r.stub.boardDigest(r.bind(MUSE), { limit: 1 });
     expect(live(page.rows).map((row) => [row.collection, row.row_id, row.head]))
       .toEqual([["board", "t1", "first"]]);
-    expect(page.cursor).toBe(live(page.rows)[0]!.change);
     const next = await r.stub.boardDigest(r.bind(MUSE), { limit: 1, after: page.cursor });
     expect(next.rows.map((row) => row.row_id)).toEqual(["t2"]);
     // A claim is a write on the row's etag: the row is changed again, past the cursor.
@@ -247,8 +331,14 @@ describe("the board digest", () => {
       body: "claimed", expected_etag: live(page.rows)[0]!.etag, private: false, history_op: "claim" });
     expect(live((await r.stub.boardDigest(r.bind(MUSE), { limit: 5, after: done.cursor })).rows)
       .map((row) => [row.row_id, row.head])).toEqual([["t1", "claimed"]]);
-    for (const bad of [{ limit: 0, after: 0 }, { limit: 1, after: -1 },
-                       { limit: 1, after: 0, head_chars: -1 }, { limit: 1 }]) {
+    // A cursor is the object's own and the feed's: one made up, altered, or a pull's, is
+    // refused.
+    const altered = (page.cursor[0] === "0" ? "1" : "0") + page.cursor.slice(1);
+    const pulled = (await r.stub.collectionPull(r.bind(MUSE), { collection: "board",
+                                                                limit: 1 })).cursor;
+    for (const bad of [{ limit: 0 }, { limit: 1, after: "0".repeat(64) },
+                       { limit: 1, after: altered }, { limit: 1, after: pulled },
+                       { limit: 1, head_chars: -1 }, {}]) {
       expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), bad as never))).code)
         .toBe("invalid");
     }
@@ -263,15 +353,13 @@ describe("a digest's deletions", () => {
     const t1 = await write(r, "board", "t1", "a task");
     await write(r, "board", "t2", "another");
     await write(r, "board", "mine", "bob's own", bob, true);
-    const seen = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    const seen = await r.stub.boardDigest(r.bind(MUSE), { limit: 10 });
     expect(live(seen.rows).map((row) => row.row_id)).toEqual(["t1", "t2"]);
     await r.stub.collectionDelete(r.bind(null), { collection: "board", row_id: "t1",
       expected_etag: "row" in t1 ? t1.row.etag : "" });
     const gone = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: seen.cursor });
     expect(gone.rows).toEqual([{ collection: "board", row_id: "t1", deleted: true,
-                                 op: "delete", writer: r.owner,
-                                 change: expect.any(Number) }]);
-    expect(gone.cursor).toBeGreaterThan(seen.cursor);
+                                 op: "delete", writer: r.owner }]);
     // A clear erases bob's private row too: only bob is told of it.
     const bobSeen = await r.stub.boardDigest(bob, { limit: 10, after: gone.cursor });
     await r.stub.collectionClear(r.bind(null), { collection: "board", writer: null });
@@ -319,7 +407,7 @@ describe("a digest's reads", () => {
     const bob = "bob";
     await inObject(r.stub, (store) => {
       const made = store.write(r.owner, r.owner, "board", "t", "public", "", false);
-      const before = store.changed("muse", { collection: "board" }, 0, 10).cursor;
+      const before = store.changed("muse", { collection: "board" }, undefined, 10).cursor;
       store.delete(r.owner, "board", "t", made.etag);
       let etag = store.write(r.owner, bob, "board", "t", "mine", "", true).etag;
       for (let n = 0; n < 5; n++) {

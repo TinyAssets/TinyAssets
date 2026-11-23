@@ -176,7 +176,7 @@ describe.each([
     const client = await mcpClient(tokens, mode);
     // A connection with no registered agent has no mailbox, and is told how it gets one.
     for (const [name, args] of [["mailbox_read", { limit: 5 }],
-                                ["inbox_digest", { limit: 5, after: 0 }]] as const) {
+                                ["inbox_digest", { limit: 5 }]] as const) {
       const refused = await client.callTool({ name, arguments: args });
       expect(refused.isError).toBe(true);
       expect(refused.content).toEqual([{ type: "text",
