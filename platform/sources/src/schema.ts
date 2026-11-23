@@ -44,7 +44,7 @@
  */
 import type { HookKind } from "../../contract/src/acts";
 import type { HookEvent } from "../../contract/src/agent-definition";
-import type { Endpoint, Upstream } from "../../contract/src/egress-scope";
+import type { CreditRead, Endpoint, Upstream } from "../../contract/src/egress-scope";
 import type { EngineEvents } from "../../contract/src/run-events";
 import type { CredentialKind } from "../../contract/src/sandbox";
 
@@ -420,10 +420,32 @@ export interface SourceRecord {
   /**
    * A gateway source's model patterns, a ranking's (`ranking.ts`), of the models its catalog
    * lists that answer no interactive call (a vendor's batch-priced variants): `auto` picks
-   * none of them unless the agent names one (`interactive`).
+   * none of them unless the agent names one (`pickable`).
    */
   readonly not_interactive?: readonly string[];
+  /** A gateway source's: how a key of it reports what it can pay for. */
+  readonly credit?: Credit;
   readonly cli?: CliSpec;
+}
+
+/**
+ * How a gateway source's key reports what it can pay for, from the vendor's page (`cite`):
+ * - `url`, `none_when`: the read (`contract/src/egress-scope.ts` `CreditRead`), a `GET`
+ *   among the record's endpoints, whose answer says the key can pay for nothing when a test
+ *   holds;
+ * - `refused`: the statuses a model call is refused with when the key cannot pay for it,
+ *   which mark the connection as paying for nothing as a read would (a connection sealed
+ *   before its record named the read learns it so);
+ * - `free`: the model patterns, a ranking's (`ranking.ts`), of the models the vendor serves a
+ *   key that pays for nothing, each one its catalog prices at zero (the sources guard): on such
+ *   a connection `auto` picks only these unless the agent names a model (`pickable`).
+ */
+export interface Credit {
+  readonly url: string;
+  readonly none_when: CreditRead["none_when"];
+  readonly refused: readonly number[];
+  readonly free: readonly string[];
+  readonly cite: string;
 }
 
 /** A record that does not fit: a bug in a data file, never a request to act on. */

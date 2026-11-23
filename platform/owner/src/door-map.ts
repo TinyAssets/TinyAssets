@@ -260,7 +260,7 @@ export interface DoorRows {
   readonly egressBeat:
     { readonly module: "egress"; readonly caller: "egress"; readonly gate: "door" };
   readonly egressSettle:
-    { readonly module: "egress"; readonly caller: "egress"; readonly gate: "door" };
+    { readonly module: "egress"; readonly caller: "egress"; readonly gate: "synced" };
   readonly egressReceipts:
     { readonly module: "egress"; readonly caller: "owner"; readonly gate: "door" };
   readonly fileSyncCommit:

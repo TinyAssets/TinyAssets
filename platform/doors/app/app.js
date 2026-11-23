@@ -733,7 +733,10 @@ async function sources(arg = null) {
              h("thead", {}, h("tr", {}, ["Source", "State", "Models", "Since", ""].map((t) =>
                h("th", {}, t)))),
              h("tbody", {}, shown.map((c) => h("tr", {},
-               h("td", {}, c.display_name), h("td", {}, c.status),
+               h("td", {}, c.display_name),
+               h("td", {}, c.status, c.pays === false
+                 ? h("div", { class: "muted" }, "Free models only: this key has no credit.")
+                 : null),
                h("td", {}, String(c.models.length)), h("td", {}, when(c.created_at)),
                h("td", {}, action("Disconnect", async () => {
                  await call("connections/revoke", { connection: c.connection });

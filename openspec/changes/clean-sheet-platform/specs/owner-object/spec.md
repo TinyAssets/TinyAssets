@@ -795,6 +795,17 @@ The object SHALL hold a model connection's credential only as the blob the gatew
 - **WHEN** the owner connects a key and the sandbox's calls use it through the egress door
 - **THEN** no table of the object, no call it makes to the gateway and no line it logs holds the key
 
+### Requirement: A connection knows what its key can pay for
+Where a gateway source's record says how its key reports what it can pay for (`credit`: a `GET` among its endpoints, the tests of its answer that say the key pays for nothing, the statuses a model call is refused with when the key cannot pay, the models its vendor serves such a key, and the vendor's page), the object SHALL keep, for each active connection, whether its key pays for a priced model, unknown until learned. The `connections` lane SHALL read it through the gateway's `credit`, with the sealed secret, only at a `GET` the sealed endpoints allow (`endpoint_refused` otherwise, nothing sent), its answer read to a bound and held to the record's tests, an answer missing a test's path a failed read, never a key that pays: once a connection is active (one made before the record named the read among them, so none needs a reconnect), again every hour while its key pays for nothing, and after a failed read; never for a source that reports nothing. A call on the connection settled with one of the record's refusal statuses SHALL mark its key as paying for nothing, as a read would, which is how a connection sealed before its record named the read learns it; on such a connection the mark SHALL lapse to unknown at its hourly recheck, so credit bought is seen at the next call. The owner SHALL be told once when a key starts to pay for nothing, and the connection's view SHALL carry it (`pays`), which the app's sources screen shows as "Free models only". The record is data the gateway reads: no provider is named in code. A revoke SHALL drop what was kept.
+
+#### Scenario: A free-tier key
+- **WHEN** the owner connects an OpenRouter key whose `GET /api/v1/key` says `is_free_tier`
+- **THEN** its connection's view says it pays for nothing, the owner is told once, and it is read again an hour later
+
+#### Scenario: A connection sealed before the read
+- **WHEN** a connection sealed before its record named the read has a model call refused with `402`
+- **THEN** its key is kept as paying for nothing, with no reconnect, until its recheck an hour later makes it unknown again; a `429` changes nothing
+
 ### Requirement: A connection keeps up to 1,024 models
 A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the setup check listed it and checked whole at commit, within 640 KiB of JSON, so 1,024 of the largest built-in record (607 bytes in pi-ai 1.4.0) fit, and the largest built-in catalog (386 models) with room.
 
@@ -908,7 +919,7 @@ A recurrence SHALL be the five classic cron fields in UTC, numbers only (no name
 - **THEN** it is refused, having no occurrence within eight years
 
 ### Requirement: `auto` is the owner's strongest connected model
-The owner's connected keys' models and its signed-in plans (each by the model its engine record says it runs) SHALL be ranked by one ranking: the owner's own file `/workspace/model-ranking.json` where it holds one, whole, else the platform's data file `sources/src/model-ranking.json`, both of one shape (tiers, strongest first, each a list of provider and model-pattern entries). The order SHALL be: by tier; within a tier, a plan before any key, so a plan in the top tier wins over every metered key; then the earliest entry a model matches, newer ids first within an entry. A model no entry matches SHALL be unknown, never placed by a guess: it ranks after every tier, ordered the same way, its keys by their catalog output price, highest first; and an `auto` run on one the agent did not name SHALL tell the owner once while that notice is kept (`model_unranked`). Then the older connection or sign-in, then the id. An owner's file that is no ranking SHALL refuse the run (`invalid`), never fall back silently to the platform's. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking, and SHALL never pick a key's model that the key's source record marks `not_interactive` (by the ranking's model patterns, whatever ranking the owner holds) unless the agent names it.
+The owner's connected keys' models and its signed-in plans (each by the model its engine record says it runs) SHALL be ranked by one ranking: the owner's own file `/workspace/model-ranking.json` where it holds one, whole, else the platform's data file `sources/src/model-ranking.json`, both of one shape (tiers, strongest first, each a list of provider and model-pattern entries). The order SHALL be: by tier; within a tier, a plan before any key, so a plan in the top tier wins over every metered key; then the earliest entry a model matches, newer ids first within an entry. A model no entry matches SHALL be unknown, never placed by a guess: it ranks after every tier, ordered the same way, its keys by their catalog output price, highest first; and an `auto` run on one the agent did not name SHALL tell the owner once while that notice is kept (`model_unranked`). Then the older connection or sign-in, then the id. An owner's file that is no ranking SHALL refuse the run (`invalid`), never fall back silently to the platform's. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking, and SHALL never pick a key's model that the key's source record marks `not_interactive` (by the ranking's model patterns, whatever ranking the owner holds), nor, on a connection whose key pays for nothing ("A connection knows what its key can pay for"), one its record's `credit.free` does not match, unless the agent names it: the strongest connected source is the strongest the owner's keys can run (Direction 4).
 
 #### Scenario: Two connections of one model
 - **WHEN** two connections list the same ranked model
@@ -929,6 +940,10 @@ The owner's connected keys' models and its signed-in plans (each by the model it
 #### Scenario: A batch variant
 - **WHEN** an OpenRouter key's catalog lists `anthropic/claude-fable-5.1:batch` and `~anthropic/claude-fable-latest`
 - **THEN** `auto` runs on `~anthropic/claude-fable-latest`, never on the batch variant unless the agent names it, and an agent naming the key's connection on its engine runs on it whatever it lists
+
+#### Scenario: A key that pays for nothing
+- **WHEN** an OpenRouter key that pays for nothing lists `~anthropic/claude-fable-latest`, `openrouter/auto` (priced at zero, a router to priced models) and `nvidia/nemotron-3-ultra-550b-a55b:free`
+- **THEN** `auto` runs on the `:free` model; an agent naming `~anthropic/claude-fable-latest` runs on it; a key that pays runs on `~anthropic/claude-fable-latest`
 
 #### Scenario: Nothing connected
 - **WHEN** the owner has no active connection, or one with no models

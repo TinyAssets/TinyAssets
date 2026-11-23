@@ -22,7 +22,7 @@ function model(id: string, output = 1): ModelRecord {
 function key(connection: string, provider: string, created: number,
              ...models: ModelRecord[]): Usable {
   return { connection, source: provider, provider, display_name: connection, created_at: created,
-           models };
+           models, pays: null };
 }
 
 const CLAUDE_PLAN: Plan = { engine: "claude-code", provider: "anthropic",

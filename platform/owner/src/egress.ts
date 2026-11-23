@@ -791,6 +791,7 @@ export interface EgressDoorNeeds extends Pick<DoorUnits, "door"> {
   readonly connections: {
     fresh(id: string): Promise<void>;
     resealed(id: string, version: number, resealed: unknown, nowMs: number): boolean;
+    refused(id: string, status: number | null, now: number): void;
   };
 }
 //
@@ -853,11 +854,16 @@ export const egressDoors = Object.freeze({
   /**
    * One reservation's end, as the egress door saw it: its outcome, the provider's status
    * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
-   * connection's compare-and-swap.
+   * connection's compare-and-swap, and a status that says its key pays for nothing is the
+   * connection's to keep (`Connections.refused`).
    */
   egressSettle(o: EgressDoorNeeds, { binding, request }: Call<Record<string, unknown>, "egress">):
       { settled: boolean } {
-    const settled = o.egress.settle(binding.sandbox, settleRequest(request), clock());
+    const ended = settleRequest(request);
+    const settled = o.egress.settle(binding.sandbox, ended, clock());
+    if (settled.settled) {
+      o.connections.refused(settled.connection, ended.status, clock());
+    }
     const resealed = request?.["resealed"];
     if (settled.settled && resealed !== undefined) {
       try {

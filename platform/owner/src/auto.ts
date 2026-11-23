@@ -30,6 +30,8 @@ export interface Usable {
   readonly display_name: string;
   readonly created_at: number;
   readonly models: readonly ModelRecord[];
+  /** Whether its key can pay for a priced model: false, it reported not; null, not known. */
+  readonly pays: boolean | null;
 }
 
 /** An engine signed in, as `auto` ranks it. */

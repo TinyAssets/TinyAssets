@@ -10,9 +10,11 @@
  * aggregator's `vendor/model`). A model ranks at the first entry it matches (`place`); one no
  * entry matches is unknown (`null`), never placed by a guess.
  *
- * What `auto` may pick on its own is the source's, not the ranking's: a model its source
- * record marks `not_interactive`, by the same patterns, answers no run's turn, so `auto`
- * skips it unless the agent names it (`interactive`), whatever ranking the owner holds.
+ * What `auto` may pick on its own is the source's, not the ranking's (`pickable`): a model
+ * its source record marks `not_interactive`, by the same patterns, answers no run's turn, and
+ * on a key that pays for nothing only the models its record's `credit.free` matches are
+ * served, so `auto` skips the rest unless the agent names one, whatever ranking the owner
+ * holds.
  */
 import { keyed } from "../../contract/src/checks";
 import { Refusal } from "../../contract/src/refusal";
@@ -42,9 +44,17 @@ function matcher(pattern: string): (id: string) => boolean {
   return (id) => whole.test(id) || whole.test(id.slice(id.lastIndexOf("/") + 1));
 }
 
-/** Whether a run can call `id` turn by turn on a key of `record`: no `not_interactive` matches. */
-export function interactive(record: SourceRecord | undefined, id: string): boolean {
-  return !(record?.not_interactive ?? []).some((pattern) => matcher(pattern)(id));
+/**
+ * Whether `auto` may pick `id` on its own on a key of `record` whose connection's key `pays`
+ * (`false`: it reported paying for nothing; `null`: not known): a run can call it turn by
+ * turn (no `not_interactive` pattern matches), and on a key that pays for nothing its vendor
+ * serves it such a key (a `credit.free` pattern matches).
+ */
+export function pickable(record: SourceRecord | undefined, id: string, pays: boolean | null):
+    boolean {
+  const matches = (patterns: readonly string[] = []) =>
+    patterns.some((pattern) => matcher(pattern)(id));
+  return !matches(record?.not_interactive) && (pays !== false || matches(record?.credit?.free));
 }
 
 /** `value`, checked whole as a ranking; `name` is the file it was read from, for the refusal. */

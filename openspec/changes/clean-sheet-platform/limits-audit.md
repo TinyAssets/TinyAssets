@@ -59,7 +59,7 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,602,015,376.5 bytes, 46.02% of the 10 GB: 398.0 MB under
+**The worst case that ships is 4,602,075,789 bytes, 46.02% of the 10 GB: 397.9 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`).
 The rooms as rows (`rooms`, `room_members`, and `archive_purges` by room; owner migration 19,
 `untangle-2026-11/shapes.md`) take 27.2 MB of it at `maxRooms`.
@@ -283,7 +283,7 @@ bound lets the oldest go, the asker's own at its share, so none is refused for r
 | `owner/src/sessions.ts` `SESSION_LIMITS.maxSessions` | 64 | signed-in devices at once | the oldest session closed | technical ceiling | The 10 GB, each session a row the guard costs. Share: the newest kept, 0.1 MB: a session a signed-in device, far past one owner's devices. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` life | 8 hours | the owner's protected session | the owner signs in again for a widening | technical ceiling | A credential's life: NIST SP 800-63B's reauthentication at AAL2, at most 12 hours. The cookie's `Max-Age`. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` freshness | 600 s | how fresh a sign-in must be to open a session | the owner signs in again | technical ceiling | S30: a widening needs a sign-in the owner just made. |
-| `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 67.8 MB (its models and egress scope in bytes, review L5-1), `connection_secrets`. A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). Share: what one owner holds at once: fifty model sources, far past the providers one owner connects. |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 67.8 MB (its models and egress scope in bytes, review L5-1), `connection_secrets`, `connection_credit` (what an active one's key pays for, migration 29). A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). Share: what one owner holds at once: fifty model sources, far past the providers one owner connects. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxRevokedKept` | 50 | revoked connections kept, once they hold no secret | the oldest let go | technical ceiling | The 10 GB: inside guard term `connections`. Share: the newest kept: a revoked connection's row, holding no blob, listed with the owner's sources so it sees what it revoked and when; as many as the live ones. One whose provider revoke is still owed is never let go. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxOpenFlows` | 10 | OAuth connect flows open at once | an 11th refused | technical ceiling | The 10 GB: guard term `connection_flows`; each holds a PKCE verifier for `flowTtlS`. Share: what waits at once, 0.3 MB: sign-in flows of at most `flowTtlS` each, far past the providers one owner signs in to at once. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.flowTtlS` | 600 s | an OAuth flow's life | the owner starts the connect again | technical ceiling | An authorization code's most recommended life, 10 minutes (RFC 6749 §4.1.2). |
