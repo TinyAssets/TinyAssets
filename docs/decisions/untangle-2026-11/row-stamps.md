@@ -156,7 +156,7 @@ Trade-offs taken:
   "a private row is its writer's own", so it can probe a key it can guess and see when that row
   is made or deleted. Not a stamp or a cursor; private rows share one key space per
   collection, and keys of their own per writer are a schema change of their own. Reported to
-  the coordinator, not owed here.
+  the coordinator, not owed here; done by `untangle/private-keys` (`private-keys.md`).
 - **A reset tells of a prune.** A reader reset learns the history overflowed past its cursor,
   which hidden changes help fill. Accepted in `board-cursor.md`; it is rarer now, since a
   cursor that read on past hidden deletions is not reset when they go.

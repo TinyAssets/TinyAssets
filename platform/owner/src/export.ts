@@ -148,9 +148,9 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     starter_receipts: t("path version class state installed offered", "path"),
     starter_state: t("only version retry_at noticed", "only"),
     // Collections.
-    collection_rows: t("collection row_id revision seq etag writer private body updated_at " +
-                       "creator change body_bytes content_id filer", "collection row_id"),
-    collection_history: t("change collection key revision op body_json at writer prev " +
+    collection_rows: t("collection space row_id revision seq etag writer body updated_at " +
+                       "creator change body_bytes content_id filer", "collection space row_id"),
+    collection_history: t("change collection space key revision op body_json at writer prev " +
                           "body_bytes content_id filer", "change"),
     collection_erasures: t("change collection key revision op at writer private_writer prev",
                            "change"),

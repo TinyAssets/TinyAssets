@@ -36,8 +36,8 @@ describe("the owner-bound guard against the database", () => {
     });
   });
 
-  it("charges a row at the widest names at least what it takes, its indexes with it",
-     async () => {
+  it("charges a row at the widest names at least what it takes, its indexes with it, its " +
+     "writer's key space among them", async () => {
     const { stub } = await ownerObject();
     await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
       const charge = () => state.storage.sql.exec<{ rows_charge: number }>(
@@ -48,15 +48,16 @@ describe("the owner-bound guard against the database", () => {
       const before = charge();
       const { gate, collections } = storesOn(state);
       await gate.write(() => collections.write(who, who, name("c"), name("r"),
-                                               "b".repeat(PLACE_BYTES), "", false));
+                                               "b".repeat(PLACE_BYTES), "", true));
       const charged = charge() - before;
       const N = 9;
       const [collection, row, principal] = [1024, 1024, 2048];
-      // The row's record (its change in it) and its five index entries (`collection_changes`
-      // among them), its collection's seq row, laid out as the guard lays them.
-      const honest = laid(collection + row + 5 * N + 64 + 2 * principal + 1 + PLACE_BYTES + 71,
+      // The row's record (its change in it, its space its writer) and its five index entries
+      // (`collection_changes` among them, its key's with the space), its collection's seq row,
+      // laid out as the guard lays them.
+      const honest = laid(collection + row + 5 * N + 64 + 3 * principal + PLACE_BYTES + 71,
                           TABLE_KEPT)
-        + laid(collection + row + N, INDEX_KEPT) + laid(collection + 2 * N, INDEX_KEPT)
+        + laid(collection + principal + row + N, INDEX_KEPT) + laid(collection + 2 * N, INDEX_KEPT)
         + 2 * laid(collection + principal + N, INDEX_KEPT) + laid(2 * N, INDEX_KEPT)
         + laid(collection + N, TABLE_KEPT) + laid(collection + N, INDEX_KEPT);
       expect(charged * WORST_FILL).toBeGreaterThanOrEqual(honest);
@@ -74,7 +75,7 @@ describe("the owner-bound guard against the database", () => {
       const { gate, collections: store } = storesOn(state);
       await gate.write(() => {
         const made = store.write(who, who, name("c"), name("r"), "b", "", true);
-        store.delete(who, name("c"), name("r"), made.etag);
+        store.delete(who, name("c"), name("r"), true, made.etag);
       });
       // The delete drops the row's entries: its own is the history's one entry.
       expect(state.storage.sql.exec<{ n: number }>(

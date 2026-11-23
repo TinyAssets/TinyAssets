@@ -101,22 +101,40 @@ describe("the revision primitive", () => {
     })).toEqual({ conflict: shownAs(one, body) });
   });
 
-  it("a private row is its writer's own", async () => {
+  it("a private row is its writer's own, under an id apart from every other row's",
+     async () => {
     const o = await ownerObject();
-    const { stub, as } = o;
+    const { stub, name: alice, as } = o;
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
     expect((await stub.collectionPull(as("cara"), { collection: ROOM, limit: 10 })).rows)
       .toEqual([]);
     expect((await stub.collectionPull(as("bob"), { collection: ROOM, limit: 10 }))
       .rows).toEqual([shownAs(mine, "secret")]);
-    const taken = await failure(() => write(o, "cara", {
-      collection: ROOM, row_id: "p", body: "x", expected_etag: mine.etag, private: true }));
-    expect([taken.code, taken.message]).toEqual(["refused", "a private row is its writer's own"]);
-    const exposed = await failure(() => write(o, "bob", {
-      collection: ROOM, row_id: "p", body: "x", expected_etag: mine.etag, private: false }));
-    expect(exposed.code).toBe("invalid");
-    expect((await rows(stub))[0]?.[6]).toBe("secret");
+    // Its id is bob's own: cara's private row and the public row of that id are rows of
+    // their own, and bob's etag is no other row's.
+    const hers = await write(o, "cara", { collection: ROOM, row_id: "p", body: "cara's",
+                                          private: true });
+    const open = await write(o, "cara", { collection: ROOM, row_id: "p", body: "everyone's" });
+    expect(await stub.collectionWrite(as("cara"), { collection: ROOM, row_id: "p", body: "x",
+                                                    expected_etag: mine.etag, private: true }))
+      .toEqual({ conflict: shownAs(hers, "cara's") });
+    // A public claim is one for everyone, bob and the owner too.
+    for (const caller of ["bob", alice]) {
+      expect(await stub.collectionWrite(as(caller), { collection: ROOM, row_id: "p",
+                                                      body: "mine", expected_etag: "",
+                                                      private: false }))
+        .toEqual({ conflict: shownAs(open, "everyone's") });
+    }
+    expect((await stub.collectionPull(as("bob"), { collection: ROOM, limit: 10 })).rows)
+      .toEqual([shownAs(mine, "secret"), shownAs(open, "everyone's")]);
+    expect((await rows(stub)).map((row) => [row[4], row[5], row[6]]))
+      .toEqual([["bob", 1, "secret"], ["cara", 1, "cara's"], ["cara", 0, "everyone's"]]);
+    // The owner reads every row it could: the public one and its own, never another's.
+    const own = await write(o, alice, { collection: ROOM, row_id: "p", body: "the owner's",
+                                        private: true });
+    expect((await stub.collectionPull(as(alice), { collection: ROOM, limit: 10 })).rows)
+      .toEqual([shownAs(open, "everyone's"), shownAs(own, "the owner's")]);
   });
 
   it("get reads one row by key as pull would show it", async () => {
@@ -125,10 +143,17 @@ describe("the revision primitive", () => {
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
     const shared = await write(o, "bob", { collection: ROOM, row_id: "s", body: "turn" });
-    const get = (caller: string, collection: string, row_id: string) =>
-      stub.collectionGet(as(caller), { collection, row_id });
-    expect(await get("bob", ROOM, "p")).toEqual({ row: shownAs(mine, "secret") });
-    expect(await get("cara", ROOM, "p")).toEqual({ row: null });
+    const get = (caller: string, collection: string, row_id: string, isPrivate?: boolean) =>
+      stub.collectionGet(as(caller), {
+        collection, row_id, ...(isPrivate === undefined ? {} : { private: isPrivate }) });
+    expect(await get("bob", ROOM, "p", true)).toEqual({ row: shownAs(mine, "secret") });
+    // Left out or false, the public row of that id; true, the caller's own.
+    expect(await get("bob", ROOM, "p")).toEqual({ row: null });
+    expect(await get("bob", ROOM, "p", false)).toEqual({ row: null });
+    expect(await get("cara", ROOM, "p", true)).toEqual({ row: null });
+    expect(await get("bob", ROOM, "s", true)).toEqual({ row: null });
+    expect((await failure(() => stub.collectionGet(as("bob"), {
+      collection: ROOM, row_id: "p", private: "yes" } as never))).code).toBe("invalid");
     expect(await get("cara", ROOM, "s")).toEqual({ row: shownAs(shared, "turn") });
     expect(await get("bob", ROOM, "none")).toEqual({ row: null });
     expect(await get("bob", "board", "s")).toEqual({ row: null });
@@ -162,7 +187,7 @@ describe("the revision primitive", () => {
       expect(() => store.write(alice, alice, "room:c:main", "x", "1", "", false))
         .toThrow("the owner's collections are full");
       // A write that takes no more passes, so an owner at the bound still writes.
-      const a = store.get(alice, "room:a:main", "x").row!;
+      const a = store.get(alice, "room:a:main", "x", false).row!;
       expect(store.write(alice, alice, "room:a:main", "x", "4321", a.etag, false).revision)
         .toBe(2);
     });
@@ -320,7 +345,7 @@ describe("the primitive's history", () => {
     const kept = await inFilled(stub, (store, state) => {
       const sql = state.storage.sql;
       const a = store.write(alice, alice, "board", "a", "aaaa", "", false);
-      store.delete(alice, "board", "a", a.etag);  // its deletion: revision 2
+      store.delete(alice, "board", "a", false, a.etag);  // its deletion: revision 2
       store.write(alice, alice, "board", "b", "bbbb", "", false);
       // Entries past the charge: the oldest change, a's deletion, goes first.
       fillHistory(store, alice, () => one(
@@ -346,7 +371,7 @@ describe("the primitive's history", () => {
       const count = (table: string, where: string) => state.storage.sql.exec<{ n: number }>(
         `SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).one().n;
       const row = store.write(alice, alice, "board", "k0", "v", "", false);
-      store.delete(alice, "board", "k0", row.etag);
+      store.delete(alice, "board", "k0", false, row.etag);
       // Entries past the charge: k0's tombstone, the oldest, goes first.
       fillHistory(store, alice, () => count("collection_erasures", "key = 'k0'") === 0);
       const filled = count("collection_history", "collection != 'board'");
@@ -355,7 +380,7 @@ describe("the primitive's history", () => {
       for (; count("collection_history", "collection != 'board'") === filled; n++) {
         expect(n, "the tombstones took no room").toBeLessThan(10_000);
         const made = store.write(alice, alice, "board", `k${n}`, "v", "", false);
-        store.delete(alice, "board", `k${n}`, made.etag);
+        store.delete(alice, "board", `k${n}`, false, made.etag);
       }
       // The newer tombstones are kept, each in the history's bytes: older entries went.
       expect(count("collection_erasures", "collection = 'board'")).toBe(n - 1);
@@ -434,10 +459,10 @@ describe("the primitive's history", () => {
       for (const body of bodies) {
         last = store.write(alice, alice, "board", "t", body, last.etag, false);
       }
-      const first = store.history("bob", "board", "t");
+      const first = store.history("bob", "board", "t", false, null);
       expect([first.entries.map((e) => e.body), first.more, first.before])
         .toEqual([bodies.slice(2), true, expect.stringMatching(/^[0-9a-f]{64}$/)]);
-      const older = store.history("bob", "board", "t", first.before);
+      const older = store.history("bob", "board", "t", false, first.before);
       expect([older.entries.map((e) => e.body), older.more, older.before])
         .toEqual([["v0", "v1"], false, null]);
       expect(store.write(alice, alice, "board", "t", "again", last.etag, false).revision)
@@ -446,23 +471,43 @@ describe("the primitive's history", () => {
     expect((await history(stub)).length).toBe(page + 4);
   });
 
+  it("reads a cursor in its own row's order alone, never a row of its id in another space",
+     async () => {
+    const { stub, name: alice } = await ownerObject();
+    await inObject(stub, (store) => {
+      let open = { etag: "" };
+      let own = { etag: "" };
+      for (const n of [1, 2]) {
+        open = store.write(alice, alice, "board", "t", `open ${n}`, open.etag, false);
+        own = store.write(alice, alice, "board", "t", `own ${n}`, own.etag, true);
+      }
+      const before = store.history(alice, "board", "t", false, null).entries[1]!.next;
+      expect(store.history(alice, "board", "t", false, before).entries.map((e) => e.body))
+        .toEqual(["open 1"]);
+      expect((thrown(() => store.history(alice, "board", "t", true, before)) as Refusal).code)
+        .toBe("invalid");
+    });
+  });
+
   it("is visible as its row is", async () => {
     const o = await ownerObject();
     const { stub, name: alice, as } = o;
     const mine = await write(o, "bob", { collection: ROOM, row_id: "p", body: "secret",
                                          private: true });
     await write(o, "bob", { collection: ROOM, row_id: "s", body: "shared" });
-    const entries = async (caller: string, rowId: string) =>
-      (await stub.collectionHistory(as(caller), { collection: ROOM, row_id: rowId })).entries;
-    expect((await entries("bob", "p")).map((e) => e.body)).toEqual(["secret"]);
-    expect(await entries("cara", "p")).toEqual([]);
-    expect(await entries(alice, "p")).toEqual([]);
+    const entries = async (caller: string, rowId: string, isPrivate = false) =>
+      (await stub.collectionHistory(as(caller), { collection: ROOM, row_id: rowId,
+                                                  private: isPrivate })).entries;
+    expect((await entries("bob", "p", true)).map((e) => e.body)).toEqual(["secret"]);
+    expect(await entries("bob", "p")).toEqual([]);
+    expect(await entries("cara", "p", true)).toEqual([]);
+    expect(await entries(alice, "p", true)).toEqual([]);
     expect((await entries("cara", "s")).map((e) => [e.revision, e.op, e.writer]))
       .toEqual([[1, "write", "bob"]]);
     // The store deletes for whichever caller it is handed; the owner-only rule is the RPC
     // door's, tested below.
-    await inObject(stub, (store) => store.delete("bob", ROOM, "p", mine.etag));
-    expect(await entries("bob", "p")).toEqual([]); // a deleted row shows no history
+    await inObject(stub, (store) => store.delete("bob", ROOM, "p", true, mine.etag));
+    expect(await entries("bob", "p", true)).toEqual([]); // a deleted row shows no history
     const extra = await failure(() => stub.collectionHistory(as("bob"), {
       collection: ROOM, row_id: "s", limit: 11 } as never));
     expect(extra.message).toBe("invalid collection request");
@@ -631,7 +676,8 @@ describe("the bounds' counters", () => {
         const rowId = `r${Math.floor(random() * 6)}`;
         const caller = pick(callers);
         const roll = random();
-        const current = store.get(caller, collection, rowId).row;
+        const isPrivate = random() < 0.2;
+        const current = store.get(caller, collection, rowId, isPrivate).row;
         let outcome = "done";
         try {
           if (roll < 0.75) {
@@ -641,10 +687,10 @@ describe("the bounds' counters", () => {
               : random() < 0.5 ? "" : "stale";
             // An outside writer's rows count in its own share and all outside writers'.
             store.write(owner, caller, collection, rowId, body, etag,
-                        current?.private ?? random() < 0.2, pick(["write", "move", "claim"]),
+                        isPrivate, pick(["write", "move", "claim"]),
                         null, caller === owner ? "owner" : `client:${caller[0]!.repeat(64)}`);
           } else if (roll < 0.9) {
-            store.delete(owner, collection, rowId, current?.etag ?? "stale");
+            store.delete(owner, collection, rowId, isPrivate, current?.etag ?? "stale");
           } else {
             store.clear(owner, collection, random() < 0.5 ? null : pick(callers));
           }
@@ -742,10 +788,10 @@ describe("the history keys' migration", () => {
           const store = stores.collections;
           const shown = (page: { entries: { revision: number; body: string }[] }) =>
             page.entries.map((each) => [each.revision, each.body]);
-          const a = store.history(owner, "board", "a");
+          const a = store.history(owner, "board", "a", false, null);
           // Before a2, whose change is a negative key.
-          return [shown(a), shown(store.history("bob", "board", "b")),
-                  shown(store.history(owner, "board", "a", a.entries[1]!.next))];
+          return [shown(a), shown(store.history("bob", "board", "b", true, null)),
+                  shown(store.history(owner, "board", "a", false, a.entries[1]!.next))];
         }),
       };
     });
@@ -763,6 +809,90 @@ describe("the history keys' migration", () => {
     expect(migrated.space.charge).toBe(migrated.recount);
     expect(migrated.after).toEqual(migrated.before);
     expect(migrated.after).toMatchObject({ refs: 2, clock: 10 });
+  });
+});
+
+describe("the private key spaces' migration", () => {
+  /** An object of the migrations through 30, its owner's tables gone first. */
+  function at30(sql: SqlStorage, storage: DurableObjectStorage): void {
+    for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master " +
+        "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' " +
+        "AND name NOT GLOB 'cf_*'").toArray()) {
+      sql.exec(`DROP TABLE "${name}"`);
+    }
+    migrate(storage, MIGRATIONS.slice(0, 30));
+  }
+  /** A row and its one entry as the code before it wrote them, at `change`. */
+  function made(sql: SqlStorage, collection: string, rowId: string, writer: string,
+                change: number, { hidden = false, filer = "owner", content = null }:
+                  { hidden?: boolean; filer?: string; content?: string | null } = {}): void {
+    const body = content === null ? `${rowId} body` : "";
+    const bytes = content === null ? body.length : 5000;
+    sql.exec("INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
+               "private, body, updated_at, creator, body_bytes, content_id, filer, change) " +
+               "VALUES (?, ?, 1, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)", collection, rowId, change,
+             `e${change}`.padEnd(64, "0"), writer, hidden ? 1 : 0, body, writer, bytes,
+             content, filer, change);
+    sql.exec("INSERT INTO collection_history (change, collection, key, revision, op, " +
+               "body_json, at, writer, prev, body_bytes, content_id, filer) VALUES " +
+               "(?, ?, ?, 1, 'write', ?, 1, ?, NULL, ?, ?, ?)", change, collection, rowId, body,
+             writer, bytes, content, filer);
+  }
+
+  it("puts each private row and its entries in its writer's space, every counter and " +
+     "content reference as a recount finds it", async () => {
+    const { stub, name: owner } = await ownerObject();
+    const placed = "c".repeat(64);
+    const client = `client:${"b".repeat(64)}`;
+    const out = await runInDurableObject(stub, async (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      at30(sql, state.storage);
+      sql.exec("INSERT INTO file_contents (content_id, size, inline, refs) VALUES (?, 5000, " +
+                 "NULL, 0)", placed);
+      made(sql, "board", "t", owner, 1);
+      made(sql, "board", "p", "bob", 2, { hidden: true, filer: client });
+      made(sql, ROOM, "big", owner, 3, { content: placed });
+      sql.exec("INSERT INTO collection_seqs VALUES ('board', 2), (?, 3)", ROOM);
+      sql.exec("UPDATE collection_clock SET change = 3");
+      const kept = () => sql.exec("SELECT (SELECT refs FROM file_contents WHERE content_id = ?) " +
+        "AS refs, (SELECT body_bytes FROM file_space) AS inline", placed).one();
+      const before = kept();
+      migrate(state.storage, MIGRATIONS);
+      const stores = storesOn(state);
+      return {
+        before, after: kept(), counters: counters(sql), recount: recount(sql),
+        spaces: sql.exec("SELECT r.row_id, r.space, h.space AS entry FROM collection_rows r " +
+                         "JOIN collection_history h ON h.change = r.change ORDER BY r.change")
+          .toArray().map((row) => Object.values(row)),
+        read: await stores.gate.write(() => {
+          const store = stores.collections;
+          // Bob's row is his alone, by its id in his space; cara's of that id is her own.
+          const hers = store.write(owner, "cara", "board", "p", "cara's", "", true);
+          return [store.get("bob", "board", "p", true).row?.body,
+                  store.get("bob", "board", "p", false).row, hers.revision,
+                  store.history("bob", "board", "p", true, null).entries.map((e) => e.body),
+                  store.get(owner, "board", "t", false).row?.body];
+        }),
+      };
+    });
+    expect(out.spaces).toEqual([["t", "", ""], ["p", "bob", "bob"], ["big", "", ""]]);
+    expect(out.read).toEqual(["p body", null, 1, ["p body"], "t body"]);
+    expect(out.counters).toEqual(out.recount);
+    expect(out.after).toEqual(out.before);
+    expect(out.after).toMatchObject({ refs: 2 });
+  });
+
+  it("fails loudly on an entry with no row, never dropping it", async () => {
+    const { stub, name: owner } = await ownerObject();
+    await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      at30(sql, state.storage);
+      made(sql, "board", "t", owner, 1);
+      sql.exec("DELETE FROM collection_rows");
+      expect(() => migrate(state.storage, MIGRATIONS)).toThrow(/NOT NULL/);
+      expect(sql.exec<{ version: number }>("SELECT version FROM schema_version").one().version)
+        .toBe(30);
+    });
   });
 });
 
@@ -810,7 +940,7 @@ describe("the RPC door's fields", () => {
     const pull = (await o.stub.collectionPull(o.as("bob"), { collection: "board", limit: 1 }))
       .cursor;
     const before = await inObject(o.stub, (store, state) => {
-      const page = store.history("bob", "board", "t");
+      const page = store.history("bob", "board", "t", false, null);
       const held = state.storage.sql.exec<{ incarnation: string }>(
         "SELECT incarnation FROM collection_space").one().incarnation;
       expect(held).toMatch(/^[0-9a-f]{16}$/);

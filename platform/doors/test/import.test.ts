@@ -160,7 +160,8 @@ async function readBack(owner: string, files = bundleFiles()): Promise<void> {
       expect(canonical(policy.policy)).toBe(canonical(row["document"]));
     } else {
       const got = await ownDoor(owner, "collectionGet", {
-        collection: row["collection"] as string, row_id: row["row_id"] as string });
+        collection: row["collection"] as string, row_id: row["row_id"] as string,
+        private: row["private"] === 1 });
       expect([got.row?.body, got.row?.private, got.row?.writer])
         .toEqual([row["body"], row["private"] === 1, owner]);
     }
