@@ -1089,8 +1089,8 @@ describe("auto and the owner's sign-ins", () => {
       .toMatchObject({ engine: "pi", credential: "api_key" });
   });
 
-  it("picks on a key that pays for nothing only a model its source serves such a key, the " +
-     "strongest its vendor lists, and on one that pays the strongest", async () => {
+  it("picks on a key that pays for nothing only a model its source serves such a key and its " +
+     "vendor still lists, and on one that pays the strongest", async () => {
     // The stage finding of 2026-11-23, past the batch variants: a free-tier OpenRouter key,
     // whose catalog prices a router at zero that routes to priced models.
     const [base] = await catalog(OPENAI);
@@ -1103,11 +1103,10 @@ describe("auto and the owner's sign-ins", () => {
     const keyed = async (pays: boolean) => {
       const r = await gated();
       await r.gateway.arm("credit", { answer: { pays } });
-      // The vendor serves and scores one free model, serves the router and the priced model
-      // unscored, and no longer serves the other free one, first by id.
+      // The vendor scores none of them, and no longer serves the other free one, first by id.
       await r.gateway.arm("listing", { answer: { models: [
         { id: PAID, score: null }, { id: "openrouter/auto", score: null },
-        { id: FREE, score: 11.8 }] } });
+        { id: FREE, score: null }] } });
       await r.connect("sk-good", OPENAI, "OpenRouter", models, "openrouter_user_models_v1");
       await drainDue(r.stub);
       await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);

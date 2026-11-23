@@ -622,6 +622,9 @@ describe("listing", () => {
     for (const key of ["sk-odd", "sk-empty", "sk-noid", "sk-unscored"]) {
       expect(await read(key), key).toMatchObject({ code: "upstream_error" });
     }
+    for (const key of ["sk-odd", "sk-empty", "sk-noid"]) {
+      expect(await read(key, LISTED, UNSCORED), key).toMatchObject({ code: "upstream_error" });
+    }
   });
 
   it("sends the key only to a GET its sealed endpoints allow, and takes only a read",
