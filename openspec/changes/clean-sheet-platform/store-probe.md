@@ -2,9 +2,10 @@
 
 Live probes P1, P2, P3, P4 and P7 of the storage design (a′): one pi Session per thread,
 its bytes in a per-thread `ThreadStore` Durable Object in the owner Worker's own script.
-Code: `scripts/probes/storeprobe/`. Workflow: `.github/workflows/store-probe.yml` (manual
-only). It follows the cap probe (`cap-probe.md`): the same safety rules, cleanup and
-reading-key method.
+Answered, and its subject deleted (ADR-034 decision 13, slice D), so its code and its manual
+workflow are deleted; both are at `14ec3e8f6` (https://github.com/TinyAssets/TinyAssets/tree/14ec3e8f6/scripts/probes/storeprobe,
+https://github.com/TinyAssets/TinyAssets/tree/14ec3e8f6/.github/workflows/store-probe.yml). It follows the cap probe (`cap-probe.md`): the same
+safety rules, cleanup and reading-key method.
 
 ## Found
 
@@ -14,13 +15,9 @@ S1-S3: `limits.subrequests` 1,000,000; `OPEN_MAX` 64; `contextRetentionMs` and
 when the thread host closes it. No pre-warm: a new thread's store opens about 0.3 s cold,
 once.
 
-Still owed, live: **P8**, `deleteAll()` on a populated store frees its billed bytes within
-a billing day (design-decision §6), which every drop's wipe and the owner's erasure
-(S4-S5) rely on, and a destroyed store then bills nothing at all: a store keeps no mark
-once destroyed (S4-S5 review M3), so it is as empty as one never made. In workerd a store
-never made, and one after a bare `deleteAll`, both read `databaseSize` 4,096; the old
-destroyed mark kept 8,192, about 2.9 GB a year at 1,000 runs a day. And **P5**, a store
-reset mid-run.
+**P8** (`deleteAll()` on a populated store frees its billed bytes within a billing day) and
+**P5** (a store reset mid-run) never ran; they lapsed with the thread stores (ADR-034
+decision 13).
 
 - **P3.** Production accepts the `PISTORE` → `ThreadStore` binding with no `script_name`
   under `disable_ctx_exports`, and it reaches only `ThreadStore` (`ctx.exports` is
@@ -128,8 +125,8 @@ ping pace. P4 runs alone, since it fills an isolate. Then the P1 runs, one after
 A default run takes about 50 minutes. The workflow deletes every Worker right after the
 cases, before the optional analytics step, which reads by object id and needs no Worker.
 
-**Local.** `node scripts/probes/storeprobe/local.mjs` needs `npm ci` in `platform/`, and
-the workflow runs it before deploying. It:
+**Local.** The probe's `local.mjs` (at `14ec3e8f6`) needed `npm ci` in `platform/`, and
+the workflow ran it before deploying. It:
 - bundles every copy with `wrangler deploy --dry-run`, which also validates the
   same-script binding under `disable_ctx_exports`;
 - runs the bundles in miniflare;
@@ -281,9 +278,8 @@ Safety, as the cap probe:
   then reads the account's namespace list back until none of the four scripts' namespaces
   is listed, and fails the run if a script or namespace remains.
 - After a run that failed or was cancelled, run it again (its first step deletes all four
-  scripts before deploying) or run `delete.sh` by hand with the same token:
-  `CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... bash scripts/probes/storeprobe/delete.sh
-  ta-storeprobe-door ta-storeprobe ta-storeprobe-low ta-storeprobe-raised`.
+  scripts before deploying) or run its `delete.sh` (at `14ec3e8f6`) by hand with the same
+  token, naming `ta-storeprobe-door ta-storeprobe ta-storeprobe-low ta-storeprobe-raised`.
 
 The differences from the cap probe:
 - four scripts, not two;
