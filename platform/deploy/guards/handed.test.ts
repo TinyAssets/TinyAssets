@@ -9,12 +9,12 @@ import { describe, expect, it } from "vitest";
 import { baseOf, fileAt } from "../../ci/history";
 import type { Args, DoorArgs, DoorRow } from "../../contract/src/doors";
 import type { Shape } from "../../contract/src/handed";
-import { type Before, handedProblems, type Side, sideAt, TREE } from "../handed";
+import { type Before, handedHold, type Side, sideAt, TREE } from "../handed";
 
 describe("what each Worker hands another, against the base branch", () => {
   it("is all the other takes, by the deploy order", () => {
     const base = sideAt(baseOf(), fileAt);
-    expect(handedProblems(() => base, TREE)).toEqual([]);
+    expect(handedHold(() => base, TREE).problems).toEqual([]);
   });
 });
 
@@ -22,8 +22,8 @@ const NONE = { doors: new Set<string>(), shapes: new Set<string>() };
 /** A side of `shapes` and door `rows`, the same for every Worker. */
 const side = (shapes: Readonly<Record<string, Shape>>, rows: readonly DoorRow[] = []):
   Before & Side => ({ shapes, doors: rows, cutover: NONE });
-/** `now` held against `then` as every Worker's version before. */
-const held = (then: Before, now: Side) => handedProblems(() => then, now);
+/** Each way `now` refuses, held against `then` as every Worker's version before. */
+const held = (then: Before, now: Side) => handedHold(() => then, now).problems;
 
 const ACCOUNT: Shape = { from: "doors", to: "owner", required: ["owner", "caller", "origin"],
                          optional: ["source", "control"] };
@@ -106,13 +106,13 @@ describe("an answer, whose sender deploys before its parser", () => {
     const sides: Readonly<Record<string, Before>> = {
       owner: side({ started: { ...STARTED, required: ["started", "code"] } }),
       doors: side({ account: ACCOUNT }) };
-    expect(handedProblems((worker) => sides[worker] ?? null, side({ started: STARTED,
-                                                                    account: ACCOUNT })))
+    expect(handedHold((worker) => sides[worker] ?? null, side({ started: STARTED,
+                                                                account: ACCOUNT })).problems)
       .toEqual(["the shape started does not always hand code, which the owner's version " +
                 "before requires: hand it always first, and stop once the stage serves no " +
                 "owner version that requires it"]);
     // No version before serves: nothing of it talks.
-    expect(handedProblems(() => null, side({ started: STARTED }))).toEqual([]);
+    expect(handedHold(() => null, side({ started: STARTED })).problems).toEqual([]);
   });
 });
 
@@ -164,6 +164,47 @@ describe("the door table, the doors' requests to the owner", () => {
     expect(held(loose, table(door(fields(["path"], []))))).toEqual([
       "fileStat refuses no request, which the doors' version before may hand",
       "fileStat refuses a field sent undefined, which the doors' version before may hand"]);
+  });
+
+  it("refuses a field's type the owner takes no more, until it is a dropped type, and takes a " +
+     "wider one", () => {
+    // #5822's: the cursors went from integers to strings, b65adb647's doors handing integers.
+    const typed = (type: unknown, more: Partial<Args> = {}) =>
+      table(door({ refused: "invalid collection request", required: {},
+                   optional: { after: type === undefined ? {} : { type } }, ...more }));
+    expect(held(typed("integer"), typed("string"))).toEqual([
+      "fileStat no longer takes after as integer, which the doors' version before hands: take " +
+      "it as that too first (droppedTypes: taken, no longer handed), and take it out once the " +
+      "stage serves no doors version that hands it"]);
+    const step = typed("string", { droppedTypes: { after: ["integer"] } });
+    expect(held(typed("integer"), step)).toEqual([]);
+    expect(held(step, typed("string"))).toEqual([]);
+    // Each type of a list is held; an integer is a number; a wider type passes.
+    expect(held(typed(["string", "null"]), typed("string"))).toEqual([
+      expect.stringContaining("fileStat no longer takes after as null,")]);
+    expect(held(typed("number"), typed("integer"))).toHaveLength(1);
+    expect(held(typed("integer"), typed("number"))).toEqual([]);
+    expect(held(typed("string"), typed(["string", "null"]))).toEqual([]);
+    expect(held(typed("integer"), typed(undefined))).toEqual([]);
+    // A field the owner takes no more is the names' problem, said once; a dropped one takes any.
+    expect(held(typed("integer"), table(door(fields([], []))))).toHaveLength(1);
+    expect(held(typed("integer"), table(door(fields([], [], { dropped: ["after"] })))))
+      .toEqual([]);
+  });
+
+  it("holds by name alone, and says so, a field the doors' version before types not", () => {
+    const untyped = table(door({ refused: "x", required: { path: {} }, optional: {} }));
+    expect(handedHold(() => untyped, table(door(fields(["path"], []))))).toEqual(
+      { problems: [], untyped: ["fileStat path"] });
+    expect(handedHold(() => untyped, untyped)).toEqual({ problems: [], untyped: [] });
+    // Only the doors' version before hands the owner a request.
+    expect(handedHold((worker) => worker === "doors" ? null : untyped,
+                      table(door(fields(["path"], []))))).toEqual({ problems: [], untyped: [] });
+    // A schema the hold cannot read is not guessed at.
+    const ranged = table(door({ refused: "x", required: { path: { type: "string", maxLength: 9 } },
+                                optional: {} }));
+    expect(() => held(ranged, table(door(fields(["path"], [])))))
+      .toThrow("path's schema is not its type and description alone");
   });
 
   it("holds a request split by who asks side by side, and either side to one list", () => {
