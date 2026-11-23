@@ -12,14 +12,16 @@ import { frozen } from "./checks.ts";
 export type ShapeName = keyof typeof table.shapes;
 
 /**
- * A shape: the Worker that hands it and the one that parses it; the fields it always hands,
- * the ones it always hands that the parser takes as if optional (the step between the two,
- * either way), the ones it hands when it has them, and the ones the parser takes that are not
- * handed (by a release before, or not yet).
+ * A shape: the Worker that hands it and the one that parses it, and whether it hands it at
+ * all (`handed: false`: its parser still takes it, for a release before that handed it); the
+ * fields it always hands, the ones it always hands that the parser takes as if optional (the
+ * step between the two, either way), the ones it hands when it has them, and the ones the
+ * parser takes that are not handed (by a release before, or not yet).
  */
 export interface Shape {
   readonly from: string;
   readonly to: string;
+  readonly handed?: false;
   readonly required: readonly string[];
   readonly optional: readonly string[];
   readonly always?: readonly string[];

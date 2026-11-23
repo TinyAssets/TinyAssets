@@ -15,7 +15,7 @@ import { workerFolders } from "../../ci/wrangler";
 import { handedShapes } from "../src/handed";
 
 const SHAPES = Object.entries(handedShapes());
-const PARTS = ["from", "to", "required", "always", "optional", "dropped"];
+const PARTS = ["from", "to", "handed", "required", "always", "optional", "dropped"];
 
 /** Every TypeScript source under `folder`, read. */
 function sources(folder: string): string[] {
@@ -31,6 +31,7 @@ describe("the shapes one Worker hands another (handed.json)", () => {
     expect(Object.keys(shape).filter((key) => !PARTS.includes(key))).toEqual([]);
     expect(workerFolders()).toEqual(expect.arrayContaining([shape.from, shape.to]));
     expect(shape.from).not.toBe(shape.to);
+    expect([undefined, false]).toContain(shape.handed);
     expect(new Set(listed).size).toBe(listed.length);
   });
 

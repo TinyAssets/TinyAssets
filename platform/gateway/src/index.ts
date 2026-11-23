@@ -8,7 +8,7 @@
  * - `verify`: the connection's setup check, and the models it can be asked for.
  * - `credit`: what a connection's key can pay for, where its source reports it.
  * - `listing`: the models a connection's source's vendor lists its key served, with their
- *   scores; `strength`, the scored ones alone, for the owner's version before.
+ *   scores; `strength`, the scored ones alone, for an owner before #5833 (`forward.ts`).
  * - `forward`: raw passthrough for sandbox egress (`forward.ts`).
  * - `reseal`, `resealDoorbell`: a connection's or a doorbell subscription's blob resealed
  *   under the active kid at the next version (the sweep that retires a kid).

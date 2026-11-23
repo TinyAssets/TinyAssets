@@ -62,9 +62,16 @@ describe("a request, whose parser deploys before its sender", () => {
     expect(held(side({ account: required }), side({ account: ACCOUNT }))).toEqual([]);
   });
 
-  it("refuses a shape gone, but for the cutover's, and holds no shape the base lacks", () => {
+  it("refuses a shape gone until the version before hands it no more, but for the cutover's, " +
+     "and holds no shape the base lacks", () => {
     expect(held(side({ account: ACCOUNT }), side({}))).toEqual([
-      "the shape account is gone, which the doors' version before hands"]);
+      "the shape account is gone, which the doors' version before hands: mark it handed: false " +
+      "first (parsed, handed no more), and take it out once the stage serves no doors version " +
+      "whose shapes hand it"]);
+    // Marked first, it passes; and taken out once the version before marks it.
+    const unhanded: Shape = { ...ACCOUNT, handed: false };
+    expect(held(side({ account: ACCOUNT }), side({ account: unhanded }))).toEqual([]);
+    expect(held(side({ account: unhanded }), side({}))).toEqual([]);
     const cutover = { ...side({ account: ACCOUNT }),
                       cutover: { doors: new Set<string>(), shapes: new Set(["account"]) } };
     expect(held(cutover, side({}))).toEqual([]);

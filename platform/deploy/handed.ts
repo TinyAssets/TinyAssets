@@ -14,8 +14,10 @@
  * and requires none it does not always hand. A field goes in steps (`dropped`: taken, not
  * handed; `always`: handed every time, taken as if optional), each once the versions the stage
  * serves no longer need the one before. A shape the sender's version before hands is still
- * parsed; one the parser's version before does not list is a new answer (or one from before
- * the shapes were data), which no caller before it reads. For the door table, the owner takes
+ * parsed, so a shape its sender hands no more is first marked so (`handed: false`: parsed, not
+ * handed), and goes once the stage serves no sender version whose shapes hand it; one the
+ * parser's version before does not list is a new answer (or one from before the shapes were
+ * data), which no caller before it reads. For the door table, the owner takes
  * every door the doors' version before calls (a door the doors call no more is first marked
  * `dropped`), every field its request lists, each as every JSON type its schema names
  * (`fieldTypes`; a type the schema names no more is first listed in `droppedTypes`), no request
@@ -277,8 +279,10 @@ export function handedHold(then: (worker: string) => Before | null, now: Side): 
         : shapeProblems(name, shape, side.shapes[name]));
     const gone = Object.entries(side.shapes).filter(([name, shape]) =>
       now.shapes[name] === undefined && later(shape) === worker && request(shape)
-      && !side.cutover.shapes.has(name))
-      .map(([name, shape]) => `the shape ${name} is gone, which ${before(shape.from)} hands`);
+      && shape.handed !== false && !side.cutover.shapes.has(name))
+      .map(([name, shape]) => `the shape ${name} is gone, which ${before(shape.from)} hands: ` +
+        "mark it handed: false first (parsed, handed no more), and take it out once the stage " +
+        `serves no ${shape.from} version whose shapes hand it`);
     return [...listed, ...gone, ...worker === "doors" ? table.problems : []];
   });
   return { problems, untyped: table.untyped };
