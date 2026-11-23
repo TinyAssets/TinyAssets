@@ -173,20 +173,25 @@ describe("the import's rows", () => {
     ];
     expect(await stub.importRows(importing(owner), { rows })).toEqual({ written: 2, skipped: 0 });
     expect(await stub.importRows(importing(owner), { rows })).toEqual({ written: 0, skipped: 2 });
-    for (const row of [{ ...rows[0]!, body: '{"t":"other"}' }, { ...rows[1]!, private: 1 as const },
+    for (const row of [{ ...rows[0]!, body: '{"t":"other"}' },
                        { ...rows[1]!, body: `${large} ` }]) {
       expect((await failure(() => stub.importRows(importing(owner), { rows: [row] }))).code)
         .toBe("conflict");
     }
+    // A private row of a public row's id is a row of its own, in the owner's key space.
+    expect(await stub.importRows(importing(owner), { rows: [{ ...rows[1]!, private: 1,
+                                                               body: '{"t":"own"}' }] }))
+      .toEqual({ written: 1, skipped: 0 });
     // The placed body's content in R2, its row naming it, its history the import's.
     const placed = await runInDurableObject(stub, (_i: unknown, state: DurableObjectState) =>
       state.storage.sql.exec<{ row_id: string; content_id: string | null; writer: string;
                                op: string }>(
         "SELECT r.row_id, r.content_id, r.writer, h.op FROM collection_rows r JOIN " +
-        "collection_history h ON h.collection = r.collection AND h.key = r.row_id " +
-        "ORDER BY r.row_id").toArray());
+        "collection_history h ON h.collection = r.collection AND h.space = r.space AND " +
+        "h.key = r.row_id ORDER BY r.row_id, r.space").toArray());
     expect(placed.map((row) => [row.row_id, row.content_id !== null, row.writer, row.op]))
-      .toEqual([["b1", false, owner, "import"], ["b2", true, owner, "import"]]);
+      .toEqual([["b1", false, owner, "import"], ["b2", true, owner, "import"],
+                ["b2", false, owner, "import"]]);
     await stub.admissionSet({ owner, caller: PLATFORM_CALLER, origin: null }, { admit: true });
     expect((await stub.collectionGet(own(owner), { collection: "board", row_id: "b2" }))
       .row?.body).toBe(large);

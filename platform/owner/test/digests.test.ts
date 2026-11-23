@@ -108,7 +108,7 @@ describe("a digest past a pruned deletion", () => {
     await inFilled(stub, (store, state) => {
       const made = store.write(name, name, "board", "gone", "x", "", false);
       const cursor = store.changed(name, { collection: "board" }, undefined, 100).cursor;
-      store.delete(name, "board", "gone", made.etag);
+      store.delete(name, "board", "gone", false, made.etag);
       // Bob's private row, cleared: a deletion only bob may see.
       store.write(name, "bob", "board", "mine", "x", "", true);
       store.clear(name, "board", "bob");
@@ -159,25 +159,29 @@ async function answers(reader: "visitor" | "host", hidden: boolean): Promise<str
   const lobby = "room:app:lobby";
   let n = 0;
   // The other writer's rows hidden from the reader: written, written again, and the host's
-  // deleted (only the owner deletes), in the board and the room alike.
-  const elsewhere = async () => {
+  // deleted (only the owner deletes), in the board and the room alike; the first time at the
+  // ids the reader writes next too, so its writes, claims among them, meet none of them.
+  const elsewhere = async (ids: readonly string[] = []) => {
     for (const collection of hidden ? ["board", lobby] : []) {
-      const made = await write(r, collection, `h${n++}`, "not yours", other, true);
-      let etag = "row" in made ? made.row.etag : "";
-      for (const body of ["again", "and again"]) {
-        const again = await r.stub.collectionWrite(other, { collection, row_id: `h${n - 1}`,
-          body, expected_etag: etag, private: true });
-        etag = "row" in again ? again.row.etag : "";
-      }
-      if (reader === "visitor") {
-        await r.stub.collectionDelete(r.bind(null), { collection, row_id: `h${n - 1}`,
-                                                      expected_etag: etag });
+      for (const id of [`h${n++}`, ...ids]) {
+        const made = await write(r, collection, id, "not yours", other, true);
+        let etag = "row" in made ? made.row.etag : "";
+        for (const body of ["again", "and again"]) {
+          const again = await r.stub.collectionWrite(other, { collection, row_id: id, body,
+                                                              expected_etag: etag,
+                                                              private: true });
+          etag = "row" in again ? again.row.etag : "";
+        }
+        if (reader === "visitor") {
+          expect(await r.stub.collectionDelete(r.bind(null), {
+            collection, row_id: id, private: true, expected_etag: etag })).toEqual({ deleted: 1 });
+        }
       }
     }
   };
   const seen: unknown[] = [];
   await write(r, lobby, "hello", "everyone's");
-  await elsewhere();
+  await elsewhere(["mine", "fresh", "claim"]);
   const mine = await write(r, lobby, "mine", "my own", me, true);
   seen.push(mine);
   await elsewhere();
@@ -189,6 +193,9 @@ async function answers(reader: "visitor" | "host", hidden: boolean): Promise<str
   seen.push(await r.stub.collectionWrite(me, { collection: lobby, row_id: "mine", body: "late",
                                                expected_etag: etag, private: true }));
   seen.push(await write(r, "board", "fresh", "a new row of my own", me, true));
+  // A claim: public, so a second is a conflict carrying the first, the reader's own.
+  seen.push(await write(r, "board", "claim", "mine to do", me));
+  seen.push(await write(r, "board", "claim", "mine to do too", me));
   const board = await r.stub.boardDigest(me, { limit: 10 });
   const pull = await r.stub.collectionPull(me, { collection: lobby, limit: 10 });
   seen.push(board, pull);
@@ -196,10 +203,17 @@ async function answers(reader: "visitor" | "host", hidden: boolean): Promise<str
   seen.push(await r.stub.boardDigest(me, { limit: 10, after: board.cursor }));
   seen.push(await r.stub.collectionPull(me, { collection: lobby, after: pull.cursor,
                                               limit: 10 }));
-  seen.push(await r.stub.collectionHistory(me, { collection: lobby, row_id: "mine" }));
-  seen.push(await r.stub.collectionGet(me, { collection: lobby, row_id: "mine" }));
+  for (const isPrivate of [true, false]) {
+    for (const [collection, id] of [[lobby, "mine"], ["board", "fresh"], ["board", "claim"]]) {
+      const key = { collection: collection!, row_id: id!, private: isPrivate };
+      seen.push(await r.stub.collectionHistory(me, key), await r.stub.collectionGet(me, key));
+    }
+  }
   if (reader === "host") {
     seen.push((await r.stub.inboxDigest(me, { limit: 10 })).rooms);
+    // Its clears reach the visitor's private rows too, and count none of them.
+    seen.push(await r.stub.collectionClear(me, { collection: lobby, writer: null }),
+              await r.stub.collectionClear(me, { collection: "board", writer: "bob" }));
   }
   return JSON.stringify(seen, (key, value: unknown) => key === "at" ? "<at>"
     : value === r.owner ? "<owner>"
@@ -358,8 +372,8 @@ describe("a digest's deletions", () => {
     await r.stub.collectionDelete(r.bind(null), { collection: "board", row_id: "t1",
       expected_etag: "row" in t1 ? t1.row.etag : "" });
     const gone = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: seen.cursor });
-    expect(gone.rows).toEqual([{ collection: "board", row_id: "t1", deleted: true,
-                                 op: "delete", writer: r.owner }]);
+    expect(gone.rows).toEqual([{ collection: "board", row_id: "t1", private: false,
+                                 deleted: true, op: "delete", writer: r.owner }]);
     // A clear erases bob's private row too: only bob is told of it.
     const bobSeen = await r.stub.boardDigest(bob, { limit: 10, after: gone.cursor });
     await r.stub.collectionClear(r.bind(null), { collection: "board", writer: null });
@@ -367,7 +381,8 @@ describe("a digest's deletions", () => {
     expect(cleared.rows.map((row) => [row.row_id, row.deleted, "op" in row ? row.op : ""]))
       .toEqual([["t2", true, "clear"]]);
     const bobs = await r.stub.boardDigest(bob, { limit: 10, after: bobSeen.cursor });
-    expect(bobs.rows.map((row) => row.row_id).sort()).toEqual(["mine", "t2"]);
+    expect(bobs.rows.map((row) => [row.row_id, row.private]).sort())
+      .toEqual([["mine", true], ["t2", false]]);
     // A row made again under a deleted key is a live row past its delete.
     await write(r, "board", "t1", "back");
     const back = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: cleared.cursor });
@@ -401,14 +416,14 @@ describe("a digest's reads", () => {
     }
   });
 
-  it("keeps a key's delete once the key is made again private, and deleted again",
+  it("keeps a public row's delete beside a private row of its id, deleted too",
      async () => {
     const r = await rig();
     const bob = "bob";
     await inObject(r.stub, (store) => {
       const made = store.write(r.owner, r.owner, "board", "t", "public", "", false);
       const before = store.changed("muse", { collection: "board" }, undefined, 10).cursor;
-      store.delete(r.owner, "board", "t", made.etag);
+      store.delete(r.owner, "board", "t", false, made.etag);
       let etag = store.write(r.owner, bob, "board", "t", "mine", "", true).etag;
       for (let n = 0; n < 5; n++) {
         etag = store.write(r.owner, bob, "board", "t", `mine ${n}`, etag, true).etag;
@@ -417,16 +432,19 @@ describe("a digest's reads", () => {
       expect(store.changed("muse", { collection: "board" }, before, 10).rows
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
       expect(store.changed(bob, { collection: "board" }, before, 10).rows
-        .map((row) => [row.row_id, row.deleted])).toEqual([["t", true], ["t", false]]);
-      // The row made again has the history of its own writes, from its making.
-      expect(store.history(bob, "board", "t").entries.map((entry) => entry.op))
+        .map((row) => [row.row_id, row.private, row.deleted]))
+        .toEqual([["t", false, true], ["t", true, false]]);
+      // Bob's row has the history of its own writes, from its making.
+      expect(store.history(bob, "board", "t", true, null).entries.map((entry) => entry.op))
         .toEqual(Array<string>(6).fill("write"));
-      // Cleared as bob's, its private deletion is bob's alone, and the public one stays.
-      expect(store.clear(r.owner, "board", bob)).toEqual({ deleted: 1 });
+      // Cleared as bob's, its private deletion is bob's alone (the owner's clear counts no
+      // row it could not see), and the public one stays.
+      expect(store.clear(r.owner, "board", bob)).toEqual({ deleted: 0 });
       expect(store.changed("muse", { collection: "board" }, before, 10).rows
         .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
       expect(store.changed(bob, { collection: "board" }, before, 10).rows
-        .map((row) => [row.row_id, row.deleted])).toEqual([["t", true], ["t", true]]);
+        .map((row) => [row.row_id, row.private, row.deleted]))
+        .toEqual([["t", false, true], ["t", true, true]]);
     });
   });
 });

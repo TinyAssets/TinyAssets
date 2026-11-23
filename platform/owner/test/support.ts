@@ -677,7 +677,7 @@ export function fillRows(store: Collections, owner: string): void {
  */
 export function fillHistory(store: Collections, owner: string, pruned: () => boolean): void {
   const key = FILLING.key("h");
-  let etag = store.get(FILLING.writer, FILLING.collection, key).row?.etag ?? "";
+  let etag = store.get(FILLING.writer, FILLING.collection, key, false).row?.etag ?? "";
   for (let n = 0; !pruned(); n++) {
     if (n > LIMITS.maxHistoryCharge / PLACE_BYTES) {
       throw new Error("the history was filled past its charge and nothing was let go");
@@ -693,8 +693,8 @@ export type RowTuple = [string, string, number, number, string, number, string];
 export function rows(stub: Stub): Promise<RowTuple[]> {
   return runInDurableObject(stub, (_instance: OwnerDO, state) =>
     state.storage.sql.exec<Record<string, string | number>>(
-      "SELECT collection, row_id, revision, seq, writer, private, body FROM collection_rows " +
-        "ORDER BY seq",
+      "SELECT collection, row_id, revision, seq, writer, space != '' AS private, body " +
+        "FROM collection_rows ORDER BY seq",
     ).toArray().map((r) => [r["collection"], r["row_id"], r["revision"], r["seq"], r["writer"],
                             r["private"], r["body"]] as RowTuple));
 }

@@ -104,7 +104,7 @@ a model when it is benchmarked), an hour after a failure.
 
 - **A source record names its vendor's strength listing (`strength`, `sources/src/schema.ts`,
   checked by `check.ts` `strengthSpec`); the gateway reads it (`forward.ts` `strength`); the
-  lane keeps each connection's models' scores (`connection_strength`, owner migration 31);
+  lane keeps each connection's models' scores (`connection_strength`, owner migration 32);
   `auto.ts` `ranked` orders the unknown by score, then price.**
   - `ranked` ordered every unknown model by catalog output price alone, so on a key that pays
     only for free models (all 0) it fell to the id: the stage's `cohere/north-mini-code:free`,
