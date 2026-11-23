@@ -17,7 +17,7 @@ doors version that reads an answer field with an owner that no longer answers it
   (held already, the shape `metering` of `handed.json`), which the doors relay from
   `egressReserve`'s answer. So every answer pairing across Workers is the doors' (and what
   they relay on).
-- **The doors' own code reads 33 doors' answers field by field**, each typed by `DoorTypes`
+- **The doors' own code reads 29 doors' answers field by field**, each typed by `DoorTypes`
   `answer`, which `OwnerDO implements OwnerDoors` holds the owner's handlers to at one commit:
   `admissionSet` and `ownerState` `state` (`authorize.ts`), `sessionOpen` `session`,
   `tierRead` `tier` and `fileRead` `entry`, `inline` (`app.ts`), `erasureOutside` `keys`,
@@ -28,9 +28,9 @@ doors version that reads an answer field with an owner that no longer answers it
   `inboundRevoke` (`inbound.ts`), `connectionPrepare` and `flowFinish` (`connect.ts`),
   `fileUploadTarget` (`file-bytes.ts`), `ownerExport` (`app.ts`), `importFileBegin`,
   `importCheck` `more`, `importDiscard` `namespace` (`import/index.ts`), `egressOpen`,
-  `egressReserve`, `runDecide` `hook`, `fileReadChunks` `chunks`, `fileRead` `inline`
-  (`egress.ts`), `restoreStep` `done`, `keys` (`operator.ts`).
-- **Another 19 `DoorTypes` answers are passed on whole** and read field by field only by the
+  `egressReserve`, `runDecide` `hook`, `fileReadChunks` `chunks`, and `fileRead` `inline` for
+  the runner (`egress.ts`), `restoreStep` `done`, `keys` (`operator.ts`).
+- **The other 26 `DoorTypes` answers are passed on whole** and read field by field only by the
   doors' tests: the operator's (`tierSet`, `dataKeyRewrap`, `gatewayReseal`, the restore
   doors but `restoreStep`, `erasureBegin`), the app routes' (`policyRead`,
   `policyProposals`, `grantList`, `registerProposals`, `noticeList`, `signinList`,
@@ -91,7 +91,7 @@ doors version that reads an answer field with an owner that no longer answers it
 1. **The door table declares each answer the doors read** (`doors.json` row `answer`):
    `required` and `optional` fields, each schema its JSON type alone (`fieldTypes`, the
    requests' vocabulary, now with `stream`, which no tool's field names, as `bytes`),
-   `nullable` where the owner may answer null, and `unread`. One place: the 52 `DoorTypes`
+   `nullable` where the owner may answer null, and `unread`. One place: the 55 `DoorTypes`
    answers move in, each at its top level.
 2. **`tsc` holds both sides at one commit from it.** `npm run generate` writes `DoorAnswers`
    (what the doors read: the fields, but `unread`) and `UnreadAnswers` (what the owner still
@@ -127,6 +127,29 @@ doors version that reads an answer field with an owner that no longer answers it
   deploys by its own protocol (`sandbox/runner/protocol.ts`), and the kit reads the owner it
   runs against at the tree it is. Owed below, research first.
 - **Outside callers' reads** are the tools' contract, not a pairing across the deploy.
+
+## As built
+
+- `contract/doors.json`: 55 rows' `answer`, every field the `DoorTypes` answers named, at its
+  top level, typed as each handler answers it.
+- `contract/src/doors.ts`: `Answer`; the table refuses an answer that is not its fields (each
+  typed, listed once, at least one), a `nullable` but `true`, and `unread` fields it answers
+  not; `stream` joins the vocabulary, and no tool's field names it or `bytes` (`RPC_TYPES`).
+- `contract/requests.ts`, `contract/src/requests.ts`: `DoorAnswers` and `UnreadAnswers`;
+  `contract/src/owner-doors.ts`: `Parts` takes `answer` only where the row declares one, and
+  `Stray` refuses a narrowing of a field the row does not read, or one wider than its row's.
+- `contract/src/owner.ts`: `DoorAnswer` is the row's, each narrowed field `DoorTypes`'s
+  (`Narrowed`); `OwnerAnswer` adds the `unread` fields; `DoorTypes` keeps the narrower parts
+  alone; the wholly JSON-typed `RewrapAnswer`, `ResealAnswer`, `RestoreHold`, `RestoreHeld`
+  and `InboundRoute` are the table's. `cutover.json`: the `owner.ts` edit names
+  `importDiscard` no more (its entry went; the `doors.json` edit still names it).
+- `owner/src/owner-do.ts`: `UnreadAnswered`, each handler answering its `unread` fields.
+- `deploy/handed.ts` `answerHold` and `Hold.undeclared`; `deploy.ts` `servedHold`'s line names
+  the undeclared doors.
+- Tests: `contract/guards/doors.test.ts` (the answer rules), `deploy/guards/handed.test.ts` (a
+  field gone, then through `unread`; made optional; widened; `integer` under `number`; null;
+  an undeclared door named; a dropped door), `deploy/guards/deploy.test.ts` (the plan stops on
+  a field the doors serving read, and names an undeclared answer).
 
 ## Owed
 

@@ -207,8 +207,9 @@ function doorsSource(rows: readonly DoorRow[]): string {
     entry("type Dropped =", rows.filter((row) => row.dropped === true)
       .map((row) => `"${row.door}"`).join(" | ") || "never"),
     "/** What `DoorTypes` may say of a door, by its row. */",
-    "type Parts<D> = (D extends keyof DoorAnswers ? \"answer\" : never) | (D extends keyof DoorRequests",
-    "  ? \"values\" | \"handed\" : D extends Loose ? \"loose\" : never);",
+    "type Parts<D> = (D extends keyof DoorAnswers ? \"answer\" : never)",
+    "  | (D extends keyof DoorRequests ? \"values\" | \"handed\"",
+    "    : D extends Loose ? \"loose\" : never);",
     "/** The fields a door's row lists (any of a choice's). */",
     "type Fields<D> = D extends keyof DoorRequests",
     "  ? DoorRequests[D] extends infer R ? R extends unknown ? keyof R : never : never : never;",
