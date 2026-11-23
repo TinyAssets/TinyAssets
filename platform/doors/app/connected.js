@@ -49,7 +49,8 @@
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
     body: JSON.stringify({ state, code, redirect_uri: redirect }),
   }).then(async (answer) => {
-    const body = await answer.json().catch(() => ({}));
+    const body = /** @type {import("../src/app").AppAnswer<"connections/oauth/finish">
+      | { error?: string }} */ (await answer.json().catch(() => ({})));
     if (!answer.ok) {
       say(`The connection was not finished: ${body.error ?? answer.status}.`, true);
       return;

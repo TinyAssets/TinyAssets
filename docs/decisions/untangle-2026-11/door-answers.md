@@ -203,10 +203,11 @@ doors version that reads an answer field with an owner that no longer answers it
 
 ## Owed
 
-- [ ] untangle/answer-readers: the app's reads held to its rows at a commit (typed `app.js`,
+- [x] untangle/answer-readers: the app's reads held to its rows at a commit (typed `app.js`,
   or a guard that reads its calls), and the runner's reads of the answers the doors relay held
   across its own pairing (its protocol, `sandbox/runner/protocol.ts`); research first (Fact
-  14).
+  14). The app's, the doors' code's and `TestAnswers` held (`answer-readers.md`); the
+  runner's owed there.
 - [ ] untangle/answer-depth: an answer field's nested fields and literal values held as data,
   or named as left for good; research first (Fact 14), with the shapes' types
   (untangle/handed-shape-types).

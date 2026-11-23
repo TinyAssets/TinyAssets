@@ -26,6 +26,14 @@ export function answer(status: number, body: unknown, headers: HeadersInit = {})
   return Response.json(body, { status, headers: noStore(headers) });
 }
 
+/**
+ * A route's value with the headers it is answered with (a cookie set or cleared): answered as
+ * JSON with `200` as the value alone is.
+ */
+export class Headed<T> {
+  constructor(readonly value: T, readonly headers: HeadersInit) {}
+}
+
 /** A JSON failure: `{error: <message>}`. */
 export function failure(status: number, message: string, headers: HeadersInit = {}): Response {
   return answer(status, { error: message }, headers);

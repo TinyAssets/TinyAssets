@@ -31,7 +31,8 @@ import { FIRST_PARTY_CLIENTS } from "./config";
 import type { DoorsEnv } from "./env";
 import { APP_RESOURCE, MCP_RESOURCE } from "../../contract/src/identity";
 import { type ControlRead, gating, requireFresh } from "../../contract/src/control";
-import type { JsonBody } from "../../contract/src/owner";
+import type { DoorAnswer, JsonBody } from "../../contract/src/owner";
+import type { ToolDoors } from "../../contract/src/requests";
 import { ownerRead } from "./control";
 import { deleteOwnKey, looksLikeKey, mintKey, revokeKey } from "./api-keys";
 import { CONNECT_ROUTES, DOORBELL_VERSION, sealDoorbell } from "./connect";
@@ -40,7 +41,7 @@ import { streamUpload } from "./file-bytes";
 import { HOOK_ROUTES } from "./inbound";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
-import { answer, bearer, failure, jsonObject, mediaType, NO_STORE } from "./kit";
+import { answer, bearer, failure, Headed, jsonObject, mediaType, NO_STORE } from "./kit";
 import { clearedCookie, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "../../sources/src/schema";
 import { signinsOn } from "../../sources/src/signin";
@@ -95,14 +96,19 @@ interface Served {
   readonly rest: string;
 }
 
-type Route = (served: Served) => Promise<Response>;
+/**
+ * A route's sequence: the value it answers, as JSON with `200` (`Headed` with the headers it
+ * is answered with), or a response of its own (a failure, a stream).
+ */
+type Route = (served: Served) => Promise<unknown>;
 
 /**
  * An owner-surface route, as data: a door of the owner's table (`contract/doors.json`),
  * called with the body as its request (none for a door that takes none); or a binder
  * sequence (`serve`); either taking only an empty object (`body: "empty"`). Two come before
  * the JSON body: `socket`, before the token too (its credential is its ticket), and `bytes`,
- * an upload's bytes.
+ * an upload's bytes. What each answers is its door's answer or its sequence's value
+ * (`AppAnswer`), which the owner app's calls are typed by (`app/api.js` `call`).
  */
 type OwnerRoute =
   | { readonly door: DoorName; readonly body?: "empty" }
@@ -117,8 +123,7 @@ type OwnerRoute =
  * expired or was revoked since it was validated is `401`, as it would have been a moment
  * earlier.
  */
-async function signOut({ env, owner: { binding, stub }, presented: token }: Served):
-    Promise<Response> {
+async function signOut({ env, owner: { binding, stub }, presented: token }: Served) {
   const oauth = authorizationServer(env).getOAuthApi(env);
   const presented = await oauth.unwrapToken(token);
   if (presented === null) {
@@ -132,7 +137,7 @@ async function signOut({ env, owner: { binding, stub }, presented: token }: Serv
   await ending.stub.socketsEnd(ending.binding);
   const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
   await oauth.revokeGrant(presented.grantId, binding.owner);
-  return answer(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
+  return new Headed({ ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
 }
 
 const NO_FIELDS = "this route takes an empty object";
@@ -142,38 +147,37 @@ const NO_FIELDS = "this route takes an empty object";
  * admission row), every tier's numbers as the control record holds them (simultaneous runs
  * and storage, nothing else), and the files it holds now.
  */
-const account: Route = async ({ owner: { binding, stub }, gate }) => {
+async function account({ owner: { binding, stub }, gate }: Served) {
   const { tier } = await stub.tierRead(binding);
-  return answer(200, { tier, tiers: gating(gate)?.tiers ?? null,
-                       usage: await stub.fileUsage(binding) });
-};
+  return { tier, tiers: gating(gate)?.tiers ?? null, usage: await stub.fileUsage(binding) };
+}
 
 /** `grants/set`: a client's mode, scopes, profile or agent; never a revoke (`grants/revoke`). */
-const grantSet: Route = async ({ owner: { binding, stub }, body: request }) => {
+async function grantSet({ owner: { binding, stub }, body: request }: Served) {
   if (request["mode"] === "revoked") {
     return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");
   }
-  return answer(200, await stub.grantSet(binding, request));
-};
+  return stub.grantSet(binding, request);
+}
 
 /** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
-const fileRead: Route = async ({ owner: { binding, stub }, body: request }) => {
+async function fileRead({ owner: { binding, stub }, body: request }: Served) {
   if (!keyed(request, ["path"])) {
     return failure(400, "a read names the file's path");
   }
   const { entry, inline } = await stub.fileRead(binding, { path: request["path"] as string });
   if (inline === undefined) {
-    return answer(200, { entry, text: null, why: "larger than one chunk" });
+    return { entry, text: null, why: "larger than one chunk" };
   }
   try {
-    return answer(200, { entry, text: utf8Decoder("strip").decode(inline) });
+    return { entry, text: utf8Decoder("strip").decode(inline) };
   } catch {
-    return answer(200, { entry, text: null, why: "not UTF-8 text" });
+    return { entry, text: null, why: "not UTF-8 text" };
   }
-};
+}
 
 /** `files/write` `{path, expected_etag, text}`: one file's whole text, against its etag. */
-const fileWrite: Route = async ({ owner: { binding, stub }, body: request }) => {
+async function fileWrite({ owner: { binding, stub }, body: request }: Served) {
   const text = request["text"];
   const fields = ["path", "expected_etag", "text"];
   if (!keyed(request, fields) || typeof text !== "string") {
@@ -181,17 +185,17 @@ const fileWrite: Route = async ({ owner: { binding, stub }, body: request }) => 
   }
   // The etag goes to the object as it came: the object's compare-and-swap decides.
   const { path, expected_etag: expected } = request;
-  return answer(200, await stub.fileWrite(binding, {
+  return stub.fileWrite(binding, {
     path: path as string, expected_etag: expected as string | null,
-    content: new TextEncoder().encode(text) }));
-};
+    content: new TextEncoder().encode(text) });
+}
 
 /**
  * `sources`: what the app shows of each record, so its connect screen is the records' data;
  * nothing sealed, no endpoint, no argv. A sign-in shows as offered only on a record read fresh,
  * as the owner's object starts one (`FRESH_ONLY`; none on a missing record, `signinsOn`).
  */
-function sourceList(sources: Sources, gate: ControlRead): unknown {
+function sourceList(sources: Sources, gate: ControlRead) {
   const switchedOn = signinsOn(sources, gate.kind === "read" ? gate.control : null);
   return {
     sources: sources.ids().map((id) => {
@@ -271,8 +275,7 @@ async function exportStream({ owner: { binding, stub }, body: request }: Served)
  * gateway, which seals it with the URL; the object stores the blob under the id derived
  * from the owner, URL, kind and what it follows. Never echoed.
  */
-async function doorbell({ env, owner: { binding, stub }, body: request }: Served):
-    Promise<Response> {
+async function doorbell({ env, owner: { binding, stub }, body: request }: Served) {
   const kind = typeof request["kind"] === "string" ? kindNamed(request["kind"]) : null;
   if (!keyed(request, ["agent_id", "kind", "url", "secret"], ["board", "rooms"])
       || typeof request["agent_id"] !== "string" || kind === null || kind.push === null
@@ -285,13 +288,13 @@ async function doorbell({ env, owner: { binding, stub }, body: request }: Served
   const args = { agent_id: request["agent_id"], board: follow.board, rooms: follow.rooms };
   const id = subscriptionId("owner", url, kind.id, args);
   const sealed = await sealDoorbell(env, binding.owner, id, { record: kind.id, url, secret });
-  return answer(200, await stub.agentDoorbell(binding, {
+  return stub.agentDoorbell(binding, {
     agent_id: request["agent_id"], kind: kind.id, subscription_id: id, board: follow.board,
-    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: DOORBELL_VERSION }));
+    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: DOORBELL_VERSION });
 }
 
 /** `agent/doorbell/kinds`: the wake kinds the owner pastes a URL and token for. */
-function doorbellKinds(): unknown {
+function doorbellKinds() {
   return { kinds: wakeKinds().filter((kind) => kind.push?.callback === "owner")
     .map(({ id, vendor, agents }) => ({ id, vendor, agents })) };
 }
@@ -300,14 +303,13 @@ function doorbellKinds(): unknown {
  * A socket ticket: the owner's token's grant (the provider's own unwrap of the presented
  * token) and expiry bound in, then the object mints it for the conversation named.
  */
-async function socketTicket({ env, token, presented, body: request }: Served):
-    Promise<Response> {
+async function socketTicket({ env, token, presented, body: request }: Served) {
   const unwrapped = await authorizationServer(env).getOAuthApi(env).unwrapToken(presented);
   if (unwrapped === null) {
     return failure(401, "sign in required");
   }
   const { binding, stub } = bindOwnerGrant(env, token, unwrapped.grantId);
-  return answer(200, await stub.socketTicket(binding, request));
+  return stub.socketTicket(binding, request);
 }
 
 /**
@@ -343,24 +345,17 @@ async function socketUpgrade(request: Request, env: DoorsEnv): Promise<Response>
   }
 }
 
-/** A route that answers a binder module's sequence's value as JSON. */
-function valued(value: (served: Served) => Promise<unknown>,
-                headers: HeadersInit = {}): { serve: Route } {
-  return { serve: async (served) => answer(200, await value(served), headers) };
-}
-
 /**
  * The owner surface's routes, as data (`OwnerRoute`), by path; a path ending in `/` is a
  * prefix, its rest the route's own (`tools/<name>`, an upload's `files/upload/<intent_id>`).
  */
-function routes(): Readonly<Record<string, OwnerRoute>> {
+function routes() {
   return {
     "agent/socket": { stage: "socket" },
     "files/upload/": { stage: "bytes" },
     "tools/": { serve: ownerTool },
     "agent/socket-ticket": { serve: socketTicket },
-    "sources": { body: "empty",
-                 serve: async ({ sources, gate }) => answer(200, sourceList(sources, gate)) },
+    "sources": { body: "empty", serve: async ({ sources, gate }) => sourceList(sources, gate) },
     "export": { serve: exportStream },
     "export/chunks": { door: "exportChunks" },
     "export/end": { door: "exportEnd" },
@@ -368,7 +363,7 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "agent/doorbell": { serve: doorbell },
     "agent/doorbell/end": { door: "agentDoorbellEnd" },
     "agent/wake-limits": { door: "policyWakeLimits" },
-    "agent/doorbell/kinds": { body: "empty", ...valued(async () => doorbellKinds()) },
+    "agent/doorbell/kinds": { body: "empty", serve: async () => doorbellKinds() },
     "account": { body: "empty", serve: account },
     "notices": { door: "noticeList", body: "empty" },
     "policy": { door: "policyRead", body: "empty" },
@@ -384,30 +379,30 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     "registrations/decline": { door: "registerDecline" },
     "grants": { door: "grantList", body: "empty" },
     "grants/set": { serve: grantSet },
-    "capabilities": { body: "empty", ...valued(async () => ({
-      capabilities: RUN_CAPABILITIES.map((id) => ({ id, words: CAPABILITY_WORDS[id] })) })) },
-    "tools": { body: "empty", ...valued(async () => ({
-      tools: toolTable().map(({ name, title }) => ({ name, title })) })) },
+    "capabilities": { body: "empty", serve: async () => ({
+      capabilities: RUN_CAPABILITIES.map((id) => ({ id, words: CAPABILITY_WORDS[id] })) }) },
+    "tools": { body: "empty", serve: async () => ({
+      tools: toolTable().map(({ name, title }) => ({ name, title })) }) },
     "files/read": { serve: fileRead },
     "files/write": { serve: fileWrite },
-    "keys": valued(async ({ env, owner, body, gate }) => {
+    "keys": { serve: async ({ env, owner, body, gate }) => {
       requireFresh(gate, "key");
       return mintKey(env, owner, body);
-    }),
+    } },
     "keys/list": { door: "keyList" },
-    "account/erase": valued(({ owner, body }) => eraseOwner(owner, body),
-                           { "Set-Cookie": clearedCookie() }),
+    "account/erase": { serve: async ({ owner, body }) =>
+      new Headed(await eraseOwner(owner, body), { "Set-Cookie": clearedCookie() }) },
     "files/upload/begin": { door: "fileUploadBegin" },
     "files/upload/commit": { door: "fileUploadCommit" },
     "files/upload/abort": { door: "fileUploadAbort" },
     ...Object.fromEntries(Object.entries(HOOK_ROUTES).map(([path, hook]) =>
-      [path, valued(({ env, owner, body }) => hook(env, owner, body))])),
-    "keys/revoke": valued(({ env, owner, body }) => revokeKey(env, owner, body)),
-    "keys/delete": valued(({ env, owner, body }) => deleteOwnKey(env, owner, body)),
-    "grants/revoke": valued(({ env, owner, body }) => revokeClient(env, owner, body["client"])),
+      [path, { serve: ({ env, owner, body }: Served) => hook(env, owner, body) }])),
+    "keys/revoke": { serve: ({ env, owner, body }) => revokeKey(env, owner, body) },
+    "keys/delete": { serve: ({ env, owner, body }) => deleteOwnKey(env, owner, body) },
+    "grants/revoke": { serve: ({ env, owner, body }) => revokeClient(env, owner, body["client"]) },
     "session/extend": { serve: async ({ owner: { binding, stub } }) => {
       const extended = await stub.sessionExtend(binding);
-      return answer(200, extended, { "Set-Cookie": sessionCookie(binding.session ?? "") });
+      return new Headed(extended, { "Set-Cookie": sessionCookie(binding.session ?? "") });
     } },
     "session/close": { serve: signOut },
     "agent/submit": { door: "agentSubmit" },
@@ -423,12 +418,30 @@ function routes(): Readonly<Record<string, OwnerRoute>> {
     ...Object.fromEntries(Object.entries(CONNECT_ROUTES).map(([path, connect]) =>
       [path, { serve: ({ env, owner, body, request, sources }: Served) =>
         connect({ env, bound: owner, body, request, sources }) }])),
-  };
+  } satisfies Readonly<Record<string, OwnerRoute>>;
 }
+
+/** The value a route's sequence answers as JSON (not a response of its own). */
+type Value<A> = A extends Response ? never : A extends Headed<infer V> ? V : A;
+/** What a route answers as JSON: its door's answer, or its sequence's value. */
+type Valued<R> = R extends { readonly door: infer D extends string } ? DoorAnswer<D>
+  : R extends { readonly serve: (served: Served) => Promise<infer A> } ? Value<A> : never;
+/** The owner surface's paths: each route's, a tool's (`tools/<name>`) and a connect route's. */
+export type AppPath = Exclude<keyof ReturnType<typeof routes>, `${string}/`>
+  | `tools/${keyof ToolDoors}` | keyof typeof CONNECT_ROUTES;
+/**
+ * What the owner surface answers at `path`: its door's answer, a tool's door's, or its
+ * sequence's value, which the owner app's calls read (`app/api.js` `call`); nothing at a path
+ * no call names (every path, as a script's untyped string is).
+ */
+export type AppAnswer<P extends AppPath> = [AppPath] extends [P] ? never
+  : P extends `tools/${infer T extends keyof ToolDoors}` ? DoorAnswer<ToolDoors[T]>
+    : P extends keyof typeof CONNECT_ROUTES ? Value<Awaited<ReturnType<(typeof CONNECT_ROUTES)[P]>>>
+      : P extends keyof ReturnType<typeof routes> ? Valued<ReturnType<typeof routes>[P]> : never;
 
 /** The route a path names, exactly or by its prefix, and the path's rest. */
 function routeOf(path: string): { route: OwnerRoute; rest: string } | null {
-  const table = routes();
+  const table: Readonly<Record<string, OwnerRoute>> = routes();
   if (Object.hasOwn(table, path)) {
     return { route: table[path]!, rest: "" };
   }
@@ -505,6 +518,8 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
     return answer(200, await callDoor(owner.stub, owner.binding, route.door, parsed,
                                       request.signal));
   }
-  return route.serve({ env, owner, body: parsed, presented: presented!, token, request,
-                       sources, gate, rest: found!.rest });
+  const served = await route.serve({ env, owner, body: parsed, presented: presented!, token,
+                                    request, sources, gate, rest: found!.rest });
+  return served instanceof Response ? served : served instanceof Headed
+    ? answer(200, served.value, served.headers) : answer(200, served);
 }

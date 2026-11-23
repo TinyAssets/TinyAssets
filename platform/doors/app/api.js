@@ -103,8 +103,13 @@ export function whenSignedOut(callback) {
 }
 
 /**
- * One owner-surface route: its JSON answer, or `Refused` with the doors' own message. A
- * token past its life is refreshed once; a sign-in the doors no longer take signs out.
+ * One owner-surface route: its JSON answer, as the doors type it (`AppAnswer`), or `Refused`
+ * with the doors' own message. A token past its life is refreshed once; a sign-in the doors
+ * no longer take signs out.
+ * @template {import("../src/app").AppPath} P
+ * @param {P} path
+ * @param {object} [body]
+ * @returns {Promise<import("../src/app").AppAnswer<P>>}
  */
 export async function call(path, body = {}) {
   const held = stored(TOKENS);
