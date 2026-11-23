@@ -59,8 +59,8 @@ import { DatabaseSync } from "node:sqlite";
 import { type Served, served } from "../../sources/src/served";
 
 import { isKept, keptPaths } from "./engine";
-import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
-         walkFiles } from "./fsafe";
+import { remove, removeEmpty, safeDirs, safePieces, safeRead, safeReadHead, safeStream,
+         safeWrite, walkFiles, walkTree } from "./fsafe";
 import { heldSecret } from "./guards";
 import { STATE_DIR } from "./protocol";
 import { readJson, STORE, withStore } from "./session";
@@ -605,35 +605,53 @@ async function theirs(client: SyncClient, place: Place, mirror: Mirror,
 
 /**
  * A folder gone from the owner's files, gone from the sandbox but for the files under it that
- * hold unsent changes, each kept with its row (sent against its base, a conflict there):
- * whether it went whole. Its tree is walked an entry at a time, whatever a folder lists: a
- * file is removed only once the walk has read it, and a directory read as it changes still
- * gives every entry neither made nor removed since once (POSIX `readdir`). A file made in it
- * after its folder was read is not looked at, and goes with the folder.
+ * hold changes sync-out sends: whether it went. Its tree is walked an entry at a time,
+ * whatever a folder lists, and each entry goes once the walk met it, its rows with it: a file
+ * unless it holds unsent changes (kept with its row, sent against its base, a conflict
+ * there), and what sync-out never sends (`passed`, `unnamed`) whole. A directory read as it
+ * changes still gives every entry neither made nor removed since once (POSIX `readdir`), but
+ * one made since may be missed, so each folder goes only once the walk left it, and only
+ * while it holds nothing (`removeEmpty`). A file a run made in it after the walk read past it
+ * keeps its folders, and the next sync-out sends it as it sends any new file (the owner's
+ * commit makes its folders again).
  */
 async function goneFolder(place: Place, mirror: Mirror, select: () => Selection,
                           path: string): Promise<boolean> {
   const local = localOf(place, path);
-  const under = `${path.slice(`${WORKSPACE}/`.length)}/`;
-  let kept = false;
-  if (select().sends(path, true)) {
-    for (const rel of walkFiles(local, { skip: (each, isDir) => select().skip(under + each,
-                                                                              isDir) })) {
-      const each = `${path}/${rel}`;
-      const stat = fileStat(join(local, rel));
-      if (stat !== null && await differs(place, each, stat, mirror.get(each))) {
-        kept = true;
-      } else if (same(fileStat(join(local, rel)), stat)) {
-        remove(join(local, rel));
-        mirror.drop(each);
+  if (!select().sends(path, true)) {
+    remove(local);
+  } else {
+    const under = `${path.slice(`${WORKSPACE}/`.length)}/`;
+    for (const met of walkTree(local, { skip: (rel, isDir) => select().skip(under + rel,
+                                                                            isDir) })) {
+      if (met.kind === "unnamed") {
+        remove(met.at);
+        continue;
+      }
+      const each = `${path}/${met.rel}`;
+      let gone = true;
+      if (met.kind === "left") {
+        gone = removeEmpty(met.at);
+      } else if (met.kind === "passed") {
+        remove(met.at);
+      } else {
+        const stat = fileStat(met.at);
+        gone = (stat === null || !await differs(place, each, stat, mirror.get(each)))
+          && same(fileStat(met.at), stat);
+        if (gone) {
+          remove(met.at);
+        }
+      }
+      if (gone) {
+        mirror.dropUnder(each);
       }
     }
   }
-  if (!kept) {
-    remove(local);
+  const went = removeEmpty(local);
+  if (went) {
     mirror.dropUnder(path);
   }
-  return !kept;
+  return went;
 }
 
 /**

@@ -335,6 +335,40 @@ describe("a start", () => {
     expect(Object.keys(state.files).filter((path) => path.includes(`${INBOX}/`))).toEqual([]);
   });
 
+  it("prepares a sandbox a fault left running unprepared before the next start launches in " +
+     "it, and only that once", async () => {
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    const who = owner();
+    const steps = async () => (await seen()).commands.map((command) => command.argv[1])
+      .filter((command) => command === "prepare" || command === "launch");
+    // Its create's `prepare` fails: the sandbox runs on, unprepared.
+    await e2b("/script", { broken: "prepare" });
+    expect((await faulted(() => stub(who).start(start()))).got).toBe("sandbox_start_failed");
+    await e2b("/script", { broken: null });
+    const joining = (n: string) => start({ run: `run_${hex(32, n)}`, tokens: null,
+                                           network: null });
+    expect(await stub(who).start(joining("4"))).toEqual({ started: true });
+    // The start that found it running prepared it before its launch; the next one does not.
+    expect(await steps()).toEqual(["prepare", "prepare", "launch"]);
+    expect(await stub(who).start(joining("5"))).toEqual({ started: true });
+    expect(await steps()).toEqual(["prepare", "prepare", "launch", "launch"]);
+    // A resume's `prepare` fails the same way, and the next start prepares it first.
+    await e2b("/reset", {});
+    await e2b("/script", { signin: { "claude-code": 0 }, state: { live: 0, quiet: true } });
+    const resumed = owner();
+    expect(await stub(resumed).start(start())).toEqual({ started: true });
+    expect(await stub(resumed).release({ lease_id: LEASE.lease_id })).toEqual({ paused: true });
+    await e2b("/script", { broken: "prepare" });
+    const next = { lease_id: hex(32, "f"), epoch: 2 };
+    expect((await faulted(() => stub(resumed).start(start({ run: `run_${hex(32, "6")}`,
+                                                           lease: next })))).got)
+      .toBe("sandbox_start_failed");
+    expect((await seen()).sandboxes[0]!.state).toBe("running");
+    await e2b("/script", { broken: null });
+    expect(await stub(resumed).start(joining("7"))).toEqual({ started: true });
+    expect(await steps()).toEqual(["prepare", "launch", "prepare", "prepare", "launch"]);
+  });
+
   it("leaves a fault from the launch command on a plain error: whether it launched is unknown",
      async () => {
     // Its reply lost after it ran, or its process never started: envd answers both the same.

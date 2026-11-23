@@ -60,6 +60,13 @@ export const CONTROL_MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "ALTER TABLE sandboxes ADD COLUMN heard INTEGER NOT NULL DEFAULT 0",
   ]),
+  // 7 (`untangle-2026-11/start-faults.md`): whether its runner's `prepare` ended since the
+  // sandbox last came running or took another runner, so a start that finds it running and
+  // unprepared (a fault on the way) prepares it before it launches anything. Unknown for the
+  // sandboxes already kept, so each is prepared again once.
+  Object.freeze([
+    "ALTER TABLE sandboxes ADD COLUMN prepared INTEGER NOT NULL DEFAULT 0",
+  ]),
 ]);
 
 /** `SandboxSlots`'s, the one line for the platform. */

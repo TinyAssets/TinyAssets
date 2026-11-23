@@ -95,9 +95,9 @@ export interface Lane {
    * One short, bounded pass over what is due at `now`, taking no new row once the owner's
    * clock (`clock()`) reaches `until`. Each outside call's failure is kept in its
    * own row, backed off there; a throw is a bug, and fails the whole pass. Each of its
-   * writes is a unit of the object's write gate. A pass that could take none of its due
-   * rows for a reason outside them (the `wakes` lane's kill switch, closed) answers
-   * {@link Held}, and its job waits until then.
+   * writes is a unit of the object's write gate. A pass that can take no more of its due
+   * rows for a reason outside them (the `wakes` lane's kill switch, closed; a refusal for the
+   * moment the `runs` lane's rows meet) answers {@link Held}, and its job waits until then.
    */
   run(now: number, until: number): Promise<unknown>;
 }

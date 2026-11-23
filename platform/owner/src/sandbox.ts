@@ -189,9 +189,9 @@ function started(value: unknown): Started | undefined {
  * (above), so the same start (its job's id, its admission's tokens and network) is sent again
  * after the refusal's own `Retry-After`, while its job still `stands` (not cancelled or ended
  * meanwhile) and that wait ends within `LANE_CALL_MS` of the first send: the bound on one
- * outside call a lane's row makes, so the waits add no more than that to a pass (a send's
- * own time is the sandbox Worker's, bounded by nothing: `untangle/lane-start-bound`). Past it
- * the refusal stands, by its own code.
+ * outside call a lane's row makes. A lane's pass waits on the whole start to that bound
+ * (`Launcher`'s `#laneLaunch`), and a start answered later is recorded then, against its job
+ * as it then stands. Past it the refusal stands, by its own code.
  */
 export async function startOutcome(job: "a run" | "a sign-in", start: () => Promise<unknown>,
                                    stands: () => Promise<boolean>): Promise<StartOutcome> {

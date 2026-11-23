@@ -6,6 +6,7 @@
  * no sandbox at all, simultaneous runs each on their own connection, a run's calls held to
  * its grant, and the `runs` lane. The doors' side is `doors/test/runs.test.ts`.
  */
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -28,14 +29,15 @@ import { catalog, gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import {
   ALL_SCOPES, defineAgent, hashed, inSession, later, OPEN_RECORD, openRecord, ownerFile, ownerRun,
-  recorder, runBinding, runnerBinding, runnerSandbox, scripted, startOf, TIERS,
+  recorder, runBinding, runnerBinding, runnerSandbox, scripted, startOf, TIERS, whileOut,
 } from "./runs-support";
 import { RANKING } from "../../contract/src/paths";
 import type { ActionRule } from "../../contract/src/policy-document";
 import type { Tiers } from "../../contract/src/control";
 import { ADMITTED_FILE_BYTES } from "../src/holds";
 import { secretOf, until } from "../../ci/workerd";
-import { drainDue, failure, gateFor, spaceOf } from "./support";
+import { drainDue, failure, gateFor, laneAt, spaceOf } from "./support";
+import { LANE_CALL_MS } from "../src/schedule";
 import { SANDBOX_WAITING, type SandboxStart } from "../../contract/src/sandbox";
 
 afterEach(() => {
@@ -682,6 +684,44 @@ describe("a run's cancel", () => {
     await r.stub.agentCancel(r.bind(), { run_id: run.run_id });
     expect((await recorder(r.stub)).cancels).toHaveLength(1);
   });
+
+  it("asked while its start is out, stops the run its start then starts, and gives one its " +
+     "start refuses for a sandbox no wait", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const submit = (id: string) => r.stub.agentSubmit(r.bind({ control: OPEN_RECORD }),
+                                                      { message: "x", client_send_id: id });
+    const cancels = async (run: string) => (await recorder(r.stub)).cancels
+      .filter((cancel) => cancel.run === run).length;
+    let run = "";
+    const started = await whileOut(r.name, "start", () => submit("o-1"), async () => {
+      run = (await recorder(r.stub)).starts.at(-1)!.run;
+      await r.stub.agentCancel(r.bind(), { run_id: run });
+      // Its cancel reached the sandbox before the start's answer came, so maybe before its
+      // launch, which then stops nothing.
+      expect(await cancels(run)).toBe(1);
+    });
+    // Started for a run that no longer stands: stopped again, now that it launched, and
+    // settled from its runner's end.
+    expect(started).toMatchObject({ run_id: run, state: "running" });
+    expect(await cancels(run)).toBe(2);
+    await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, run)),
+                           { frames: [], end: { exit_code: null } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: run }))
+      .toMatchObject({ state: "failed", code: "cancelled" });
+    // No room for its sandbox: a cancelled run waits for none, and settles by that answer.
+    await scripted(r.stub, { answer: { started: false, code: SANDBOX_WAITING } });
+    let refused = "";
+    const answer = await whileOut(r.name, "start", () => submit("o-2"), async () => {
+      refused = (await recorder(r.stub)).starts.at(-1)!.run;
+      await r.stub.agentCancel(r.bind(), { run_id: refused });
+    });
+    expect(answer).toMatchObject({ run_id: refused, state: "failed", code: SANDBOX_WAITING });
+    expect(await r.sql("SELECT run FROM run_inputs")).toEqual([]);
+    expect(await r.sql("SELECT id FROM runs WHERE sandbox_wait = 1")).toEqual([]);
+    // Nothing launched: only the cancel's own reached the sandbox.
+    expect(await cancels(refused)).toBe(1);
+  });
 });
 
 describe("simultaneous runs", () => {
@@ -1231,12 +1271,26 @@ describe("the runs lane", () => {
       const before = (await recorder(r.stub)).starts.length;
       await r.stub.agentRun(r.bind(), { agent: "main", input: "report",
                                                         ...trigger });
-      // The read refused `busy`, as a full slot pool refuses it: the pass fails, unclaimed.
+      // The read refused `busy` for the moment, as a full slot pool refuses it: the pass
+      // holds the lane until its Retry-After, never failed, the schedule unclaimed and due.
       const busy = slotBusy();
-      await gateFor(env.FILES_GATE, await spaceOf(r.stub))
-        .arm("getChunks", { refuse: { code: busy.code, message: busy.message } });
-      await fireSchedules(r).catch(() => undefined);
-      // The lane's next pass, as its backoff brings it.
+      await gateFor(env.FILES_GATE, await spaceOf(r.stub)).arm("getChunks", { refuse: {
+        code: busy.code, message: busy.message, retryAfterS: 60 } });
+      const logged = vi.spyOn(console, "error");
+      onTestFinished(() => logged.mockRestore());
+      const began = Date.now() / 1000;
+      await fireSchedules(r);
+      const ended = Date.now() / 1000;
+      expect(logged.mock.calls.map((call) => String(call[0])))
+        .not.toContain("the owner's runs pass failed; it runs again later");
+      logged.mockRestore();
+      const held = (await laneAt(r.stub, "runs"))!;
+      expect(held).toBeGreaterThanOrEqual(began + 60);
+      expect(held).toBeLessThanOrEqual(Math.ceil((ended + 60) * 1000) / 1000);
+      expect((await recorder(r.stub)).starts.length - before).toBe(0);
+      expect(await r.sql("SELECT last_error FROM run_schedules WHERE next_at <= ?", ended))
+        .toEqual([{ last_error: null }]);
+      // The lane's next pass, as its hold brings it.
       await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");
       await drainDue(r.stub);
       expect((await recorder(r.stub)).starts.length - before).toBe(1);
@@ -1250,6 +1304,59 @@ describe("the runs lane", () => {
           "SELECT id FROM run_schedules"))[0]!["id"] as string });
       }
     }
+  });
+
+  it("keeps a refusal that crossed from the files plane on its schedule's row, the pass " +
+     "never failed for it", async () => {
+    const r = await gated();
+    // An agent's file past an inline one, so the launch reads it from the files plane.
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.fileWrite(r.session(), {
+      path: "/workspace/agents/main/agent.json", content: new TextEncoder().encode(
+        `${JSON.stringify(SIGNED_IN)}${" ".repeat(INLINE_BYTES)}`),
+      expected_etag: (await r.stub.fileStat(r.bind(), {
+        path: "/workspace/agents/main/agent.json" })).entry!.etag });
+    await r.stub.agentRun(r.bind({ control: OPEN_RECORD }), { agent: "main", input: "report",
+                                                      cron: "30 * * * *" });
+    await gateFor(env.FILES_GATE, await spaceOf(r.stub)).arm("getChunks", { refuse: {
+      code: "invalid", message: "invalid: the files plane refuses this read" } });
+    await fireSchedules(r);
+    expect(await r.sql("SELECT last_error FROM run_schedules"))
+      .toEqual([{ last_error: "invalid: the files plane refuses this read" }]);
+    expect((await recorder(r.stub)).starts).toEqual([]);
+  });
+
+  it("waits on a due schedule's start only to the bound on a row's outside call: the pass " +
+     "goes on, the run queued, and its answer is recorded when it comes", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await r.stub.agentRun(r.bind({ control: OPEN_RECORD }), { agent: "main", input: "report",
+                                                      at: Date.now() / 1000 + 3600 });
+    const sandbox = gateFor(env.SANDBOX_GATE, r.name);
+    await sandbox.arm("start", { hold: "before" });
+    await r.sql("UPDATE run_schedules SET next_at = ?", Date.now() / 1000 - 1);
+    // Time passes on the fake clock while the start is held, advanced inside the object
+    // (workerd resolves a timer it set only in its own context): no guessed wait ends it.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    // A door re-derives the lane's job, due now, and its pass sends the start.
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/d-bound", expected_etag: null });
+    const pass = runDurableObjectAlarm(r.stub);
+    await until(async () => (await env.SANDBOX_GATE.held())
+      .some((call) => call.name === r.name && call.method === "start"), "the start held");
+    await runInDurableObject(r.stub, () => vi.advanceTimersByTimeAsync(LANE_CALL_MS));
+    vi.useRealTimers();
+    // The pass ended with the start still out: its job set from the rows, the run's own
+    // look ahead, and the run queued, which no pass starts again.
+    await until(async () => (await laneAt(r.stub, "runs") ?? 0) > Date.now() / 1000,
+                "the pass's end");
+    const [row] = await r.sql("SELECT id, state FROM runs");
+    expect(row).toMatchObject({ state: "queued" });
+    expect(await r.sql("SELECT id FROM run_schedules")).toEqual([]);
+    await sandbox.release("start");
+    await until(async () => (await r.sql("SELECT state FROM runs"))[0]!["state"] === "running",
+                "the late start recorded");
+    expect((await recorder(r.stub)).starts.map((start) => start.run)).toEqual([row!["id"]]);
+    await pass;
   });
 
   it("cancels a schedule of the caller's", async () => {
