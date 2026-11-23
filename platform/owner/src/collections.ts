@@ -542,15 +542,18 @@ export class Collections {
   /**
    * The newest change `caller` may see, a row's or a deletion's, and never under the floor a
    * reset hands out (`erasure_floor`): the cursor a wake is after, so it counts no change
-   * hidden from its reader. Each part read from its newest change down to the first visible.
+   * hidden from its reader. The rows are read from their newest change down to the first
+   * visible, and the deletions only past that one, so a clear of rows hidden from the
+   * reader is read again only until a row it can see is written, not on every call after.
    */
   seen(caller: string): number {
     return this.#sql.exec<{ change: number }>(
-      "SELECT max((SELECT erasure_floor FROM collection_space), " +
-        "coalesce((SELECT change FROM collection_rows INDEXED BY collection_changes " +
-        "WHERE private = 0 OR writer = ? ORDER BY change DESC LIMIT 1), 0), " +
-        "coalesce((SELECT change FROM collection_erasures WHERE private_writer IS NULL " +
-        "OR private_writer = ? ORDER BY change DESC LIMIT 1), 0)) AS change",
+      "SELECT max((SELECT erasure_floor FROM collection_space), newest, " +
+        "coalesce((SELECT change FROM collection_erasures WHERE change > newest AND " +
+        "(private_writer IS NULL OR private_writer = ?) ORDER BY change DESC LIMIT 1), 0)) " +
+        "AS change FROM (SELECT coalesce((SELECT change FROM collection_rows INDEXED BY " +
+        "collection_changes WHERE private = 0 OR writer = ? ORDER BY change DESC LIMIT 1), " +
+        "0) AS newest)",
       caller, caller).one().change;
   }
 

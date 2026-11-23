@@ -114,13 +114,24 @@ replaces `Collections.clock()`, whose only readers were the wakes.
   between them. Numbering what each reader sees apart would need a counter per writer and
   cursors of two parts (public, own), a change to every stored row, the history's keys and
   every client; the cursor is fixed here because it moved with nothing shown, which no stamp
-  does.
+  does. Review: the stamps are also an oracle a visitor can call. It writes a private row of
+  its own (`collection_write` answers its `seq`; `board_digest` and `collection_history` show
+  its `change`) and so reads the owner-wide clock, or a room's seq, when it likes. This change
+  closes the passive leak only; the active one is `untangle/row-stamps` (Owed).
 - **A reset tells the floor.** A reader under `erasure_floor` must be handed a cursor at or
   past it, or it is reset again forever; so a reset tells it the change of the newest pruned
   deletion (or the clock, after a restore). That is one number, told once per prune past it.
 - **Rescans.** Shape A's repeated read of changes past the cursor that its reader can't see,
   above. A per-collection change index would bound a board reader's to the board's, at a
   migration and the rows' charge (every index entry is charged); nothing measured asks for it.
+- **`seen`'s read.** `clock()` read one row. `seen` reads the change index from its top down
+  to the first row its reader may see, and the deletions only past that row's change. Review
+  bounded the deletions so: read whole, a clear of a visitor's private rows was read again by
+  every later owner write and mail post (about 7 ms per 200,000 deletions in SQLite). A
+  visitor's private rows newer than the newest row the owner sees are still read again by each
+  owner write, delete, clear and mail post, bounded by that visitor's share of the rows. An
+  O(1) answer keeps the owner-visible change in `collection_space` at each write, a
+  migration; it goes with `untangle/row-stamps`, which renumbers these counters anyway.
 
 ## As built
 
@@ -129,7 +140,7 @@ replaces `Collections.clock()`, whose only readers were the wakes.
   the store's when none is kept.
 - `Collections.seen(caller)` replaces `clock()`: `ring`'s `before` is
   `seen(account.owner)`, the ledger's mail wake `seen(namedOwner(id))` (an outside agent's
-  calls are the owner's caller).
+  calls are the owner's caller). Its deletions are read only past its newest visible row.
 - The spec: the digests' cursor and reset, the wake's `after`, the pull's cursor, and two
   scenarios (a visiting owner's cursor, an empty board).
 - Tests: a visitor's board and room cursors stay put while the host writes private rows and
@@ -143,3 +154,5 @@ replaces `Collections.clock()`, whose only readers were the wakes.
 
 - [ ] live: after the next owner deploy, the stage's `board_digest` from 0 with no board row
   answers cursor 0, whatever the rooms hold.
+- [ ] untangle/row-stamps: the stamps' oracle ("Left"), researched first (Fact 14); with it,
+  `seen`'s and the digests' rereads of what their reader can't see.
