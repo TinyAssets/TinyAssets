@@ -110,12 +110,28 @@ releases before it, it kept:
   `entry.test.ts`'s Vercel source) and the one that held `handed`'s answer
   (`forward.test.ts`): now the `apis` spelling, and the seal input's old spelling is
   refused.
+- `credential.test.ts`'s refusals of an unsupported API and of each bad base URL (18 cases),
+  and its open of a plaintext on a retired API, set `api` or `base_url` beside the record's
+  `apis` since #5837, so each was refused for the extra key whatever the rule under test
+  did: they could not fail. Each now changes the API's row (`onApi`); a mutation that lets
+  any API seal fails four of them.
+- `owner/test/connections.test.ts` "keeps maxModels of the largest built-in record" grew each
+  record's id by five characters, so with every record naming its API (`"api":
+  "anthropic-messages"`, 27 bytes) its 1,024 records came to 640 KiB and one byte, past
+  `MODELS_JSON_MAX`, though the largest record itself fits 1,024 times (650,241 bytes with
+  separators). The bound's promise is the largest record's; each synthetic id now keeps its
+  length, and the test checks each record is the largest's size.
 - `openspec` gateway spec's `verify` requirement named the one-API spelling. Updated.
 
 ## Left, with reasons
 
 - **The old spelling's two readers** (`upstream`'s blob, `egressScope`'s stored scope) and
   `ModelRecord.api`'s absence, for the reasons above, owed below.
+- **`MODELS_JSON_MAX`'s margin**: 1,024 of the largest record, each naming its API, are
+  650,241 of its 655,360 bytes, as the lane's `models` read (#5844) already hands them. The
+  bound is sized to that product, not measured at run time, and the connections test holds it
+  at every pi-ai pin, so a bump with a larger record fails that test, and the bound moves
+  with the bump.
 - **A rollback by hand past #5837** (the dashboard's Deployments) would put a gateway that
   cannot open an `apis`-spelled blob before every blob sealed or resealed since; the
   checklist's rules for one (`deploy/checklist.md`) hold migration counts and secrets, not a
