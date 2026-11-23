@@ -69,6 +69,7 @@ export interface DoorRequests {
   readonly registerAgent:
     | DoorFields<"card_id" | "digest">
     | DoorFields<"command_center_id" | "display_name" | "delivery_method" | "recipe_id">;
+  readonly registerProposal: DoorFields<"card_id">;
   readonly registerDecline: DoorFields<"card_id" | "digest">;
   readonly disableAgent: DoorFields<"agent_id" | "reason">;
   readonly agentDoorbell:

@@ -151,6 +151,8 @@ export interface DoorRows {
     { readonly module: "files"; readonly caller: "account"; readonly gate: "door" };
   readonly registerAgent:
     { readonly module: "ledger"; readonly caller: "session"; readonly gate: "synced" };
+  readonly registerProposal:
+    { readonly module: "registrations"; readonly caller: "owner"; readonly gate: "door" };
   readonly registerProposals:
     { readonly module: "registrations"; readonly caller: "owner"; readonly gate: "door" };
   readonly registerDecline:
@@ -593,6 +595,8 @@ export interface DoorMethods<H> {
     Promise<AnswerIn<H, "fileUploadStored">>;
   registerAgent(binding: Binding, request: RequestIn<H, "registerAgent">):
     Promise<AnswerIn<H, "registerAgent">>;
+  registerProposal(binding: Binding, request: RequestIn<H, "registerProposal">):
+    Promise<AnswerIn<H, "registerProposal">>;
   registerProposals(binding: Binding): Promise<AnswerIn<H, "registerProposals">>;
   registerDecline(binding: Binding, request: RequestIn<H, "registerDecline">):
     Promise<AnswerIn<H, "registerDecline">>;

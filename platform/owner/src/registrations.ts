@@ -289,6 +289,18 @@ export const registrationsDoors = Object.freeze({
       authenticated_at: binding.authenticated_at ?? null }, request, clock());
     return { ...filed, approve_url: approveUrl(filed.card_id) };
   },
+  /**
+   * The one card under `card_id`, for the doors' version before (`dropped`), which still
+   * names it until the stage serves none.
+   */
+  registerProposal(o: RegistrationsDoorNeeds, { r }: Call<{ readonly card_id: string }>):
+      Card {
+    const card = o.registrations.list().find((each) => each.card_id === r["card_id"]);
+    if (card === undefined) {
+      throw new Refusal("refused", "no pending registration for this card");
+    }
+    return card;
+  },
   /** The pending registration cards the owner is shown, oldest first, each with its digest. */
   registerProposals(o: RegistrationsDoorNeeds, _call: Call<undefined>): { cards: Card[] } {
     return { cards: o.registrations.list() };
