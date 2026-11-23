@@ -203,8 +203,15 @@ targets (#5810). Asked whether the routing formats are a shape `handed.json` mus
   neither goes back alone. `platform.json` `forward` is for a change no config shows.
 - **Left:** from the owner's 100% until the doors', the doors' version before verifies only the
   old token and route. The owner's new tokens are refused and its new routes go unrouted for
-  that window, which closes when the doors serve; a run stopped between fails loudly and is
-  rerun. Closing it would take the two-format downgrade path the research refused.
+  that window, which closes when the doors serve. Closing it would take the two-format
+  downgrade path the research refused, over three deploys, to keep the minute in which the
+  doors upload and deploy, inside the deploy that ends every routing value made before it on
+  purpose; it happens once, since a rotation after it is staged (`keyring-stage`) and has none.
+- **Review: a run stopped between had no way on.** Its rerun finds the owner alone holding
+  `ROUTING_KEYRING` and stops, naming `--rotate ROUTING_KEYRING`, which `secretPlan` refused as
+  a rotation adding no key: `production`'s ring has one kid, and the founder no copy to add to.
+  Setting a shared keyring one holder lacks on both again is no rotation, so it needs no added
+  key; held by both, a rotation still does.
 
 ## Founder step
 

@@ -131,7 +131,8 @@ It never counts as "absent".
    adding a key: run `keyring-add` on your copy
    of the stored keyring, store the result, then run with `rotate` naming it. The
    kit refuses a rotated keyring with fewer than two keys, or whose active key is not among
-   them. **Residual:** Cloudflare never shows a held secret, so the kit cannot read the
+   them; a shared one only one Worker holds (a run stopped between them) is set on both
+   again as `production` holds it. **Residual:** Cloudflare never shows a held secret, so the kit cannot read the
    deployed keyring back. A two-key ring that dropped the deployed key would pass its check
    and make every sealed credential (or, for `FILES_KEYRING`, every chunk) unreadable. `keyring-add` keeps every old key by
    construction, so rotate only with it, on your copy of the stored keyring. Mode `rotation`

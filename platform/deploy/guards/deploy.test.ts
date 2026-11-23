@@ -3523,6 +3523,13 @@ describe("the parts of a run", () => {
     expect(secretPlan({ doors: ["ROUTING_KEYRING"], owner: [] }, new Set(["ROUTING_KEYRING"]),
                       () => ROTATED).filter(({ name }) => name === "ROUTING_KEYRING"))
       .toHaveLength(2);
+    // The first run to set it stopped between the owner and the doors: setting both again is
+    // no rotation, so production's one-kid ring goes on both; held by both, it is refused.
+    expect(secretPlan({ doors: [], owner: ["ROUTING_KEYRING"] }, new Set(["ROUTING_KEYRING"]),
+                      () => RING).filter(({ name }) => name === "ROUTING_KEYRING"))
+      .toHaveLength(2);
+    expect(() => secretPlan({ doors: ["ROUTING_KEYRING"], owner: ["ROUTING_KEYRING"] },
+                            new Set(["ROUTING_KEYRING"]), () => RING)).toThrow(/adding a key/);
   });
 
   it("never replaces a held keyring, and rotates one only by adding a key", () => {

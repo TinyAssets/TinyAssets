@@ -837,26 +837,32 @@ export function keyring(text: string | undefined, name: string): Ring {
 
 /**
  * What to set: each Worker's missing secrets, and those `rotate` names (the shared routing
- * key on both or neither; a keyring only as an addition). `held` is each Worker's listing,
- * empty for a Worker the account's Workers listing lacks.
+ * keyring on both or neither; a keyring only as an addition, unless set on both again).
+ * `held` is each Worker's listing, empty for a Worker the account's Workers listing lacks.
  */
 export function secretPlan(held: Readonly<Record<string, readonly string[]>>,
                            rotate: ReadonlySet<string>,
                            values: ((name: string) => string | undefined) | null):
     { worker: string; name: string }[] {
   const has = (worker: string, name: string) => (held[worker] ?? []).includes(name);
+  // A shared secret one holder lacks (a run stopped between its holders' deploys, as the first
+  // to set one can): setting both again is no rotation, so its ring need add no key.
+  const halfHeld = new Set<string>();
   for (const name of SHARED) {
     const holders = Object.keys(SECRETS).filter((worker) => SECRETS[worker]!.includes(name));
-    if (new Set(holders.map((worker) => has(worker, name))).size > 1 && !rotate.has(name)) {
-      throw new Error(`only one of ${holders.map((worker) => `the ${worker}`).join(" and ")} ` +
-                      `holds ${name}: pass --rotate ${name} to set both again`);
+    if (new Set(holders.map((worker) => has(worker, name))).size > 1) {
+      if (!rotate.has(name)) {
+        throw new Error(`only one of ${holders.map((worker) => `the ${worker}`).join(" and ")} ` +
+                        `holds ${name}: pass --rotate ${name} to set both again`);
+      }
+      halfHeld.add(name);
     }
   }
   // `values` null: the plan job, which holds no keyring; the apply job checks the ring.
   for (const name of KEYRINGS) {
     if (rotate.has(name) && values !== null) {
       const ring = keyring(values(name), name);
-      if (ring.keys.size < 2) {
+      if (ring.keys.size < 2 && !halfHeld.has(name)) {
         throw new Error(`a keyring is rotated by adding a key: the new ${name} holds ` +
                         "the old keys and a new active one (keyring-add)");
       }
