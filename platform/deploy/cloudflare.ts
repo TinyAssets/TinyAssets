@@ -3,7 +3,8 @@
  * account's token: the zone and its account, the account's Workers, their secrets' names,
  * their deployments and their versions' tags, KV namespaces, keys and values, R2 buckets with
  * their lock rules and objects, queues with their messages and consumers, and the zone's
- * Worker routes, DNS records and Workers custom domains. Every call is checked: a failed
+ * Worker routes, DNS records and Workers custom domains, and the Workers' logs (Workers
+ * Observability's telemetry query). Every call is checked: a failed
  * listing or read throws, never reads as "absent", and a body that is not JSON throws. Every
  * listing is read to its last page. The kit's other Cloudflare tool is wrangler (`deploy.ts`),
  * which uploads and deploys the run's versions; a rollback's deployment is this client's.
@@ -15,6 +16,14 @@ import { HEX32 } from "../contract/src/ids.ts";
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 const CF_API = "https://api.cloudflare.com/client/v4";
+/**
+ * The permission a Workers Logs query takes, by the API's name and the dashboard's: the one
+ * group `x-api-token-group` gives `telemetry.query` in Cloudflare's OpenAPI schema
+ * (`cloudflare/api-schemas`, read 2026-11-23); Workers Scripts and Account Analytics Read are
+ * not among them.
+ */
+export const TELEMETRY_PERMISSION =
+  "Workers Observability Write (the dashboard's Account, Workers Observability, Edit)";
 /** The most messages one Queues batch push takes (Cloudflare's Queues limits). */
 export const BATCH = 100;
 
@@ -406,6 +415,28 @@ export class Cloudflare {
   async workers(account: string): Promise<string[]> {
     return (await this.#rows("the Workers listing", `/accounts/${account}/workers/scripts`))
       .map((script) => String(script["id"]));
+  }
+
+  /**
+   * The account's Workers Observability telemetry query (`POST .../workers/observability/
+   * telemetry/query`), its `query` the body Cloudflare's `telemetry.query` takes: its result.
+   * It reads only. A refusal names the one permission group Cloudflare's OpenAPI schema gives
+   * it (`TELEMETRY_PERMISSION`); any other failure throws as every call does.
+   */
+  async telemetry(account: string, query: unknown): Promise<unknown> {
+    const path = `/accounts/${account}/workers/observability/telemetry/query`;
+    const answer = await this.#call(path, { method: "POST", body: JSON.stringify(query),
+                                            headers: { "Content-Type": "application/json" } });
+    if (answer.status === 401 || answer.status === 403) {
+      throw new Error(`the Workers Logs query was refused (${answer.status}, ${codes(answer)}): ` +
+                      `the Cloudflare token lacks ${TELEMETRY_PERMISSION}, the one permission ` +
+                      "the query takes; the founder adds it to the token");
+    }
+    const body = envelope(answer);
+    if (answer.status !== 200 || body.success !== true) {
+      throw new Error(`the Workers Logs query failed (${answer.status}, ${codes(answer)})`);
+    }
+    return body.result;
   }
 
   /**

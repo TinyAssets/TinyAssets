@@ -30,7 +30,10 @@ name: Platform deploy (manual, founder-approved)
 #
 # The modes are the kit's own (deploy.ts says what each does): plan, dark,
 # routes, h2, handback, rollback, control, owner, restore, copyback, recover,
-# erase, rotation and retire here; pair is its own job.
+# erase, rotation, retire and logs here; pair is its own job. `logs`, like
+# `plan`, is the plan job's alone: it prints the Workers' error and warn lines
+# of the last `minutes` (`worker`'s alone, those holding `filter`), redacted,
+# and changes nothing (deploy/logs.ts).
 # `routes` keeps a record of what it changes (the zone's routes, the egress
 # custom domain, E2B's lifecycle webhook) before any change, or keeps the
 # host's record while one stands, and its plan names the record's id (the
@@ -67,11 +70,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'plan | dark | routes | h2 | handback | rollback | control | owner | restore | copyback | recover | erase | rotation | retire'
+        description: 'plan | dark | routes | h2 | handback | rollback | control | owner | restore | copyback | recover | erase | rotation | retire | logs'
         required: true
         default: plan
         type: choice
-        options: [plan, dark, routes, h2, handback, rollback, control, owner, restore, copyback, recover, erase, rotation, retire]
+        options: [plan, dark, routes, h2, handback, rollback, control, owner, restore, copyback, recover, erase, rotation, retire, logs]
       rotate:
         description: 'Secrets to set again, comma-separated (a keyring only as an addition)'
         required: false
@@ -127,6 +130,21 @@ on:
         required: false
         default: ''
         type: string
+      minutes:
+        description: 'logs: the minutes of error and warn lines read, within the 7 days Workers Logs keep; none, the kit''s default'
+        required: false
+        default: ''
+        type: string
+      worker:
+        description: 'logs: the one Worker read, by its folder under platform/ (doors, owner, sandbox, ...); none, every Worker'
+        required: false
+        default: ''
+        type: string
+      filter:
+        description: 'logs: text each line read holds, any case; none, any line'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -158,6 +176,9 @@ jobs:
       CONFIRM: ${{ inputs.confirm }}
       KEYRING: ${{ inputs.keyring }}
       AT: ${{ inputs.at }}
+      MINUTES: ${{ inputs.minutes }}
+      WORKER: ${{ inputs.worker }}
+      FILTER: ${{ inputs.filter }}
     steps:
       # Every commit, without file contents: the plan reads what each serving Worker hands and
       # takes at the commit its version's tag names (platform/deploy/handed.ts), each file's
@@ -182,7 +203,7 @@ jobs:
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
           --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"
-          --at "${AT}"
+          --at "${AT}" --minutes "${MINUTES}" --worker "${WORKER}" --filter "${FILTER}"
 
       # The plan the apply job is held to, kept by this run alone (a re-run of the plan job
       # writes it again).
@@ -224,7 +245,7 @@ jobs:
   apply:
     needs: [plan, pair]
     if: >-
-      always() && github.ref == 'refs/heads/main' && inputs.mode != 'plan'
+      always() && github.ref == 'refs/heads/main' && inputs.mode != 'plan' && inputs.mode != 'logs'
       && needs.plan.result == 'success'
       && (needs.pair.result == 'success'
           || (inputs.mode != 'dark' && inputs.mode != 'routes' && needs.pair.result == 'skipped'))
@@ -273,6 +294,9 @@ jobs:
       CONFIRM: ${{ inputs.confirm }}
       KEYRING: ${{ inputs.keyring }}
       AT: ${{ inputs.at }}
+      MINUTES: ${{ inputs.minutes }}
+      WORKER: ${{ inputs.worker }}
+      FILTER: ${{ inputs.filter }}
     steps:
       # As the plan job's: its plan made again reads the serving commits' files too.
       - uses: actions/checkout@v4
@@ -306,4 +330,4 @@ jobs:
           --rotate "${ROTATE}" --migrate "${MIGRATE}" --record "${RECORD}" --set "${SET}"
           --replace "${REPLACE}" --owner "${OWNER}" --act "${ACT}"
           --generation "${GENERATION}" --confirm "${CONFIRM}" --keyring "${KEYRING}"
-          --at "${AT}"
+          --at "${AT}" --minutes "${MINUTES}" --worker "${WORKER}" --filter "${FILTER}"
