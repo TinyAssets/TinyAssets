@@ -84,7 +84,7 @@ export interface Args {
   readonly omitted?: true;
   /**
    * Fields a release before listed, which the doors hand no more and the owner still takes
-   * and drops, until the doors the stage serve list them no more
+   * and drops, until the doors the stage serves list them no more
    * (`deploy/guards/handed.test.ts`).
    */
   readonly dropped?: readonly string[];
@@ -121,7 +121,7 @@ export interface DoorRow {
   readonly stop?: true;
   /**
    * The doors call it no more (no tool, and no method of `OwnerDoors`); the owner still takes
-   * it, until the doors the stage serve call it no more (`deploy/guards/handed.test.ts`).
+   * it, until the doors the stage serves call it no more (`deploy/guards/handed.test.ts`).
    */
   readonly dropped?: true;
 }

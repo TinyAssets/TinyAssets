@@ -15,7 +15,7 @@
  * hand. What the doors stop handing is dropped first: a binding field to its shape's
  * `dropped`, a request's field to its arguments' `dropped`, which the owner takes and drops,
  * and a door to `dropped: true`, which the owner takes and the doors' `OwnerDoors` lacks. It
- * goes once the doors the stage serve hand it no more (expand, then contract): the base
+ * goes once the doors the stage serves hand it no more (expand, then contract): the base
  * branch is not what the stage serves, so that wait is the change's own, named in its
  * decision log. A door's request read by its own module (`loose`) is its module's, and not
  * held here. The base is `ci/history.ts`'s.
@@ -34,10 +34,12 @@ const DOORS_JSON = "platform/contract/doors.json";
 
 /** What the doors hand on one side of the change: the binding's shapes and the door table. */
 interface Side {
-  /** Null on a base before the shapes were data. */
-  readonly shapes: Readonly<Record<string, Shape>> | null;
+  readonly shapes: Readonly<Record<string, Shape>>;
   readonly doors: readonly DoorRow[];
 }
+
+/** The base's side: its shapes are null on a base from before they were data. */
+type BaseSide = Omit<Side, "shapes"> & { readonly shapes: Side["shapes"] | null };
 
 /** The fields one side hands, always and sometimes, and the ones it takes and drops. */
 interface Fields {
@@ -56,10 +58,10 @@ function fieldProblems(what: string, handed: Fields, taken: Fields): string[] {
     ...[...handed.required, ...handed.optional].filter((field) => !takes.has(field))
       .map((field) => `${what} no longer takes ${field}, which the doors' version before ` +
                       "hands: drop it first (the owner takes and drops it), and take it out " +
-                      "once the doors the stage serve hand it no more"),
+                      "once the doors the stage serves hand it no more"),
     ...taken.required.filter((field) => !handed.required.includes(field))
       .map((field) => `${what} requires ${field}, which the doors' version before does not ` +
-                      "always hand: take it as optional until the doors the stage serve do"),
+                      "always hand: take it as optional until the doors the stage serves do"),
   ];
 }
 
@@ -93,7 +95,7 @@ function argsProblems(door: string, base: DoorArgs, head: DoorArgs): string[] {
                              || Object.keys(args.required).length > 0)
       .map(([side]) => `${named(side)} takes a request now, which the doors' version before ` +
                        "calls it without: take none, or an omitted one, until the doors the " +
-                       "stage serve hand one");
+                       "stage serves hand one");
   }
   return Object.entries(requestSides(base)).flatMap(([side, before]) =>
     paired(side).flatMap(([key, after]) => [
@@ -107,10 +109,10 @@ function argsProblems(door: string, base: DoorArgs, head: DoorArgs): string[] {
 }
 
 /** Each way `head`'s owner refuses what `base`'s doors hand it. */
-function handedProblems(base: Side, head: Side): string[] {
-  const shapes = base.shapes === null || head.shapes === null ? []
+function handedProblems(base: BaseSide, head: Side): string[] {
+  const shapes = base.shapes === null ? []
     : Object.entries(base.shapes).flatMap(([name, before]) => {
-      const after = head.shapes![name];
+      const after = head.shapes[name];
       return after === undefined
         ? [`the binding shape ${name} is gone, which the doors' version before hands`]
         : fieldProblems(`the binding shape ${name}`, shapeFields(before), shapeFields(after));
@@ -122,12 +124,12 @@ function handedProblems(base: Side, head: Side): string[] {
       : before.dropped === true ? []
         : [`the door ${before.door} is gone, which the doors' version before calls: drop it ` +
            "first (the owner takes it, the doors call it no more), and take it out once the " +
-           "doors the stage serve call it no more"];
+           "doors the stage serves call it no more"];
   })];
 }
 
 /** The base's side: its shapes, none before they were data, and its door table. */
-function baseSide(base: string): Side {
+function baseSide(base: string): BaseSide {
   const shapes = fileAt(base, BINDINGS_JSON);
   const table = fileAt(base, DOORS_JSON);
   if (table === null) {
@@ -165,7 +167,7 @@ describe("what the doors hand the owner, against the base branch", () => {
     expect(handedProblems(side(before), side(ACCOUNT))).toEqual(["tiers", "signins"].map((field) =>
       `the binding shape account no longer takes ${field}, which the doors' version before ` +
       "hands: drop it first (the owner takes and drops it), and take it out once the doors " +
-      "the stage serve hand it no more"));
+      "the stage serves hand it no more"));
     // Dropped first, as HANDED_BEFORE did, it passes; and taken out once the base drops it.
     const dropped = { ...ACCOUNT, dropped: ["tiers", "signins"] };
     expect(handedProblems(side(before), side(dropped))).toEqual([]);
@@ -179,7 +181,7 @@ describe("what the doors hand the owner, against the base branch", () => {
     const newly = { ...ACCOUNT, required: [...ACCOUNT.required, "grant"] };
     expect(handedProblems(side(ACCOUNT), side(required))).toEqual([
       "the binding shape account requires control, which the doors' version before does not " +
-      "always hand: take it as optional until the doors the stage serve do"]);
+      "always hand: take it as optional until the doors the stage serves do"]);
     expect(handedProblems(side(ACCOUNT), side(newly))).toHaveLength(1);
     // A new optional field, and one made optional, the doors' version before never hands
     // wrongly.
@@ -197,13 +199,13 @@ describe("what the doors hand the owner, against the base branch", () => {
     expect(handedProblems(base, side(ACCOUNT, []))).toEqual([
       "the door fileStat is gone, which the doors' version before calls: drop it first (the " +
       "owner takes it, the doors call it no more), and take it out once the doors the stage " +
-      "serve call it no more"]);
+      "serves call it no more"]);
     const dropped = { ...door(fields(["path"], ["etag"])), dropped: true } as const;
     expect(handedProblems(base, side(ACCOUNT, [dropped]))).toEqual([]);
     expect(handedProblems(side(ACCOUNT, [dropped]), side(ACCOUNT, []))).toEqual([]);
     expect(handedProblems(base, side(ACCOUNT, [door(fields(["path"], []))]))).toEqual([
       "fileStat no longer takes etag, which the doors' version before hands: drop it first " +
-      "(the owner takes and drops it), and take it out once the doors the stage serve hand it " +
+      "(the owner takes and drops it), and take it out once the doors the stage serves hand it " +
       "no more"]);
     const etagDropped = door(fields(["path"], [], { dropped: ["etag"] }));
     expect(handedProblems(base, side(ACCOUNT, [etagDropped]))).toEqual([]);
@@ -226,7 +228,7 @@ describe("what the doors hand the owner, against the base branch", () => {
       .toEqual([]);
     expect(handedProblems(none, side(ACCOUNT, [door(fields([], ["after"]))]))).toEqual([
       "fileStat takes a request now, which the doors' version before calls it without: take " +
-      "none, or an omitted one, until the doors the stage serve hand one"]);
+      "none, or an omitted one, until the doors the stage serves hand one"]);
     const loose = side(ACCOUNT, [door(fields(["path"], [], { omitted: true,
                                                                 undefinedAllowed: true }))]);
     expect(handedProblems(loose, side(ACCOUNT, [door(fields(["path"], []))]))).toEqual([
@@ -242,12 +244,12 @@ describe("what the doors hand the owner, against the base branch", () => {
     expect(handedProblems(split, side(ACCOUNT, [door({ owner: outside, outside })]))).toEqual([
       "fileStat (owner) no longer takes card_id, which the doors' version before hands: drop " +
       "it first (the owner takes and drops it), and take it out once the doors the stage " +
-      "serve hand it no more",
+      "serves hand it no more",
       "fileStat (owner) no longer takes digest, which the doors' version before hands: drop " +
       "it first (the owner takes and drops it), and take it out once the doors the stage " +
-      "serve hand it no more",
+      "serves hand it no more",
       "fileStat (owner) requires command_center_id, which the doors' version before does not " +
-      "always hand: take it as optional until the doors the stage serve do"]);
+      "always hand: take it as optional until the doors the stage serves do"]);
     // One list for both sides takes what either side hands.
     const both = fields([], ["card_id", "digest", "command_center_id"]);
     expect(handedProblems(split, side(ACCOUNT, [door(both)]))).toEqual([]);

@@ -86,7 +86,7 @@ const MALFORMED: Readonly<Record<BindingKind, readonly [string, unknown][]>> = {
                                         control: JSON.stringify({ outside: "on" }) }],
     ["a control record not its text", { owner: OWNER, caller: OWNER, origin: null,
                                         control: JSON.parse(RECORD) }],
-    // What the doors handed before #5805 and #5807, which no doors the stage serve hand now.
+    // What the doors handed before #5805 and #5807, which no doors the stage serves hand now.
     ["the tiers beside the record", { owner: OWNER, caller: OWNER, origin: null,
                                       control: RECORD, tiers: { free: { runs: 5 } } }],
     ["the switches beside the record", { owner: OWNER, caller: OWNER, origin: null,
