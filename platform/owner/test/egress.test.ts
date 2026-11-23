@@ -29,6 +29,7 @@ import { type Binding, PLATFORM_CALLER } from "../../contract/src/binding";
 import { apiRules } from "../../contract/src/api-rules";
 import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
 import { SYNC_FENCED } from "../src/files";
+import { MODEL_CHOSEN } from "../src/runs";
 import { costMicros, largestFitting, priced, SETTLED_WITHIN_S } from "../src/money";
 import { MODEL_SETTINGS } from "../../contract/src/policy-document";
 import {
@@ -1157,9 +1158,9 @@ describe("the spend caps", () => {
     expect((await r.stub.egressReceipts(r.bind())).receipts[0])
       .toMatchObject({ reservation: snapshot.reservation, charge: "succeeded",
                        served: "model-x-2026-01-01" });
-    // A bill within its hold tells the owner of no overspend.
+    // A bill within its hold tells the owner nothing but the model its run is given.
     expect((await r.stub.noticeList(r.bind())).notices
-      .filter((notice) => notice.type === "egress_overspent")).toEqual([]);
+      .filter((notice) => notice.type !== MODEL_CHOSEN)).toEqual([]);
     expect((await failure(() => r.stub.egressSettle(lease.as(), settle(snapshot.reservation, {
       spend: { ...DONE, served: "a b" } })))).message).toBe("invalid egress settle");
     // A settled charge never moves again.
