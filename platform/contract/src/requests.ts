@@ -340,7 +340,6 @@ export interface DoorAnswers {
     readonly state: string;
     readonly engine: string;
     readonly model: string | null;
-    readonly result: string | null;
     readonly error: string | null;
     readonly code: string | null;
   };
@@ -358,7 +357,6 @@ export interface DoorAnswers {
     readonly state?: string;
     readonly engine?: string;
     readonly model?: string | null;
-    readonly result?: string | null;
     readonly error?: string | null;
     readonly code?: string | null;
   } & object;
@@ -510,4 +508,44 @@ export interface DoorAnswers {
 }
 
 /** The answer fields the owner still answers, the doors reading them no more (`unread`). */
-export type UnreadAnswers = Record<never, never>;
+export interface UnreadAnswers {
+  readonly agentSubmit: { readonly result: string | null };
+  readonly agentCancel: { readonly result?: string | null } & object;
+}
+
+/** Each tool's door, by the tool's name. */
+export interface ToolDoors {
+  readonly inbox_digest: "inboxDigest";
+  readonly board_digest: "boardDigest";
+  readonly mailbox_read: "mailboxRead";
+  readonly mailbox_ack: "mailboxAck";
+  readonly room_post: "roomPost";
+  readonly agents_list: "outsideAgents";
+  readonly agent_register: "registerPropose";
+  readonly policy_propose: "policyPropose";
+  readonly collection_get: "collectionGet";
+  readonly collection_list: "collectionPull";
+  readonly collection_history: "collectionHistory";
+  readonly collection_write: "collectionWrite";
+  readonly collection_delete: "collectionDelete";
+  readonly collection_clear: "collectionClear";
+  readonly file_stat: "fileStat";
+  readonly file_list: "fileList";
+  readonly file_read: "fileText";
+  readonly search: "fileSearch";
+  readonly fetch: "fileFetch";
+  readonly file_append: "fileAppend";
+  readonly file_write: "fileWrite";
+  readonly file_edit: "fileEdit";
+  readonly file_history: "fileHistory";
+  readonly file_usage: "fileUsage";
+  readonly file_mkdir: "fileMkdir";
+  readonly file_remove: "fileRemove";
+  readonly file_rename: "fileRename";
+  readonly file_restore: "fileRestore";
+  readonly converse: "agentSubmit";
+  readonly run_graph: "agentRun";
+  readonly run_status: "agentStatus";
+  readonly run_cancel: "agentCancel";
+  readonly code: "codeRun";
+}

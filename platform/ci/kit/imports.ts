@@ -327,8 +327,13 @@ function ownLayers(layer: Layer, ws: string, layers: readonly Layer[],
  * TypeScript's own pre-processor reads the named ones (imports and re-exports, type ones
  * too, a type imported by path, `import()`, `require()`, `import x = require()` and
  * `/// <reference path>`, as its compiler finds them, at a fifth of a full parse's cost); a
- * script that calls `import(` or `require(` at all is parsed in full for those it computes.
+ * script that calls `import(` or `require(` at all is parsed in full for those it computes,
+ * and for the types a script's JSDoc imports by path (`@type {import("…").T}`), which the
+ * pre-processor does not read.
  */
+/** A script whose JSDoc types it (JavaScript), by its name. */
+const SCRIPT_DOCS = /\.[cm]?jsx?$/;
+
 function specifiers(path: string, source: string): (string | null)[] {
   const named = ts.preProcessFile(source, true, true);
   const found: (string | null)[] = [
@@ -376,6 +381,15 @@ function specifiers(path: string, source: string): (string | null)[] {
       ? "computed" : null;
   };
   const visit = (node: ts.Node): void => {
+    if (ts.isImportTypeNode(node) && (node.flags & ts.NodeFlags.JSDoc) !== 0
+        && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
+      found.push(node.argument.literal.text);
+    }
+    // A script's JSDoc is its types; a TypeScript module's is prose.
+    for (const doc of SCRIPT_DOCS.test(path) ? (node as { jsDoc?: readonly ts.Node[] }).jsDoc
+      ?? [] : []) {
+      visit(doc);
+    }
     const how = ts.isCallExpression(node) ? loads(node.expression) : null;
     if (how !== null && ts.isCallExpression(node)) {
       const first = node.arguments[0];

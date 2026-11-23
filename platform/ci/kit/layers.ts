@@ -121,10 +121,11 @@ export const LAYERS: readonly Layer[] = Object.freeze([
   },
   {
     // The owner app's pages, run in the browser: they import one another by the path the
-    // doors serve them at (`doors/src/pages.ts`).
+    // doors serve them at (`doors/src/pages.ts`), and type what the owner surface answers by
+    // the doors' routes (`src/app.ts` `AppAnswer`, in JSDoc, which no browser loads).
     name: "the owner app's pages",
     files: ["platform/doors/app/**", ...NOT_TESTS],
-    may: ["platform/doors/app/**", ...NOT_TESTS],
+    may: ["platform/doors/app/**", "platform/doors/src/app.ts", ...NOT_TESTS],
     packages: ["/app/static"],
   },
   {

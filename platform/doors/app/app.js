@@ -7,6 +7,17 @@ import {
 } from "/app/static/api.js";
 import { action, bytes, eventShown, field, fill, h, when } from "/app/static/view.js";
 
+/**
+ * What the doors answer at an owner-surface path, as they type it (`call`).
+ * @template {import("../src/app").AppPath} P
+ * @typedef {import("../src/app").AppAnswer<P>} AppAnswer
+ */
+/**
+ * A run as the doors answer it: started, read or stopped.
+ * @typedef {AppAnswer<"agent/submit"> | AppAnswer<"agent/status"> | AppAnswer<"agent/cancel">}
+ *   Run
+ */
+
 const main = document.getElementById("main");
 const nav = document.getElementById("nav");
 const who = document.getElementById("who");
@@ -54,7 +65,10 @@ function inWords(code) {
   return NOT_STARTED[code] ?? code;
 }
 
-/** Why a run stopped short, in plain words: the run's own error, else its code's. */
+/**
+ * Why a run stopped short, in plain words: the run's own error, else its code's.
+ * @param {Run} run
+ */
 function runWhy(run) {
   return run.error ?? (run.code ? inWords(run.code) : null);
 }
@@ -222,12 +236,23 @@ function appOf(client, names) {
 }
 
 /**
+ * One answer to a card: the route its id and digest are posted to, the button's words, and
+ * what is said once it answered, from the route's answer and the card.
+ * @template {import("../src/app").AppPath} P
+ * @param {P} route
+ * @param {string} words
+ * @param {(answer: AppAnswer<P>, card: any) => string} said
+ */
+function answering(route, words, said) {
+  return { route, words, said };
+}
+
+/**
  * The kinds of card that wait on the owner's answer, as data: the route listing a kind's
  * pending cards (each with its id, the digest shown and when it was filed), what its card
- * shows, and its two answers, each a route its id and digest are posted to, the button's
- * words and what is said once it answered. A kind's yes is in the owner's session.
+ * shows, and its two answers (`answering`). A kind's yes is in the owner's session.
  */
-const KINDS = Object.freeze([
+const KINDS = Object.freeze(/** @type {const} */ ([
   { list: "registrations",
     title: (card) => card.request.display_name,
     asker: (card, names) => appOf(card.client, names),
@@ -239,10 +264,10 @@ const KINDS = Object.freeze([
               `What its app may do: ${client === undefined ? "nothing now" : access(client)}`];
     },
     note: () => "Applying gives this app its own mailbox and rooms with you.",
-    yes: { words: "Apply", route: "registrations/apply",
-           said: (agent) => `Applied: ${agent.display_name} has its mailbox and rooms.` },
-    no: { words: "Decline", route: "registrations/decline",
-          said: (_, card) => `Declined: ${card.request.display_name} is not registered.` } },
+    yes: answering("registrations/apply", "Apply",
+                   (agent) => `Applied: ${agent.display_name} has its mailbox and rooms.`),
+    no: answering("registrations/decline", "Decline",
+                  (_, card) => `Declined: ${card.request.display_name} is not registered.`) },
   { list: "actions",
     title: (card) => card.says,
     asker: (card, names) => card.agent === null ? appOf(card.client, names)
@@ -255,11 +280,10 @@ const KINDS = Object.freeze([
     note: (card) => card.conversation === null
       ? "Allowing it lets this one call through, once, the next time its agent makes it."
       : "Allowing it lets this one call through, once, and resumes its run.",
-    yes: { words: "Allow once", route: "actions/approve",
-           said: (answer) => answer.run === null
-             ? "Allowed once: its agent's next try of this call goes through."
-             : `Allowed once: its run resumes (${answer.run}).` },
-    no: { words: "Deny", route: "actions/refuse", said: () => "Denied: the call is not made." } },
+    yes: answering("actions/approve", "Allow once", (answer) => answer.run === null
+      ? "Allowed once: its agent's next try of this call goes through."
+      : `Allowed once: its run resumes (${answer.run}).`),
+    no: answering("actions/refuse", "Deny", () => "Denied: the call is not made.") },
   { list: "policy/proposals",
     title: () => "A change to your settings",
     asker: (card, names) => card.client === null ? "your own agent" : appOf(card.client, names),
@@ -269,11 +293,9 @@ const KINDS = Object.freeze([
     note: () => "Applying replaces all your settings with the proposed ones, once, if they are " +
       "a whole set made against your settings as they stand: whatever they leave out (a rule, " +
       "an allowed host) goes. Any other change is yours to make, or to decline.",
-    yes: { words: "Apply", route: "policy/apply",
-           said: () => "Applied: your settings are the ones proposed." },
-    no: { words: "Decline", route: "policy/decline",
-          said: () => "Declined: your settings are unchanged." } },
-]);
+    yes: answering("policy/apply", "Apply", () => "Applied: your settings are the ones proposed."),
+    no: answering("policy/decline", "Decline", () => "Declined: your settings are unchanged.") },
+]));
 
 /** Every pending card of every kind, oldest first, each with its kind. */
 async function waitingCards() {
@@ -437,7 +459,17 @@ async function agents(arg) {
          action("Make the agent", create, report)));
 }
 
-/** The live conversation with each agent this page talks to. */
+/**
+ * This page's conversation with one agent: its id once started, its live socket, its run, what
+ * was said each way, the run's frames, the view showing them, and the next read of the run.
+ * @typedef {{ conversation: string | null, socket: { close(): void, readyState: number } | null,
+ *   run: Run | null, said: [string, string][], frames: object[], listener: (frame: any) => void,
+ *   timer?: ReturnType<typeof setTimeout> }} Talk
+ */
+/**
+ * The live conversation with each agent this page talks to.
+ * @type {Map<string, Talk>}
+ */
 const talks = new Map();
 
 function talkOf(name) {
@@ -726,6 +758,7 @@ function signinEnded(record, event) {
 
 function signinPanel(record, present, live) {
   const box = h("div", { class: "signin" });
+  /** @param {AppAnswer<"signin/start"> | null} view */
   const show = (view) => {
     if (view === null && !record.signin.enabled) {
       // Off: no sign-in is offered, but a login already here can always be removed.
@@ -768,6 +801,7 @@ function signinPanel(record, present, live) {
          }, report)) : null,
          action("Stop", () => call("signin/cancel", { id: view.id }), report, { class: "quiet" }));
   };
+  /** @param {AppAnswer<"signin/start">} view */
   const watch = async (view) => {
     show(view);
     signinSocket?.close();
