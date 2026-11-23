@@ -26,9 +26,9 @@ import { ALL_SCOPES, defineAgent, ownerRun, recorder, runBinding, runnerBinding,
          TIERS, whileOut } from "./runs-support";
 import { clock } from "../src/clock";
 import { LANE_PASS_S, LANE_RETRY_S } from "../src/schedule";
-import { PLACE_BYTES, QUEUE_ROWS } from "../../contract/src/limits";
+import { PLACE_BYTES, QUEUE_ROWS, SLOT_WAIT_MS } from "../../contract/src/limits";
 import { slotBusy } from "../../contract/src/slots";
-import { OWNER_WAITERS, ownerSlots } from "../src/holds";
+import { ownerSlots } from "../src/holds";
 import { writeControl } from "../../ci/fixtures";
 import { sqlIn } from "../../ci/workerd";
 import { clockAt, drainDue, failure, laneAt, starterSeed } from "./support";
@@ -363,7 +363,8 @@ describe("mail to an agent", () => {
   });
 
   it("waits on through a full slot pool: a long mail's waiting run, its body's read refused " +
-     "busy at its turn, keeps waiting and starts once the pool frees", async () => {
+     "busy at its turn, never waiting on the pool, keeps waiting and starts once the pool " +
+     "frees", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     const main = await identity(r, "main");
@@ -373,27 +374,26 @@ describe("mail to an agent", () => {
     const long = "w".repeat(5 * 1024 * 1024) + "!";
     await ownerMail(r, dm(main.agent_id), long);
     await drainDue(r.stub);
-    // The isolate's pool full in its larger class, and its queue at its waiters: the body's
-    // read at the run's turn is refused `busy` at once, a transient refusal.
+    // The isolate's pool full in its larger class, and no call waiting for it: the body's
+    // read at the run's turn takes its units now or is refused `busy` (a transient refusal).
     const pool = ownerSlots();
     const held = await pool.acquire(pool.capacity - pool.reserve, "", undefined, true);
-    const stop = new AbortController();
-    const queued = Array.from({ length: OWNER_WAITERS }, () =>
-      pool.acquire(1, "", stop.signal, true).then((slot) => slot.release(), () => undefined));
     try {
       await end(r, (await starts(r))[0]!, "done 0");
-      // The pass holds the lane until the refusal's Retry-After, never failed for it.
+      // The pass holds the lane until the refusal's Retry-After, never failed for it. The
+      // pool's units stay held through it, so a read that waited would be refused only by the
+      // pool's own timer, `SLOT_WAIT_MS` on: finishing inside it is the never-waiting.
+      const before = Date.now();
       const began = clock();
       await drainDue(r.stub);
+      expect(Date.now() - before).toBeLessThan(SLOT_WAIT_MS);
       expect(await r.sql("SELECT state, code FROM runs WHERE state NOT IN ('running', " +
                          "'succeeded')")).toEqual([{ state: "waiting", code: null }]);
       const held = (await laneAt(r.stub, "runs"))!;
       expect(held).toBeGreaterThanOrEqual(began + slotBusy().retryAfter!);
       expect(held).toBeLessThan(began + LANE_RETRY_S);
     } finally {
-      stop.abort();
       held.release();
-      await Promise.all(queued);
     }
     // The lane's next try, as its hold brings it once the pool has freed.
     await r.sql("UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-schedule/runs'");

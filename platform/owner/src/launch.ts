@@ -37,7 +37,7 @@ import {
 } from "../../contract/src/egress";
 import type { PolicyDocument } from "../../contract/src/policy-document";
 import { LEASE_TTL_S, PLACE_BYTES } from "../../contract/src/limits";
-import { slotted } from "../../contract/src/slots";
+import { slotted, type SlotPool } from "../../contract/src/slots";
 import { Refusal, refusalOf } from "../../contract/src/refusal";
 import { bundledSources } from "../../sources/src/catalog";
 import { type Ranking, rankingOf, shippedRanking } from "../../sources/src/ranking";
@@ -52,6 +52,7 @@ import { OWNER, scopeOf, type Stamped, type StandingGrant } from "./authority";
 import type { Bodies, Placed, Placing } from "./bodies";
 import type { DoorUnits, ObjectReads } from "./door";
 import type { Egress } from "./egress";
+import { slottedNow } from "./gate";
 import type { OwnerEnv } from "./env";
 import { type Files, type Lease, type SandboxLease } from "./files";
 import { ADMITTED_FILE_BYTES, ADMITTED_FILE_UNITS, ownerSlots } from "./holds";
@@ -113,6 +114,9 @@ export interface AgentRead {
   readonly mcp: AgentMcp;
   readonly hooks: AgentHooks;
 }
+
+/** How a read holds the isolate's pool: a door's waits its turn, a lane's takes it now. */
+type PoolHold = <T>(pool: SlotPool, units: number, work: () => Promise<T>) => Promise<T>;
 
 /** `agent`'s definition file `name`, as text: strict UTF-8, or the run is refused. */
 function definitionText(agent: string, name: string, bytes: Uint8Array): string {
@@ -213,6 +217,16 @@ export class Launcher implements RunHost {
    * synchronous unit, for its settle to post by reference (`answer`).
    */
   #replyPlaced: Placed | null = null;
+  /**
+   * The jobs' stops sent to the sandbox and not yet answered (`stopAfter`). A lease's release
+   * is sent only once those out when it is due have answered (`#released`), so it reaches the
+   * sandbox's serial chain after the stops of its lease's jobs: a release drops its lease's
+   * `launched` rows, so a run's cancel after it finds nothing to stop, and it pauses only a
+   * sandbox nothing lives in (`sandbox/src/control.ts` `release`).
+   */
+  readonly #stopping = new Set<Promise<void>>();
+  /** The leases whose release is asked and not yet sent: each is sent once. */
+  readonly #releasing = new Set<string>();
 
   constructor(o: LauncherNeeds) {
     this.#o = o;
@@ -260,10 +274,8 @@ export class Launcher implements RunHost {
 
   releaseLease(leaseId: string, epoch: number): void {
     // A lease a sign-in holds stays: its sandbox is in use with no run.
-    if (!this.#o.signins.holds(leaseId) && this.#o.files.leaseRelease(leaseId, epoch).released) {
-      this.#o.egress.end("lease", (live) => live.lease === leaseId);
-      // Once the unit is over, its sandbox paused: no run lives in it.
-      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+    if (!this.#o.signins.holds(leaseId)) {
+      this.#giveBack(leaseId, epoch);
     }
   }
 
@@ -274,7 +286,7 @@ export class Launcher implements RunHost {
   leasesLapsed(now: number): void {
     // Each lapsed lease's sandbox paused, as a given-back one's is.
     for (const leaseId of this.#o.files.leasesLapsed(now)) {
-      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+      this.#released(leaseId);
     }
   }
 
@@ -316,11 +328,41 @@ export class Launcher implements RunHost {
     this.#o.notices.once(type, detail, clock());
   }
 
-  /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
+  /** From a unit: each run's cancel sent to the sandbox once the unit is over (`stopAfter`). */
   stop(runs: readonly string[]): void {
     for (const run of runs) {
-      queueMicrotask(() => void this.cancel(run));
+      void this.stopAfter(() => this.cancel(run));
     }
+  }
+
+  /**
+   * From a unit: `stop`, a job's stop in the sandbox (a run's cancel, a sign-in's), sent once
+   * the unit is over, before the release of any lease given back meanwhile (`#released`).
+   * What it answers.
+   */
+  stopAfter<T>(stop: () => Promise<T>): Promise<T> {
+    const stopped = Promise.resolve().then(stop);
+    const out = stopped.then(() => undefined, () => undefined);
+    this.#stopping.add(out);
+    void out.then(() => this.#stopping.delete(out));
+    return stopped;
+  }
+
+  /**
+   * In a unit: a job whose start may have launched after it stopped standing (cancelled,
+   * ended or lost while its start was out: `#start`, `signinStart`), stopped (`stopAfter`);
+   * then, when nothing holds its lease now, that lease given back and its sandbox released
+   * after the stop, however the lease went: one given back while the start was out had its
+   * release reach the sandbox first, and the start then resumed it. What the stop answers.
+   */
+  landed<T>(lease: { readonly lease_id: string; readonly epoch: number },
+            stop: () => Promise<T>): { stopped: Promise<T> } {
+    const stopped = this.stopAfter(stop);
+    if (!this.runs.holds(lease.lease_id) && !this.#o.signins.holds(lease.lease_id)) {
+      this.#giveBack(lease.lease_id, lease.epoch);
+      this.#released(lease.lease_id);
+    }
+    return { stopped };
   }
 
   /**
@@ -355,25 +397,39 @@ export class Launcher implements RunHost {
    * platform's), its `mcp.json` (none, no servers) and its `hooks.json` (none, no hooks). An
    * owner's file that is no ranking
    * refuses the run (`invalid`), never a silent fall back to the platform's; a definition
-   * file that does not fit refuses it too (`agent_file_invalid`), never half-read.
+   * file that does not fit refuses it too (`agent_file_invalid`), never half-read. A door's
+   * read waits its turn on the isolate's pool (`slotted`).
    */
-  async readAgent(agent: string): Promise<AgentRead> {
-    const read = await this.#whole(agentPath(agent, AGENT_FILES.agent));
+  readAgent(agent: string): Promise<AgentRead> {
+    return this.#readAgent(agent, slotted);
+  }
+
+  /**
+   * `readAgent` for the `runs` lane, whose read takes the pool's units now or is refused
+   * `busy` (`slottedNow`), which holds the lane (`run`): inside the alarm a lane never waits
+   * on the pool, since the object's other lanes would wait with it (`unitsNow`).
+   */
+  #laneAgent(agent: string): Promise<AgentRead> {
+    return this.#readAgent(agent, slottedNow);
+  }
+
+  async #readAgent(agent: string, hold: PoolHold): Promise<AgentRead> {
+    const read = await this.#whole(agentPath(agent, AGENT_FILES.agent), hold);
     if (read === null) {
       throw new Refusal("agent_undefined", AGENT_UNDEFINED);
     }
-    const servers = await this.#whole(agentPath(agent, AGENT_FILES.mcp));
-    const hooks = await this.#whole(agentPath(agent, AGENT_FILES.hooks));
+    const servers = await this.#whole(agentPath(agent, AGENT_FILES.mcp), hold);
+    const hooks = await this.#whole(agentPath(agent, AGENT_FILES.hooks), hold);
     return { file: agentFile(definitionText(agent, AGENT_FILES.agent, read.bytes)),
-             etag: read.etag, ranking: await this.#ranking(),
+             etag: read.etag, ranking: await this.#ranking(hold),
              mcp: servers === null ? { servers: {} }
                : agentMcp(definitionText(agent, AGENT_FILES.mcp, servers.bytes)),
              hooks: agentHooks(hooks === null ? '{"hooks": {}}'
                : definitionText(agent, AGENT_FILES.hooks, hooks.bytes)) };
   }
 
-  async #ranking(): Promise<Ranking> {
-    const read = await this.#whole(RANKING);
+  async #ranking(hold: PoolHold): Promise<Ranking> {
+    const read = await this.#whole(RANKING, hold);
     if (read === null) {
       return shippedRanking();
     }
@@ -388,9 +444,11 @@ export class Launcher implements RunHost {
 
   /**
    * The owner's file at `path`, read whole, and its etag; null where nothing is. Anything else
-   * there (a folder) refuses the run (`Files.openFile`), never read as no file (Fact 8).
+   * there (a folder) refuses the run (`Files.openFile`), never read as no file (Fact 8). A file
+   * past an inline one is read holding the pool's units as `hold` takes them.
    */
-  async #whole(path: string): Promise<{ bytes: Uint8Array; etag: string } | null> {
+  async #whole(path: string, hold: PoolHold):
+      Promise<{ bytes: Uint8Array; etag: string } | null> {
     const content = await this.#o.door(() => this.#o.files.openFile(path));
     if (content === null) {
       return null;
@@ -399,7 +457,7 @@ export class Launcher implements RunHost {
       throw new Refusal("invalid", `${path} is past the ${ADMITTED_FILE_BYTES} bytes a run's ` +
                         "admission reads whole");
     }
-    const bytes = content.inline ?? await slotted(ownerSlots(), ADMITTED_FILE_UNITS, () =>
+    const bytes = content.inline ?? await hold(ownerSlots(), ADMITTED_FILE_UNITS, () =>
       this.#o.files.range(content.chunks ?? [], 0, content.entry.size));
     return { bytes, etag: content.entry.etag };
   }
@@ -508,7 +566,9 @@ export class Launcher implements RunHost {
    * answer came out of the contract's shape, or `unknown` when no answer came. A run stands
    * while it holds its grant (a cancel, a revocation, a settle or a lost runner each take it),
    * and only a run that stands gets a second chance: its start sent again, or its wait for a
-   * sandbox. Whatever may have launched and no longer stands is stopped in the sandbox: a
+   * sandbox; one that no longer stands settles by its start's answer (one cancelled,
+   * `cancelled`: `Runs.settle`). Whatever may have launched and no longer stands is stopped in
+   * the sandbox, and its sandbox released after once nothing holds its lease (`landed`): a
    * start with no answer it can read, and one that started after its run stopped standing
    * (cancelled while its start was out, or settled lost while it was late), which then
    * settles from its runner's end, or is refused at its first post.
@@ -518,7 +578,7 @@ export class Launcher implements RunHost {
     const stands = () => this.runs.grant(run) !== null;
     const answer = await startOutcome("a run", () => this.#o.sandbox.start(start),
                                       () => this.#o.door(stands));
-    const stop = await this.#o.door(() => {
+    const stopped = await this.#o.door(() => {
       const standing = stands();
       if (answer.started === null) {
         this.runs.settle(run, answer.state, answer.code, null, clock());
@@ -541,11 +601,10 @@ export class Launcher implements RunHost {
           } sandbox, through the vendor's own flow`, clock());
         }
       }
-      return answer.started === null || (answer.started && !standing);
+      return answer.started === null || (answer.started && !standing)
+        ? this.landed(start.lease, () => this.cancel(run)) : null;
     });
-    if (stop) {
-      await this.cancel(run);
-    }
+    await stopped?.stopped;
     await this.#o.sync();
   }
 
@@ -598,6 +657,31 @@ export class Launcher implements RunHost {
       await this.#o.sandbox.release({ lease_id: leaseId });
     } catch {
       console.error("a lease's release did not reach the sandbox; its idle reap pauses it");
+    }
+  }
+
+  /**
+   * From a unit: the lease's sandbox released (`#sandboxRelease`) once the unit is over and
+   * the jobs' stops out then have answered (`#stopping`), once however often it is asked
+   * before it is sent.
+   */
+  #released(leaseId: string): void {
+    if (this.#releasing.has(leaseId)) {
+      return;
+    }
+    this.#releasing.add(leaseId);
+    queueMicrotask(() => void (async () => {
+      await Promise.all(this.#stopping);
+      this.#releasing.delete(leaseId);
+      await this.#sandboxRelease(leaseId);
+    })());
+  }
+
+  /** In a unit: the lease given back if it is still live, its streams ended, its sandbox released. */
+  #giveBack(leaseId: string, epoch: number): void {
+    if (this.#o.files.leaseRelease(leaseId, epoch).released) {
+      this.#o.egress.end("lease", (live) => live.lease === leaseId);
+      this.#released(leaseId);
     }
   }
 
@@ -733,7 +817,7 @@ export class Launcher implements RunHost {
         break;
       }
       try {
-        const read = await this.readAgent(waiting.ask.agent);
+        const read = await this.#laneAgent(waiting.ask.agent);
         const prompt = waiting.ask.mail === null ? waiting.ask.prompt
           : await this.#mailPrompt(waiting.ask.mail.message, waiting.ask.agent);
         await this.#laneLaunch(read, () => ({
@@ -789,7 +873,7 @@ export class Launcher implements RunHost {
       }
       let gone = false;
       try {
-        const read = await this.readAgent(row.agent);
+        const read = await this.#laneAgent(row.agent);
         await this.#laneLaunch(read, () => {
           if (!this.runs.stands(row)) {
             gone = true;
@@ -873,7 +957,7 @@ export class Launcher implements RunHost {
                           `mail_${mail.integrity}: the mail's body is ${mail.integrity}`);
       }
       const prompt = mailInput(mail, mail.body);
-      const read = await this.readAgent(mail.agent);
+      const read = await this.#laneAgent(mail.agent);
       const conversation = mailConversation(mail.agent, mail.thread, origin?.client ?? null);
       await this.#laneLaunch(read, () => ({
         initiator: "mail", stamp, origin, agent: mail.agent,
@@ -908,12 +992,8 @@ export class Launcher implements RunHost {
 
   /** In a unit: a lease no run and no sign-in holds now given back, as a settle gives it. */
   leaseFreed(leaseId: string, epoch: number): void {
-    if (this.runs.holds(leaseId) || this.#o.signins.holds(leaseId)) {
-      return;
-    }
-    if (this.#o.files.leaseRelease(leaseId, epoch).released) {
-      this.#o.egress.end("lease", (live) => live.lease === leaseId);
-      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+    if (!this.runs.holds(leaseId) && !this.#o.signins.holds(leaseId)) {
+      this.#giveBack(leaseId, epoch);
     }
   }
 
@@ -988,8 +1068,9 @@ export class Launcher implements RunHost {
    * dropped stays reachable from it: its sign-ins ended and its runs settled `failed`
    * (`NETWORK_UNCONFIRMED`), so its runner's next post is refused and stops each CLI (which
    * needs neither the sandbox Worker nor E2B, whose fault may be why no re-apply landed);
-   * its tokens and streams end with it; each CLI stopped and its sandbox paused through the
-   * Worker as well; and the owner told. Whatever the owner's admission: a stop is never held.
+   * its tokens and streams end with it; each CLI stopped through the Worker as well, and its
+   * sandbox paused after those stops (`#released`); and the owner told. Whatever the owner's
+   * admission: a stop is never held.
    */
   #unconfirmed(now: number): void {
     const due = this.#narrowed(now).filter(({ due: at }) => at <= now)
@@ -1005,9 +1086,9 @@ export class Launcher implements RunHost {
       this.leaseFreed(lease.lease_id, lease.epoch);
       this.stop(runs);
       for (const row of signins) {
-        queueMicrotask(() => void this.#o.sandbox.signinCancel({ authority: row.authority,
-                                                                 id: row.id })
-          .catch(() => console.error("a stopped sign-in's cancel did not reach the sandbox")));
+        void this.stopAfter(() => this.#o.sandbox.signinCancel({ authority: row.authority,
+                                                                 id: row.id }))
+          .catch(() => console.error("a stopped sign-in's cancel did not reach the sandbox"));
       }
       const sandboxOf = lease.authority === OWNER ? "your own sandbox"
         : `client ${lease.authority}'s sandbox`;
