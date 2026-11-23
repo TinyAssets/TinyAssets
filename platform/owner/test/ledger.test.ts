@@ -746,9 +746,9 @@ describe("the policy store's counters", () => {
     const [usage, actual] = await recount();
     expect(usage).toEqual(actual);
     expect(usage).toMatchObject({ sessions: 1, owner_clients: 1, free_clients: 1,
-                                  pending_proposals: 2, applied_proposals: 1,
+                                  pending_proposals: 3, applied_proposals: 1,
                                   owner_receipts: 1, agent_receipts: 4, refusal_receipts: 1 });
-    expect(JSON.parse(usage!["shares"] as string)).toEqual({ owner: 1, [MUSE.client]: 1 });
+    expect(JSON.parse(usage!["shares"] as string)).toEqual({ owner: 2, [MUSE.client]: 1 });
     await r.stub.deleteAgent(r.bind(null, { session: fresh.session }), { agent_id: muse });
     await r.sql("DELETE FROM policy_proposals");
     const [after, recounted] = await recount();

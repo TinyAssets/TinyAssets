@@ -554,9 +554,6 @@ export class Actions {
   }
 }
 
-export interface ActionCardRequest {
-  readonly card_id: string;
-}
 export interface ActionAnswerRequest {
   readonly card_id: string;
   readonly digest: string;
@@ -588,19 +585,6 @@ export interface ActionsDoorNeeds {
 
 /** The `actions` doors' handlers, by door. */
 export const actionsDoors = Object.freeze({
-  /**
-   * The one card under `card_id`, for the doors' version before (`dropped`), which still
-   * names it until the stage serves none.
-   */
-  actionRequest(o: ActionsDoorNeeds, { r }: Call<ActionCardRequest>):
-      { card: ActionCard; digest: string } {
-    const held = o.actions.list().find((each) => each.card_id === r["card_id"]);
-    if (held === undefined) {
-      throw new Refusal("refused", "no pending action request for this card");
-    }
-    const { digest, ...card } = held;
-    return { card, digest };
-  },
   /** The pending held calls the owner is shown, oldest first, each with its digest. */
   actionRequests(o: ActionsDoorNeeds, _call: Call<undefined>):
       { cards: (ActionCard & { readonly digest: string })[] } {

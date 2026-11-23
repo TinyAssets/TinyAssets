@@ -48,11 +48,12 @@ export interface DoorRequests {
   readonly codeRun: DoorFields<"script">;
   readonly ownerExport: DoorFields<never, "cursor" | "export_id">;
   readonly exportChunks: DoorFields<"export_id" | "sha256s">;
-  readonly policyWrite: DoorFields<"expected_generation" | "policy", "proposal">;
+  readonly policyWrite: DoorFields<"expected_generation" | "policy">;
   readonly policyProposal: DoorFields<"request_id">;
+  readonly policyApply: DoorFields<"card_id" | "digest">;
+  readonly policyDecline: DoorFields<"card_id" | "digest">;
   readonly policyWakeLimits:
     DoorFields<"agent_id" | "max_wakes_per_hour" | "batch_window_s" | "expected_generation">;
-  readonly actionRequest: DoorFields<"card_id">;
   readonly actionApprove: DoorFields<"card_id" | "digest">;
   readonly actionRefuse: DoorFields<"card_id" | "digest">;
   readonly grantSet:

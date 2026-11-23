@@ -652,7 +652,10 @@ export interface DoorTypes {
                                          readonly not_enforced: readonly string[] };
                        readonly codemode: { readonly on: boolean } };
   };
-  readonly policyProposal: { readonly answer: { readonly digest: string } };
+  readonly policyProposals: {
+    readonly answer: {
+      readonly cards: readonly { readonly card_id: string; readonly digest: string }[] };
+  };
   readonly grantList: {
     readonly answer: {
       readonly clients: readonly {

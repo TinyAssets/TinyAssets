@@ -18,9 +18,12 @@
  * - A fresh object starts from the default document at generation 1, put there by its
  *   migration: the Python's bootstrap, legacy upgrade and per-owner failure isolation
  *   have no counterpart, since the object is the account.
- * - An agent's proposal is receipted, and with a card id held for the owner, who
- *   applies it at most once through a write that names it. A held card never changes;
- *   pending ones are never evicted, and a full pending set refuses more.
+ * - An agent's proposal is receipted and held for the owner as a card (its `request_id`, or
+ *   one minted when it names none), which the owner answers on its app's page
+ *   (`waitingPage`): the proposal's answer names it, and so does the `policy_proposal`
+ *   notice. The owner reads the pending cards (`list`), applies one at most once in its
+ *   session (`apply`), or declines it (`decline`), a narrowing that needs no session. A held
+ *   card never changes; a full pending set lets the oldest go.
  * - A refused owner-session call leaves a `refusal` receipt with the digest of what was
  *   asked, never the session proof, written after the refused change rolled back.
  * - The optional `actions` table holds the owner's action rules, each on an act (`acts.json`):
@@ -86,6 +89,8 @@ import { Refusal } from "../../contract/src/refusal";
 import type { OwnerStorage } from "./gate";
 import { profileNames } from "../../contract/src/doors";
 import { codePoints } from "../../contract/src/text";
+import { waitingPage } from "../../contract/src/identity";
+import { randomHex } from "../../contract/src/ids";
 import {
   type Call, type Door, type DoorUnits, type ImportLine, type LiveSession, proven,
 } from "./door";
@@ -147,6 +152,21 @@ export function modelSettings(document: PolicyDocument): ModelSettings {
 
 /** A held proposal's change: the JSON object an agent filed. */
 export type Change = { readonly [key: string]: string | number | boolean | null | object };
+
+/**
+ * A held proposal, as the owner is shown it (`policyProposals`): its card, the digest an
+ * answer names, the client that filed it (null for the owner's own agents) and its change.
+ */
+export interface ProposalCard {
+  readonly card_id: string;
+  readonly digest: string;
+  readonly filed_at: number;
+  readonly client: string | null;
+  readonly change: Change;
+}
+
+/** The pending cards' rows: not yet applied. */
+const PENDING = "FROM policy_proposals WHERE applied_at IS NULL";
 
 interface PolicyState {
   readonly generation: number;
@@ -231,9 +251,9 @@ function expected(value: unknown): number {
 
 export class Policy {
   readonly #storage: OwnerStorage;
-  readonly #notices: Pick<Notices, "once">;
+  readonly #notices: Pick<Notices, "add" | "once">;
 
-  constructor(storage: OwnerStorage, notices: Pick<Notices, "once">) {
+  constructor(storage: OwnerStorage, notices: Pick<Notices, "add" | "once">) {
     this.#storage = storage;
     this.#notices = notices;
   }
@@ -335,48 +355,66 @@ export class Policy {
     return listed.sort((a, b) => b.seq - a.seq).map(({ seq: _seq, ...receipt }) => receipt);
   }
 
-  /**
-   * The owner's write, in its session; with `proposal`, only as that held card's one apply.
-   * The held proposal must be pending, a `policy_proposal` of exactly this
-   * document and generation with the digest the owner was shown, and is marked applied in
-   * the same transaction.
-   */
+  /** The owner's write, in its session. */
   write(session: LiveSession, expectedGeneration: unknown, document: unknown,
-        proposal: unknown, now: number): PolicyState {
+        now: number): PolicyState {
     proven(session, "session");
-    return this.#write(session.hash, expectedGeneration, document, proposal, now);
+    return this.#write(session.hash, expectedGeneration, document, now);
+  }
+
+  /**
+   * The owner's yes, in its session, to the pending card shown: its change written, once, as
+   * the owner's write. Only a `policy_proposal` applies, a whole document made against the
+   * policy as it stands; any other change waits for the owner to decline it, or to make it.
+   */
+  apply(session: LiveSession, card: unknown, shown: unknown, now: number): PolicyState {
+    proven(session, "session");
+    return this.#storage.transactionSync(() => {
+      const { card_id: applied, change } = this.#shown(card, shown);
+      if (change["type"] !== "policy_proposal") {
+        throw new Refusal("refused", "this proposal is not a whole set of rules to apply: " +
+                          "make the change it asks yourself, or decline it");
+      }
+      if (change["expected_generation"] !== this.#generation()) {
+        throw new Refusal("refused", "this proposal was made against your rules before a " +
+                          "later change, so it no longer applies: decline it, or make the " +
+                          "change yourself");
+      }
+      this.#sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
+                     applied);
+      return this.#write(session.hash, change["expected_generation"], change["policy"], now);
+    });
+  }
+
+  /** The owner's no to the pending card shown: deleted, its proposer free to ask again. */
+  decline(card: unknown, shown: unknown): string {
+    return this.#storage.transactionSync(() => {
+      const { card_id: declined } = this.#shown(card, shown);
+      this.#sql.exec("DELETE FROM policy_proposals WHERE request_id = ?", declined);
+      return declined;
+    });
+  }
+
+  /** The pending card under `card` whose digest is the one shown, or refused. */
+  #shown(card: unknown, shown: unknown): { card_id: string; change: Change } {
+    const held = cardId(card) ? this.#sql.exec<{ digest: string; document: string }>(
+      `SELECT digest, document ${PENDING} AND request_id = ?`, card).toArray()[0] : undefined;
+    if (held === undefined || held.digest !== shown) {
+      throw new Refusal("refused", "proposal is not the pending card shown");
+    }
+    return { card_id: card as string, change: JSON.parse(held.document) as Change };
   }
 
   /** A write receipted under `sessionId`: the owner's session's, or the import's. */
   #write(sessionId: string, expectedGeneration: unknown, document: unknown,
-         proposal: unknown, now: number): PolicyState {
+         now: number): PolicyState {
     validate(document);
     const generation = expected(expectedGeneration);
-    if (proposal !== null && (!keyed(proposal, ["request_id", "digest"])
-                              || !cardId(proposal["request_id"])
-                              || !cardId(proposal["digest"]))) {
-      throw new Refusal("invalid", "invalid proposal apply");
-    }
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = this.#stored();
       if (row.generation !== generation) {
         throw new Refusal("refused", "policy generation changed");
-      }
-      if (proposal !== null) {
-        const held = sql.exec<{ digest: string; document: string }>(
-          "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-            "AND applied_at IS NULL", proposal["request_id"] as string,
-        ).toArray()[0];
-        const change: unknown = held === undefined ? {} : JSON.parse(held.document);
-        if (held === undefined || held.digest !== proposal["digest"] || !object(change)
-            || change["type"] !== "policy_proposal"
-            || canonical(change["policy"]) !== canonical(document)
-            || change["expected_generation"] !== generation) {
-          throw new Refusal("refused", "proposal is not the pending card shown");
-        }
-        sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
-                 proposal["request_id"] as string);
       }
       const digest = policyDigest(document);
       // The egress generation moves only when the egress table does: the sandbox's network
@@ -410,7 +448,7 @@ export class Policy {
                         "conflict: the owner's policy is neither the default nor the " +
                         "imported one");
     }
-    this.#write("import", row.generation, document, null, now);
+    this.#write("import", row.generation, document, now);
     return true;
   }
 
@@ -439,63 +477,66 @@ export class Policy {
   }
 
   /**
-   * An agent's proposal, receipted; with its card's id, held for the owner. Refiling a
-   * held card with another change is refused (the same change again is a no-op); all but
-   * the newest applied ones are pruned first, and a new card at a bound lets the oldest
-   * pending one go to make its room: the proposer's own at its share, else the oldest of its
-   * class's (outside clients' or the owner's), refused when its class has none; the owner
-   * told whose (`held_request_evicted`).
+   * An agent's proposal, receipted and held for the owner under its card: `requestId`, the
+   * proposer's own for its retries, or one minted. Refiling a held card with another change
+   * is refused (the same change again is a no-op); all but the newest applied ones are pruned
+   * first, and a new card at a bound lets the oldest pending one go to make its room: the
+   * proposer's own at its share, else the oldest of its class's (outside clients' or the
+   * owner's), refused when its class has none; the owner told whose (`held_request_evicted`).
+   * A new card is noticed with its page (`policy_proposal`).
    */
   propose(change: unknown, requestId: unknown, proposer: string, now: number):
-      { request_digest: string; generation: number } {
+      { card_id: string; request_digest: string; generation: number } {
     if (!object(change) || codePoints(canonical(change)) > POLICY_LIMITS.maxChange) {
       throw new Refusal("invalid", "invalid policy proposal");
     }
     if (requestId !== null && !cardId(requestId)) {
       throw new Refusal("invalid", "invalid policy proposal");
     }
+    const card = requestId ?? `pol_${randomHex(16)}`;
     const generation = this.#generation();
     const digest = policyDigest(change);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
-      if (requestId !== null) {
-        const over = this.#usage().applied_proposals - POLICY_LIMITS.appliedProposals;
-        if (over > 0) {
-          sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +
-                     "FROM policy_proposals WHERE applied_at IS NOT NULL " +
-                     "ORDER BY applied_at LIMIT ?)", over);
-        }
-        const held = sql.exec<{ digest: string }>(
-          "SELECT digest FROM policy_proposals WHERE request_id = ?", requestId,
-        ).toArray()[0];
-        if (held !== undefined && held.digest !== digest) {
-          throw new Refusal("refused", "a proposal is already held for this card");
-        }
-        if (held === undefined) {
-          const share = sql.exec<{ pending: number }>(
-            "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
-          ).toArray()[0]?.pending ?? 0;
-          const own = proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient;
-          if (own || this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
-            const gone = sql.exec<{ proposer: string }>(
-              "DELETE FROM policy_proposals WHERE request_id = (SELECT request_id FROM " +
-                "policy_proposals WHERE applied_at IS NULL AND proposer " +
-                `${own || proposer === OWNER ? "=" : "!="} ? ORDER BY at, rowid LIMIT 1) ` +
-                "RETURNING proposer", own ? proposer : OWNER).toArray()[0];
-            if (gone === undefined) {
-              throw new Refusal("refused", "too many pending policy proposals");
-            }
-            this.#notices.once("held_request_evicted", `a proposal of ${gone.proposer} was ` +
-                               "let go to make room for a newer one", now);
+      const over = this.#usage().applied_proposals - POLICY_LIMITS.appliedProposals;
+      if (over > 0) {
+        sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +
+                   "FROM policy_proposals WHERE applied_at IS NOT NULL " +
+                   "ORDER BY applied_at LIMIT ?)", over);
+      }
+      const held = sql.exec<{ digest: string }>(
+        "SELECT digest FROM policy_proposals WHERE request_id = ?", card,
+      ).toArray()[0];
+      if (held !== undefined && held.digest !== digest) {
+        throw new Refusal("refused", "a proposal is already held for this card");
+      }
+      if (held === undefined) {
+        const share = sql.exec<{ pending: number }>(
+          "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
+        ).toArray()[0]?.pending ?? 0;
+        const own = proposer !== OWNER && share >= POLICY_LIMITS.pendingPerClient;
+        if (own || this.#usage().pending_proposals >= POLICY_LIMITS.pendingProposals) {
+          const gone = sql.exec<{ proposer: string }>(
+            "DELETE FROM policy_proposals WHERE request_id = (SELECT request_id FROM " +
+              "policy_proposals WHERE applied_at IS NULL AND proposer " +
+              `${own || proposer === OWNER ? "=" : "!="} ? ORDER BY at, rowid LIMIT 1) ` +
+              "RETURNING proposer", own ? proposer : OWNER).toArray()[0];
+          if (gone === undefined) {
+            throw new Refusal("refused", "too many pending policy proposals");
           }
-          sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
-                     "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,
-                   proposer);
+          this.#notices.once("held_request_evicted", `a proposal of ${gone.proposer} was ` +
+                             "let go to make room for a newer one", now);
         }
+        sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
+                   "VALUES (?, ?, ?, ?, ?)", card, digest, canonical(change), now,
+                 proposer);
+        this.#notices.add("policy_proposal", `${proposer === OWNER ? "Your agent" : "An app " +
+                          "you connected"} asks to change your settings: apply or decline ` +
+                          `it at ${waitingPage(card)}`, now);
       }
       this.receipt("proposal", { request_digest: digest, generation, rule: "owner_policy",
                                  decision: "ask", outcome: "requested" }, now);
-      return { request_digest: digest, generation };
+      return { card_id: card, request_digest: digest, generation };
     });
   }
 
@@ -525,17 +566,15 @@ export class Policy {
                    proposal["request_id"] as string);
   }
 
-  /** The pending proposal held under a card id, and its digest, or null. */
-  held(requestId: unknown): { change: Change; digest: string } | null {
-    if (!cardId(requestId)) {
-      return null;
-    }
-    const row = this.#sql.exec<{ digest: string; document: string }>(
-      "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
-        "AND applied_at IS NULL", requestId,
-    ).toArray()[0];
-    return row === undefined ? null
-      : { change: JSON.parse(row.document) as Change, digest: row.digest };
+  /** The pending proposals, oldest first, each as the owner is shown it. */
+  list(): ProposalCard[] {
+    return this.#sql.exec<{ request_id: string; digest: string; document: string; at: number;
+                            proposer: string }>(
+      `SELECT request_id, digest, document, at, proposer ${PENDING} ORDER BY at, rowid`,
+    ).toArray().map((row) => ({
+      card_id: row.request_id, digest: row.digest, filed_at: row.at,
+      client: row.proposer === OWNER ? null : row.proposer,
+      change: JSON.parse(row.document) as Change }));
   }
 
   /**
@@ -554,7 +593,6 @@ export class Policy {
 export interface PolicyWriteRequest {
   readonly expected_generation: number;
   readonly policy: PolicyDocument;
-  readonly proposal?: { readonly request_id: string; readonly digest: string };
 }
 export interface ProposeRequest {
   readonly change: Change;
@@ -562,6 +600,11 @@ export interface ProposeRequest {
 }
 export interface CardRequest {
   readonly request_id: string;
+}
+/** The owner's answer to a held proposal: its card, and the digest it was shown. */
+export interface ProposalAnswerRequest {
+  readonly card_id: string;
+  readonly digest: string;
 }
 
 // -- THE DOORS: the `policy` rows' handlers (`owner/doors.json`) ----------------------------------
@@ -581,16 +624,38 @@ export interface PolicyDoorNeeds extends Pick<DoorUnits, "door" | "synced"> {
   readonly actions: Pick<Actions, "receipts">;
 }
 
+/**
+ * The owner's write in its session (`write`), in the handler's synced unit. A new files
+ * retention is applied to rows already kept by housekeeping, so the schedule is synced after
+ * it (the `files` lane re-applies it). A write that lets out less marks every live lease in
+ * its unit (`leasesNarrowed`): each sandbox's network is wider than the policy until a
+ * re-apply lands, and its lease is given back if none lands in time (`Launcher.reapply`).
+ * Once it committed, the handler ends the sandbox's in-flight egress streams; a call opened
+ * after it is admitted under the new generation.
+ */
+function written(o: PolicyDoorNeeds, owner: string,
+                 write: (now: number) => PolicyState): Projection {
+  const before = o.policy.read().document.egress;
+  const now = clock();
+  const after = write(now);
+  if (narrows(before, after.document.egress)) {
+    o.files.leasesNarrowed(o.policy.egressGeneration(), now);
+  }
+  return projected(owner, after);
+}
+
 /** The `policy` doors' handlers, by door. */
 export const policyDoors = Object.freeze({
   /**
-   * An agent's proposal, the owner's or an admitted outside client's; never applied. A
-   * scoped client proposes only with `propose_policy` granted where its agent is.
+   * An agent's proposal, the owner's or an admitted outside client's, held for the owner; its
+   * answer names the owner app's page of the card, which the agent hands its user. A scoped
+   * client proposes only with `propose_policy` granted where its agent is.
    */
   policyPropose(o: PolicyDoorNeeds, { account, r }: Call<ProposeRequest>):
-      { request_digest: string; generation: number } {
-    return o.policy.propose(r["change"], r["request_id"] ?? null,
-                              account.origin?.client ?? OWNER, clock());
+      { card_id: string; request_digest: string; generation: number; approve_url: string } {
+    const filed = o.policy.propose(r["change"], r["request_id"] ?? null,
+                                   account.origin?.client ?? OWNER, clock());
+    return { ...filed, approve_url: waitingPage(filed.card_id) };
   },
   policyRead(o: PolicyDoorNeeds, { account: { owner } }: Call<undefined>): Projection {
     return o.policy.projection(owner);
@@ -600,36 +665,41 @@ export const policyDoors = Object.freeze({
       { receipts: Receipt[]; actions: ActionReceipt[] } {
     return { receipts: o.policy.receipts(), actions: o.actions.receipts() };
   },
-  /**
-   * The owner's write, in its session; with `proposal`, a held card's one apply. A new
-   * files retention is applied to rows already kept by housekeeping, so the schedule is
-   * synced after it (the `files` lane re-applies it). A write that lets out less marks every
-   * live lease in its unit (`leasesNarrowed`): each sandbox's network is wider than the
-   * policy until a re-apply lands, and its lease is given back if none lands in time
-   * (`Launcher.reapply`). Once it committed, it ends the sandbox's in-flight egress streams;
-   * a call opened after it is admitted under the new generation.
-   */
+  /** The owner's write, in its session. */
   async policyWrite(o: PolicyDoorNeeds, door: Door<PolicyWriteRequest, "session">):
       Promise<Projection> {
-    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) => {
-      const before = o.policy.read().document.egress;
-      const now = clock();
-      const written = o.policy.write(session, r["expected_generation"], r["policy"],
-                                     r["proposal"] ?? null, now);
-      if (narrows(before, written.document.egress)) {
-        o.files.leasesNarrowed(o.policy.egressGeneration(), now);
-      }
-      return projected(owner, written);
-    }));
+    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) =>
+      written(o, owner, (now) =>
+        o.policy.write(session, r["expected_generation"], r["policy"], now))));
     await o.door(() => o.egress.end("policy"));
     return done;
   },
-  /** The pending card the owner is shown, and the digest its apply must name. */
+  /** The pending proposals the owner is shown, oldest first, each with its digest. */
+  policyProposals(o: PolicyDoorNeeds, _call: Call<undefined>): { cards: ProposalCard[] } {
+    return { cards: o.policy.list() };
+  },
+  /**
+   * The one card under `request_id`, for the doors' version before (`dropped`), which still
+   * names it until the stage serves none.
+   */
   policyProposal(o: PolicyDoorNeeds, { r }: Call<CardRequest>): { change: Change; digest: string } {
-    const held = o.policy.held(r["request_id"]);
-    if (held === null) {
+    const held = o.policy.list().find((card) => card.card_id === r["request_id"]);
+    if (held === undefined) {
       throw new Refusal("refused", "no pending proposal for this card");
     }
-    return held;
+    return { change: held.change, digest: held.digest };
+  },
+  /** The owner's yes, in its session: the held proposal applied once, as its write. */
+  async policyApply(o: PolicyDoorNeeds, door: Door<ProposalAnswerRequest, "session">):
+      Promise<Projection> {
+    const done = await o.synced(() => door.within(({ account: { owner }, session, r }) =>
+      written(o, owner, (now) => o.policy.apply(session, r["card_id"], r["digest"], now))));
+    await o.door(() => o.egress.end("policy"));
+    return done;
+  },
+  /** The owner's no, a narrowing that needs no session: the held proposal gone. */
+  policyDecline(o: PolicyDoorNeeds, { r }: Call<ProposalAnswerRequest>):
+      { card_id: string; declined: true } {
+    return { card_id: o.policy.decline(r["card_id"], r["digest"]), declined: true };
   },
 });
