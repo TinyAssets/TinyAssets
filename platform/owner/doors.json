@@ -221,7 +221,7 @@
     { "door": "egressOpen", "caller": "egress", "handler": "egress", "gate": "units" },
     { "door": "egressReserve", "caller": "egress", "handler": "egress", "gate": "door" },
     { "door": "egressBeat", "caller": "egress", "handler": "egress", "gate": "door" },
-    { "door": "egressSettle", "caller": "egress", "handler": "egress", "gate": "door" },
+    { "door": "egressSettle", "caller": "egress", "handler": "egress", "gate": "synced" },
     { "door": "egressReceipts", "caller": "owner", "action": "read its sandbox's egress",
       "handler": "egress", "gate": "door" },
     { "door": "fileSyncCommit", "caller": "lease", "action": "hold the file sync lease",

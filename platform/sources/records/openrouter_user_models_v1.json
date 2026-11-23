@@ -29,7 +29,8 @@
       "origin": "https://openrouter.ai",
       "paths": [
         "/api/v1/models/user",
-        "/api/v1/benchmarks"
+        "/api/v1/benchmarks",
+        "/api/v1/key"
       ],
       "methods": [
         "GET"
@@ -42,6 +43,32 @@
   "not_interactive": [
     "*:batch"
   ],
+  "credit": {
+    "url": "https://openrouter.ai/api/v1/key",
+    "none_when": [
+      {
+        "path": [
+          "data",
+          "is_free_tier"
+        ],
+        "equals": true
+      },
+      {
+        "path": [
+          "data",
+          "limit_remaining"
+        ],
+        "at_most": 0
+      }
+    ],
+    "refused": [
+      402
+    ],
+    "free": [
+      "*:free"
+    ],
+    "cite": "https://openrouter.ai/docs/api_reference/limits"
+  },
   "oauth": {
     "protocol": "pkce_user_key_v1",
     "authorization_endpoint": "https://openrouter.ai/auth",

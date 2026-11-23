@@ -326,6 +326,23 @@ test("the owner connects a model source with a key", { timeout: 60_000 }, async 
   await page.locator("table", { hasText: "Groq" }).waitFor();
 });
 
+test("a connected key with no credit says it runs free models only", { timeout: 60_000 },
+     async () => {
+  await page.goto(`${ORIGIN}/app#sources`);
+  const card = page.locator(".card", { hasText: "OpenRouter" });
+  await card.locator("input[type=password]").fill(`sk-or-free-${randomBytes(8).toString("hex")}`);
+  await card.getByRole("button", { name: "Connect with a key" }).click();
+  await page.locator(".message.good", { hasText: "Connected OpenRouter" }).waitFor();
+  // The owner's connections lane reads the key's credit once it is connected.
+  const row = page.locator("tr", { hasText: "OpenRouter" });
+  for (let tries = 0; await row.getByText("Free models only").count() === 0; tries++) {
+    assert.ok(tries < 50, "the sources screen says the key runs free models only");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await page.reload();
+  }
+  await row.getByRole("button", { name: "Disconnect" }).click();
+});
+
 test("the connect page clears the fragment before any other script runs, sends no " +
      "referrer, and finishes the connect", { timeout: 60_000 }, async () => {
   await page.goto(`${ORIGIN}/app#sources`);

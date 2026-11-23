@@ -2,7 +2,8 @@
  * Where a sealed credential may go: the source values the binder
  * hands the gateway to seal (the pi-ai provider and API, the base URL, how the secret is
  * sent, the endpoints it may reach, an OAuth client), the egress scope a committed
- * connection keeps, and the rules that judge a request against them. The gateway seals and
+ * connection keeps, the rules that judge a request against them, and the read of what a
+ * key can pay for (`CreditRead`). The gateway seals and
  * opens by these (`gateway/src/credential.ts`), the source records are checked by them
  * (`sources/src/check.ts`), and the owner's object admits a sandbox call by them
  * (`owner/src/egress.ts`), so the three can never disagree.
@@ -16,7 +17,7 @@
  * its agents' (`serviceSource`), sent with no metering and only to that URL.
  */
 import { type ApiRules, apiRules, declaredApi } from "./api-rules.ts";
-import { list, object, shape, text, valueAtPath } from "./checks.ts";
+import { keyed, list, object, shape, text, valueAtPath } from "./checks.ts";
 import { Refusal } from "./refusal.ts";
 import { checkedRecord, type ModelRecord } from "./model-record.ts";
 
@@ -423,6 +424,90 @@ export function allows(endpoints: readonly Endpoint[], method: string, url: URL)
   return endpoints.some((entry) => entry.origin === url.origin
                                    && entry.methods.includes(method)
                                    && pathAllowed(entry.paths, url.pathname));
+}
+
+/**
+ * One test of a key's limits answer (`CreditRead`): the value at `path` is `equals`, or a
+ * number at most `at_most`.
+ */
+export type NoCredit =
+  | { readonly path: readonly string[]; readonly equals: boolean }
+  | { readonly path: readonly string[]; readonly at_most: number };
+
+/**
+ * Where a source reports what a key can pay for, from its source record (`credit`): a `GET`
+ * of `url` with the sealed secret, whose JSON answer says the key can pay for nothing when
+ * any of `none_when` holds. Every test's path must be in the answer (its value may be null),
+ * so an answer of another shape is a failed read, never a key that pays.
+ */
+export interface CreditRead {
+  readonly url: string;
+  readonly none_when: readonly NoCredit[];
+}
+
+const PATH_KEY = /^[A-Za-z0-9_-]{1,64}$/;
+const PATH_MAX = 8;
+const NO_CREDIT_MAX = 8;
+
+function noCredit(value: unknown): NoCredit {
+  const path = object(value) ? value["path"] : undefined;
+  if (!Array.isArray(path) || path.length < 1 || path.length > PATH_MAX
+      || !path.every((key) => typeof key === "string" && PATH_KEY.test(key))) {
+    throw new Refusal("invalid_request");
+  }
+  const kept = Object.freeze([...path] as string[]);
+  if (keyed(value, ["path", "equals"]) && typeof value["equals"] === "boolean") {
+    return Object.freeze({ path: kept, equals: value["equals"] });
+  }
+  if (keyed(value, ["path", "at_most"]) && typeof value["at_most"] === "number"
+      && Number.isFinite(value["at_most"])) {
+    return Object.freeze({ path: kept, at_most: value["at_most"] });
+  }
+  throw new Refusal("invalid_request");
+}
+
+/**
+ * A credit read's `url` and `none_when`, checked (`invalid_request`): an `https:` URL written
+ * as the URL parser writes it, with no query or fragment, and one to `NO_CREDIT_MAX` tests.
+ * The gateway sends it only where the sealed endpoints allow a `GET` (`allows`), so it
+ * reaches nothing a sandbox's read could not. Which other keys it may come with is its
+ * holder's: a source record's (`sources/src/check.ts`) or the owner's call (`credit_read`).
+ */
+export function creditRead(value: unknown): CreditRead {
+  if (!object(value) || typeof value["url"] !== "string"
+      || !Array.isArray(value["none_when"]) || value["none_when"].length < 1
+      || value["none_when"].length > NO_CREDIT_MAX) {
+    throw new Refusal("invalid_request");
+  }
+  let url: URL;
+  try {
+    url = new URL(value["url"]);
+  } catch {
+    throw new Refusal("invalid_request");
+  }
+  if (url.protocol !== "https:" || url.href !== value["url"] || url.search !== ""
+      || url.hash !== "") {
+    throw new Refusal("invalid_request");
+  }
+  return Object.freeze({ url: url.href,
+                         none_when: Object.freeze(value["none_when"].map(noCredit)) });
+}
+
+/**
+ * Whether a key whose limits answer is `body` can pay for a priced model: none of `read`'s
+ * tests holds. Null when a test's path is not in the answer: an answer of another shape.
+ */
+export function paysBy(read: CreditRead, body: unknown): boolean | null {
+  let none = false;
+  for (const test of read.none_when) {
+    const value = valueAtPath(body, test.path);
+    if (value === undefined) {
+      return null;
+    }
+    none ||= "equals" in test ? value === test.equals
+      : typeof value === "number" && value <= test.at_most;
+  }
+  return !none;
 }
 
 /**

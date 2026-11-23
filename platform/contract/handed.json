@@ -56,6 +56,8 @@
                         "required": ["record", "secret", "url"], "optional": [] },
     "authorization_grant": { "from": "doors", "to": "gateway",
                              "required": ["code", "redirect_uri", "verifier"], "optional": [] },
+    "credit_read": { "from": "owner", "to": "gateway", "required": ["none_when", "url"],
+                     "optional": [] },
     "ring_request": { "from": "owner", "to": "gateway",
                       "required": ["body", "event_id", "headers"], "optional": [] },
     "metering": { "from": "owner", "to": "gateway",

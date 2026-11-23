@@ -15,11 +15,13 @@
  * (`RESEALED_HEADER`, `egress.ts`).
  *
  * Each value one side builds and the gateway reads has its checker beside its type
- * (`metering`, `doorbellInput`, `ringRequest`), so its builder and its reader hold one rule.
+ * (`metering`, `doorbellInput`, `ringRequest`; a credit read's, `CreditRead`, is
+ * `egress-scope.ts`'s, as the source records are checked by it too), so its builder and its
+ * reader hold one rule.
  */
 import { keyed, object, whole } from "./checks.ts";
 import { taken } from "./handed.ts";
-import type { EgressScope, ServiceSource, Source } from "./egress-scope.ts";
+import type { CreditRead, EgressScope, ServiceSource, Source } from "./egress-scope.ts";
 import type { ModelRecord } from "./model-record.ts";
 import { Refusal } from "./refusal.ts";
 import { AUTH_HEADER } from "./wake-records.ts";
@@ -197,8 +199,20 @@ export type RingAnswer =
   | { readonly state: "refused" }
   | { readonly state: "unknown" };
 
+/** What a key's limits answer said: whether it can pay for a priced model. */
+export interface KeyCredit {
+  readonly pays: boolean;
+}
+
 /** The default entrypoint, as the owner's object binds it (`GATEWAY`). */
 export interface GatewayService {
+  /**
+   * What a connection's key can pay for, read where its source reports it (`CreditRead`),
+   * with the sealed secret, at a `GET` its sealed endpoints allow (`endpoint_refused` where
+   * they do not: a connection sealed before its record named the read).
+   */
+  credit(owner: string, connection: string, version: number, blob: string,
+         read: CreditRead): Promise<KeyCredit>;
   /** An OAuth credential refreshed; the result is bound to `version + 1`. */
   refresh(owner: string, connection: string, version: number, blob: string):
     Promise<Refreshed>;

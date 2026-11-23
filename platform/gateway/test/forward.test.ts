@@ -2,7 +2,7 @@
  * Raw passthrough for sandbox egress (research §5.4), as a free call takes it: inbound
  * credentials stripped, the sealed one injected, the sealed endpoints enforced, a stalled
  * answer cut, and the secret redacted from what comes back. And the connection's setup check
- * (`verify`).
+ * (`verify`), and the read of what its key can pay for (`credit`).
  */
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -16,7 +16,7 @@ import { checkedRecord } from "../../contract/src/model-record";
 import { Refusal } from "../../contract/src/refusal";
 import { EGRESS_DEADLINE_S } from "../../contract/src/limits";
 import { serviceSource, type Source } from "../../contract/src/egress-scope";
-import { forwardMetered, forwardRead, verify } from "../src/forward";
+import { credit, forwardMetered, forwardRead, verify } from "../src/forward";
 import { redaction } from "../src/redact";
 import { seal, type Binding } from "../src/keyring";
 import { steer } from "./fake-upstream";
@@ -537,6 +537,53 @@ describe("verify", () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
     await expect(verify(env, ALICE, blob, builtinCatalog())).rejects.toThrow("unsupported_source");
+  });
+});
+
+describe("credit", () => {
+  /** OpenAI's calls, with a key's limits read at `credit.test` sealed beside them. */
+  const LIMITED: Source = Object.freeze({ ...OPENAI, endpoints: [...OPENAI.endpoints, {
+    origin: "https://credit.test", paths: ["/key"], methods: ["GET"] }] });
+  /** OpenRouter's read, as its source record has it. */
+  const READ = { url: "https://credit.test/key", none_when: [
+    { path: ["data", "is_free_tier"], equals: true },
+    { path: ["data", "limit_remaining"], at_most: 0 }] };
+  const read = async (key: string, record: Source = LIMITED, asked: unknown = READ) => {
+    const env = ring("k1");
+    return credit(env, ALICE, await sealed(env, ALICE, key, record), asked)
+      .catch((caught: unknown) => caught);
+  };
+
+  it("reads whether a key pays for a priced model where its source reports it", async () => {
+    expect(await read("sk-free")).toEqual({ pays: false });
+    expect(await read("sk-dry")).toEqual({ pays: false });
+    expect(await read("sk-paid")).toEqual({ pays: true });
+  });
+
+  it("answers a refused key, an answer of another shape and a redirect with fixed codes, " +
+     "never following the redirect", async () => {
+    expect(await read("sk-bad")).toMatchObject({ code: "upstream_unauthorized" });
+    expect(await read("sk-odd")).toMatchObject({ code: "upstream_error" });
+    expect(await read("sk-redirect")).toMatchObject({ code: "upstream_error" });
+    const evil = await (await fetch("https://status.test/evil")).json() as unknown[];
+    expect(JSON.stringify(evil)).not.toContain("sk-redirect");
+  });
+
+  it("sends the key only to a GET its sealed endpoints allow, and takes only a read",
+     async () => {
+    // A blob sealed before its record named the read: nothing is sent.
+    expect(await read("sk-free", OPENAI)).toMatchObject({ code: "endpoint_refused" });
+    expect(await read("sk-free", LIMITED, { ...READ, url: "https://evil.test/key" }))
+      .toMatchObject({ code: "endpoint_refused" });
+    const evil = await (await fetch("https://status.test/evil")).json() as unknown[];
+    expect(JSON.stringify(evil)).not.toContain("sk-free");
+    for (const bad of [{ ...READ, extra: 1 }, { ...READ, none_when: [] },
+                       { ...READ, url: "http://credit.test/key" },
+                       { ...READ, url: "https://credit.test/key?key=1" },
+                       { ...READ, none_when: [{ path: ["data"], equals: "yes" }] }]) {
+      expect(await read("sk-free", LIMITED, bad), JSON.stringify(bad))
+        .toMatchObject({ code: "invalid_request" });
+    }
   });
 });
 
