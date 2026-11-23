@@ -1,287 +1,212 @@
 /**
- * What the doors hand the owner's object, held against the base branch: the owner takes
- * everything the base's doors hand it. The kit deploys the owner before the doors
- * (`facts.ts` `WORKERS`: each Worker after the ones it binds), so from the owner's 100% until
- * the doors' (their 0% soak and smoke, or a run stopped between) the doors' version before
- * calls this owner, and a rollback takes the doors back first. The 0% smoke reaches only the
- * doors' new version, so nothing else would see the owner refuse the version before.
- *
- * Two things the doors hand are data, which the base's files say for the base's doors: each
- * binding's shapes (`contract/bindings.json`) and each door's request (`contract/doors.json`
- * `args`). The owner must still take every door the base's table has; every field a base
- * shape or request lists, required or optional; no request where the base's door takes none
- * or may be called with none (`omitted`); a field sent `undefined` where the base's door
- * takes one (`undefinedAllowed`); and it may require no field the base's doors do not always
- * hand. What the doors stop handing is dropped first: a binding field to its shape's
- * `dropped`, a request's field to its arguments' `dropped`, which the owner takes and drops,
- * and a door to `dropped: true`, which the owner takes and the doors' `OwnerDoors` lacks. It
- * goes once the doors the stage serves hand it no more (expand, then contract): the base
- * branch is not what the stage serves, so that wait is the change's own, named in its
- * decision log. The one exception is the cutover's: the doors and shapes the base's manifest
- * (`cutover.json`) names in its `cutover` phase's edits of the two files may go at once, since
- * its change lands after the import window closes (tasks.md §9 step 15), when nothing calls
- * them. A door's request read by its own module (`loose`) is its module's, and not held here.
- * The base is `ci/history.ts`'s.
+ * What each Worker hands another, held to the deploy order (`deploy/handed.ts`) against the base
+ * branch (`ci/history.ts`): this tree takes everything the base's versions hand it and hands
+ * nothing the base's versions refuse. The kit's plan holds the same against the versions the
+ * stage serves (`deploy.ts` `rollout`), which the base branch is not.
  */
 import { describe, expect, it } from "vitest";
 
 import { baseOf, fileAt } from "../../ci/history";
-import bindings from "../../contract/bindings.json" with { type: "json" };
-import doors from "../../contract/doors.json" with { type: "json" };
-import type { Shape } from "../../contract/src/binding";
 import type { Args, DoorArgs, DoorRow } from "../../contract/src/doors";
-import { WORKERS } from "../facts";
+import type { Shape } from "../../contract/src/handed";
+import { type Before, handedProblems, type Side, sideAt, TREE } from "../handed";
 
-const BINDINGS_JSON = "platform/contract/bindings.json";
-const DOORS_JSON = "platform/contract/doors.json";
-const CUTOVER_JSON = "platform/cutover.json";
+describe("what each Worker hands another, against the base branch", () => {
+  it("is all the other takes, by the deploy order", () => {
+    const base = sideAt(baseOf(), fileAt);
+    expect(handedProblems(() => base, TREE)).toEqual([]);
+  });
+});
 
-/** What the doors hand on one side of the change: the binding's shapes and the door table. */
-interface Side {
-  readonly shapes: Readonly<Record<string, Shape>>;
-  readonly doors: readonly DoorRow[];
-}
+const NONE = { doors: new Set<string>(), shapes: new Set<string>() };
+/** A side of `shapes` and door `rows`, the same for every Worker. */
+const side = (shapes: Readonly<Record<string, Shape>>, rows: readonly DoorRow[] = []):
+  Before & Side => ({ shapes, doors: rows, cutover: NONE });
+/** `now` held against `then` as every Worker's version before. */
+const held = (then: Before, now: Side) => handedProblems(() => then, now);
 
-/**
- * The base's side: its shapes are null on a base from before they were data; and the doors and
- * shapes its cutover manifest takes out, by name.
- */
-type BaseSide = Omit<Side, "shapes"> & {
-  readonly shapes: Side["shapes"] | null;
-  readonly cutover: { readonly doors: ReadonlySet<string>; readonly shapes: ReadonlySet<string> };
-};
+const ACCOUNT: Shape = { from: "doors", to: "owner", required: ["owner", "caller", "origin"],
+                         optional: ["source", "control"] };
+/** An answer: the sandbox, which deploys first, hands it the owner. */
+const STARTED: Shape = { from: "sandbox", to: "owner", required: ["started"], optional: [] };
 
-/** The fields one side hands, always and sometimes, and the ones it takes and drops. */
-interface Fields {
-  readonly required: readonly string[];
-  readonly optional: readonly string[];
-  readonly dropped: readonly string[];
-}
-
-/**
- * Each way `taken` refuses what `handed` hands, as `what`'s: a field it no longer takes, or
- * one it requires that `handed` does not always hand.
- */
-function fieldProblems(what: string, handed: Fields, taken: Fields): string[] {
-  const takes = new Set([...taken.required, ...taken.optional, ...taken.dropped]);
-  return [
-    ...[...handed.required, ...handed.optional].filter((field) => !takes.has(field))
-      .map((field) => `${what} no longer takes ${field}, which the doors' version before ` +
-                      "hands: drop it first (the owner takes and drops it), and take it out " +
-                      "once the doors the stage serves hand it no more"),
-    ...taken.required.filter((field) => !handed.required.includes(field))
-      .map((field) => `${what} requires ${field}, which the doors' version before does not ` +
-                      "always hand: take it as optional until the doors the stage serves do"),
-  ];
-}
-
-function shapeFields(shape: Shape): Fields {
-  return { required: shape.required, optional: shape.optional, dropped: shape.dropped ?? [] };
-}
-
-/** A door's request as one list of fields, by who asks where its row splits them. */
-function requestSides(args: Args | { readonly owner: Args; readonly outside: Args }):
-    Readonly<Record<string, Args>> {
-  return "refused" in args ? { "": args } : { owner: args.owner, outside: args.outside };
-}
-
-function argsFields(args: Args): Fields {
-  return { required: Object.keys(args.required), optional: Object.keys(args.optional),
-           dropped: args.dropped ?? [] };
-}
-
-/** Each way the head's arguments of `door` refuse what the base's doors hand it. */
-function argsProblems(door: string, base: DoorArgs, head: DoorArgs): string[] {
-  if (base === "loose" || head === "loose" || head === "none") {
-    return [];
-  }
-  const sides = requestSides(head);
-  const paired = (side: string): [string, Args][] => Object.entries(sides)
-    .filter(([key]) => side === "" || key === "" || key === side)
-    .map(([key, args]) => [side || key, args]);
-  const named = (side: string) => side === "" ? door : `${door} (${side})`;
-  if (base === "none") {
-    return paired("").filter(([, args]) => args.omitted !== true
-                             || Object.keys(args.required).length > 0)
-      .map(([side]) => `${named(side)} takes a request now, which the doors' version before ` +
-                       "calls it without: take none, or an omitted one, until the doors the " +
-                       "stage serves hand one");
-  }
-  return Object.entries(requestSides(base)).flatMap(([side, before]) =>
-    paired(side).flatMap(([key, after]) => [
-      ...fieldProblems(named(key), argsFields(before), argsFields(after)),
-      ...before.omitted === true && after.omitted !== true
-        ? [`${named(key)} refuses no request, which the doors' version before may hand`] : [],
-      ...before.undefinedAllowed === true && after.undefinedAllowed !== true
-        ? [`${named(key)} refuses a field sent undefined, which the doors' version before ` +
-           "may hand"] : [],
-    ]));
-}
-
-/** Each way `head`'s owner refuses what `base`'s doors hand it. */
-function handedProblems(base: BaseSide, head: Side): string[] {
-  const shapes = base.shapes === null ? []
-    : Object.entries(base.shapes).flatMap(([name, before]) => {
-      const after = head.shapes[name];
-      return after === undefined && base.cutover.shapes.has(name) ? []
-        : after === undefined ? [`the binding shape ${name} is gone, which the doors' version before hands`]
-        : fieldProblems(`the binding shape ${name}`, shapeFields(before), shapeFields(after));
-    });
-  const rows = new Map(head.doors.map((row) => [row.door, row]));
-  return [...shapes, ...base.doors.flatMap((before) => {
-    const after = rows.get(before.door);
-    return after !== undefined ? argsProblems(before.door, before.args, after.args)
-      : before.dropped === true || base.cutover.doors.has(before.door) ? []
-        : [`the door ${before.door} is gone, which the doors' version before calls: drop it ` +
-           "first (the owner takes it, the doors call it no more), and take it out once the " +
-           "doors the stage serves call it no more"];
-  })];
-}
-
-/** The base's side: its shapes, none before they were data, and its door table. */
-function baseSide(base: string): BaseSide {
-  const shapes = fileAt(base, BINDINGS_JSON);
-  const table = fileAt(base, DOORS_JSON);
-  if (table === null) {
-    throw new Error(`${base} holds no ${DOORS_JSON}`);
-  }
-  if (shapes === null && /^import .* from ".*\.json"/m
-    .test(fileAt(base, "platform/contract/src/binding.ts") ?? "")) {
-    throw new Error(`${base}'s binding parsers read a shapes file that is not ${BINDINGS_JSON}`);
-  }
-  const manifest = fileAt(base, CUTOVER_JSON);
-  const edits = manifest === null ? [] : (JSON.parse(manifest) as {
-    phases: { cutover: { entries: { edit?: string; names?: string[] }[] } } })
-    .phases.cutover.entries;
-  const cut = (path: string) => new Set(edits.flatMap((entry) => entry.edit === path
-    ? (entry.names ?? []).map((name) => name.replace(/^"(.*)"$/, "$1")) : []));
-  return { shapes: shapes === null ? null : (JSON.parse(shapes) as typeof bindings).shapes,
-           doors: (JSON.parse(table) as { doors: DoorRow[] }).doors,
-           cutover: { doors: cut(DOORS_JSON), shapes: cut(BINDINGS_JSON) } };
-}
-
-const HEAD: Side = { shapes: bindings.shapes, doors: doors.doors as unknown as DoorRow[] };
-
-describe("what the doors hand the owner, against the base branch", () => {
-  it("is all the owner takes, which the kit deploys before the doors", () => {
-    // The rule's direction is the deploy order's: were the doors deployed first, the doors'
-    // new version would call the owner's version before, and the rule would run the other way.
-    expect(WORKERS.indexOf("owner")).toBeLessThan(WORKERS.indexOf("doors"));
-    expect(handedProblems(baseSide(baseOf()), HEAD)).toEqual([]);
+describe("a request, whose parser deploys before its sender", () => {
+  it("refuses a parser that no longer takes a field the sender's version before hands", () => {
+    // #5805's and #5807's: the doors stopped handing tiers, then signins, and the owner's
+    // parser refused both in the same change.
+    const before = { ...ACCOUNT, optional: [...ACCOUNT.optional, "tiers", "signins"] };
+    expect(held(side({ account: before }), side({ account: ACCOUNT }))).toEqual(
+      ["tiers", "signins"].map((field) => `the shape account no longer takes ${field}, which ` +
+        "the doors' version before hands: drop it first (taken and left out), and take it out " +
+        "once the stage serves no doors version that hands it"));
+    // Dropped first, it passes; and taken out once the version before drops it.
+    const dropped = { ...ACCOUNT, dropped: ["tiers", "signins"] };
+    expect(held(side({ account: before }), side({ account: dropped }))).toEqual([]);
+    expect(held(side({ account: dropped }), side({ account: ACCOUNT }))).toEqual([]);
   });
 
-  const ACCOUNT: Shape = { required: ["owner", "caller", "origin"],
-                           optional: ["source", "control"] };
-  const NONE = { doors: new Set<string>(), shapes: new Set<string>() };
-  const side = (account: Shape, rows: readonly DoorRow[] = []): BaseSide & Side =>
-    ({ shapes: { account }, doors: rows, cutover: NONE });
+  it("refuses a field newly required, until the version before hands it always", () => {
+    const required = { ...ACCOUNT, required: [...ACCOUNT.required, "control"],
+                       optional: ["source"] };
+    expect(held(side({ account: ACCOUNT }), side({ account: required }))).toEqual([
+      "the shape account requires control, which the doors' version before does not always " +
+      "hand: take it as always first, and require it once the stage serves no doors version " +
+      "that does not"]);
+    const always = { ...ACCOUNT, always: ["control"], optional: ["source"] };
+    expect(held(side({ account: ACCOUNT }), side({ account: always }))).toEqual([]);
+    expect(held(side({ account: always }), side({ account: required }))).toEqual([]);
+    // A new optional field, and one made optional, the version before never hands wrongly.
+    expect(held(side({ account: ACCOUNT }),
+                side({ account: { ...ACCOUNT, optional: [...ACCOUNT.optional, "grant"] } })))
+      .toEqual([]);
+    expect(held(side({ account: required }), side({ account: ACCOUNT }))).toEqual([]);
+  });
+
+  it("refuses a shape gone, but for the cutover's, and holds no shape the base lacks", () => {
+    expect(held(side({ account: ACCOUNT }), side({}))).toEqual([
+      "the shape account is gone, which the doors' version before hands"]);
+    const cutover = { ...side({ account: ACCOUNT }),
+                      cutover: { doors: new Set<string>(), shapes: new Set(["account"]) } };
+    expect(held(cutover, side({}))).toEqual([]);
+    expect(held(side({}), side({ account: { ...ACCOUNT, required: ["grant"] } }))).toEqual([]);
+  });
+});
+
+describe("an answer, whose sender deploys before its parser", () => {
+  it("refuses a sender that hands a field the parser's version before does not take", () => {
+    const code = { ...STARTED, optional: ["code"] };
+    expect(held(side({ started: STARTED }), side({ started: code }))).toEqual([
+      "the shape started hands code, which the owner's version before does not take: take it " +
+      "first (dropped: taken, not yet handed), and hand it once the stage serves no owner " +
+      "version that refuses it"]);
+    // Taken first, not yet handed, then handed.
+    const ready = { ...STARTED, dropped: ["code"] };
+    expect(held(side({ started: STARTED }), side({ started: ready }))).toEqual([]);
+    expect(held(side({ started: ready }), side({ started: code }))).toEqual([]);
+  });
+
+  it("refuses a sender that stops always handing what the version before requires", () => {
+    const stopped = { ...STARTED, required: [], optional: ["started"] };
+    expect(held(side({ started: STARTED }), side({ started: stopped }))).toEqual([
+      "the shape started does not always hand started, which the owner's version before " +
+      "requires: hand it always first, and stop once the stage serves no owner version that " +
+      "requires it"]);
+    const always = { ...STARTED, required: [], always: ["started"] };
+    expect(held(side({ started: STARTED }), side({ started: always }))).toEqual([]);
+    expect(held(side({ started: always }), side({ started: stopped }))).toEqual([]);
+  });
+
+  it("holds no answer the parser's version before lists not, and lets one go", () => {
+    expect(held(side({}), side({ started: STARTED }))).toEqual([]);
+    expect(held(side({ started: STARTED }), side({}))).toEqual([]);
+  });
+
+  it("reads each Worker's own version before: the answer's parser's, the request's sender's", () => {
+    const sides: Readonly<Record<string, Before>> = {
+      owner: side({ started: { ...STARTED, required: ["started", "code"] } }),
+      doors: side({ account: ACCOUNT }) };
+    expect(handedProblems((worker) => sides[worker] ?? null, side({ started: STARTED,
+                                                                    account: ACCOUNT })))
+      .toEqual(["the shape started does not always hand code, which the owner's version " +
+                "before requires: hand it always first, and stop once the stage serves no " +
+                "owner version that requires it"]);
+    // No version before serves: nothing of it talks.
+    expect(handedProblems(() => null, side({ started: STARTED }))).toEqual([]);
+  });
+});
+
+describe("the door table, the doors' requests to the owner", () => {
   const door = (args: DoorArgs): DoorRow =>
     ({ door: "fileStat", class: "read", capability: "read_graph", args });
   const fields = (required: string[], optional: string[], more: Partial<Args> = {}): Args => ({
     refused: "invalid file request", ...more,
     required: Object.fromEntries(required.map((name) => [name, { type: "string" }])),
     optional: Object.fromEntries(optional.map((name) => [name, { type: "string" }])) });
-
-  it("refuses an owner that no longer takes a binding field the base's doors hand", () => {
-    // #5805's and #5807's: the doors stopped handing tiers, then signins, and the owner's
-    // parser refused both in the same change.
-    const before = { ...ACCOUNT, optional: [...ACCOUNT.optional, "tiers", "signins"] };
-    expect(handedProblems(side(before), side(ACCOUNT))).toEqual(["tiers", "signins"].map((field) =>
-      `the binding shape account no longer takes ${field}, which the doors' version before ` +
-      "hands: drop it first (the owner takes and drops it), and take it out once the doors " +
-      "the stage serves hand it no more"));
-    // Dropped first, as HANDED_BEFORE did, it passes; and taken out once the base drops it.
-    const dropped = { ...ACCOUNT, dropped: ["tiers", "signins"] };
-    expect(handedProblems(side(before), side(dropped))).toEqual([]);
-    expect(handedProblems(side(dropped), side(ACCOUNT))).toEqual([]);
-  });
-
-  it("refuses a field the owner newly requires, a shape gone, and a base before the shapes " +
-     "holds none", () => {
-    const required = { ...ACCOUNT, required: [...ACCOUNT.required, "control"],
-                       optional: ["source"] };
-    const newly = { ...ACCOUNT, required: [...ACCOUNT.required, "grant"] };
-    expect(handedProblems(side(ACCOUNT), side(required))).toEqual([
-      "the binding shape account requires control, which the doors' version before does not " +
-      "always hand: take it as optional until the doors the stage serves do"]);
-    expect(handedProblems(side(ACCOUNT), side(newly))).toHaveLength(1);
-    // A new optional field, and one made optional, the doors' version before never hands
-    // wrongly.
-    expect(handedProblems(side(ACCOUNT), side({ ...ACCOUNT, optional: ["source", "control",
-                                                                      "grant"] })))
-      .toEqual([]);
-    expect(handedProblems(side(required), side(ACCOUNT))).toEqual([]);
-    expect(handedProblems(side(ACCOUNT), { shapes: {}, doors: [] }))
-      .toEqual(["the binding shape account is gone, which the doors' version before hands"]);
-    expect(handedProblems({ shapes: null, doors: [], cutover: NONE }, side(ACCOUNT))).toEqual([]);
-  });
+  const table = (...rows: DoorRow[]) => side({}, rows);
 
   it("refuses a door gone, and a request field it no longer takes or newly requires", () => {
-    const base = side(ACCOUNT, [door(fields(["path"], ["etag"]))]);
-    expect(handedProblems(base, side(ACCOUNT, []))).toEqual([
+    const base = table(door(fields(["path"], ["etag"])));
+    expect(held(base, table())).toEqual([
       "the door fileStat is gone, which the doors' version before calls: drop it first (the " +
-      "owner takes it, the doors call it no more), and take it out once the doors the stage " +
-      "serves call it no more"]);
+      "owner takes it, the doors call it no more), and take it out once the stage serves no " +
+      "doors version that calls it"]);
     const dropped = { ...door(fields(["path"], ["etag"])), dropped: true } as const;
-    expect(handedProblems(base, side(ACCOUNT, [dropped]))).toEqual([]);
-    expect(handedProblems(side(ACCOUNT, [dropped]), side(ACCOUNT, []))).toEqual([]);
-    expect(handedProblems(base, side(ACCOUNT, [door(fields(["path"], []))]))).toEqual([
+    expect(held(base, table(dropped))).toEqual([]);
+    expect(held(table(dropped), table())).toEqual([]);
+    expect(held(base, table(door(fields(["path"], []))))).toEqual([
       "fileStat no longer takes etag, which the doors' version before hands: drop it first " +
-      "(the owner takes and drops it), and take it out once the doors the stage serves hand it " +
-      "no more"]);
+      "(taken and left out), and take it out once the stage serves no doors version that " +
+      "hands it"]);
     const etagDropped = door(fields(["path"], [], { dropped: ["etag"] }));
-    expect(handedProblems(base, side(ACCOUNT, [etagDropped]))).toEqual([]);
-    expect(handedProblems(side(ACCOUNT, [etagDropped]), side(ACCOUNT, [door(fields(["path"],
-                                                                                  []))])))
-      .toEqual([]);
-    expect(handedProblems(base, side(ACCOUNT, [door(fields(["path", "etag"], []))])))
-      .toHaveLength(1);
-    expect(handedProblems(base, side(ACCOUNT, [door(fields(["path"], ["etag", "max"]))])))
-      .toEqual([]);
+    expect(held(base, table(etagDropped))).toEqual([]);
+    expect(held(table(etagDropped), table(door(fields(["path"], []))))).toEqual([]);
+    expect(held(base, table(door(fields(["path", "etag"], []))))).toHaveLength(1);
+    expect(held(base, table(door(fields(["path"], ["etag", "max"]))))).toEqual([]);
     // What the base's cutover manifest takes out goes at once; nothing else it names does.
     const cutover = { ...base, cutover: { doors: new Set(["fileStat"]),
-                                          shapes: new Set(["account"]) } };
-    expect(handedProblems(cutover, { shapes: {}, doors: [] })).toEqual([]);
-    expect(handedProblems(cutover, side(ACCOUNT, [door(fields(["path", "etag"], []))])))
-      .toHaveLength(1);
+                                          shapes: new Set<string>() } };
+    expect(held(cutover, table())).toEqual([]);
+    expect(held(cutover, table(door(fields(["path", "etag"], []))))).toHaveLength(1);
     // A door that reads its request no more, or leaves it to its module, refuses nothing here.
-    expect(handedProblems(base, side(ACCOUNT, [door("none")]))).toEqual([]);
-    expect(handedProblems(base, side(ACCOUNT, [door("loose")]))).toEqual([]);
+    expect(held(base, table(door("none")))).toEqual([]);
+    expect(held(base, table(door("loose")))).toEqual([]);
   });
 
   it("refuses a request where the base's door takes none, and a request's omission or an " +
      "undefined field refused", () => {
-    const none = side(ACCOUNT, [door("none")]);
-    expect(handedProblems(none, side(ACCOUNT, [door(fields([], ["after"], { omitted: true }))])))
-      .toEqual([]);
-    expect(handedProblems(none, side(ACCOUNT, [door(fields([], ["after"]))]))).toEqual([
+    const none = table(door("none"));
+    expect(held(none, table(door(fields([], ["after"], { omitted: true }))))).toEqual([]);
+    expect(held(none, table(door(fields([], ["after"]))))).toEqual([
       "fileStat takes a request now, which the doors' version before calls it without: take " +
-      "none, or an omitted one, until the doors the stage serves hand one"]);
-    const loose = side(ACCOUNT, [door(fields(["path"], [], { omitted: true,
-                                                                undefinedAllowed: true }))]);
-    expect(handedProblems(loose, side(ACCOUNT, [door(fields(["path"], []))]))).toEqual([
+      "none, or an omitted one, until the stage serves no doors version that calls it without"]);
+    const loose = table(door(fields(["path"], [], { omitted: true, undefinedAllowed: true })));
+    expect(held(loose, table(door(fields(["path"], []))))).toEqual([
       "fileStat refuses no request, which the doors' version before may hand",
       "fileStat refuses a field sent undefined, which the doors' version before may hand"]);
   });
 
   it("holds a request split by who asks side by side, and either side to one list", () => {
-    const owner = fields(["card_id", "digest"], []);
-    const outside = fields(["command_center_id"], []);
-    const split = side(ACCOUNT, [door({ owner, outside })]);
-    expect(handedProblems(split, split)).toEqual([]);
-    expect(handedProblems(split, side(ACCOUNT, [door({ owner: outside, outside })]))).toEqual([
-      "fileStat (owner) no longer takes card_id, which the doors' version before hands: drop " +
-      "it first (the owner takes and drops it), and take it out once the doors the stage " +
-      "serves hand it no more",
-      "fileStat (owner) no longer takes digest, which the doors' version before hands: drop " +
-      "it first (the owner takes and drops it), and take it out once the doors the stage " +
-      "serves hand it no more",
-      "fileStat (owner) requires command_center_id, which the doors' version before does not " +
-      "always hand: take it as optional until the doors the stage serves do"]);
+    const split = table(door({ owner: fields(["card_id", "digest"], []),
+                               outside: fields(["command_center_id"], []) }));
+    expect(held(split, split)).toEqual([]);
+    expect(held(split, table(door({ owner: fields(["command_center_id"], []),
+                                    outside: fields(["command_center_id"], []) }))))
+      .toHaveLength(3);
     // One list for both sides takes what either side hands.
-    const both = fields([], ["card_id", "digest", "command_center_id"]);
-    expect(handedProblems(split, side(ACCOUNT, [door(both)]))).toEqual([]);
+    const both = table(door(fields([], ["card_id", "digest", "command_center_id"])));
+    expect(held(split, both)).toEqual([]);
     // Split from one list, each side is held to all of it.
-    expect(handedProblems(side(ACCOUNT, [door(both)]), split)).toHaveLength(6);
+    expect(held(both, split)).toHaveLength(6);
+  });
+});
+
+describe("a release's side, read from git", () => {
+  const files = (at: Readonly<Record<string, string>>) => (_commit: string, path: string) =>
+    at[path] ?? null;
+  const DOORS = JSON.stringify({ doors: [] });
+
+  it("is its handed.json, or before it its bindings.json's shapes, the doors' to the owner", () => {
+    const shapes = { account: { required: ["owner"], optional: [] } };
+    expect(sideAt("c", files({ "platform/contract/doors.json": DOORS,
+                               "platform/contract/bindings.json": JSON.stringify({ shapes }) }))
+      .shapes).toEqual({ account: { ...shapes.account, from: "doors", to: "owner" } });
+    const handed = { started: STARTED };
+    expect(sideAt("c", files({ "platform/contract/doors.json": DOORS,
+                               "platform/contract/handed.json": JSON.stringify({ shapes: handed }),
+                               "platform/contract/bindings.json": "not read" })).shapes)
+      .toEqual(handed);
+  });
+
+  it("names the cutover's edits of the file it read, and throws for a release with neither", () => {
+    const manifest = JSON.stringify({ phases: { cutover: { entries: [
+      { edit: "platform/contract/handed.json", names: ["\"account\"", "origin"] },
+      { edit: "platform/contract/doors.json", names: ["importRows"] }] } } });
+    const read = sideAt("c", files({ "platform/contract/doors.json": DOORS,
+                                     "platform/contract/handed.json": "{\"shapes\": {}}",
+                                     "platform/cutover.json": manifest }));
+    expect(read.cutover).toEqual({ doors: new Set(["importRows"]),
+                                   shapes: new Set(["account", "origin"]) });
+    expect(() => sideAt("c", files({ "platform/contract/doors.json": DOORS })))
+      .toThrow("c holds no platform/contract/handed.json: what it hands and takes is unknown");
   });
 });

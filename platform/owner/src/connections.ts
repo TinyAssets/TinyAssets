@@ -70,6 +70,7 @@ import {
 } from "../../contract/src/egress-scope";
 import { base64url, KID, parseBlob } from "../../contract/src/envelope";
 import { fields } from "../../contract/src/doors";
+import { type ShapeName, taken } from "../../contract/src/handed";
 import { checkedRecord, type ModelRecord } from "../../contract/src/model-record";
 
 import type { GatewayService, Refreshed } from "../../contract/src/gateway";
@@ -187,6 +188,11 @@ const STATE = /^[A-Za-z0-9_-]{43}$/;
 
 const INVALID_REQUEST = "invalid connection request";
 
+/** A connection door's request held to its shape (`handed.json`), or `INVALID_REQUEST`. */
+function requested(request: unknown, name: ShapeName): Record<string, unknown> {
+  return fields(request, ...taken(name), INVALID_REQUEST);
+}
+
 function grammar(value: unknown, pattern: RegExp, what: string): string {
   if (typeof value !== "string" || !pattern.test(value)) {
     throw new Refusal("invalid", `invalid ${what}`);
@@ -301,8 +307,7 @@ export class Connections {
    * write, so a refusal leaves nothing behind.
    */
   prepare(sessionId: string, request: unknown, now: number): Prepared {
-    const r = fields(request, ["source", "kind", "display_name", "provider", "revocable"],
-                     ["redirect_uri"], INVALID_REQUEST);
+    const r = requested(request, "connection_prepare");
     const source = grammar(r["source"], SOURCE_ID, "source");
     const provider = grammar(r["provider"], PROVIDER, "provider");
     const kind = r["kind"];
@@ -352,8 +357,7 @@ export class Connections {
    * revoke, an unrevocable one deleted with an owner notice.
    */
   commit(request: unknown, now: number): ConnectionView {
-    const r = fields(request, ["connection", "version", "blob", "kid", "models"],
-                     ["expires_at", "failed", "egress"], INVALID_REQUEST);
+    const r = requested(request, "connection_commit");
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
@@ -454,7 +458,7 @@ export class Connections {
    */
   revoke(request: unknown, now: number): { connection: string; revoked: boolean;
                                            provider_revoke: boolean } {
-    const r = fields(request, ["connection"], [], INVALID_REQUEST);
+    const r = requested(request, "connection_revoke");
     const id = grammar(r["connection"], CONNECTION_ID, "connection");
     const row = this.#row(id);
     if (row === undefined) {
@@ -527,7 +531,7 @@ export class Connections {
   flowFinish(sessionId: string, request: unknown, now: number):
       { connection: string; version: number; verifier: string; redirect_uri: string;
         source: string } {
-    const r = fields(request, ["state"], [], INVALID_REQUEST);
+    const r = requested(request, "flow_finish");
     const state = grammar(r["state"], STATE, "state");
     const flow = this.#sql.exec<{ connection_id: string; session_id: string; verifier: string;
                                   redirect_uri: string }>(
@@ -812,7 +816,7 @@ export class Connections {
    */
   #keepResealed(id: string, version: number, resealed: unknown, nowMs: number,
                 holds: (row: Row) => boolean): boolean {
-    if (!keyed(resealed, ["blob", "kid", "version"])
+    if (!keyed(resealed, ...taken("resealed"))
         || typeof resealed["kid"] !== "string" || !KID.test(resealed["kid"])
         || resealed["version"] !== version + 1) {
       return false;

@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { REPO } from "./paths";
+import { REPO } from "./paths.ts";
 
 /** `folders` (repo-relative, whole, so each file's imports resolve as they did) at `commit`. */
 export interface Tree {
@@ -74,8 +74,8 @@ export function fileAt(base: string, path: string,
   try {
     run("rev-parse", "--verify", "--quiet", `${base}^{commit}`);
   } catch {
-    throw new Error(`${base} is not in this checkout: fetch it (the guard never passes ` +
-                    "without its base)");
+    throw new Error(`${base} is not in this checkout: fetch it (nothing held to it passes ` +
+                    "without it)");
   }
   if (run("ls-tree", "--name-only", base, "--", path).trim() !== path) {
     return null;

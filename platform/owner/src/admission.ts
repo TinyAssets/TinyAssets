@@ -61,6 +61,7 @@
  * so a record past it is malformed.
  */
 import { keyed } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import type { DoorClass as TableClass } from "../../contract/src/doors";
 import { wiped } from "./erasure";
 import { Refusal } from "../../contract/src/refusal";
@@ -141,9 +142,8 @@ const CHANGE = "an admission change is an admit, or a reason and whether it susp
 
 /** A tier change's tier, or `invalid`. */
 function tierName(request: unknown): TierName {
-  if (typeof request !== "object" || request === null || Array.isArray(request)
-      || Object.keys(request).join() !== "tier"
-      || !(TIER_NAMES as readonly unknown[]).includes((request as { tier: unknown }).tier)) {
+  if (!keyed(request, ...taken("tier_change"))
+      || !(TIER_NAMES as readonly unknown[]).includes(request["tier"])) {
     throw new Refusal("invalid", "a tier change names free or paid");
   }
   return (request as { tier: TierName }).tier;
@@ -218,7 +218,7 @@ export class OwnerAdmission {
     proven(platform, "reserved");
     const now = this.row();
     const sql = this.#storage.sql;
-    if (keyed(request, ["admit"])) {
+    if (keyed(request, ...taken("admission_admit"))) {
       if (request["admit"] !== true) {
         throw new Refusal("invalid", "an admit is {admit: true}");
       }
@@ -228,7 +228,7 @@ export class OwnerAdmission {
       sql.exec("UPDATE owner_admission SET state = 'admitted'");
       return { state: "admitted", reasons: [] };
     }
-    if (!keyed(request, ["reason", "suspended"])) {
+    if (!keyed(request, ...taken("admission_change"))) {
       throw new Refusal("invalid", CHANGE);
     }
     const { reason, suspended } = request;

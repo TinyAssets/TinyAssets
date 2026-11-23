@@ -18,6 +18,7 @@
  */
 import { type Credential, type OAuthGrant } from "./credential";
 import { keyed, object } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import {
   keyExchangeSource, type OAuthClient, scope, secret, source, type Source,
 } from "../../contract/src/egress-scope";
@@ -138,7 +139,7 @@ function oauthCredential(base: Source, grant: OAuthGrant): Credential {
 }
 
 function authorizationGrant(grant: unknown): { code: string; verifier: string; redirect: URL } {
-  if (!keyed(grant, ["code", "redirect_uri", "verifier"])
+  if (!keyed(grant, ...taken("authorization_grant"))
       || typeof grant["code"] !== "string" || !CODE.test(grant["code"])
       || typeof grant["verifier"] !== "string" || !VERIFIER.test(grant["verifier"])
       || typeof grant["redirect_uri"] !== "string") {

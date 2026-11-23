@@ -56,7 +56,7 @@
         { "edit": "platform/contract/doors.json", "names": ["importRows", "importFiles", "importFileBegin", "importFileStored", "importFileCommit", "importNotice", "importCheck", "importDiscard", "\"import\""], "what": "the eight import rows" },
         { "edit": "platform/contract/src/doors.ts", "names": ["\"import\"", "owner/src/import.ts"], "what": "the import class" },
         { "edit": "platform/contract/src/binding.ts", "names": ["ImportBinding", "importBinding", "IMPORT_KEY", "doors/src/import/", "owner/src/import.ts", "\"import\""], "what": "the binding's import field and the import kind" },
-        { "edit": "platform/contract/bindings.json", "names": ["\"import\"", "import_bundle"], "what": "the import kind's shapes" },
+        { "edit": "platform/contract/handed.json", "names": ["\"import\"", "import_bundle"], "what": "the import kind's shapes" },
         { "edit": "platform/contract/guards/binding.test.ts", "names": ["\"import\""], "what": "where the import kind's shapes sit" },
         { "edit": "platform/contract/src/owner.ts", "names": ["importRows", "importDiscard", "CheckPart", "doors/src/import/", "import/survey.ts"], "imports": ["platform/contract/src/import-message.ts"], "what": "the import doors' types" },
         { "edit": "platform/contract/src/paths.ts", "names": ["IMPORTED", "platform/import/", "owner/src/import.ts", "/workspace/imported"], "what": "the imported tree's path" },
@@ -391,7 +391,8 @@
         { "edit": "scripts/canary_handles.json", "names": ["\"old\"", "scripts/mcp_public_canary.py", "tests/test_handles_canary.py", "platform/cutover.json"], "what": "the old stack's record, by which the platform's canary knows the platform dark" },
         { "edit": "platform/deploy/canary.ts", "names": ["oldAnswers", "sides.old"], "what": "the dark side: no handback is left to give the routes back to the old stack" },
         { "edit": "platform/deploy/alarm.ts", "names": ["dark: the old stack serves"], "what": "the alarm's dark stand-down, with the canary's dark side" },
-        { "edit": "platform/deploy/guards/handed.test.ts", "names": ["CUTOVER_JSON", "platform/cutover.json"], "what": "the cutover's exception, the doors and shapes its change takes out, which the cutover's own PRs need and nothing after" },
+        { "edit": "platform/deploy/handed.ts", "names": ["CUTOVER_JSON", "platform/cutover.json"], "what": "the cutover's exception, the doors and shapes its change takes out, which the cutover's own PRs need and nothing after" },
+        { "edit": "platform/deploy/guards/handed.test.ts", "names": ["platform/cutover.json"], "what": "the cutover's exception's test, with it" },
 
         { "delete": ".github/workflows/restart-daemon.yml", "what": "restarts the old stack on its untouched volumes after a handback (checklist.md, the handback's step 2), so it stays until the hold ends; at the cutover it loses its converge step (below)" },
         { "delete": "scripts/retire_cheat_loop_deploy_fence.py", "what": "restart-daemon.yml's host fence" },

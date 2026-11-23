@@ -42,6 +42,7 @@ import { clock, clockMs } from "./clock";
 import type { OwnerStorage, Write } from "./gate";
 import type { Call, Door, DoorUnits, ObjectReads } from "./door";
 import { keyed, whole } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import type { BilledEvent } from "../../contract/src/owner";
 import { Refusal } from "../../contract/src/refusal";
 import { METER_BATCH, type MeterEvent } from "../../contract/src/sandbox";
@@ -101,7 +102,7 @@ const AUTHORITY = /^[A-Za-z0-9._:-]{1,64}$/;
 
 /** A read of the log, checked whole: anything out of shape fails loudly. */
 export function meterRead(value: unknown, after: number): { events: MeterEvent[]; next: number } {
-  if (!keyed(value, ["events", "next"])) {
+  if (!keyed(value, ...taken("meter_read"))) {
     throw new Error("the sandbox's meter answered out of shape");
   }
   const { events, next } = value;
@@ -110,7 +111,7 @@ export function meterRead(value: unknown, after: number): { events: MeterEvent[]
   }
   let last = after;
   for (const event of events as unknown[]) {
-    if (!keyed(event, ["seq", "authority", "kind", "at"]) || !whole(event["seq"], 0, next)
+    if (!keyed(event, ...taken("meter_event")) || !whole(event["seq"], 0, next)
         || event["seq"] <= last
         || typeof event["authority"] !== "string" || !AUTHORITY.test(event["authority"])
         || typeof event["kind"] !== "string" || !KINDS.includes(event["kind"])
@@ -344,9 +345,7 @@ export class SandboxTime {
 /** A billed event as the doors handed it, checked whole: anything else fails loudly. */
 function billedEvent(value: unknown): BilledEvent {
   const id = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(v);
-  if (!keyed(value, ["id", "execution_id", "sandbox_id", "at", "authority", "kind", "started_at",
-                     "execution_ms", "vcpu", "memory_mb"])
-      || !id(value["id"]) || !id(value["execution_id"]) || !id(value["sandbox_id"])
+  if (!keyed(value, ...taken("billed_event")) || !id(value["id"]) || !id(value["execution_id"]) || !id(value["sandbox_id"])
       || !whole(value["at"], 0)
       || typeof value["authority"] !== "string" || !AUTHORITY.test(value["authority"])
       || (value["kind"] !== "paused" && value["kind"] !== "killed")

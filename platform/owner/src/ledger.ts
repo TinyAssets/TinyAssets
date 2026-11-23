@@ -94,6 +94,7 @@ import { AGENT_ID, codePoints, printable, utf8Bytes, utf8Decoder } from "../../c
 import { sha256Hex } from "../../contract/src/digest";
 import { canonical } from "../../contract/src/canonical";
 import { keyed, whole } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import { HEX16, HEX64, randomHex, SUBSCRIPTION_ID } from "../../contract/src/ids";
 import { Buffer } from "node:buffer";
 
@@ -735,7 +736,7 @@ export function outsideOrigin(value: unknown): Origin | null {
   if (value === null) {
     return null;
   }
-  if (!keyed(value, ["client", "family"])) {
+  if (!keyed(value, ...taken("origin"))) {
     throw new Refusal("invalid", "invalid outside origin");
   }
   const { client, family } = value;
@@ -753,7 +754,7 @@ export function outsideOrigin(value: unknown): Origin | null {
  * re-derives the origin from the key id so the two can never disagree.
  */
 export function registrant(source: unknown, origin: Origin | null): Source {
-  if (!keyed(source, ["kind", "ref"])) {
+  if (!keyed(source, ...taken("source"))) {
     throw new Refusal("invalid", "source is api_key or mcp");
   }
   const { kind, ref } = source;

@@ -2,13 +2,13 @@
  * Each binding kind's parser (`contract/src/binding.ts`) takes the binding the binder builds
  * for it, field for field, which presents that kind (`bindingKind`), and refuses any malformed
  * one as `invalid`: a field missing, a field another kind carries, a field out of its grammar,
- * or another kind's caller. Each shape a binding is made of (`bindings.json`) lists exactly the
+ * or another kind's caller. Each shape a binding is made of (`handed.json`) lists exactly the
  * fields its parser takes from what the binder builds.
  */
 import { describe, expect, it } from "vitest";
 
-import { BINDING_PARSERS, type BindingKind, bindingKind, bindingShapes, PLATFORM_CALLER,
-         type ShapeName } from "../src/binding";
+import { BINDING_PARSERS, type BindingKind, bindingKind, PLATFORM_CALLER } from "../src/binding";
+import { handedShapes, type ShapeName } from "../src/handed";
 import { refusalOf } from "../src/refusal";
 
 const OWNER = "user_owner";
@@ -169,7 +169,7 @@ describe("each binding kind's parser", () => {
       expect(refusalOf(thrown)?.code).toBe("invalid");
     });
 
-  // A field a shape drops (`bindings.json`), which the doors' version before still hands, is
+  // A field a shape drops (`handed.json`), which the doors' version before still hands, is
   // taken and left out.
   it.each(KINDS.flatMap((kind) => BUILT[kind].map((built) => [kind, built] as const))
     .filter(([kind]) => kind !== "none"))(
@@ -182,7 +182,7 @@ describe("each binding kind's parser", () => {
 });
 
 /** Where each shape sits in a kind's binding: the kind, and the path to it. */
-const PLACES: Readonly<Record<ShapeName, readonly (readonly [BindingKind, string?])[]>> = {
+const PLACES: Readonly<Partial<Record<ShapeName, readonly (readonly [BindingKind, string?])[]>>> = {
   account: [["account"], ["session"]],
   origin: [["account", "origin"], ["session", "origin"]],
   source: [["account", "source"], ["session", "source"]],
@@ -197,34 +197,24 @@ const PLACES: Readonly<Record<ShapeName, readonly (readonly [BindingKind, string
   import: [["import"]],
   import_bundle: [["import", "import"]],
 };
-const SHAPES = bindingShapes();
+const SHAPES = handedShapes();
 /** Each kind's own shape, the one its binding is. */
 const AT: Partial<Record<BindingKind, ShapeName>> = Object.fromEntries(
   Object.entries(PLACES).flatMap(([name, places]) => places
     .filter(([, path]) => path === undefined).map(([kind]) => [kind, name])));
 
-describe("the shapes a binding is made of (bindings.json)", () => {
-  it("are each lists of distinct fields, none in two", () => {
-    for (const [name, shape] of Object.entries(SHAPES)) {
-      const listed = [...shape.required, ...shape.optional, ...shape.dropped ?? []];
-      expect(Object.keys(shape).every((key) => ["required", "optional", "dropped"].includes(key)),
-             name).toBe(true);
-      expect(new Set(listed).size, name).toBe(listed.length);
-    }
-  });
-
+describe("the shapes a binding is made of (handed.json)", () => {
   it.each(Object.keys(PLACES) as ShapeName[])(
-    "%s lists exactly the fields its parser takes from what the binder builds", (name) => {
-      const built = PLACES[name].flatMap(([kind, path]) => BUILT[kind].map((binding) =>
+    "%s, which the doors hand the owner, lists exactly the fields its parser takes from what " +
+    "the binder builds", (name) => {
+      const shape = SHAPES[name];
+      const always = [...shape.required, ...shape.always ?? []];
+      const built = PLACES[name]!.flatMap(([kind, path]) => BUILT[kind].map((binding) =>
         path === undefined ? binding : (binding as Record<string, unknown>)[path]))
         .filter((value) => typeof value === "object" && value !== null) as object[];
       const fields = new Set(built.flatMap((value) => Object.keys(value)));
-      expect([...fields].sort()).toEqual([...SHAPES[name].required, ...SHAPES[name].optional].sort());
-      expect(built.every((value) => SHAPES[name].required.every((field) => field in value)))
-        .toBe(true);
+      expect([shape.from, shape.to]).toEqual(["doors", "owner"]);
+      expect([...fields].sort()).toEqual([...always, ...shape.optional].sort());
+      expect(built.every((value) => always.every((field) => field in value))).toBe(true);
     });
-
-  it("are every shape the table has", () => {
-    expect(Object.keys(SHAPES).sort()).toEqual(Object.keys(PLACES).sort());
-  });
 });

@@ -79,6 +79,7 @@
  */
 import type { SandboxToken } from "../../contract/src/binding";
 import { keyed } from "../../contract/src/checks";
+import { taken } from "../../contract/src/handed";
 import { CONNECTION_ID, HEX32, randomHex, RUN_ID } from "../../contract/src/ids";
 
 import { apiRules, freeCall, tierMultiplier } from "../../contract/src/api-rules";
@@ -306,7 +307,7 @@ type Row = {
 
 /** The request's fields, exactly, or `invalid`. */
 export function egressRequest(value: unknown): EgressRequest {
-  if (!keyed(value, ["bytes_hint", "connection", "method", "path", "run"])) {
+  if (!keyed(value, ...taken("egress_request"))) {
     throw new Refusal("invalid", "invalid egress request");
   }
   const { run, connection, method, path, bytes_hint: hint } = value;
@@ -322,7 +323,7 @@ export function egressRequest(value: unknown): EgressRequest {
 
 /** A reserve's fields, exactly, or `invalid`. */
 function reserveRequest(value: unknown): ReserveRequest {
-  if (!keyed(value, ["model", "reservation", "tier"])) {
+  if (!keyed(value, ...taken("egress_reserve"))) {
     throw new Refusal("invalid", "invalid egress reserve");
   }
   const { reservation, model, tier } = value;
@@ -335,14 +336,14 @@ function reserveRequest(value: unknown): ReserveRequest {
 }
 
 function spendOutcome(value: unknown): MeterOutcome {
-  if (keyed(value, ["state"]) && (value["state"] === "failed" || value["state"] === "unknown")) {
+  if (keyed(value, ...taken("spend_ended"))
+      && (value["state"] === "failed" || value["state"] === "unknown")) {
     return { state: value["state"] };
   }
   const served = typeof value === "object" && value !== null && "served" in value
     ? (value as { served: unknown }).served : undefined;
-  if ((keyed(value, ["cost", "state", "tokens"])
-       || (keyed(value, ["cost", "served", "state", "tokens"]) && typeof served === "string"
-           && MODEL_NAME.test(served)))
+  if (keyed(value, ...taken("spend_succeeded"))
+      && (!("served" in value) || (typeof served === "string" && MODEL_NAME.test(served)))
       && value["state"] === "succeeded"
       && typeof value["tokens"] === "number" && Number.isSafeInteger(value["tokens"])
       && value["tokens"] >= 0 && typeof value["cost"] === "number"
@@ -353,9 +354,9 @@ function spendOutcome(value: unknown): MeterOutcome {
   throw new Refusal("invalid", "invalid egress settle");
 }
 
-/** The settle's fields, exactly, or `invalid`. */
+/** The settle's fields, exactly (its `resealed` the connection's), or `invalid`. */
 function settleRequest(value: unknown): SettleRequest {
-  if (!keyed(value, ["bytes", "outcome", "reservation", "spend", "status"])) {
+  if (!keyed(value, ...taken("egress_settle"))) {
     throw new Refusal("invalid", "invalid egress settle");
   }
   const { reservation, outcome, status, bytes, spend } = value;
@@ -856,8 +857,8 @@ export const egressDoors = Object.freeze({
    */
   egressSettle(o: EgressDoorNeeds, { binding, request }: Call<Record<string, unknown>, "egress">):
       { settled: boolean } {
-    const { resealed, ...rest } = request ?? {};
-    const settled = o.egress.settle(binding.sandbox, settleRequest(rest), clock());
+    const settled = o.egress.settle(binding.sandbox, settleRequest(request), clock());
+    const resealed = request?.["resealed"];
     if (settled.settled && resealed !== undefined) {
       try {
         o.connections.resealed(settled.connection, settled.version, resealed, clockMs());

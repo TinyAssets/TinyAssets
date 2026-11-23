@@ -261,6 +261,11 @@ interface WorldOptions {
   readonly lacking?: readonly string[];
   /** The exit of the doors' smoke (`canary.ts --smoke`): 0 by default. */
   readonly smoke?: number;
+  /**
+   * The files the held versions' commit (`BEFORE`) holds, by repo path, in place of this
+   * tree's; null, a file it lacks.
+   */
+  readonly before?: Readonly<Record<string, string | null>>;
 }
 
 /** A version a fake Worker serves: its id, its share and its tag. */
@@ -816,8 +821,17 @@ function world(options: WorldOptions = {}) {
   };
   // The clock moves on only while the kit waits for an answer.
   let clock = NOW.getTime();
-  const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, commit: () => COMMIT, log,
-                   now: () => new Date(clock), sleep: async (ms) => { clock += ms; } };
+  // Git holds the held versions' commit and the run's: this tree's files, but for `before`'s.
+  const fileAt = (commit: string, path: string): string | null => {
+    if (commit !== BEFORE && !COMMIT.startsWith(commit)) {
+      throw new Error(`${commit} is not in this checkout`);
+    }
+    const given = commit === BEFORE ? options.before?.[path] : undefined;
+    return given !== undefined ? given
+      : existsSync(join(REPO, path)) ? readFileSync(join(REPO, path), "utf8") : null;
+  };
+  const io: Io = { fetch: fetcher, spawn, exec, bundles, treeImage, commit: () => COMMIT, fileAt,
+                   log, now: () => new Date(clock), sleep: async (ms) => { clock += ms; } };
   return { io, events, logs, secretsPut, secretFiles, secrets, routes, hooks, accounts, kv, tables,
            kill, domains, inert, dns, created, sent, deployments, versions };
 }
@@ -1292,8 +1306,8 @@ describe("the plan the apply job runs", () => {
     const { why, changed } = await refused(w, "dark", plan);
     expect(why).toMatch(new RegExp(`^this job's line \\d+ is not the approved plan's, so it ` +
       "stops before that change, having made no change but what the approved lines before it " +
-      "name: approved \"record " +
-      "each Worker's version as this run's rollout record"));
+      "name: approved "));
+    expect(why).toContain(`approved "${HELD_HOLD}"`);
     expect(why).toContain(`and this job's "set the secret WORKOS_API_KEY on ${DOORS} with its ` +
                           'version"');
     expect(changed).toEqual([]);
@@ -2666,6 +2680,46 @@ describe("the rollout record and mode rollback", () => {
     await expect(runMode(refused, "dark", ["--yes"], RUN)).rejects.toThrow(
       `writing ${ROLLOUT} failed (500)`);
     expect(refused.events.filter((event) => event.startsWith("wrangler "))).toEqual([]);
+  });
+
+  it("stops before any change when the run's Workers refuse what the serving versions hand, " +
+     "either way, or what a serving version hands is unknown", async () => {
+    const HANDED = "platform/contract/handed.json";
+    const tree = JSON.parse(readFileSync(join(REPO, HANDED), "utf8")) as {
+      shapes: Record<string, { required: string[]; optional: string[] }> };
+    const served = (name: string, change: (shape: { required: string[]; optional: string[] }) =>
+      object) => ({ [HANDED]: JSON.stringify({ shapes: { ...tree.shapes,
+                                                         [name]: change(tree.shapes[name]!) } }) });
+    const stops = async (w: ReturnType<typeof world>, why: string) => {
+      await expect(runMode(w, "dark", ["--yes"], RUN)).rejects.toThrow(why);
+      expect(w.events.filter((event) => CHANGE.test(event))).toEqual([]);
+    };
+    // A request: the doors serving hand the owner an account field this owner no longer takes.
+    await stops(world({ held: true, before: served("account", (shape) =>
+      ({ ...shape, optional: [...shape.optional, "tiers"] })) }),
+                "the run's Workers and the versions the stage serves refuse what the other " +
+                "hands across the deploy, so nothing is changed: the shape account no longer " +
+                "takes tiers, which the doors' version before hands");
+    // An answer: the owner serving requires a field of the start's answer this sandbox does not
+    // always hand.
+    await stops(world({ held: true, before: served("started", (shape) =>
+      ({ ...shape, required: [...shape.required, "lease"] })) }),
+                "the shape started does not always hand lease, which the owner's version " +
+                "before requires");
+    // Before handed.json, the serving commit's bindings.json is its shapes, the doors' to the
+    // owner; a commit with neither, a version no tag names a commit of, and a commit this
+    // checkout lacks, are unknown.
+    const bindings = { [HANDED]: null, "platform/contract/bindings.json": JSON.stringify({
+      shapes: Object.fromEntries(Object.entries(tree.shapes).slice(0, 13)) }) };
+    expect((await runMode(world({ held: true, before: bindings }), "dark", ["--public"], PUBLIC))
+      .plan).toContain(HELD_HOLD);
+    await stops(world({ held: true, before: { [HANDED]: null } }),
+                `${BEFORE} holds no ${HANDED}: what it hands and takes is unknown`);
+    const doors = (tag: string | null) => world({ held: true, serving: { ...HELD_SERVING,
+      [DOORS]: [{ version: "before-doors", percentage: 100, tag }] } });
+    await stops(doors(null), `${DOORS} serves before-doors, tagged with nothing, which names no ` +
+                "commit: what it hands and takes is unknown, so nothing is changed");
+    await stops(doors("a".repeat(12)), `${"a".repeat(12)} is not in this checkout`);
   });
 
   it("plans an optional secret the doors lack, and the doors' way back, as the apply job's to " +
@@ -5243,6 +5297,13 @@ const CONTROL_WRITE = `cf PUT /accounts/${ACCOUNT}/storage/kv/`;
 const writesControl = (event: string) => event.startsWith(CONTROL_WRITE)
   && event.endsWith(`/values/${encodeURIComponent(CONTROL_KEY)}`);
 
+/** A deploy plan's hold of its Workers to the serving versions, each Worker's at `commits`. */
+const holdLine = (commits: string) => "hold the run's Workers to what the serving versions " +
+  `hand and take (contract/handed.json, contract/doors.json), read from git: ${commits}: none ` +
+  "refuses the other";
+/** The hold over a held account, every Worker serving `BEFORE`. */
+const HELD_HOLD = holdLine(WORKERS.map((worker) => `${NAMES[worker]} at ${BEFORE}`).join(", "));
+
 /** The rollout record's line of a deploy's plan. */
 const RECORDED = `record each Worker's version as this run's rollout record in ${
   NAMESPACES["CONTROL"]}, before its first deploy: roll back with --mode rollback --record ` +
@@ -5301,6 +5362,7 @@ const DARK_FRESH = [
   ...Object.entries(SECRETS).flatMap(([worker, names]) =>
     names.map((name) => `set the secret ${name} on ${NAMES[worker]} with its version${
       OPTIONAL.includes(name) ? " if the run is given it: it is" : ""}`)),
+  holdLine("none serves yet"),
   RECORDED,
   ...WORKERS.map((worker) => `${NAMES[worker]}: deployed by this run first, so a rollback stops ` +
     "at it"),
@@ -5324,6 +5386,7 @@ const ROUTES_HELD = [
   `WorkOS redirect URI ${UPSTREAM_CALLBACK}: present`,
   `WorkOS's authorize of the doors' client and ${UPSTREAM_CALLBACK}: it takes them, sending ` +
   "the browser to auth.test's sign-in",
+  HELD_HOLD,
   RECORDED,
   ...WORKERS.map((worker) => `${NAMES[worker]}: serving before-${worker} (${
     HELD_SERVING[NAMES[worker]!]![0]!.tag}); a rollback takes it back there`),

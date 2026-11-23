@@ -146,6 +146,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fileAt } from "../ci/history.ts";
 import { PLATFORM, REPO } from "../ci/paths.ts";
 import { migrated } from "../ci/kit/locks.ts";
 import { WRANGLER } from "../ci/wrangler.ts";
@@ -187,6 +188,7 @@ import {
   IDENTITY, KEYRINGS, MIGRATES, NAMES, NAMESPACES, OPTIONAL, QUEUES,
   RETIRED, ROTATED, ROUTES, SECRET_INPUTS, SECRETS, SHARED, STAGES, WORKER_FACTS, WORKERS,
 } from "./facts.ts";
+import { type Before, handedProblems, sideAt, TREE } from "./handed.ts";
 import { INPUTS as H2_INPUTS } from "./h2-probes.ts";
 import {
   BACK_INPUTS, backFrom, type Begin, copyBack, firstNightAfter, KEEP_DAYS, readableAt, recover,
@@ -256,6 +258,11 @@ export interface Io {
   readonly treeImage: () => string;
   /** The commit the checkout is at, which each Worker's version is tagged with. */
   readonly commit: () => string;
+  /**
+   * The text of a repo-relative file at an earlier commit, or null when its tree lacks it; an
+   * unknown commit throws (`ci/history.ts` `fileAt`: the plan and apply jobs fetch history).
+   */
+  readonly fileAt: (commit: string, path: string) => string | null;
   readonly log: (line: string) => void;
   /** The clock: a route record's time, and how long the operator's answer is waited for. */
   readonly now: () => Date;
@@ -271,6 +278,7 @@ export const IO: Io = Object.freeze({
   treeImage,
   commit: () => execFileSync("git", ["rev-parse", "HEAD"], { cwd: PLATFORM, encoding: "utf8" })
     .trim(),
+  fileAt: (commit: string, path: string) => fileAt(commit, path),
   log: (line: string) => console.log(line),
   now: () => new Date(),
   sleep: (ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }),
@@ -1816,7 +1824,8 @@ const secretsLater = step<Secrets, "deployed" | "setting">((ctx, got) =>
  * The rollout record (`RolloutRecord`), kept before the first Worker deploy: each Worker the
  * account's Workers listing holds read as the one version it serves, and that version's tag.
  * A Worker that serves two (a split) stops the run before any deploy (`Cloudflare.serving`).
- * Written on an applied run when the run's record is not there yet, and kept as it is when it
+ * The run's Workers are held to what those versions hand and take (`servedHold`), before the
+ * record and on every attempt. Written on an applied run when the run's record is not there yet, and kept as it is when it
  * is (a re-run attempt keeps the versions its first attempt read); a refused write stops the
  * run before any deploy. The plan names, Worker by Worker, where a rollback of the run stops.
  * The Workers as read now are what the deploy goes on from (`workers`).
@@ -1845,6 +1854,7 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
       workers.push(rolled);
       lines.push(rolledLine(rolled, setting));
     }
+    say(servedHold(run, workers));
     // Read after the split check, so a re-run attempt stops on a split as its first would.
     const held = namespace === undefined ? undefined
       : await got.cloudflare.value(got.account, namespace, key);
@@ -1867,6 +1877,44 @@ const rollout = step<"cloudflare" | "account" | "ids" | "deployed" | "setting" |
     add(`Rollout record ${key}:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\`\n\n`);
     return { rolled: workers };
   });
+
+/**
+ * The run's Workers held to what the versions the stage serves hand them and take from them
+ * (`handed.ts`), each serving version read from git at the commit its tag names: from each
+ * Worker's 100% until a later one's, that one's version before talks to it (`WORKERS`). Any
+ * refusal stops the run before any change, each named; so does a serving version whose tag names
+ * no commit, or one this checkout lacks: what it hands is unknown. A Worker no version of which
+ * serves (`rolled`'s first deploy) holds nothing. The plan's line names each commit read.
+ */
+function servedHold(run: Run, rolled: readonly Rolled[]): string {
+  const sides = new Map<string, Before>();
+  const read: string[] = [];
+  const then = (worker: string): Before | null => {
+    const { name, before } = rolled[WORKERS.indexOf(worker)]!;
+    if (before === null) {
+      return null;
+    }
+    const commit = taggedAs(before.tag)?.commit;
+    if (commit === undefined) {
+      throw new Error(`${name} serves ${before.version}, tagged ${before.tag ?? "with nothing"}, ` +
+                      "which names no commit: what it hands and takes is unknown, so nothing " +
+                      "is changed");
+    }
+    if (!sides.has(commit)) {
+      sides.set(commit, sideAt(commit, run.io.fileAt));
+    }
+    read.push(`${name} at ${commit}`);
+    return sides.get(commit)!;
+  };
+  const problems = handedProblems(then, TREE);
+  if (problems.length > 0) {
+    throw new Error(`the run's Workers and the versions the stage serves refuse what the other ` +
+                    `hands across the deploy, so nothing is changed: ${problems.join("; ")}`);
+  }
+  return `hold the run's Workers to what the serving versions hand and take (contract/handed.json, ` +
+    `contract/doors.json), read from git: ${read.length === 0 ? "none serves yet"
+      : read.join(", ")}: none refuses the other`;
+}
 
 /** The doors' smoke at a share below 100 (`canary.ts --smoke`), as a plan names it. */
 const SMOKE = "the canary's doors checks, each request with Cloudflare's version override for " +
